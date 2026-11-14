@@ -878,6 +878,8 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
+        // A new connection attempt retires the previous home failure. Switches do not.
+        self.home_failure = None;
         if self.platform == ClientPlatform::Android {
             return self.connect_android(kernel, vpn);
         }
@@ -996,7 +998,6 @@ impl ProfileBook {
                 let mut model = self.link_model();
                 model.tun = true;
                 model.tun_wanted = true;
-                model.failure = None;
                 model.connected = model.system_proxy;
                 self.apply_model(model);
             }
@@ -3737,6 +3738,52 @@ proxy-groups:
         assert!(again.system_proxy);
         assert_eq!(yaml_mode(&kernel.last).as_deref(), Some("global"));
         assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+    }
+
+    #[test]
+    fn home_failure_survives_disconnect_proxy_close_and_tun_until_connect() {
+        let dir = temp_dir("keep-home-failure");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = ModeKernel {
+            fail_mode: false,
+            alive: false,
+            last: String::new(),
+            up: 1,
+            down: 2,
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected && connected.failure.is_none());
+
+        kernel.fail_mode = true;
+        let denied = book.set_outbound_mode("global", &mut kernel);
+        assert_eq!(denied.mode.as_deref(), Some("rule"));
+        assert_eq!(denied.failure.as_deref(), Some("模式没有切换"));
+        assert!(denied.system_proxy && denied.connected);
+        kernel.fail_mode = false;
+
+        let closed_proxy = book.set_system_proxy(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!closed_proxy.system_proxy);
+        assert_eq!(closed_proxy.failure.as_deref(), Some("模式没有切换"));
+
+        let opened_tun = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(opened_tun.tun);
+        assert_eq!(opened_tun.failure.as_deref(), Some("模式没有切换"));
+
+        let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!disconnected.connected);
+        assert!(!disconnected.system_proxy && !disconnected.tun && !disconnected.vpn);
+        assert_eq!(disconnected.failure.as_deref(), Some("模式没有切换"));
+
+        let again = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(again.connected);
+        assert!(again.failure.is_none());
+        assert!(again.system_proxy);
     }
 
     #[cfg(unix)]

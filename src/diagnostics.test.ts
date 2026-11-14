@@ -299,4 +299,37 @@ describe('连接与日志', () => {
     await flushPromises()
     expect(wrapper.get('[data-testid="link-status"]').text()).toBe('未连接')
   })
+
+  it('首页已连接时下一次采样替换上行和下行', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    let upload = 11
+    let download = 22
+    const memory = createMemoryProfilePort({
+      connected: true,
+      system_proxy: true,
+      kernel_running: true,
+      upload: 11,
+      download: 22,
+      active_id: 'p1',
+      profiles: [savedProfile()],
+    })
+    const port: ProfilePort = {
+      ...memory,
+      async load() {
+        const snapshot = await memory.load()
+        return { ...snapshot, connected: true, upload, download }
+      },
+    }
+    const wrapper = await mountApp(port)
+    expect(wrapper.find('[data-screen="diagnostics"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="home-rates"]').text()).toContain('上行 11')
+    expect(wrapper.get('[data-testid="home-rates"]').text()).toContain('下行 22')
+    upload = 31
+    download = 42
+    await vi.advanceTimersByTimeAsync(DIAGNOSTICS_SAMPLE_MS)
+    await flushPromises()
+    expect(wrapper.find('[data-screen="diagnostics"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="home-rates"]').text()).toContain('上行 31')
+    expect(wrapper.get('[data-testid="home-rates"]').text()).toContain('下行 42')
+  })
 })

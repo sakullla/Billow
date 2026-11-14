@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import App from './App.vue'
 import { MODE_DIRECT_HINT, MODE_GLOBAL_HINT, MODE_RULE_HINT } from './copy'
 import { createMemoryProfilePort, type ProfilePort } from './profile-port'
@@ -25,14 +25,21 @@ function item(partial: Partial<ProfileItem> & Pick<ProfileItem, 'id' | 'name'>):
   }
 }
 
+const mounted: Array<{ unmount: () => void }> = []
+
 async function mountApp(profilePort: ProfilePort = createMemoryProfilePort(), width = 900) {
   const wrapper = mount(App, {
     props: { initialWidth: width, port: createMemoryPort(), profilePort },
   })
+  mounted.push(wrapper)
   await (wrapper.vm as unknown as { ready: Promise<void> }).ready
   await flushPromises()
   return wrapper
 }
+
+afterEach(() => {
+  for (const wrapper of mounted.splice(0)) wrapper.unmount()
+})
 
 function follows(earlier: Element, later: Element) {
   return (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0

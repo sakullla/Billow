@@ -165,6 +165,23 @@ function stopDiagnosticsSample() {
   }
 }
 
+function profileSampleWanted() {
+  return diagnostics.value || (entry.value === 'home' && profileState.value.connected)
+}
+
+function ensureProfileSample() {
+  if (!profileSampleWanted()) {
+    stopDiagnosticsSample()
+    return
+  }
+  if (diagnosticsTimer != null) return
+  // profile_state is the existing sampler. Connections, logs, and home rates have no push channel.
+  diagnosticsTimer = setInterval(() => {
+    if (!profileSampleWanted() || profilePending > 0) return
+    void refreshProfiles()
+  }, DIAGNOSTICS_SAMPLE_MS)
+}
+
 function enableProfile(id: string) {
   void runProfile(() => profile.enable(id))
 }
@@ -274,14 +291,16 @@ function openDiagnostics() {
 
 watch(diagnostics, (open) => {
   stopDiagnosticsSample()
-  if (!open) return
-  // profile_state is the existing sampler. Connections and logs have no push channel.
-  void refreshProfiles()
-  diagnosticsTimer = setInterval(() => {
-    if (!diagnostics.value || profilePending > 0) return
-    void refreshProfiles()
-  }, DIAGNOSTICS_SAMPLE_MS)
+  if (open) void refreshProfiles()
+  ensureProfileSample()
 })
+
+watch(
+  () => [entry.value, profileState.value.connected] as const,
+  () => {
+    ensureProfileSample()
+  },
+)
 
 function setConnectionQuery(query: string) {
   void runProfile(() => profile.setConnectionQuery(query))

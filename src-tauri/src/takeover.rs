@@ -216,7 +216,6 @@ pub fn disconnect(
     }
     model.system_proxy = false;
     model.connected = false;
-    model.failure = None;
 }
 
 fn clear_owned(model: &mut LinkModel, proxy: &mut dyn SystemProxy) -> bool {
@@ -252,7 +251,6 @@ pub fn set_system_proxy(
         }
         model.system_proxy = false;
         model.connected = false;
-        model.failure = None;
         return;
     }
     let Some(port) = port else {
@@ -264,7 +262,6 @@ pub fn set_system_proxy(
     if open_proxy(model, port, proxy) {
         model.system_proxy = true;
         model.connected = true;
-        model.failure = None;
     }
 }
 
@@ -294,7 +291,6 @@ pub fn set_tun(model: &mut LinkModel, enabled: bool, tun: &mut dyn TunGrant) {
     }
     model.tun = true;
     model.tun_wanted = true;
-    model.failure = None;
     model.connected = model.system_proxy;
 }
 
@@ -2048,7 +2044,7 @@ mod tests {
         tun.grant = windows_tun_granted(opened);
         let allowed = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(allowed.tun && allowed.connected && allowed.system_proxy);
-        assert!(allowed.failure.is_none());
+        assert_eq!(allowed.failure.as_deref(), Some(TUN_DENIED));
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
     }
 
