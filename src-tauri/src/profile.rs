@@ -9,7 +9,9 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-use crate::takeover::{self, ClientPlatform, PlatformRelease, ProxyEndpoint, SystemProxy, TunGrant, VpnGrant};
+use crate::takeover::{
+    self, ClientPlatform, PlatformRelease, ProxyEndpoint, SystemProxy, TunGrant, VpnGrant,
+};
 
 const BODY_LIMIT: u64 = 2_000_000;
 const CONTENT_ERROR: &str = "配置无法应用";
@@ -382,10 +384,6 @@ impl ProfileBook {
         self.platform = platform;
     }
 
-    pub fn take_release(&mut self) -> Option<PlatformRelease> {
-        self.pending_release.take()
-    }
-
     pub fn snapshot(&self) -> ProfileSnapshot {
         let profiles = self
             .profiles
@@ -427,6 +425,17 @@ impl ProfileBook {
         self.installed = apps;
     }
 
+    /// Android home reads installed apps into the snapshot. Desktop has no per-app exclusion.
+    pub fn refresh_installed(&mut self, source: &mut dyn takeover::InstalledApps) {
+        if self.platform != ClientPlatform::Android {
+            self.installed.clear();
+            return;
+        }
+        if let Ok(apps) = source.list() {
+            self.installed = takeover::normalize_installed(apps);
+        }
+    }
+
     pub fn matching_installed(&self, query: &str) -> Vec<&crate::takeover::InstalledApp> {
         takeover::filter_installed(&self.installed, query)
     }
@@ -462,7 +471,12 @@ impl ProfileBook {
     pub fn add_subscription(&mut self, url: &str) -> ProfileSnapshot {
         match validate_subscription_url(url.trim()) {
             Ok(url) => {
-                self.push_profile(ProfileKind::Subscription, subscription_name(&url), url, String::new());
+                self.push_profile(
+                    ProfileKind::Subscription,
+                    subscription_name(&url),
+                    url,
+                    String::new(),
+                );
                 self.input_error = None;
                 self.persist();
             }
@@ -634,7 +648,9 @@ impl ProfileBook {
         &mut self,
         enabled: bool,
         kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
         tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
         if self.platform != ClientPlatform::Desktop {
             return self.snapshot();
@@ -674,11 +690,7 @@ impl ProfileBook {
             }
             Err(StartError::Failed(message)) => {
                 let mut model = self.link_model();
-                model.tun = false;
-                model.system_proxy = false;
-                model.vpn = false;
-                model.connected = false;
-                model.failure = Some(message);
+                takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
                 self.apply_model(model);
             }
         }
@@ -734,7 +746,11 @@ impl ProfileBook {
         self.snapshot()
     }
 
-    fn connect_android(&mut self, kernel: &mut dyn KernelLaunch, vpn: &mut dyn VpnGrant) -> ProfileSnapshot {
+    fn connect_android(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
         if self.active_id.is_none() {
             self.home_failure = Some(takeover::NO_PROFILE.to_string());
             self.connected = false;
@@ -787,14 +803,22 @@ impl ProfileBook {
         self.snapshot()
     }
 
-    pub fn exclude_package(&mut self, package_name: &str, vpn: &mut dyn VpnGrant) -> ProfileSnapshot {
+    pub fn exclude_package(
+        &mut self,
+        package_name: &str,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
         let mut model = self.link_model();
         takeover::exclude_package(&mut model, package_name, vpn);
         self.apply_model(model);
         self.snapshot()
     }
 
-    pub fn include_package(&mut self, package_name: &str, vpn: &mut dyn VpnGrant) -> ProfileSnapshot {
+    pub fn include_package(
+        &mut self,
+        package_name: &str,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
         let mut model = self.link_model();
         takeover::include_package(&mut model, package_name, vpn);
         self.apply_model(model);
@@ -876,14 +900,39 @@ impl ProfileBook {
     fn fail_activation(&mut self, index: usize, message: String) {
         self.profiles[index].failure = Some(message.clone());
         self.home_failure = Some(message);
+        let endpoint = self.our_endpoint.clone();
         self.pending_release = Some(PlatformRelease {
-            endpoint: self.our_endpoint.clone(),
+            endpoint: endpoint.clone(),
             close_tun: self.takeover.tun,
             close_vpn: self.takeover.vpn,
         });
-        self.takeover = Takeover::default();
+        self.takeover.tun = false;
+        self.takeover.vpn = false;
         self.connected = false;
-        self.our_endpoint = None;
+        if endpoint.is_none() {
+            self.takeover.system_proxy = false;
+        }
+        self.persist();
+    }
+
+    /// Runs a deferred proxy clear. The flag and port are dropped only when the clear succeeds.
+    pub fn apply_release(
+        &mut self,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) {
+        let Some(release) = self.pending_release.take() else {
+            return;
+        };
+        let cleared = takeover::release_platform(proxy, tun, vpn, &release);
+        if cleared {
+            self.takeover.system_proxy = false;
+            self.our_endpoint = None;
+        } else if release.endpoint.is_some() {
+            self.our_endpoint = release.endpoint;
+            self.takeover.system_proxy = true;
+        }
         self.persist();
     }
 
@@ -1017,7 +1066,9 @@ impl ProfileBook {
             .filter(|package| !package.is_empty())
             .collect();
         self.our_endpoint = match (disk.proxy_host, disk.proxy_port) {
-            (Some(host), Some(port)) if !host.is_empty() && port > 0 => Some(ProxyEndpoint { host, port }),
+            (Some(host), Some(port)) if !host.is_empty() && port > 0 => {
+                Some(ProxyEndpoint { host, port })
+            }
             _ => None,
         };
         self.next_id = self.next_id.max(
@@ -1059,7 +1110,10 @@ impl ProfileBook {
             home_failure: self.home_failure.clone(),
             tun_wanted: self.tun_wanted,
             excluded_packages: self.excluded.clone(),
-            proxy_host: self.our_endpoint.as_ref().map(|endpoint| endpoint.host.clone()),
+            proxy_host: self
+                .our_endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.host.clone()),
             proxy_port: self.our_endpoint.as_ref().map(|endpoint| endpoint.port),
             profiles: self
                 .profiles
@@ -1142,7 +1196,8 @@ fn force_tun(yaml: &str, enable: bool, fd: Option<i32>) -> Result<String, String
 fn prepare(content: &str, override_text: &str) -> Result<Prepared, PrepareError> {
     let mut base = parse_config(content).map_err(|_| PrepareError::Content)?;
     if !override_text.trim().is_empty() {
-        let overlay = serde_yaml::from_str::<Value>(override_text).map_err(|_| PrepareError::Override)?;
+        let overlay =
+            serde_yaml::from_str::<Value>(override_text).map_err(|_| PrepareError::Override)?;
         if !overlay.is_null() {
             merge(&mut base, &overlay);
         }
@@ -1160,7 +1215,11 @@ fn prepare(content: &str, override_text: &str) -> Result<Prepared, PrepareError>
 
 fn parse_config(text: &str) -> Result<Value, ()> {
     let value = serde_yaml::from_str::<Value>(text).map_err(|_| ())?;
-    if is_config(&value) { Ok(value) } else { Err(()) }
+    if is_config(&value) {
+        Ok(value)
+    } else {
+        Err(())
+    }
 }
 
 fn is_config(value: &Value) -> bool {
@@ -1196,7 +1255,9 @@ fn read_i64(value: &Value, key: &str) -> Option<i64> {
 }
 
 fn read_string(value: &Value, key: &str) -> Option<String> {
-    mapping_get(value, key).and_then(Value::as_str).map(str::to_string)
+    mapping_get(value, key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn mapping_get<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
@@ -1233,7 +1294,9 @@ fn parse_userinfo(header: Option<&str>) -> Option<Usage> {
         }
     }
     usage_from_parts(
-        total.filter(|value| *value > 0).map(|_| upload.unwrap_or(0).saturating_add(download.unwrap_or(0))),
+        total
+            .filter(|value| *value > 0)
+            .map(|_| upload.unwrap_or(0).saturating_add(download.unwrap_or(0))),
         total.filter(|value| *value > 0),
         expire.filter(|value| *value > 0),
     )
@@ -1241,12 +1304,20 @@ fn parse_userinfo(header: Option<&str>) -> Option<Usage> {
 
 fn usage_from_parts(used: Option<u64>, total: Option<u64>, expire: Option<u64>) -> Option<Usage> {
     let total = total.filter(|value| *value > 0);
-    let used = if total.is_some() { used.or(Some(0)) } else { None };
+    let used = if total.is_some() {
+        used.or(Some(0))
+    } else {
+        None
+    };
     let expire = expire.filter(|value| *value > 0);
     if used.is_none() && total.is_none() && expire.is_none() {
         None
     } else {
-        Some(Usage { used, total, expire })
+        Some(Usage {
+            used,
+            total,
+            expire,
+        })
     }
 }
 
@@ -1261,7 +1332,10 @@ fn parse_install_link(raw: &str) -> Result<String, String> {
     let Some((host, query)) = rest.split_once('?') else {
         return Err(ONE_LINK_ERROR.to_string());
     };
-    if !host.trim_end_matches('/').eq_ignore_ascii_case("install-config") {
+    if !host
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case("install-config")
+    {
         return Err(LINK_ERROR.to_string());
     }
     let mut urls = Vec::new();
@@ -1309,7 +1383,11 @@ fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'
         return None;
     }
     let (head, tail) = value.split_at(prefix.len());
-    if head.eq_ignore_ascii_case(prefix) { Some(tail) } else { None }
+    if head.eq_ignore_ascii_case(prefix) {
+        Some(tail)
+    } else {
+        None
+    }
 }
 
 fn percent_decode(input: &str) -> String {
@@ -1351,7 +1429,11 @@ fn clean_name(name: &str, fallback: &str) -> String {
         .filter(|ch| *ch != '/' && *ch != '\\' && *ch != '\n' && *ch != '\r')
         .take(80)
         .collect();
-    if name.is_empty() { fallback.to_string() } else { name }
+    if name.is_empty() {
+        fallback.to_string()
+    } else {
+        name
+    }
 }
 
 fn normalize_subscription_content(raw: &str) -> String {
@@ -1407,8 +1489,14 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> TempDir {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("billow-profile-{name}-{}-{nanos}", std::process::id()));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "billow-profile-{name}-{}-{nanos}",
+            std::process::id()
+        ));
         fs::create_dir_all(&path).unwrap();
         TempDir(path)
     }
@@ -1484,7 +1572,12 @@ mod tests {
         assert_eq!(current_ids(&first), ["p1"]);
         assert_eq!(first.active_id.as_deref(), Some("p1"));
         assert_eq!(first.mixed_port, Some(7890));
-        assert!(first.profiles.iter().all(|profile| profile.failure.is_none()));
+        assert!(
+            first
+                .profiles
+                .iter()
+                .all(|profile| profile.failure.is_none())
+        );
 
         let second = book.enable("p2", &RejectSource, &mut kernel);
         assert_eq!(current_ids(&second), ["p2"]);
@@ -1506,7 +1599,10 @@ mod tests {
         assert!(parse_userinfo(Some("not a header")).is_none());
         assert!(parse_userinfo(Some("upload=1; download=2; total=0; expire=0")).is_none());
 
-        let usage = parse_userinfo(Some(" upload = 10 ; download = 20 ; total = 100 ; expire = 0 ")).unwrap();
+        let usage = parse_userinfo(Some(
+            " upload = 10 ; download = 20 ; total = 100 ; expire = 0 ",
+        ))
+        .unwrap();
         assert_eq!(usage.used, Some(30));
         assert_eq!(usage.total, Some(100));
         assert_eq!(usage.expire, None);
@@ -1550,7 +1646,11 @@ mod tests {
         );
         book.add_subscription("https://example.com/plain");
         let snapshot = book.enable("p2", &source, &mut kernel);
-        let plain = snapshot.profiles.iter().find(|profile| profile.id == "p2").unwrap();
+        let plain = snapshot
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "p2")
+            .unwrap();
         assert!(plain.used.is_none() && plain.total.is_none() && plain.expire.is_none());
         let encoded = base64::engine::general_purpose::STANDARD.encode(config(7001));
         source.items.insert(
@@ -1563,7 +1663,11 @@ mod tests {
         book.add_subscription("https://example.com/b64");
         let snapshot = book.update("p3", &source, &mut kernel);
         assert_eq!(snapshot.mixed_port, Some(7001));
-        let encoded_profile = snapshot.profiles.iter().find(|profile| profile.id == "p3").unwrap();
+        let encoded_profile = snapshot
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "p3")
+            .unwrap();
         assert_eq!(encoded_profile.used, Some(0));
         assert_eq!(encoded_profile.total, Some(5));
         assert_eq!(encoded_profile.expire, Some(9));
@@ -1575,7 +1679,10 @@ mod tests {
         let mut book = ProfileBook::open(&dir.0);
         let link = "billow://install-config?url=https%3A%2F%2Fexample.com%2Fsub";
         let staged = book.stage_install_link(link);
-        assert_eq!(staged.pending_url.as_deref(), Some("https://example.com/sub"));
+        assert_eq!(
+            staged.pending_url.as_deref(),
+            Some("https://example.com/sub")
+        );
         assert!(staged.profiles.is_empty());
         assert!(staged.active_id.is_none());
 
@@ -1594,7 +1701,8 @@ mod tests {
         assert!(book.confirm_pending().profiles.len() == 1);
 
         let before = book.snapshot();
-        let rejected = book.stage_install_link("clash://install-config?url=https://example.com/other");
+        let rejected =
+            book.stage_install_link("clash://install-config?url=https://example.com/other");
         assert_eq!(rejected.input_error.as_deref(), Some(LINK_ERROR));
         assert_eq!(rejected.profiles.len(), before.profiles.len());
         assert!(rejected.pending_url.is_none());
@@ -1604,7 +1712,11 @@ mod tests {
         );
         assert_eq!(doubled.input_error.as_deref(), Some(ONE_LINK_ERROR));
         assert_eq!(doubled.profiles.len(), 1);
-        assert!(book.stage_install_link("billow://install-config?url=ftp://example.com/a").input_error.is_some());
+        assert!(
+            book.stage_install_link("billow://install-config?url=ftp://example.com/a")
+                .input_error
+                .is_some()
+        );
         assert_eq!(book.snapshot().profiles.len(), 1);
 
         let manual = book.add_subscription("https://manual.example/a");
@@ -1639,7 +1751,11 @@ mod tests {
         assert_eq!(snapshot.active_id.as_deref(), Some("p1"));
         assert_eq!(current_ids(&snapshot), ["p1"]);
         assert!(!snapshot.system_proxy && !snapshot.tun && !snapshot.vpn);
-        let failed = snapshot.profiles.iter().find(|profile| profile.id == "p2").unwrap();
+        let failed = snapshot
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "p2")
+            .unwrap();
         assert_eq!(failed.failure.as_deref(), Some(FETCH_ERROR));
         assert!(!failed.current);
         assert_eq!(kernel.calls, 1);
@@ -1648,7 +1764,13 @@ mod tests {
 
         let again = book.enable("p2", &missing, &mut kernel);
         assert_eq!(
-            again.profiles.iter().find(|profile| profile.id == "p2").unwrap().failure.as_deref(),
+            again
+                .profiles
+                .iter()
+                .find(|profile| profile.id == "p2")
+                .unwrap()
+                .failure
+                .as_deref(),
             Some(FETCH_ERROR)
         );
         assert!(!again.system_proxy && !again.tun && !again.vpn);
@@ -1663,14 +1785,22 @@ mod tests {
         let recovered = book.enable("p2", &missing, &mut kernel);
         assert_eq!(current_ids(&recovered), ["p2"]);
         assert!(recovered.failure.is_none());
-        assert!(recovered.profiles.iter().all(|profile| profile.id != "p2" || profile.failure.is_none()));
+        assert!(
+            recovered
+                .profiles
+                .iter()
+                .all(|profile| profile.id != "p2" || profile.failure.is_none())
+        );
     }
 
     #[test]
     fn unusable_override_does_not_replace_the_active_config() {
         let dir = temp_dir("override");
         let mut book = ProfileBook::open(&dir.0);
-        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\ndns:\n  enable: true\n  listen: 127.0.0.1:53\n");
+        book.add_local(
+            "a.yaml",
+            "mixed-port: 7890\nmode: rule\ndns:\n  enable: true\n  listen: 127.0.0.1:53\n",
+        );
         book.add_local("b.yaml", &config(7891));
         let mut kernel = FakeKernel {
             running: None,
@@ -1702,7 +1832,13 @@ mod tests {
         assert!(switched.system_proxy && switched.vpn && !switched.tun);
         assert_eq!(kernel.calls, calls_before);
         assert_eq!(
-            switched.profiles.iter().find(|profile| profile.id == "p2").unwrap().override_error.as_deref(),
+            switched
+                .profiles
+                .iter()
+                .find(|profile| profile.id == "p2")
+                .unwrap()
+                .override_error
+                .as_deref(),
             Some(OVERRIDE_ERROR)
         );
 
@@ -1757,7 +1893,13 @@ mod tests {
         assert_eq!(failed.mixed_port, Some(7890));
         assert!(!failed.system_proxy && !failed.tun && !failed.vpn);
         assert_eq!(
-            failed.profiles.iter().find(|profile| profile.id == "p2").unwrap().failure.as_deref(),
+            failed
+                .profiles
+                .iter()
+                .find(|profile| profile.id == "p2")
+                .unwrap()
+                .failure
+                .as_deref(),
             Some(KERNEL_ERROR)
         );
         assert_eq!(port_of(kernel.running.as_deref().unwrap()), 7890);
@@ -1770,7 +1912,13 @@ mod tests {
         assert_eq!(invalid.active_id.as_deref(), Some("p1"));
         assert!(!invalid.system_proxy && !invalid.tun && !invalid.vpn);
         assert_eq!(
-            invalid.profiles.iter().find(|profile| profile.id == "p3").unwrap().failure.as_deref(),
+            invalid
+                .profiles
+                .iter()
+                .find(|profile| profile.id == "p3")
+                .unwrap()
+                .failure
+                .as_deref(),
             Some(CONTENT_ERROR)
         );
         assert_eq!(kernel.calls, calls);
@@ -1801,27 +1949,41 @@ mod tests {
         let error = runtime.start_or_reload("mixed-port: 1\n").unwrap_err();
         assert_eq!(error, MISSING_KERNEL);
         runtime.set_kernel_path(Some(dir.0.join("missing-core")));
-        assert_eq!(runtime.start_or_reload("mixed-port: 1\n").unwrap_err(), MISSING_KERNEL);
+        assert_eq!(
+            runtime.start_or_reload("mixed-port: 1\n").unwrap_err(),
+            MISSING_KERNEL
+        );
 
         #[cfg(unix)]
         {
             runtime.set_kernel_path(Some(PathBuf::from("/usr/bin/yes")));
             runtime.start_or_reload(&config(7890)).unwrap();
             runtime.set_kernel_path(Some(PathBuf::from("/usr/bin/false")));
-            assert_eq!(runtime.start_or_reload(&config(1)).unwrap_err(), KERNEL_ERROR);
+            assert_eq!(
+                runtime.start_or_reload(&config(1)).unwrap_err(),
+                KERNEL_ERROR
+            );
             runtime.stop();
         }
     }
 
     #[test]
     fn deep_link_scheme_is_billow_only() {
-        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        assert_eq!(config["plugins"]["deep-link"]["desktop"]["schemes"], serde_json::json!(["billow"]));
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            config["plugins"]["deep-link"]["desktop"]["schemes"],
+            serde_json::json!(["billow"])
+        );
         assert_eq!(
             config["plugins"]["deep-link"]["mobile"][0]["scheme"],
             serde_json::json!(["billow"])
         );
-        assert!(!include_str!("../tauri.conf.json").to_ascii_lowercase().contains("clash"));
+        assert!(
+            !include_str!("../tauri.conf.json")
+                .to_ascii_lowercase()
+                .contains("clash")
+        );
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let permissions = capability["permissions"]

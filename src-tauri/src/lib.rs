@@ -3,16 +3,16 @@ mod profile;
 mod shell;
 mod takeover;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use kernel::{
-    parse_channel, ConnectResult, GithubReleaseClient, KernelManager, KernelStatus, PlatformTarget,
+    ConnectResult, GithubReleaseClient, KernelManager, KernelStatus, PlatformTarget, parse_channel,
 };
 use profile::{HttpSubscriptionClient, ProcessRuntime, ProfileBook, ProfileSnapshot};
-use shell::{read_shell_state, resolve_entry, resolve_theme, write_shell_state, ShellState};
+use shell::{ShellState, read_shell_state, resolve_entry, resolve_theme, write_shell_state};
 
 struct Store {
     state: Mutex<ShellState>,
@@ -37,15 +37,21 @@ struct ProfileStore {
 }
 
 fn lock(state: &Mutex<ShellState>) -> std::sync::MutexGuard<'_, ShellState> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn lock_kernel(state: &Mutex<KernelManager>) -> std::sync::MutexGuard<'_, KernelManager> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn lock_profiles(state: &Mutex<ProfileSession>) -> std::sync::MutexGuard<'_, ProfileSession> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn shell_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -185,12 +191,17 @@ fn profiles_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 fn prepare_profiles(app: &tauri::App) {
     let directory = match profiles_dir(app.handle()) {
         Ok(directory) => directory,
-        Err(_) => std::env::temp_dir().join(format!("billow-profiles-unavailable-{}", std::process::id())),
+        Err(_) => std::env::temp_dir().join(format!(
+            "billow-profiles-unavailable-{}",
+            std::process::id()
+        )),
     };
     let mut book = ProfileBook::open(&directory);
     let runtime = ProcessRuntime::new(&directory);
     let mut proxy = takeover::host_proxy();
     book.release_lingering_proxy(&mut proxy);
+    let mut installed = takeover::HostInstalledApps;
+    book.refresh_installed(&mut installed);
     let vpn = takeover::host_vpn();
     app.manage(ProfileStore {
         session: Mutex::new(ProfileSession {
@@ -237,7 +248,8 @@ fn prepare_kernel(app: &tauri::App) {
         Ok(dir) => KernelManager::open(dir, PlatformTarget::current()),
         Err(message) => {
             let mut manager = KernelManager::open(
-                std::env::temp_dir().join(format!("billow-kernel-unavailable-{}", std::process::id())),
+                std::env::temp_dir()
+                    .join(format!("billow-kernel-unavailable-{}", std::process::id())),
                 PlatformTarget::current(),
             );
             manager.fail_without_change(message);
@@ -334,7 +346,10 @@ fn connect_kernel(app: AppHandle) -> ConnectStatus {
 
 fn profile_snapshot(app: &AppHandle) -> ProfileSnapshot {
     let store = app.state::<ProfileStore>();
-    lock_profiles(&store.session).book.snapshot()
+    let mut session = lock_profiles(&store.session);
+    let mut installed = takeover::HostInstalledApps;
+    session.book.refresh_installed(&mut installed);
+    session.book.snapshot()
 }
 
 fn with_profile<T>(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> T) -> T {
@@ -359,18 +374,19 @@ fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot 
         vpn,
     } = &mut *session;
     runtime.set_kernel_path(kernel_path);
-    let snapshot = if update {
-        book.update(id, &client, runtime)
+    if update {
+        book.update(id, &client, runtime);
     } else {
-        book.enable(id, &client, runtime)
-    };
-    if let Some(release) = book.take_release() {
-        takeover::release_platform(proxy, tun, vpn, &release);
+        book.enable(id, &client, runtime);
     }
-    snapshot
+    book.apply_release(proxy, tun, vpn);
+    book.snapshot()
 }
 
-fn with_session(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> ProfileSnapshot) -> ProfileSnapshot {
+fn with_session(
+    app: &AppHandle,
+    change: impl FnOnce(&mut ProfileSession) -> ProfileSnapshot,
+) -> ProfileSnapshot {
     let kernel_path = {
         let store = app.state::<KernelStore>();
         lock_kernel(&store.manager).installed_path()
@@ -471,8 +487,14 @@ fn set_system_proxy(app: AppHandle, enabled: bool) -> ProfileSnapshot {
 #[tauri::command]
 fn set_tun_enabled(app: AppHandle, enabled: bool) -> ProfileSnapshot {
     with_session(&app, |session| {
-        let ProfileSession { book, runtime, tun, .. } = session;
-        book.set_tun(enabled, runtime, tun)
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = session;
+        book.set_tun(enabled, runtime, proxy, tun, vpn)
     })
 }
 

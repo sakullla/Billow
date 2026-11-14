@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{Condvar, Mutex};
 
 use serde::Serialize;
 
@@ -79,6 +79,54 @@ pub fn filter_installed<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<&'a In
     apps.iter().filter(|app| app.name.contains(query)).collect()
 }
 
+/// Keeps display names, including internal spaces. Empty packages and duplicates are dropped.
+pub fn normalize_installed(apps: Vec<InstalledApp>) -> Vec<InstalledApp> {
+    let mut seen = Vec::new();
+    let mut out = Vec::new();
+    for app in apps {
+        let package_name = app.package_name.trim().to_string();
+        if package_name.is_empty() || seen.iter().any(|item: &String| item == &package_name) {
+            continue;
+        }
+        let name = if app.name.trim().is_empty() {
+            package_name.clone()
+        } else {
+            app.name
+        };
+        seen.push(package_name.clone());
+        out.push(InstalledApp { name, package_name });
+    }
+    out.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then(left.package_name.cmp(&right.package_name))
+    });
+    out
+}
+
+pub trait InstalledApps: Send {
+    fn list(&mut self) -> Result<Vec<InstalledApp>, String>;
+}
+
+pub struct HostInstalledApps;
+
+impl InstalledApps for HostInstalledApps {
+    fn list(&mut self) -> Result<Vec<InstalledApp>, String> {
+        host_installed_apps()
+    }
+}
+
+pub fn host_installed_apps() -> Result<Vec<InstalledApp>, String> {
+    #[cfg(target_os = "android")]
+    {
+        android_installed_apps()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkModel {
     pub platform: ClientPlatform,
@@ -99,24 +147,28 @@ pub struct PlatformRelease {
     pub close_vpn: bool,
 }
 
+/// Clears the owned proxy when `release.endpoint` is set.
+/// `false` means the proxy is still pointing at us, so the caller must keep the flag and port.
 pub fn release_platform(
     proxy: &mut dyn SystemProxy,
     tun: &mut dyn TunGrant,
     vpn: &mut dyn VpnGrant,
     release: &PlatformRelease,
-) {
-    if let Some(endpoint) = &release.endpoint {
-        let _ = proxy.clear_if_pointing_at(endpoint);
-    }
+) -> bool {
+    let cleared = match &release.endpoint {
+        Some(endpoint) => proxy.clear_if_pointing_at(endpoint).is_ok(),
+        None => true,
+    };
     if release.close_tun {
         let _ = tun.set_enabled(false);
     }
     if release.close_vpn {
         let _ = vpn.close();
     }
+    cleared
 }
 
-/// Kernel start failed: system proxy, TUN and VPN are all off.
+/// Kernel start failed. TUN and VPN close. The system proxy is marked off only after a successful clear.
 pub fn fail_kernel(
     model: &mut LinkModel,
     proxy: &mut dyn SystemProxy,
@@ -124,7 +176,7 @@ pub fn fail_kernel(
     vpn: &mut dyn VpnGrant,
     message: String,
 ) {
-    release_platform(
+    let cleared = release_platform(
         proxy,
         tun,
         vpn,
@@ -134,11 +186,13 @@ pub fn fail_kernel(
             close_vpn: model.vpn,
         },
     );
-    model.system_proxy = false;
+    if cleared {
+        model.system_proxy = false;
+        model.endpoint = None;
+    }
     model.tun = false;
     model.vpn = false;
     model.connected = false;
-    model.endpoint = None;
     model.failure = Some(if message.is_empty() {
         "内核没有启动".to_string()
     } else {
@@ -146,7 +200,12 @@ pub fn fail_kernel(
     });
 }
 
-pub fn disconnect(model: &mut LinkModel, proxy: &mut dyn SystemProxy, tun: &mut dyn TunGrant, vpn: &mut dyn VpnGrant) {
+pub fn disconnect(
+    model: &mut LinkModel,
+    proxy: &mut dyn SystemProxy,
+    tun: &mut dyn TunGrant,
+    vpn: &mut dyn VpnGrant,
+) {
     let _ = tun.set_enabled(false);
     let _ = vpn.close();
     model.tun = false;
@@ -177,7 +236,12 @@ fn clear_owned(model: &mut LinkModel, proxy: &mut dyn SystemProxy) -> bool {
     }
 }
 
-pub fn set_system_proxy(model: &mut LinkModel, enabled: bool, port: Option<u16>, proxy: &mut dyn SystemProxy) {
+pub fn set_system_proxy(
+    model: &mut LinkModel,
+    enabled: bool,
+    port: Option<u16>,
+    proxy: &mut dyn SystemProxy,
+) {
     if model.platform != ClientPlatform::Desktop {
         return;
     }
@@ -380,22 +444,80 @@ impl VpnGrant for MemoryVpn {
     }
 }
 
-/// Desktop TUN grant. The default probe can fail; it does not report success unless a device opens.
+/// Which desktop TUN device the grant refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunHost {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Linux,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Macos,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    Windows,
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    Other,
+}
+
+impl TunHost {
+    pub fn current() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self::Linux
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Self::Macos
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Self::Windows
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            Self::Other
+        }
+    }
+}
+
+/// Results of the platform probes. macOS and Windows do not consult `linux_node`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TunEvidence {
+    pub linux_node: bool,
+    pub utun: bool,
+    pub windows: bool,
+}
+
+/// Linux allows TUN when `/dev/net/tun` or `/dev/tun` opens.
+/// macOS allows it when utun opens. Windows allows it when the process can create WinTUN.
+/// A missing Linux device node is not a denial on macOS or Windows.
+pub fn tun_allowed(host: TunHost, evidence: TunEvidence) -> bool {
+    match host {
+        TunHost::Linux => evidence.linux_node,
+        TunHost::Macos => evidence.utun,
+        TunHost::Windows => evidence.windows,
+        TunHost::Other => false,
+    }
+}
+
+/// Desktop TUN grant. Authorization uses [`tun_allowed`] and the host's own probe.
 pub struct HostTun {
-    probe: fn() -> bool,
+    evidence: fn() -> TunEvidence,
     enabled: bool,
 }
 
 impl HostTun {
     pub fn host() -> Self {
         Self {
-            probe: os_tun_allowed,
+            evidence: live_tun_evidence,
             enabled: false,
         }
     }
 
-    pub fn with_probe(probe: fn() -> bool) -> Self {
-        Self { probe, enabled: false }
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_evidence(evidence: fn() -> TunEvidence) -> Self {
+        Self {
+            evidence,
+            enabled: false,
+        }
     }
 }
 
@@ -407,7 +529,7 @@ impl Default for HostTun {
 
 impl TunGrant for HostTun {
     fn authorize(&mut self) -> Result<bool, String> {
-        Ok((self.probe)())
+        Ok(tun_allowed(TunHost::current(), (self.evidence)()))
     }
 
     fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
@@ -416,13 +538,177 @@ impl TunGrant for HostTun {
     }
 }
 
-fn os_tun_allowed() -> bool {
+fn live_tun_evidence() -> TunEvidence {
+    match TunHost::current() {
+        TunHost::Linux => TunEvidence {
+            linux_node: linux_tun_node_open(),
+            utun: false,
+            windows: false,
+        },
+        TunHost::Macos => TunEvidence {
+            linux_node: false,
+            utun: macos_utun_open(),
+            windows: false,
+        },
+        TunHost::Windows => TunEvidence {
+            linux_node: false,
+            utun: false,
+            windows: windows_tun_open(),
+        },
+        TunHost::Other => TunEvidence {
+            linux_node: false,
+            utun: false,
+            windows: false,
+        },
+    }
+}
+
+fn linux_tun_node_open() -> bool {
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/net/tun")
         .is_ok()
-        || std::fs::OpenOptions::new().read(true).write(true).open("/dev/tun").is_ok()
+        || std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tun")
+            .is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_utun_open() -> bool {
+    const PF_SYSTEM: i32 = 32;
+    const AF_SYS_CONTROL: u16 = 2;
+    const SYSPROTO_CONTROL: i32 = 2;
+    const SOCK_DGRAM: i32 = 2;
+    const CTLIOCGINFO: u64 = 0xc0644e03;
+    const NAME: &[u8] = b"com.apple.net.utun_control";
+
+    #[repr(C)]
+    struct CtlInfo {
+        ctl_id: u32,
+        ctl_name: [u8; 96],
+    }
+
+    #[repr(C)]
+    struct SockaddrCtl {
+        sc_len: u8,
+        sc_family: u8,
+        ss_sysaddr: u16,
+        sc_id: u32,
+        sc_unit: u32,
+        sc_reserved: [u32; 5],
+    }
+
+    unsafe extern "C" {
+        fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+        fn ioctl(fd: i32, request: u64, argp: *mut CtlInfo) -> i32;
+        fn connect(fd: i32, addr: *const SockaddrCtl, len: u32) -> i32;
+        fn close(fd: i32) -> i32;
+    }
+
+    unsafe {
+        let fd = socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL);
+        if fd < 0 {
+            return false;
+        }
+        let mut info = CtlInfo {
+            ctl_id: 0,
+            ctl_name: [0; 96],
+        };
+        let name_len = NAME.len().min(info.ctl_name.len() - 1);
+        info.ctl_name[..name_len].copy_from_slice(&NAME[..name_len]);
+        if ioctl(fd, CTLIOCGINFO, &mut info) < 0 {
+            close(fd);
+            return false;
+        }
+        let mut addr = SockaddrCtl {
+            sc_len: std::mem::size_of::<SockaddrCtl>() as u8,
+            sc_family: PF_SYSTEM as u8,
+            ss_sysaddr: AF_SYS_CONTROL,
+            sc_id: info.ctl_id,
+            sc_unit: 0,
+            sc_reserved: [0; 5],
+        };
+        let mut opened = false;
+        for unit in 0..16u32 {
+            addr.sc_unit = unit;
+            if connect(fd, &addr, std::mem::size_of::<SockaddrCtl>() as u32) == 0 {
+                opened = true;
+                break;
+            }
+            let err = std::io::Error::last_os_error().raw_os_error();
+            if err == Some(1) || err == Some(13) {
+                break;
+            }
+        }
+        close(fd);
+        opened
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_utun_open() -> bool {
+    false
+}
+
+/// WinTUN has no `/dev/net/tun`. Creating the adapter requires an elevated process.
+#[cfg(target_os = "windows")]
+fn windows_tun_open() -> bool {
+    #[repr(C)]
+    struct TokenElevation {
+        token_is_elevated: u32,
+    }
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn OpenProcessToken(
+            process: *mut core::ffi::c_void,
+            access: u32,
+            token: *mut *mut core::ffi::c_void,
+        ) -> i32;
+        fn GetTokenInformation(
+            token: *mut core::ffi::c_void,
+            class: i32,
+            info: *mut core::ffi::c_void,
+            len: u32,
+            returned: *mut u32,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+    }
+
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_ELEVATION: i32 = 20;
+    unsafe {
+        let mut token = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TokenElevation {
+            token_is_elevated: 0,
+        };
+        let mut returned = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TOKEN_ELEVATION,
+            &mut elevation as *mut TokenElevation as *mut core::ffi::c_void,
+            core::mem::size_of::<TokenElevation>() as u32,
+            &mut returned,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation.token_is_elevated != 0
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_tun_open() -> bool {
+    false
 }
 
 /// Calls `prepare` and then `start`. Tests inject [`VpnBridge`]; the OS bridge does not run in unit tests.
@@ -575,8 +861,11 @@ fn android_prepare() -> Result<bool, String> {
     VPN_CONSENT.store(false, Ordering::SeqCst);
     // BillowVpnBridge.prepare shows the system dialog and reports back through nativeConsent.
     let ctx = ndk_context::android_context();
-    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm_as_ptr().cast()) }.map_err(|_| "VPN 不可用".to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|_| "VPN 不可用".to_string())?;
+    let vm =
+        unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|_| "VPN 不可用".to_string())?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|_| "VPN 不可用".to_string())?;
     let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
     let already = env
         .call_static_method(
@@ -592,7 +881,9 @@ fn android_prepare() -> Result<bool, String> {
         return Ok(true);
     }
     let guard = VPN_LOCK.lock().map_err(|_| "VPN 不可用".to_string())?;
-    let _guard = VPN_READY.wait_timeout(guard, std::time::Duration::from_secs(120)).map_err(|_| "VPN 授权被拒绝".to_string())?;
+    let _guard = VPN_READY
+        .wait_timeout(guard, std::time::Duration::from_secs(120))
+        .map_err(|_| "VPN 授权被拒绝".to_string())?;
     Ok(VPN_CONSENT.load(Ordering::SeqCst))
 }
 
@@ -600,11 +891,18 @@ fn android_prepare() -> Result<bool, String> {
 fn android_start(excluded: &[String]) -> Result<i32, String> {
     VPN_FD.store(-1, Ordering::SeqCst);
     let ctx = ndk_context::android_context();
-    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm_as_ptr().cast()) }.map_err(|_| "VPN 没有建立".to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|_| "VPN 没有建立".to_string())?;
-    let list = env.new_object("java/util/ArrayList", "()V", &[]).map_err(|_| "VPN 没有建立".to_string())?;
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|_| "VPN 没有建立".to_string())?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|_| "VPN 没有建立".to_string())?;
+    let list = env
+        .new_object("java/util/ArrayList", "()V", &[])
+        .map_err(|_| "VPN 没有建立".to_string())?;
     for package_name in excluded {
-        let value = env.new_string(package_name).map_err(|_| "VPN 没有建立".to_string())?;
+        let value = env
+            .new_string(package_name)
+            .map_err(|_| "VPN 没有建立".to_string())?;
         env.call_method(
             &list,
             "add",
@@ -625,7 +923,9 @@ fn android_start(excluded: &[String]) -> Result<i32, String> {
     )
     .map_err(|_| "VPN 没有建立".to_string())?;
     let guard = VPN_LOCK.lock().map_err(|_| "VPN 没有建立".to_string())?;
-    let _guard = VPN_READY.wait_timeout(guard, std::time::Duration::from_secs(15)).map_err(|_| "VPN 没有建立".to_string())?;
+    let _guard = VPN_READY
+        .wait_timeout(guard, std::time::Duration::from_secs(15))
+        .map_err(|_| "VPN 没有建立".to_string())?;
     let fd = VPN_FD.load(Ordering::SeqCst);
     if fd < 0 {
         Err("VPN 没有建立".to_string())
@@ -638,7 +938,7 @@ fn android_start(excluded: &[String]) -> Result<i32, String> {
 fn android_stop() {
     let _ = (|| -> Result<(), ()> {
         let ctx = ndk_context::android_context();
-        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm_as_ptr().cast()) }.map_err(|_| ())?;
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|_| ())?;
         let mut env = vm.attach_current_thread().map_err(|_| ())?;
         let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
         env.call_static_method(
@@ -677,12 +977,112 @@ pub fn report_vpn_fd(fd: i32) {
 /// Kotlin `BillowVpnBridge.nativeConsent` reports the system dialog here.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_app_billow_client_BillowVpnService_nativeConsent(
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeConsent(
     _env: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,
-    granted: u8,
+    granted: i32,
 ) {
     report_vpn_consent(granted != 0);
+}
+
+#[cfg(target_os = "android")]
+fn android_installed_apps() -> Result<Vec<InstalledApp>, String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|_| "已安装应用没有读取".to_string())?;
+    let mut guard = vm
+        .attach_current_thread()
+        .map_err(|_| "已安装应用没有读取".to_string())?;
+    let env = &mut *guard;
+    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+    let pm = env
+        .call_method(
+            &context,
+            "getPackageManager",
+            "()Landroid/content/pm/PackageManager;",
+            &[],
+        )
+        .and_then(|value| value.l())
+        .map_err(|_| "已安装应用没有读取".to_string())?;
+    let list = env
+        .call_method(
+            &pm,
+            "getInstalledApplications",
+            "(I)Ljava/util/List;",
+            &[jni::objects::JValue::Int(0)],
+        )
+        .and_then(|value| value.l())
+        .map_err(|_| {
+            let _ = env.exception_clear();
+            "已安装应用没有读取".to_string()
+        })?;
+    let size = env
+        .call_method(&list, "size", "()I", &[])
+        .and_then(|value| value.i())
+        .map_err(|_| {
+            let _ = env.exception_clear();
+            "已安装应用没有读取".to_string()
+        })?;
+    let pm_raw = pm.as_raw();
+    let list_raw = list.as_raw();
+    let mut apps = Vec::new();
+    for index in 0..size {
+        let read = env.with_local_frame(
+            16,
+            |env| -> Result<Option<InstalledApp>, jni::errors::Error> {
+                let pm = unsafe { jni::objects::JObject::from_raw(pm_raw) };
+                let list = unsafe { jni::objects::JObject::from_raw(list_raw) };
+                let info = env
+                    .call_method(
+                        &list,
+                        "get",
+                        "(I)Ljava/lang/Object;",
+                        &[jni::objects::JValue::Int(index)],
+                    )?
+                    .l()?;
+                let package_obj = env
+                    .get_field(&info, "packageName", "Ljava/lang/String;")?
+                    .l()?;
+                let package_name = java_string(env, &package_obj)?;
+                if package_name.is_empty() {
+                    return Ok(None);
+                }
+                let label = env
+                    .call_method(
+                        &info,
+                        "loadLabel",
+                        "(Landroid/content/pm/PackageManager;)Ljava/lang/CharSequence;",
+                        &[jni::objects::JValue::Object(&pm)],
+                    )?
+                    .l()?;
+                let label_obj = env
+                    .call_method(label, "toString", "()Ljava/lang/String;", &[])?
+                    .l()?;
+                let mut name = java_string(env, &label_obj)?;
+                if name.trim().is_empty() {
+                    name = package_name.clone();
+                }
+                Ok(Some(InstalledApp { name, package_name }))
+            },
+        );
+        match read {
+            Ok(Some(app)) => apps.push(app),
+            Ok(None) => {}
+            Err(_) => {
+                let _ = env.exception_clear();
+            }
+        }
+    }
+    Ok(normalize_installed(apps))
+}
+
+#[cfg(target_os = "android")]
+fn java_string(
+    env: &mut jni::JNIEnv,
+    object: &jni::objects::JObject,
+) -> Result<String, jni::errors::Error> {
+    let text = env.get_string(<&jni::objects::JString>::from(object))?;
+    Ok(std::borrow::Cow::<str>::from(&*text).into_owned())
 }
 
 /// Kotlin reports the TUN fd after `VpnService.Builder.establish`.
@@ -813,7 +1213,7 @@ mod host_proxy {
     mod macos {
         use std::process::Command;
 
-        use super::super::{parse_macos_proxy, parse_network_services, ProxyEndpoint};
+        use super::super::{ProxyEndpoint, parse_macos_proxy, parse_network_services};
 
         pub fn set(endpoint: &ProxyEndpoint) -> Result<(), String> {
             let port = endpoint.port.to_string();
@@ -847,7 +1247,11 @@ mod host_proxy {
         }
 
         fn read_service(service: &str, https: bool) -> Result<Option<ProxyEndpoint>, String> {
-            let flag = if https { "-getsecurewebproxy" } else { "-getwebproxy" };
+            let flag = if https {
+                "-getsecurewebproxy"
+            } else {
+                "-getwebproxy"
+            };
             let text = run_text(&[flag, service])?;
             Ok(parse_macos_proxy(&text))
         }
@@ -879,8 +1283,28 @@ mod host_proxy {
 
         pub fn set(endpoint: &ProxyEndpoint) -> Result<(), String> {
             let server = format!("{}:{}", endpoint.host, endpoint.port);
-            reg(&["add", KEY, "/v", "ProxyServer", "/t", "REG_SZ", "/d", &server, "/f"])?;
-            reg(&["add", KEY, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f"])?;
+            reg(&[
+                "add",
+                KEY,
+                "/v",
+                "ProxyServer",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &server,
+                "/f",
+            ])?;
+            reg(&[
+                "add",
+                KEY,
+                "/v",
+                "ProxyEnable",
+                "/t",
+                "REG_DWORD",
+                "/d",
+                "1",
+                "/f",
+            ])?;
             Ok(())
         }
 
@@ -888,7 +1312,17 @@ mod host_proxy {
             let server = format!("{}:{}", endpoint.host, endpoint.port);
             let current = reg_query("ProxyServer");
             if current.as_deref() == Some(server.as_str()) {
-                reg(&["add", KEY, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f"])?;
+                reg(&[
+                    "add",
+                    KEY,
+                    "/v",
+                    "ProxyEnable",
+                    "/t",
+                    "REG_DWORD",
+                    "/d",
+                    "0",
+                    "/f",
+                ])?;
             }
             Ok(())
         }
@@ -906,7 +1340,10 @@ mod host_proxy {
         }
 
         fn reg_query(name: &str) -> Option<String> {
-            let output = Command::new("reg").args(["query", KEY, "/v", name]).output().ok()?;
+            let output = Command::new("reg")
+                .args(["query", KEY, "/v", name])
+                .output()
+                .ok()?;
             let text = String::from_utf8(output.stdout).ok()?;
             for line in text.lines() {
                 let mut parts = line.split_whitespace();
@@ -933,7 +1370,12 @@ mod host_proxy {
                 "port",
                 &endpoint.port.to_string(),
             ])?;
-            gsettings(&["set", "org.gnome.system.proxy.https", "host", &endpoint.host])?;
+            gsettings(&[
+                "set",
+                "org.gnome.system.proxy.https",
+                "host",
+                &endpoint.host,
+            ])?;
             gsettings(&[
                 "set",
                 "org.gnome.system.proxy.https",
@@ -950,16 +1392,22 @@ mod host_proxy {
             let https_port = gsettings_get(&["get", "org.gnome.system.proxy.https", "port"]);
             let port = endpoint.port.to_string();
             let host = format!("'{}'", endpoint.host);
-            if http_host.as_deref() == Some(host.as_str()) && http_port.as_deref() == Some(port.as_str()) {
+            if http_host.as_deref() == Some(host.as_str())
+                && http_port.as_deref() == Some(port.as_str())
+            {
                 gsettings(&["set", "org.gnome.system.proxy.http", "host", ""])?;
             }
-            if https_host.as_deref() == Some(host.as_str()) && https_port.as_deref() == Some(port.as_str()) {
+            if https_host.as_deref() == Some(host.as_str())
+                && https_port.as_deref() == Some(port.as_str())
+            {
                 gsettings(&["set", "org.gnome.system.proxy.https", "host", ""])?;
             }
             let mode = gsettings_get(&["get", "org.gnome.system.proxy", "mode"]);
             if mode.as_deref() == Some("'manual'")
-                && gsettings_get(&["get", "org.gnome.system.proxy.http", "host"]).as_deref() != Some(host.as_str())
-                && gsettings_get(&["get", "org.gnome.system.proxy.https", "host"]).as_deref() != Some(host.as_str())
+                && gsettings_get(&["get", "org.gnome.system.proxy.http", "host"]).as_deref()
+                    != Some(host.as_str())
+                && gsettings_get(&["get", "org.gnome.system.proxy.https", "host"]).as_deref()
+                    != Some(host.as_str())
             {
                 gsettings(&["set", "org.gnome.system.proxy", "mode", "none"])?;
             }
@@ -1013,7 +1461,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("billow-takeover-{name}-{}-{nanos}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "billow-takeover-{name}-{}-{nanos}",
+            std::process::id()
+        ));
         fs::create_dir_all(&path).unwrap();
         TempDir(path)
     }
@@ -1101,7 +1552,7 @@ mod tests {
         assert!(!vpn.open);
 
         tun.grant = true;
-        let enabled = book.set_tun(true, &mut kernel, &mut tun);
+        let enabled = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert_eq!(tun_enable(&kernel.last), Some(true));
         assert!(enabled.tun);
         assert!(enabled.tun_wanted);
@@ -1119,7 +1570,7 @@ mod tests {
         let mut tun = MemoryTun::default();
         let mut vpn = MemoryVpn::default();
         book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
-        book.set_tun(true, &mut kernel, &mut tun);
+        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!disconnected.system_proxy && !disconnected.tun && !disconnected.vpn);
         assert!(!disconnected.connected);
@@ -1132,7 +1583,7 @@ mod tests {
         assert!(tun.enabled);
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
 
-        book.set_tun(false, &mut kernel, &mut tun);
+        book.set_tun(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         let closed = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(closed.system_proxy && closed.connected);
@@ -1152,7 +1603,7 @@ mod tests {
         let mut tun = MemoryTun::default();
         let mut vpn = MemoryVpn::default();
         book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
-        book.set_tun(true, &mut kernel, &mut tun);
+        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         let mut reopened = ProfileBook::open(&dir.0);
         reopened.set_platform(ClientPlatform::Desktop);
@@ -1180,7 +1631,7 @@ mod tests {
         };
         let mut vpn = MemoryVpn::default();
 
-        let denied = book.set_tun(true, &mut kernel, &mut tun);
+        let denied = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!denied.connected);
         assert!(!denied.tun && !denied.tun_wanted);
         assert!(!denied.system_proxy);
@@ -1193,7 +1644,7 @@ mod tests {
         book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         let sets = proxy.sets;
         tun.grant = false;
-        let again = book.set_tun(true, &mut kernel, &mut tun);
+        let again = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(again.system_proxy);
         assert!(!again.tun);
         assert!(!again.connected);
@@ -1202,10 +1653,10 @@ mod tests {
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
         assert_eq!(proxy.https.as_ref(), Some(&endpoint()));
 
-        book.set_tun(true, &mut kernel, &mut tun);
+        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!book.snapshot().tun_wanted);
         tun.grant = true;
-        book.set_tun(true, &mut kernel, &mut tun);
+        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         tun.grant = false;
         let sets = proxy.sets;
@@ -1255,7 +1706,11 @@ mod tests {
         let excluded = book.exclude_package("com.example.mail", &mut vpn);
         assert_eq!(excluded.excluded, vec!["com.example.mail".to_string()]);
         assert_eq!(vpn.last_excluded, vec!["com.example.mail".to_string()]);
-        assert!(!vpn.last_excluded.iter().any(|item| item == "com.example.browser"));
+        assert!(
+            !vpn.last_excluded
+                .iter()
+                .any(|item| item == "com.example.browser")
+        );
 
         book.exclude_package("com.example.mail", &mut vpn);
         assert_eq!(book.snapshot().excluded.len(), 1);
@@ -1270,7 +1725,10 @@ mod tests {
 
         let mut reopened = ProfileBook::open(&dir.0);
         reopened.set_platform(ClientPlatform::Android);
-        assert_eq!(reopened.snapshot().excluded, vec!["com.example.mail".to_string()]);
+        assert_eq!(
+            reopened.snapshot().excluded,
+            vec!["com.example.mail".to_string()]
+        );
     }
 
     #[test]
@@ -1308,7 +1766,7 @@ mod tests {
         let mut tun = MemoryTun::default();
         let mut vpn = MemoryVpn::default();
         book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
-        book.set_tun(true, &mut kernel, &mut tun);
+        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         kernel.fail = true;
         let failed = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!failed.system_proxy && !failed.tun && !failed.vpn);
@@ -1327,18 +1785,84 @@ mod tests {
         assert!(parse_macos_proxy("Enabled: No\nServer: 127.0.0.1\nPort: 7890\n").is_none());
         assert!(parse_macos_proxy("Enabled: Yes\nServer: 127.0.0.1\nPort: 0\n").is_none());
         assert_eq!(
-            parse_network_services("An asterisk (*) denotes that a network service is disabled.\n*Disabled\nWi-Fi\n"),
+            parse_network_services(
+                "An asterisk (*) denotes that a network service is disabled.\n*Disabled\nWi-Fi\n"
+            ),
             vec!["Wi-Fi".to_string()]
+        );
+    }
+
+    fn open_without_linux_node() -> TunEvidence {
+        match TunHost::current() {
+            TunHost::Linux => TunEvidence {
+                linux_node: true,
+                utun: false,
+                windows: false,
+            },
+            TunHost::Macos => TunEvidence {
+                linux_node: false,
+                utun: true,
+                windows: false,
+            },
+            TunHost::Windows => TunEvidence {
+                linux_node: false,
+                utun: false,
+                windows: true,
+            },
+            TunHost::Other => TunEvidence {
+                linux_node: false,
+                utun: false,
+                windows: false,
+            },
+        }
+    }
+
+    fn native_denial() -> TunEvidence {
+        TunEvidence {
+            linux_node: true,
+            utun: false,
+            windows: false,
+        }
+    }
+
+    #[test]
+    fn macos_and_windows_do_not_deny_tun_for_a_missing_linux_node() {
+        let missing = TunEvidence {
+            linux_node: false,
+            utun: true,
+            windows: true,
+        };
+        assert!(tun_allowed(TunHost::Macos, missing));
+        assert!(tun_allowed(TunHost::Windows, missing));
+        assert!(!tun_allowed(TunHost::Linux, missing));
+        assert!(!tun_allowed(TunHost::Macos, native_denial()));
+        assert!(!tun_allowed(TunHost::Windows, native_denial()));
+        assert!(tun_allowed(TunHost::Linux, native_denial()));
+        assert!(!linux_tun_node_open() || cfg!(target_os = "linux"));
+
+        let evidence = open_without_linux_node();
+        if matches!(TunHost::current(), TunHost::Macos | TunHost::Windows) {
+            assert!(!evidence.linux_node);
+        }
+        let mut tun = HostTun::with_evidence(open_without_linux_node);
+        assert!(tun.authorize().unwrap());
+        let mut denied = HostTun::with_evidence(native_denial);
+        assert!(!denied.authorize().unwrap());
+        assert_eq!(
+            HostTun::host().authorize().unwrap(),
+            tun_allowed(TunHost::current(), live_tun_evidence())
         );
     }
 
     #[test]
     fn host_adapter_reloads_tun_and_can_deny_authorization() {
-        assert!(!HostTun::host().authorize().unwrap());
         let dir = temp_dir("host-tun");
         let mut book = ProfileBook::open(&dir.0);
         book.set_platform(ClientPlatform::Desktop);
-        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\ntun:\n  enable: true\n");
+        book.add_local(
+            "a.yaml",
+            "mixed-port: 7890\nmode: rule\ntun:\n  enable: true\n",
+        );
         let mut kernel = TestKernel {
             fail: false,
             calls: 0,
@@ -1346,7 +1870,7 @@ mod tests {
         };
         book.enable("p1", &UnusedSource, &mut kernel);
         let mut proxy = MemoryProxy::default();
-        let mut tun = HostTun::with_probe(|| true);
+        let mut tun = HostTun::with_evidence(open_without_linux_node);
         let mut vpn = MemoryVpn::default();
         let first = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(first.system_proxy && first.connected);
@@ -1354,11 +1878,12 @@ mod tests {
         assert_eq!(tun_enable(&kernel.last), Some(false));
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
 
-        book.set_tun(true, &mut kernel, &mut tun);
+        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert_eq!(tun_enable(&kernel.last), Some(true));
-        let mut denied = HostTun::with_probe(|| false);
+        assert!(tun.authorize().unwrap());
+        let mut denied = HostTun::with_evidence(native_denial);
         let previous = proxy.sets;
-        let rejected = book.set_tun(true, &mut kernel, &mut denied);
+        let rejected = book.set_tun(true, &mut kernel, &mut proxy, &mut denied, &mut vpn);
         assert!(!rejected.connected && !rejected.tun);
         assert!(rejected.system_proxy);
         assert_eq!(proxy.sets, previous);
@@ -1413,9 +1938,21 @@ mod tests {
             ..MemoryVpn::default()
         };
         book.exclude_package("com.example.mail", &mut vpn);
-        assert_eq!(book.snapshot().excluded, vec!["com.example.mail".to_string()]);
-        assert!(book.matching_installed("电子").iter().any(|app| app.name == "电子 邮箱"));
-        book.connect(&mut kernel, &mut MemoryProxy::default(), &mut MemoryTun::default(), &mut vpn);
+        assert_eq!(
+            book.snapshot().excluded,
+            vec!["com.example.mail".to_string()]
+        );
+        assert!(
+            book.matching_installed("电子")
+                .iter()
+                .any(|app| app.name == "电子 邮箱")
+        );
+        book.connect(
+            &mut kernel,
+            &mut MemoryProxy::default(),
+            &mut MemoryTun::default(),
+            &mut vpn,
+        );
         assert_eq!(vpn.last_excluded, vec!["com.example.mail".to_string()]);
     }
 
@@ -1461,7 +1998,10 @@ mod tests {
         let mut reopened = ProfileBook::open(&dir.0);
         reopened.release_lingering_proxy(&mut proxy);
         assert!(reopened.snapshot().system_proxy);
-        assert_eq!(reopened.snapshot().failure.as_deref(), Some("系统代理没有关闭"));
+        assert_eq!(
+            reopened.snapshot().failure.as_deref(),
+            Some("系统代理没有关闭")
+        );
         proxy.fail_clear = false;
         reopened.release_lingering_proxy(&mut proxy);
         assert!(!reopened.snapshot().system_proxy);
@@ -1470,18 +2010,257 @@ mod tests {
 
     #[test]
     fn android_vpn_service_establishes_tun_and_reports_consent() {
-        let source = include_str!("../gen/android/app/src/main/java/app/billow/client/BillowVpnService.kt");
+        let source =
+            include_str!("../gen/android/app/src/main/java/app/billow/client/BillowVpnService.kt");
         assert!(source.contains("VpnService"));
         assert!(source.contains("addDisallowedApplication"));
         assert!(source.contains("nativeConsent"));
         assert!(source.contains("nativeTunFd"));
         assert!(source.contains("prepare"));
         assert!(source.contains("start"));
+        assert!(source.contains("BillowVpnBridge"));
         assert!(!source.to_ascii_lowercase().contains("mihomo"));
         let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
         assert!(manifest.contains("android.net.VpnService"));
         assert!(manifest.contains("BIND_VPN_SERVICE"));
         assert!(manifest.contains("BillowVpnService"));
+        assert!(manifest.contains("QUERY_ALL_PACKAGES"));
+        let activity =
+            include_str!("../gen/android/app/src/main/java/app/billow/client/MainActivity.kt");
+        assert!(activity.contains("BillowVpnBridge.onActivityResult"));
+    }
+
+    #[test]
+    fn jni_consent_symbol_is_billow_vpn_bridge() {
+        let rust = include_str!("takeover.rs");
+        let bridge = [
+            "fn Java_app_billow_client_",
+            "BillowVpnBridge_nativeConsent",
+        ]
+        .concat();
+        let service = [
+            "fn Java_app_billow_client_",
+            "BillowVpnService_nativeConsent",
+        ]
+        .concat();
+        assert!(rust.contains(&bridge));
+        assert!(!rust.contains(&service));
+        let kotlin =
+            include_str!("../gen/android/app/src/main/java/app/billow/client/BillowVpnService.kt");
+        assert!(kotlin.contains("class BillowVpnBridge"));
+        assert!(kotlin.contains("external fun nativeConsent"));
+        assert!(kotlin.contains("fun onActivityResult"));
+    }
+
+    struct FixedInstalled(Vec<InstalledApp>);
+
+    impl InstalledApps for FixedInstalled {
+        fn list(&mut self) -> Result<Vec<InstalledApp>, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn installed_apps_enter_the_android_snapshot() {
+        let apps = vec![
+            InstalledApp {
+                name: "电子 邮箱".to_string(),
+                package_name: "com.example.mail".to_string(),
+            },
+            InstalledApp {
+                name: "浏览器".to_string(),
+                package_name: "com.example.browser".to_string(),
+            },
+        ];
+        let normalized = normalize_installed(apps.clone());
+        assert_eq!(
+            normalized
+                .iter()
+                .find(|app| app.package_name == "com.example.mail")
+                .unwrap()
+                .name,
+            "电子 邮箱"
+        );
+        let dir = temp_dir("installed-snapshot");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        let mut source = FixedInstalled(apps);
+        book.refresh_installed(&mut source);
+        let snapshot = book.snapshot();
+        assert_eq!(snapshot.installed.len(), 2);
+        assert!(
+            snapshot
+                .installed
+                .iter()
+                .any(|app| app.name == "电子 邮箱" && app.package_name == "com.example.mail")
+        );
+        assert!(
+            book.matching_installed("浏览器")
+                .iter()
+                .all(|app| app.package_name == "com.example.browser")
+        );
+        assert!(book.matching_installed("不存在的原文").is_empty());
+        assert!(
+            book.matching_installed("电子")
+                .iter()
+                .any(|app| app.name == "电子 邮箱")
+        );
+
+        book.set_platform(ClientPlatform::Desktop);
+        book.refresh_installed(&mut source);
+        assert!(book.snapshot().installed.is_empty());
+        let wiring = include_str!("lib.rs");
+        assert!(wiring.contains("refresh_installed"));
+        assert!(wiring.contains("HostInstalledApps"));
+    }
+
+    #[test]
+    fn fail_kernel_keeps_system_proxy_and_endpoint_when_clear_fails() {
+        let mut model = LinkModel {
+            platform: ClientPlatform::Desktop,
+            tun_wanted: true,
+            excluded: Vec::new(),
+            system_proxy: true,
+            tun: true,
+            vpn: false,
+            connected: true,
+            failure: None,
+            endpoint: Some(endpoint()),
+        };
+        let mut proxy = StickyProxy {
+            inner: MemoryProxy {
+                http: Some(endpoint()),
+                https: Some(endpoint()),
+                sets: 1,
+            },
+            fail_clear: true,
+        };
+        let mut tun = MemoryTun {
+            grant: true,
+            enabled: true,
+            authorize_calls: 0,
+        };
+        let mut vpn = MemoryVpn::default();
+        let cleared = release_platform(
+            &mut proxy,
+            &mut tun,
+            &mut vpn,
+            &PlatformRelease {
+                endpoint: Some(endpoint()),
+                close_tun: true,
+                close_vpn: false,
+            },
+        );
+        assert!(!cleared);
+        assert!(proxy.inner.http.as_ref() == Some(&endpoint()));
+        assert!(!tun.enabled);
+
+        tun.enabled = true;
+        fail_kernel(
+            &mut model,
+            &mut proxy,
+            &mut tun,
+            &mut vpn,
+            "内核没有启动".to_string(),
+        );
+        assert!(model.system_proxy);
+        assert_eq!(model.endpoint.as_ref(), Some(&endpoint()));
+        assert!(!model.connected);
+        assert!(!model.tun && !model.vpn);
+        assert_eq!(model.failure.as_deref(), Some("内核没有启动"));
+        assert_eq!(proxy.inner.http.as_ref(), Some(&endpoint()));
+
+        proxy.fail_clear = false;
+        fail_kernel(
+            &mut model,
+            &mut proxy,
+            &mut tun,
+            &mut vpn,
+            "内核没有启动".to_string(),
+        );
+        assert!(!model.system_proxy);
+        assert!(model.endpoint.is_none());
+        assert!(proxy.inner.http.is_none() && proxy.inner.https.is_none());
+
+        let dir = temp_dir("fail-kernel-sticky");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Desktop);
+        let mut proxy = StickyProxy {
+            inner: MemoryProxy::default(),
+            fail_clear: false,
+        };
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        proxy.fail_clear = true;
+        kernel.fail = true;
+        let failed = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(failed.system_proxy);
+        assert!(!failed.connected);
+        assert!(!failed.tun);
+        assert_eq!(failed.failure.as_deref(), Some("内核没有启动"));
+        assert_eq!(proxy.inner.http.as_ref(), Some(&endpoint()));
+        let mut reopened = ProfileBook::open(&dir.0);
+        reopened.release_lingering_proxy(&mut proxy);
+        assert!(reopened.snapshot().system_proxy);
+        proxy.fail_clear = false;
+        reopened.release_lingering_proxy(&mut proxy);
+        assert!(!reopened.snapshot().system_proxy);
+        assert!(proxy.inner.http.is_none());
+    }
+
+    #[test]
+    fn set_tun_kernel_failure_keeps_proxy_when_clear_fails() {
+        let dir = temp_dir("set-tun-sticky");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Desktop);
+        let mut proxy = StickyProxy {
+            inner: MemoryProxy::default(),
+            fail_clear: false,
+        };
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        proxy.fail_clear = true;
+        kernel.fail = true;
+        let failed = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(failed.system_proxy);
+        assert!(!failed.connected);
+        assert!(!failed.tun);
+        assert_eq!(proxy.inner.http.as_ref(), Some(&endpoint()));
+        let mut reopened = ProfileBook::open(&dir.0);
+        reopened.release_lingering_proxy(&mut proxy);
+        assert!(reopened.snapshot().system_proxy);
+    }
+
+    #[test]
+    fn fail_activation_keeps_proxy_and_endpoint_when_clear_fails() {
+        let dir = temp_dir("activation-sticky");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Desktop);
+        let mut proxy = StickyProxy {
+            inner: MemoryProxy::default(),
+            fail_clear: false,
+        };
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let opened = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(opened.system_proxy);
+        proxy.fail_clear = true;
+        kernel.fail = true;
+        book.add_local("other.yaml", "mixed-port: 7891\nmode: rule\n");
+        let mid = book.enable("p2", &UnusedSource, &mut kernel);
+        assert!(mid.system_proxy);
+        assert!(!mid.connected);
+        book.apply_release(&mut proxy, &mut tun, &mut vpn);
+        let failed = book.snapshot();
+        assert!(failed.system_proxy);
+        assert!(!failed.tun && !failed.vpn && !failed.connected);
+        assert_eq!(proxy.inner.http.as_ref(), Some(&endpoint()));
+        let mut reopened = ProfileBook::open(&dir.0);
+        reopened.release_lingering_proxy(&mut proxy);
+        assert!(reopened.snapshot().system_proxy);
+        proxy.fail_clear = false;
+        reopened.release_lingering_proxy(&mut proxy);
+        assert!(!reopened.snapshot().system_proxy);
+        assert!(proxy.inner.http.is_none());
     }
 
     #[test]
