@@ -4,6 +4,7 @@ import {
   ACTION_ADD_PROFILE,
   ACTION_CONNECT,
   ACTION_DISCONNECT,
+  EXCLUDE_NO_MATCH,
   EXCLUDE_OFF,
   EXCLUDE_ON,
   EXCLUDE_SEARCH,
@@ -83,11 +84,15 @@ const primaryLabel = computed(() => {
   return props.connected ? ACTION_DISCONNECT : ACTION_CONNECT
 })
 
+const excludeQuery = computed(() => query.value.trim())
+
 const filteredApps = computed(() => {
-  const needle = query.value.trim()
+  const needle = excludeQuery.value
   if (!needle) return props.installed
   return props.installed.filter((app) => app.name.includes(needle))
 })
+
+const showExcludeNoMatch = computed(() => excludeQuery.value.length > 0 && filteredApps.value.length === 0)
 
 function onPrimary() {
   if (props.connecting) return
@@ -209,7 +214,8 @@ function onPrimary() {
             </button>
             <div v-if="excluding" data-testid="exclude-panel">
               <input v-model="query" type="search" data-testid="exclude-search" :placeholder="EXCLUDE_SEARCH" />
-              <ul class="profile-list">
+              <p v-if="showExcludeNoMatch" class="card" data-testid="exclude-notice">{{ EXCLUDE_NO_MATCH }}</p>
+              <ul v-else class="profile-list">
                 <li
                   v-for="app in filteredApps"
                   :key="app.package_name"

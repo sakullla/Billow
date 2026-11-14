@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import App from './App.vue'
-import { PROXY_HINT, TUN_HINT } from './copy'
+import { EXCLUDE_NO_MATCH, PROXY_HINT, TUN_HINT } from './copy'
 import { createMemoryProfilePort, type ProfilePort } from './profile-port'
 import { createMemoryPort } from './port'
 
@@ -100,6 +100,58 @@ describe('接管界面', () => {
     await wrapper.get('[data-testid="exclude-search"]').setValue('电子')
     expect(wrapper.get('[data-package="com.example.mail"]').attributes('data-name')).toBe('电子 邮箱')
     expect(wrapper.find('[data-package="com.example.browser"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="exclude-notice"]').exists()).toBe(false)
+  })
+
+  it('按应用排除搜索无匹配时显示没有匹配项，排除名单不变', async () => {
+    const port = createMemoryProfilePort({
+      platform: 'android',
+      active_id: 'p1',
+      mode: 'rule',
+      profiles: [
+        {
+          id: 'p1',
+          name: '已保存',
+          kind: 'local',
+          source: '',
+          current: true,
+          failure: null,
+          override_text: '',
+          override_error: null,
+          used: null,
+          total: null,
+          expire: null,
+          last_success_ms: null,
+        },
+      ],
+      excluded: ['com.example.mail'],
+      installed: [
+        { name: '电子 邮箱', package_name: 'com.example.mail' },
+        { name: '浏览器', package_name: 'com.example.browser' },
+      ],
+    })
+    const wrapper = await mountApp(port)
+    await wrapper.get('[data-testid="open-exclusions"]').trigger('click')
+    expect(wrapper.find('[data-testid="exclude-notice"]').exists()).toBe(false)
+    const before = await port.load()
+
+    const missing = '没有这个应用'
+    await wrapper.get('[data-testid="exclude-search"]').setValue(missing)
+    const notice = wrapper.get('[data-testid="exclude-notice"]')
+    expect(notice.text()).toBe(EXCLUDE_NO_MATCH)
+    expect(wrapper.find('[data-testid="exclude-row"]').exists()).toBe(false)
+    expect(wrapper.find(`[data-name="${missing}"]`).exists()).toBe(false)
+    expect(wrapper.find(`[data-package="${missing}"]`).exists()).toBe(false)
+
+    const after = await port.load()
+    expect(after.excluded).toEqual(before.excluded)
+    expect(after.excluded).toEqual(['com.example.mail'])
+    expect(after.installed).toEqual(before.installed)
+
+    await wrapper.get('[data-testid="exclude-search"]').setValue('')
+    expect(wrapper.find('[data-testid="exclude-notice"]').exists()).toBe(false)
+    expect(wrapper.get('[data-package="com.example.mail"]').attributes('data-excluded')).toBe('true')
+    expect(wrapper.get('[data-package="com.example.browser"]').attributes('data-excluded')).toBe('false')
   })
 
   it('失败时不显示已连接', async () => {
