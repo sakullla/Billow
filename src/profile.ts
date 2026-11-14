@@ -71,6 +71,8 @@ export interface ProfileSnapshot {
   log_filter: 'all' | 'error' | 'warning' | 'info'
 }
 
+export const DIAGNOSTICS_SAMPLE_MS = 1000
+
 export function emptyProfileSnapshot(): ProfileSnapshot {
   return {
     profiles: [],

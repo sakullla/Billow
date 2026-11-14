@@ -15,7 +15,7 @@ import { resolveKernelChannel } from './kernel'
 import { layoutForWidth, resolveEntry } from './navigation'
 import { createShellPort, type ShellPort } from './port'
 import { createMemoryProfilePort, createProfilePort, type ProfilePort } from './profile-port'
-import { emptyProfileSnapshot, type ProfileSnapshot } from './profile'
+import { DIAGNOSTICS_SAMPLE_MS, emptyProfileSnapshot, type ProfileSnapshot } from './profile'
 import { applyTheme, resolveTheme } from './theme'
 import type { LogFilter } from './copy'
 import { normalizeLogFilter } from './profile'
@@ -52,7 +52,9 @@ const kernel: KernelPort = props.kernelPort ?? (props.port ? createMemoryKernelP
 const profile: ProfilePort =
   props.profilePort ?? (props.port ? createMemoryProfilePort() : createProfilePort())
 let kernelEpoch = 0
-let profileEpoch = 0
+let profileQueue: Promise<void> = Promise.resolve()
+let profilePending = 0
+let diagnosticsTimer: ReturnType<typeof setInterval> | null = null
 let unsubscribeProfile = () => {}
 let persist = false
 let resolveReady = () => {}
@@ -117,25 +119,36 @@ function applyProfile(snapshot: ProfileSnapshot) {
   profileState.value = snapshot
 }
 
-async function refreshProfiles() {
-  const epoch = ++profileEpoch
-  try {
-    const snapshot = await profile.load()
-    if (epoch !== profileEpoch) return
-    applyProfile(snapshot)
-  } catch (error) {
-    console.error(error)
-  }
+function enqueueProfile(action: () => Promise<ProfileSnapshot>): Promise<void> {
+  profilePending += 1
+  const run = profileQueue.then(async () => {
+    try {
+      applyProfile(await action())
+    } catch (error) {
+      console.error(error)
+    } finally {
+      profilePending -= 1
+    }
+  })
+  profileQueue = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
 }
 
-async function runProfile(action: () => Promise<ProfileSnapshot>) {
-  const epoch = ++profileEpoch
-  try {
-    const snapshot = await action()
-    if (epoch !== profileEpoch) return
-    applyProfile(snapshot)
-  } catch (error) {
-    console.error(error)
+function refreshProfiles() {
+  return enqueueProfile(() => profile.load())
+}
+
+function runProfile(action: () => Promise<ProfileSnapshot>) {
+  return enqueueProfile(action)
+}
+
+function stopDiagnosticsSample() {
+  if (diagnosticsTimer != null) {
+    clearInterval(diagnosticsTimer)
+    diagnosticsTimer = null
   }
 }
 
@@ -219,6 +232,17 @@ function openDiagnostics() {
   diagnostics.value = true
 }
 
+watch(diagnostics, (open) => {
+  stopDiagnosticsSample()
+  if (!open) return
+  // profile_state is the existing sampler. Connections and logs have no push channel.
+  void refreshProfiles()
+  diagnosticsTimer = setInterval(() => {
+    if (!diagnostics.value || profilePending > 0) return
+    void refreshProfiles()
+  }, DIAGNOSTICS_SAMPLE_MS)
+})
+
 function setConnectionQuery(query: string) {
   void runProfile(() => profile.setConnectionQuery(query))
 }
@@ -264,11 +288,15 @@ onMounted(async () => {
     await refreshProfiles()
     resolveReady()
   }
-  unsubscribeProfile = profile.subscribe?.((snapshot) => applyProfile(snapshot)) ?? (() => {})
+  unsubscribeProfile =
+    profile.subscribe?.((snapshot) => {
+      void enqueueProfile(async () => snapshot)
+    }) ?? (() => {})
   await kernelLoad
 })
 
 onBeforeUnmount(() => {
+  stopDiagnosticsSample()
   unsubscribeProfile()
   window.removeEventListener('resize', readWidth)
   resolveReady()

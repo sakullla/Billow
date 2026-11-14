@@ -554,7 +554,10 @@ fn set_connection_query(app: AppHandle, query: String) -> ProfileSnapshot {
 
 #[tauri::command]
 fn set_log_filter(app: AppHandle, level: String) -> ProfileSnapshot {
-    with_profile(&app, |session| session.book.set_log_filter(&level))
+    with_profile(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.set_log_filter(&level, runtime)
+    })
 }
 
 fn release_proxy_on_exit(app: &AppHandle) {

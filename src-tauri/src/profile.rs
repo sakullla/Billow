@@ -811,7 +811,7 @@ impl ProfileBook {
             let mut model = self.link_model();
             takeover::set_system_proxy(&mut model, false, None, proxy);
             self.apply_model(model);
-            return self.snapshot();
+            return self.publish(kernel);
         }
         let previous = self.takeover.system_proxy;
         let tun_enable = if self.tun_wanted {
@@ -826,7 +826,7 @@ impl ProfileBook {
                     model.failure = Some(takeover::TUN_DENIED.to_string());
                     self.apply_model(model);
                     self.remember_current_failure();
-                    return self.snapshot();
+                    return self.publish(kernel);
                 }
             }
         } else {
@@ -853,7 +853,7 @@ impl ProfileBook {
                 self.remember_current_failure();
             }
         }
-        self.snapshot()
+        self.publish(kernel)
     }
 
     pub fn set_tun(
@@ -873,7 +873,7 @@ impl ProfileBook {
             let mut model = self.link_model();
             takeover::set_tun(&mut model, false, tun);
             self.apply_model(model);
-            return self.snapshot();
+            return self.publish(kernel);
         }
         if !matches!(tun.authorize(), Ok(true)) {
             let _ = self.reload(kernel, false, None);
@@ -885,7 +885,7 @@ impl ProfileBook {
             model.failure = Some(takeover::TUN_DENIED.to_string());
             self.apply_model(model);
             self.remember_current_failure();
-            return self.snapshot();
+            return self.publish(kernel);
         }
         match self.reload(kernel, true, None) {
             Ok(_) => {
@@ -909,7 +909,7 @@ impl ProfileBook {
                 self.remember_current_failure();
             }
         }
-        self.snapshot()
+        self.publish(kernel)
     }
 
     fn connect_desktop(
@@ -1065,7 +1065,7 @@ impl ProfileBook {
                 }),
                 Err(_) => {
                     self.fail_activation(index, FETCH_ERROR.to_string());
-                    return self.snapshot();
+                    return self.publish(kernel);
                 }
             }
         } else {
@@ -1080,7 +1080,7 @@ impl ProfileBook {
             Ok(prepared) => prepared,
             Err(PrepareError::Content) => {
                 self.fail_activation(index, CONTENT_ERROR.to_string());
-                return self.snapshot();
+                return self.publish(kernel);
             }
             Err(PrepareError::Override) => {
                 // Judged before the running config changes, so takeover and the active id stay.
@@ -1099,7 +1099,7 @@ impl ProfileBook {
                 message
             };
             self.fail_activation(index, message);
-            return self.snapshot();
+            return self.publish(kernel);
         }
         let now = now_ms();
         {
@@ -1120,7 +1120,7 @@ impl ProfileBook {
         self.input_error = None;
         self.apply_live_selections(kernel);
         self.persist();
-        self.snapshot()
+        self.publish(kernel)
     }
 
     fn fail_activation(&mut self, index: usize, message: String) {
@@ -1410,7 +1410,7 @@ impl ProfileBook {
         } else {
             self.auto_now.clear();
             self.connections.clear();
-            // The kernel was up and is now gone, so the session is no longer connected.
+            // The process is no longer running, so the session is not connected.
             if was_running {
                 self.connected = false;
             }
@@ -1426,9 +1426,13 @@ impl ProfileBook {
         self.publish(kernel)
     }
 
-    pub fn set_log_filter(&mut self, filter: &str) -> ProfileSnapshot {
+    pub fn set_log_filter(
+        &mut self,
+        filter: &str,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
         self.log_filter = diagnostics::normalize_log_filter(filter).to_string();
-        self.snapshot()
+        self.publish(kernel)
     }
 
     pub fn set_node_query(&mut self, query: &str) -> ProfileSnapshot {
@@ -3156,7 +3160,7 @@ proxy-groups:
         let encoded = serde_json::to_value(&filtered.connections[0]).unwrap();
         assert_eq!(encoded.as_object().unwrap().len(), 2);
         assert!(book.set_connection_query("直连", &mut kernel).connections.is_empty());
-        let warned = book.set_log_filter("warning");
+        let warned = book.set_log_filter("warning", &mut kernel);
         assert_eq!(warned.logs.len(), 1);
         assert_eq!(warned.logs[0].message, "注意一下");
 
@@ -3166,6 +3170,16 @@ proxy-groups:
         assert!(stopped.connections.is_empty());
         assert!(!stopped.connected);
         assert!(!stopped.kernel_running);
+
+        kernel.running = true;
+        kernel.connections.push(ConnectionView {
+            host: "example.com".to_string(),
+            outbound: "香港节点".to_string(),
+        });
+        let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!disconnected.connected);
+        assert!(disconnected.connections.is_empty());
+        assert!(disconnected.logs.iter().any(|line| line.message == "注意一下"));
     }
 
     #[test]
@@ -3197,10 +3211,10 @@ proxy-groups:
             message: "普通记录".to_string(),
         });
         book.sync_runtime(&mut kernel);
-        let info = book.set_log_filter("info");
+        let info = book.set_log_filter("info", &mut kernel);
         assert!(info.logs.iter().all(|line| line.level == "info"));
         assert!(info.logs.iter().any(|line| line.message == "普通记录"));
-        let errors = book.set_log_filter("error");
+        let errors = book.set_log_filter("error", &mut kernel);
         assert!(errors.logs.iter().any(|line| line.message.contains(KERNEL_ERROR)));
         assert!(errors.logs.iter().all(|line| line.level == "error"));
         assert!(!book.snapshot().connected);
@@ -3213,5 +3227,98 @@ proxy-groups:
                 "{permission}"
             );
         }
+    }
+
+    struct ReplacingKernel {
+        running: bool,
+        stay_up: bool,
+        rows: Vec<ConnectionView>,
+        pending_logs: Vec<LogView>,
+    }
+
+    impl KernelLaunch for ReplacingKernel {
+        fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+            self.rows.clear();
+            self.pending_logs.clear();
+            self.running = self.stay_up;
+            if self.stay_up {
+                Ok(())
+            } else {
+                Err(KERNEL_ERROR.to_string())
+            }
+        }
+
+        fn running(&mut self) -> bool {
+            self.running
+        }
+
+        fn connections(&mut self) -> Vec<ConnectionView> {
+            if self.running {
+                self.rows.clone()
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn pull_logs(&mut self) -> Vec<LogView> {
+            std::mem::take(&mut self.pending_logs)
+        }
+    }
+
+    #[test]
+    fn closing_tun_drops_the_replaced_kernels_connections_and_a_later_sample_sees_new_traffic() {
+        let dir = temp_dir("tun-replace");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", &config(7890));
+        let mut kernel = ReplacingKernel {
+            running: false,
+            stay_up: true,
+            rows: Vec::new(),
+            pending_logs: Vec::new(),
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected && connected.system_proxy && !connected.tun);
+        let enabled = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(enabled.tun && enabled.connected);
+
+        kernel.rows.push(ConnectionView {
+            host: "example.com".to_string(),
+            outbound: "香港节点".to_string(),
+        });
+        let opened = book.set_log_filter("all", &mut kernel);
+        assert_eq!(opened.connections.len(), 1);
+        assert_eq!(opened.connections[0].host, "example.com");
+
+        kernel.stay_up = false;
+        let closed = book.set_tun(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!closed.tun);
+        assert!(!closed.connected);
+        assert!(closed.connections.is_empty());
+
+        kernel.stay_up = true;
+        let again = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(again.connected);
+        kernel.rows.push(ConnectionView {
+            host: "fresh.example".to_string(),
+            outbound: "日本节点".to_string(),
+        });
+        kernel.pending_logs.push(LogView {
+            level: "info".to_string(),
+            message: "新的流量".to_string(),
+        });
+        let sampled = book.set_log_filter("info", &mut kernel);
+        assert!(sampled.connections.iter().any(|row| row.host == "fresh.example"));
+        assert!(sampled.logs.iter().any(|line| line.message == "新的流量"));
+
+        kernel.running = false;
+        let exited = book.set_log_filter("all", &mut kernel);
+        assert!(!exited.connected);
+        assert!(exited.connections.is_empty());
+        assert!(!exited.kernel_running);
     }
 }
