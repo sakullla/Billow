@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Billow 主窗口使用的默认权限",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-shell-state",
+    "allow-set-theme",
+    "allow-set-last-entry"
+  ]
+}

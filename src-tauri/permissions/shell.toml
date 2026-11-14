@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-shell-state"
+description = "Enables the shell_state command without any pre-configured scope."
+commands.allow = ["shell_state"]
+
+[[permission]]
+identifier = "allow-set-theme"
+description = "Enables the set_theme command without any pre-configured scope."
+commands.allow = ["set_theme"]
+
+[[permission]]
+identifier = "allow-set-last-entry"
+description = "Enables the set_last_entry command without any pre-configured scope."
+commands.allow = ["set_last_entry"]
