@@ -187,14 +187,16 @@ fn prepare_profiles(app: &tauri::App) {
         Ok(directory) => directory,
         Err(_) => std::env::temp_dir().join(format!("billow-profiles-unavailable-{}", std::process::id())),
     };
-    let book = ProfileBook::open(&directory);
+    let mut book = ProfileBook::open(&directory);
     let runtime = ProcessRuntime::new(&directory);
-    let vpn = takeover::host_vpn(directory.join("vpn"));
+    let mut proxy = takeover::host_proxy();
+    book.release_lingering_proxy(&mut proxy);
+    let vpn = takeover::host_vpn();
     app.manage(ProfileStore {
         session: Mutex::new(ProfileSession {
             book,
             runtime,
-            proxy: takeover::host_proxy(),
+            proxy,
             tun: takeover::host_tun(),
             vpn,
         }),
@@ -443,12 +445,12 @@ fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession {
             book,
+            runtime,
             proxy,
             tun,
             vpn,
-            ..
         } = session;
-        book.disconnect(proxy, tun, vpn)
+        book.disconnect(runtime, proxy, tun, vpn)
     })
 }
 
@@ -469,8 +471,8 @@ fn set_system_proxy(app: AppHandle, enabled: bool) -> ProfileSnapshot {
 #[tauri::command]
 fn set_tun_enabled(app: AppHandle, enabled: bool) -> ProfileSnapshot {
     with_session(&app, |session| {
-        let ProfileSession { book, tun, .. } = session;
-        book.set_tun(enabled, tun)
+        let ProfileSession { book, runtime, tun, .. } = session;
+        book.set_tun(enabled, runtime, tun)
     })
 }
 
@@ -490,6 +492,13 @@ fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     })
 }
 
+fn release_proxy_on_exit(app: &AppHandle) {
+    let store = app.state::<ProfileStore>();
+    let mut session = lock_profiles(&store.session);
+    let ProfileSession { book, proxy, .. } = &mut *session;
+    book.release_lingering_proxy(proxy);
+}
+
 fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
     if label != "main" {
         return;
@@ -499,7 +508,10 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
             remember_window_size(app);
         }
         tauri::WindowEvent::ScaleFactorChanged { .. } => remember_window_size(app),
-        tauri::WindowEvent::CloseRequested { .. } => remember_window_size(app),
+        tauri::WindowEvent::CloseRequested { .. } => {
+            remember_window_size(app);
+            release_proxy_on_exit(app);
+        }
         _ => {}
     }
 }

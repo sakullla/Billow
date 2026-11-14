@@ -24,3 +24,7 @@ tauri = { version = "2.12.5", features = [] }
 tauri-plugin-deep-link = "2"
 ureq = "2.12"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"

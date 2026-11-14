@@ -12,6 +12,11 @@ export interface ProfileItem {
   expire: number | null
 }
 
+export interface InstalledApp {
+  name: string
+  package_name: string
+}
+
 export interface ProfileSnapshot {
   profiles: ProfileItem[]
   active_id: string | null
@@ -27,6 +32,7 @@ export interface ProfileSnapshot {
   platform: 'desktop' | 'android'
   tun_wanted: boolean
   excluded: string[]
+  installed: InstalledApp[]
 }
 
 export function emptyProfileSnapshot(): ProfileSnapshot {
@@ -45,6 +51,7 @@ export function emptyProfileSnapshot(): ProfileSnapshot {
     platform: 'desktop',
     tun_wanted: false,
     excluded: [],
+    installed: [],
   }
 }
 
@@ -96,6 +103,15 @@ export function normalizeProfileSnapshot(raw: unknown): ProfileSnapshot {
     tun_wanted: Boolean(source.tun_wanted),
     excluded: Array.isArray(source.excluded)
       ? source.excluded.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [],
+    installed: Array.isArray(source.installed)
+      ? source.installed.flatMap((item) => {
+          const app = item && typeof item === 'object' ? (item as Partial<InstalledApp>) : {}
+          const name = typeof app.name === 'string' ? app.name : ''
+          const packageName = typeof app.package_name === 'string' ? app.package_name.trim() : ''
+          if (!name || !packageName) return []
+          return [{ name, package_name: packageName }]
+        })
       : [],
   }
 }

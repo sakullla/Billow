@@ -110,6 +110,7 @@ pub struct ProfileSnapshot {
     pub platform: String,
     pub tun_wanted: bool,
     pub excluded: Vec<String>,
+    pub installed: Vec<crate::takeover::InstalledApp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,10 +125,6 @@ pub trait SubscriptionSource {
 
 pub trait KernelLaunch {
     fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String>;
-
-    fn is_running(&self) -> bool {
-        false
-    }
 }
 
 pub struct HttpSubscriptionClient {
@@ -283,10 +280,6 @@ impl KernelLaunch for ProcessRuntime {
         self.config_path = Some(config_path);
         Ok(())
     }
-
-    fn is_running(&self) -> bool {
-        self.child.is_some()
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -351,6 +344,7 @@ pub struct ProfileBook {
     platform: ClientPlatform,
     tun_wanted: bool,
     excluded: Vec<String>,
+    installed: Vec<crate::takeover::InstalledApp>,
     connected: bool,
     our_endpoint: Option<ProxyEndpoint>,
     pending_release: Option<PlatformRelease>,
@@ -374,6 +368,7 @@ impl ProfileBook {
             platform: ClientPlatform::current(),
             tun_wanted: false,
             excluded: Vec::new(),
+            installed: Vec::new(),
             connected: false,
             our_endpoint: None,
             pending_release: None,
@@ -424,6 +419,43 @@ impl ProfileBook {
             platform: self.platform.as_str().to_string(),
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
+            installed: self.installed.clone(),
+        }
+    }
+
+    pub fn set_installed(&mut self, apps: Vec<crate::takeover::InstalledApp>) {
+        self.installed = apps;
+    }
+
+    pub fn matching_installed(&self, query: &str) -> Vec<&crate::takeover::InstalledApp> {
+        takeover::filter_installed(&self.installed, query)
+    }
+
+    /// On exit and the next launch, clear a system proxy that still points at our last port.
+    pub fn release_lingering_proxy(&mut self, proxy: &mut dyn SystemProxy) {
+        let Some(endpoint) = self.our_endpoint.clone() else {
+            return;
+        };
+        match proxy.clear_if_pointing_at(&endpoint) {
+            Ok(()) => {
+                self.takeover.system_proxy = false;
+                self.connected = false;
+                self.our_endpoint = None;
+                if self.home_failure.as_deref() == Some("系统代理没有关闭") {
+                    self.home_failure = None;
+                }
+                self.persist();
+            }
+            Err(message) => {
+                self.takeover.system_proxy = true;
+                self.connected = false;
+                self.home_failure = Some(if message.is_empty() {
+                    "系统代理没有关闭".to_string()
+                } else {
+                    message
+                });
+                self.persist();
+            }
         }
     }
 
@@ -521,31 +553,20 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
-        match self.ensure_kernel(kernel) {
-            Ok(port) => {
-                let mut model = self.link_model();
-                takeover::connect(&mut model, port, proxy, tun, vpn);
-                self.apply_model(model);
-            }
-            Err(StartError::Idle(message)) => {
-                self.home_failure = Some(message);
-                self.connected = false;
-            }
-            Err(StartError::Failed(message)) => {
-                let mut model = self.link_model();
-                takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
-                self.apply_model(model);
-            }
+        if self.platform == ClientPlatform::Android {
+            return self.connect_android(kernel, vpn);
         }
-        self.snapshot()
+        self.connect_desktop(kernel, proxy, tun, vpn)
     }
 
     pub fn disconnect(
         &mut self,
+        kernel: &mut dyn KernelLaunch,
         proxy: &mut dyn SystemProxy,
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
+        let _ = self.reload(kernel, false, None);
         let mut model = self.link_model();
         takeover::disconnect(&mut model, proxy, tun, vpn);
         self.apply_model(model);
@@ -569,10 +590,31 @@ impl ProfileBook {
             self.apply_model(model);
             return self.snapshot();
         }
-        match self.ensure_kernel(kernel) {
+        let previous = self.takeover.system_proxy;
+        let tun_enable = if self.tun_wanted {
+            match tun.authorize() {
+                Ok(true) => true,
+                _ => {
+                    let _ = self.reload(kernel, false, None);
+                    let mut model = self.link_model();
+                    model.tun = false;
+                    model.system_proxy = previous;
+                    model.connected = false;
+                    model.failure = Some(takeover::TUN_DENIED.to_string());
+                    self.apply_model(model);
+                    return self.snapshot();
+                }
+            }
+        } else {
+            false
+        };
+        match self.reload(kernel, tun_enable, None) {
             Ok(port) => {
                 let mut model = self.link_model();
                 takeover::set_system_proxy(&mut model, true, Some(port), proxy);
+                if tun_enable {
+                    model.tun = true;
+                }
                 self.apply_model(model);
             }
             Err(StartError::Idle(message)) => {
@@ -588,10 +630,160 @@ impl ProfileBook {
         self.snapshot()
     }
 
-    pub fn set_tun(&mut self, enabled: bool, tun: &mut dyn TunGrant) -> ProfileSnapshot {
-        let mut model = self.link_model();
-        takeover::set_tun(&mut model, enabled, tun);
-        self.apply_model(model);
+    pub fn set_tun(
+        &mut self,
+        enabled: bool,
+        kernel: &mut dyn KernelLaunch,
+        tun: &mut dyn TunGrant,
+    ) -> ProfileSnapshot {
+        if self.platform != ClientPlatform::Desktop {
+            return self.snapshot();
+        }
+        let previous = self.takeover.system_proxy;
+        if !enabled {
+            let _ = self.reload(kernel, false, None);
+            let mut model = self.link_model();
+            takeover::set_tun(&mut model, false, tun);
+            self.apply_model(model);
+            return self.snapshot();
+        }
+        if !matches!(tun.authorize(), Ok(true)) {
+            let _ = self.reload(kernel, false, None);
+            let _ = tun.set_enabled(false);
+            let mut model = self.link_model();
+            model.tun = false;
+            model.system_proxy = previous;
+            model.connected = false;
+            model.failure = Some(takeover::TUN_DENIED.to_string());
+            self.apply_model(model);
+            return self.snapshot();
+        }
+        match self.reload(kernel, true, None) {
+            Ok(_) => {
+                let _ = tun.set_enabled(true);
+                let mut model = self.link_model();
+                model.tun = true;
+                model.tun_wanted = true;
+                model.failure = None;
+                model.connected = model.system_proxy;
+                self.apply_model(model);
+            }
+            Err(StartError::Idle(message)) => {
+                self.home_failure = Some(message);
+                self.connected = false;
+            }
+            Err(StartError::Failed(message)) => {
+                let mut model = self.link_model();
+                model.tun = false;
+                model.system_proxy = false;
+                model.vpn = false;
+                model.connected = false;
+                model.failure = Some(message);
+                self.apply_model(model);
+            }
+        }
+        self.snapshot()
+    }
+
+    fn connect_desktop(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let previous = self.takeover.system_proxy;
+        let tun_enable = if self.tun_wanted {
+            match tun.authorize() {
+                Ok(true) => true,
+                _ => {
+                    let _ = self.reload(kernel, false, None);
+                    let _ = tun.set_enabled(false);
+                    let mut model = self.link_model();
+                    model.tun = false;
+                    model.system_proxy = previous;
+                    model.connected = false;
+                    model.failure = Some(takeover::TUN_DENIED.to_string());
+                    self.apply_model(model);
+                    return self.snapshot();
+                }
+            }
+        } else {
+            false
+        };
+        match self.reload(kernel, tun_enable, None) {
+            Ok(port) => {
+                let _ = tun.set_enabled(tun_enable);
+                let mut model = self.link_model();
+                takeover::set_system_proxy(&mut model, true, Some(port), proxy);
+                model.tun = tun_enable;
+                let _ = vpn.close();
+                model.vpn = false;
+                self.apply_model(model);
+            }
+            Err(StartError::Idle(message)) => {
+                self.home_failure = Some(message);
+                self.connected = false;
+            }
+            Err(StartError::Failed(message)) => {
+                let mut model = self.link_model();
+                takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
+                self.apply_model(model);
+            }
+        }
+        self.snapshot()
+    }
+
+    fn connect_android(&mut self, kernel: &mut dyn KernelLaunch, vpn: &mut dyn VpnGrant) -> ProfileSnapshot {
+        if self.active_id.is_none() {
+            self.home_failure = Some(takeover::NO_PROFILE.to_string());
+            self.connected = false;
+            return self.snapshot();
+        }
+        if !matches!(vpn.authorize(), Ok(true)) {
+            let _ = vpn.close();
+            let mut model = self.link_model();
+            model.vpn = false;
+            model.connected = false;
+            model.system_proxy = false;
+            model.tun = false;
+            model.failure = Some(takeover::VPN_DENIED.to_string());
+            self.apply_model(model);
+            return self.snapshot();
+        }
+        let fd = match vpn.establish(&self.excluded) {
+            Ok(fd) => fd,
+            Err(_) => {
+                let _ = vpn.close();
+                let mut model = self.link_model();
+                model.vpn = false;
+                model.connected = false;
+                model.failure = Some("VPN 没有建立".to_string());
+                self.apply_model(model);
+                return self.snapshot();
+            }
+        };
+        match self.reload(kernel, true, Some(fd)) {
+            Ok(_) => {
+                let mut model = self.link_model();
+                model.vpn = true;
+                model.connected = true;
+                model.system_proxy = false;
+                model.tun = false;
+                model.failure = None;
+                self.apply_model(model);
+            }
+            Err(StartError::Failed(message)) | Err(StartError::Idle(message)) => {
+                let _ = vpn.close();
+                let mut model = self.link_model();
+                model.vpn = false;
+                model.connected = false;
+                model.system_proxy = false;
+                model.tun = false;
+                model.failure = Some(message);
+                self.apply_model(model);
+            }
+        }
         self.snapshot()
     }
 
@@ -695,36 +887,43 @@ impl ProfileBook {
         self.persist();
     }
 
-    fn ensure_kernel(&mut self, kernel: &mut dyn KernelLaunch) -> Result<u16, StartError> {
+    fn reload(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        tun_enable: bool,
+        fd: Option<i32>,
+    ) -> Result<u16, StartError> {
+        let (yaml, port) = self.kernel_yaml(tun_enable, fd)?;
+        kernel.start_or_reload(&yaml).map_err(|message| {
+            StartError::Failed(if message.is_empty() {
+                KERNEL_ERROR.to_string()
+            } else {
+                message
+            })
+        })?;
+        Ok(port)
+    }
+
+    fn kernel_yaml(&self, tun_enable: bool, fd: Option<i32>) -> Result<(String, u16), StartError> {
         let Some(active) = self.active_id.clone() else {
             return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
         };
         let Some(profile) = self.profiles.iter().find(|profile| profile.id == active) else {
             return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
         };
-        let content = profile.content.clone();
-        let applied = profile.applied_override.clone();
-        let prepared = match prepare(&content, &applied) {
+        let prepared = match prepare(&profile.content, &profile.applied_override) {
             Ok(prepared) => prepared,
             Err(_) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
         };
         let Some(port) = prepared
             .mixed_port
             .and_then(|value| u16::try_from(value).ok())
-            .filter(|port| *port > 0)
+            .filter(|value| *value > 0)
         else {
             return Err(StartError::Failed("没有本地端口".to_string()));
         };
-        if !kernel.is_running() {
-            kernel.start_or_reload(&prepared.yaml).map_err(|message| {
-                StartError::Failed(if message.is_empty() {
-                    KERNEL_ERROR.to_string()
-                } else {
-                    message
-                })
-            })?;
-        }
-        Ok(port)
+        let yaml = force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?;
+        Ok((yaml, port))
     }
 
     fn link_model(&self) -> takeover::LinkModel {
@@ -916,6 +1115,28 @@ enum StartError {
 enum PrepareError {
     Content,
     Override,
+}
+
+fn force_tun(yaml: &str, enable: bool, fd: Option<i32>) -> Result<String, String> {
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let Some(map) = value.as_mapping_mut() else {
+        return Err(CONTENT_ERROR.to_string());
+    };
+    let tun_key = Value::String("tun".to_string());
+    let mut tun = map
+        .get(&tun_key)
+        .and_then(|item| item.as_mapping())
+        .cloned()
+        .unwrap_or_default();
+    tun.insert(Value::String("enable".to_string()), Value::Bool(enable));
+    let fd_key = Value::String("file-descriptor".to_string());
+    if let Some(fd) = fd {
+        tun.insert(fd_key, Value::Number(i64::from(fd).into()));
+    } else {
+        tun.remove(&fd_key);
+    }
+    map.insert(tun_key, Value::Mapping(tun));
+    serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
 }
 
 fn prepare(content: &str, override_text: &str) -> Result<Prepared, PrepareError> {

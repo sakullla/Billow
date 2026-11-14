@@ -115,6 +115,8 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
+ "jni",
+ "ndk-context",
  "serde",
  "serde_json",
  "serde_yaml",

@@ -289,6 +289,7 @@ defineExpose({ ready })
         :tun="profileState.tun"
         :vpn="profileState.vpn"
         :excluded="profileState.excluded"
+        :installed="profileState.installed"
         @connect="connectSession"
         @disconnect="disconnectSession"
         @system-proxy="setSystemProxy"

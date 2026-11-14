@@ -22,7 +22,7 @@ import {
   VPN_EXCLUDE,
   PRODUCT_NAME,
 } from '../copy'
-import { formatExpire, showsExpire, showsUsage } from '../profile'
+import { formatExpire, showsExpire, showsUsage, type InstalledApp } from '../profile'
 
 const props = defineProps<{
   failure: string | null
@@ -37,6 +37,7 @@ const props = defineProps<{
   tun: boolean
   vpn: boolean
   excluded: string[]
+  installed: InstalledApp[]
 }>()
 
 const emit = defineEmits<{
@@ -57,16 +58,10 @@ const statusLabel = computed(() => {
   return HOME_STATUS
 })
 
-const filteredExcluded = computed(() => {
+const filteredApps = computed(() => {
   const needle = query.value.trim()
-  if (!needle) return props.excluded
-  return props.excluded.filter((name) => name.includes(needle))
-})
-
-const candidate = computed(() => {
-  const needle = query.value.trim()
-  if (!needle || props.excluded.includes(needle)) return ''
-  return needle
+  if (!needle) return props.installed
+  return props.installed.filter((app) => app.name.includes(needle))
 })
 
 function toggleConnection() {
@@ -157,21 +152,26 @@ function toggleConnection() {
         <div v-if="excluding" data-testid="exclude-panel">
           <input v-model="query" type="search" data-testid="exclude-search" :placeholder="EXCLUDE_SEARCH" />
           <ul class="profile-list">
-            <li v-if="candidate" data-testid="exclude-row" :data-package="candidate" data-excluded="false">
-              <span>{{ candidate }}</span>
-              <span>{{ EXCLUDE_OFF }}</span>
-              <button type="button" @click="emit('exclude', candidate)">{{ EXCLUDE_OFF }}</button>
-            </li>
             <li
-              v-for="name in filteredExcluded"
-              :key="name"
+              v-for="app in filteredApps"
+              :key="app.package_name"
               data-testid="exclude-row"
-              :data-package="name"
-              data-excluded="true"
+              :data-package="app.package_name"
+              :data-name="app.name"
+              :data-excluded="excluded.includes(app.package_name) ? 'true' : 'false'"
             >
-              <span>{{ name }}</span>
-              <span>{{ EXCLUDE_ON }}</span>
-              <button type="button" @click="emit('include', name)">{{ EXCLUDE_ON }}</button>
+              <span>{{ app.name }}</span>
+              <span>{{ excluded.includes(app.package_name) ? EXCLUDE_ON : EXCLUDE_OFF }}</span>
+              <button
+                type="button"
+                @click="
+                  excluded.includes(app.package_name)
+                    ? emit('include', app.package_name)
+                    : emit('exclude', app.package_name)
+                "
+              >
+                {{ excluded.includes(app.package_name) ? EXCLUDE_ON : EXCLUDE_OFF }}
+              </button>
             </li>
           </ul>
         </div>

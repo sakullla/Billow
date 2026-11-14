@@ -33,6 +33,10 @@ describe('接管界面', () => {
       createMemoryProfilePort({
         platform: 'android',
         excluded: ['com.example.mail'],
+        installed: [
+          { name: '电子 邮箱', package_name: 'com.example.mail' },
+          { name: '浏览器', package_name: 'com.example.browser' },
+        ],
       }),
     )
     expect(wrapper.find('[data-testid="desktop-controls"]').exists()).toBe(false)
@@ -42,15 +46,19 @@ describe('接管界面', () => {
     expect(wrapper.get('[data-testid="home-takeover"]').text()).not.toContain('TUN')
     expect(wrapper.get('[data-testid="android-controls"]').text()).toContain('VPN')
     await wrapper.get('[data-testid="open-exclusions"]').trigger('click')
-    const row = wrapper.get('[data-package="com.example.mail"]')
-    expect(row.attributes('data-excluded')).toBe('true')
-    expect(row.text()).toContain('已排除')
-    await wrapper.get('[data-testid="exclude-search"]').setValue('com.example.browser')
+    const mail = wrapper.get('[data-package="com.example.mail"]')
+    expect(mail.attributes('data-name')).toBe('电子 邮箱')
+    expect(mail.attributes('data-excluded')).toBe('true')
+    expect(mail.text()).toContain('已排除')
+    await wrapper.get('[data-testid="exclude-search"]').setValue('浏览器')
     expect(wrapper.find('[data-package="com.example.mail"]').exists()).toBe(false)
-    const candidate = wrapper.get('[data-package="com.example.browser"]')
-    expect(candidate.attributes('data-excluded')).toBe('false')
-    expect(candidate.text()).toContain('未排除')
-    expect((await wrapper.find('[data-testid="exclude-search"]')).exists()).toBe(true)
+    expect(wrapper.find('[data-package="浏览器"]').exists()).toBe(false)
+    const browser = wrapper.get('[data-package="com.example.browser"]')
+    expect(browser.attributes('data-excluded')).toBe('false')
+    expect(browser.text()).toContain('未排除')
+    await wrapper.get('[data-testid="exclude-search"]').setValue('电子')
+    expect(wrapper.get('[data-package="com.example.mail"]').attributes('data-name')).toBe('电子 邮箱')
+    expect(wrapper.find('[data-package="com.example.browser"]').exists()).toBe(false)
   })
 
   it('失败时不显示已连接', async () => {
