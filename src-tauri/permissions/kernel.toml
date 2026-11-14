@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-kernel-state"
+description = "Enables the kernel_state command without any pre-configured scope."
+commands.allow = ["kernel_state"]
+
+[[permission]]
+identifier = "allow-set-kernel-channel"
+description = "Enables the set_kernel_channel command without any pre-configured scope."
+commands.allow = ["set_kernel_channel"]
+
+[[permission]]
+identifier = "allow-connect-kernel"
+description = "Enables the connect_kernel command without any pre-configured scope."
+commands.allow = ["connect_kernel"]

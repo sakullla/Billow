@@ -6,6 +6,8 @@ import {
   ABOUT_TEXT,
   HOME_HINT,
   HOME_STATUS,
+  KERNEL_OPTIONS,
+  KERNEL_TITLE,
   LICENSE_NAME,
   NAV_ITEMS,
   NODES_EMPTY,
@@ -21,6 +23,8 @@ const FORBIDDEN = ['轻澜', 'Zephyr', 'FlClash', 'Sparkle', 'Clash Verge', '观
 const visible = [
   ...NAV_ITEMS.map((item) => item.label),
   ...THEME_OPTIONS.map((option) => option.label),
+  ...KERNEL_OPTIONS.map((option) => option.label),
+  KERNEL_TITLE,
   HOME_STATUS,
   HOME_HINT,
   NODES_EMPTY,
@@ -58,6 +62,10 @@ describe('简体中文主文案', () => {
     expect(wrapper.text()).toContain('跟随系统')
     expect(wrapper.text()).toContain('始终浅色')
     expect(wrapper.text()).toContain('始终深色')
+    expect(wrapper.text()).toContain('内核渠道')
+    expect(wrapper.text()).toContain('稳定版')
+    expect(wrapper.text()).toContain('预览版')
+    expect(wrapper.find('[data-testid="kernel-channel"] input[type="text"]').exists()).toBe(false)
   })
 
   it('窗口标题和构建入口使用 Billow，且不使用其他客户端名称', () => {

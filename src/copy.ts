@@ -9,6 +9,7 @@ export const NODES_TITLE = '节点'
 export const NODES_EMPTY = '还没有可显示的节点。'
 export const SETTINGS_TITLE = '配置'
 export const THEME_TITLE = '主题'
+export const KERNEL_TITLE = '内核渠道'
 
 export const NAV_ITEMS = [
   { id: 'home', label: '首页' },
@@ -22,5 +23,11 @@ export const THEME_OPTIONS = [
   { id: 'dark', label: '始终深色' },
 ] as const
 
+export const KERNEL_OPTIONS = [
+  { id: 'stable', label: '稳定版' },
+  { id: 'preview', label: '预览版' },
+] as const
+
 export type EntryId = (typeof NAV_ITEMS)[number]['id']
 export type ThemePreference = (typeof THEME_OPTIONS)[number]['id']
+export type KernelChannel = (typeof KERNEL_OPTIONS)[number]['id']

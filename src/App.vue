@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NAV_ITEMS, PRODUCT_NAME, type EntryId, type ThemePreference } from './copy'
+import { NAV_ITEMS, PRODUCT_NAME, type EntryId, type KernelChannel, type ThemePreference } from './copy'
+import { createKernelPort, createMemoryKernelPort, type KernelPort } from './kernel-port'
+import { resolveKernelChannel } from './kernel'
 import { layoutForWidth, resolveEntry } from './navigation'
 import { createShellPort, type ShellPort } from './port'
 import { applyTheme, resolveTheme } from './theme'
@@ -10,15 +12,20 @@ import SettingsView from './views/SettingsView.vue'
 
 const props = defineProps<{
   port?: ShellPort
+  kernelPort?: KernelPort
   initialWidth?: number
 }>()
 
 const entry = ref<EntryId>('home')
 const theme = ref<ThemePreference>('system')
+const kernelChannel = ref<KernelChannel>('stable')
+const kernelFailure = ref<string | null>(null)
 const width = ref(typeof props.initialWidth === 'number' ? props.initialWidth : window.innerWidth)
 const layout = computed(() => layoutForWidth(width.value))
 
 let port: ShellPort | null = props.port ?? null
+const kernel: KernelPort = props.kernelPort ?? (props.port ? createMemoryKernelPort() : createKernelPort())
+let kernelEpoch = 0
 let persist = false
 let resolveReady = () => {}
 const ready = new Promise<void>((resolve) => {
@@ -50,17 +57,48 @@ watch(
   { flush: 'sync' },
 )
 
-function choose(next: EntryId) {
-  entry.value = next
-  if (!persist || !port) return
-  void port.saveEntry(next).catch((error: unknown) => {
+async function refreshKernel() {
+  const epoch = ++kernelEpoch
+  try {
+    const snapshot = await kernel.load()
+    if (epoch !== kernelEpoch) return
+    kernelChannel.value = resolveKernelChannel(snapshot.channel)
+    kernelFailure.value = snapshot.failure
+  } catch (error) {
     console.error(error)
-  })
+    if (epoch !== kernelEpoch) return
+    kernelFailure.value = '内核状态没有读取'
+  }
+}
+
+async function changeKernel(next: KernelChannel) {
+  const epoch = ++kernelEpoch
+  try {
+    const snapshot = await kernel.setChannel(next)
+    if (epoch !== kernelEpoch) return
+    kernelChannel.value = resolveKernelChannel(snapshot.channel)
+    kernelFailure.value = snapshot.failure
+  } catch (error) {
+    console.error(error)
+    if (epoch !== kernelEpoch) return
+    kernelFailure.value = '内核下载失败'
+  }
+}
+
+async function choose(next: EntryId) {
+  entry.value = next
+  if (persist && port) {
+    void port.saveEntry(next).catch((error: unknown) => {
+      console.error(error)
+    })
+  }
+  if (next === 'settings') await refreshKernel()
 }
 
 onMounted(async () => {
   readWidth()
   window.addEventListener('resize', readWidth)
+  const kernelLoad = refreshKernel()
   try {
     port = props.port ?? createShellPort()
     const snapshot = await port.load()
@@ -81,6 +119,7 @@ onMounted(async () => {
   } finally {
     resolveReady()
   }
+  await kernelLoad
 })
 
 onBeforeUnmount(() => {
@@ -110,7 +149,13 @@ defineExpose({ ready })
     <main class="main">
       <HomeView v-if="entry === 'home'" />
       <NodesView v-else-if="entry === 'nodes'" />
-      <SettingsView v-else v-model="theme" />
+      <SettingsView
+        v-else
+        v-model="theme"
+        :channel="kernelChannel"
+        :failure="kernelFailure"
+        @update:channel="changeKernel"
+      />
     </main>
     <nav v-if="layout === 'bottom'" class="bottom-nav" aria-label="主导航">
       <button

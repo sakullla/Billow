@@ -7,6 +7,9 @@
     "core:default",
     "allow-shell-state",
     "allow-set-theme",
-    "allow-set-last-entry"
+    "allow-set-last-entry",
+    "allow-kernel-state",
+    "allow-set-kernel-channel",
+    "allow-connect-kernel"
   ]
 }

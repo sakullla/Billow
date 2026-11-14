@@ -1,3 +1,4 @@
+mod kernel;
 mod shell;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -5,6 +6,9 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
 
+use kernel::{
+    parse_channel, ConnectResult, GithubReleaseClient, KernelManager, KernelStatus, PlatformTarget,
+};
 use shell::{read_shell_state, resolve_entry, resolve_theme, write_shell_state, ShellState};
 
 struct Store {
@@ -13,7 +17,15 @@ struct Store {
     accept_resize: AtomicBool,
 }
 
+struct KernelStore {
+    manager: Mutex<KernelManager>,
+}
+
 fn lock(state: &Mutex<ShellState>) -> std::sync::MutexGuard<'_, ShellState> {
+    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_kernel(state: &Mutex<KernelManager>) -> std::sync::MutexGuard<'_, KernelManager> {
     state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -131,6 +143,43 @@ fn prepare_shell(app: &tauri::App) {
     });
 }
 
+fn kernel_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "内核目录不可用".to_string())?
+        .join("kernels");
+    std::fs::create_dir_all(&directory).map_err(|_| "内核目录不可用".to_string())?;
+    Ok(directory)
+}
+
+fn prepare_kernel(app: &tauri::App) {
+    let manager = match kernel_dir(app.handle()) {
+        Ok(dir) => KernelManager::open(dir, PlatformTarget::current()),
+        Err(message) => {
+            let mut manager = KernelManager::open(
+                std::env::temp_dir().join(format!("billow-kernel-unavailable-{}", std::process::id())),
+                PlatformTarget::current(),
+            );
+            manager.fail_without_change(message);
+            app.manage(KernelStore {
+                manager: Mutex::new(manager),
+            });
+            return;
+        }
+    };
+    app.manage(KernelStore {
+        manager: Mutex::new(manager),
+    });
+    let handle = app.handle().clone();
+    std::thread::spawn(move || {
+        let store = handle.state::<KernelStore>();
+        let mut manager = lock_kernel(&store.manager);
+        let channel = manager.channel();
+        manager.sync(channel, &GithubReleaseClient::new());
+    });
+}
+
 #[tauri::command]
 fn shell_state(app: AppHandle) -> ShellState {
     let store = app.state::<Store>();
@@ -160,6 +209,50 @@ fn set_last_entry(app: AppHandle, entry: String) -> ShellState {
     state.clone()
 }
 
+#[tauri::command]
+fn kernel_state(app: AppHandle) -> KernelStatus {
+    let store = app.state::<KernelStore>();
+    lock_kernel(&store.manager).status()
+}
+
+#[tauri::command]
+fn set_kernel_channel(app: AppHandle, channel: String) -> KernelStatus {
+    let store = app.state::<KernelStore>();
+    let mut manager = lock_kernel(&store.manager);
+    match parse_channel(&channel) {
+        Ok(channel) => manager.sync(channel, &GithubReleaseClient::new()),
+        Err(message) => manager.fail_without_change(message),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ConnectStatus {
+    failed: bool,
+    failure: Option<String>,
+    system_proxy: bool,
+    tun: bool,
+    vpn: bool,
+}
+
+impl From<ConnectResult> for ConnectStatus {
+    fn from(result: ConnectResult) -> Self {
+        Self {
+            failed: result.failed,
+            failure: result.failure,
+            system_proxy: result.system_proxy,
+            tun: result.tun,
+            vpn: result.vpn,
+        }
+    }
+}
+
+#[tauri::command]
+fn connect_kernel(app: AppHandle) -> ConnectStatus {
+    let store = app.state::<KernelStore>();
+    let mut manager = lock_kernel(&store.manager);
+    manager.connect().into()
+}
+
 fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
     if label != "main" {
         return;
@@ -177,9 +270,17 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![shell_state, set_theme, set_last_entry])
+        .invoke_handler(tauri::generate_handler![
+            shell_state,
+            set_theme,
+            set_last_entry,
+            kernel_state,
+            set_kernel_channel,
+            connect_kernel
+        ])
         .setup(|app| {
             prepare_shell(app);
+            prepare_kernel(app);
             Ok(())
         })
         .build(tauri::generate_context!())

@@ -1,0 +1,1507 @@
+use std::fs;
+use std::io::{Cursor, Read};
+use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
+
+use flate2::read::GzDecoder;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use zip::ZipArchive;
+
+/// Release index for the MetaCubeX mihomo releases page.
+pub const RELEASES_PAGE: &str = "https://github.com/MetaCubeX/mihomo/releases";
+pub const PREVIEW_TAG: &str = "Prerelease-Alpha";
+
+fn release_api(channel: Channel) -> String {
+    let repo = RELEASES_PAGE.trim_end_matches("/releases");
+    let api_repo = repo.replacen("https://github.com/", "https://api.github.com/repos/", 1);
+    match channel {
+        Channel::Stable => format!("{api_repo}/releases/latest"),
+        Channel::Preview => format!("{api_repo}/releases/tags/{PREVIEW_TAG}"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Channel {
+    Stable,
+    Preview,
+}
+
+impl Default for Channel {
+    fn default() -> Self {
+        Self::Stable
+    }
+}
+
+impl Channel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Preview => "preview",
+        }
+    }
+}
+
+pub fn parse_channel(value: &str) -> Result<Channel, String> {
+    match value {
+        "stable" => Ok(Channel::Stable),
+        "preview" => Ok(Channel::Preview),
+        _ => Err("没有这个内核渠道".to_string()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopOs {
+    Darwin,
+    Windows,
+    Linux,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuArch {
+    Amd64,
+    Arm64,
+    I386,
+    Armv7,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidAbi {
+    Arm64V8a,
+    ArmeabiV7a,
+    X86,
+    X86_64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformTarget {
+    Desktop { os: DesktopOs, arch: CpuArch },
+    Android { abi: AndroidAbi },
+}
+
+impl PlatformTarget {
+    pub fn current() -> Self {
+        #[cfg(target_os = "android")]
+        {
+            PlatformTarget::Android {
+                abi: current_android_abi(),
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            PlatformTarget::Desktop {
+                os: current_desktop_os(),
+                arch: current_cpu_arch(),
+            }
+        }
+    }
+
+    fn asset_prefix(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Desktop {
+                os: DesktopOs::Darwin,
+                arch: CpuArch::Arm64,
+            } => "mihomo-darwin-arm64-",
+            Self::Desktop {
+                os: DesktopOs::Darwin,
+                arch: CpuArch::Amd64,
+            } => "mihomo-darwin-amd64-",
+            Self::Desktop {
+                os: DesktopOs::Windows,
+                arch: CpuArch::Arm64,
+            } => "mihomo-windows-arm64-",
+            Self::Desktop {
+                os: DesktopOs::Windows,
+                arch: CpuArch::Amd64,
+            } => "mihomo-windows-amd64-",
+            Self::Desktop {
+                os: DesktopOs::Windows,
+                arch: CpuArch::I386,
+            } => "mihomo-windows-386-",
+            Self::Desktop {
+                os: DesktopOs::Linux,
+                arch: CpuArch::Amd64,
+            } => "mihomo-linux-amd64-",
+            Self::Desktop {
+                os: DesktopOs::Linux,
+                arch: CpuArch::Arm64,
+            } => "mihomo-linux-arm64-",
+            Self::Desktop {
+                os: DesktopOs::Linux,
+                arch: CpuArch::I386,
+            } => "mihomo-linux-386-",
+            Self::Desktop {
+                os: DesktopOs::Linux,
+                arch: CpuArch::Armv7,
+            } => "mihomo-linux-armv7-",
+            Self::Android {
+                abi: AndroidAbi::Arm64V8a,
+            } => "mihomo-android-arm64-v8-",
+            Self::Android {
+                abi: AndroidAbi::ArmeabiV7a,
+            } => "mihomo-android-armv7-",
+            Self::Android { abi: AndroidAbi::X86 } => "mihomo-android-386-",
+            Self::Android {
+                abi: AndroidAbi::X86_64,
+            } => "mihomo-android-amd64-",
+            _ => return None,
+        })
+    }
+
+    fn archive_ext(self) -> &'static str {
+        match self {
+            Self::Desktop {
+                os: DesktopOs::Windows,
+                ..
+            } => "zip",
+            _ => "gz",
+        }
+    }
+
+    fn binary_file_name(self) -> &'static str {
+        match self {
+            Self::Desktop {
+                os: DesktopOs::Windows,
+                ..
+            } => "core.exe",
+            _ => "core",
+        }
+    }
+}
+
+const SUPPORTED_TARGETS: &[PlatformTarget] = &[
+    PlatformTarget::Desktop {
+        os: DesktopOs::Darwin,
+        arch: CpuArch::Arm64,
+    },
+    PlatformTarget::Desktop {
+        os: DesktopOs::Darwin,
+        arch: CpuArch::Amd64,
+    },
+    PlatformTarget::Desktop {
+        os: DesktopOs::Windows,
+        arch: CpuArch::Arm64,
+    },
+    PlatformTarget::Desktop {
+        os: DesktopOs::Windows,
+        arch: CpuArch::Amd64,
+    },
+    PlatformTarget::Desktop {
+        os: DesktopOs::Windows,
+        arch: CpuArch::I386,
+    },
+    PlatformTarget::Desktop {
+        os: DesktopOs::Linux,
+        arch: CpuArch::Amd64,
+    },
+    PlatformTarget::Desktop {
+        os: DesktopOs::Linux,
+        arch: CpuArch::Arm64,
+    },
+    PlatformTarget::Desktop {
+        os: DesktopOs::Linux,
+        arch: CpuArch::I386,
+    },
+    PlatformTarget::Desktop {
+        os: DesktopOs::Linux,
+        arch: CpuArch::Armv7,
+    },
+    PlatformTarget::Android {
+        abi: AndroidAbi::Arm64V8a,
+    },
+    PlatformTarget::Android {
+        abi: AndroidAbi::ArmeabiV7a,
+    },
+    PlatformTarget::Android { abi: AndroidAbi::X86 },
+    PlatformTarget::Android {
+        abi: AndroidAbi::X86_64,
+    },
+];
+
+#[cfg(target_os = "android")]
+fn current_android_abi() -> AndroidAbi {
+    #[cfg(target_arch = "aarch64")]
+    {
+        AndroidAbi::Arm64V8a
+    }
+    #[cfg(target_arch = "arm")]
+    {
+        AndroidAbi::ArmeabiV7a
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        AndroidAbi::X86_64
+    }
+    #[cfg(target_arch = "x86")]
+    {
+        AndroidAbi::X86
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn current_desktop_os() -> DesktopOs {
+    #[cfg(target_os = "macos")]
+    {
+        DesktopOs::Darwin
+    }
+    #[cfg(target_os = "windows")]
+    {
+        DesktopOs::Windows
+    }
+    #[cfg(target_os = "linux")]
+    {
+        DesktopOs::Linux
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn current_cpu_arch() -> CpuArch {
+    #[cfg(target_arch = "aarch64")]
+    {
+        CpuArch::Arm64
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        CpuArch::Amd64
+    }
+    #[cfg(target_arch = "x86")]
+    {
+        CpuArch::I386
+    }
+    #[cfg(target_arch = "arm")]
+    {
+        CpuArch::Armv7
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub url: String,
+    /// GitHub asset digest, such as `sha256:<hex>`. Ignored when checksums.txt exists.
+    pub digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseIndex {
+    pub tag: String,
+    pub prerelease: bool,
+    pub assets: Vec<ReleaseAsset>,
+}
+
+pub trait ReleaseSource {
+    fn fetch_release(&self, channel: Channel) -> Result<ReleaseIndex, String>;
+    fn download(&self, url: &str) -> Result<Vec<u8>, String>;
+}
+
+pub struct GithubReleaseClient {
+    agent: ureq::Agent,
+}
+
+impl GithubReleaseClient {
+    pub fn new() -> Self {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(20))
+            .timeout_read(Duration::from_secs(120))
+            .build();
+        Self { agent }
+    }
+}
+
+impl Default for GithubReleaseClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReleaseSource for GithubReleaseClient {
+    fn fetch_release(&self, channel: Channel) -> Result<ReleaseIndex, String> {
+        let url = release_api(channel);
+        let bytes = http_get(&self.agent, &url, "application/vnd.github+json")?;
+        let text = String::from_utf8(bytes).map_err(|_| "发布索引无法读取".to_string())?;
+        parse_github_release(&text)
+    }
+
+    fn download(&self, url: &str) -> Result<Vec<u8>, String> {
+        http_get(&self.agent, url, "application/octet-stream")
+    }
+}
+
+fn http_get(agent: &ureq::Agent, url: &str, accept: &str) -> Result<Vec<u8>, String> {
+    if !url.starts_with("https://") {
+        return Err("内核地址不可用".to_string());
+    }
+    let response = agent
+        .get(url)
+        .set("User-Agent", "Billow")
+        .set("Accept", accept)
+        .call()
+        .map_err(|_| "内核下载失败".to_string())?;
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut bytes)
+        .map_err(|_| "内核下载失败".to_string())?;
+    Ok(bytes)
+}
+
+fn parse_github_release(body: &str) -> Result<ReleaseIndex, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|_| "发布索引无法读取".to_string())?;
+    let tag = value
+        .get("tag_name")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .to_string();
+    if tag.is_empty() {
+        return Err("发布标签缺失".to_string());
+    }
+    let prerelease = value.get("prerelease").and_then(|item| item.as_bool()).unwrap_or(false);
+    let mut assets = Vec::new();
+    for asset in value.get("assets").and_then(|item| item.as_array()).into_iter().flatten() {
+        let name = asset.get("name").and_then(|item| item.as_str()).unwrap_or("");
+        let url = asset
+            .get("browser_download_url")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
+        if name.is_empty() || url.is_empty() {
+            continue;
+        }
+        let digest = asset
+            .get("digest")
+            .and_then(|item| item.as_str())
+            .filter(|item| !item.is_empty())
+            .map(str::to_string);
+        assets.push(ReleaseAsset {
+            name: name.to_string(),
+            url: url.to_string(),
+            digest,
+        });
+    }
+    Ok(ReleaseIndex { tag, prerelease, assets })
+}
+
+fn validate_release(channel: Channel, release: &ReleaseIndex) -> Result<(), String> {
+    match channel {
+        Channel::Stable => {
+            if release.prerelease || !is_version(&release.tag) {
+                return Err("稳定版标签不可用".to_string());
+            }
+        }
+        Channel::Preview => {
+            if release.tag != PREVIEW_TAG {
+                return Err("预览版标签不可用".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Plain build only. Variant names (`compatible`, `go*`, `v1`/`v2`/`v3`, packages)
+/// and the other platform family are left unmatched.
+fn is_plain_asset(name: &str, prefix: &str, ext: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(stem) = rest.strip_suffix(&format!(".{ext}")) else {
+        return false;
+    };
+    is_version(stem) || is_alpha(stem)
+}
+
+fn is_version(stem: &str) -> bool {
+    let Some(digits) = stem.strip_prefix('v') else {
+        return false;
+    };
+    let parts: Vec<&str> = digits.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_alpha(stem: &str) -> bool {
+    let Some(hex) = stem.strip_prefix("alpha-") else {
+        return false;
+    };
+    !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+pub fn select_asset(release: &ReleaseIndex, target: PlatformTarget) -> Result<ReleaseAsset, String> {
+    let prefix = target.asset_prefix().ok_or("没有适用于当前系统的内核")?;
+    let ext = target.archive_ext();
+    let matches: Vec<ReleaseAsset> = release
+        .assets
+        .iter()
+        .filter(|asset| is_plain_asset(&asset.name, prefix, ext))
+        .cloned()
+        .collect();
+    match matches.len() {
+        1 => Ok(matches.into_iter().next().unwrap()),
+        0 => Err("没有适用于当前系统的内核".to_string()),
+        _ => Err("内核产物不唯一".to_string()),
+    }
+}
+
+fn sha256_from_digest(digest: Option<&str>) -> Option<String> {
+    let (algo, hex) = digest?.split_once(':')?;
+    if !algo.eq_ignore_ascii_case("sha256") {
+        return None;
+    }
+    if hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(hex.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn lookup_checksum(checksums: &str, asset_name: &str) -> Result<String, String> {
+    for line in checksums.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(hash) = parts.next() else {
+            continue;
+        };
+        let Some(file_name) = parts.next() else {
+            continue;
+        };
+        if parts.next().is_some() {
+            continue;
+        }
+        let file_name = file_name.trim_start_matches("./").trim_start_matches('*');
+        let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+        if file_name != asset_name {
+            continue;
+        }
+        if hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Ok(hash.to_ascii_lowercase());
+        }
+        return Err("校验和无法读取".to_string());
+    }
+    Err("校验和里没有这个文件".to_string())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn decode_gzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut decoder = GzDecoder::new(bytes);
+    let mut plain = Vec::new();
+    decoder
+        .read_to_end(&mut plain)
+        .map_err(|_| "内核文件无法解压".to_string())?;
+    Ok(plain)
+}
+
+fn decode_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| "内核文件无法解压".to_string())?;
+    let count = archive.len();
+    let mut chosen: Option<usize> = None;
+    for index in 0..count {
+        let name = {
+            let file = archive
+                .by_index(index)
+                .map_err(|_| "内核文件无法解压".to_string())?;
+            if !file.is_file() {
+                continue;
+            }
+            file.name().replace('\\', "/")
+        };
+        let base = name.rsplit('/').next().unwrap_or("");
+        if base.eq_ignore_ascii_case("mihomo.exe") || base.ends_with(".exe") {
+            chosen = Some(index);
+            if base.eq_ignore_ascii_case("mihomo.exe") {
+                break;
+            }
+        } else if chosen.is_none() && count == 1 {
+            chosen = Some(index);
+        }
+    }
+    let index = chosen.ok_or("内核文件无法解压")?;
+    let mut file = archive
+        .by_index(index)
+        .map_err(|_| "内核文件无法解压".to_string())?;
+    let mut plain = Vec::new();
+    file.read_to_end(&mut plain)
+        .map_err(|_| "内核文件无法解压".to_string())?;
+    Ok(plain)
+}
+
+fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+    }
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, bytes).map_err(|err| err.to_string())?;
+    let _ = fs::remove_file(path);
+    fs::rename(&temporary, path).map_err(|err| err.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn extract_kernel(asset_name: &str, bytes: &[u8], destination: &Path) -> Result<(), String> {
+    let plain = if asset_name.ends_with(".gz") {
+        decode_gzip(bytes)?
+    } else if asset_name.ends_with(".zip") {
+        decode_zip(bytes)?
+    } else {
+        return Err("内核文件无法解压".to_string());
+    };
+    if plain.is_empty() {
+        return Err("内核文件无法解压".to_string());
+    }
+    write_executable(destination, &plain)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstalledKernel {
+    channel: Channel,
+    identity: String,
+    relative_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KernelState {
+    channel: Channel,
+    installed: Option<InstalledKernel>,
+    failure: Option<String>,
+}
+
+impl Default for KernelState {
+    fn default() -> Self {
+        Self {
+            channel: Channel::Stable,
+            installed: None,
+            failure: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedKernel {
+    #[serde(default)]
+    channel: Channel,
+    #[serde(default)]
+    installed: Option<PersistedInstall>,
+    #[serde(default)]
+    failure: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedInstall {
+    channel: Channel,
+    identity: String,
+    relative_path: String,
+}
+
+fn safe_relative(path: &str) -> bool {
+    let path = Path::new(path);
+    !path.as_os_str().is_empty()
+        && path.is_relative()
+        && path.components().all(|component| matches!(component, Component::Normal(_)))
+}
+
+fn read_state(path: &Path) -> KernelState {
+    let Ok(text) = fs::read_to_string(path) else {
+        return KernelState::default();
+    };
+    let Ok(persisted) = serde_json::from_str::<PersistedKernel>(&text) else {
+        return KernelState::default();
+    };
+    let installed = persisted.installed.and_then(|item| {
+        if item.identity.is_empty() || !safe_relative(&item.relative_path) {
+            None
+        } else {
+            Some(InstalledKernel {
+                channel: item.channel,
+                identity: item.identity,
+                relative_path: item.relative_path,
+            })
+        }
+    });
+    KernelState {
+        channel: persisted.channel,
+        installed,
+        failure: persisted.failure,
+    }
+}
+
+fn write_state(path: &Path, state: &KernelState) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+    }
+    let persisted = PersistedKernel {
+        channel: state.channel,
+        installed: state.installed.as_ref().map(|item| PersistedInstall {
+            channel: item.channel,
+            identity: item.identity.clone(),
+            relative_path: item.relative_path.clone(),
+        }),
+        failure: state.failure.clone(),
+    };
+    let data = serde_json::to_vec_pretty(&persisted).map_err(|err| err.to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, data).map_err(|err| err.to_string())?;
+    fs::rename(&temporary, path).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KernelStatus {
+    pub channel: String,
+    pub failure: Option<String>,
+    pub ready: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectResult {
+    pub failed: bool,
+    pub failure: Option<String>,
+    pub system_proxy: bool,
+    pub tun: bool,
+    pub vpn: bool,
+    pub kernel_path: Option<PathBuf>,
+}
+
+pub struct KernelManager {
+    root: PathBuf,
+    target: PlatformTarget,
+    state: KernelState,
+    running: Option<InstalledKernel>,
+}
+
+impl KernelManager {
+    pub fn open(root: impl Into<PathBuf>, target: PlatformTarget) -> Self {
+        let root = root.into();
+        assert!(SUPPORTED_TARGETS.iter().all(|item| item.asset_prefix().is_some()));
+        let state = read_state(&root.join("state.json"));
+        Self {
+            root,
+            target,
+            state,
+            running: None,
+        }
+    }
+
+    pub fn channel(&self) -> Channel {
+        self.state.channel
+    }
+
+    #[cfg(test)]
+    fn failure(&self) -> Option<&str> {
+        self.state.failure.as_deref()
+    }
+
+    pub fn installed_path(&self) -> Option<PathBuf> {
+        self.state
+            .installed
+            .as_ref()
+            .map(|item| self.root.join(&item.relative_path))
+    }
+
+    #[cfg(test)]
+    fn running_path(&self) -> Option<PathBuf> {
+        self.running
+            .as_ref()
+            .map(|item| self.root.join(&item.relative_path))
+    }
+
+    pub fn status(&self) -> KernelStatus {
+        let ready = self
+            .installed_path()
+            .map(|path| path.is_file())
+            .unwrap_or(false);
+        KernelStatus {
+            channel: self.state.channel.as_str().to_string(),
+            failure: self.state.failure.clone(),
+            ready,
+        }
+    }
+
+    pub fn fail_without_change(&mut self, message: String) -> KernelStatus {
+        self.state.failure = Some(message);
+        let _ = self.persist();
+        self.status()
+    }
+
+    pub fn sync(&mut self, requested: Channel, source: &dyn ReleaseSource) -> KernelStatus {
+        let previous = self.state.clone();
+        match self.stage(requested, source) {
+            Ok(installed) => {
+                self.state.channel = requested;
+                self.state.installed = Some(installed);
+                self.state.failure = None;
+                if let Err(message) = self.persist() {
+                    self.state = previous;
+                    self.state.failure = Some(message);
+                    let _ = self.persist();
+                } else if let Some(old) = previous.installed {
+                    let replaced = self
+                        .state
+                        .installed
+                        .as_ref()
+                        .map(|item| item.relative_path != old.relative_path)
+                        .unwrap_or(false);
+                    let running_old = self
+                        .running
+                        .as_ref()
+                        .map(|item| item.relative_path == old.relative_path)
+                        .unwrap_or(false);
+                    if replaced && !running_old {
+                        let _ = fs::remove_file(self.root.join(&old.relative_path));
+                    }
+                }
+            }
+            Err(message) => {
+                self.state = previous;
+                self.state.failure = Some(message);
+                let _ = self.persist();
+            }
+        }
+        self.status()
+    }
+
+    /// Select the staged kernel for the next launch.
+    /// Without a local file the result is a failure and takeover stays off.
+    pub fn connect(&mut self) -> ConnectResult {
+        let Some(installed) = self.state.installed.clone() else {
+            self.running = None;
+            return no_kernel();
+        };
+        let path = self.root.join(&installed.relative_path);
+        if !path.is_file() {
+            self.running = None;
+            return no_kernel();
+        }
+        self.running = Some(installed);
+        ConnectResult {
+            failed: false,
+            failure: None,
+            system_proxy: false,
+            tun: false,
+            vpn: false,
+            kernel_path: Some(path),
+        }
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        write_state(&self.root.join("state.json"), &self.state)
+    }
+
+    fn stage(&self, requested: Channel, source: &dyn ReleaseSource) -> Result<InstalledKernel, String> {
+        let release = source.fetch_release(requested)?;
+        validate_release(requested, &release)?;
+        let asset = select_asset(&release, self.target)?;
+        let expected = expected_checksum(&release, &asset, source)?;
+        let identity = format!("{}:{}:{expected}", release.tag, asset.name);
+        if let Some(current) = &self.state.installed {
+            if current.channel == requested && current.identity == identity {
+                let path = self.root.join(&current.relative_path);
+                if path.is_file() {
+                    return Ok(current.clone());
+                }
+            }
+        }
+        let bytes = source.download(&asset.url)?;
+        if sha256_hex(&bytes) != expected {
+            return Err("内核校验和不一致".to_string());
+        }
+        let relative = format!("files/{expected}/{}", self.target.binary_file_name());
+        extract_kernel(&asset.name, &bytes, &self.root.join(&relative))?;
+        Ok(InstalledKernel {
+            channel: requested,
+            identity,
+            relative_path: relative,
+        })
+    }
+}
+
+fn expected_checksum(
+    release: &ReleaseIndex,
+    asset: &ReleaseAsset,
+    source: &dyn ReleaseSource,
+) -> Result<String, String> {
+    if let Some(checksum_asset) = release.assets.iter().find(|item| item.name == "checksums.txt") {
+        let checksum_bytes = source.download(&checksum_asset.url)?;
+        let checksum_text = String::from_utf8(checksum_bytes).map_err(|_| "校验和无法读取".to_string())?;
+        return lookup_checksum(&checksum_text, &asset.name);
+    }
+    sha256_from_digest(asset.digest.as_deref()).ok_or_else(|| "发布页没有校验和".to_string())
+}
+
+fn no_kernel() -> ConnectResult {
+    ConnectResult {
+        failed: true,
+        failure: Some("没有本地内核".to_string()),
+        system_proxy: false,
+        tun: false,
+        vpn: false,
+        kernel_path: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::io::Write;
+
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_dir(name: &str) -> TempDir {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("billow-kernel-{name}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        TempDir(path)
+    }
+
+    struct MapSource {
+        releases: HashMap<Channel, ReleaseIndex>,
+        files: HashMap<String, Vec<u8>>,
+    }
+
+    impl ReleaseSource for MapSource {
+        fn fetch_release(&self, channel: Channel) -> Result<ReleaseIndex, String> {
+            self.releases
+                .get(&channel)
+                .cloned()
+                .ok_or_else(|| "内核下载失败".to_string())
+        }
+
+        fn download(&self, url: &str) -> Result<Vec<u8>, String> {
+            self.files
+                .get(url)
+                .cloned()
+                .ok_or_else(|| "内核下载失败".to_string())
+        }
+    }
+
+    fn gzip_bytes(plain: &[u8]) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(plain).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn zip_bytes(file_name: &str, plain: &[u8]) -> Vec<u8> {
+        use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(file_name, SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(plain).unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn archive_for(name: &str, plain: &[u8]) -> Vec<u8> {
+        if name.ends_with(".zip") {
+            zip_bytes("mihomo.exe", plain)
+        } else {
+            gzip_bytes(plain)
+        }
+    }
+
+    fn source_with(channel: Channel, tag: &str, files: &[(&str, Vec<u8>)]) -> MapSource {
+        let mut assets = Vec::new();
+        let mut stored = HashMap::new();
+        let mut lines = String::new();
+        for (name, bytes) in files {
+            let url = format!("mem://{tag}/{name}");
+            lines.push_str(&format!("{}  ./{name}\n", sha256_hex(bytes)));
+            assets.push(ReleaseAsset {
+                name: (*name).to_string(),
+                url: url.clone(),
+                digest: None,
+            });
+            stored.insert(url, bytes.clone());
+        }
+        let checksum_url = format!("mem://{tag}/checksums.txt");
+        assets.push(ReleaseAsset {
+            name: "checksums.txt".to_string(),
+            url: checksum_url.clone(),
+            digest: None,
+        });
+        stored.insert(checksum_url, lines.into_bytes());
+        let mut releases = HashMap::new();
+        releases.insert(
+            channel,
+            ReleaseIndex {
+                tag: tag.to_string(),
+                prerelease: channel == Channel::Preview,
+                assets,
+            },
+        );
+        MapSource {
+            releases,
+            files: stored,
+        }
+    }
+
+    fn linux_amd64() -> PlatformTarget {
+        PlatformTarget::Desktop {
+            os: DesktopOs::Linux,
+            arch: CpuArch::Amd64,
+        }
+    }
+
+    fn release_of(names: &[&str]) -> ReleaseIndex {
+        ReleaseIndex {
+            tag: "v1.19.34".to_string(),
+            prerelease: false,
+            assets: names
+                .iter()
+                .map(|name| ReleaseAsset {
+                    name: (*name).to_string(),
+                    url: format!("mem://{name}"),
+                    digest: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn default_channel_is_stable_and_has_no_third_channel() {
+        let dir = temp_dir("default");
+        let manager = KernelManager::open(&dir.0, linux_amd64());
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert!(manager.installed_path().is_none());
+        assert!(manager.failure().is_none());
+        assert_eq!(parse_channel("stable").unwrap(), Channel::Stable);
+        assert_eq!(parse_channel("preview").unwrap(), Channel::Preview);
+        assert!(parse_channel("beta").is_err());
+        assert!(parse_channel("commit").is_err());
+        assert!(parse_channel("deadbeef").is_err());
+        assert!(parse_channel("v1.19.34").is_err());
+        assert!(parse_channel("Prerelease-Alpha").is_err());
+        assert!(parse_channel("").is_err());
+
+        fs::write(dir.0.join("state.json"), b"{not json").unwrap();
+        let reopened = KernelManager::open(&dir.0, linux_amd64());
+        assert_eq!(reopened.channel(), Channel::Stable);
+        assert!(reopened.installed_path().is_none());
+
+        assert_eq!(RELEASES_PAGE, "https://github.com/MetaCubeX/mihomo/releases");
+        assert_eq!(
+            release_api(Channel::Stable),
+            "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+        );
+        assert_eq!(
+            release_api(Channel::Preview),
+            "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/Prerelease-Alpha"
+        );
+        assert!(SUPPORTED_TARGETS.contains(&linux_amd64()));
+    }
+
+    #[test]
+    fn desktop_and_android_assets_do_not_mix() {
+        let names = [
+            "mihomo-darwin-arm64-v1.19.34.gz",
+            "mihomo-darwin-arm64-go120-v1.19.34.gz",
+            "mihomo-darwin-amd64-v1.19.34.gz",
+            "mihomo-darwin-amd64-compatible-v1.19.34.gz",
+            "mihomo-darwin-amd64-v3-v1.19.34.gz",
+            "mihomo-windows-amd64-v1.19.34.zip",
+            "mihomo-windows-amd64-v1-go120-v1.19.34.zip",
+            "mihomo-linux-amd64-v1.19.34.gz",
+            "mihomo-linux-amd64-v1.19.34.deb",
+            "mihomo-linux-amd64-compatible-v1.19.34.gz",
+            "mihomo-linux-arm64-v1.19.34.gz",
+            "mihomo-android-arm64-v8-v1.19.34.gz",
+            "mihomo-android-armv7-v1.19.34.gz",
+            "mihomo-android-amd64-v1.19.34.gz",
+            "mihomo-android-386-v1.19.34.gz",
+            "mihomo-freebsd-amd64-v1.19.34.gz",
+            "checksums.txt",
+        ];
+        let release = release_of(&names);
+        assert_eq!(
+            select_asset(
+                &release,
+                PlatformTarget::Desktop {
+                    os: DesktopOs::Darwin,
+                    arch: CpuArch::Arm64,
+                },
+            )
+            .unwrap()
+            .name,
+            "mihomo-darwin-arm64-v1.19.34.gz"
+        );
+        assert_eq!(
+            select_asset(
+                &release,
+                PlatformTarget::Desktop {
+                    os: DesktopOs::Windows,
+                    arch: CpuArch::Amd64,
+                },
+            )
+            .unwrap()
+            .name,
+            "mihomo-windows-amd64-v1.19.34.zip"
+        );
+        assert_eq!(
+            select_asset(&release, linux_amd64()).unwrap().name,
+            "mihomo-linux-amd64-v1.19.34.gz"
+        );
+        assert_eq!(
+            select_asset(
+                &release,
+                PlatformTarget::Android {
+                    abi: AndroidAbi::Arm64V8a,
+                },
+            )
+            .unwrap()
+            .name,
+            "mihomo-android-arm64-v8-v1.19.34.gz"
+        );
+        assert!(select_asset(
+            &release,
+            PlatformTarget::Desktop {
+                os: DesktopOs::Darwin,
+                arch: CpuArch::Armv7,
+            },
+        )
+        .is_err());
+
+        let preview = ReleaseIndex {
+            tag: PREVIEW_TAG.to_string(),
+            prerelease: true,
+            assets: vec![
+                ReleaseAsset {
+                    name: "mihomo-android-arm64-v8-alpha-4c57a4a.gz".to_string(),
+                    url: "mem://android".to_string(),
+                    digest: None,
+                },
+                ReleaseAsset {
+                    name: "mihomo-darwin-arm64-alpha-4c57a4a.gz".to_string(),
+                    url: "mem://darwin".to_string(),
+                    digest: None,
+                },
+                ReleaseAsset {
+                    name: "mihomo-darwin-arm64-go120-alpha-4c57a4a.gz".to_string(),
+                    url: "mem://variant".to_string(),
+                    digest: None,
+                },
+            ],
+        };
+        assert_eq!(
+            select_asset(
+                &preview,
+                PlatformTarget::Android {
+                    abi: AndroidAbi::Arm64V8a,
+                },
+            )
+            .unwrap()
+            .name,
+            "mihomo-android-arm64-v8-alpha-4c57a4a.gz"
+        );
+        assert_eq!(
+            select_asset(
+                &preview,
+                PlatformTarget::Desktop {
+                    os: DesktopOs::Darwin,
+                    arch: CpuArch::Arm64,
+                },
+            )
+            .unwrap()
+            .name,
+            "mihomo-darwin-arm64-alpha-4c57a4a.gz"
+        );
+
+        let dir = temp_dir("install-family");
+        let linux_name = "mihomo-linux-amd64-v1.19.34.gz";
+        let android_name = "mihomo-android-arm64-v8-v1.19.34.gz";
+        let mut files = HashMap::new();
+        let linux_archive = archive_for(linux_name, b"linux-kernel");
+        let android_archive = archive_for(android_name, b"android-kernel");
+        files.insert(linux_name, linux_archive);
+        files.insert(android_name, android_archive);
+        files.insert(
+            "mihomo-linux-amd64-compatible-v1.19.34.gz",
+            archive_for("mihomo-linux-amd64-compatible-v1.19.34.gz", b"variant"),
+        );
+        let listed: Vec<(&str, Vec<u8>)> = files.iter().map(|(name, bytes)| (*name, bytes.clone())).collect();
+        let source = source_with(Channel::Stable, "v1.19.34", &listed);
+        let mut desktop = KernelManager::open(&dir.0, linux_amd64());
+        let status = desktop.sync(Channel::Stable, &source);
+        assert!(status.failure.is_none());
+        assert_eq!(fs::read(desktop.installed_path().unwrap()).unwrap(), b"linux-kernel");
+
+        let android_dir = temp_dir("install-android");
+        let mut android = KernelManager::open(
+            &android_dir.0,
+            PlatformTarget::Android {
+                abi: AndroidAbi::Arm64V8a,
+            },
+        );
+        let status = android.sync(Channel::Stable, &source);
+        assert!(status.failure.is_none());
+        assert_eq!(fs::read(android.installed_path().unwrap()).unwrap(), b"android-kernel");
+
+        let windows_dir = temp_dir("install-windows");
+        let windows_name = "mihomo-windows-amd64-v1.19.34.zip";
+        let windows = source_with(
+            Channel::Stable,
+            "v1.19.34",
+            &[(windows_name, archive_for(windows_name, b"windows-kernel"))],
+        );
+        let mut windows_manager = KernelManager::open(
+            &windows_dir.0,
+            PlatformTarget::Desktop {
+                os: DesktopOs::Windows,
+                arch: CpuArch::Amd64,
+            },
+        );
+        assert!(windows_manager.sync(Channel::Stable, &windows).failure.is_none());
+        assert_eq!(
+            fs::read(windows_manager.installed_path().unwrap()).unwrap(),
+            b"windows-kernel"
+        );
+        assert!(windows_manager
+            .installed_path()
+            .unwrap()
+            .ends_with("core.exe"));
+    }
+
+    #[test]
+    fn update_uses_new_file_on_next_launch_and_keeps_channel() {
+        let dir = temp_dir("update");
+        let mut manager = KernelManager::open(&dir.0, linux_amd64());
+        let first_name = "mihomo-linux-amd64-v1.19.34.gz";
+        let first = source_with(
+            Channel::Stable,
+            "v1.19.34",
+            &[(first_name, archive_for(first_name, b"kernel-v1"))],
+        );
+        assert!(manager.sync(Channel::Stable, &first).failure.is_none());
+        let started = manager.connect();
+        assert!(!started.failed);
+        let first_path = started.kernel_path.clone().unwrap();
+        assert_eq!(fs::read(&first_path).unwrap(), b"kernel-v1");
+        assert!(!started.system_proxy && !started.tun && !started.vpn);
+
+        let second_name = "mihomo-linux-amd64-v1.19.35.gz";
+        let second = source_with(
+            Channel::Stable,
+            "v1.19.35",
+            &[(second_name, archive_for(second_name, b"kernel-v2"))],
+        );
+        let status = manager.sync(Channel::Stable, &second);
+        assert_eq!(status.channel, "stable");
+        assert!(status.failure.is_none());
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(manager.running_path().unwrap(), first_path);
+        assert_eq!(fs::read(&first_path).unwrap(), b"kernel-v1");
+
+        let next = manager.connect();
+        assert!(!next.failed);
+        assert_ne!(next.kernel_path.as_ref(), Some(&first_path));
+        assert_eq!(fs::read(next.kernel_path.unwrap()).unwrap(), b"kernel-v2");
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert!(!next.system_proxy && !next.tun && !next.vpn);
+
+        let mut reopened = KernelManager::open(&dir.0, linux_amd64());
+        assert_eq!(reopened.channel(), Channel::Stable);
+        assert_eq!(fs::read(reopened.installed_path().unwrap()).unwrap(), b"kernel-v2");
+        assert!(reopened.running_path().is_none());
+
+        let preview_name = "mihomo-linux-amd64-alpha-abc123.gz";
+        let preview = source_with(
+            Channel::Preview,
+            PREVIEW_TAG,
+            &[(preview_name, archive_for(preview_name, b"preview-kernel"))],
+        );
+        let status = reopened.sync(Channel::Preview, &preview);
+        assert_eq!(status.channel, "preview");
+        assert!(status.failure.is_none());
+        let launched = reopened.connect();
+        assert!(!launched.failed);
+        assert_eq!(fs::read(launched.kernel_path.unwrap()).unwrap(), b"preview-kernel");
+        assert_eq!(reopened.channel(), Channel::Preview);
+    }
+
+    #[test]
+    fn download_failure_keeps_channel_and_file() {
+        let dir = temp_dir("failure");
+        let mut manager = KernelManager::open(&dir.0, linux_amd64());
+        let name = "mihomo-linux-amd64-v1.19.34.gz";
+        let original = source_with(Channel::Stable, "v1.19.34", &[(name, archive_for(name, b"kernel-v1"))]);
+        assert!(manager.sync(Channel::Stable, &original).failure.is_none());
+        let path = manager.installed_path().unwrap();
+        let bytes = fs::read(&path).unwrap();
+
+        let broken = source_with(Channel::Stable, "v1.19.35", &[]);
+        let status = manager.sync(Channel::Stable, &broken);
+        assert_eq!(status.channel, "stable");
+        assert!(status.failure.is_some());
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(manager.installed_path().unwrap(), path);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        let mut mismatched = source_with(
+            Channel::Stable,
+            "v1.19.35",
+            &[(
+                "mihomo-linux-amd64-v1.19.35.gz",
+                archive_for("mihomo-linux-amd64-v1.19.35.gz", b"kernel-v2"),
+            )],
+        );
+        let asset_url = mismatched.releases[&Channel::Stable]
+            .assets
+            .iter()
+            .find(|asset| asset.name.ends_with(".gz"))
+            .unwrap()
+            .url
+            .clone();
+        mismatched.files.insert(asset_url, b"not-the-archive".to_vec());
+        let status = manager.sync(Channel::Stable, &mismatched);
+        assert_eq!(status.failure.as_deref(), Some("内核校验和不一致"));
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        let preview_name = "mihomo-linux-amd64-alpha-4c57a4a.gz";
+        let mut preview = source_with(
+            Channel::Preview,
+            PREVIEW_TAG,
+            &[(preview_name, archive_for(preview_name, b"preview-kernel"))],
+        );
+        let preview_url = preview.releases[&Channel::Preview]
+            .assets
+            .iter()
+            .find(|asset| asset.name == preview_name)
+            .unwrap()
+            .url
+            .clone();
+        preview.files.remove(&preview_url);
+        let status = manager.sync(Channel::Preview, &preview);
+        assert_eq!(status.channel, "stable");
+        assert!(status.failure.is_some());
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(fs::read(manager.installed_path().unwrap()).unwrap(), bytes);
+
+        let mut prerelease = source_with(
+            Channel::Stable,
+            "v1.19.36",
+            &[(
+                "mihomo-linux-amd64-v1.19.36.gz",
+                archive_for("mihomo-linux-amd64-v1.19.36.gz", b"nope"),
+            )],
+        );
+        prerelease.releases.get_mut(&Channel::Stable).unwrap().prerelease = true;
+        let status = manager.sync(Channel::Stable, &prerelease);
+        assert!(status.failure.is_some());
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        let bare_name = "mihomo-linux-amd64-v1.19.37.gz";
+        let bare_url = format!("mem://v1.19.37/{bare_name}");
+        let mut bare_releases = HashMap::new();
+        bare_releases.insert(
+            Channel::Stable,
+            ReleaseIndex {
+                tag: "v1.19.37".to_string(),
+                prerelease: false,
+                assets: vec![ReleaseAsset {
+                    name: bare_name.to_string(),
+                    url: bare_url.clone(),
+                    digest: None,
+                }],
+            },
+        );
+        let mut bare_files = HashMap::new();
+        bare_files.insert(bare_url, archive_for(bare_name, b"bare"));
+        let status = manager.sync(
+            Channel::Stable,
+            &MapSource {
+                releases: bare_releases,
+                files: bare_files,
+            },
+        );
+        assert_eq!(status.failure.as_deref(), Some("发布页没有校验和"));
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(manager.installed_path().unwrap(), path);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        let other_name = "mihomo-linux-amd64-v1.19.38.gz";
+        let other_url = format!("mem://v1.19.38/{other_name}");
+        let mut other_releases = HashMap::new();
+        other_releases.insert(
+            Channel::Stable,
+            ReleaseIndex {
+                tag: "v1.19.38".to_string(),
+                prerelease: false,
+                assets: vec![ReleaseAsset {
+                    name: other_name.to_string(),
+                    url: other_url.clone(),
+                    digest: Some(format!("sha512:{}", "ab".repeat(32))),
+                }],
+            },
+        );
+        let mut other_files = HashMap::new();
+        other_files.insert(other_url, archive_for(other_name, b"other"));
+        let status = manager.sync(
+            Channel::Stable,
+            &MapSource {
+                releases: other_releases,
+                files: other_files,
+            },
+        );
+        assert_eq!(status.failure.as_deref(), Some("发布页没有校验和"));
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        let reopened = KernelManager::open(&dir.0, linux_amd64());
+        assert_eq!(reopened.channel(), Channel::Stable);
+        assert_eq!(fs::read(reopened.installed_path().unwrap()).unwrap(), bytes);
+        assert!(reopened.failure().is_some());
+    }
+
+    #[test]
+    fn stable_release_without_checksums_uses_asset_digest() {
+        let dir = temp_dir("digest");
+        let mut manager = KernelManager::open(&dir.0, linux_amd64());
+        let name = "mihomo-linux-amd64-v1.19.34.gz";
+        let archive = archive_for(name, b"stable-kernel");
+        let url = format!("mem://v1.19.34/{name}");
+        let mut releases = HashMap::new();
+        releases.insert(
+            Channel::Stable,
+            ReleaseIndex {
+                tag: "v1.19.34".to_string(),
+                prerelease: false,
+                assets: vec![ReleaseAsset {
+                    name: name.to_string(),
+                    url: url.clone(),
+                    digest: Some(format!("sha256:{}", sha256_hex(&archive))),
+                }],
+            },
+        );
+        let mut files = HashMap::new();
+        files.insert(url, archive);
+        let status = manager.sync(
+            Channel::Stable,
+            &MapSource {
+                releases,
+                files,
+            },
+        );
+        assert!(status.failure.is_none(), "{status:?}");
+        assert_eq!(status.channel, "stable");
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(fs::read(manager.installed_path().unwrap()).unwrap(), b"stable-kernel");
+
+        let checked_name = "mihomo-linux-amd64-v1.19.35.gz";
+        let checked = archive_for(checked_name, b"from-checksums");
+        let mut preferred = source_with(Channel::Stable, "v1.19.35", &[(checked_name, checked)]);
+        preferred
+            .releases
+            .get_mut(&Channel::Stable)
+            .unwrap()
+            .assets
+            .iter_mut()
+            .find(|item| item.name == checked_name)
+            .unwrap()
+            .digest = Some(format!("sha256:{}", "0".repeat(64)));
+        let status = manager.sync(Channel::Stable, &preferred);
+        assert!(status.failure.is_none(), "{status:?}");
+        assert_eq!(manager.channel(), Channel::Stable);
+        assert_eq!(fs::read(manager.installed_path().unwrap()).unwrap(), b"from-checksums");
+    }
+
+    #[test]
+    fn missing_kernel_connect_fails_and_takeover_stays_off() {
+        let dir = temp_dir("missing");
+        let mut manager = KernelManager::open(&dir.0, linux_amd64());
+        let result = manager.connect();
+        assert!(result.failed);
+        assert_eq!(result.failure.as_deref(), Some("没有本地内核"));
+        assert!(!result.system_proxy);
+        assert!(!result.tun);
+        assert!(!result.vpn);
+        assert!(result.kernel_path.is_none());
+        assert_eq!(manager.channel(), Channel::Stable);
+
+        let name = "mihomo-linux-amd64-v1.19.34.gz";
+        let source = source_with(Channel::Stable, "v1.19.34", &[(name, archive_for(name, b"kernel-v1"))]);
+        assert!(manager.sync(Channel::Stable, &source).failure.is_none());
+        let path = manager.installed_path().unwrap();
+        fs::remove_file(&path).unwrap();
+        let result = manager.connect();
+        assert!(result.failed);
+        assert_eq!(result.failure.as_deref(), Some("没有本地内核"));
+        assert!(!result.system_proxy && !result.tun && !result.vpn);
+        assert!(result.kernel_path.is_none());
+        assert_eq!(manager.channel(), Channel::Stable);
+    }
+
+    #[test]
+    fn commands_are_exposed_to_the_window() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let permissions = capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>();
+        assert!(permissions.contains(&"allow-kernel-state"));
+        assert!(permissions.contains(&"allow-set-kernel-channel"));
+        assert!(permissions.contains(&"allow-connect-kernel"));
+        assert!(permissions.contains(&"allow-shell-state"));
+    }
+
+    #[test]
+    fn github_release_json_keeps_checksum_asset() {
+        let body = r#"{
+            "tag_name": "v1.19.34",
+            "prerelease": false,
+            "assets": [
+                {"name": "mihomo-linux-amd64-v1.19.34.gz", "browser_download_url": "https://example.test/core.gz", "digest": "sha256:1a7a20eca63fbbaec90137717465bfde488d0db2a3a79b8fadebf9b2545b6e4c"},
+                {"name": "checksums.txt", "browser_download_url": "https://example.test/checksums.txt"},
+                {"name": "", "browser_download_url": "https://example.test/skip"}
+            ]
+        }"#;
+        let release = parse_github_release(body).unwrap();
+        assert_eq!(release.tag, "v1.19.34");
+        assert!(!release.prerelease);
+        assert_eq!(release.assets.len(), 2);
+        assert_eq!(
+            release.assets[0].digest.as_deref(),
+            Some("sha256:1a7a20eca63fbbaec90137717465bfde488d0db2a3a79b8fadebf9b2545b6e4c")
+        );
+        assert_eq!(
+            sha256_from_digest(release.assets[0].digest.as_deref()).as_deref(),
+            Some("1a7a20eca63fbbaec90137717465bfde488d0db2a3a79b8fadebf9b2545b6e4c")
+        );
+        assert!(sha256_from_digest(Some("sha512:abcd")).is_none());
+        assert_eq!(
+            lookup_checksum(
+                "abc  ./other.gz\n0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  ./mihomo-linux-amd64-v1.19.34.gz\n",
+                "mihomo-linux-amd64-v1.19.34.gz"
+            )
+            .unwrap(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+}
