@@ -10,6 +10,15 @@
     "allow-set-last-entry",
     "allow-kernel-state",
     "allow-set-kernel-channel",
-    "allow-connect-kernel"
+    "allow-connect-kernel",
+    "allow-profile-state",
+    "allow-add-subscription-profile",
+    "allow-add-local-profile",
+    "allow-stage-install-link",
+    "allow-confirm-install-link",
+    "allow-cancel-install-link",
+    "allow-enable-profile",
+    "allow-update-profile",
+    "allow-save-profile-override"
   ]
 }

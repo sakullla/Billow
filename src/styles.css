@@ -63,7 +63,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -242,13 +243,87 @@ h2 {
   color: var(--accent);
 }
 
+.btn-primary,
+.btn,
+.row-actions button {
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
 .btn-primary {
   background: var(--accent);
   color: var(--on-accent);
   border: 0;
+}
+
+.btn,
+.row-actions button {
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--line);
+}
+
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.profile-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-heading h2 {
+  margin-bottom: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.file-field,
+form[data-testid='add-subscription'] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.file-field input,
+form[data-testid='add-subscription'] input,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 10px 16px;
-  cursor: pointer;
+  background: var(--page);
+  color: inherit;
+  padding: 8px 10px;
+}
+
+textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
 }
 
 @media (prefers-reduced-motion: reduce) {

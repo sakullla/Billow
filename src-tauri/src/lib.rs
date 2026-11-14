@@ -1,14 +1,16 @@
 mod kernel;
+mod profile;
 mod shell;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use kernel::{
     parse_channel, ConnectResult, GithubReleaseClient, KernelManager, KernelStatus, PlatformTarget,
 };
+use profile::{HttpSubscriptionClient, ProcessRuntime, ProfileBook, ProfileSnapshot};
 use shell::{read_shell_state, resolve_entry, resolve_theme, write_shell_state, ShellState};
 
 struct Store {
@@ -21,11 +23,24 @@ struct KernelStore {
     manager: Mutex<KernelManager>,
 }
 
+struct ProfileSession {
+    book: ProfileBook,
+    runtime: ProcessRuntime,
+}
+
+struct ProfileStore {
+    session: Mutex<ProfileSession>,
+}
+
 fn lock(state: &Mutex<ShellState>) -> std::sync::MutexGuard<'_, ShellState> {
     state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn lock_kernel(state: &Mutex<KernelManager>) -> std::sync::MutexGuard<'_, KernelManager> {
+    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_profiles(state: &Mutex<ProfileSession>) -> std::sync::MutexGuard<'_, ProfileSession> {
     state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -153,6 +168,57 @@ fn kernel_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(directory)
 }
 
+fn profiles_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "配置目录不可用".to_string())?
+        .join("profiles");
+    std::fs::create_dir_all(&directory).map_err(|_| "配置目录不可用".to_string())?;
+    Ok(directory)
+}
+
+fn prepare_profiles(app: &tauri::App) {
+    let directory = match profiles_dir(app.handle()) {
+        Ok(directory) => directory,
+        Err(_) => std::env::temp_dir().join(format!("billow-profiles-unavailable-{}", std::process::id())),
+    };
+    let book = ProfileBook::open(&directory);
+    let runtime = ProcessRuntime::new(&directory);
+    app.manage(ProfileStore {
+        session: Mutex::new(ProfileSession { book, runtime }),
+    });
+    bind_install_links(app.handle());
+}
+
+fn accept_install_link(app: &AppHandle, link: &str) {
+    let store = app.state::<ProfileStore>();
+    let snapshot = {
+        let mut session = lock_profiles(&store.session);
+        session.book.stage_install_link(link)
+    };
+    let _ = app.emit("profile-changed", snapshot);
+}
+
+fn bind_install_links(app: &AppHandle) {
+    use tauri_plugin_deep_link::DeepLinkExt;
+    let handle = app.clone();
+    app.deep_link().on_open_url(move |event| {
+        for url in event.urls() {
+            accept_install_link(&handle, url.as_str());
+        }
+    });
+    if let Ok(Some(urls)) = app.deep_link().get_current() {
+        for url in urls {
+            accept_install_link(app, url.as_str());
+        }
+    }
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        let _ = app.deep_link().register("billow");
+    }
+}
+
 fn prepare_kernel(app: &tauri::App) {
     let manager = match kernel_dir(app.handle()) {
         Ok(dir) => KernelManager::open(dir, PlatformTarget::current()),
@@ -253,6 +319,78 @@ fn connect_kernel(app: AppHandle) -> ConnectStatus {
     manager.connect().into()
 }
 
+fn profile_snapshot(app: &AppHandle) -> ProfileSnapshot {
+    let store = app.state::<ProfileStore>();
+    lock_profiles(&store.session).book.snapshot()
+}
+
+fn with_profile<T>(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> T) -> T {
+    let store = app.state::<ProfileStore>();
+    let mut session = lock_profiles(&store.session);
+    change(&mut session)
+}
+
+fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot {
+    let kernel_path = {
+        let store = app.state::<KernelStore>();
+        lock_kernel(&store.manager).installed_path()
+    };
+    let client = HttpSubscriptionClient::new();
+    with_profile(app, |session| {
+        session.runtime.set_kernel_path(kernel_path);
+        if update {
+            session.book.update(id, &client, &mut session.runtime)
+        } else {
+            session.book.enable(id, &client, &mut session.runtime)
+        }
+    })
+}
+
+#[tauri::command]
+fn profile_state(app: AppHandle) -> ProfileSnapshot {
+    profile_snapshot(&app)
+}
+
+#[tauri::command]
+fn add_subscription_profile(app: AppHandle, url: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.add_subscription(&url))
+}
+
+#[tauri::command]
+fn add_local_profile(app: AppHandle, name: String, content: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.add_local(&name, &content))
+}
+
+#[tauri::command]
+fn stage_install_link(app: AppHandle, link: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.stage_install_link(&link))
+}
+
+#[tauri::command]
+fn confirm_install_link(app: AppHandle) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.confirm_pending())
+}
+
+#[tauri::command]
+fn cancel_install_link(app: AppHandle) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.cancel_pending())
+}
+
+#[tauri::command]
+fn enable_profile(app: AppHandle, id: String) -> ProfileSnapshot {
+    activate_profile(&app, &id, false)
+}
+
+#[tauri::command]
+fn update_profile(app: AppHandle, id: String) -> ProfileSnapshot {
+    activate_profile(&app, &id, true)
+}
+
+#[tauri::command]
+fn save_profile_override(app: AppHandle, id: String, text: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.save_override(&id, &text))
+}
+
 fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
     if label != "main" {
         return;
@@ -270,17 +408,28 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .invoke_handler(tauri::generate_handler![
             shell_state,
             set_theme,
             set_last_entry,
             kernel_state,
             set_kernel_channel,
-            connect_kernel
+            connect_kernel,
+            profile_state,
+            add_subscription_profile,
+            add_local_profile,
+            stage_install_link,
+            confirm_install_link,
+            cancel_install_link,
+            enable_profile,
+            update_profile,
+            save_profile_override
         ])
         .setup(|app| {
             prepare_shell(app);
             prepare_kernel(app);
+            prepare_profiles(app);
             Ok(())
         })
         .build(tauri::generate_context!())

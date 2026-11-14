@@ -26,6 +26,16 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["billow"]
+      },
+      "mobile": [
+        { "scheme": ["billow"], "host": "install-config" }
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

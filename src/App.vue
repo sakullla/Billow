@@ -1,10 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NAV_ITEMS, PRODUCT_NAME, type EntryId, type KernelChannel, type ThemePreference } from './copy'
+import {
+  ACTION_CANCEL,
+  ACTION_CONFIRM,
+  INSTALL_PROMPT,
+  NAV_ITEMS,
+  PRODUCT_NAME,
+  type EntryId,
+  type KernelChannel,
+  type ThemePreference,
+} from './copy'
 import { createKernelPort, createMemoryKernelPort, type KernelPort } from './kernel-port'
 import { resolveKernelChannel } from './kernel'
 import { layoutForWidth, resolveEntry } from './navigation'
 import { createShellPort, type ShellPort } from './port'
+import { createMemoryProfilePort, createProfilePort, type ProfilePort } from './profile-port'
+import { emptyProfileSnapshot, type ProfileSnapshot } from './profile'
 import { applyTheme, resolveTheme } from './theme'
 import HomeView from './views/HomeView.vue'
 import NodesView from './views/NodesView.vue'
@@ -13,6 +24,7 @@ import SettingsView from './views/SettingsView.vue'
 const props = defineProps<{
   port?: ShellPort
   kernelPort?: KernelPort
+  profilePort?: ProfilePort
   initialWidth?: number
 }>()
 
@@ -20,12 +32,20 @@ const entry = ref<EntryId>('home')
 const theme = ref<ThemePreference>('system')
 const kernelChannel = ref<KernelChannel>('stable')
 const kernelFailure = ref<string | null>(null)
+const profileState = ref<ProfileSnapshot>(emptyProfileSnapshot())
 const width = ref(typeof props.initialWidth === 'number' ? props.initialWidth : window.innerWidth)
 const layout = computed(() => layoutForWidth(width.value))
+const currentProfile = computed(
+  () => profileState.value.profiles.find((profile) => profile.current) ?? null,
+)
 
 let port: ShellPort | null = props.port ?? null
 const kernel: KernelPort = props.kernelPort ?? (props.port ? createMemoryKernelPort() : createKernelPort())
+const profile: ProfilePort =
+  props.profilePort ?? (props.port ? createMemoryProfilePort() : createProfilePort())
 let kernelEpoch = 0
+let profileEpoch = 0
+let unsubscribeProfile = () => {}
 let persist = false
 let resolveReady = () => {}
 const ready = new Promise<void>((resolve) => {
@@ -85,6 +105,60 @@ async function changeKernel(next: KernelChannel) {
   }
 }
 
+function applyProfile(snapshot: ProfileSnapshot) {
+  profileState.value = snapshot
+}
+
+async function refreshProfiles() {
+  const epoch = ++profileEpoch
+  try {
+    const snapshot = await profile.load()
+    if (epoch !== profileEpoch) return
+    applyProfile(snapshot)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+async function runProfile(action: () => Promise<ProfileSnapshot>) {
+  const epoch = ++profileEpoch
+  try {
+    const snapshot = await action()
+    if (epoch !== profileEpoch) return
+    applyProfile(snapshot)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+function enableProfile(id: string) {
+  void runProfile(() => profile.enable(id))
+}
+
+function updateProfile(id: string) {
+  void runProfile(() => profile.update(id))
+}
+
+function saveOverride(id: string, text: string) {
+  void runProfile(() => profile.saveOverride(id, text))
+}
+
+function addSubscription(url: string) {
+  void runProfile(() => profile.addSubscription(url))
+}
+
+function addLocal(name: string, content: string) {
+  void runProfile(() => profile.addLocal(name, content))
+}
+
+function confirmInstall() {
+  void runProfile(() => profile.confirmInstall())
+}
+
+function cancelInstall() {
+  void runProfile(() => profile.cancelInstall())
+}
+
 async function choose(next: EntryId) {
   entry.value = next
   if (persist && port) {
@@ -117,12 +191,15 @@ onMounted(async () => {
     theme.value = 'system'
     applyTheme('system')
   } finally {
+    await refreshProfiles()
     resolveReady()
   }
+  unsubscribeProfile = profile.subscribe?.((snapshot) => applyProfile(snapshot)) ?? (() => {})
   await kernelLoad
 })
 
 onBeforeUnmount(() => {
+  unsubscribeProfile()
   window.removeEventListener('resize', readWidth)
   resolveReady()
 })
@@ -147,14 +224,48 @@ defineExpose({ ready })
       </button>
     </nav>
     <main class="main">
-      <HomeView v-if="entry === 'home'" />
+      <div
+        v-if="profileState.pending_url"
+        class="card dialog"
+        data-testid="install-confirm"
+        role="dialog"
+        aria-modal="true"
+      >
+        <p>{{ INSTALL_PROMPT }}</p>
+        <p data-testid="install-url">{{ profileState.pending_url }}</p>
+        <div class="row-actions">
+          <button type="button" class="btn-primary" data-testid="install-confirm-yes" @click="confirmInstall">
+            {{ ACTION_CONFIRM }}
+          </button>
+          <button type="button" class="btn" data-testid="install-cancel" @click="cancelInstall">
+            {{ ACTION_CANCEL }}
+          </button>
+        </div>
+      </div>
+      <HomeView
+        v-if="entry === 'home'"
+        :failure="profileState.failure"
+        :used="currentProfile?.used ?? null"
+        :total="currentProfile?.total ?? null"
+        :expire="currentProfile?.expire ?? null"
+        :mixed-port="profileState.mixed_port"
+        :system-proxy="profileState.system_proxy"
+        :tun="profileState.tun"
+        :vpn="profileState.vpn"
+      />
       <NodesView v-else-if="entry === 'nodes'" />
       <SettingsView
         v-else
         v-model="theme"
         :channel="kernelChannel"
         :failure="kernelFailure"
+        :profiles="profileState"
         @update:channel="changeKernel"
+        @enable="enableProfile"
+        @update="updateProfile"
+        @save-override="saveOverride"
+        @add-subscription="addSubscription"
+        @add-local="addLocal"
       />
     </main>
     <nav v-if="layout === 'bottom'" class="bottom-nav" aria-label="主导航">

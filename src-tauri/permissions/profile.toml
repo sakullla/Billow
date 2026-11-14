@@ -1,0 +1,44 @@
+[[permission]]
+identifier = "allow-profile-state"
+description = "Enables the profile_state command without any pre-configured scope."
+commands.allow = ["profile_state"]
+
+[[permission]]
+identifier = "allow-add-subscription-profile"
+description = "Enables the add_subscription_profile command without any pre-configured scope."
+commands.allow = ["add_subscription_profile"]
+
+[[permission]]
+identifier = "allow-add-local-profile"
+description = "Enables the add_local_profile command without any pre-configured scope."
+commands.allow = ["add_local_profile"]
+
+[[permission]]
+identifier = "allow-stage-install-link"
+description = "Enables the stage_install_link command without any pre-configured scope."
+commands.allow = ["stage_install_link"]
+
+[[permission]]
+identifier = "allow-confirm-install-link"
+description = "Enables the confirm_install_link command without any pre-configured scope."
+commands.allow = ["confirm_install_link"]
+
+[[permission]]
+identifier = "allow-cancel-install-link"
+description = "Enables the cancel_install_link command without any pre-configured scope."
+commands.allow = ["cancel_install_link"]
+
+[[permission]]
+identifier = "allow-enable-profile"
+description = "Enables the enable_profile command without any pre-configured scope."
+commands.allow = ["enable_profile"]
+
+[[permission]]
+identifier = "allow-update-profile"
+description = "Enables the update_profile command without any pre-configured scope."
+commands.allow = ["update_profile"]
+
+[[permission]]
+identifier = "allow-save-profile-override"
+description = "Enables the save_profile_override command without any pre-configured scope."
+commands.allow = ["save_profile_override"]
