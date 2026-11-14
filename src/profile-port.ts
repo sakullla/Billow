@@ -8,7 +8,10 @@ import {
 } from './copy'
 import {
   emptyProfileSnapshot,
+  normalizeLogFilter,
   normalizeProfileSnapshot,
+  type ConnectionRow,
+  type LogLine,
   type NodeGroup,
   type NodeItem,
   type ProfileItem,
@@ -35,6 +38,8 @@ export interface ProfilePort {
   testGroup(group: string): Promise<ProfileSnapshot>
   setNodeQuery(query: string): Promise<ProfileSnapshot>
   setNodeSort(group: string, sort: string): Promise<ProfileSnapshot>
+  setConnectionQuery(query: string): Promise<ProfileSnapshot>
+  setLogFilter(level: string): Promise<ProfileSnapshot>
   subscribe?(handler: (snapshot: ProfileSnapshot) => void): () => void
 }
 
@@ -98,6 +103,27 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
   let query = state.node_query
   let nodesError = state.nodes_error
   let kernelRunning = state.kernel_running
+  let allConnections: ConnectionRow[] = state.connections.map((row) => ({ ...row }))
+  let connectionQuery = state.connection_query
+  let allLogs: LogLine[] = state.logs.map((line) => ({ ...line }))
+  let logFilter = state.log_filter
+  function visibleConnections(): ConnectionRow[] {
+    if (!state.connected) return []
+    const needle = connectionQuery.trim().toLowerCase()
+    const rows = needle
+      ? allConnections.filter((row) => row.host.toLowerCase().includes(needle))
+      : allConnections
+    return rows.map((row) => ({ ...row }))
+  }
+  function visibleLogs(): LogLine[] {
+    const rows = logFilter === 'all' ? allLogs : allLogs.filter((line) => line.level === logFilter)
+    return rows.map((line) => ({ ...line }))
+  }
+  function pushLog(level: LogLine['level'], message: string) {
+    const text = message.trim()
+    if (!text) return
+    allLogs.push({ level, message: text })
+  }
   function finish(): ProfileSnapshot {
     const view = projectNodes(catalog, query, state.profiles.length)
     state.node_catalog = copyGroups(catalog)
@@ -106,6 +132,10 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
     state.nodes_notice = view.notice
     state.nodes_error = nodesError
     state.kernel_running = kernelRunning
+    state.connections = visibleConnections()
+    state.connection_query = connectionQuery
+    state.logs = visibleLogs()
+    state.log_filter = logFilter
     return clone(state)
   }
   function find(id: string): ProfileItem | undefined {
@@ -231,6 +261,9 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
       if (!state.active_id) {
         state.failure = '没有生效配置'
         state.connected = false
+        allConnections = []
+        kernelRunning = false
+        pushLog('error', '没有生效配置')
         return finish()
       }
       if (state.platform === 'android') {
@@ -245,6 +278,8 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
         state.connected = true
       }
       state.failure = null
+      kernelRunning = true
+      allConnections = []
       return finish()
     },
     async disconnect() {
@@ -253,6 +288,8 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
       state.vpn = false
       state.connected = false
       state.failure = null
+      kernelRunning = false
+      allConnections = []
       return finish()
     },
     async setSystemProxy(enabled) {
@@ -314,6 +351,14 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
       if (found) found.sort = sort === 'delay' || sort === 'name' ? sort : 'default'
       return finish()
     },
+    async setConnectionQuery(next) {
+      connectionQuery = next.slice(0, 200)
+      return finish()
+    },
+    async setLogFilter(level) {
+      logFilter = normalizeLogFilter(level)
+      return finish()
+    },
   }
 }
 
@@ -355,6 +400,8 @@ function wrapStore(inner: ProfilePort, storage: Storage): ProfilePort {
     testGroup: (group) => inner.testGroup(group).then(keep),
     setNodeQuery: (query) => inner.setNodeQuery(query).then(keep),
     setNodeSort: (group, sort) => inner.setNodeSort(group, sort).then(keep),
+    setConnectionQuery: (query) => inner.setConnectionQuery(query).then(keep),
+    setLogFilter: (level) => inner.setLogFilter(level).then(keep),
   }
 }
 
@@ -448,6 +495,14 @@ function createTauriProfilePort(): ProfilePort {
     async setNodeSort(group, sort) {
       const { invoke } = await import('@tauri-apps/api/core')
       return applyRaw(await invoke<ProfileSnapshot>('set_node_sort', { group, sort }))
+    },
+    async setConnectionQuery(query) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('set_connection_query', { query }))
+    },
+    async setLogFilter(level) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('set_log_filter', { level }))
     },
     subscribe(handler) {
       let stop = () => {}

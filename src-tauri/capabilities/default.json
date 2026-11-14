@@ -29,6 +29,8 @@
     "allow-select-profile-node",
     "allow-test-profile-group",
     "allow-set-node-query",
-    "allow-set-node-sort"
+    "allow-set-node-sort",
+    "allow-set-connection-query",
+    "allow-set-log-filter"
   ]
 }

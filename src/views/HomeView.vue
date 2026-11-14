@@ -9,6 +9,7 @@ import {
   EXCLUDE_SEARCH,
   HOME_HINT,
   HOME_STATUS,
+  OPEN_DIAGNOSTICS,
   PROXY_HINT,
   STATUS_CONNECTED,
   STATUS_CONNECTING,
@@ -19,6 +20,7 @@ import {
   USAGE_EXPIRE,
   USAGE_TOTAL,
   USAGE_USED,
+  VIEW_DIAGNOSTICS,
   VPN_EXCLUDE,
   PRODUCT_NAME,
 } from '../copy'
@@ -47,6 +49,7 @@ const emit = defineEmits<{
   tun: [enabled: boolean]
   exclude: [packageName: string]
   include: [packageName: string]
+  diagnostics: []
 }>()
 
 const excluding = ref(false)
@@ -87,7 +90,12 @@ function toggleConnection() {
       </p>
       <p v-if="showsExpire(expire)" data-testid="home-expire">{{ USAGE_EXPIRE }} {{ formatExpire(expire ?? 0) }}</p>
       <p v-if="mixedPort != null" data-testid="home-effective">{{ EFFECTIVE_LABEL }} {{ mixedPort }}</p>
-      <p v-if="failure" class="notice" data-testid="home-failure" role="alert">{{ failure }}</p>
+      <p v-if="failure" class="notice failure-row" data-testid="home-failure" role="alert">
+        <span>{{ failure }}</span>
+        <button type="button" class="text-link" data-testid="open-diagnostics-failure" @click="emit('diagnostics')">
+          {{ VIEW_DIAGNOSTICS }}
+        </button>
+      </p>
       <p
         data-testid="home-takeover"
         :data-system-proxy="systemProxy ? 'on' : 'off'"
@@ -177,5 +185,8 @@ function toggleConnection() {
         </div>
       </div>
     </article>
+    <button type="button" class="text-link" data-testid="open-diagnostics" @click="emit('diagnostics')">
+      {{ OPEN_DIAGNOSTICS }}
+    </button>
   </section>
 </template>

@@ -32,6 +32,16 @@ export interface NodeGroup {
   nodes: NodeItem[]
 }
 
+export interface ConnectionRow {
+  host: string
+  outbound: string
+}
+
+export interface LogLine {
+  level: 'error' | 'warning' | 'info'
+  message: string
+}
+
 export interface ProfileSnapshot {
   profiles: ProfileItem[]
   active_id: string | null
@@ -55,6 +65,10 @@ export interface ProfileSnapshot {
   nodes_error: string | null
   nodes_profile_id: string | null
   kernel_running: boolean
+  connections: ConnectionRow[]
+  connection_query: string
+  logs: LogLine[]
+  log_filter: 'all' | 'error' | 'warning' | 'info'
 }
 
 export function emptyProfileSnapshot(): ProfileSnapshot {
@@ -81,6 +95,10 @@ export function emptyProfileSnapshot(): ProfileSnapshot {
     nodes_error: null,
     nodes_profile_id: null,
     kernel_running: false,
+    connections: [],
+    connection_query: '',
+    logs: [],
+    log_filter: 'all',
   }
 }
 
@@ -126,6 +144,26 @@ function normalizeGroup(raw: unknown): NodeGroup | null {
     sort: group.sort === 'delay' || group.sort === 'name' ? group.sort : 'default',
     nodes,
   }
+}
+
+function normalizeConnection(raw: unknown): ConnectionRow | null {
+  const row = raw && typeof raw === 'object' ? (raw as Partial<ConnectionRow>) : {}
+  const host = typeof row.host === 'string' ? row.host.trim() : ''
+  const outbound = typeof row.outbound === 'string' ? row.outbound.trim() : ''
+  if (!host || !outbound) return null
+  return { host, outbound }
+}
+
+function normalizeLog(raw: unknown): LogLine | null {
+  const line = raw && typeof raw === 'object' ? (raw as Partial<LogLine>) : {}
+  const level = line.level === 'error' || line.level === 'warning' || line.level === 'info' ? line.level : null
+  const message = typeof line.message === 'string' ? line.message.trim() : ''
+  if (!level || !message) return null
+  return { level, message }
+}
+
+export function normalizeLogFilter(filter: unknown): ProfileSnapshot['log_filter'] {
+  return filter === 'error' || filter === 'warning' || filter === 'info' ? filter : 'all'
 }
 
 function normalizeGroups(raw: unknown): NodeGroup[] {
@@ -180,6 +218,20 @@ export function normalizeProfileSnapshot(raw: unknown): ProfileSnapshot {
     nodes_error: text(source.nodes_error),
     nodes_profile_id: text(source.nodes_profile_id),
     kernel_running: Boolean(source.kernel_running),
+    connections: Array.isArray(source.connections)
+      ? source.connections.flatMap((item) => {
+          const row = normalizeConnection(item)
+          return row ? [row] : []
+        })
+      : [],
+    connection_query: typeof source.connection_query === 'string' ? source.connection_query : '',
+    logs: Array.isArray(source.logs)
+      ? source.logs.flatMap((item) => {
+          const line = normalizeLog(item)
+          return line ? [line] : []
+        })
+      : [],
+    log_filter: normalizeLogFilter(source.log_filter),
     installed: Array.isArray(source.installed)
       ? source.installed.flatMap((item) => {
           const app = item && typeof item === 'object' ? (item as Partial<InstalledApp>) : {}

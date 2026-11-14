@@ -61,6 +61,23 @@ export const TAKEOVER_TUN = 'TUN'
 export const TAKEOVER_VPN = 'VPN'
 export const INSTALL_PROMPT = '确认添加这条订阅链接？'
 export const SUBSCRIPTION_PLACEHOLDER = '输入订阅链接'
+export const OPEN_DIAGNOSTICS = '连接与日志'
+export const VIEW_DIAGNOSTICS = '查看诊断'
+export const DIAGNOSTICS_TITLE = '诊断'
+export const DIAGNOSTIC_CONNECTIONS = '连接'
+export const DIAGNOSTIC_LOGS = '日志'
+export const CONNECTION_SEARCH = '搜索目标'
+export const CONNECTIONS_NONE = '没有当前连接'
+export const ACTION_BACK = '返回'
+
+export const LOG_FILTERS = [
+  { id: 'all', label: '全部' },
+  { id: 'error', label: '错误' },
+  { id: 'warning', label: '警告' },
+  { id: 'info', label: '信息' },
+] as const
+
+export type LogFilter = (typeof LOG_FILTERS)[number]['id']
 
 export const NAV_ITEMS = [
   { id: 'home', label: '首页' },

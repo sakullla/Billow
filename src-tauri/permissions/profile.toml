@@ -92,3 +92,13 @@ commands.allow = ["set_node_query"]
 identifier = "allow-set-node-sort"
 description = "Enables the set_node_sort command without any pre-configured scope."
 commands.allow = ["set_node_sort"]
+
+[[permission]]
+identifier = "allow-set-connection-query"
+description = "Enables the set_connection_query command without any pre-configured scope."
+commands.allow = ["set_connection_query"]
+
+[[permission]]
+identifier = "allow-set-log-filter"
+description = "Enables the set_log_filter command without any pre-configured scope."
+commands.allow = ["set_log_filter"]

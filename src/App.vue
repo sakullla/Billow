@@ -17,6 +17,9 @@ import { createShellPort, type ShellPort } from './port'
 import { createMemoryProfilePort, createProfilePort, type ProfilePort } from './profile-port'
 import { emptyProfileSnapshot, type ProfileSnapshot } from './profile'
 import { applyTheme, resolveTheme } from './theme'
+import type { LogFilter } from './copy'
+import { normalizeLogFilter } from './profile'
+import DiagnosticsView from './views/DiagnosticsView.vue'
 import HomeView from './views/HomeView.vue'
 import NodesView from './views/NodesView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -29,6 +32,7 @@ const props = defineProps<{
 }>()
 
 const entry = ref<EntryId>('home')
+const diagnostics = ref(false)
 const theme = ref<ThemePreference>('system')
 const kernelChannel = ref<KernelChannel>('stable')
 const kernelFailure = ref<string | null>(null)
@@ -211,7 +215,20 @@ function setNodeSort(group: string, sort: string) {
   void runProfile(() => profile.setNodeSort(group, sort))
 }
 
+function openDiagnostics() {
+  diagnostics.value = true
+}
+
+function setConnectionQuery(query: string) {
+  void runProfile(() => profile.setConnectionQuery(query))
+}
+
+function setLogFilter(level: LogFilter) {
+  void runProfile(() => profile.setLogFilter(normalizeLogFilter(level)))
+}
+
 async function choose(next: EntryId) {
+  diagnostics.value = false
   entry.value = next
   if (persist && port) {
     void port.saveEntry(next).catch((error: unknown) => {
@@ -295,8 +312,19 @@ defineExpose({ ready })
           </button>
         </div>
       </div>
+      <DiagnosticsView
+        v-if="diagnostics"
+        :connected="profileState.connected"
+        :connections="profileState.connections"
+        :connection-query="profileState.connection_query"
+        :logs="profileState.logs"
+        :log-filter="profileState.log_filter"
+        @close="diagnostics = false"
+        @query="setConnectionQuery"
+        @log-filter="setLogFilter"
+      />
       <HomeView
-        v-if="entry === 'home'"
+        v-else-if="entry === 'home'"
         :failure="profileState.failure"
         :used="currentProfile?.used ?? null"
         :total="currentProfile?.total ?? null"
@@ -316,6 +344,7 @@ defineExpose({ ready })
         @tun="setTun"
         @exclude="excludePackage"
         @include="includePackage"
+        @diagnostics="openDiagnostics"
       />
       <NodesView
         v-else-if="entry === 'nodes'"

@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
+use crate::diagnostics::{self, ConnectionView, LogView};
 use crate::nodes::{
     self, ControllerEndpoint, KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay,
     NodeGroupView, ParsedGroup, SELECT_FAILED,
@@ -124,6 +126,10 @@ pub struct ProfileSnapshot {
     pub nodes_error: Option<String>,
     pub nodes_profile_id: Option<String>,
     pub kernel_running: bool,
+    pub connections: Vec<ConnectionView>,
+    pub connection_query: String,
+    pub logs: Vec<LogView>,
+    pub log_filter: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +159,14 @@ pub trait KernelLaunch {
 
     fn auto_now(&mut self) -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    fn connections(&mut self) -> Vec<ConnectionView> {
+        Vec::new()
+    }
+
+    fn pull_logs(&mut self) -> Vec<LogView> {
+        Vec::new()
     }
 }
 
@@ -213,6 +227,7 @@ pub struct ProcessRuntime {
     config_path: Option<PathBuf>,
     controller: Option<ControllerEndpoint>,
     cached_now: BTreeMap<String, String>,
+    log_buffer: Option<CapturedLogs>,
 }
 
 impl ProcessRuntime {
@@ -224,6 +239,7 @@ impl ProcessRuntime {
             config_path: None,
             controller: None,
             cached_now: BTreeMap::new(),
+            log_buffer: None,
         }
     }
 
@@ -251,7 +267,32 @@ impl ProcessRuntime {
         }
         self.controller = None;
         self.cached_now.clear();
+        self.log_buffer = None;
     }
+}
+
+struct CapturedLogs {
+    lines: Arc<Mutex<Vec<LogView>>>,
+}
+
+fn spawn_log_buffer(stdout: ChildStdout) -> CapturedLogs {
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::clone(&lines);
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            let Some(item) = diagnostics::parse_log_line(&line) else {
+                continue;
+            };
+            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.push(item);
+            let overflow = guard.len().saturating_sub(diagnostics::LOG_LIMIT);
+            if overflow > 0 {
+                guard.drain(0..overflow);
+            }
+        }
+    });
+    CapturedLogs { lines }
 }
 
 impl Drop for ProcessRuntime {
@@ -275,13 +316,19 @@ impl KernelLaunch for ProcessRuntime {
             .as_nanos();
         let config_path = self.work_dir.join(format!("runtime-{nanos}.yaml"));
         fs::write(&config_path, config_yaml).map_err(|_| "配置没有写入".to_string())?;
+        let controller = nodes::controller_from_yaml(config_yaml);
         let mut command = Command::new(&path);
         command
             .arg("-f")
             .arg(&config_path)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // A stand-in process has no controller. Leaving its stdout discarded avoids a full pipe.
+        if controller.is_some() {
+            command.stdout(Stdio::piped());
+        } else {
+            command.stdout(Stdio::null());
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -310,11 +357,15 @@ impl KernelLaunch for ProcessRuntime {
                 }
             }
         }
+        let stdout = child.stdout.take();
         self.stop();
         self.child = Some(child);
         self.config_path = Some(config_path);
-        self.controller = nodes::controller_from_yaml(config_yaml);
+        self.controller = controller;
         self.cached_now.clear();
+        if let Some(stdout) = stdout {
+            self.log_buffer = Some(spawn_log_buffer(stdout));
+        }
         Ok(())
     }
 
@@ -376,6 +427,27 @@ impl KernelLaunch for ProcessRuntime {
             }
             Err(_) => self.cached_now.clone(),
         }
+    }
+
+    fn connections(&mut self) -> Vec<ConnectionView> {
+        if !self.running() {
+            return Vec::new();
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return Vec::new();
+        };
+        diagnostics::fetch_connections(&endpoint)
+    }
+
+    fn pull_logs(&mut self) -> Vec<LogView> {
+        let Some(buffer) = &self.log_buffer else {
+            return Vec::new();
+        };
+        let mut guard = buffer
+            .lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *guard)
     }
 }
 
@@ -451,6 +523,10 @@ pub struct ProfileBook {
     auto_now: BTreeMap<String, String>,
     nodes_error: Option<String>,
     kernel_running: bool,
+    connections: Vec<ConnectionView>,
+    connection_query: String,
+    logs: Vec<LogView>,
+    log_filter: String,
 }
 
 struct DelayMark {
@@ -486,6 +562,10 @@ impl ProfileBook {
             auto_now: BTreeMap::new(),
             nodes_error: None,
             kernel_running: false,
+            connections: Vec::new(),
+            connection_query: String::new(),
+            logs: Vec::new(),
+            log_filter: "all".to_string(),
         };
         book.load();
         book
@@ -538,6 +618,14 @@ impl ProfileBook {
             nodes_error: self.nodes_error.clone(),
             nodes_profile_id,
             kernel_running: self.kernel_running,
+            connections: if self.connected {
+                diagnostics::filter_connections(&self.connections, &self.connection_query)
+            } else {
+                Vec::new()
+            },
+            connection_query: self.connection_query.clone(),
+            logs: diagnostics::filter_logs(&self.logs, &self.log_filter),
+            log_filter: self.log_filter.clone(),
         }
     }
 
@@ -704,7 +792,8 @@ impl ProfileBook {
         let mut model = self.link_model();
         takeover::disconnect(&mut model, proxy, tun, vpn);
         self.apply_model(model);
-        self.snapshot()
+        self.connections.clear();
+        self.publish(kernel)
     }
 
     pub fn set_system_proxy(
@@ -736,6 +825,7 @@ impl ProfileBook {
                     model.connected = false;
                     model.failure = Some(takeover::TUN_DENIED.to_string());
                     self.apply_model(model);
+                    self.remember_current_failure();
                     return self.snapshot();
                 }
             }
@@ -754,11 +844,13 @@ impl ProfileBook {
             Err(StartError::Idle(message)) => {
                 self.home_failure = Some(message);
                 self.connected = false;
+                self.remember_current_failure();
             }
             Err(StartError::Failed(message)) => {
                 let mut model = self.link_model();
                 takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
                 self.apply_model(model);
+                self.remember_current_failure();
             }
         }
         self.snapshot()
@@ -792,6 +884,7 @@ impl ProfileBook {
             model.connected = false;
             model.failure = Some(takeover::TUN_DENIED.to_string());
             self.apply_model(model);
+            self.remember_current_failure();
             return self.snapshot();
         }
         match self.reload(kernel, true, None) {
@@ -807,11 +900,13 @@ impl ProfileBook {
             Err(StartError::Idle(message)) => {
                 self.home_failure = Some(message);
                 self.connected = false;
+                self.remember_current_failure();
             }
             Err(StartError::Failed(message)) => {
                 let mut model = self.link_model();
                 takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
                 self.apply_model(model);
+                self.remember_current_failure();
             }
         }
         self.snapshot()
@@ -837,7 +932,8 @@ impl ProfileBook {
                     model.connected = false;
                     model.failure = Some(takeover::TUN_DENIED.to_string());
                     self.apply_model(model);
-                    return self.snapshot();
+                    self.remember_current_failure();
+                    return self.publish(kernel);
                 }
             }
         } else {
@@ -856,14 +952,16 @@ impl ProfileBook {
             Err(StartError::Idle(message)) => {
                 self.home_failure = Some(message);
                 self.connected = false;
+                self.remember_current_failure();
             }
             Err(StartError::Failed(message)) => {
                 let mut model = self.link_model();
                 takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
                 self.apply_model(model);
+                self.remember_current_failure();
             }
         }
-        self.snapshot()
+        self.publish(kernel)
     }
 
     fn connect_android(
@@ -874,7 +972,8 @@ impl ProfileBook {
         if self.active_id.is_none() {
             self.home_failure = Some(takeover::NO_PROFILE.to_string());
             self.connected = false;
-            return self.snapshot();
+            self.remember_current_failure();
+            return self.publish(kernel);
         }
         if !matches!(vpn.authorize(), Ok(true)) {
             let _ = vpn.close();
@@ -885,7 +984,8 @@ impl ProfileBook {
             model.tun = false;
             model.failure = Some(takeover::VPN_DENIED.to_string());
             self.apply_model(model);
-            return self.snapshot();
+            self.remember_current_failure();
+            return self.publish(kernel);
         }
         let fd = match vpn.establish(&self.excluded) {
             Ok(fd) => fd,
@@ -896,7 +996,8 @@ impl ProfileBook {
                 model.connected = false;
                 model.failure = Some("VPN 没有建立".to_string());
                 self.apply_model(model);
-                return self.snapshot();
+                self.remember_current_failure();
+                return self.publish(kernel);
             }
         };
         match self.reload(kernel, true, Some(fd)) {
@@ -918,9 +1019,10 @@ impl ProfileBook {
                 model.tun = false;
                 model.failure = Some(message);
                 self.apply_model(model);
+                self.remember_current_failure();
             }
         }
-        self.snapshot()
+        self.publish(kernel)
     }
 
     pub fn exclude_package(
@@ -1037,6 +1139,24 @@ impl ProfileBook {
             self.takeover.system_proxy = false;
         }
         self.persist();
+        self.remember_current_failure();
+    }
+
+    fn publish(&mut self, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        self.sync_runtime(kernel);
+        self.snapshot()
+    }
+
+    fn remember_current_failure(&mut self) {
+        let Some(message) = self.home_failure.clone() else {
+            return;
+        };
+        self.connections.clear();
+        self.append_logs(vec![diagnostics::failure_log(&message)]);
+    }
+
+    fn append_logs(&mut self, lines: Vec<LogView>) {
+        diagnostics::push_logs(&mut self.logs, lines);
     }
 
     /// Runs a deferred proxy clear. The flag and port are dropped only when the clear succeeds.
@@ -1207,6 +1327,9 @@ impl ProfileBook {
                 + 1,
         );
         self.recompute_effective();
+        if let Some(message) = self.home_failure.clone() {
+            self.append_logs(vec![diagnostics::failure_log(&message)]);
+        }
     }
 
     fn recompute_effective(&mut self) {
@@ -1274,12 +1397,38 @@ impl ProfileBook {
 
     pub fn sync_runtime(&mut self, kernel: &mut dyn KernelLaunch) {
         let running = kernel.running();
+        let was_running = self.kernel_running;
         self.kernel_running = running;
+        self.append_logs(kernel.pull_logs());
         if running {
             self.auto_now = kernel.auto_now();
+            if self.connected {
+                self.connections = diagnostics::accept_connections(kernel.connections());
+            } else {
+                self.connections.clear();
+            }
         } else {
             self.auto_now.clear();
+            self.connections.clear();
+            // The kernel was up and is now gone, so the session is no longer connected.
+            if was_running {
+                self.connected = false;
+            }
         }
+    }
+
+    pub fn set_connection_query(
+        &mut self,
+        query: &str,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
+        self.connection_query = query.chars().take(200).collect();
+        self.publish(kernel)
+    }
+
+    pub fn set_log_filter(&mut self, filter: &str) -> ProfileSnapshot {
+        self.log_filter = diagnostics::normalize_log_filter(filter).to_string();
+        self.snapshot()
     }
 
     pub fn set_node_query(&mut self, query: &str) -> ProfileSnapshot {
@@ -2919,6 +3068,148 @@ proxy-groups:
                 permissions
                     .iter()
                     .any(|item| item.as_str() == Some(permission)),
+                "{permission}"
+            );
+        }
+    }
+
+    struct TrafficKernel {
+        running: bool,
+        fail: bool,
+        connections: Vec<ConnectionView>,
+        logs: Vec<LogView>,
+    }
+
+    impl KernelLaunch for TrafficKernel {
+        fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+            if self.fail {
+                self.running = false;
+                return Err(KERNEL_ERROR.to_string());
+            }
+            self.running = true;
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.running
+        }
+
+        fn connections(&mut self) -> Vec<ConnectionView> {
+            if self.running {
+                self.connections.clone()
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn pull_logs(&mut self) -> Vec<LogView> {
+            if self.running {
+                std::mem::take(&mut self.logs)
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    #[test]
+    fn injected_connections_filter_by_host_and_disappear_when_the_kernel_stops() {
+        let dir = temp_dir("traffic");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", &config(7890));
+        let mut kernel = TrafficKernel {
+            running: false,
+            fail: false,
+            connections: vec![
+                ConnectionView {
+                    host: "Example.COM".to_string(),
+                    outbound: "香港节点".to_string(),
+                },
+                ConnectionView {
+                    host: "other.test".to_string(),
+                    outbound: "直连".to_string(),
+                },
+            ],
+            logs: vec![
+                LogView {
+                    level: "info".to_string(),
+                    message: "普通记录".to_string(),
+                },
+                LogView {
+                    level: "warning".to_string(),
+                    message: "注意一下".to_string(),
+                },
+            ],
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let live = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(live.connected);
+        assert!(!live.tun);
+        assert_eq!(live.connections.len(), 2);
+        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.host.as_str()), Some("127.0.0.1"));
+        let filtered = book.set_connection_query("example", &mut kernel);
+        assert_eq!(filtered.connections.len(), 1);
+        assert_eq!(filtered.connections[0].host, "Example.COM");
+        assert_eq!(filtered.connections[0].outbound, "香港节点");
+        let encoded = serde_json::to_value(&filtered.connections[0]).unwrap();
+        assert_eq!(encoded.as_object().unwrap().len(), 2);
+        assert!(book.set_connection_query("直连", &mut kernel).connections.is_empty());
+        let warned = book.set_log_filter("warning");
+        assert_eq!(warned.logs.len(), 1);
+        assert_eq!(warned.logs[0].message, "注意一下");
+
+        kernel.running = false;
+        book.sync_runtime(&mut kernel);
+        let stopped = book.snapshot();
+        assert!(stopped.connections.is_empty());
+        assert!(!stopped.connected);
+        assert!(!stopped.kernel_running);
+    }
+
+    #[test]
+    fn a_start_failure_is_kept_in_the_log_and_level_filters_do_not_drop_it() {
+        let dir = temp_dir("start-log");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", &config(7890));
+        let mut kernel = TrafficKernel {
+            running: false,
+            fail: true,
+            connections: vec![ConnectionView {
+                host: "stale.example".to_string(),
+                outbound: "旧出站".to_string(),
+            }],
+            logs: Vec::new(),
+        };
+        let failed = book.enable("p1", &RejectSource, &mut kernel);
+        assert!(failed.active_id.is_none());
+        assert!(!failed.connected);
+        assert!(!failed.system_proxy && !failed.tun && !failed.vpn);
+        assert!(failed.connections.is_empty());
+        assert!(failed.logs.iter().any(|line| {
+            line.level == "error" && line.message.contains(KERNEL_ERROR)
+        }));
+        kernel.fail = false;
+        kernel.running = true;
+        kernel.logs.push(LogView {
+            level: "info".to_string(),
+            message: "普通记录".to_string(),
+        });
+        book.sync_runtime(&mut kernel);
+        let info = book.set_log_filter("info");
+        assert!(info.logs.iter().all(|line| line.level == "info"));
+        assert!(info.logs.iter().any(|line| line.message == "普通记录"));
+        let errors = book.set_log_filter("error");
+        assert!(errors.logs.iter().any(|line| line.message.contains(KERNEL_ERROR)));
+        assert!(errors.logs.iter().all(|line| line.level == "error"));
+        assert!(!book.snapshot().connected);
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let permissions = capability["permissions"].as_array().unwrap();
+        for permission in ["allow-set-connection-query", "allow-set-log-filter"] {
+            assert!(
+                permissions.iter().any(|item| item.as_str() == Some(permission)),
                 "{permission}"
             );
         }

@@ -1,3 +1,4 @@
+mod diagnostics;
 mod kernel;
 mod nodes;
 mod profile;
@@ -543,6 +544,19 @@ fn set_node_sort(app: AppHandle, group: String, sort: String) -> ProfileSnapshot
     with_profile(&app, |session| session.book.set_node_sort(&group, &sort))
 }
 
+#[tauri::command]
+fn set_connection_query(app: AppHandle, query: String) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.set_connection_query(&query, runtime)
+    })
+}
+
+#[tauri::command]
+fn set_log_filter(app: AppHandle, level: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.set_log_filter(&level))
+}
+
 fn release_proxy_on_exit(app: &AppHandle) {
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
@@ -596,7 +610,9 @@ pub fn run() {
             select_profile_node,
             test_profile_group,
             set_node_query,
-            set_node_sort
+            set_node_sort,
+            set_connection_query,
+            set_log_filter
         ])
         .setup(|app| {
             prepare_shell(app);

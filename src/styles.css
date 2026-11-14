@@ -415,6 +415,58 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.text-link {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.failure-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.segment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.connection-host {
+  font-weight: 600;
+}
+
+.connection-outbound {
+  margin-left: 8px;
+  color: var(--muted);
+}
+
+.log-scroller {
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--page);
+}
+
+.log-row {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.log-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
