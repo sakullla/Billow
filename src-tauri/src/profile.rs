@@ -337,7 +337,9 @@ fn spawn_log_buffer(stdout: ChildStdout) -> CapturedLogs {
             let Some(item) = diagnostics::parse_log_line(&line) else {
                 continue;
             };
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.push(item);
             let overflow = guard.len().saturating_sub(diagnostics::LOG_LIMIT);
             if overflow > 0 {
@@ -1104,19 +1106,66 @@ impl ProfileBook {
                 return self.publish(kernel);
             }
         };
+        let model = self.link_model();
+        self.finish_android_fd(kernel, vpn, model, fd)
+    }
+
+    pub fn exclude_package(
+        &mut self,
+        package_name: &str,
+        kernel: &mut dyn KernelLaunch,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        self.change_exclusion(package_name, true, kernel, vpn)
+    }
+
+    pub fn include_package(
+        &mut self,
+        package_name: &str,
+        kernel: &mut dyn KernelLaunch,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        self.change_exclusion(package_name, false, kernel, vpn)
+    }
+
+    fn change_exclusion(
+        &mut self,
+        package_name: &str,
+        exclude: bool,
+        kernel: &mut dyn KernelLaunch,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let mut model = self.link_model();
+        let fd = if exclude {
+            takeover::exclude_package(&mut model, package_name, vpn)
+        } else {
+            takeover::include_package(&mut model, package_name, vpn)
+        };
+        if let Some(fd) = fd {
+            return self.finish_android_fd(kernel, vpn, model, fd);
+        }
+        self.apply_model(model);
+        self.snapshot()
+    }
+
+    fn finish_android_fd(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        vpn: &mut dyn VpnGrant,
+        mut model: takeover::LinkModel,
+        fd: i32,
+    ) -> ProfileSnapshot {
         match self.reload(kernel, true, Some(fd)) {
             Ok(_) => {
-                let mut model = self.link_model();
                 model.vpn = true;
                 model.connected = true;
                 model.system_proxy = false;
                 model.tun = false;
-                model.failure = None;
+                // connect() already retires the home failure. Package changes do not.
                 self.apply_model(model);
             }
             Err(StartError::Failed(message)) | Err(StartError::Idle(message)) => {
                 let _ = vpn.close();
-                let mut model = self.link_model();
                 model.vpn = false;
                 model.connected = false;
                 model.system_proxy = false;
@@ -1127,28 +1176,6 @@ impl ProfileBook {
             }
         }
         self.publish(kernel)
-    }
-
-    pub fn exclude_package(
-        &mut self,
-        package_name: &str,
-        vpn: &mut dyn VpnGrant,
-    ) -> ProfileSnapshot {
-        let mut model = self.link_model();
-        takeover::exclude_package(&mut model, package_name, vpn);
-        self.apply_model(model);
-        self.snapshot()
-    }
-
-    pub fn include_package(
-        &mut self,
-        package_name: &str,
-        vpn: &mut dyn VpnGrant,
-    ) -> ProfileSnapshot {
-        let mut model = self.link_model();
-        takeover::include_package(&mut model, package_name, vpn);
-        self.apply_model(model);
-        self.snapshot()
     }
 
     fn activate(
@@ -1435,9 +1462,9 @@ impl ProfileBook {
                 .unwrap_or(0)
                 + 1,
         );
-        self.chosen_mode = disk.chosen_mode.and_then(|mode| {
-            normalize_outbound(&mode).map(|mode| mode.to_string())
-        });
+        self.chosen_mode = disk
+            .chosen_mode
+            .and_then(|mode| normalize_outbound(&mode).map(|mode| mode.to_string()));
         self.recompute_effective();
         if let Some(mode) = self.chosen_mode.clone() {
             self.mode = Some(mode);
@@ -1540,7 +1567,11 @@ impl ProfileBook {
         }
     }
 
-    pub fn set_outbound_mode(&mut self, mode: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+    pub fn set_outbound_mode(
+        &mut self,
+        mode: &str,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
         let Some(next) = normalize_outbound(mode) else {
             self.home_failure = Some("模式没有切换".to_string());
             self.remember_current_failure();
@@ -3324,14 +3355,21 @@ proxy-groups:
         assert!(live.connected);
         assert!(!live.tun);
         assert_eq!(live.connections.len(), 2);
-        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.host.as_str()), Some("127.0.0.1"));
+        assert_eq!(
+            proxy.http.as_ref().map(|endpoint| endpoint.host.as_str()),
+            Some("127.0.0.1")
+        );
         let filtered = book.set_connection_query("example", &mut kernel);
         assert_eq!(filtered.connections.len(), 1);
         assert_eq!(filtered.connections[0].host, "Example.COM");
         assert_eq!(filtered.connections[0].outbound, "香港节点");
         let encoded = serde_json::to_value(&filtered.connections[0]).unwrap();
         assert_eq!(encoded.as_object().unwrap().len(), 2);
-        assert!(book.set_connection_query("直连", &mut kernel).connections.is_empty());
+        assert!(
+            book.set_connection_query("直连", &mut kernel)
+                .connections
+                .is_empty()
+        );
         let warned = book.set_log_filter("warning", &mut kernel);
         assert_eq!(warned.logs.len(), 1);
         assert_eq!(warned.logs[0].message, "注意一下");
@@ -3351,7 +3389,12 @@ proxy-groups:
         let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!disconnected.connected);
         assert!(disconnected.connections.is_empty());
-        assert!(disconnected.logs.iter().any(|line| line.message == "注意一下"));
+        assert!(
+            disconnected
+                .logs
+                .iter()
+                .any(|line| line.message == "注意一下")
+        );
     }
 
     #[test]
@@ -3373,9 +3416,12 @@ proxy-groups:
         assert!(!failed.connected);
         assert!(!failed.system_proxy && !failed.tun && !failed.vpn);
         assert!(failed.connections.is_empty());
-        assert!(failed.logs.iter().any(|line| {
-            line.level == "error" && line.message.contains(KERNEL_ERROR)
-        }));
+        assert!(
+            failed
+                .logs
+                .iter()
+                .any(|line| { line.level == "error" && line.message.contains(KERNEL_ERROR) })
+        );
         kernel.fail = false;
         kernel.running = true;
         kernel.logs.push(LogView {
@@ -3387,7 +3433,12 @@ proxy-groups:
         assert!(info.logs.iter().all(|line| line.level == "info"));
         assert!(info.logs.iter().any(|line| line.message == "普通记录"));
         let errors = book.set_log_filter("error", &mut kernel);
-        assert!(errors.logs.iter().any(|line| line.message.contains(KERNEL_ERROR)));
+        assert!(
+            errors
+                .logs
+                .iter()
+                .any(|line| line.message.contains(KERNEL_ERROR))
+        );
         assert!(errors.logs.iter().all(|line| line.level == "error"));
         assert!(!book.snapshot().connected);
         let capability: serde_json::Value =
@@ -3395,7 +3446,9 @@ proxy-groups:
         let permissions = capability["permissions"].as_array().unwrap();
         for permission in ["allow-set-connection-query", "allow-set-log-filter"] {
             assert!(
-                permissions.iter().any(|item| item.as_str() == Some(permission)),
+                permissions
+                    .iter()
+                    .any(|item| item.as_str() == Some(permission)),
                 "{permission}"
             );
         }
@@ -3484,7 +3537,12 @@ proxy-groups:
             message: "新的流量".to_string(),
         });
         let sampled = book.set_log_filter("info", &mut kernel);
-        assert!(sampled.connections.iter().any(|row| row.host == "fresh.example"));
+        assert!(
+            sampled
+                .connections
+                .iter()
+                .any(|row| row.host == "fresh.example")
+        );
         assert!(sampled.logs.iter().any(|line| line.message == "新的流量"));
 
         kernel.running = false;
@@ -3537,7 +3595,10 @@ proxy-groups:
         assert!(closed.connections.is_empty());
         assert!(closed.system_proxy);
         assert!(!closed.tun);
-        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+        assert_eq!(
+            proxy.http.as_ref().map(|endpoint| endpoint.port),
+            Some(7890)
+        );
     }
 
     struct ModeKernel {
@@ -3574,7 +3635,10 @@ proxy-groups:
 
     fn yaml_mode(yaml: &str) -> Option<String> {
         let value: Value = serde_yaml::from_str(yaml).ok()?;
-        value.get("mode").and_then(|item| item.as_str()).map(str::to_string)
+        value
+            .get("mode")
+            .and_then(|item| item.as_str())
+            .map(str::to_string)
     }
 
     #[test]
@@ -3600,7 +3664,10 @@ proxy-groups:
         assert_eq!(connected.mode.as_deref(), Some("rule"));
         assert_eq!(connected.upload, Some(11));
         assert_eq!(connected.download, Some(22));
-        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+        assert_eq!(
+            proxy.http.as_ref().map(|endpoint| endpoint.port),
+            Some(7890)
+        );
         let sets = proxy.sets;
 
         let switched = book.set_outbound_mode("direct", &mut kernel);
@@ -3609,7 +3676,10 @@ proxy-groups:
         assert!(switched.system_proxy);
         assert!(!switched.tun);
         assert_eq!(proxy.sets, sets);
-        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+        assert_eq!(
+            proxy.http.as_ref().map(|endpoint| endpoint.port),
+            Some(7890)
+        );
 
         let again = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert_eq!(yaml_mode(&kernel.last).as_deref(), Some("direct"));
@@ -3737,7 +3807,10 @@ proxy-groups:
         assert!(again.failure.is_none());
         assert!(again.system_proxy);
         assert_eq!(yaml_mode(&kernel.last).as_deref(), Some("global"));
-        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+        assert_eq!(
+            proxy.http.as_ref().map(|endpoint| endpoint.port),
+            Some(7890)
+        );
     }
 
     #[test]
@@ -3767,7 +3840,8 @@ proxy-groups:
         assert!(denied.system_proxy && denied.connected);
         kernel.fail_mode = false;
 
-        let closed_proxy = book.set_system_proxy(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        let closed_proxy =
+            book.set_system_proxy(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!closed_proxy.system_proxy);
         assert_eq!(closed_proxy.failure.as_deref(), Some("模式没有切换"));
 

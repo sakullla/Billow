@@ -294,39 +294,53 @@ pub fn set_tun(model: &mut LinkModel, enabled: bool, tun: &mut dyn TunGrant) {
     model.connected = model.system_proxy;
 }
 
-pub fn exclude_package(model: &mut LinkModel, package_name: &str, vpn: &mut dyn VpnGrant) {
+pub fn exclude_package(
+    model: &mut LinkModel,
+    package_name: &str,
+    vpn: &mut dyn VpnGrant,
+) -> Option<i32> {
     if model.platform != ClientPlatform::Android {
-        return;
+        return None;
     }
     let Some(package_name) = clean_package(package_name) else {
-        return;
+        return None;
     };
     if !model.excluded.iter().any(|item| item == &package_name) {
         model.excluded.push(package_name);
     }
-    refresh_vpn(model, vpn);
+    refresh_vpn(model, vpn)
 }
 
-pub fn include_package(model: &mut LinkModel, package_name: &str, vpn: &mut dyn VpnGrant) {
+pub fn include_package(
+    model: &mut LinkModel,
+    package_name: &str,
+    vpn: &mut dyn VpnGrant,
+) -> Option<i32> {
     if model.platform != ClientPlatform::Android {
-        return;
+        return None;
     }
     let Some(package_name) = clean_package(package_name) else {
-        return;
+        return None;
     };
     model.excluded.retain(|item| item != &package_name);
-    refresh_vpn(model, vpn);
+    refresh_vpn(model, vpn)
 }
 
-fn refresh_vpn(model: &mut LinkModel, vpn: &mut dyn VpnGrant) {
+/// `None` means the list was saved and VPN stayed down, or establish failed.
+/// `Some` is the replacement TUN fd. The previous fd no longer reads traffic.
+fn refresh_vpn(model: &mut LinkModel, vpn: &mut dyn VpnGrant) -> Option<i32> {
     if !model.vpn {
-        return;
+        return None;
     }
-    if vpn.establish(&model.excluded).is_err() {
-        let _ = vpn.close();
-        model.vpn = false;
-        model.connected = false;
-        model.failure = Some("VPN 没有建立".to_string());
+    match vpn.establish(&model.excluded) {
+        Ok(fd) => Some(fd),
+        Err(_) => {
+            let _ = vpn.close();
+            model.vpn = false;
+            model.connected = false;
+            model.failure = Some("VPN 没有建立".to_string());
+            None
+        }
     }
 }
 
@@ -1768,7 +1782,7 @@ mod tests {
         assert_eq!(proxy.sets, 0);
         assert_eq!(tun.authorize_calls, 0);
 
-        let excluded = book.exclude_package("com.example.mail", &mut vpn);
+        let excluded = book.exclude_package("com.example.mail", &mut kernel, &mut vpn);
         assert_eq!(excluded.excluded, vec!["com.example.mail".to_string()]);
         assert_eq!(vpn.last_excluded, vec!["com.example.mail".to_string()]);
         assert!(
@@ -1777,15 +1791,21 @@ mod tests {
                 .any(|item| item == "com.example.browser")
         );
 
-        book.exclude_package("com.example.mail", &mut vpn);
+        book.exclude_package("com.example.mail", &mut kernel, &mut vpn);
         assert_eq!(book.snapshot().excluded.len(), 1);
-        book.exclude_package("  ", &mut vpn);
+        book.exclude_package("  ", &mut kernel, &mut vpn);
         assert_eq!(book.snapshot().excluded.len(), 1);
 
         let desktop_dir = temp_dir("desktop-exclude");
         let mut desktop = ProfileBook::open(&desktop_dir.0);
         desktop.set_platform(ClientPlatform::Desktop);
-        desktop.exclude_package("com.example.mail", &mut vpn);
+        let mut idle_kernel = TestKernel {
+            fail: false,
+            calls: 0,
+            last: String::new(),
+            alive: false,
+        };
+        desktop.exclude_package("com.example.mail", &mut idle_kernel, &mut vpn);
         assert!(desktop.snapshot().excluded.is_empty());
 
         let mut reopened = ProfileBook::open(&dir.0);
@@ -1794,6 +1814,190 @@ mod tests {
             reopened.snapshot().excluded,
             vec!["com.example.mail".to_string()]
         );
+    }
+
+    struct SequenceVpn {
+        fds: Vec<i32>,
+        cursor: usize,
+        open: bool,
+        establish_calls: u32,
+        last_excluded: Vec<String>,
+    }
+
+    impl SequenceVpn {
+        fn new(fds: Vec<i32>) -> Self {
+            Self {
+                fds,
+                cursor: 0,
+                open: false,
+                establish_calls: 0,
+                last_excluded: Vec::new(),
+            }
+        }
+    }
+
+    impl VpnGrant for SequenceVpn {
+        fn authorize(&mut self) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn establish(&mut self, excluded: &[String]) -> Result<i32, String> {
+            self.establish_calls += 1;
+            self.last_excluded = excluded.to_vec();
+            let fd = self.fds[self.cursor];
+            self.cursor += 1;
+            self.open = true;
+            Ok(fd)
+        }
+
+        fn close(&mut self) -> Result<(), String> {
+            self.open = false;
+            Ok(())
+        }
+    }
+
+    struct RejectingKernel {
+        last: String,
+    }
+
+    impl KernelLaunch for RejectingKernel {
+        fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
+            self.last = config_yaml.to_string();
+            Err("内核没有启动".to_string())
+        }
+
+        fn running(&mut self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn connected_exclude_reloads_kernel_with_the_new_fd_and_the_saved_list() {
+        let dir = temp_dir("exclude-fd");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Android);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = SequenceVpn::new(vec![7, 11, 13]);
+        let calls = kernel.calls;
+
+        let saved = book.exclude_package("com.example.mail", &mut kernel, &mut vpn);
+        assert_eq!(saved.excluded, vec!["com.example.mail".to_string()]);
+        assert!(!saved.vpn && !saved.connected);
+        assert!(saved.failure.is_none());
+        assert_eq!(vpn.establish_calls, 0);
+        assert!(!vpn.open);
+        assert_eq!(kernel.calls, calls);
+        assert_eq!(proxy.sets, 0);
+
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn && connected.connected);
+        assert_eq!(tun_fd(&kernel.last), Some(7));
+        assert_eq!(vpn.last_excluded, vec!["com.example.mail".to_string()]);
+        assert_eq!(proxy.sets, 0);
+
+        let excluded = book.exclude_package("com.example.browser", &mut kernel, &mut vpn);
+        assert!(excluded.vpn && excluded.connected);
+        assert!(excluded.failure.is_none());
+        assert_eq!(tun_fd(&kernel.last), Some(11));
+        assert_eq!(
+            excluded.excluded,
+            vec![
+                "com.example.mail".to_string(),
+                "com.example.browser".to_string()
+            ]
+        );
+        assert_eq!(vpn.last_excluded, excluded.excluded);
+        assert!(vpn.open);
+
+        let mut reopened = ProfileBook::open(&dir.0);
+        reopened.set_platform(ClientPlatform::Android);
+        assert_eq!(reopened.snapshot().excluded, excluded.excluded);
+
+        let restored = book.include_package("com.example.browser", &mut kernel, &mut vpn);
+        assert!(restored.vpn && restored.connected);
+        assert!(restored.failure.is_none());
+        assert_eq!(tun_fd(&kernel.last), Some(13));
+        assert_eq!(restored.excluded, vec!["com.example.mail".to_string()]);
+        assert_eq!(vpn.last_excluded, vec!["com.example.mail".to_string()]);
+        assert!(vpn.open);
+        assert_eq!(proxy.sets, 0);
+    }
+
+    #[test]
+    fn excluding_while_connected_keeps_the_home_failure_and_hands_over_the_new_fd() {
+        let dir = temp_dir("exclude-keeps-failure");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Android);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = SequenceVpn::new(vec![7, 11, 13, 15]);
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn && connected.connected);
+        assert!(connected.failure.is_none());
+        assert_eq!(tun_fd(&kernel.last), Some(7));
+
+        let marked = book.set_outbound_mode("nope", &mut kernel);
+        assert_eq!(marked.failure.as_deref(), Some("模式没有切换"));
+        assert!(marked.vpn && marked.connected);
+
+        let excluded = book.exclude_package("com.example.mail", &mut kernel, &mut vpn);
+        assert_eq!(tun_fd(&kernel.last), Some(11));
+        assert_eq!(excluded.excluded, vec!["com.example.mail".to_string()]);
+        assert_eq!(excluded.failure.as_deref(), Some("模式没有切换"));
+        assert!(excluded.connected && excluded.vpn);
+        assert_eq!(vpn.last_excluded, excluded.excluded);
+        assert_eq!(proxy.sets, 0);
+
+        let restored = book.include_package("com.example.mail", &mut kernel, &mut vpn);
+        assert_eq!(tun_fd(&kernel.last), Some(13));
+        assert!(restored.excluded.is_empty());
+        assert_eq!(restored.failure.as_deref(), Some("模式没有切换"));
+        assert!(restored.connected && restored.vpn);
+
+        let again = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(again.connected && again.vpn);
+        assert!(again.failure.is_none());
+        assert_eq!(proxy.sets, 0);
+    }
+
+    #[test]
+    fn failed_exclusion_reload_closes_vpn_and_is_not_connected() {
+        let dir = temp_dir("exclude-reload-fail");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Android);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = SequenceVpn::new(vec![4, 8, 15, 16]);
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn && connected.connected);
+        assert_eq!(tun_fd(&kernel.last), Some(4));
+
+        let mut rejecting = RejectingKernel {
+            last: String::new(),
+        };
+        let failed = book.exclude_package("com.example.mail", &mut rejecting, &mut vpn);
+        assert_eq!(tun_fd(&rejecting.last), Some(8));
+        assert!(!failed.vpn && !failed.connected);
+        assert_eq!(failed.failure.as_deref(), Some("内核没有启动"));
+        assert!(!vpn.open);
+        assert_eq!(failed.excluded, vec!["com.example.mail".to_string()]);
+        assert_eq!(vpn.last_excluded, failed.excluded);
+        assert_eq!(proxy.sets, 0);
+
+        let again = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(again.vpn && again.connected);
+        assert_eq!(tun_fd(&kernel.last), Some(15));
+        assert_eq!(again.excluded, vec!["com.example.mail".to_string()]);
+        assert_eq!(vpn.last_excluded, again.excluded);
+
+        let mut rejecting = RejectingKernel {
+            last: String::new(),
+        };
+        let restored = book.include_package("com.example.mail", &mut rejecting, &mut vpn);
+        assert_eq!(tun_fd(&rejecting.last), Some(16));
+        assert!(!restored.vpn && !restored.connected);
+        assert_eq!(restored.failure.as_deref(), Some("内核没有启动"));
+        assert!(!vpn.open);
+        assert!(restored.excluded.is_empty());
+        assert_eq!(proxy.sets, 0);
     }
 
     #[test]
@@ -2132,7 +2336,7 @@ mod tests {
             grant: true,
             ..MemoryVpn::default()
         };
-        book.exclude_package("com.example.mail", &mut vpn);
+        book.exclude_package("com.example.mail", &mut kernel, &mut vpn);
         assert_eq!(
             book.snapshot().excluded,
             vec!["com.example.mail".to_string()]

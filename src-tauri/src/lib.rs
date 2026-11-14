@@ -505,16 +505,20 @@ fn set_tun_enabled(app: AppHandle, enabled: bool) -> ProfileSnapshot {
 #[tauri::command]
 fn exclude_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     with_session(&app, |session| {
-        let ProfileSession { book, vpn, .. } = session;
-        book.exclude_package(&package_name, vpn)
+        let ProfileSession {
+            book, runtime, vpn, ..
+        } = session;
+        book.exclude_package(&package_name, runtime, vpn)
     })
 }
 
 #[tauri::command]
 fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     with_session(&app, |session| {
-        let ProfileSession { book, vpn, .. } = session;
-        book.include_package(&package_name, vpn)
+        let ProfileSession {
+            book, runtime, vpn, ..
+        } = session;
+        book.include_package(&package_name, runtime, vpn)
     })
 }
 
