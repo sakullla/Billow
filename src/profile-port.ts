@@ -310,7 +310,6 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
         return finish()
       }
       state.mode = next
-      state.failure = null
       return finish()
     },
     async setSystemProxy(enabled) {

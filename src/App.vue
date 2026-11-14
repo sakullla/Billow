@@ -205,7 +205,11 @@ function setMode(mode: OutboundMode) {
 
 function openGroup(name: string) {
   focusGroup.value = name
-  void choose('nodes')
+  const hidden =
+    profileState.value.node_query.trim().length > 0 &&
+    !profileState.value.node_groups.some((group) => group.name === name)
+  const clearing = hidden ? runProfile(() => profile.setNodeQuery('')) : Promise.resolve()
+  return clearing.then(() => choose('nodes'))
 }
 
 function confirmInstall() {

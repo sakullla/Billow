@@ -1,4 +1,6 @@
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -172,6 +174,93 @@ pub fn fetch_connections(endpoint: &ControllerEndpoint) -> Vec<ConnectionView> {
         return Vec::new();
     }
     connections_from_body(&body)
+}
+
+/// One controller sample is `{"up":bytes_per_second,"down":bytes_per_second}`.
+pub fn traffic_from_text(text: &str) -> Option<(u64, u64)> {
+    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let up = json_u64(value.get("up"))?;
+    let down = json_u64(value.get("down"))?;
+    Some((up, down))
+}
+
+/// `/traffic` stays open and writes a sample about once a second. The latest pair is kept.
+pub fn watch_traffic(
+    endpoint: ControllerEndpoint,
+    latest: Arc<Mutex<Option<(u64, u64)>>>,
+    stop: Arc<AtomicBool>,
+) {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return;
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_millis(400))
+        .timeout_read(Duration::from_millis(1500))
+        .timeout_write(Duration::from_millis(400))
+        .redirects(0)
+        .try_proxy_from_env(false)
+        .build();
+    while !stop.load(Ordering::Relaxed) {
+        let url = format!("http://{}:{}/traffic", endpoint.host, endpoint.port);
+        let request = agent.get(&url).set("User-Agent", "Billow");
+        let request = if endpoint.secret.is_empty() {
+            request
+        } else {
+            request.set("Authorization", &format!("Bearer {}", endpoint.secret))
+        };
+        let Ok(response) = request.call() else {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
+        };
+        let mut reader = response.into_reader().take(1_000_000);
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 512];
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            match reader.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(count) => {
+                    buf.extend_from_slice(&tmp[..count]);
+                    store_traffic_buf(&mut buf, &latest);
+                }
+                Err(_) => {
+                    store_traffic_buf(&mut buf, &latest);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn store_traffic_buf(buf: &mut Vec<u8>, latest: &Mutex<Option<(u64, u64)>>) {
+    loop {
+        let Some(end) = buf.iter().position(|byte| *byte == b'\n') else {
+            break;
+        };
+        let line: Vec<u8> = buf.drain(..=end).collect();
+        if let Some(sample) = std::str::from_utf8(&line)
+            .ok()
+            .and_then(traffic_from_text)
+        {
+            *latest.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sample);
+        }
+    }
+    if let Some(sample) = std::str::from_utf8(buf).ok().and_then(traffic_from_text) {
+        buf.clear();
+        *latest.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sample);
+    }
+}
+
+fn json_u64(value: Option<&serde_json::Value>) -> Option<u64> {
+    let value = value?;
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|number| u64::try_from(number).ok()))
 }
 
 fn sanitize_connection(host: String, outbound: String) -> Option<ConnectionView> {
@@ -358,5 +447,13 @@ mod tests {
         assert!(filter_logs(&logs, "警告").iter().all(|row| row.level == "warning"));
         assert!(filter_logs(&logs, "全部").len() > filter_logs(&logs, "error").len());
         assert_eq!(normalize_log_filter("nope"), "all");
+    }
+
+    #[test]
+    fn traffic_text_reads_up_and_down_only() {
+        assert_eq!(traffic_from_text("{\"up\":4,\"down\":5}\n"), Some((4, 5)));
+        assert_eq!(traffic_from_text("  {\"up\":0,\"down\":0}  "), Some((0, 0)));
+        assert!(traffic_from_text("{\"upload\":1,\"download\":2}").is_none());
+        assert!(traffic_from_text("not-json").is_none());
     }
 }

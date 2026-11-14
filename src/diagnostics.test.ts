@@ -10,6 +10,23 @@ import { DIAGNOSTICS_SAMPLE_MS, type LogLine, type ProfileSnapshot } from './pro
 
 const mounted: Array<{ unmount: () => void }> = []
 
+function savedProfile() {
+  return {
+    id: 'p1',
+    name: '甲',
+    kind: 'local' as const,
+    source: '',
+    current: true,
+    failure: null,
+    override_text: '',
+    override_error: null,
+    used: null,
+    total: null,
+    expire: null,
+    last_success_ms: null,
+  }
+}
+
 afterEach(() => {
   for (const wrapper of mounted.splice(0)) wrapper.unmount()
   vi.useRealTimers()
@@ -27,7 +44,13 @@ async function mountApp(profilePort = createMemoryProfilePort()) {
 
 describe('连接与日志', () => {
   it('首页两个入口打开同一诊断页，配置页和主导航没有这个入口', async () => {
-    const wrapper = await mountApp(createMemoryProfilePort({ failure: '订阅没有取回' }))
+    const wrapper = await mountApp(
+      createMemoryProfilePort({
+        failure: '订阅没有取回',
+        active_id: 'p1',
+        profiles: [savedProfile()],
+      }),
+    )
     expect(wrapper.get('[data-testid="open-diagnostics"]').text()).toBe('连接与日志')
     expect(wrapper.get('[data-testid="open-diagnostics-failure"]').text()).toBe('查看诊断')
     expect(wrapper.findAll('.nav-button').map((button) => button.text())).toEqual(['首页', '节点', '配置'])
@@ -61,6 +84,8 @@ describe('连接与日志', () => {
       createMemoryProfilePort({
         connected: true,
         kernel_running: true,
+        active_id: 'p1',
+        profiles: [savedProfile()],
         connections: [
           { host: 'example.com', outbound: '香港节点' },
           { host: 'other.test', outbound: '直连' },
@@ -87,6 +112,8 @@ describe('连接与日志', () => {
         connected: true,
         kernel_running: true,
         system_proxy: true,
+        active_id: 'p1',
+        profiles: [savedProfile()],
         connections: [{ host: 'example.com', outbound: '香港节点' }],
       }),
     )
@@ -132,6 +159,8 @@ describe('连接与日志', () => {
 
     const filtered = await mountApp(
       createMemoryProfilePort({
+        active_id: 'p1',
+        profiles: [savedProfile()],
         logs: [
           { level: 'info', message: '普通记录' },
           { level: 'warning', message: '注意一下' },
@@ -204,6 +233,8 @@ describe('连接与日志', () => {
       kernel_running: true,
       system_proxy: true,
       tun: true,
+      active_id: 'p1',
+      profiles: [savedProfile()],
       connections: [{ host: 'example.com', outbound: '香港节点' }],
       logs: [{ level: 'info', message: '旧记录' }],
     })

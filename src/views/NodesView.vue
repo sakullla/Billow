@@ -25,8 +25,9 @@ const props = defineProps<{
 }>()
 
 watch(
-  () => props.focusGroup,
-  (name) => {
+  () => [props.focusGroup, props.groups.map((group) => group.name).join('\u0000')] as const,
+  () => {
+    const name = props.focusGroup
     if (!name) return
     void nextTick(() => {
       const node = document.querySelector(`[data-testid="node-group"][data-group="${CSS.escape(name)}"]`)

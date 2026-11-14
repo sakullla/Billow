@@ -152,10 +152,6 @@ function onPrimary() {
             </button>
           </div>
           <p v-if="modeHint" class="muted" data-testid="mode-hint">{{ modeHint }}</p>
-          <p v-if="connected" class="rate-line" data-testid="home-rates">
-            <span>{{ RATE_UP }} {{ upload ?? 0 }}</span>
-            <span>{{ RATE_DOWN }} {{ download ?? 0 }}</span>
-          </p>
           <div v-if="platform !== 'android'" data-testid="desktop-controls">
             <p
               data-testid="home-takeover"
@@ -253,9 +249,19 @@ function onPrimary() {
           <span>{{ group.name }}</span>
           <span>{{ NODES_NOW }} {{ group.now || NODES_UNKNOWN }}</span>
         </button>
+        <p v-if="connected && upload != null && download != null" class="rate-line" data-testid="home-rates">
+          <span>{{ RATE_UP }} {{ upload }}</span>
+          <span>{{ RATE_DOWN }} {{ download }}</span>
+        </p>
       </div>
     </div>
-    <button type="button" class="text-link" data-testid="open-diagnostics" @click="emit('diagnostics')">
+    <button
+      v-if="hasProfiles"
+      type="button"
+      class="text-link"
+      data-testid="open-diagnostics"
+      @click="emit('diagnostics')"
+    >
       {{ OPEN_DIAGNOSTICS }}
     </button>
   </section>

@@ -3,8 +3,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -239,6 +240,39 @@ pub struct ProcessRuntime {
     controller: Option<ControllerEndpoint>,
     cached_now: BTreeMap<String, String>,
     log_buffer: Option<CapturedLogs>,
+    traffic_watch: Option<TrafficWatch>,
+}
+
+struct TrafficWatch {
+    latest: Arc<Mutex<Option<(u64, u64)>>>,
+    stop: Arc<AtomicBool>,
+    waited: bool,
+}
+
+impl TrafficWatch {
+    fn spawn(endpoint: ControllerEndpoint) -> Self {
+        let latest = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let shared = Arc::clone(&latest);
+        let flag = Arc::clone(&stop);
+        std::thread::spawn(move || diagnostics::watch_traffic(endpoint, shared, flag));
+        Self {
+            latest,
+            stop,
+            waited: false,
+        }
+    }
+
+    fn latest(&self) -> Option<(u64, u64)> {
+        *self
+            .latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn halt(self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 impl ProcessRuntime {
@@ -251,6 +285,7 @@ impl ProcessRuntime {
             controller: None,
             cached_now: BTreeMap::new(),
             log_buffer: None,
+            traffic_watch: None,
         }
     }
 
@@ -259,6 +294,7 @@ impl ProcessRuntime {
     }
 
     fn stop(&mut self) {
+        self.halt_traffic();
         if let Some(mut child) = self.child.take() {
             #[cfg(unix)]
             {
@@ -279,6 +315,12 @@ impl ProcessRuntime {
         self.controller = None;
         self.cached_now.clear();
         self.log_buffer = None;
+    }
+
+    fn halt_traffic(&mut self) {
+        if let Some(watch) = self.traffic_watch.take() {
+            watch.halt();
+        }
     }
 }
 
@@ -377,6 +419,9 @@ impl KernelLaunch for ProcessRuntime {
         if let Some(stdout) = stdout {
             self.log_buffer = Some(spawn_log_buffer(stdout));
         }
+        if let Some(endpoint) = self.controller.clone() {
+            self.traffic_watch = Some(TrafficWatch::spawn(endpoint));
+        }
         Ok(())
     }
 
@@ -389,6 +434,7 @@ impl KernelLaunch for ProcessRuntime {
             self.child = None;
             self.controller = None;
             self.cached_now.clear();
+            self.halt_traffic();
         }
         alive
     }
@@ -469,6 +515,31 @@ impl KernelLaunch for ProcessRuntime {
             return Ok(());
         };
         nodes::patch_mode(&endpoint, mode)
+    }
+
+    fn traffic(&mut self) -> Option<(u64, u64)> {
+        if !self.running() {
+            return None;
+        }
+        let Some(watch) = self.traffic_watch.as_mut() else {
+            return None;
+        };
+        if let Some(sample) = watch.latest() {
+            return Some(sample);
+        }
+        // The controller emits the first sample after its one-second tick.
+        if watch.waited {
+            return None;
+        }
+        watch.waited = true;
+        let deadline = Instant::now() + Duration::from_millis(1200);
+        while Instant::now() < deadline {
+            if let Some(sample) = watch.latest() {
+                return Some(sample);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        watch.latest()
     }
 }
 
@@ -1457,12 +1528,10 @@ impl ProfileBook {
             self.connected = false;
         }
         if self.connected {
+            // None is not a zero reading. A later sample still replaces the last one.
             if let Some((upload, download)) = kernel.traffic() {
                 self.upload = Some(upload);
                 self.download = Some(download);
-            } else if self.upload.is_none() {
-                self.upload = Some(0);
-                self.download = Some(0);
             }
         } else {
             self.upload = None;
@@ -1494,7 +1563,6 @@ impl ProfileBook {
         }
         self.mode = Some(next.to_string());
         self.chosen_mode = Some(next.to_string());
-        self.home_failure = None;
         self.persist();
         self.publish(kernel)
     }
@@ -3558,5 +3626,223 @@ proxy-groups:
         let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!disconnected.system_proxy && !disconnected.tun && !disconnected.vpn);
         assert!(disconnected.upload.is_none() && disconnected.download.is_none());
+    }
+
+    struct SampleKernel {
+        alive: bool,
+        sample: Option<(u64, u64)>,
+    }
+
+    impl KernelLaunch for SampleKernel {
+        fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+            self.alive = true;
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.alive
+        }
+
+        fn traffic(&mut self) -> Option<(u64, u64)> {
+            self.sample
+        }
+    }
+
+    #[test]
+    fn connected_rates_follow_samples_and_a_missing_sample_is_not_stuck_at_zero() {
+        let dir = temp_dir("rates");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = SampleKernel {
+            alive: false,
+            sample: None,
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected);
+        assert!(connected.upload.is_none() && connected.download.is_none());
+
+        kernel.sample = Some((7, 8));
+        book.sync_runtime(&mut kernel);
+        let sampled = book.snapshot();
+        assert_eq!(sampled.upload, Some(7));
+        assert_eq!(sampled.download, Some(8));
+
+        kernel.sample = None;
+        book.sync_runtime(&mut kernel);
+        let held = book.snapshot();
+        assert_eq!(held.upload, Some(7));
+        assert_eq!(held.download, Some(8));
+
+        kernel.sample = Some((1, 2));
+        book.sync_runtime(&mut kernel);
+        let replaced = book.snapshot();
+        assert_eq!(replaced.upload, Some(1));
+        assert_eq!(replaced.download, Some(2));
+
+        let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!disconnected.connected);
+        assert!(disconnected.upload.is_none() && disconnected.download.is_none());
+    }
+
+    #[test]
+    fn outbound_mode_keeps_the_previous_failure_until_the_next_connect() {
+        let dir = temp_dir("mode-keeps-failure");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = ModeKernel {
+            fail_mode: false,
+            alive: false,
+            last: String::new(),
+            up: 11,
+            down: 22,
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected && connected.failure.is_none());
+        assert!(connected.system_proxy);
+        let sets = proxy.sets;
+
+        kernel.fail_mode = true;
+        let denied = book.set_outbound_mode("global", &mut kernel);
+        assert_eq!(denied.mode.as_deref(), Some("rule"));
+        assert_eq!(denied.failure.as_deref(), Some("模式没有切换"));
+        assert_eq!(proxy.sets, sets);
+        assert!(denied.system_proxy);
+
+        kernel.fail_mode = false;
+        let switched = book.set_outbound_mode("direct", &mut kernel);
+        assert_eq!(switched.mode.as_deref(), Some("direct"));
+        assert_eq!(switched.failure.as_deref(), Some("模式没有切换"));
+        assert!(switched.system_proxy && !switched.tun);
+        assert_eq!(proxy.sets, sets);
+
+        kernel.alive = false;
+        let recorded = book.set_outbound_mode("global", &mut kernel);
+        assert_eq!(recorded.mode.as_deref(), Some("global"));
+        assert_eq!(recorded.failure.as_deref(), Some("模式没有切换"));
+        assert_eq!(recorded.system_proxy, switched.system_proxy);
+        assert_eq!(proxy.sets, sets);
+
+        kernel.alive = true;
+        let again = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(again.connected);
+        assert!(again.failure.is_none());
+        assert!(again.system_proxy);
+        assert_eq!(yaml_mode(&kernel.last).as_deref(), Some("global"));
+        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_runtime_reads_injected_controller_traffic_without_touching_system_proxy() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+        use std::thread;
+
+        let dir = temp_dir("runtime-traffic");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            fn accept_for(listener: &std::net::TcpListener) -> std::net::TcpStream {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => return stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                panic!("controller client did not connect");
+                            }
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+            }
+            fn read_headers(stream: &mut std::net::TcpStream) -> String {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 2048];
+                loop {
+                    match stream.read(&mut tmp) {
+                        Ok(0) => break,
+                        Ok(count) => {
+                            buf.extend_from_slice(&tmp[..count]);
+                            if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                String::from_utf8_lossy(&buf).into_owned()
+            }
+            fn write_json(stream: &mut std::net::TcpStream, body: &str) {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+            listener.set_nonblocking(true).unwrap();
+            let mut first_stream = accept_for(&listener);
+            first_stream.set_nonblocking(false).unwrap();
+            let first_seen = read_headers(&mut first_stream);
+            write_json(&mut first_stream, "{\"up\":4,\"down\":5}");
+            drop(first_stream);
+            let mut second_stream = accept_for(&listener);
+            second_stream.set_nonblocking(false).unwrap();
+            let second_seen = read_headers(&mut second_stream);
+            let _ = gate_rx.recv_timeout(Duration::from_secs(3));
+            write_json(&mut second_stream, "{\"up\":8,\"down\":9}");
+            format!("{first_seen}\n{second_seen}")
+        });
+        let script = dir.0.join("stand-in.sh");
+        fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut runtime = ProcessRuntime::new(&dir.0);
+        runtime.set_kernel_path(Some(script));
+        runtime
+            .start_or_reload(&format!(
+                "mixed-port: 1\nexternal-controller: 127.0.0.1:{port}\nsecret: billow-local\n"
+            ))
+            .unwrap();
+        let first = wait_traffic(&mut runtime, Some((4, 5)));
+        assert_eq!(first, Some((4, 5)));
+        gate_tx.send(()).unwrap();
+        let second = wait_traffic(&mut runtime, Some((8, 9)));
+        assert_eq!(second, Some((8, 9)));
+        runtime.stop();
+        assert!(runtime.traffic().is_none());
+        let seen = server.join().unwrap();
+        assert!(seen.contains("GET /traffic"), "{seen}");
+        assert!(seen.contains("Bearer billow-local"), "{seen}");
+        assert!(!seen.contains("networksetup"), "{seen}");
+    }
+
+    #[cfg(unix)]
+    fn wait_traffic(runtime: &mut ProcessRuntime, want: Option<(u64, u64)>) -> Option<(u64, u64)> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut last = None;
+        while Instant::now() < deadline {
+            last = runtime.traffic();
+            if last == want {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        last
     }
 }

@@ -56,6 +56,8 @@ describe('首页结构', () => {
     expect(wrapper.find('[data-testid="mode-switch"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="desktop-controls"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="home-rates"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-diagnostics"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('连接与日志')
     expect(wrapper.findAll('.btn-primary')).toHaveLength(1)
     await wrapper.get('[data-testid="home-add"]').trigger('click')
     expect(wrapper.get('[data-screen="home"]').exists()).toBe(true)
@@ -129,6 +131,27 @@ describe('首页结构', () => {
     expect(blocked.get('[data-testid="home-failure"]').text()).toContain('模式没有切换')
     expect(blocked.get('[data-testid="home-takeover"]').attributes('data-system-proxy')).toBe('on')
 
+    const kept = createMemoryProfilePort({
+      active_id: 'p1',
+      mode: 'rule',
+      system_proxy: true,
+      connected: false,
+      failure: '内核没有启动',
+      profiles: [item({ id: 'p1', name: '甲', current: true })],
+    })
+    const keptView = await mountApp(kept)
+    await keptView.get('[data-mode="direct"]').trigger('click')
+    await flushPromises()
+    expect(keptView.get('[data-testid="mode-switch"]').attributes('data-mode')).toBe('direct')
+    expect(keptView.get('[data-testid="mode-hint"]').text()).toBe(MODE_DIRECT_HINT)
+    expect(keptView.get('[data-testid="home-failure"]').text()).toContain('内核没有启动')
+    expect(keptView.get('[data-testid="home-takeover"]').attributes('data-system-proxy')).toBe('on')
+    await keptView.get('[data-testid="session-connect"]').trigger('click')
+    await flushPromises()
+    expect(keptView.get('[data-testid="link-status"]').text()).toBe('已连接')
+    expect(keptView.find('[data-testid="home-failure"]').exists()).toBe(false)
+    expect(keptView.get('[data-testid="home-takeover"]').attributes('data-system-proxy')).toBe('on')
+
     const port = createMemoryProfilePort({
       active_id: 'p1',
       mode: 'rule',
@@ -196,7 +219,6 @@ describe('首页结构', () => {
       'home-profile',
       'home-usage',
       'mode-switch',
-      'home-rates',
       'system-proxy-toggle',
       'tun-toggle',
     ]
@@ -205,6 +227,15 @@ describe('首页结构', () => {
     }
     expect(main.contains(wrapper.get('[data-testid="mode-switch"]').element)).toBe(true)
     expect(main.contains(wrapper.get('[data-testid="tun-toggle"]').element)).toBe(true)
+    expect(main.contains(wrapper.get('[data-testid="home-rates"]').element)).toBe(false)
+    expect(side.contains(wrapper.get('[data-testid="home-rates"]').element)).toBe(true)
+    expect(wrapper.get('[data-testid="home-rates"]').text()).toContain('上行')
+    expect(wrapper.get('[data-testid="home-rates"]').text()).toContain('下行')
+    expect(
+      follows(wrapper.get('[data-testid="home-group"]').element, wrapper.get('[data-testid="home-rates"]').element),
+    ).toBe(true)
+    expect(wrapper.get('[data-testid="open-diagnostics"]').text()).toBe('连接与日志')
+    expect(follows(wrapper.get('[data-testid="home-board"]').element, wrapper.get('[data-testid="open-diagnostics"]').element)).toBe(true)
     expect(side.textContent).toContain('手动组')
     expect(side.textContent).not.toContain('自动组')
     expect(wrapper.findAll('.btn-primary')).toHaveLength(1)
@@ -223,6 +254,59 @@ describe('首页结构', () => {
         narrow.get('[data-testid="home-column-groups"]').element,
       ),
     ).toBe(true)
+    expect(narrow.get('[data-testid="home-column-main"]').element.contains(narrow.get('[data-testid="home-rates"]').element)).toBe(false)
+    expect(
+      follows(
+        narrow.get('[data-testid="home-group"]').element,
+        narrow.get('[data-testid="home-rates"]').element,
+      ),
+    ).toBe(true)
+    expect(
+      follows(
+        narrow.get('[data-testid="home-rates"]').element,
+        narrow.get('[data-testid="open-diagnostics"]').element,
+      ),
+    ).toBe(true)
+  })
+
+  it('搜索滤掉手动组后从首页进入仍能定位，无搜索时也能定位', async () => {
+    const port = createMemoryProfilePort({
+      active_id: 'p1',
+      mode: 'rule',
+      profiles: [item({ id: 'p1', name: '甲', current: true })],
+      node_groups: [
+        {
+          name: '手动组',
+          kind: 'manual',
+          now: '甲',
+          sort: 'default',
+          nodes: [{ name: '甲', delay_ms: null, failed: false, selected: true }],
+        },
+      ],
+    })
+    const wrapper = await mountApp(port)
+    await wrapper.get('[data-entry="nodes"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="node-query"]').setValue('不会匹配')
+    await flushPromises()
+    expect(wrapper.find('[data-group="手动组"]').exists()).toBe(false)
+    await wrapper.get('[data-entry="home"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="home-group"]').attributes('data-group')).toBe('手动组')
+    await wrapper.get('[data-testid="home-group"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-screen="nodes"]').exists()).toBe(true)
+    expect(wrapper.get('[data-group="手动组"]').attributes('data-located')).toBe('true')
+    expect((wrapper.get('[data-testid="node-query"]').element as HTMLInputElement).value).toBe('')
+
+    await wrapper.get('[data-testid="node-query"]').setValue('甲')
+    await flushPromises()
+    await wrapper.get('[data-entry="home"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="home-group"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-group="手动组"]').attributes('data-located')).toBe('true')
+    expect((wrapper.get('[data-testid="node-query"]').element as HTMLInputElement).value).toBe('甲')
   })
 
   it('配置页列表之后是主题和内核渠道，并且没有排除项入口', async () => {
