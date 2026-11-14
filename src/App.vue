@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  ACTION_ADD,
   ACTION_CANCEL,
+  ACTION_CLOSE,
   ACTION_CONFIRM,
+  ADD_LOCAL,
+  ADD_SUBSCRIPTION,
   INSTALL_PROMPT,
   NAV_ITEMS,
   PRODUCT_NAME,
+  SUBSCRIPTION_PLACEHOLDER,
   type EntryId,
   type KernelChannel,
+  type OutboundMode,
   type ThemePreference,
 } from './copy'
 import { createKernelPort, createMemoryKernelPort, type KernelPort } from './kernel-port'
@@ -15,7 +21,7 @@ import { resolveKernelChannel } from './kernel'
 import { layoutForWidth, resolveEntry } from './navigation'
 import { createShellPort, type ShellPort } from './port'
 import { createMemoryProfilePort, createProfilePort, type ProfilePort } from './profile-port'
-import { DIAGNOSTICS_SAMPLE_MS, emptyProfileSnapshot, type ProfileSnapshot } from './profile'
+import { DIAGNOSTICS_SAMPLE_MS, emptyProfileSnapshot, normalizeMode, type ProfileSnapshot } from './profile'
 import { applyTheme, resolveTheme } from './theme'
 import type { LogFilter } from './copy'
 import { normalizeLogFilter } from './profile'
@@ -33,6 +39,9 @@ const props = defineProps<{
 
 const entry = ref<EntryId>('home')
 const diagnostics = ref(false)
+const adding = ref(false)
+const focusGroup = ref<string | null>(null)
+const subscriptionUrl = ref('')
 const theme = ref<ThemePreference>('system')
 const kernelChannel = ref<KernelChannel>('stable')
 const kernelFailure = ref<string | null>(null)
@@ -46,6 +55,10 @@ const currentProfile = computed(
 const nodesSearchable = computed(
   () => profileState.value.node_catalog.length > 0 || profileState.value.node_query.trim().length > 0,
 )
+const manualGroups = computed(() =>
+  profileState.value.node_catalog.filter((group) => group.kind === 'manual'),
+)
+const outboundMode = computed(() => normalizeMode(profileState.value.mode))
 
 let port: ShellPort | null = props.port ?? null
 const kernel: KernelPort = props.kernelPort ?? (props.port ? createMemoryKernelPort() : createKernelPort())
@@ -170,6 +183,29 @@ function addSubscription(url: string) {
 
 function addLocal(name: string, content: string) {
   void runProfile(() => profile.addLocal(name, content))
+}
+
+function submitSubscription() {
+  const url = subscriptionUrl.value
+  subscriptionUrl.value = ''
+  addSubscription(url)
+}
+
+async function onLocalFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  addLocal(file.name, await file.text())
+}
+
+function setMode(mode: OutboundMode) {
+  void runProfile(() => profile.setMode(mode))
+}
+
+function openGroup(name: string) {
+  focusGroup.value = name
+  void choose('nodes')
 }
 
 function confirmInstall() {
@@ -332,13 +368,30 @@ defineExpose({ ready })
         <p>{{ INSTALL_PROMPT }}</p>
         <p data-testid="install-url">{{ profileState.pending_url }}</p>
         <div class="row-actions">
-          <button type="button" class="btn-primary" data-testid="install-confirm-yes" @click="confirmInstall">
+          <button type="button" class="btn" data-testid="install-confirm-yes" @click="confirmInstall">
             {{ ACTION_CONFIRM }}
           </button>
           <button type="button" class="btn" data-testid="install-cancel" @click="cancelInstall">
             {{ ACTION_CANCEL }}
           </button>
         </div>
+      </div>
+      <div v-if="adding" class="card dialog" data-testid="add-layer" role="dialog" aria-modal="true">
+        <form data-testid="add-subscription" @submit.prevent="submitSubscription">
+          <label>
+            <span>{{ ADD_SUBSCRIPTION }}</span>
+            <input v-model="subscriptionUrl" type="url" name="subscription-url" :placeholder="SUBSCRIPTION_PLACEHOLDER" />
+          </label>
+          <button type="submit" class="btn">{{ ACTION_ADD }}</button>
+        </form>
+        <label data-testid="add-local" class="file-field">
+          <span>{{ ADD_LOCAL }}</span>
+          <input type="file" @change="onLocalFile" />
+        </label>
+        <p v-if="profileState.input_error" class="notice" data-testid="profile-input-error" role="alert">
+          {{ profileState.input_error }}
+        </p>
+        <button type="button" class="btn" data-testid="add-layer-close" @click="adding = false">{{ ACTION_CLOSE }}</button>
       </div>
       <DiagnosticsView
         v-if="diagnostics"
@@ -354,10 +407,16 @@ defineExpose({ ready })
       <HomeView
         v-else-if="entry === 'home'"
         :failure="profileState.failure"
+        :profile-name="currentProfile?.name ?? null"
+        :has-profiles="profileState.profiles.length > 0"
         :used="currentProfile?.used ?? null"
         :total="currentProfile?.total ?? null"
         :expire="currentProfile?.expire ?? null"
-        :mixed-port="profileState.mixed_port"
+        :mode="outboundMode"
+        :upload="profileState.upload"
+        :download="profileState.download"
+        :groups="manualGroups"
+        :arrangement="layout === 'sidebar' ? 'columns' : 'stack'"
         :platform="profileState.platform"
         :connected="profileState.connected"
         :connecting="connecting"
@@ -368,6 +427,9 @@ defineExpose({ ready })
         :installed="profileState.installed"
         @connect="connectSession"
         @disconnect="disconnectSession"
+        @add="adding = true"
+        @mode="setMode"
+        @open-group="openGroup"
         @system-proxy="setSystemProxy"
         @tun="setTun"
         @exclude="excludePackage"
@@ -381,6 +443,7 @@ defineExpose({ ready })
         :notice="profileState.nodes_notice"
         :error="profileState.nodes_error"
         :searchable="nodesSearchable"
+        :focus-group="focusGroup"
         @query="setNodeQuery"
         @sort="setNodeSort"
         @select="selectNode"
@@ -396,8 +459,7 @@ defineExpose({ ready })
         @enable="enableProfile"
         @update="updateProfile"
         @save-override="saveOverride"
-        @add-subscription="addSubscription"
-        @add-local="addLocal"
+        @add="adding = true"
       />
     </main>
     <nav v-if="layout === 'bottom'" class="bottom-nav" aria-label="主导航">

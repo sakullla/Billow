@@ -188,6 +188,44 @@ textarea {
   font-size: 0.875rem;
 }
 
+.home-board {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.home-board[data-arrangement='columns'] {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  align-items: start;
+}
+
+.home-main,
+.home-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.config-name {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.rate-line {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-group {
+  width: 100%;
+  justify-content: space-between;
+}
+
 .status-word {
   margin: 0;
   font-size: 3rem;

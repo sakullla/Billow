@@ -9,6 +9,26 @@ export const STATUS_CONNECTED = '已连接'
 export const HOME_HINT = '连接信息会显示在这里。'
 export const ACTION_CONNECT = '连接'
 export const ACTION_DISCONNECT = '断开'
+export const ACTION_ADD_PROFILE = '添加配置'
+export const MODE_RULE = '规则'
+export const MODE_GLOBAL = '全局'
+export const MODE_DIRECT = '直连'
+export const MODE_RULE_HINT = '按配置自动选择'
+export const MODE_GLOBAL_HINT = '全部走当前节点'
+export const MODE_DIRECT_HINT = '新连接不走代理'
+export const RATE_UP = '上行'
+export const RATE_DOWN = '下行'
+export const PROFILE_LOCAL = '本地'
+export const PROFILE_SUBSCRIPTION = '订阅'
+export const PROFILE_SUCCESS = '最近成功'
+
+export const OUTBOUND_MODES = [
+  { id: 'rule', label: MODE_RULE, hint: MODE_RULE_HINT },
+  { id: 'global', label: MODE_GLOBAL, hint: MODE_GLOBAL_HINT },
+  { id: 'direct', label: MODE_DIRECT, hint: MODE_DIRECT_HINT },
+] as const
+
+export type OutboundMode = (typeof OUTBOUND_MODES)[number]['id']
 export const PROXY_HINT = '浏览器和遵守系统设置的应用'
 export const TUN_HINT = '不遵守系统代理的应用也走代理，并需要系统授权'
 export const VPN_EXCLUDE = '按应用排除'

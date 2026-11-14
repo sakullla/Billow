@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { nextTick, watch } from 'vue'
 import {
   NODE_SORTS,
   NODES_AUTO,
@@ -14,13 +15,28 @@ import {
 } from '../copy'
 import type { NodeGroup, NodeItem } from '../profile'
 
-defineProps<{
+const props = defineProps<{
   groups: NodeGroup[]
   query: string
   notice: string | null
   error: string | null
   searchable: boolean
+  focusGroup?: string | null
 }>()
+
+watch(
+  () => props.focusGroup,
+  (name) => {
+    if (!name) return
+    void nextTick(() => {
+      const node = document.querySelector(`[data-testid="node-group"][data-group="${CSS.escape(name)}"]`)
+      if (node instanceof HTMLElement && typeof node.scrollIntoView === 'function') {
+        node.scrollIntoView({ block: 'start' })
+      }
+    })
+  },
+  { immediate: true },
+)
 
 const emit = defineEmits<{
   query: [value: string]
@@ -64,6 +80,7 @@ function onQuery(event: Event) {
       :data-group="group.name"
       :data-kind="group.kind"
       :data-sort="group.sort"
+      :data-located="focusGroup === group.name ? 'true' : 'false'"
     >
       <div class="group-meta">
         <h2>{{ group.name }}</h2>

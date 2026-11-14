@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   ABOUT_TEXT,
   ABOUT_TITLE,
-  ACTION_ADD,
+  ACTION_ADD_PROFILE,
   ACTION_CLOSE,
   ACTION_SAVE,
-  ADD_LOCAL,
-  ADD_SUBSCRIPTION,
   CURRENT_MARK,
   EFFECTIVE_LABEL,
   KERNEL_OPTIONS,
@@ -15,10 +13,12 @@ import {
   OVERRIDE_TITLE,
   PROFILE_ADVANCED,
   PROFILE_ENABLE,
+  PROFILE_LOCAL,
+  PROFILE_SUBSCRIPTION,
+  PROFILE_SUCCESS,
   PROFILE_UPDATE,
   PROFILES_EMPTY,
   SETTINGS_TITLE,
-  SUBSCRIPTION_PLACEHOLDER,
   TAKEOVER_PROXY,
   TAKEOVER_TUN,
   TAKEOVER_VPN,
@@ -29,10 +29,10 @@ import {
   type KernelChannel,
   type ThemePreference,
 } from '../copy'
-import { formatExpire, showsExpire, showsUsage, type ProfileSnapshot } from '../profile'
+import { formatExpire, formatSuccess, showsExpire, showsUsage, type ProfileSnapshot } from '../profile'
 import { THEME_OPTIONS } from '../theme'
 
-defineProps<{
+const props = defineProps<{
   modelValue: ThemePreference
   channel: KernelChannel
   failure: string | null
@@ -44,13 +44,17 @@ const emit = defineEmits<{
   enable: [id: string]
   update: [id: string]
   'save-override': [id: string, text: string]
-  'add-subscription': [url: string]
-  'add-local': [name: string, content: string]
+  add: []
 }>()
 
-const subscriptionUrl = ref('')
 const advancedId = ref<string | null>(null)
 const draft = ref('')
+const orderedProfiles = computed(() =>
+  [...props.profiles.profiles].sort((left, right) => Number(right.current) - Number(left.current)),
+)
+const advancedProfile = computed(
+  () => props.profiles.profiles.find((profile) => profile.id === advancedId.value) ?? null,
+)
 
 function openAdvanced(id: string, text: string) {
   advancedId.value = id
@@ -71,39 +75,15 @@ function onDraft(event: Event) {
   const target = event.target
   if (target instanceof HTMLTextAreaElement) draft.value = target.value
 }
-
-function addSubscription() {
-  emit('add-subscription', subscriptionUrl.value)
-  subscriptionUrl.value = ''
-}
-
-async function onFile(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  emit('add-local', file.name, await file.text())
-}
 </script>
 
 <template>
   <section class="screen" data-screen="settings">
     <h1 class="page-title">{{ SETTINGS_TITLE }}</h1>
     <article class="card" data-testid="profiles">
-      <form data-testid="add-subscription" @submit.prevent="addSubscription">
-        <label>
-          <span>{{ ADD_SUBSCRIPTION }}</span>
-          <input v-model="subscriptionUrl" type="url" name="subscription-url" :placeholder="SUBSCRIPTION_PLACEHOLDER" />
-        </label>
-        <button type="submit" class="btn">{{ ACTION_ADD }}</button>
-      </form>
-      <label data-testid="add-local" class="file-field">
-        <span>{{ ADD_LOCAL }}</span>
-        <input type="file" @change="onFile" />
-      </label>
-      <p v-if="profiles.input_error" class="notice" data-testid="profile-input-error" role="alert">
-        {{ profiles.input_error }}
-      </p>
+      <button type="button" class="btn" data-testid="open-add-profile" @click="emit('add')">
+        {{ ACTION_ADD_PROFILE }}
+      </button>
       <p
         data-testid="takeover"
         :data-system-proxy="profiles.system_proxy ? 'on' : 'off'"
@@ -114,10 +94,10 @@ async function onFile(event: Event) {
         {{ TAKEOVER_TUN }}{{ profiles.tun ? '开启' : '关闭' }}
         {{ TAKEOVER_VPN }}{{ profiles.vpn ? '开启' : '关闭' }}
       </p>
-      <p v-if="profiles.profiles.length === 0">{{ PROFILES_EMPTY }}</p>
+      <p v-if="orderedProfiles.length === 0">{{ PROFILES_EMPTY }}</p>
       <ul v-else class="profile-list">
         <li
-          v-for="profile in profiles.profiles"
+          v-for="profile in orderedProfiles"
           :key="profile.id"
           :data-profile-id="profile.id"
           :data-current="profile.current ? 'true' : 'false'"
@@ -127,7 +107,13 @@ async function onFile(event: Event) {
             <h2>{{ profile.name }}</h2>
             <span v-if="profile.current" data-testid="profile-current">{{ CURRENT_MARK }}</span>
           </div>
+          <p class="muted" data-testid="profile-kind">
+            {{ profile.kind === 'local' ? PROFILE_LOCAL : PROFILE_SUBSCRIPTION }}
+          </p>
           <p v-if="profile.source.includes('://')" class="muted">{{ profile.source }}</p>
+          <p v-if="profile.last_success_ms" data-testid="profile-success">
+            {{ PROFILE_SUCCESS }} {{ formatSuccess(profile.last_success_ms) }}
+          </p>
           <p v-if="showsUsage(profile.used, profile.total)" data-testid="profile-usage">
             {{ USAGE_USED }} {{ profile.used }} {{ USAGE_TOTAL }} {{ profile.total }}
           </p>
@@ -139,8 +125,17 @@ async function onFile(event: Event) {
           </p>
           <p v-if="profile.failure" class="notice" data-testid="profile-failure" role="alert">{{ profile.failure }}</p>
           <div class="row-actions" data-testid="profile-actions">
-            <button type="button" data-action="enable" @click="emit('enable', profile.id)">{{ PROFILE_ENABLE }}</button>
-            <button type="button" data-action="update" @click="emit('update', profile.id)">{{ PROFILE_UPDATE }}</button>
+            <button v-if="!profile.current" type="button" data-action="enable" @click="emit('enable', profile.id)">
+              {{ PROFILE_ENABLE }}
+            </button>
+            <button
+              v-if="profile.current && profile.kind === 'subscription'"
+              type="button"
+              data-action="update"
+              @click="emit('update', profile.id)"
+            >
+              {{ PROFILE_UPDATE }}
+            </button>
             <button
               type="button"
               data-action="advanced"
@@ -149,19 +144,19 @@ async function onFile(event: Event) {
               {{ PROFILE_ADVANCED }}
             </button>
           </div>
-          <div v-if="advancedId === profile.id" data-testid="override-editor">
-            <h2>{{ OVERRIDE_TITLE }}</h2>
-            <textarea :value="draft" @input="onDraft" />
-            <div class="row-actions">
-              <button type="button" data-testid="override-save" @click="saveAdvanced">{{ ACTION_SAVE }}</button>
-              <button type="button" data-testid="override-close" @click="closeAdvanced">{{ ACTION_CLOSE }}</button>
-            </div>
-            <p v-if="profile.override_error" class="notice" data-testid="override-error" role="alert">
-              {{ profile.override_error }}
-            </p>
-          </div>
         </li>
       </ul>
+      <div v-if="advancedProfile" class="dialog" data-testid="override-editor" role="dialog">
+        <h2>{{ OVERRIDE_TITLE }}</h2>
+        <textarea :value="draft" @input="onDraft" />
+        <div class="row-actions">
+          <button type="button" data-testid="override-save" @click="saveAdvanced">{{ ACTION_SAVE }}</button>
+          <button type="button" data-testid="override-close" @click="closeAdvanced">{{ ACTION_CLOSE }}</button>
+        </div>
+        <p v-if="advancedProfile.override_error" class="notice" data-testid="override-error" role="alert">
+          {{ advancedProfile.override_error }}
+        </p>
+      </div>
     </article>
     <article class="card">
       <h2>{{ THEME_TITLE }}</h2>

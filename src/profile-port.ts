@@ -9,6 +9,7 @@ import {
 import {
   emptyProfileSnapshot,
   normalizeLogFilter,
+  normalizeMode,
   normalizeProfileSnapshot,
   type ConnectionRow,
   type LogLine,
@@ -40,6 +41,7 @@ export interface ProfilePort {
   setNodeSort(group: string, sort: string): Promise<ProfileSnapshot>
   setConnectionQuery(query: string): Promise<ProfileSnapshot>
   setLogFilter(level: string): Promise<ProfileSnapshot>
+  setMode(mode: string): Promise<ProfileSnapshot>
   subscribe?(handler: (snapshot: ProfileSnapshot) => void): () => void
 }
 
@@ -195,6 +197,7 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
         used: null,
         total: null,
         expire: null,
+        last_success_ms: null,
       })
       return finish()
     },
@@ -211,6 +214,7 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
         used: null,
         total: null,
         expire: null,
+        last_success_ms: null,
       })
       const port = readPort(content)
       if (port != null) state.profiles[state.profiles.length - 1]!.source = content
@@ -235,6 +239,7 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
         used: null,
         total: null,
         expire: null,
+        last_success_ms: null,
       })
       return finish()
     },
@@ -261,6 +266,8 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
       if (!state.active_id) {
         state.failure = '没有生效配置'
         state.connected = false
+        state.upload = null
+        state.download = null
         allConnections = []
         kernelRunning = false
         pushLog('error', '没有生效配置')
@@ -278,6 +285,8 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
         state.connected = true
       }
       state.failure = null
+      state.upload = 128
+      state.download = 256
       kernelRunning = true
       allConnections = []
       return finish()
@@ -287,9 +296,21 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
       state.tun = false
       state.vpn = false
       state.connected = false
+      state.upload = null
+      state.download = null
       state.failure = null
       kernelRunning = false
       allConnections = []
+      return finish()
+    },
+    async setMode(mode) {
+      const next = normalizeMode(mode)
+      if (!next || !state.active_id) {
+        state.failure = '模式没有切换'
+        return finish()
+      }
+      state.mode = next
+      state.failure = null
       return finish()
     },
     async setSystemProxy(enabled) {
@@ -402,6 +423,7 @@ function wrapStore(inner: ProfilePort, storage: Storage): ProfilePort {
     setNodeSort: (group, sort) => inner.setNodeSort(group, sort).then(keep),
     setConnectionQuery: (query) => inner.setConnectionQuery(query).then(keep),
     setLogFilter: (level) => inner.setLogFilter(level).then(keep),
+    setMode: (mode) => inner.setMode(mode).then(keep),
   }
 }
 
@@ -503,6 +525,10 @@ function createTauriProfilePort(): ProfilePort {
     async setLogFilter(level) {
       const { invoke } = await import('@tauri-apps/api/core')
       return applyRaw(await invoke<ProfileSnapshot>('set_log_filter', { level }))
+    },
+    async setMode(mode) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('set_outbound_mode', { mode }))
     },
     subscribe(handler) {
       let stop = () => {}

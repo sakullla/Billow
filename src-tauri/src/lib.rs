@@ -553,6 +553,14 @@ fn set_connection_query(app: AppHandle, query: String) -> ProfileSnapshot {
 }
 
 #[tauri::command]
+fn set_outbound_mode(app: AppHandle, mode: String) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.set_outbound_mode(&mode, runtime)
+    })
+}
+
+#[tauri::command]
 fn set_log_filter(app: AppHandle, level: String) -> ProfileSnapshot {
     with_profile(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -615,7 +623,8 @@ pub fn run() {
             set_node_query,
             set_node_sort,
             set_connection_query,
-            set_log_filter
+            set_log_filter,
+            set_outbound_mode
         ])
         .setup(|app| {
             prepare_shell(app);

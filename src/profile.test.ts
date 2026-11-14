@@ -16,6 +16,7 @@ function profile(partial: Partial<ProfileItem> & Pick<ProfileItem, 'id' | 'name'
     used: null,
     total: null,
     expire: null,
+    last_success_ms: null,
     ...partial,
   }
 }
@@ -131,6 +132,7 @@ describe('配置', () => {
 
     const entries = await mountApp()
     await entries.get('[data-entry="settings"]').trigger('click')
+    await entries.get('[data-testid="open-add-profile"]').trigger('click')
     const subscription = entries.get('[data-testid="add-subscription"]')
     const local = entries.get('[data-testid="add-local"]')
     expect(subscription.text()).toContain('订阅链接')

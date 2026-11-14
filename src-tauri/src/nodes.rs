@@ -212,6 +212,32 @@ pub fn controller_from_yaml(yaml: &str) -> Option<ControllerEndpoint> {
     })
 }
 
+pub fn patch_mode(endpoint: &ControllerEndpoint, mode: &str) -> Result<(), String> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return Err("模式没有切换".to_string());
+    }
+    let mode = match mode {
+        "rule" | "global" | "direct" => mode,
+        _ => return Err("模式没有切换".to_string()),
+    };
+    let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
+    let body = format!("{{\"mode\":\"{mode}\"}}");
+    let agent = agent(Duration::from_millis(800));
+    let request = agent
+        .patch(&url)
+        .set("Content-Type", "application/json")
+        .set("User-Agent", "Billow");
+    let request = if endpoint.secret.is_empty() {
+        request
+    } else {
+        request.set("Authorization", &format!("Bearer {}", endpoint.secret))
+    };
+    match request.send_string(&body) {
+        Ok(_) => Ok(()),
+        Err(_) => Err("模式没有切换".to_string()),
+    }
+}
+
 pub fn put_selection(endpoint: &ControllerEndpoint, group: &str, node: &str) -> Result<(), String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 || group.is_empty() || node.is_empty() {
         return Err(SELECT_FAILED.to_string());

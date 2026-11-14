@@ -100,7 +100,26 @@ describe('连接与日志', () => {
   })
 
   it('一次启动失败能在日志里看到，并且可以按级别留下失败行', async () => {
-    const wrapper = await mountApp()
+    const wrapper = await mountApp(
+      createMemoryProfilePort({
+        profiles: [
+          {
+            id: 'p1',
+            name: '未启用',
+            kind: 'local',
+            source: '',
+            current: false,
+            failure: null,
+            override_text: '',
+            override_error: null,
+            used: null,
+            total: null,
+            expire: null,
+            last_success_ms: null,
+          },
+        ],
+      }),
+    )
     await wrapper.get('[data-testid="session-connect"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-testid="open-diagnostics-failure"]').trigger('click')

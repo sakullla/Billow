@@ -100,6 +100,7 @@ pub struct ProfileView {
     pub used: Option<u64>,
     pub total: Option<u64>,
     pub expire: Option<u64>,
+    pub last_success_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -130,6 +131,8 @@ pub struct ProfileSnapshot {
     pub connection_query: String,
     pub logs: Vec<LogView>,
     pub log_filter: String,
+    pub upload: Option<u64>,
+    pub download: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +170,14 @@ pub trait KernelLaunch {
 
     fn pull_logs(&mut self) -> Vec<LogView> {
         Vec::new()
+    }
+
+    fn set_mode(&mut self, _mode: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn traffic(&mut self) -> Option<(u64, u64)> {
+        None
     }
 }
 
@@ -449,6 +460,16 @@ impl KernelLaunch for ProcessRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::mem::take(&mut *guard)
     }
+
+    fn set_mode(&mut self, mode: &str) -> Result<(), String> {
+        if !self.running() {
+            return Ok(());
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return Ok(());
+        };
+        nodes::patch_mode(&endpoint, mode)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -469,6 +490,8 @@ struct DiskState {
     proxy_port: Option<u16>,
     #[serde(default)]
     profiles: Vec<DiskProfile>,
+    #[serde(default)]
+    chosen_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -527,6 +550,9 @@ pub struct ProfileBook {
     connection_query: String,
     logs: Vec<LogView>,
     log_filter: String,
+    chosen_mode: Option<String>,
+    upload: Option<u64>,
+    download: Option<u64>,
 }
 
 struct DelayMark {
@@ -566,6 +592,9 @@ impl ProfileBook {
             connection_query: String::new(),
             logs: Vec::new(),
             log_filter: "all".to_string(),
+            chosen_mode: None,
+            upload: None,
+            download: None,
         };
         book.load();
         book
@@ -592,6 +621,7 @@ impl ProfileBook {
                 used: profile.usage.as_ref().and_then(|usage| usage.used),
                 total: profile.usage.as_ref().and_then(|usage| usage.total),
                 expire: profile.usage.as_ref().and_then(|usage| usage.expire),
+                last_success_ms: profile.last_success_ms,
             })
             .collect();
         let (node_catalog, node_groups, nodes_notice, nodes_profile_id) = self.node_views();
@@ -626,6 +656,8 @@ impl ProfileBook {
             connection_query: self.connection_query.clone(),
             logs: diagnostics::filter_logs(&self.logs, &self.log_filter),
             log_filter: self.log_filter.clone(),
+            upload: self.upload,
+            download: self.download,
         }
     }
 
@@ -1115,7 +1147,8 @@ impl ProfileBook {
             self.active_id = Some(profile.id.clone());
         }
         self.mixed_port = prepared.mixed_port;
-        self.mode = prepared.mode;
+        self.mode = prepared.mode.clone();
+        self.chosen_mode = prepared.mode;
         self.home_failure = None;
         self.input_error = None;
         self.apply_live_selections(kernel);
@@ -1218,6 +1251,10 @@ impl ProfileBook {
         };
         let selected = profile.selected.clone();
         let yaml = force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?;
+        let yaml = match self.mode.as_deref().and_then(normalize_outbound) {
+            Some(mode) => force_mode(&yaml, mode).map_err(StartError::Failed)?,
+            None => yaml,
+        };
         let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&yaml, &selected));
         Ok((yaml, port))
     }
@@ -1326,7 +1363,13 @@ impl ProfileBook {
                 .unwrap_or(0)
                 + 1,
         );
+        self.chosen_mode = disk.chosen_mode.and_then(|mode| {
+            normalize_outbound(&mode).map(|mode| mode.to_string())
+        });
         self.recompute_effective();
+        if let Some(mode) = self.chosen_mode.clone() {
+            self.mode = Some(mode);
+        }
         if let Some(message) = self.home_failure.clone() {
             self.append_logs(vec![diagnostics::failure_log(&message)]);
         }
@@ -1365,6 +1408,7 @@ impl ProfileBook {
                 .as_ref()
                 .map(|endpoint| endpoint.host.clone()),
             proxy_port: self.our_endpoint.as_ref().map(|endpoint| endpoint.port),
+            chosen_mode: self.chosen_mode.clone(),
             profiles: self
                 .profiles
                 .iter()
@@ -1412,6 +1456,47 @@ impl ProfileBook {
             // A stopped kernel is not connected. The system-proxy switch may stay on.
             self.connected = false;
         }
+        if self.connected {
+            if let Some((upload, download)) = kernel.traffic() {
+                self.upload = Some(upload);
+                self.download = Some(download);
+            } else if self.upload.is_none() {
+                self.upload = Some(0);
+                self.download = Some(0);
+            }
+        } else {
+            self.upload = None;
+            self.download = None;
+        }
+    }
+
+    pub fn set_outbound_mode(&mut self, mode: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        let Some(next) = normalize_outbound(mode) else {
+            self.home_failure = Some("模式没有切换".to_string());
+            self.remember_current_failure();
+            return self.snapshot();
+        };
+        if self.active_id.is_none() {
+            self.home_failure = Some("没有生效配置".to_string());
+            self.remember_current_failure();
+            return self.snapshot();
+        }
+        if kernel.running() {
+            if let Err(message) = kernel.set_mode(next) {
+                self.home_failure = Some(if message.is_empty() {
+                    "模式没有切换".to_string()
+                } else {
+                    message
+                });
+                self.remember_current_failure();
+                return self.publish(kernel);
+            }
+        }
+        self.mode = Some(next.to_string());
+        self.chosen_mode = Some(next.to_string());
+        self.home_failure = None;
+        self.persist();
+        self.publish(kernel)
     }
 
     pub fn set_connection_query(
@@ -1766,6 +1851,27 @@ enum StartError {
 enum PrepareError {
     Content,
     Override,
+}
+
+fn normalize_outbound(mode: &str) -> Option<&'static str> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "rule" | "规则" => Some("rule"),
+        "global" | "全局" => Some("global"),
+        "direct" | "直连" => Some("direct"),
+        _ => None,
+    }
+}
+
+fn force_mode(yaml: &str, mode: &str) -> Result<String, String> {
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let Some(map) = value.as_mapping_mut() else {
+        return Err(CONTENT_ERROR.to_string());
+    };
+    map.insert(
+        Value::String("mode".to_string()),
+        Value::String(mode.to_string()),
+    );
+    serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
 }
 
 fn force_tun(yaml: &str, enable: bool, fd: Option<i32>) -> Result<String, String> {
@@ -3363,5 +3469,94 @@ proxy-groups:
         assert!(closed.system_proxy);
         assert!(!closed.tun);
         assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+    }
+
+    struct ModeKernel {
+        fail_mode: bool,
+        alive: bool,
+        last: String,
+        up: u64,
+        down: u64,
+    }
+
+    impl KernelLaunch for ModeKernel {
+        fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
+            self.last = config_yaml.to_string();
+            self.alive = true;
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.alive
+        }
+
+        fn set_mode(&mut self, _mode: &str) -> Result<(), String> {
+            if self.fail_mode {
+                Err("模式没有切换".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn traffic(&mut self) -> Option<(u64, u64)> {
+            Some((self.up, self.down))
+        }
+    }
+
+    fn yaml_mode(yaml: &str) -> Option<String> {
+        let value: Value = serde_yaml::from_str(yaml).ok()?;
+        value.get("mode").and_then(|item| item.as_str()).map(str::to_string)
+    }
+
+    #[test]
+    fn direct_mode_keeps_the_system_proxy_and_a_failed_switch_keeps_the_mode() {
+        let dir = temp_dir("mode");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = ModeKernel {
+            fail_mode: false,
+            alive: false,
+            last: String::new(),
+            up: 11,
+            down: 22,
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.system_proxy);
+        assert!(!connected.tun);
+        assert!(!connected.vpn);
+        assert_eq!(connected.mode.as_deref(), Some("rule"));
+        assert_eq!(connected.upload, Some(11));
+        assert_eq!(connected.download, Some(22));
+        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+        let sets = proxy.sets;
+
+        let switched = book.set_outbound_mode("direct", &mut kernel);
+        assert_eq!(switched.mode.as_deref(), Some("direct"));
+        assert!(switched.failure.is_none());
+        assert!(switched.system_proxy);
+        assert!(!switched.tun);
+        assert_eq!(proxy.sets, sets);
+        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+
+        let again = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(yaml_mode(&kernel.last).as_deref(), Some("direct"));
+        assert!(again.system_proxy);
+        assert!(!again.tun);
+        let sets_after = proxy.sets;
+
+        kernel.fail_mode = true;
+        let failed = book.set_outbound_mode("global", &mut kernel);
+        assert_eq!(failed.mode.as_deref(), Some("direct"));
+        assert_eq!(failed.failure.as_deref(), Some("模式没有切换"));
+        assert!(failed.system_proxy);
+        assert_eq!(proxy.sets, sets_after);
+
+        let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!disconnected.system_proxy && !disconnected.tun && !disconnected.vpn);
+        assert!(disconnected.upload.is_none() && disconnected.download.is_none());
     }
 }

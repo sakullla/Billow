@@ -14,9 +14,32 @@ async function mountApp(profilePort: ProfilePort) {
   return wrapper
 }
 
+function savedDesktop() {
+  return createMemoryProfilePort({
+    active_id: 'p1',
+    mode: 'rule',
+    profiles: [
+      {
+        id: 'p1',
+        name: '已保存',
+        kind: 'local',
+        source: '',
+        current: true,
+        failure: null,
+        override_text: '',
+        override_error: null,
+        used: null,
+        total: null,
+        expire: null,
+        last_success_ms: null,
+      },
+    ],
+  })
+}
+
 describe('接管界面', () => {
   it('桌面首页说明系统代理和 TUN，并且没有按应用排除', async () => {
-    const wrapper = await mountApp(createMemoryProfilePort())
+    const wrapper = await mountApp(savedDesktop())
     expect(wrapper.get('[data-testid="link-status"]').text()).toBe('未连接')
     expect(wrapper.get('[data-testid="system-proxy-hint"]').text()).toBe(PROXY_HINT)
     expect(wrapper.get('[data-testid="tun-hint"]').text()).toBe(TUN_HINT)
@@ -32,6 +55,24 @@ describe('接管界面', () => {
     const wrapper = await mountApp(
       createMemoryProfilePort({
         platform: 'android',
+        active_id: 'p1',
+        mode: 'rule',
+        profiles: [
+          {
+            id: 'p1',
+            name: '已保存',
+            kind: 'local',
+            source: '',
+            current: true,
+            failure: null,
+            override_text: '',
+            override_error: null,
+            used: null,
+            total: null,
+            expire: null,
+            last_success_ms: null,
+          },
+        ],
         excluded: ['com.example.mail'],
         installed: [
           { name: '电子 邮箱', package_name: 'com.example.mail' },

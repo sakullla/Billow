@@ -10,6 +10,7 @@ export interface ProfileItem {
   used: number | null
   total: number | null
   expire: number | null
+  last_success_ms: number | null
 }
 
 export interface InstalledApp {
@@ -69,6 +70,8 @@ export interface ProfileSnapshot {
   connection_query: string
   logs: LogLine[]
   log_filter: 'all' | 'error' | 'warning' | 'info'
+  upload: number | null
+  download: number | null
 }
 
 export const DIAGNOSTICS_SAMPLE_MS = 1000
@@ -101,6 +104,8 @@ export function emptyProfileSnapshot(): ProfileSnapshot {
     connection_query: '',
     logs: [],
     log_filter: 'all',
+    upload: null,
+    download: null,
   }
 }
 
@@ -168,6 +173,13 @@ export function normalizeLogFilter(filter: unknown): ProfileSnapshot['log_filter
   return filter === 'error' || filter === 'warning' || filter === 'info' ? filter : 'all'
 }
 
+export function normalizeMode(mode: unknown): 'rule' | 'global' | 'direct' | null {
+  if (typeof mode !== 'string') return null
+  const text = mode.trim().toLowerCase()
+  if (text === 'rule' || text === 'global' || text === 'direct') return text
+  return null
+}
+
 function normalizeGroups(raw: unknown): NodeGroup[] {
   if (!Array.isArray(raw)) return []
   return raw.flatMap((item) => {
@@ -194,11 +206,12 @@ export function normalizeProfileSnapshot(raw: unknown): ProfileSnapshot {
         used: whole(profile.used),
         total: positive(profile.total),
         expire: positive(profile.expire),
+        last_success_ms: positive(profile.last_success_ms),
       }
     }),
     active_id: text(source.active_id),
     mixed_port: whole(source.mixed_port),
-    mode: text(source.mode),
+    mode: normalizeMode(source.mode),
     system_proxy: Boolean(source.system_proxy),
     tun: Boolean(source.tun),
     vpn: Boolean(source.vpn),
@@ -234,6 +247,8 @@ export function normalizeProfileSnapshot(raw: unknown): ProfileSnapshot {
         })
       : [],
     log_filter: normalizeLogFilter(source.log_filter),
+    upload: whole(source.upload),
+    download: whole(source.download),
     installed: Array.isArray(source.installed)
       ? source.installed.flatMap((item) => {
           const app = item && typeof item === 'object' ? (item as Partial<InstalledApp>) : {}
@@ -261,4 +276,11 @@ export function showsUsage(used: number | null, total: number | null): boolean {
 
 export function showsExpire(expire: number | null): boolean {
   return expire != null && expire > 0
+}
+
+export function formatSuccess(ms: number): string {
+  const date = new Date(ms)
+  if (Number.isNaN(date.getTime())) return String(ms)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }

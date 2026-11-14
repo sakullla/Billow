@@ -42,6 +42,7 @@ function profilePort(): ProfilePort {
         used: null,
         total: null,
         expire: null,
+        last_success_ms: null,
       },
     ],
     node_groups: groups,
