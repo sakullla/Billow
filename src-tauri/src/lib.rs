@@ -1,4 +1,5 @@
 mod kernel;
+mod nodes;
 mod profile;
 mod shell;
 mod takeover;
@@ -349,7 +350,9 @@ fn profile_snapshot(app: &AppHandle) -> ProfileSnapshot {
     let mut session = lock_profiles(&store.session);
     let mut installed = takeover::HostInstalledApps;
     session.book.refresh_installed(&mut installed);
-    session.book.snapshot()
+    let ProfileSession { book, runtime, .. } = &mut *session;
+    book.sync_runtime(runtime);
+    book.snapshot()
 }
 
 fn with_profile<T>(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> T) -> T {
@@ -514,6 +517,32 @@ fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     })
 }
 
+#[tauri::command]
+fn select_profile_node(app: AppHandle, group: String, node: String) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.select_node(&group, &node, runtime)
+    })
+}
+
+#[tauri::command]
+fn test_profile_group(app: AppHandle, group: String) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.test_group(&group, runtime)
+    })
+}
+
+#[tauri::command]
+fn set_node_query(app: AppHandle, query: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.set_node_query(&query))
+}
+
+#[tauri::command]
+fn set_node_sort(app: AppHandle, group: String, sort: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.set_node_sort(&group, &sort))
+}
+
 fn release_proxy_on_exit(app: &AppHandle) {
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
@@ -563,7 +592,11 @@ pub fn run() {
             set_system_proxy,
             set_tun_enabled,
             exclude_package,
-            include_package
+            include_package,
+            select_profile_node,
+            test_profile_group,
+            set_node_query,
+            set_node_sort
         ])
         .setup(|app| {
             prepare_shell(app);

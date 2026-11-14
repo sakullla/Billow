@@ -17,6 +17,25 @@ export const EXCLUDE_ON = '已排除'
 export const EXCLUDE_OFF = '未排除'
 export const NODES_TITLE = '节点'
 export const NODES_EMPTY = '还没有可显示的节点。'
+export const NODES_NEED_PROFILE = '需要先添加或更新配置'
+export const NODES_NO_MATCH = '没有匹配的节点'
+export const NODES_SEARCH = '搜索节点'
+export const NODES_MANUAL = '手动'
+export const NODES_AUTO = '自动'
+export const NODES_NOW = '当前节点'
+export const NODES_UNKNOWN = '未知'
+export const NODES_TEST = '测试'
+export const NODES_FAILED = '失败'
+export const NODES_SELECTED = '已选'
+export const NODES_KERNEL_DOWN = '内核没有运行'
+export const NODES_NOT_MANUAL = '不能改选'
+export const NODES_MISSING = '没有这个节点'
+
+export const NODE_SORTS = [
+  { id: 'default', label: '默认' },
+  { id: 'delay', label: '延迟' },
+  { id: 'name', label: '名称' },
+] as const
 export const SETTINGS_TITLE = '配置'
 export const THEME_TITLE = '主题'
 export const KERNEL_TITLE = '内核渠道'

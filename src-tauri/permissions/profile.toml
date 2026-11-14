@@ -72,3 +72,23 @@ commands.allow = ["exclude_package"]
 identifier = "allow-include-package"
 description = "Enables the include_package command without any pre-configured scope."
 commands.allow = ["include_package"]
+
+[[permission]]
+identifier = "allow-select-profile-node"
+description = "Enables the select_profile_node command without any pre-configured scope."
+commands.allow = ["select_profile_node"]
+
+[[permission]]
+identifier = "allow-test-profile-group"
+description = "Enables the test_profile_group command without any pre-configured scope."
+commands.allow = ["test_profile_group"]
+
+[[permission]]
+identifier = "allow-set-node-query"
+description = "Enables the set_node_query command without any pre-configured scope."
+commands.allow = ["set_node_query"]
+
+[[permission]]
+identifier = "allow-set-node-sort"
+description = "Enables the set_node_sort command without any pre-configured scope."
+commands.allow = ["set_node_sort"]

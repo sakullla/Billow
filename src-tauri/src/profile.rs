@@ -9,6 +9,10 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
+use crate::nodes::{
+    self, ControllerEndpoint, KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay,
+    NodeGroupView, ParsedGroup, SELECT_FAILED,
+};
 use crate::takeover::{
     self, ClientPlatform, PlatformRelease, ProxyEndpoint, SystemProxy, TunGrant, VpnGrant,
 };
@@ -113,6 +117,13 @@ pub struct ProfileSnapshot {
     pub tun_wanted: bool,
     pub excluded: Vec<String>,
     pub installed: Vec<crate::takeover::InstalledApp>,
+    pub node_groups: Vec<NodeGroupView>,
+    pub node_catalog: Vec<NodeGroupView>,
+    pub node_query: String,
+    pub nodes_notice: Option<String>,
+    pub nodes_error: Option<String>,
+    pub nodes_profile_id: Option<String>,
+    pub kernel_running: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +138,22 @@ pub trait SubscriptionSource {
 
 pub trait KernelLaunch {
     fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String>;
+
+    fn running(&mut self) -> bool {
+        false
+    }
+
+    fn select_proxy(&mut self, _group: &str, _node: &str) -> Result<(), String> {
+        Err(KERNEL_DOWN.to_string())
+    }
+
+    fn probe_delays(&mut self, _group: &str, _nodes: &[String]) -> Result<Vec<NodeDelay>, String> {
+        Err(KERNEL_DOWN.to_string())
+    }
+
+    fn auto_now(&mut self) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
 }
 
 pub struct HttpSubscriptionClient {
@@ -184,6 +211,8 @@ pub struct ProcessRuntime {
     work_dir: PathBuf,
     child: Option<Child>,
     config_path: Option<PathBuf>,
+    controller: Option<ControllerEndpoint>,
+    cached_now: BTreeMap<String, String>,
 }
 
 impl ProcessRuntime {
@@ -193,6 +222,8 @@ impl ProcessRuntime {
             work_dir: work_dir.into(),
             child: None,
             config_path: None,
+            controller: None,
+            cached_now: BTreeMap::new(),
         }
     }
 
@@ -218,6 +249,8 @@ impl ProcessRuntime {
         if let Some(path) = self.config_path.take() {
             let _ = fs::remove_file(path);
         }
+        self.controller = None;
+        self.cached_now.clear();
     }
 }
 
@@ -280,7 +313,69 @@ impl KernelLaunch for ProcessRuntime {
         self.stop();
         self.child = Some(child);
         self.config_path = Some(config_path);
+        self.controller = nodes::controller_from_yaml(config_yaml);
+        self.cached_now.clear();
         Ok(())
+    }
+
+    fn running(&mut self) -> bool {
+        let alive = match self.child.as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false,
+        };
+        if !alive {
+            self.child = None;
+            self.controller = None;
+            self.cached_now.clear();
+        }
+        alive
+    }
+
+    fn select_proxy(&mut self, group: &str, node: &str) -> Result<(), String> {
+        if !self.running() {
+            return Err(KERNEL_DOWN.to_string());
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return Err(KERNEL_DOWN.to_string());
+        };
+        let mut last = SELECT_FAILED.to_string();
+        for _ in 0..5 {
+            match nodes::put_selection(&endpoint, group, node) {
+                Ok(()) => return Ok(()),
+                Err(message) => last = message,
+            }
+            if !self.running() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(last)
+    }
+
+    fn probe_delays(&mut self, _group: &str, names: &[String]) -> Result<Vec<NodeDelay>, String> {
+        if !self.running() {
+            return Err(KERNEL_DOWN.to_string());
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return Err(KERNEL_DOWN.to_string());
+        };
+        nodes::fetch_delays(&endpoint, names)
+    }
+
+    fn auto_now(&mut self) -> BTreeMap<String, String> {
+        if !self.running() {
+            return BTreeMap::new();
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return BTreeMap::new();
+        };
+        match nodes::fetch_now(&endpoint) {
+            Ok(now) => {
+                self.cached_now = now.clone();
+                now
+            }
+            Err(_) => self.cached_now.clone(),
+        }
     }
 }
 
@@ -350,6 +445,17 @@ pub struct ProfileBook {
     connected: bool,
     our_endpoint: Option<ProxyEndpoint>,
     pending_release: Option<PlatformRelease>,
+    node_query: String,
+    node_sort: BTreeMap<String, String>,
+    delays: BTreeMap<String, BTreeMap<String, BTreeMap<String, DelayMark>>>,
+    auto_now: BTreeMap<String, String>,
+    nodes_error: Option<String>,
+    kernel_running: bool,
+}
+
+struct DelayMark {
+    delay_ms: Option<u64>,
+    failed: bool,
 }
 
 impl ProfileBook {
@@ -374,6 +480,12 @@ impl ProfileBook {
             connected: false,
             our_endpoint: None,
             pending_release: None,
+            node_query: String::new(),
+            node_sort: BTreeMap::new(),
+            delays: BTreeMap::new(),
+            auto_now: BTreeMap::new(),
+            nodes_error: None,
+            kernel_running: false,
         };
         book.load();
         book
@@ -402,6 +514,7 @@ impl ProfileBook {
                 expire: profile.usage.as_ref().and_then(|usage| usage.expire),
             })
             .collect();
+        let (node_catalog, node_groups, nodes_notice, nodes_profile_id) = self.node_views();
         ProfileSnapshot {
             profiles,
             active_id: self.active_id.clone(),
@@ -418,6 +531,13 @@ impl ProfileBook {
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
             installed: self.installed.clone(),
+            node_groups,
+            node_catalog,
+            node_query: self.node_query.clone(),
+            nodes_notice,
+            nodes_error: self.nodes_error.clone(),
+            nodes_profile_id,
+            kernel_running: self.kernel_running,
         }
     }
 
@@ -867,7 +987,10 @@ impl ProfileBook {
                 return self.snapshot();
             }
         };
-        if let Err(message) = kernel.start_or_reload(&prepared.yaml) {
+        let selected = self.profiles[index].selected.clone();
+        let yaml =
+            nodes::ensure_controller(&nodes::prioritize_selections(&prepared.yaml, &selected));
+        if let Err(message) = kernel.start_or_reload(&yaml) {
             let message = if message.is_empty() {
                 KERNEL_ERROR.to_string()
             } else {
@@ -893,6 +1016,7 @@ impl ProfileBook {
         self.mode = prepared.mode;
         self.home_failure = None;
         self.input_error = None;
+        self.apply_live_selections(kernel);
         self.persist();
         self.snapshot()
     }
@@ -950,6 +1074,7 @@ impl ProfileBook {
                 message
             })
         })?;
+        self.apply_live_selections(kernel);
         Ok(port)
     }
 
@@ -971,7 +1096,9 @@ impl ProfileBook {
         else {
             return Err(StartError::Failed("没有本地端口".to_string()));
         };
+        let selected = profile.selected.clone();
         let yaml = force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?;
+        let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&yaml, &selected));
         Ok((yaml, port))
     }
 
@@ -1145,6 +1272,326 @@ impl ProfileBook {
         }
     }
 
+    pub fn sync_runtime(&mut self, kernel: &mut dyn KernelLaunch) {
+        let running = kernel.running();
+        self.kernel_running = running;
+        if running {
+            self.auto_now = kernel.auto_now();
+        } else {
+            self.auto_now.clear();
+        }
+    }
+
+    pub fn set_node_query(&mut self, query: &str) -> ProfileSnapshot {
+        self.node_query = query.chars().take(200).collect();
+        self.snapshot()
+    }
+
+    pub fn set_node_sort(&mut self, group: &str, sort: &str) -> ProfileSnapshot {
+        let group = group.trim();
+        if !group.is_empty() {
+            self.node_sort
+                .insert(group.to_string(), nodes::normalize_sort(sort).to_string());
+        }
+        self.snapshot()
+    }
+
+    pub fn select_node(
+        &mut self,
+        group: &str,
+        node: &str,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
+        self.sync_runtime(kernel);
+        let group_name = group.trim();
+        let node_name = node.trim();
+        let Some(index) = self.nodes_profile_index() else {
+            self.nodes_error = Some(NEED_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if self.profiles[index].content.trim().is_empty() {
+            self.nodes_error = Some(NEED_PROFILE.to_string());
+            return self.snapshot();
+        }
+        let Some(document) = document_value(&self.profiles[index]) else {
+            self.nodes_error = Some(NO_NODES.to_string());
+            return self.snapshot();
+        };
+        let parsed = nodes::parse_proxy_groups(&document);
+        let Some(found) = parsed.iter().find(|item| item.name == group_name) else {
+            self.nodes_error = Some("没有这个代理组".to_string());
+            return self.snapshot();
+        };
+        if !found.manual {
+            self.nodes_error = Some(NOT_MANUAL.to_string());
+            return self.snapshot();
+        }
+        if !found.proxies.iter().any(|item| item.as_str() == node_name) {
+            self.nodes_error = Some("没有这个节点".to_string());
+            return self.snapshot();
+        }
+        if self.kernel_running {
+            if let Err(message) = kernel.select_proxy(group_name, node_name) {
+                self.nodes_error = Some(if message.is_empty() {
+                    SELECT_FAILED.to_string()
+                } else {
+                    message
+                });
+                return self.snapshot();
+            }
+        }
+        self.profiles[index]
+            .selected
+            .insert(group_name.to_string(), node_name.to_string());
+        self.nodes_error = None;
+        self.persist();
+        self.snapshot()
+    }
+
+    pub fn test_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        self.sync_runtime(kernel);
+        if !self.kernel_running {
+            self.nodes_error = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        }
+        let Some(index) = self.nodes_profile_index() else {
+            self.nodes_error = Some(NEED_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let Some(document) = document_value(&self.profiles[index]) else {
+            self.nodes_error = Some(NO_NODES.to_string());
+            return self.snapshot();
+        };
+        let parsed = nodes::parse_proxy_groups(&document);
+        let Some(found) = parsed.iter().find(|item| item.name == group.trim()) else {
+            self.nodes_error = Some("没有这个代理组".to_string());
+            return self.snapshot();
+        };
+        let manual = found.manual;
+        let group_key = found.name.clone();
+        let mut members = found.proxies.clone();
+        if !manual {
+            if let Some(now) = self.auto_now.get(&group_key).cloned() {
+                if !members.iter().any(|item| item == &now) {
+                    members.push(now);
+                }
+            }
+        }
+        let profile_id = self.profiles[index].id.clone();
+        match kernel.probe_delays(&group_key, &members) {
+            Ok(results) => {
+                let slot = self
+                    .delays
+                    .entry(profile_id)
+                    .or_default()
+                    .entry(group_key)
+                    .or_default();
+                for item in results {
+                    if !members.iter().any(|name| name == &item.name) {
+                        continue;
+                    }
+                    if let Some(ms) = item.delay_ms {
+                        slot.insert(
+                            item.name,
+                            DelayMark {
+                                delay_ms: Some(ms),
+                                failed: false,
+                            },
+                        );
+                    } else {
+                        slot.insert(
+                            item.name,
+                            DelayMark {
+                                delay_ms: None,
+                                failed: true,
+                            },
+                        );
+                    }
+                }
+                self.nodes_error = None;
+            }
+            Err(message) => {
+                self.nodes_error = Some(if message.is_empty() {
+                    KERNEL_DOWN.to_string()
+                } else {
+                    message
+                });
+            }
+        }
+        self.snapshot()
+    }
+
+    fn nodes_profile_index(&self) -> Option<usize> {
+        if let Some(id) = self.active_id.as_deref() {
+            if let Some(index) = self.profiles.iter().position(|profile| profile.id == id) {
+                return Some(index);
+            }
+        }
+        self.profiles
+            .iter()
+            .rposition(|profile| !profile.content.trim().is_empty())
+    }
+
+    fn node_views(
+        &self,
+    ) -> (
+        Vec<NodeGroupView>,
+        Vec<NodeGroupView>,
+        Option<String>,
+        Option<String>,
+    ) {
+        let Some(index) = self.nodes_profile_index() else {
+            return (Vec::new(), Vec::new(), Some(NEED_PROFILE.to_string()), None);
+        };
+        let profile = &self.profiles[index];
+        let profile_id = profile.id.clone();
+        if profile.content.trim().is_empty() {
+            return (
+                Vec::new(),
+                Vec::new(),
+                Some(NEED_PROFILE.to_string()),
+                Some(profile_id),
+            );
+        }
+        let Some(document) = document_value(profile) else {
+            return (
+                Vec::new(),
+                Vec::new(),
+                Some(NO_NODES.to_string()),
+                Some(profile_id),
+            );
+        };
+        let parsed = nodes::parse_proxy_groups(&document);
+        if parsed.is_empty() {
+            return (
+                Vec::new(),
+                Vec::new(),
+                Some(NO_NODES.to_string()),
+                Some(profile_id),
+            );
+        }
+        let catalog: Vec<NodeGroupView> = parsed
+            .iter()
+            .map(|group| self.present_group(profile, group))
+            .collect();
+        let mut visible = catalog.clone();
+        for group in &mut visible {
+            group.nodes = nodes::sorted_nodes(std::mem::take(&mut group.nodes), &group.sort);
+        }
+        let (visible, none) = nodes::filter_visible(visible, &self.node_query);
+        if none {
+            return (
+                catalog,
+                Vec::new(),
+                Some(NO_MATCH.to_string()),
+                Some(profile_id),
+            );
+        }
+        (catalog, visible, None, Some(profile_id))
+    }
+
+    fn present_group(&self, profile: &Profile, group: &ParsedGroup) -> NodeGroupView {
+        let sort = self.sort_of(&group.name);
+        if !group.manual {
+            let now = self.auto_now.get(&group.name).cloned().unwrap_or_default();
+            let nodes = if now.is_empty() {
+                Vec::new()
+            } else {
+                vec![self.node_item(profile, &group.name, &now, false)]
+            };
+            return NodeGroupView {
+                name: group.name.clone(),
+                kind: "auto".to_string(),
+                now,
+                sort,
+                nodes,
+            };
+        }
+        let chosen = profile
+            .selected
+            .get(&group.name)
+            .filter(|name| group.proxies.iter().any(|item| item == *name))
+            .cloned();
+        let now = chosen
+            .clone()
+            .or_else(|| group.proxies.first().cloned())
+            .unwrap_or_default();
+        let nodes = group
+            .proxies
+            .iter()
+            .map(|name| {
+                let selected = match &chosen {
+                    Some(choice) => choice == name,
+                    None => group.proxies.first() == Some(name),
+                };
+                self.node_item(profile, &group.name, name, selected)
+            })
+            .collect();
+        NodeGroupView {
+            name: group.name.clone(),
+            kind: "manual".to_string(),
+            now,
+            sort,
+            nodes,
+        }
+    }
+
+    fn node_item(
+        &self,
+        profile: &Profile,
+        group: &str,
+        name: &str,
+        selected: bool,
+    ) -> nodes::NodeItemView {
+        let mark = self
+            .delays
+            .get(&profile.id)
+            .and_then(|groups| groups.get(group))
+            .and_then(|nodes| nodes.get(name));
+        nodes::NodeItemView {
+            name: name.to_string(),
+            delay_ms: mark.and_then(|item| item.delay_ms),
+            failed: mark.is_some_and(|item| item.failed),
+            selected,
+        }
+    }
+
+    fn sort_of(&self, group: &str) -> String {
+        nodes::normalize_sort(
+            self.node_sort
+                .get(group)
+                .map(String::as_str)
+                .unwrap_or("default"),
+        )
+        .to_string()
+    }
+
+    fn apply_live_selections(&self, kernel: &mut dyn KernelLaunch) {
+        if !kernel.running() {
+            return;
+        }
+        let Some(id) = self.active_id.as_deref() else {
+            return;
+        };
+        let Some(profile) = self.profiles.iter().find(|profile| profile.id == id) else {
+            return;
+        };
+        let Some(document) = document_value(profile) else {
+            return;
+        };
+        for group in nodes::parse_proxy_groups(&document) {
+            if !group.manual {
+                continue;
+            }
+            let Some(node) = profile.selected.get(&group.name) else {
+                continue;
+            };
+            if group.proxies.iter().any(|item| item == node) {
+                let _ = kernel.select_proxy(&group.name, node);
+            }
+        }
+    }
+
     #[cfg(test)]
     fn set_takeover(&mut self, system_proxy: bool, tun: bool, vpn: bool) {
         self.takeover = Takeover {
@@ -1191,6 +1638,17 @@ fn force_tun(yaml: &str, enable: bool, fd: Option<i32>) -> Result<String, String
     }
     map.insert(tun_key, Value::Mapping(tun));
     serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
+}
+
+fn document_value(profile: &Profile) -> Option<Value> {
+    if profile.content.trim().is_empty() {
+        return None;
+    }
+    let prepared = match prepare(&profile.content, &profile.applied_override) {
+        Ok(prepared) => prepared,
+        Err(_) => prepare(&profile.content, "").ok()?,
+    };
+    serde_yaml::from_str(&prepared.yaml).ok()
 }
 
 fn prepare(content: &str, override_text: &str) -> Result<Prepared, PrepareError> {
@@ -1479,6 +1937,9 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    use crate::nodes::{KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay};
+    use crate::takeover::{MemoryProxy, MemoryTun, MemoryVpn};
 
     struct TempDir(PathBuf);
 
@@ -2004,6 +2465,462 @@ mod tests {
             "allow-save-profile-override",
         ] {
             assert!(permissions.contains(&permission), "{permission}");
+        }
+    }
+
+    struct NodeKernel {
+        report_running: bool,
+        yaml: Option<String>,
+        calls: u32,
+        applied: Vec<(String, String)>,
+        delay_calls: u32,
+        scripts: HashMap<String, Vec<NodeDelay>>,
+        auto: BTreeMap<String, String>,
+        reject_select: bool,
+    }
+
+    impl KernelLaunch for NodeKernel {
+        fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
+            self.calls += 1;
+            self.yaml = Some(config_yaml.to_string());
+            self.report_running = true;
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.report_running
+        }
+
+        fn select_proxy(&mut self, group: &str, node: &str) -> Result<(), String> {
+            if !self.report_running || self.reject_select {
+                return Err("节点没有切换".to_string());
+            }
+            self.applied.push((group.to_string(), node.to_string()));
+            Ok(())
+        }
+
+        fn probe_delays(
+            &mut self,
+            group: &str,
+            nodes: &[String],
+        ) -> Result<Vec<NodeDelay>, String> {
+            self.delay_calls += 1;
+            if !self.report_running {
+                return Err(KERNEL_DOWN.to_string());
+            }
+            Ok(self
+                .scripts
+                .get(group)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|item| nodes.iter().any(|name| name == &item.name))
+                .collect())
+        }
+
+        fn auto_now(&mut self) -> BTreeMap<String, String> {
+            if self.report_running {
+                self.auto.clone()
+            } else {
+                BTreeMap::new()
+            }
+        }
+    }
+
+    fn node_kernel() -> NodeKernel {
+        NodeKernel {
+            report_running: false,
+            yaml: None,
+            calls: 0,
+            applied: Vec::new(),
+            delay_calls: 0,
+            scripts: HashMap::new(),
+            auto: BTreeMap::new(),
+            reject_select: false,
+        }
+    }
+
+    fn grouped_config() -> String {
+        r#"mixed-port: 7890
+mode: rule
+proxies:
+  - name: z-node
+    type: ss
+    server: 127.0.0.1
+    port: 1
+  - name: m-node
+    type: ss
+    server: 127.0.0.1
+    port: 2
+  - name: a-node
+    type: ss
+    server: 127.0.0.1
+    port: 3
+proxy-groups:
+  - name: manual
+    type: select
+    proxies:
+      - z-node
+      - m-node
+      - a-node
+  - name: auto
+    type: url-test
+    proxies:
+      - z-node
+      - m-node
+      - a-node
+"#
+        .to_string()
+    }
+
+    fn group<'a>(
+        groups: &'a [crate::nodes::NodeGroupView],
+        name: &str,
+    ) -> &'a crate::nodes::NodeGroupView {
+        groups.iter().find(|group| group.name == name).unwrap()
+    }
+
+    fn node_names(group: &crate::nodes::NodeGroupView) -> Vec<&str> {
+        group.nodes.iter().map(|node| node.name.as_str()).collect()
+    }
+
+    fn proxies_of(yaml: &str, name: &str) -> Vec<String> {
+        let value: Value = serde_yaml::from_str(yaml).unwrap();
+        crate::nodes::parse_proxy_groups(&value)
+            .into_iter()
+            .find(|group| group.name == name)
+            .unwrap()
+            .proxies
+    }
+
+    #[test]
+    fn saved_config_lists_groups_while_kernel_is_stopped_and_keeps_manual_choice() {
+        let dir = temp_dir("nodes-saved");
+        let mut book = ProfileBook::open(&dir.0);
+        assert_eq!(book.snapshot().nodes_notice.as_deref(), Some(NEED_PROFILE));
+        book.add_subscription("https://example.com/sub");
+        let mut kernel = node_kernel();
+        let missing = book.select_node("manual", "a-node", &mut kernel);
+        assert_eq!(missing.nodes_error.as_deref(), Some(NEED_PROFILE));
+        assert!(missing.node_groups.is_empty());
+        assert!(kernel.applied.is_empty());
+
+        book.add_local("nodes.yaml", &grouped_config());
+        book.sync_runtime(&mut kernel);
+        let listed = book.snapshot();
+        assert!(listed.nodes_notice.is_none());
+        assert!(!listed.kernel_running);
+        assert_eq!(listed.nodes_profile_id.as_deref(), Some("p2"));
+        assert_eq!(
+            node_names(group(&listed.node_catalog, "manual")),
+            ["z-node", "m-node", "a-node"]
+        );
+        assert!(group(&listed.node_catalog, "manual").nodes[0].selected);
+        assert!(group(&listed.node_catalog, "auto").nodes.is_empty());
+        assert_eq!(group(&listed.node_catalog, "auto").kind, "auto");
+        assert_eq!(kernel.delay_calls, 0);
+        assert!(listed.node_catalog.iter().all(|item| {
+            item.nodes
+                .iter()
+                .all(|node| node.delay_ms.is_none() && !node.failed)
+        }));
+
+        let chosen = book.select_node("manual", "a-node", &mut kernel);
+        assert!(chosen.nodes_error.is_none());
+        assert!(kernel.applied.is_empty());
+        assert_eq!(kernel.calls, 0);
+        let manual = group(&chosen.node_groups, "manual");
+        assert!(
+            manual
+                .nodes
+                .iter()
+                .any(|node| node.name == "a-node" && node.selected)
+        );
+        assert!(
+            !manual
+                .nodes
+                .iter()
+                .any(|node| node.name == "z-node" && node.selected)
+        );
+        assert_eq!(manual.now, "a-node");
+
+        let rejected = book.select_node("auto", "m-node", &mut kernel);
+        assert_eq!(rejected.nodes_error.as_deref(), Some(NOT_MANUAL));
+        assert!(kernel.applied.is_empty());
+        let reopened = ProfileBook::open(&dir.0);
+        let stored = fs::read_to_string(dir.0.join("profiles.json")).unwrap();
+        assert!(stored.contains("\"manual\""));
+        assert!(stored.contains("a-node"));
+        assert!(!stored.contains("\"auto\""));
+        let reopened_view = reopened.snapshot();
+        let manual = group(&reopened_view.node_catalog, "manual");
+        assert!(
+            manual
+                .nodes
+                .iter()
+                .any(|node| node.name == "a-node" && node.selected)
+        );
+        assert!(
+            reopened_view
+                .node_groups
+                .iter()
+                .all(|item| { item.nodes.iter().all(|node| node.delay_ms.is_none()) })
+        );
+    }
+
+    #[test]
+    fn next_successful_connect_applies_the_saved_manual_choice() {
+        let dir = temp_dir("nodes-connect");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("nodes.yaml", &grouped_config());
+        let mut kernel = node_kernel();
+        book.select_node("manual", "a-node", &mut kernel);
+        assert!(kernel.applied.is_empty());
+        book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(
+            kernel.applied,
+            [("manual".to_string(), "a-node".to_string())]
+        );
+        assert_eq!(
+            proxies_of(kernel.yaml.as_deref().unwrap(), "manual")[0],
+            "a-node"
+        );
+        assert_eq!(
+            proxies_of(kernel.yaml.as_deref().unwrap(), "auto"),
+            ["z-node", "m-node", "a-node"]
+        );
+        assert!(kernel.yaml.as_deref().unwrap().contains("127.0.0.1:"));
+
+        kernel.report_running = false;
+        kernel.applied.clear();
+        let marked = book.select_node("manual", "m-node", &mut kernel);
+        assert!(kernel.applied.is_empty());
+        assert_eq!(group(&marked.node_groups, "manual").now, "m-node");
+        kernel.reject_select = false;
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected);
+        assert_eq!(
+            kernel.applied,
+            [("manual".to_string(), "m-node".to_string())]
+        );
+        assert_eq!(
+            proxies_of(kernel.yaml.as_deref().unwrap(), "manual")[0],
+            "m-node"
+        );
+        assert_eq!(
+            proxy.http.as_ref().map(|endpoint| endpoint.host.as_str()),
+            Some("127.0.0.1")
+        );
+        assert!(!tun.enabled && !vpn.open);
+
+        kernel.report_running = true;
+        kernel.reject_select = true;
+        let kept = book.select_node("manual", "z-node", &mut kernel);
+        assert_eq!(kept.nodes_error.as_deref(), Some("节点没有切换"));
+        assert_eq!(group(&kept.node_groups, "manual").now, "m-node");
+        kernel.auto.insert("auto".to_string(), "z-node".to_string());
+        book.sync_runtime(&mut kernel);
+        let current = book.snapshot();
+        let auto = group(&current.node_groups, "auto");
+        assert_eq!(node_names(auto), ["z-node"]);
+        assert!(!auto.nodes[0].selected);
+    }
+
+    #[test]
+    fn delay_results_arrive_only_after_an_explicit_test_and_a_failure_stays_local() {
+        let dir = temp_dir("nodes-delay");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("nodes.yaml", &grouped_config());
+        let mut kernel = node_kernel();
+        book.sync_runtime(&mut kernel);
+        assert_eq!(book.snapshot().nodes_notice, None);
+        assert_eq!(kernel.delay_calls, 0);
+
+        let idle = book.test_group("manual", &mut kernel);
+        assert_eq!(idle.nodes_error.as_deref(), Some(KERNEL_DOWN));
+        assert_eq!(kernel.delay_calls, 0);
+        assert!(
+            group(&idle.node_catalog, "manual")
+                .nodes
+                .iter()
+                .all(|node| node.delay_ms.is_none() && !node.failed)
+        );
+
+        kernel.report_running = true;
+        kernel.scripts.insert(
+            "manual".to_string(),
+            vec![
+                NodeDelay {
+                    name: "z-node".to_string(),
+                    delay_ms: Some(20),
+                },
+                NodeDelay {
+                    name: "m-node".to_string(),
+                    delay_ms: None,
+                },
+                NodeDelay {
+                    name: "a-node".to_string(),
+                    delay_ms: Some(5),
+                },
+            ],
+        );
+        let tested = book.test_group("manual", &mut kernel);
+        assert!(tested.nodes_error.is_none());
+        assert_eq!(kernel.delay_calls, 1);
+        let manual = group(&tested.node_groups, "manual");
+        assert_eq!(
+            manual
+                .nodes
+                .iter()
+                .find(|node| node.name == "z-node")
+                .unwrap()
+                .delay_ms,
+            Some(20)
+        );
+        assert!(
+            manual
+                .nodes
+                .iter()
+                .find(|node| node.name == "m-node")
+                .unwrap()
+                .failed
+        );
+        assert_eq!(
+            manual
+                .nodes
+                .iter()
+                .find(|node| node.name == "a-node")
+                .unwrap()
+                .delay_ms,
+            Some(5)
+        );
+
+        kernel.scripts.insert(
+            "manual".to_string(),
+            vec![NodeDelay {
+                name: "z-node".to_string(),
+                delay_ms: None,
+            }],
+        );
+        let partial = book.test_group("manual", &mut kernel);
+        let manual = group(&partial.node_groups, "manual");
+        assert!(
+            manual
+                .nodes
+                .iter()
+                .find(|node| node.name == "z-node")
+                .unwrap()
+                .failed
+        );
+        assert_eq!(
+            manual
+                .nodes
+                .iter()
+                .find(|node| node.name == "z-node")
+                .unwrap()
+                .delay_ms,
+            None
+        );
+        assert!(
+            manual
+                .nodes
+                .iter()
+                .find(|node| node.name == "m-node")
+                .unwrap()
+                .failed
+        );
+        assert_eq!(
+            manual
+                .nodes
+                .iter()
+                .find(|node| node.name == "a-node")
+                .unwrap()
+                .delay_ms,
+            Some(5)
+        );
+        assert!(
+            !manual
+                .nodes
+                .iter()
+                .find(|node| node.name == "a-node")
+                .unwrap()
+                .failed
+        );
+
+        let by_delay = book.set_node_sort("manual", "delay");
+        assert_eq!(
+            node_names(group(&by_delay.node_groups, "manual")),
+            ["a-node", "z-node", "m-node"]
+        );
+        let by_name = book.set_node_sort("manual", "name");
+        assert_eq!(
+            node_names(group(&by_name.node_groups, "manual")),
+            ["a-node", "m-node", "z-node"]
+        );
+        let original = book.set_node_sort("manual", "default");
+        assert_eq!(
+            node_names(group(&original.node_groups, "manual")),
+            ["z-node", "m-node", "a-node"]
+        );
+        assert!(
+            group(&original.node_groups, "manual")
+                .nodes
+                .iter()
+                .find(|node| node.name == "a-node")
+                .unwrap()
+                .delay_ms
+                == Some(5)
+        );
+    }
+
+    #[test]
+    fn name_filter_hides_rows_without_clearing_the_saved_profile() {
+        let dir = temp_dir("nodes-filter");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("plain.yaml", "mixed-port: 7890\nmode: rule\n");
+        assert_eq!(book.snapshot().nodes_notice.as_deref(), Some(NO_NODES));
+        book.add_local("nodes.yaml", &grouped_config());
+        let mut kernel = node_kernel();
+        book.select_node("manual", "a-node", &mut kernel);
+        let path = dir.0.join("profiles.json");
+        let before = fs::read(&path).unwrap();
+        let missed = book.set_node_query("missing-node");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(missed.nodes_notice.as_deref(), Some(NO_MATCH));
+        assert!(missed.node_groups.is_empty());
+        assert_eq!(missed.node_catalog.len(), 2);
+        assert_eq!(
+            node_names(group(&missed.node_catalog, "manual")),
+            ["z-node", "m-node", "a-node"]
+        );
+        let matched = book.set_node_query("a-n");
+        assert_eq!(
+            node_names(group(&matched.node_groups, "manual")),
+            ["a-node"]
+        );
+        assert!(group(&matched.node_catalog, "manual").nodes.len() == 3);
+        let restored = book.set_node_query("  ");
+        assert!(restored.nodes_notice.is_none());
+        assert_eq!(node_names(group(&restored.node_groups, "manual")).len(), 3);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let permissions = capability["permissions"].as_array().unwrap();
+        for permission in [
+            "allow-select-profile-node",
+            "allow-test-profile-group",
+            "allow-set-node-query",
+            "allow-set-node-sort",
+        ] {
+            assert!(
+                permissions
+                    .iter()
+                    .any(|item| item.as_str() == Some(permission)),
+                "{permission}"
+            );
         }
     }
 }

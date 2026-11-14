@@ -17,6 +17,21 @@ export interface InstalledApp {
   package_name: string
 }
 
+export interface NodeItem {
+  name: string
+  delay_ms: number | null
+  failed: boolean
+  selected: boolean
+}
+
+export interface NodeGroup {
+  name: string
+  kind: 'manual' | 'auto'
+  now: string
+  sort: 'default' | 'delay' | 'name'
+  nodes: NodeItem[]
+}
+
 export interface ProfileSnapshot {
   profiles: ProfileItem[]
   active_id: string | null
@@ -33,6 +48,13 @@ export interface ProfileSnapshot {
   tun_wanted: boolean
   excluded: string[]
   installed: InstalledApp[]
+  node_groups: NodeGroup[]
+  node_catalog: NodeGroup[]
+  node_query: string
+  nodes_notice: string | null
+  nodes_error: string | null
+  nodes_profile_id: string | null
+  kernel_running: boolean
 }
 
 export function emptyProfileSnapshot(): ProfileSnapshot {
@@ -52,6 +74,13 @@ export function emptyProfileSnapshot(): ProfileSnapshot {
     tun_wanted: false,
     excluded: [],
     installed: [],
+    node_groups: [],
+    node_catalog: [],
+    node_query: '',
+    nodes_notice: null,
+    nodes_error: null,
+    nodes_profile_id: null,
+    kernel_running: false,
   }
 }
 
@@ -67,6 +96,44 @@ function whole(value: unknown): number | null {
 function positive(value: unknown): number | null {
   const number = whole(value)
   return number != null && number > 0 ? number : null
+}
+
+function normalizeNode(raw: unknown): NodeItem | null {
+  const node = raw && typeof raw === 'object' ? (raw as Partial<NodeItem>) : {}
+  const name = typeof node.name === 'string' ? node.name.trim() : ''
+  if (!name) return null
+  const failed = Boolean(node.failed)
+  return {
+    name,
+    delay_ms: failed ? null : whole(node.delay_ms),
+    failed,
+    selected: Boolean(node.selected),
+  }
+}
+
+function normalizeGroup(raw: unknown): NodeGroup | null {
+  const group = raw && typeof raw === 'object' ? (raw as Partial<NodeGroup>) : {}
+  const name = typeof group.name === 'string' ? group.name.trim() : ''
+  if (!name) return null
+  const nodes = Array.isArray(group.nodes) ? group.nodes.flatMap((item) => {
+    const node = normalizeNode(item)
+    return node ? [node] : []
+  }) : []
+  return {
+    name,
+    kind: group.kind === 'auto' ? 'auto' : 'manual',
+    now: typeof group.now === 'string' ? group.now : '',
+    sort: group.sort === 'delay' || group.sort === 'name' ? group.sort : 'default',
+    nodes,
+  }
+}
+
+function normalizeGroups(raw: unknown): NodeGroup[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((item) => {
+    const group = normalizeGroup(item)
+    return group ? [group] : []
+  })
 }
 
 export function normalizeProfileSnapshot(raw: unknown): ProfileSnapshot {
@@ -104,6 +171,15 @@ export function normalizeProfileSnapshot(raw: unknown): ProfileSnapshot {
     excluded: Array.isArray(source.excluded)
       ? source.excluded.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
       : [],
+    node_groups: normalizeGroups(source.node_groups),
+    node_catalog: normalizeGroups(source.node_catalog).length
+      ? normalizeGroups(source.node_catalog)
+      : normalizeGroups(source.node_groups),
+    node_query: typeof source.node_query === 'string' ? source.node_query : '',
+    nodes_notice: text(source.nodes_notice),
+    nodes_error: text(source.nodes_error),
+    nodes_profile_id: text(source.nodes_profile_id),
+    kernel_running: Boolean(source.kernel_running),
     installed: Array.isArray(source.installed)
       ? source.installed.flatMap((item) => {
           const app = item && typeof item === 'object' ? (item as Partial<InstalledApp>) : {}

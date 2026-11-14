@@ -1,6 +1,16 @@
 import {
+  NODES_EMPTY,
+  NODES_KERNEL_DOWN,
+  NODES_MISSING,
+  NODES_NEED_PROFILE,
+  NODES_NO_MATCH,
+  NODES_NOT_MANUAL,
+} from './copy'
+import {
   emptyProfileSnapshot,
   normalizeProfileSnapshot,
+  type NodeGroup,
+  type NodeItem,
   type ProfileItem,
   type ProfileSnapshot,
 } from './profile'
@@ -21,6 +31,10 @@ export interface ProfilePort {
   setTun(enabled: boolean): Promise<ProfileSnapshot>
   excludePackage(packageName: string): Promise<ProfileSnapshot>
   includePackage(packageName: string): Promise<ProfileSnapshot>
+  selectNode(group: string, node: string): Promise<ProfileSnapshot>
+  testGroup(group: string): Promise<ProfileSnapshot>
+  setNodeQuery(query: string): Promise<ProfileSnapshot>
+  setNodeSort(group: string, sort: string): Promise<ProfileSnapshot>
   subscribe?(handler: (snapshot: ProfileSnapshot) => void): () => void
 }
 
@@ -36,10 +50,62 @@ function clone(state: ProfileSnapshot): ProfileSnapshot {
   return normalizeProfileSnapshot(JSON.parse(JSON.stringify(state)) as ProfileSnapshot)
 }
 
-/// Browser fallback and component tests. Enable and override decisions are made in Rust.
+function copyGroups(groups: NodeGroup[]): NodeGroup[] {
+  return groups.map((group) => ({ ...group, nodes: group.nodes.map((node) => ({ ...node })) }))
+}
+
+function delayKey(node: NodeItem, index: number): [number, number, number] {
+  if (node.delay_ms != null && !node.failed) return [0, node.delay_ms, index]
+  if (node.failed) return [2, 0, index]
+  return [1, 0, index]
+}
+
+function sortNodes(group: NodeGroup): NodeItem[] {
+  const items = group.nodes.map((node, index) => ({ node, index }))
+  if (group.sort === 'name') {
+    items.sort((left, right) => left.node.name.toLowerCase().localeCompare(right.node.name.toLowerCase()) || left.index - right.index)
+  } else if (group.sort === 'delay') {
+    items.sort((left, right) => {
+      const a = delayKey(left.node, left.index)
+      const b = delayKey(right.node, right.index)
+      return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
+    })
+  }
+  return items.map((item) => ({ ...item.node }))
+}
+
+function projectNodes(catalog: NodeGroup[], query: string, profileCount: number): { groups: NodeGroup[]; notice: string | null } {
+  const sorted = catalog.map((group) => ({ ...group, nodes: sortNodes(group) }))
+  const needle = query.trim().toLowerCase()
+  if (!needle) {
+    if (sorted.length === 0) return { groups: [], notice: profileCount > 0 ? NODES_EMPTY : NODES_NEED_PROFILE }
+    return { groups: sorted, notice: null }
+  }
+  const groups = sorted
+    .map((group) => ({
+      ...group,
+      nodes: group.nodes.filter((node) => node.name.toLowerCase().includes(needle)),
+    }))
+    .filter((group) => group.nodes.length > 0)
+  if (groups.length === 0) return { groups: [], notice: NODES_NO_MATCH }
+  return { groups, notice: null }
+}
+
+/// Browser fallback and component tests. Enable, override, and node decisions are made in Rust.
 export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): ProfilePort {
   const state = normalizeProfileSnapshot({ ...emptyProfileSnapshot(), ...initial })
+  let catalog = copyGroups(state.node_catalog)
+  let query = state.node_query
+  let nodesError = state.nodes_error
+  let kernelRunning = state.kernel_running
   function finish(): ProfileSnapshot {
+    const view = projectNodes(catalog, query, state.profiles.length)
+    state.node_catalog = copyGroups(catalog)
+    state.node_groups = view.groups
+    state.node_query = query
+    state.nodes_notice = view.notice
+    state.nodes_error = nodesError
+    state.kernel_running = kernelRunning
     return clone(state)
   }
   function find(id: string): ProfileItem | undefined {
@@ -212,6 +278,42 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
       state.excluded = state.excluded.filter((item) => item !== packageName)
       return finish()
     },
+    async selectNode(group, node) {
+      const found = catalog.find((item) => item.name === group)
+      if (!found || found.kind !== 'manual') {
+        nodesError = NODES_NOT_MANUAL
+        return finish()
+      }
+      if (!found.nodes.some((item) => item.name === node)) {
+        nodesError = NODES_MISSING
+        return finish()
+      }
+      for (const item of found.nodes) item.selected = item.name === node
+      found.now = node
+      nodesError = null
+      return finish()
+    },
+    async testGroup(group) {
+      if (!catalog.some((item) => item.name === group)) {
+        nodesError = NODES_MISSING
+        return finish()
+      }
+      if (!kernelRunning) {
+        nodesError = NODES_KERNEL_DOWN
+        return finish()
+      }
+      nodesError = null
+      return finish()
+    },
+    async setNodeQuery(next) {
+      query = next
+      return finish()
+    },
+    async setNodeSort(group, sort) {
+      const found = catalog.find((item) => item.name === group)
+      if (found) found.sort = sort === 'delay' || sort === 'name' ? sort : 'default'
+      return finish()
+    },
   }
 }
 
@@ -249,6 +351,10 @@ function wrapStore(inner: ProfilePort, storage: Storage): ProfilePort {
     setTun: (enabled) => inner.setTun(enabled).then(keep),
     excludePackage: (packageName) => inner.excludePackage(packageName).then(keep),
     includePackage: (packageName) => inner.includePackage(packageName).then(keep),
+    selectNode: (group, node) => inner.selectNode(group, node).then(keep),
+    testGroup: (group) => inner.testGroup(group).then(keep),
+    setNodeQuery: (query) => inner.setNodeQuery(query).then(keep),
+    setNodeSort: (group, sort) => inner.setNodeSort(group, sort).then(keep),
   }
 }
 
@@ -326,6 +432,22 @@ function createTauriProfilePort(): ProfilePort {
     async includePackage(packageName) {
       const { invoke } = await import('@tauri-apps/api/core')
       return applyRaw(await invoke<ProfileSnapshot>('include_package', { packageName }))
+    },
+    async selectNode(group, node) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('select_profile_node', { group, node }))
+    },
+    async testGroup(group) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('test_profile_group', { group }))
+    },
+    async setNodeQuery(query) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('set_node_query', { query }))
+    },
+    async setNodeSort(group, sort) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('set_node_sort', { group, sort }))
     },
     subscribe(handler) {
       let stop = () => {}

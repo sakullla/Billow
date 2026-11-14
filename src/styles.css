@@ -305,6 +305,7 @@ form[data-testid='add-subscription'] {
 
 .file-field input,
 form[data-testid='add-subscription'] input,
+.node-query,
 textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -334,6 +335,84 @@ textarea {
 button:disabled {
   cursor: default;
   opacity: 0.7;
+}
+
+.node-query {
+  margin-bottom: 4px;
+}
+
+.group-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+}
+
+.group-meta h2 {
+  margin-bottom: 0;
+}
+
+.group-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sort-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.node-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.node-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.app[data-layout='sidebar'] .node-row {
+  min-height: 36px;
+}
+
+.node-row[data-selected='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.node-check {
+  width: 2.5rem;
+  flex: none;
+}
+
+.node-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.node-delay {
+  width: 4rem;
+  flex: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -39,6 +39,9 @@ const layout = computed(() => layoutForWidth(width.value))
 const currentProfile = computed(
   () => profileState.value.profiles.find((profile) => profile.current) ?? null,
 )
+const nodesSearchable = computed(
+  () => profileState.value.node_catalog.length > 0 || profileState.value.node_query.trim().length > 0,
+)
 
 let port: ShellPort | null = props.port ?? null
 const kernel: KernelPort = props.kernelPort ?? (props.port ? createMemoryKernelPort() : createKernelPort())
@@ -192,6 +195,22 @@ function includePackage(packageName: string) {
   void runProfile(() => profile.includePackage(packageName))
 }
 
+function selectNode(group: string, node: string) {
+  void runProfile(() => profile.selectNode(group, node))
+}
+
+function testGroup(group: string) {
+  void runProfile(() => profile.testGroup(group))
+}
+
+function setNodeQuery(query: string) {
+  void runProfile(() => profile.setNodeQuery(query))
+}
+
+function setNodeSort(group: string, sort: string) {
+  void runProfile(() => profile.setNodeSort(group, sort))
+}
+
 async function choose(next: EntryId) {
   entry.value = next
   if (persist && port) {
@@ -200,6 +219,7 @@ async function choose(next: EntryId) {
     })
   }
   if (next === 'settings') await refreshKernel()
+  if (next === 'nodes') await refreshProfiles()
 }
 
 onMounted(async () => {
@@ -297,7 +317,18 @@ defineExpose({ ready })
         @exclude="excludePackage"
         @include="includePackage"
       />
-      <NodesView v-else-if="entry === 'nodes'" />
+      <NodesView
+        v-else-if="entry === 'nodes'"
+        :groups="profileState.node_groups"
+        :query="profileState.node_query"
+        :notice="profileState.nodes_notice"
+        :error="profileState.nodes_error"
+        :searchable="nodesSearchable"
+        @query="setNodeQuery"
+        @sort="setNodeSort"
+        @select="selectNode"
+        @test="testGroup"
+      />
       <SettingsView
         v-else
         v-model="theme"

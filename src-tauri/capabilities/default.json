@@ -25,6 +25,10 @@
     "allow-set-system-proxy",
     "allow-set-tun-enabled",
     "allow-exclude-package",
-    "allow-include-package"
+    "allow-include-package",
+    "allow-select-profile-node",
+    "allow-test-profile-group",
+    "allow-set-node-query",
+    "allow-set-node-sort"
   ]
 }
