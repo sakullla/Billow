@@ -1397,7 +1397,6 @@ impl ProfileBook {
 
     pub fn sync_runtime(&mut self, kernel: &mut dyn KernelLaunch) {
         let running = kernel.running();
-        let was_running = self.kernel_running;
         self.kernel_running = running;
         self.append_logs(kernel.pull_logs());
         if running {
@@ -1410,10 +1409,8 @@ impl ProfileBook {
         } else {
             self.auto_now.clear();
             self.connections.clear();
-            // The process is no longer running, so the session is not connected.
-            if was_running {
-                self.connected = false;
-            }
+            // A stopped kernel is not connected. The system-proxy switch may stay on.
+            self.connected = false;
         }
     }
 
@@ -3320,5 +3317,51 @@ proxy-groups:
         assert!(!exited.connected);
         assert!(exited.connections.is_empty());
         assert!(!exited.kernel_running);
+    }
+
+    #[test]
+    fn closing_tun_after_a_sampled_exit_stays_disconnected_while_the_proxy_switch_stays_on() {
+        let dir = temp_dir("tun-after-sample");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", &config(7890));
+        let mut kernel = ReplacingKernel {
+            running: false,
+            stay_up: true,
+            rows: Vec::new(),
+            pending_logs: Vec::new(),
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected && connected.system_proxy);
+        let enabled = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(enabled.tun && enabled.connected && enabled.kernel_running);
+        kernel.rows.push(ConnectionView {
+            host: "stale.example".to_string(),
+            outbound: "香港节点".to_string(),
+        });
+        let live = book.set_log_filter("all", &mut kernel);
+        assert_eq!(live.connections.len(), 1);
+
+        kernel.running = false;
+        book.sync_runtime(&mut kernel);
+        let sampled = book.snapshot();
+        assert!(!sampled.kernel_running);
+        assert!(sampled.system_proxy);
+        assert!(!sampled.connected);
+        assert!(sampled.connections.is_empty());
+
+        kernel.stay_up = false;
+        let closed = book.set_tun(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!kernel.running);
+        assert!(!closed.connected);
+        assert!(!closed.kernel_running);
+        assert!(closed.connections.is_empty());
+        assert!(closed.system_proxy);
+        assert!(!closed.tun);
+        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
     }
 }

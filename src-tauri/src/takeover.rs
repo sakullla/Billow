@@ -1541,16 +1541,23 @@ mod tests {
         fail: bool,
         calls: u32,
         last: String,
+        alive: bool,
     }
 
     impl KernelLaunch for TestKernel {
         fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
             self.calls += 1;
             if self.fail {
+                self.alive = false;
                 return Err("内核没有启动".to_string());
             }
             self.last = config_yaml.to_string();
+            self.alive = true;
             Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.alive
         }
     }
 
@@ -1578,6 +1585,7 @@ mod tests {
             fail: false,
             calls: 0,
             last: String::new(),
+            alive: false,
         };
         book.enable("p1", &UnusedSource, &mut kernel);
         (book, kernel)
@@ -1673,6 +1681,7 @@ mod tests {
             fail: false,
             calls: 0,
             last: String::new(),
+            alive: false,
         };
         let mut proxy = MemoryProxy::default();
         let mut tun = MemoryTun::default();
@@ -2056,6 +2065,7 @@ mod tests {
             fail: false,
             calls: 0,
             last: String::new(),
+            alive: false,
         };
         book.enable("p1", &UnusedSource, &mut kernel);
         let mut proxy = MemoryProxy::default();
