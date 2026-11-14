@@ -487,7 +487,7 @@ pub struct TunEvidence {
 }
 
 /// Linux allows TUN when `/dev/net/tun` or `/dev/tun` opens.
-/// macOS allows it when utun opens. Windows allows it when the process can create WinTUN.
+/// macOS allows it when utun opens. Windows allows it when WinTUN can be created or opened.
 /// A missing Linux device node is not a denial on macOS or Windows.
 pub fn tun_allowed(host: TunHost, evidence: TunEvidence) -> bool {
     match host {
@@ -653,62 +653,80 @@ fn macos_utun_open() -> bool {
     false
 }
 
-/// WinTUN has no `/dev/net/tun`. Creating the adapter requires an elevated process.
-#[cfg(target_os = "windows")]
-fn windows_tun_open() -> bool {
-    #[repr(C)]
-    struct TokenElevation {
-        token_is_elevated: u32,
-    }
+/// Injected WinTUN probe. `elevated` is not a grant; only create or open is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsTunProbe {
+    elevated: bool,
+    created_or_opened: bool,
+}
 
-    #[link(name = "advapi32")]
-    unsafe extern "system" {
-        fn OpenProcessToken(
-            process: *mut core::ffi::c_void,
-            access: u32,
-            token: *mut *mut core::ffi::c_void,
-        ) -> i32;
-        fn GetTokenInformation(
-            token: *mut core::ffi::c_void,
-            class: i32,
-            info: *mut core::ffi::c_void,
-            len: u32,
-            returned: *mut u32,
-        ) -> i32;
-    }
+/// Token elevation is not WinTUN's answer.
+fn windows_tun_granted(probe: WindowsTunProbe) -> bool {
+    let _ = probe.elevated;
+    probe.created_or_opened
+}
+
+/// Load WinTUN and create or open an adapter. A missing DLL or a failed call is a denial.
+#[cfg(target_os = "windows")]
+fn wintun_create_or_open() -> bool {
+    use core::ffi::c_void;
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn GetCurrentProcess() -> *mut core::ffi::c_void;
-        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        fn LoadLibraryW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+        fn FreeLibrary(module: *mut c_void) -> i32;
     }
 
-    const TOKEN_QUERY: u32 = 0x0008;
-    const TOKEN_ELEVATION: i32 = 20;
+    type Create = unsafe extern "system" fn(*const u16, *const u16, *const c_void) -> *mut c_void;
+    type Open = unsafe extern "system" fn(*const u16) -> *mut c_void;
+    type Close = unsafe extern "system" fn(*mut c_void);
+
+    fn utf16z(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
     unsafe {
-        let mut token = core::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+        let dll = utf16z("wintun.dll");
+        let module = LoadLibraryW(dll.as_ptr());
+        if module.is_null() {
             return false;
         }
-        let mut elevation = TokenElevation {
-            token_is_elevated: 0,
-        };
-        let mut returned = 0u32;
-        let ok = GetTokenInformation(
-            token,
-            TOKEN_ELEVATION,
-            &mut elevation as *mut TokenElevation as *mut core::ffi::c_void,
-            core::mem::size_of::<TokenElevation>() as u32,
-            &mut returned,
-        );
-        CloseHandle(token);
-        ok != 0 && elevation.token_is_elevated != 0
+        let create = GetProcAddress(module, b"WintunCreateAdapter\0".as_ptr());
+        let open = GetProcAddress(module, b"WintunOpenAdapter\0".as_ptr());
+        let close = GetProcAddress(module, b"WintunCloseAdapter\0".as_ptr());
+        if create.is_null() || open.is_null() || close.is_null() {
+            FreeLibrary(module);
+            return false;
+        }
+        let create = std::mem::transmute::<*mut c_void, Create>(create);
+        let open = std::mem::transmute::<*mut c_void, Open>(open);
+        let close = std::mem::transmute::<*mut c_void, Close>(close);
+        let name = utf16z("Billow");
+        let mut adapter = open(name.as_ptr());
+        if adapter.is_null() {
+            let tunnel = utf16z("Billow");
+            adapter = create(name.as_ptr(), tunnel.as_ptr(), std::ptr::null());
+        }
+        let opened = !adapter.is_null();
+        if opened {
+            close(adapter);
+        }
+        FreeLibrary(module);
+        opened
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn windows_tun_open() -> bool {
+fn wintun_create_or_open() -> bool {
     false
+}
+
+fn windows_tun_open() -> bool {
+    windows_tun_granted(WindowsTunProbe {
+        elevated: false,
+        created_or_opened: wintun_create_or_open(),
+    })
 }
 
 /// Calls `prepare` and then `start`. Tests inject [`VpnBridge`]; the OS bridge does not run in unit tests.
@@ -852,6 +870,8 @@ static VPN_CONSENT: AtomicBool = AtomicBool::new(false);
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static VPN_FD: AtomicI32 = AtomicI32::new(-1);
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+static VPN_FD_READY: AtomicBool = AtomicBool::new(false);
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static VPN_READY: Condvar = Condvar::new();
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static VPN_LOCK: Mutex<()> = Mutex::new(());
@@ -887,9 +907,49 @@ fn android_prepare() -> Result<bool, String> {
     Ok(VPN_CONSENT.load(Ordering::SeqCst))
 }
 
+#[cfg(any(target_os = "android", test))]
+fn clear_written_vpn_fd() {
+    let reset = || {
+        VPN_FD.store(-1, Ordering::SeqCst);
+        VPN_FD_READY.store(false, Ordering::SeqCst);
+    };
+    match VPN_LOCK.lock() {
+        Ok(guard) => {
+            reset();
+            drop(guard);
+        }
+        Err(_) => reset(),
+    }
+}
+
+/// The service may write the fd before waiting starts. Return as soon as that write is visible.
+#[cfg(any(target_os = "android", test))]
+fn wait_for_written_vpn_fd(timeout: std::time::Duration) -> Result<i32, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut guard = VPN_LOCK.lock().map_err(|_| "VPN 没有建立".to_string())?;
+    loop {
+        if VPN_FD_READY.load(Ordering::SeqCst) {
+            let fd = VPN_FD.load(Ordering::SeqCst);
+            return if fd >= 0 {
+                Ok(fd)
+            } else {
+                Err("VPN 没有建立".to_string())
+            };
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err("VPN 没有建立".to_string());
+        }
+        let (next, _) = VPN_READY
+            .wait_timeout(guard, deadline - now)
+            .map_err(|_| "VPN 没有建立".to_string())?;
+        guard = next;
+    }
+}
+
 #[cfg(target_os = "android")]
 fn android_start(excluded: &[String]) -> Result<i32, String> {
-    VPN_FD.store(-1, Ordering::SeqCst);
+    clear_written_vpn_fd();
     let ctx = ndk_context::android_context();
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|_| "VPN 没有建立".to_string())?;
@@ -922,16 +982,7 @@ fn android_start(excluded: &[String]) -> Result<i32, String> {
         ],
     )
     .map_err(|_| "VPN 没有建立".to_string())?;
-    let guard = VPN_LOCK.lock().map_err(|_| "VPN 没有建立".to_string())?;
-    let _guard = VPN_READY
-        .wait_timeout(guard, std::time::Duration::from_secs(15))
-        .map_err(|_| "VPN 没有建立".to_string())?;
-    let fd = VPN_FD.load(Ordering::SeqCst);
-    if fd < 0 {
-        Err("VPN 没有建立".to_string())
-    } else {
-        Ok(fd)
-    }
+    wait_for_written_vpn_fd(std::time::Duration::from_secs(15))
 }
 
 #[cfg(target_os = "android")]
@@ -969,9 +1020,18 @@ pub fn report_vpn_consent(granted: bool) {
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub fn report_vpn_fd(fd: i32) {
-    VPN_FD.store(fd, Ordering::SeqCst);
-    #[cfg(target_os = "android")]
-    signal_vpn();
+    let publish = || {
+        VPN_FD.store(fd, Ordering::SeqCst);
+        VPN_FD_READY.store(true, Ordering::SeqCst);
+    };
+    match VPN_LOCK.lock() {
+        Ok(guard) => {
+            publish();
+            VPN_READY.notify_all();
+            drop(guard);
+        }
+        Err(_) => publish(),
+    }
 }
 
 /// Kotlin `BillowVpnBridge.nativeConsent` reports the system dialog here.
@@ -1759,6 +1819,61 @@ mod tests {
     }
 
     #[test]
+    fn failed_vpn_establish_closes_and_does_not_show_connected() {
+        let dir = temp_dir("vpn-start-fail");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Android);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = HostVpn::new(Box::new(RecordingVpn {
+            grant: true,
+            fail_start: true,
+            ..RecordingVpn::default()
+        }));
+        let failed = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!failed.vpn && !failed.connected);
+        assert!(!failed.system_proxy && !failed.tun);
+        assert_eq!(failed.failure.as_deref(), Some("VPN 没有建立"));
+        assert_eq!(vpn.calls(), ["prepare", "start"]);
+    }
+
+    #[test]
+    fn written_vpn_fd_returns_without_burning_the_timeout() {
+        clear_written_vpn_fd();
+        let started = std::time::Instant::now();
+        let missing = wait_for_written_vpn_fd(std::time::Duration::from_millis(80));
+        assert_eq!(missing.unwrap_err(), "VPN 没有建立");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        report_vpn_fd(-1);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            wait_for_written_vpn_fd(std::time::Duration::from_secs(15)).unwrap_err(),
+            "VPN 没有建立"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+
+        clear_written_vpn_fd();
+        report_vpn_fd(6);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            wait_for_written_vpn_fd(std::time::Duration::from_secs(15)).unwrap(),
+            6
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+
+        clear_written_vpn_fd();
+        let started = std::time::Instant::now();
+        let waiting =
+            std::thread::spawn(|| wait_for_written_vpn_fd(std::time::Duration::from_secs(15)));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        report_vpn_fd(9);
+        assert_eq!(waiting.join().unwrap().unwrap(), 9);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        clear_written_vpn_fd();
+    }
+
+    #[test]
     fn desktop_kernel_failure_closes_system_proxy_and_tun() {
         let dir = temp_dir("kernel");
         let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Desktop);
@@ -1852,6 +1967,80 @@ mod tests {
             HostTun::host().authorize().unwrap(),
             tun_allowed(TunHost::current(), live_tun_evidence())
         );
+    }
+
+    #[test]
+    fn windows_grant_follows_wintun_open_and_not_token_elevation() {
+        let closed = WindowsTunProbe {
+            elevated: true,
+            created_or_opened: false,
+        };
+        let opened = WindowsTunProbe {
+            elevated: false,
+            created_or_opened: true,
+        };
+        assert!(!windows_tun_granted(closed));
+        assert!(windows_tun_granted(opened));
+        assert_eq!(
+            windows_tun_granted(WindowsTunProbe {
+                elevated: true,
+                created_or_opened: true,
+            }),
+            windows_tun_granted(opened)
+        );
+        assert_eq!(
+            windows_tun_granted(WindowsTunProbe {
+                elevated: false,
+                created_or_opened: false,
+            }),
+            windows_tun_granted(closed)
+        );
+        assert!(!tun_allowed(
+            TunHost::Windows,
+            TunEvidence {
+                linux_node: false,
+                utun: false,
+                windows: windows_tun_granted(closed),
+            }
+        ));
+        assert!(tun_allowed(
+            TunHost::Windows,
+            TunEvidence {
+                linux_node: false,
+                utun: false,
+                windows: windows_tun_granted(opened),
+            }
+        ));
+        #[cfg(not(target_os = "windows"))]
+        assert!(!wintun_create_or_open());
+
+        let source = include_str!("takeover.rs");
+        assert!(!source.contains(&["TOKEN_", "ELEVATION"].concat()));
+        assert!(!source.contains(&["Open", "Process", "Token"].concat()));
+        assert!(source.contains("WintunCreateAdapter"));
+        assert!(source.contains("WintunOpenAdapter"));
+        assert!(source.contains("com.apple.net.utun_control"));
+
+        let dir = temp_dir("wintun-grant");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Desktop);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun {
+            grant: windows_tun_granted(closed),
+            ..MemoryTun::default()
+        };
+        let mut vpn = MemoryVpn::default();
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        let denied = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!denied.connected && !denied.tun);
+        assert!(denied.system_proxy);
+        assert_eq!(denied.failure.as_deref(), Some(TUN_DENIED));
+        assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
+
+        tun.grant = windows_tun_granted(opened);
+        let allowed = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(allowed.tun && allowed.connected && allowed.system_proxy);
+        assert!(allowed.failure.is_none());
+        assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
     }
 
     #[test]
