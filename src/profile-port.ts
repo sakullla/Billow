@@ -15,6 +15,12 @@ export interface ProfilePort {
   enable(id: string): Promise<ProfileSnapshot>
   update(id: string): Promise<ProfileSnapshot>
   saveOverride(id: string, text: string): Promise<ProfileSnapshot>
+  connect(): Promise<ProfileSnapshot>
+  disconnect(): Promise<ProfileSnapshot>
+  setSystemProxy(enabled: boolean): Promise<ProfileSnapshot>
+  setTun(enabled: boolean): Promise<ProfileSnapshot>
+  excludePackage(packageName: string): Promise<ProfileSnapshot>
+  includePackage(packageName: string): Promise<ProfileSnapshot>
   subscribe?(handler: (snapshot: ProfileSnapshot) => void): () => void
 }
 
@@ -155,6 +161,57 @@ export function createMemoryProfilePort(initial?: Partial<ProfileSnapshot>): Pro
       profile.override_text = text
       return finish()
     },
+    async connect() {
+      if (!state.active_id) {
+        state.failure = '没有生效配置'
+        state.connected = false
+        return finish()
+      }
+      if (state.platform === 'android') {
+        state.vpn = true
+        state.system_proxy = false
+        state.tun = false
+        state.connected = true
+      } else {
+        state.system_proxy = true
+        state.tun = state.tun_wanted
+        state.vpn = false
+        state.connected = true
+      }
+      state.failure = null
+      return finish()
+    },
+    async disconnect() {
+      state.system_proxy = false
+      state.tun = false
+      state.vpn = false
+      state.connected = false
+      state.failure = null
+      return finish()
+    },
+    async setSystemProxy(enabled) {
+      if (state.platform === 'android') return finish()
+      state.system_proxy = enabled
+      state.connected = enabled
+      return finish()
+    },
+    async setTun(enabled) {
+      if (state.platform === 'android') return finish()
+      state.tun_wanted = enabled
+      state.tun = enabled
+      if (!enabled && state.system_proxy) state.connected = true
+      return finish()
+    },
+    async excludePackage(packageName) {
+      if (state.platform !== 'android') return finish()
+      const name = packageName.trim()
+      if (name && !state.excluded.includes(name)) state.excluded.push(name)
+      return finish()
+    },
+    async includePackage(packageName) {
+      state.excluded = state.excluded.filter((item) => item !== packageName)
+      return finish()
+    },
   }
 }
 
@@ -186,6 +243,12 @@ function wrapStore(inner: ProfilePort, storage: Storage): ProfilePort {
     enable: (id) => inner.enable(id).then(keep),
     update: (id) => inner.update(id).then(keep),
     saveOverride: (id, text) => inner.saveOverride(id, text).then(keep),
+    connect: () => inner.connect().then(keep),
+    disconnect: () => inner.disconnect().then(keep),
+    setSystemProxy: (enabled) => inner.setSystemProxy(enabled).then(keep),
+    setTun: (enabled) => inner.setTun(enabled).then(keep),
+    excludePackage: (packageName) => inner.excludePackage(packageName).then(keep),
+    includePackage: (packageName) => inner.includePackage(packageName).then(keep),
   }
 }
 
@@ -239,6 +302,30 @@ function createTauriProfilePort(): ProfilePort {
     async saveOverride(id, text) {
       const { invoke } = await import('@tauri-apps/api/core')
       return applyRaw(await invoke<ProfileSnapshot>('save_profile_override', { id, text }))
+    },
+    async connect() {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('connect_session'))
+    },
+    async disconnect() {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('disconnect_session'))
+    },
+    async setSystemProxy(enabled) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('set_system_proxy', { enabled }))
+    },
+    async setTun(enabled) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('set_tun_enabled', { enabled }))
+    },
+    async excludePackage(packageName) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('exclude_package', { packageName }))
+    },
+    async includePackage(packageName) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return applyRaw(await invoke<ProfileSnapshot>('include_package', { packageName }))
     },
     subscribe(handler) {
       let stop = () => {}

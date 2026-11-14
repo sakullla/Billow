@@ -23,6 +23,10 @@ export interface ProfileSnapshot {
   pending_url: string | null
   failure: string | null
   input_error: string | null
+  connected: boolean
+  platform: 'desktop' | 'android'
+  tun_wanted: boolean
+  excluded: string[]
 }
 
 export function emptyProfileSnapshot(): ProfileSnapshot {
@@ -37,6 +41,10 @@ export function emptyProfileSnapshot(): ProfileSnapshot {
     pending_url: null,
     failure: null,
     input_error: null,
+    connected: false,
+    platform: 'desktop',
+    tun_wanted: false,
+    excluded: [],
   }
 }
 
@@ -83,6 +91,12 @@ export function normalizeProfileSnapshot(raw: unknown): ProfileSnapshot {
     pending_url: text(source.pending_url),
     failure: text(source.failure),
     input_error: text(source.input_error),
+    connected: Boolean(source.connected),
+    platform: source.platform === 'android' ? 'android' : 'desktop',
+    tun_wanted: Boolean(source.tun_wanted),
+    excluded: Array.isArray(source.excluded)
+      ? source.excluded.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [],
   }
 }
 

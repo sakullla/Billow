@@ -9,6 +9,8 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
+use crate::takeover::{self, ClientPlatform, PlatformRelease, ProxyEndpoint, SystemProxy, TunGrant, VpnGrant};
+
 const BODY_LIMIT: u64 = 2_000_000;
 const CONTENT_ERROR: &str = "配置无法应用";
 const OVERRIDE_ERROR: &str = "覆写无法应用";
@@ -104,6 +106,10 @@ pub struct ProfileSnapshot {
     pub pending_url: Option<String>,
     pub failure: Option<String>,
     pub input_error: Option<String>,
+    pub connected: bool,
+    pub platform: String,
+    pub tun_wanted: bool,
+    pub excluded: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +124,10 @@ pub trait SubscriptionSource {
 
 pub trait KernelLaunch {
     fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String>;
+
+    fn is_running(&self) -> bool {
+        false
+    }
 }
 
 pub struct HttpSubscriptionClient {
@@ -273,6 +283,10 @@ impl KernelLaunch for ProcessRuntime {
         self.config_path = Some(config_path);
         Ok(())
     }
+
+    fn is_running(&self) -> bool {
+        self.child.is_some()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -283,6 +297,14 @@ struct DiskState {
     active_id: Option<String>,
     #[serde(default)]
     home_failure: Option<String>,
+    #[serde(default)]
+    tun_wanted: bool,
+    #[serde(default)]
+    excluded_packages: Vec<String>,
+    #[serde(default)]
+    proxy_host: Option<String>,
+    #[serde(default)]
+    proxy_port: Option<u16>,
     #[serde(default)]
     profiles: Vec<DiskProfile>,
 }
@@ -326,6 +348,12 @@ pub struct ProfileBook {
     input_error: Option<String>,
     mixed_port: Option<i64>,
     mode: Option<String>,
+    platform: ClientPlatform,
+    tun_wanted: bool,
+    excluded: Vec<String>,
+    connected: bool,
+    our_endpoint: Option<ProxyEndpoint>,
+    pending_release: Option<PlatformRelease>,
 }
 
 impl ProfileBook {
@@ -343,9 +371,24 @@ impl ProfileBook {
             input_error: None,
             mixed_port: None,
             mode: None,
+            platform: ClientPlatform::current(),
+            tun_wanted: false,
+            excluded: Vec::new(),
+            connected: false,
+            our_endpoint: None,
+            pending_release: None,
         };
         book.load();
         book
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_platform(&mut self, platform: ClientPlatform) {
+        self.platform = platform;
+    }
+
+    pub fn take_release(&mut self) -> Option<PlatformRelease> {
+        self.pending_release.take()
     }
 
     pub fn snapshot(&self) -> ProfileSnapshot {
@@ -377,6 +420,10 @@ impl ProfileBook {
             pending_url: self.pending_url.clone(),
             failure: self.home_failure.clone(),
             input_error: self.input_error.clone(),
+            connected: self.connected,
+            platform: self.platform.as_str().to_string(),
+            tun_wanted: self.tun_wanted,
+            excluded: self.excluded.clone(),
         }
     }
 
@@ -467,6 +514,101 @@ impl ProfileBook {
         self.activate(id, source, kernel)
     }
 
+    pub fn connect(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        match self.ensure_kernel(kernel) {
+            Ok(port) => {
+                let mut model = self.link_model();
+                takeover::connect(&mut model, port, proxy, tun, vpn);
+                self.apply_model(model);
+            }
+            Err(StartError::Idle(message)) => {
+                self.home_failure = Some(message);
+                self.connected = false;
+            }
+            Err(StartError::Failed(message)) => {
+                let mut model = self.link_model();
+                takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
+                self.apply_model(model);
+            }
+        }
+        self.snapshot()
+    }
+
+    pub fn disconnect(
+        &mut self,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let mut model = self.link_model();
+        takeover::disconnect(&mut model, proxy, tun, vpn);
+        self.apply_model(model);
+        self.snapshot()
+    }
+
+    pub fn set_system_proxy(
+        &mut self,
+        enabled: bool,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        if self.platform != ClientPlatform::Desktop {
+            return self.snapshot();
+        }
+        if !enabled {
+            let mut model = self.link_model();
+            takeover::set_system_proxy(&mut model, false, None, proxy);
+            self.apply_model(model);
+            return self.snapshot();
+        }
+        match self.ensure_kernel(kernel) {
+            Ok(port) => {
+                let mut model = self.link_model();
+                takeover::set_system_proxy(&mut model, true, Some(port), proxy);
+                self.apply_model(model);
+            }
+            Err(StartError::Idle(message)) => {
+                self.home_failure = Some(message);
+                self.connected = false;
+            }
+            Err(StartError::Failed(message)) => {
+                let mut model = self.link_model();
+                takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
+                self.apply_model(model);
+            }
+        }
+        self.snapshot()
+    }
+
+    pub fn set_tun(&mut self, enabled: bool, tun: &mut dyn TunGrant) -> ProfileSnapshot {
+        let mut model = self.link_model();
+        takeover::set_tun(&mut model, enabled, tun);
+        self.apply_model(model);
+        self.snapshot()
+    }
+
+    pub fn exclude_package(&mut self, package_name: &str, vpn: &mut dyn VpnGrant) -> ProfileSnapshot {
+        let mut model = self.link_model();
+        takeover::exclude_package(&mut model, package_name, vpn);
+        self.apply_model(model);
+        self.snapshot()
+    }
+
+    pub fn include_package(&mut self, package_name: &str, vpn: &mut dyn VpnGrant) -> ProfileSnapshot {
+        let mut model = self.link_model();
+        takeover::include_package(&mut model, package_name, vpn);
+        self.apply_model(model);
+        self.snapshot()
+    }
+
     fn activate(
         &mut self,
         id: &str,
@@ -542,7 +684,74 @@ impl ProfileBook {
     fn fail_activation(&mut self, index: usize, message: String) {
         self.profiles[index].failure = Some(message.clone());
         self.home_failure = Some(message);
+        self.pending_release = Some(PlatformRelease {
+            endpoint: self.our_endpoint.clone(),
+            close_tun: self.takeover.tun,
+            close_vpn: self.takeover.vpn,
+        });
         self.takeover = Takeover::default();
+        self.connected = false;
+        self.our_endpoint = None;
+        self.persist();
+    }
+
+    fn ensure_kernel(&mut self, kernel: &mut dyn KernelLaunch) -> Result<u16, StartError> {
+        let Some(active) = self.active_id.clone() else {
+            return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
+        };
+        let Some(profile) = self.profiles.iter().find(|profile| profile.id == active) else {
+            return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
+        };
+        let content = profile.content.clone();
+        let applied = profile.applied_override.clone();
+        let prepared = match prepare(&content, &applied) {
+            Ok(prepared) => prepared,
+            Err(_) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
+        };
+        let Some(port) = prepared
+            .mixed_port
+            .and_then(|value| u16::try_from(value).ok())
+            .filter(|port| *port > 0)
+        else {
+            return Err(StartError::Failed("没有本地端口".to_string()));
+        };
+        if !kernel.is_running() {
+            kernel.start_or_reload(&prepared.yaml).map_err(|message| {
+                StartError::Failed(if message.is_empty() {
+                    KERNEL_ERROR.to_string()
+                } else {
+                    message
+                })
+            })?;
+        }
+        Ok(port)
+    }
+
+    fn link_model(&self) -> takeover::LinkModel {
+        takeover::LinkModel {
+            platform: self.platform,
+            tun_wanted: self.tun_wanted,
+            excluded: self.excluded.clone(),
+            system_proxy: self.takeover.system_proxy,
+            tun: self.takeover.tun,
+            vpn: self.takeover.vpn,
+            connected: self.connected,
+            failure: self.home_failure.clone(),
+            endpoint: self.our_endpoint.clone(),
+        }
+    }
+
+    fn apply_model(&mut self, model: takeover::LinkModel) {
+        self.platform = model.platform;
+        self.tun_wanted = model.tun_wanted;
+        self.excluded = model.excluded;
+        self.takeover.system_proxy = model.system_proxy;
+        self.takeover.tun = model.tun;
+        self.takeover.vpn = model.vpn;
+        self.connected = model.connected;
+        self.home_failure = model.failure;
+        self.our_endpoint = model.endpoint;
+        self.pending_release = None;
         self.persist();
     }
 
@@ -601,6 +810,17 @@ impl ProfileBook {
             .iter()
             .any(|profile| disk.active_id.as_deref() == Some(profile.id.as_str()));
         self.active_id = if known { disk.active_id } else { None };
+        self.tun_wanted = disk.tun_wanted;
+        self.excluded = disk
+            .excluded_packages
+            .into_iter()
+            .map(|package| package.trim().to_string())
+            .filter(|package| !package.is_empty())
+            .collect();
+        self.our_endpoint = match (disk.proxy_host, disk.proxy_port) {
+            (Some(host), Some(port)) if !host.is_empty() && port > 0 => Some(ProxyEndpoint { host, port }),
+            _ => None,
+        };
         self.next_id = self.next_id.max(
             self.profiles
                 .iter()
@@ -638,6 +858,10 @@ impl ProfileBook {
             next_id: self.next_id,
             active_id: self.active_id.clone(),
             home_failure: self.home_failure.clone(),
+            tun_wanted: self.tun_wanted,
+            excluded_packages: self.excluded.clone(),
+            proxy_host: self.our_endpoint.as_ref().map(|endpoint| endpoint.host.clone()),
+            proxy_port: self.our_endpoint.as_ref().map(|endpoint| endpoint.port),
             profiles: self
                 .profiles
                 .iter()
@@ -682,6 +906,11 @@ struct Prepared {
     yaml: String,
     mixed_port: Option<i64>,
     mode: Option<String>,
+}
+
+enum StartError {
+    Idle(String),
+    Failed(String),
 }
 
 enum PrepareError {

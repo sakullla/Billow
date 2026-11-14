@@ -42,3 +42,33 @@ commands.allow = ["update_profile"]
 identifier = "allow-save-profile-override"
 description = "Enables the save_profile_override command without any pre-configured scope."
 commands.allow = ["save_profile_override"]
+
+[[permission]]
+identifier = "allow-connect-session"
+description = "Enables the connect_session command without any pre-configured scope."
+commands.allow = ["connect_session"]
+
+[[permission]]
+identifier = "allow-disconnect-session"
+description = "Enables the disconnect_session command without any pre-configured scope."
+commands.allow = ["disconnect_session"]
+
+[[permission]]
+identifier = "allow-set-system-proxy"
+description = "Enables the set_system_proxy command without any pre-configured scope."
+commands.allow = ["set_system_proxy"]
+
+[[permission]]
+identifier = "allow-set-tun-enabled"
+description = "Enables the set_tun_enabled command without any pre-configured scope."
+commands.allow = ["set_tun_enabled"]
+
+[[permission]]
+identifier = "allow-exclude-package"
+description = "Enables the exclude_package command without any pre-configured scope."
+commands.allow = ["exclude_package"]
+
+[[permission]]
+identifier = "allow-include-package"
+description = "Enables the include_package command without any pre-configured scope."
+commands.allow = ["include_package"]

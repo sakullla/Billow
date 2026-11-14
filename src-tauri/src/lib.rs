@@ -1,6 +1,7 @@
 mod kernel;
 mod profile;
 mod shell;
+mod takeover;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -26,6 +27,9 @@ struct KernelStore {
 struct ProfileSession {
     book: ProfileBook,
     runtime: ProcessRuntime,
+    proxy: takeover::HostSystemProxy,
+    tun: takeover::HostTun,
+    vpn: takeover::HostVpn,
 }
 
 struct ProfileStore {
@@ -185,8 +189,15 @@ fn prepare_profiles(app: &tauri::App) {
     };
     let book = ProfileBook::open(&directory);
     let runtime = ProcessRuntime::new(&directory);
+    let vpn = takeover::host_vpn(directory.join("vpn"));
     app.manage(ProfileStore {
-        session: Mutex::new(ProfileSession { book, runtime }),
+        session: Mutex::new(ProfileSession {
+            book,
+            runtime,
+            proxy: takeover::host_proxy(),
+            tun: takeover::host_tun(),
+            vpn,
+        }),
     });
     bind_install_links(app.handle());
 }
@@ -336,14 +347,36 @@ fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot 
         lock_kernel(&store.manager).installed_path()
     };
     let client = HttpSubscriptionClient::new();
-    with_profile(app, |session| {
-        session.runtime.set_kernel_path(kernel_path);
-        if update {
-            session.book.update(id, &client, &mut session.runtime)
-        } else {
-            session.book.enable(id, &client, &mut session.runtime)
-        }
-    })
+    let store = app.state::<ProfileStore>();
+    let mut session = lock_profiles(&store.session);
+    let ProfileSession {
+        book,
+        runtime,
+        proxy,
+        tun,
+        vpn,
+    } = &mut *session;
+    runtime.set_kernel_path(kernel_path);
+    let snapshot = if update {
+        book.update(id, &client, runtime)
+    } else {
+        book.enable(id, &client, runtime)
+    };
+    if let Some(release) = book.take_release() {
+        takeover::release_platform(proxy, tun, vpn, &release);
+    }
+    snapshot
+}
+
+fn with_session(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> ProfileSnapshot) -> ProfileSnapshot {
+    let kernel_path = {
+        let store = app.state::<KernelStore>();
+        lock_kernel(&store.manager).installed_path()
+    };
+    let store = app.state::<ProfileStore>();
+    let mut session = lock_profiles(&store.session);
+    session.runtime.set_kernel_path(kernel_path);
+    change(&mut session)
 }
 
 #[tauri::command]
@@ -391,6 +424,72 @@ fn save_profile_override(app: AppHandle, id: String, text: String) -> ProfileSna
     with_profile(&app, |session| session.book.save_override(&id, &text))
 }
 
+#[tauri::command]
+fn connect_session(app: AppHandle) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = session;
+        book.connect(runtime, proxy, tun, vpn)
+    })
+}
+
+#[tauri::command]
+fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession {
+            book,
+            proxy,
+            tun,
+            vpn,
+            ..
+        } = session;
+        book.disconnect(proxy, tun, vpn)
+    })
+}
+
+#[tauri::command]
+fn set_system_proxy(app: AppHandle, enabled: bool) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = session;
+        book.set_system_proxy(enabled, runtime, proxy, tun, vpn)
+    })
+}
+
+#[tauri::command]
+fn set_tun_enabled(app: AppHandle, enabled: bool) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, tun, .. } = session;
+        book.set_tun(enabled, tun)
+    })
+}
+
+#[tauri::command]
+fn exclude_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, vpn, .. } = session;
+        book.exclude_package(&package_name, vpn)
+    })
+}
+
+#[tauri::command]
+fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, vpn, .. } = session;
+        book.include_package(&package_name, vpn)
+    })
+}
+
 fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
     if label != "main" {
         return;
@@ -424,7 +523,13 @@ pub fn run() {
             cancel_install_link,
             enable_profile,
             update_profile,
-            save_profile_override
+            save_profile_override,
+            connect_session,
+            disconnect_session,
+            set_system_proxy,
+            set_tun_enabled,
+            exclude_package,
+            include_package
         ])
         .setup(|app| {
             prepare_shell(app);

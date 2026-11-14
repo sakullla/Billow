@@ -19,6 +19,12 @@
     "allow-cancel-install-link",
     "allow-enable-profile",
     "allow-update-profile",
-    "allow-save-profile-override"
+    "allow-save-profile-override",
+    "allow-connect-session",
+    "allow-disconnect-session",
+    "allow-set-system-proxy",
+    "allow-set-tun-enabled",
+    "allow-exclude-package",
+    "allow-include-package"
   ]
 }

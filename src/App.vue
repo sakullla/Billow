@@ -33,6 +33,7 @@ const theme = ref<ThemePreference>('system')
 const kernelChannel = ref<KernelChannel>('stable')
 const kernelFailure = ref<string | null>(null)
 const profileState = ref<ProfileSnapshot>(emptyProfileSnapshot())
+const connecting = ref(false)
 const width = ref(typeof props.initialWidth === 'number' ? props.initialWidth : window.innerWidth)
 const layout = computed(() => layoutForWidth(width.value))
 const currentProfile = computed(
@@ -159,6 +160,38 @@ function cancelInstall() {
   void runProfile(() => profile.cancelInstall())
 }
 
+function connectSession() {
+  if (connecting.value) return
+  connecting.value = true
+  void runProfile(() => profile.connect()).finally(() => {
+    connecting.value = false
+  })
+}
+
+function disconnectSession() {
+  if (connecting.value) return
+  connecting.value = true
+  void runProfile(() => profile.disconnect()).finally(() => {
+    connecting.value = false
+  })
+}
+
+function setSystemProxy(enabled: boolean) {
+  void runProfile(() => profile.setSystemProxy(enabled))
+}
+
+function setTun(enabled: boolean) {
+  void runProfile(() => profile.setTun(enabled))
+}
+
+function excludePackage(packageName: string) {
+  void runProfile(() => profile.excludePackage(packageName))
+}
+
+function includePackage(packageName: string) {
+  void runProfile(() => profile.includePackage(packageName))
+}
+
 async function choose(next: EntryId) {
   entry.value = next
   if (persist && port) {
@@ -249,9 +282,19 @@ defineExpose({ ready })
         :total="currentProfile?.total ?? null"
         :expire="currentProfile?.expire ?? null"
         :mixed-port="profileState.mixed_port"
+        :platform="profileState.platform"
+        :connected="profileState.connected"
+        :connecting="connecting"
         :system-proxy="profileState.system_proxy"
         :tun="profileState.tun"
         :vpn="profileState.vpn"
+        :excluded="profileState.excluded"
+        @connect="connectSession"
+        @disconnect="disconnectSession"
+        @system-proxy="setSystemProxy"
+        @tun="setTun"
+        @exclude="excludePackage"
+        @include="includePackage"
       />
       <NodesView v-else-if="entry === 'nodes'" />
       <SettingsView
