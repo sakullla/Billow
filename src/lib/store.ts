@@ -114,6 +114,7 @@ export function createStore(backend: Backend) {
   let generation = 0
   let starting: Promise<void> | null = null
   const toastTimers = new Map<number, ReturnType<typeof setTimeout>>()
+  const toastMeta = new Map<number, { remaining: number; startedAt: number }>()
   let queue: Promise<unknown> = Promise.resolve()
   let unlisten: (() => void) | null = null
   let unlistenNodeTest: (() => void) | null = null
@@ -126,18 +127,69 @@ export function createStore(backend: Backend) {
   const connectStage = ref('')
   const appUpdate = createAppUpdater(nativeUpdateDriver(() => isAndroid.value))
 
+  function dismissToast(id: number) {
+    const timer = toastTimers.get(id)
+    if (timer) clearTimeout(timer)
+    toastTimers.delete(id)
+    toastMeta.delete(id)
+    toasts.value = toasts.value.filter((item) => item.id !== id)
+  }
+
+  function scheduleToast(id: number, duration: number) {
+    const prev = toastTimers.get(id)
+    if (prev) clearTimeout(prev)
+    toastMeta.set(id, { remaining: duration, startedAt: Date.now() })
+    toastTimers.set(
+      id,
+      setTimeout(() => {
+        toastTimers.delete(id)
+        toastMeta.delete(id)
+        toasts.value = toasts.value.filter((item) => item.id !== id)
+      }, duration),
+    )
+  }
+
+  function pauseToast(id: number) {
+    const timer = toastTimers.get(id)
+    const meta = toastMeta.get(id)
+    if (!timer || !meta) return
+    clearTimeout(timer)
+    toastTimers.delete(id)
+    const elapsed = Math.max(0, Date.now() - meta.startedAt)
+    toastMeta.set(id, { remaining: Math.max(900, meta.remaining - elapsed), startedAt: 0 })
+  }
+
+  function resumeToast(id: number) {
+    if (toastTimers.has(id)) return
+    const meta = toastMeta.get(id)
+    if (!meta) return
+    scheduleToast(id, meta.remaining)
+  }
+
   function toast(text: string, tone: Toast['tone'] = 'info') {
     if (stopped) return
     const id = ++toastId
     for (const item of toasts.value.slice(0, -3)) {
       clearTimeout(toastTimers.get(item.id))
       toastTimers.delete(item.id)
+      toastMeta.delete(item.id)
     }
     toasts.value = [...toasts.value.slice(-3), { id, tone, text }]
-    toastTimers.set(id, setTimeout(() => {
-      toastTimers.delete(id)
-      toasts.value = toasts.value.filter((item) => item.id !== id)
-    }, tone === 'error' ? 5200 : 2800))
+    scheduleToast(id, tone === 'error' ? 5200 : 2800)
+  }
+
+  function proxyEnvCommand(): { port: number; command: string } {
+    const port = snapshot.value.mixed_port || snapshot.value.settings.mixed_port || 7890
+    const isWin = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)
+    const command = isWin
+      ? `$env:HTTP_PROXY="http://127.0.0.1:${port}"; $env:HTTPS_PROXY="http://127.0.0.1:${port}"; $env:ALL_PROXY="socks5://127.0.0.1:${port}"`
+      : `export https_proxy=http://127.0.0.1:${port} http_proxy=http://127.0.0.1:${port} all_proxy=socks5://127.0.0.1:${port}`
+    return { port, command }
+  }
+
+  async function copyProxyEnv() {
+    const { port, command } = proxyEnvCommand()
+    return copyText(command, `已复制终端代理环境变量 (127.0.0.1:${port})`)
   }
 
   /**
@@ -209,6 +261,26 @@ export function createStore(backend: Backend) {
       if (previous.length === next[key].length && previous.every((pkg, i) => pkg === next[key][i])) {
         next = { ...next, [key]: previous }
       }
+    }
+    const prevSettings = snapshot.value.settings
+    if (prevSettings !== next.settings) {
+      let nextSettings = next.settings
+      if (JSON.stringify(prevSettings.tun) === JSON.stringify(nextSettings.tun)) {
+        nextSettings = { ...nextSettings, tun: prevSettings.tun }
+      }
+      if (JSON.stringify(prevSettings.dns) === JSON.stringify(nextSettings.dns)) {
+        nextSettings = { ...nextSettings, dns: prevSettings.dns }
+      }
+      if (JSON.stringify(prevSettings) === JSON.stringify(nextSettings)) {
+        nextSettings = prevSettings
+      }
+      if (nextSettings !== next.settings) {
+        next = { ...next, settings: nextSettings }
+      }
+    }
+    const prevConfigValues = snapshot.value.config_values
+    if (prevConfigValues !== next.config_values && JSON.stringify(prevConfigValues) === JSON.stringify(next.config_values)) {
+      next = { ...next, config_values: prevConfigValues }
     }
     snapshot.value = next
   }
@@ -527,6 +599,7 @@ export function createStore(backend: Backend) {
     unlistenNodeTest = null
     toastTimers.forEach((timer) => clearTimeout(timer))
     toastTimers.clear()
+    toastMeta.clear()
     toasts.value = []
   }
 
@@ -651,8 +724,12 @@ export function createStore(backend: Backend) {
     connecting,
     connectStage,
     toast,
+    dismissToast,
+    pauseToast,
+    resumeToast,
     /** Shared clipboard helper so a failure surfaces as a toast instead of silence (R28). */
     copyText,
+    copyProxyEnv,
     start,
     stop,
     go,

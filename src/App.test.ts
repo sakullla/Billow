@@ -2470,4 +2470,331 @@ describe('App', () => {
     expect(wrapper.text()).toContain('内核未运行')
     expect(wrapper.findAll('[data-testid="rule-row"]')).toHaveLength(0)
   })
+
+  it('opens the command palette from the sidebar, switches modes and copies terminal proxy env', async () => {
+    const { wrapper, backend } = await mountApp()
+    const clipboard = stubClipboard()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+
+    // Home port button copies OS-aware proxy environment variables.
+    await wrapper.find('[data-testid="copy-proxy-cmd"]').trigger('click')
+    await flushPromises()
+    expect(String(clipboard.mock.calls.at(-1)?.[0])).toContain('127.0.0.1:7890')
+
+    // Sidebar trigger opens Command Palette and switches mode to Direct.
+    const setMode = vi.spyOn(backend, 'setMode')
+    await wrapper.find('[data-testid="open-palette"]').trigger('click')
+    await flushPromises()
+    await nextTick()
+    expect(paletteInput()).not.toBeNull()
+    paletteOption('action:mode-direct')?.click()
+    await settle(200)
+    expect(setMode).toHaveBeenCalledWith('direct')
+    expect(wrapper.find('[data-testid="groups-card"]').classes()).toContain('direct-dim')
+    expect(wrapper.find('[data-testid="groups-card"]').text()).toContain('直连中')
+  })
+
+  it('pauses toasts on hover and dismisses them on click', async () => {
+    const { wrapper } = await mountApp()
+    const store = storeOf(wrapper)
+    store.toast('悬停暂停提示', 'info')
+    await flushPromises()
+
+    const toast = wrapper.find('.toast')
+    expect(toast.exists()).toBe(true)
+    await toast.trigger('mouseenter')
+    await settle(4000)
+    expect(wrapper.find('.toast').exists()).toBe(true)
+
+    await wrapper.find('.toast').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.toast').exists()).toBe(false)
+  })
+
+  it('locates the active proxy node and pastes or clears quick subscription URLs', async () => {
+    const { wrapper } = await mountApp()
+    await openPage(wrapper, 'proxies')
+    await flushPromises()
+
+    // Collapse the first group, then click locate-active-node to re-expand and highlight it.
+    await wrapper.find('[data-testid="group-toggle-节点选择"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-group-card="节点选择"]').classes()).not.toContain('open')
+
+    await wrapper.find('[data-testid="locate-active-node"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-group-card="节点选择"]').classes()).toContain('open')
+    expect(wrapper.find('[data-group-card="节点选择"] .node.located').exists()).toBe(true)
+
+    // Quick-import clipboard paste and inline clear on Profiles.
+    Object.defineProperty(navigator, 'clipboard', {
+      value: {
+        readText: vi.fn(async () => 'https://sub.example.com/clash.yaml\n'),
+        writeText: vi.fn(async () => undefined),
+      },
+      configurable: true,
+    })
+    await openPage(wrapper, 'profiles')
+    await flushPromises()
+    await wrapper.find('[data-testid="quick-paste"]').trigger('click')
+    await flushPromises()
+    const urlInput = wrapper.find('.quick-import input')
+    expect((urlInput.element as HTMLInputElement).value).toBe('https://sub.example.com/clash.yaml')
+    await wrapper.find('[data-testid="quick-clear"]').trigger('click')
+    await flushPromises()
+    expect((urlInput.element as HTMLInputElement).value).toBe('')
+  })
+
+  it('sorts connections by table headers, filters from connection detail and highlights rule/log matches', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+
+    await openPage(wrapper, 'connections')
+    await settle(1100)
+    const hostHeader = wrapper.find('th .th-sort')
+    await hostHeader.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('th').attributes('aria-sort')).toBe('ascending')
+    await hostHeader.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('th').attributes('aria-sort')).toBe('descending')
+
+    // Open connection detail and filter by host chip.
+    await wrapper.find('[data-testid="connection-row"]').trigger('click')
+    await flushPromises()
+    const filterHostBtn = document.body.querySelector<HTMLButtonElement>('[data-testid="filter-conn-host"]')
+    expect(filterHostBtn).not.toBeNull()
+    filterHostBtn?.click()
+    await flushPromises()
+    expect((wrapper.find('[data-testid="connection-search"]').element as HTMLInputElement).value).not.toBe('')
+    await wrapper.find('[data-testid="clear-connection-search"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.find('[data-testid="connection-search"]').element as HTMLInputElement).value).toBe('')
+
+    // Rules search highlight & inline clear.
+    await openPage(wrapper, 'rules')
+    await settle(400)
+    await wrapper.find('.toolbar input[type="search"]').setValue('openai')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="rule-row"] mark').length).toBeGreaterThan(0)
+    await wrapper.find('[data-testid="clear-rule-search"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.find('.toolbar input[type="search"]').element as HTMLInputElement).value).toBe('')
+
+    // Logs search highlight & inline clear.
+    await openPage(wrapper, 'logs')
+    await flushPromises()
+    const firstMsg = wrapper.find('.log-msg').text().slice(0, 4)
+    if (firstMsg) {
+      await wrapper.find('.toolbar input[type="search"]').setValue(firstMsg)
+      await flushPromises()
+      expect(wrapper.findAll('.log-msg mark').length).toBeGreaterThan(0)
+      await wrapper.find('[data-testid="clear-log-search"]').trigger('click')
+      await flushPromises()
+      expect((wrapper.find('.toolbar input[type="search"]').element as HTMLInputElement).value).toBe('')
+    }
+  })
+
+  it('preserves kernel port, TUN and DNS input drafts across polling ticks without resetting', async () => {
+    const { wrapper, backend } = await mountApp()
+    const saveSpy = vi.spyOn(backend, 'saveSettings')
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+
+    await openPage(wrapper, 'settings')
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="kernel"]').trigger('click')
+    await flushPromises()
+
+    const portInput = wrapper.find('[data-testid="mixed-port-input"]')
+    await portInput.trigger('focus')
+    await portInput.setValue('7891')
+    expect(wrapper.find('[data-testid="save-port"]').exists()).toBe(true)
+
+    // Multiple 1s live-traffic polling ticks must never reset the focused or dirty port input.
+    await settle(3500)
+    expect((portInput.element as HTMLInputElement).value).toBe('7891')
+    expect(wrapper.find('[data-testid="save-port"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="save-port"]').trigger('click')
+    await settle(600)
+    expect(saveSpy).toHaveBeenCalledWith(expect.objectContaining({ mixed_port: 7891 }))
+    expect((portInput.element as HTMLInputElement).value).toBe('7891')
+    expect(wrapper.find('[data-testid="save-port"]').exists()).toBe(false)
+
+    // TUN drafts survive polling ticks too.
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="tun"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').trigger('click')
+    const mtuInput = wrapper.find('input[aria-label="MTU"]')
+    await mtuInput.setValue('1420')
+    await settle(3500)
+    expect((mtuInput.element as HTMLInputElement).value).toBe('1420')
+    expect(wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="save-tun"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="save-tun"]').trigger('click')
+    await settle(600)
+    expect(saveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ tun: expect.objectContaining({ stack: 'gvisor', mtu: 1420 }) }),
+    )
+
+    // DNS drafts survive polling ticks too.
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="dns-settings"] [data-value="redir-host"]').trigger('click')
+    const nsInput = wrapper.find('textarea[aria-label="主 DNS 服务器"]')
+    await nsInput.setValue('https://1.1.1.1/dns-query')
+    await settle(3500)
+    expect((nsInput.element as HTMLTextAreaElement).value).toBe('https://1.1.1.1/dns-query')
+    expect(wrapper.find('[data-testid="save-dns"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    await settle(600)
+    expect(saveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dns: expect.objectContaining({ enhanced_mode: 'redir-host', nameserver: ['https://1.1.1.1/dns-query'] }),
+      }),
+    )
+  })
+
+  it('offers one-click jump to kernel port settings when a port conflict occurs', async () => {
+    const conflictMsg =
+      '端口 127.0.0.1:7890 已被其他程序占用，内核无法启动。请关闭占用它的程序（例如另一个 Clash / mihomo 客户端），或在设置中更换混合端口后重试。'
+    const demo = createDemoBackend()
+    const readState = demo.state.bind(demo)
+    let conflicted = false
+    demo.connect = async () => {
+      conflicted = true
+      throw new Error(conflictMsg)
+    }
+    demo.state = async () => {
+      const snap = await readState()
+      if (!conflicted) return snap
+      return {
+        ...snap,
+        logs: [...snap.logs, { time_ms: Date.now(), level: 'error' as const, message: conflictMsg }],
+      }
+    }
+
+    const wrapper = await mountWith(demo)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+
+    expect(wrapper.find('[data-testid="home-failure"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="failure-open-settings"]').text()).toBe('更换端口')
+
+    await openPage(wrapper, 'logs')
+    await settle(3200)
+    expect(wrapper.find('[data-testid="log-conflict"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="logs-open-settings"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
+    expect(wrapper.find('[data-testid="mixed-port-input"]').exists()).toBe(true)
+  })
+
+  it('jumps directly to a collapsed proxy group from the quick group strip on phones', async () => {
+    const { wrapper } = await mountApp({}, 360)
+    await wrapper.find('.tabbar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+
+    const strip = wrapper.find('[data-testid="group-jump-bar"]')
+    expect(strip.exists()).toBe(true)
+    // Pick a group that starts collapsed
+    const pills = strip.findAll('button')
+    expect(pills.length).toBeGreaterThan(2)
+    const collapsed = pills.find((pill) => !pill.classes('open'))
+    expect(collapsed).toBeDefined()
+    const testId = collapsed!.attributes('data-testid')!
+    const targetName = testId.replace('jump-group-', '')
+    expect(wrapper.find(`[data-group-card="${targetName}"]`).classes('open')).toBe(false)
+
+    await collapsed!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find(`[data-group-card="${targetName}"]`).classes('open')).toBe(true)
+    expect(wrapper.find(`[data-testid="${testId}"]`).classes('open')).toBe(true)
+  })
+
+  it('recovers from a GEO upgrade failure by switching to jsDelivr and retrying', async () => {
+    const { wrapper, backend } = await mountApp({}, 360)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    storeOf(wrapper).go('resources')
+    await settle(300)
+
+    const saveSpy = vi.spyOn(backend, 'saveSettings')
+    let calls = 0
+    vi.spyOn(backend, 'upgradeGeo').mockImplementation(async () => {
+      calls += 1
+      if (calls === 1) {
+        throw new Error('GEO 数据库下载超时或连接受阻，可切换下载源为「jsDelivr 加速」后重试')
+      }
+    })
+
+    await wrapper.find('[data-testid="upgrade-geo"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="geo-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="geo-error"]').text()).toContain('jsDelivr')
+    expect(wrapper.find('[data-testid="geo-switch-jsdelivr"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="geo-switch-jsdelivr"]').trigger('click')
+    await settle(500)
+    expect(saveSpy).toHaveBeenCalledWith(expect.objectContaining({ geo_source: 'jsdelivr' }))
+    expect(calls).toBe(2)
+    expect(wrapper.find('[data-testid="geo-error"]').exists()).toBe(false)
+  })
+
+  it('switches profiles from the mobile home sheet and jumps straight to the active node group', async () => {
+    const { wrapper, backend } = await mountApp({ platform: 'android' }, 375)
+    const enableSpy = vi.spyOn(backend, 'enable')
+
+    // Disconnected: dock has no live dot yet; profile trigger opens the quick switcher sheet
+    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="mobile-profile-trigger"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="mobile-profile-trigger"]').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-profile-sheet"]')).not.toBeNull()
+
+    document.body.querySelector<HTMLElement>('[data-testid="sheet-profile-p2"]')?.click()
+    await settle(300)
+    expect(enableSpy).toHaveBeenCalledWith('p2')
+    expect(document.body.querySelector('[data-testid="home-profile-sheet"]')).toBeNull()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+
+    // Connect and verify the dock live indicator lights up even after switching tabs
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(true)
+
+    // Tapping the active node capsule jumps directly to its group on ProxiesView
+    const nodePill = wrapper.find('[data-testid="hero-node-pill"]')
+    expect(nodePill.exists()).toBe(true)
+    await nodePill.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
+    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(true)
+  })
+
+  it('connects inline from mobile proxies when disconnected and focuses one group per pill tap', async () => {
+    localStorage.clear()
+    const { wrapper, backend } = await mountApp({ platform: 'android' }, 360)
+    const connectSpy = vi.spyOn(backend, 'connect')
+
+    await wrapper.find('.tabbar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(true)
+
+    // Tapping a second group pill on mobile collapses the previously open group for zero clutter
+    expect(wrapper.find('[data-group-card="节点选择"]').classes('open')).toBe(true)
+    await wrapper.find('[data-testid="jump-group-OpenAI"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-group-card="OpenAI"]').classes('open')).toBe(true)
+    expect(wrapper.find('[data-group-card="节点选择"]').classes('open')).toBe(false)
+
+    // 1-tap connect directly from ProxiesView enables testing without going back to Home
+    await wrapper.find('[data-testid="proxies-connect"]').trigger('click')
+    await settle(1500)
+    expect(connectSpy).toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="test-all"]').attributes('disabled')).toBeUndefined()
+  })
 })

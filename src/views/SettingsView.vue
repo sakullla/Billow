@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
@@ -48,18 +48,56 @@ const FLAGS: { key: Flag; title: string; hint: string }[] = [
   { key: 'tcp_concurrent', title: 'TCP 并发', hint: '同时连接多个解析结果，取最快的一个' },
 ]
 
+const pendingSettings = ref<KernelSettings | null>(null)
+const currentSettings = computed(() => pendingSettings.value ?? snap.value.settings)
+
 const port = ref('')
-const testUrl = ref('')
-const timeout = ref('')
+const portFocused = ref(false)
+let lastSyncedPort: number | null | undefined = undefined
 watch(
-  () => snap.value.settings,
-  (settings) => {
-    port.value = settings.mixed_port ? String(settings.mixed_port) : ''
-    testUrl.value = settings.test_url
-    timeout.value = settings.test_timeout_ms ? String(settings.test_timeout_ms) : ''
+  () => snap.value.settings.mixed_port,
+  (mixedPort) => {
+    if (mixedPort === lastSyncedPort) return
+    lastSyncedPort = mixedPort
+    if (!portFocused.value) {
+      port.value = mixedPort ? String(mixedPort) : ''
+    }
   },
   { immediate: true },
 )
+
+const testUrl = ref('')
+const timeout = ref('')
+const testUrlFocused = ref(false)
+const timeoutFocused = ref(false)
+let lastSyncedProbe = ''
+watch(
+  () => `${snap.value.settings.test_url}\n${snap.value.settings.test_timeout_ms}`,
+  (key) => {
+    if (key === lastSyncedProbe) return
+    lastSyncedProbe = key
+    if (!testUrlFocused.value) {
+      testUrl.value = snap.value.settings.test_url
+    }
+    if (!timeoutFocused.value) {
+      timeout.value = snap.value.settings.test_timeout_ms ? String(snap.value.settings.test_timeout_ms) : ''
+    }
+  },
+  { immediate: true },
+)
+
+const savedPortText = computed(() => {
+  const mixed = currentSettings.value.mixed_port
+  return mixed ? String(mixed) : ''
+})
+const portDirty = computed(() => port.value.trim() !== savedPortText.value)
+
+const probeDirty = computed(() => {
+  const base = currentSettings.value
+  const rawTimeout = timeout.value.trim()
+  const ms = rawTimeout ? Number(rawTimeout) : 0
+  return testUrl.value.trim() !== base.test_url || ms !== base.test_timeout_ms
+})
 
 const overridden = computed(() => {
   const s = snap.value.settings
@@ -74,29 +112,72 @@ function effective(key: Flag): boolean {
 }
 
 function save(patch: Partial<KernelSettings>) {
-  void store.saveSettings({ ...snap.value.settings, ...patch })
+  const next: KernelSettings = { ...currentSettings.value, ...patch }
+  pendingSettings.value = next
+  void store.saveSettings(next).finally(() => {
+    if (pendingSettings.value === next) pendingSettings.value = null
+  })
 }
 
-function commitPort() {
+function commitPort(silentInvalid = false) {
+  const base = currentSettings.value
   const text = port.value.trim()
   const value = text ? Number(text) : null
   if (value != null && (!Number.isInteger(value) || value < 1 || value > 65535)) {
-    store.toast('端口需要是 1–65535 之间的整数', 'error')
-    port.value = snap.value.settings.mixed_port ? String(snap.value.settings.mixed_port) : ''
+    if (!silentInvalid) {
+      store.toast('端口需要是 1–65535 之间的整数', 'error')
+      port.value = base.mixed_port ? String(base.mixed_port) : ''
+    }
     return
   }
-  if (value !== snap.value.settings.mixed_port) save({ mixed_port: value })
+  lastSyncedPort = value
+  if (value !== base.mixed_port) save({ mixed_port: value })
 }
 
-function commitProbe() {
-  const ms = timeout.value.trim() ? Number(timeout.value) : 0
-  if (testUrl.value.trim() === snap.value.settings.test_url && ms === snap.value.settings.test_timeout_ms) return
-  save({ test_url: testUrl.value.trim(), test_timeout_ms: Number.isFinite(ms) ? ms : 0 })
+function commitProbe(silentInvalid = false) {
+  const base = currentSettings.value
+  const trimmedUrl = testUrl.value.trim()
+  const rawTimeout = timeout.value.trim()
+  const parsed = rawTimeout ? Number(rawTimeout) : 0
+  if (rawTimeout && (!Number.isInteger(parsed) || parsed < 0)) {
+    if (!silentInvalid) {
+      store.toast('测速超时需要是非负整数（毫秒）', 'error')
+      timeout.value = base.test_timeout_ms ? String(base.test_timeout_ms) : ''
+    }
+    return
+  }
+  const ms = Number.isFinite(parsed) ? parsed : 0
+  lastSyncedProbe = `${trimmedUrl}\n${ms}`
+  if (trimmedUrl === base.test_url && ms === base.test_timeout_ms) return
+  save({ test_url: trimmedUrl, test_timeout_ms: ms })
 }
+
+function flushKernelInputs() {
+  if (portDirty.value) commitPort(true)
+  if (probeDirty.value) commitProbe(true)
+}
+
+watch(
+  () => store.settingsTab.value,
+  (_next, prev) => {
+    if (prev === 'kernel') flushKernelInputs()
+  },
+)
+
+onBeforeUnmount(() => {
+  if (store.page.value !== 'settings') flushKernelInputs()
+})
 
 function reset() {
-  void store.saveSettings({
-    ...snap.value.settings,
+  portFocused.value = false
+  testUrlFocused.value = false
+  timeoutFocused.value = false
+  port.value = ''
+  testUrl.value = ''
+  timeout.value = ''
+  lastSyncedPort = null
+  lastSyncedProbe = '\n0'
+  save({
     sniffer: null,
     mixed_port: null,
     allow_lan: null,
@@ -115,6 +196,7 @@ const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
 /** Phone sub-pages go back through the app history when possible (App provides it). */
 const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab.value = 'general'))
+const openShortcuts = inject<(() => void) | null>('openShortcuts', null)
 const SUB_TITLES: Record<SettingsTab, string> = { general: '设置', kernel: '内核', tun: 'TUN 模式', dns: 'DNS' }
 
 const appSummary = computed(() => {
@@ -122,15 +204,6 @@ const appSummary = computed(() => {
   if (s.app_mode === 'include' && s.included.length) return `仅 ${s.included.length} 个应用`
   return s.excluded.length ? `绕过 ${s.excluded.length} 个` : '全部应用'
 })
-
-const TABS = computed(() =>
-  [
-    { id: 'general' as SettingsTab, label: '通用' },
-    { id: 'kernel' as SettingsTab, label: '内核' },
-    ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: 'TUN' }]),
-    { id: 'dns' as SettingsTab, label: 'DNS' },
-  ],
-)
 
 // ── TUN draft
 const STACKS = [
@@ -140,28 +213,44 @@ const STACKS = [
 ] as const
 const tun = ref<TunSettings>(copy(snap.value.settings.tun))
 const tunHijack = ref('')
+const tunMtu = ref('')
+let lastSyncedTun = ''
+function applyTunDraft(value: TunSettings) {
+  tun.value = copy(value)
+  tunHijack.value = value.dns_hijack.join('\n')
+  tunMtu.value = value.mtu ? String(value.mtu) : ''
+}
+function loadTun(value: TunSettings) {
+  applyTunDraft(value)
+  lastSyncedTun = JSON.stringify(value)
+}
 watch(
   () => snap.value.settings.tun,
   (value) => {
-    tun.value = copy(value)
-    tunHijack.value = value.dns_hijack.join('\n')
+    const serialized = JSON.stringify(value)
+    if (serialized === lastSyncedTun) return
+    loadTun(value)
   },
   { immediate: true, deep: true },
 )
 const lines = (text: string) => text.split(/[\n,]/).map((item) => item.trim()).filter(Boolean)
-const tunDraft = computed<TunSettings>(() => ({ ...tun.value, dns_hijack: lines(tunHijack.value), mtu: Number(tun.value.mtu) || 0 }))
+const tunDraft = computed<TunSettings>(() => {
+  const mtuNum = Number(tunMtu.value.trim())
+  return {
+    ...tun.value,
+    dns_hijack: lines(tunHijack.value),
+    mtu: Number.isFinite(mtuNum) && mtuNum > 0 ? Math.round(mtuNum) : 0,
+  }
+})
 const tunDirty = computed(() => JSON.stringify(tunDraft.value) !== JSON.stringify(snap.value.settings.tun))
 function undoTun() {
-  tun.value = copy(snap.value.settings.tun)
-  tunHijack.value = snap.value.settings.tun.dns_hijack.join('\n')
+  loadTun(snap.value.settings.tun)
 }
 function saveTun() {
   save({ tun: tunDraft.value })
 }
 function resetTun() {
-  const base = defaultTun()
-  tun.value = base
-  tunHijack.value = base.dns_hijack.join('\n')
+  applyTunDraft(defaultTun())
 }
 
 // ── DNS draft
@@ -181,11 +270,24 @@ const LISTS: { key: ListKey; title: string; hint: string; fakeIpOnly?: boolean }
 ]
 const dns = ref<DnsSettings>(copy(snap.value.settings.dns))
 const dnsText = ref<Record<ListKey, string>>({} as Record<ListKey, string>)
-function loadDns(value: DnsSettings) {
+let lastSyncedDns = ''
+function applyDnsDraft(value: DnsSettings) {
   dns.value = copy(value)
   dnsText.value = Object.fromEntries(LISTS.map((item) => [item.key, value[item.key].join('\n')])) as Record<ListKey, string>
 }
-watch(() => snap.value.settings.dns, loadDns, { immediate: true, deep: true })
+function loadDns(value: DnsSettings) {
+  applyDnsDraft(value)
+  lastSyncedDns = JSON.stringify(value)
+}
+watch(
+  () => snap.value.settings.dns,
+  (value) => {
+    const serialized = JSON.stringify(value)
+    if (serialized === lastSyncedDns) return
+    loadDns(value)
+  },
+  { immediate: true, deep: true },
+)
 const dnsDraft = computed<DnsSettings>(() => ({
   ...dns.value,
   ...Object.fromEntries(LISTS.map((item) => [item.key, lines(dnsText.value[item.key] ?? '')])),
@@ -195,8 +297,17 @@ function saveDns() {
   save({ dns: dnsDraft.value })
 }
 function resetDns() {
-  loadDns(defaultDns())
+  applyDnsDraft(defaultDns())
 }
+
+const TABS = computed(() =>
+  [
+    { id: 'general' as SettingsTab, label: '通用' },
+    { id: 'kernel' as SettingsTab, label: '内核' },
+    ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: tunDirty.value ? 'TUN •' : 'TUN' }]),
+    { id: 'dns' as SettingsTab, label: dnsDirty.value ? 'DNS •' : 'DNS' },
+  ],
+)
 </script>
 
 <template>
@@ -234,22 +345,22 @@ function resetDns() {
       <!-- Phones reach the tool pages from here (the tab bar keeps four entries). -->
       <nav v-if="compact" class="tool-grid" aria-label="工具" data-testid="tool-grid">
         <button type="button" class="tool-tile" data-tool="connections" @click="store.go('connections')">
-          <span class="tool-icon"><Icon name="activity" /></span>
+          <span class="tool-icon blue"><Icon name="activity" /></span>
           <strong>连接</strong>
           <span class="muted small">{{ snap.connected ? `${snap.connection_total} 个活动` : '未连接' }}</span>
         </button>
         <button type="button" class="tool-tile" data-tool="logs" @click="store.go('logs')">
-          <span class="tool-icon"><Icon name="terminal" /></span>
+          <span class="tool-icon amber"><Icon name="terminal" /></span>
           <strong>日志</strong>
           <span class="muted small">{{ snap.logs.length ? `${snap.logs.length} 条` : '暂无' }}</span>
         </button>
         <button type="button" class="tool-tile" data-tool="rules" @click="store.go('rules')">
-          <span class="tool-icon"><Icon name="route" /></span>
+          <span class="tool-icon violet"><Icon name="route" /></span>
           <strong>规则</strong>
           <span class="muted small">分流规则与命中</span>
         </button>
         <button type="button" class="tool-tile" data-tool="resources" @click="store.go('resources')">
-          <span class="tool-icon"><Icon name="database" /></span>
+          <span class="tool-icon green"><Icon name="database" /></span>
           <strong>外部资源</strong>
           <span class="muted small">规则集与代理集</span>
         </button>
@@ -296,13 +407,22 @@ function resetDns() {
       </template>
 
       <section v-else class="card">
-        <header class="card-head"><h2>外观</h2></header>
+        <header class="card-head"><h2>外观与操作</h2></header>
         <div class="setting-row">
           <div class="grow">
             <strong>主题</strong>
             <p class="muted small">浅色、深色或跟随系统</p>
           </div>
           <Segmented :model-value="store.theme.value" :options="THEMES" size="sm" label="主题" @update:model-value="store.setTheme" />
+        </div>
+        <div v-if="openShortcuts" class="setting-row">
+          <div class="grow">
+            <strong>键盘快捷键</strong>
+            <p class="muted small">命令面板、搜索聚焦与快速清除</p>
+          </div>
+          <button type="button" class="btn ghost sm" data-testid="settings-shortcuts" @click="openShortcuts()">
+            <Icon name="keyboard" :size="15" />查看快捷键
+          </button>
         </div>
       </section>
 
@@ -340,7 +460,19 @@ function resetDns() {
           <div class="grow min0">
             <strong>Billow</strong>
             <p class="muted small">基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0</p>
-            <p v-if="app?.data_dir" class="muted small mono ellipsis" :title="app.data_dir">{{ app.data_dir }}</p>
+            <div v-if="app?.data_dir" class="about-dir">
+              <p class="muted small mono ellipsis" :title="app.data_dir">{{ app.data_dir }}</p>
+              <button
+                type="button"
+                class="icon-btn sm"
+                title="复制数据目录路径"
+                aria-label="复制数据目录路径"
+                data-testid="copy-data-dir"
+                @click="store.copyText(app.data_dir, '已复制数据目录路径')"
+              >
+                <Icon name="copy" :size="13" />
+              </button>
+            </div>
           </div>
           <span class="muted small mono">v{{ app?.version ?? '—' }}</span>
         </div>
@@ -387,18 +519,33 @@ function resetDns() {
         <p class="muted small card-note">这些设置覆盖每份配置中的同名项；留空或选择“跟随配置”则使用配置文件的值。修改后运行中的内核会自动重启。</p>
         <div class="setting-row">
           <div class="grow">
-            <strong>混合代理端口</strong>
+            <strong>混合代理端口<span v-if="snap.settings.mixed_port" class="tag accent sm">已覆盖</span></strong>
             <p class="muted small">HTTP 与 SOCKS5 共用，系统代理指向它</p>
           </div>
-          <input
-            v-model="port"
-            class="input sm mono"
-            inputmode="numeric"
-            :placeholder="String(snap.config_values.mixed_port ?? 7890)"
-            aria-label="混合代理端口"
-            @blur="commitPort"
-            @keydown.enter="($event.target as HTMLInputElement).blur()"
-          />
+          <div class="inline-field">
+            <input
+              v-model="port"
+              class="input sm mono"
+              inputmode="numeric"
+              :placeholder="String(snap.config_values.mixed_port ?? 7890)"
+              aria-label="混合代理端口"
+              data-testid="mixed-port-input"
+              @focus="portFocused = true"
+              @blur="portFocused = false; commitPort()"
+              @keydown.enter="($event.target as HTMLInputElement).blur()"
+            />
+            <button
+              v-if="portDirty"
+              type="button"
+              class="btn primary sm"
+              :disabled="store.busy.settings"
+              data-testid="save-port"
+              @mousedown.prevent
+              @click="commitPort()"
+            >
+              保存
+            </button>
+          </div>
         </div>
         <div v-for="flag in FLAGS" :key="flag.key" class="setting-row">
           <div class="grow">
@@ -447,25 +594,40 @@ function resetDns() {
             <strong>测速地址</strong>
             <p class="muted small">延迟测试请求的网址与超时（毫秒）</p>
           </div>
-          <div class="input-pair">
-            <input
-              v-model="testUrl"
-              class="input sm mono"
-              type="url"
-              placeholder="http://www.gstatic.com/generate_204"
-              aria-label="测速地址"
-              @blur="commitProbe"
-              @keydown.enter="($event.target as HTMLInputElement).blur()"
-            />
-            <input
-              v-model="timeout"
-              class="input sm mono short"
-              inputmode="numeric"
-              placeholder="5000"
-              aria-label="测速超时"
-              @blur="commitProbe"
-              @keydown.enter="($event.target as HTMLInputElement).blur()"
-            />
+          <div class="inline-field">
+            <div class="input-pair">
+              <input
+                v-model="testUrl"
+                class="input sm mono"
+                type="url"
+                placeholder="http://www.gstatic.com/generate_204"
+                aria-label="测速地址"
+                @focus="testUrlFocused = true"
+                @blur="testUrlFocused = false; commitProbe()"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+              <input
+                v-model="timeout"
+                class="input sm mono short"
+                inputmode="numeric"
+                placeholder="5000"
+                aria-label="测速超时"
+                @focus="timeoutFocused = true"
+                @blur="timeoutFocused = false; commitProbe()"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </div>
+            <button
+              v-if="probeDirty"
+              type="button"
+              class="btn primary sm"
+              :disabled="store.busy.settings"
+              data-testid="save-probe"
+              @mousedown.prevent
+              @click="commitProbe()"
+            >
+              保存
+            </button>
           </div>
         </div>
       </section>
@@ -527,7 +689,7 @@ function resetDns() {
             <strong>MTU</strong>
             <p class="muted small">一般保持 1500；遇到大包问题可调小，例如 1400</p>
           </div>
-          <input v-model.number="tun.mtu" class="input sm mono short" inputmode="numeric" aria-label="MTU" />
+          <input v-model="tunMtu" class="input sm mono short" inputmode="numeric" placeholder="1500" aria-label="MTU" />
         </div>
         <div class="setting-row">
           <div class="grow">

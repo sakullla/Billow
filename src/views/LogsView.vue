@@ -38,6 +38,31 @@ const lineKey = (line: LogLine) => `${line.time_ms}|${line.level}|${line.message
 /** Pausing freezes the list and every count, while the store keeps buffering (R28). */
 const source = computed(() => (paused.value ? frozen.value : snap.value.logs))
 
+const needle = computed(() => query.value.trim().toLowerCase())
+const isFiltered = computed(() => Boolean(needle.value) || filter.value !== 'all')
+
+interface HighlightPart {
+  text: string
+  hit: boolean
+}
+
+function highlight(value: string): HighlightPart[] {
+  const q = needle.value
+  if (!q || !value) return [{ text: value, hit: false }]
+  const lower = value.toLowerCase()
+  const parts: HighlightPart[] = []
+  let idx = 0
+  let found = lower.indexOf(q)
+  while (found >= 0) {
+    if (found > idx) parts.push({ text: value.slice(idx, found), hit: false })
+    parts.push({ text: value.slice(found, found + q.length), hit: true })
+    idx = found + q.length
+    found = lower.indexOf(q, idx)
+  }
+  if (idx < value.length) parts.push({ text: value.slice(idx), hit: false })
+  return parts.length ? parts : [{ text: value, hit: false }]
+}
+
 /**
  * Filtered rows keep a content-stable key (`time|level|message` plus an
  * occurrence counter for duplicate lines). Trimming the front of the capped
@@ -45,7 +70,7 @@ const source = computed(() => (paused.value ? frozen.value : snap.value.logs))
  * lines instead of rebuilding the table (R31).
  */
 const entries = computed(() => {
-  const needle = query.value.trim().toLowerCase()
+  const q = needle.value
   const seen = new Map<string, number>()
   const result: { line: LogLine; key: string }[] = []
   for (const line of source.value) {
@@ -53,7 +78,7 @@ const entries = computed(() => {
     const occurrence = seen.get(base) ?? 0
     seen.set(base, occurrence + 1)
     if (filter.value !== 'all' && line.level !== filter.value) continue
-    if (needle && !line.message.toLowerCase().includes(needle)) continue
+    if (q && !line.message.toLowerCase().includes(q)) continue
     result.push({ line, key: `${base}#${occurrence}` })
   }
   return result
@@ -163,6 +188,29 @@ function resetFilters() {
   query.value = ''
   filter.value = 'all'
 }
+
+const conflictAction = computed<{ message: string; label: string; tab: 'kernel' | 'tun' } | null>(() => {
+  if (snap.value.connected) return null
+  for (let i = source.value.length - 1; i >= 0; i -= 1) {
+    const line = source.value[i]!
+    if (line.level !== 'error') continue
+    if (line.message.includes('更换混合端口') || (line.message.includes('端口') && line.message.includes('占用'))) {
+      return {
+        message: '本地监听端口冲突导致内核未能启动，可前往内核设置更换混合代理端口后重新连接。',
+        label: '更换混合端口',
+        tab: 'kernel',
+      }
+    }
+    if (line.message.includes('TUN 设置') || (line.message.includes('TUN') && line.message.includes('占用'))) {
+      return {
+        message: '虚拟网卡冲突导致内核未能启动，可前往 TUN 设置调整或关闭其他 VPN 后重试。',
+        label: 'TUN 设置',
+        tab: 'tun',
+      }
+    }
+  }
+  return null
+})
 </script>
 
 <template>
@@ -172,6 +220,7 @@ function resetFilters() {
         <h1>日志</h1>
         <p class="muted small">
           <span data-testid="log-count">{{ source.length }} 条</span>
+          <template v-if="isFiltered"> · 显示 {{ lines.length }} 条</template>
           · {{ counts.warning }} 警告
           · {{ counts.error }} 错误
           <template v-if="paused"> · 暂停于 {{ formatClock(pausedAt ?? 0) }}</template>
@@ -230,8 +279,31 @@ function resetFilters() {
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索日志" data-page-search />
+        <button
+          v-if="query"
+          type="button"
+          class="icon-btn sm"
+          aria-label="清空搜索"
+          data-testid="clear-log-search"
+          @click="query = ''"
+        >
+          <Icon name="x" :size="14" />
+        </button>
       </div>
       <Segmented v-model="filter" :options="filterOptions" size="sm" label="日志级别" />
+    </div>
+
+    <div v-if="conflictAction" class="banner error log-conflict" role="alert" data-testid="log-conflict">
+      <Icon name="alert" :size="16" />
+      <span class="grow small">{{ conflictAction.message }}</span>
+      <button
+        type="button"
+        class="btn ghost sm"
+        data-testid="logs-open-settings"
+        @click="store.openSettings(conflictAction.tab)"
+      >
+        <Icon name="sliders" :size="14" />{{ conflictAction.label }}
+      </button>
     </div>
 
     <div class="card log-card" :class="{ paused }">
@@ -259,7 +331,7 @@ function resetFilters() {
         <div
           v-for="entry in entries"
           :key="entry.key"
-          v-memo="[entry.line.time_ms, entry.line.level, entry.line.message]"
+          v-memo="[entry.line.time_ms, entry.line.level, entry.line.message, needle]"
           class="log-line"
           :class="entry.line.level"
           :data-log-line="lineKey(entry.line)"
@@ -267,7 +339,11 @@ function resetFilters() {
         >
           <span class="log-time mono">{{ formatClock(entry.line.time_ms) }}</span>
           <span class="log-level mono">{{ LABEL[entry.line.level] }}</span>
-          <span class="log-msg mono">{{ entry.line.message }}</span>
+          <span class="log-msg mono">
+            <template v-for="(part, partIdx) in highlight(entry.line.message)" :key="partIdx">
+              <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+            </template>
+          </span>
           <button
             type="button"
             class="icon-btn sm log-copy"

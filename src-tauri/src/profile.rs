@@ -595,7 +595,12 @@ fn friendly_listen_error(message: &str) -> String {
     let in_use = lower.contains("only one usage of each socket address")
         || lower.contains("address already in use")
         || lower.contains("10048");
-    if message.contains("Start Mixed") && in_use {
+    if (message.contains("Start Mixed")
+        || message.contains("Start HTTP")
+        || message.contains("Start SOCKS")
+        || message.contains("RESTful API"))
+        && in_use
+    {
         let address = message
             .split("listen tcp ")
             .nth(1)
@@ -630,7 +635,7 @@ fn kernel_root(kernel: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// Orphaned kernels leave their `runtime-*.yaml` behind; only the new one stays.
-#[cfg(target_os = "windows")]
+#[cfg(not(target_os = "android"))]
 fn remove_stale_runtime_configs(work_dir: &std::path::Path, keep: &std::path::Path) {
     let Ok(entries) = fs::read_dir(work_dir) else { return };
     for entry in entries.flatten() {
@@ -643,12 +648,109 @@ fn remove_stale_runtime_configs(work_dir: &std::path::Path, keep: &std::path::Pa
     }
 }
 
+/// Reap a stray kernel left behind on macOS/Linux by an earlier crashed or force-quit session.
+#[cfg(all(unix, not(target_os = "android")))]
+fn reap_stale_unix_kernel(work_dir: &std::path::Path, kernel_path: &std::path::Path) {
+    let pid_file = work_dir.join("kernel.pid");
+    let Ok(raw) = fs::read_to_string(&pid_file) else { return };
+    let _ = fs::remove_file(&pid_file);
+    let Some(pid) = raw.lines().next().and_then(|line| line.trim().parse::<u32>().ok()) else {
+        return;
+    };
+    if pid <= 1 || pid == std::process::id() {
+        return;
+    }
+    let check = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(out) = check else { return };
+    if !out.status.success() {
+        return;
+    }
+    let cmdline = String::from_utf8_lossy(&out.stdout);
+    let work_str = work_dir.to_string_lossy();
+    let kern_str = kernel_path.to_string_lossy();
+    if !cmdline.contains(work_str.as_ref()) && !cmdline.contains(kern_str.as_ref()) {
+        return;
+    }
+    let _ = Command::new("kill")
+        .args(["-KILL", &format!("-{pid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    for _ in 0..10 {
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !alive {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// If the configured loopback controller port is already held by another client, pick an open one.
+fn ensure_free_controller_port(yaml: &str) -> String {
+    let Some(endpoint) = nodes::controller_from_yaml(yaml) else {
+        return yaml.to_string();
+    };
+    if std::net::TcpListener::bind((endpoint.host.as_str(), endpoint.port)).is_ok() {
+        return yaml.to_string();
+    }
+    let Ok(mut value) = serde_yaml::from_str::<Value>(yaml) else {
+        return yaml.to_string();
+    };
+    let mixed = read_i64(&value, "mixed-port")
+        .and_then(|p| u16::try_from(p).ok())
+        .filter(|p| *p > 0);
+    let tun = value
+        .get("tun")
+        .and_then(|t| t.get("enable"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !endpoint.secret.is_empty() && nodes::listeners_ready(&endpoint, mixed, tun) {
+        return yaml.to_string();
+    }
+    let Ok(free) = std::net::TcpListener::bind(("127.0.0.1", 0)) else {
+        return yaml.to_string();
+    };
+    let Ok(addr) = free.local_addr() else {
+        return yaml.to_string();
+    };
+    let port = addr.port();
+    drop(free);
+    if let Some(map) = value.as_mapping_mut() {
+        map.insert(
+            Value::String("external-controller".to_string()),
+            Value::String(format!("127.0.0.1:{port}")),
+        );
+        if let Ok(rewritten) = serde_yaml::to_string(&value) {
+            return rewritten;
+        }
+    }
+    yaml.to_string()
+}
+
 /// Spawns the already installed kernel. Tests inject [`KernelLaunch`] instead.
 pub struct ProcessRuntime {
     kernel_path: Option<PathBuf>,
     work_dir: PathBuf,
     child: Option<Child>,
     config_path: Option<PathBuf>,
+    last_requested_yaml: Option<String>,
     controller: Option<ControllerEndpoint>,
     cached_catalog: nodes::RuntimeCatalog,
     provider_catalog: Option<(Instant, nodes::RuntimeCatalog)>,
@@ -702,6 +804,7 @@ impl ProcessRuntime {
             work_dir: work_dir.into(),
             child: None,
             config_path: None,
+            last_requested_yaml: None,
             controller: None,
             cached_catalog: nodes::RuntimeCatalog::default(),
             provider_catalog: None,
@@ -720,9 +823,9 @@ impl ProcessRuntime {
         self.kernel_path = path;
     }
 
-
-    #[cfg(target_os = "windows")]
-    pub fn shutdown(&mut self) { self.stop(); }
+    pub fn shutdown(&mut self) {
+        self.stop();
+    }
 
     fn stop(&mut self) {
         self.halt_metrics();
@@ -743,6 +846,9 @@ impl ProcessRuntime {
         if let Some(path) = self.config_path.take() {
             let _ = fs::remove_file(path);
         }
+        #[cfg(all(unix, not(target_os = "android")))]
+        let _ = fs::remove_file(self.work_dir.join("kernel.pid"));
+        self.last_requested_yaml = None;
         self.controller = None;
         self.launched_kernel = None;
         self.cached_catalog = nodes::RuntimeCatalog::default();
@@ -804,19 +910,24 @@ impl KernelLaunch for ProcessRuntime {
         if !path.is_file() {
             return Err(MISSING_KERNEL.to_string());
         }
-        if self.running() && self.launched_kernel.as_ref() == Some(&path)
-            && self.config_path.as_ref().and_then(|p| fs::read_to_string(p).ok()).as_deref() == Some(config_yaml)
+        if self.running()
+            && self.launched_kernel.as_ref() == Some(&path)
+            && self.last_requested_yaml.as_deref() == Some(config_yaml)
         {
             return Ok(());
         }
         fs::create_dir_all(&self.work_dir).map_err(|_| "配置没有写入".to_string())?;
+        self.stop();
+        #[cfg(all(unix, not(target_os = "android")))]
+        reap_stale_unix_kernel(&self.work_dir, &path);
+        let effective_yaml = ensure_free_controller_port(config_yaml);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
         let config_path = self.work_dir.join(format!("runtime-{nanos}.yaml"));
-        fs::write(&config_path, config_yaml).map_err(|_| "配置没有写入".to_string())?;
-        let controller = nodes::controller_from_yaml(config_yaml);
+        fs::write(&config_path, &effective_yaml).map_err(|_| "配置没有写入".to_string())?;
+        let controller = nodes::controller_from_yaml(&effective_yaml);
         #[cfg(target_os = "android")]
         {
             let apk = crate::kernel::android_app_dir("sourceDir")
@@ -848,7 +959,6 @@ impl KernelLaunch for ProcessRuntime {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
-        self.stop();
         // A kernel orphaned by an earlier app process still holds the mixed and
         // controller ports; every new start would fail with "address in use".
         #[cfg(target_os = "windows")]
@@ -863,8 +973,9 @@ impl KernelLaunch for ProcessRuntime {
                     "上次运行留下的内核（PID {pids}）仍占用端口，结束它需要管理员权限。请在任务管理器中结束该进程，或以管理员身份重新打开 Billow 后重试"
                 ));
             }
-            remove_stale_runtime_configs(&self.work_dir, &config_path);
         }
+        #[cfg(not(target_os = "android"))]
+        remove_stale_runtime_configs(&self.work_dir, &config_path);
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -874,17 +985,23 @@ impl KernelLaunch for ProcessRuntime {
         };
         #[cfg(target_os = "windows")]
         crate::win_process::bind_to_app_lifetime(&child);
+        #[cfg(all(unix, not(target_os = "android")))]
+        let _ = fs::write(
+            self.work_dir.join("kernel.pid"),
+            format!("{}\n{}", child.id(), path.display()),
+        );
         let stdout = child.stdout.take();
         self.started = Some(Instant::now());
         self.child = Some(child);
         self.launched_kernel = Some(path);
         self.config_path = Some(config_path);
+        self.last_requested_yaml = Some(config_yaml.to_string());
         self.controller = controller;
         self.cached_catalog = nodes::RuntimeCatalog::default();
         if let Some(stdout) = stdout {
             self.log_buffer = Some(spawn_log_buffer(stdout));
         }
-        let config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
+        let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
         let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
         let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
         let wait = if self.controller.is_some() { Duration::from_secs(90) } else { Duration::from_millis(300) };
@@ -893,7 +1010,11 @@ impl KernelLaunch for ProcessRuntime {
             let failure = self.log_buffer.as_ref().and_then(|logs| {
                 let lines = logs.lines.lock().unwrap_or_else(|p| p.into_inner());
                 lines.iter().find(|line| line.level == "error" &&
-                    (line.message.contains("Start Mixed") || line.message.contains("Start TUN")))
+                    (line.message.contains("Start Mixed")
+                        || line.message.contains("Start HTTP")
+                        || line.message.contains("Start SOCKS")
+                        || line.message.contains("RESTful API")
+                        || line.message.contains("Start TUN")))
                     .map(|line| line.message.clone())
             });
             if let Some(message) = failure {
@@ -2722,12 +2843,31 @@ fn apply_settings(
     let key = |name: &str| Value::String(name.to_string());
     if let Some(port) = settings.mixed_port {
         map.insert(key("mixed-port"), Value::Number(i64::from(port).into()));
+        if desktop {
+            // Explicit mixed-port override replaces legacy separate HTTP/SOCKS listeners
+            // so a profile's occupied `port: 7890` / `socks-port: 7891` never keeps failing.
+            map.remove(key("port"));
+            map.remove(key("socks-port"));
+        }
     } else if !map.contains_key(key("mixed-port")) && !map.contains_key(key("port")) {
         map.insert(key("mixed-port"), Value::Number(FALLBACK_MIXED_PORT.into()));
     } else if !map.contains_key(key("mixed-port")) {
-        // Only an HTTP `port`: reuse it as the mixed listener so system proxy has a target.
+        // Only an HTTP `port`: reuse it as the mixed listener so system proxy has a target,
+        // and remove `port` so mihomo does not bind the same port twice and fail against itself.
         if let Some(port) = map.get(key("port")).and_then(Value::as_i64) {
             map.insert(key("mixed-port"), Value::Number(port.into()));
+            if desktop {
+                map.remove(key("port"));
+            }
+        }
+    }
+    if desktop {
+        if let Some(mixed) = map.get(key("mixed-port")).and_then(Value::as_i64).filter(|p| *p > 0) {
+            for name in ["port", "socks-port", "redir-port", "tproxy-port"] {
+                if map.get(key(name)).and_then(Value::as_i64) == Some(mixed) {
+                    map.remove(key(name));
+                }
+            }
         }
     }
     if !desktop {
@@ -3827,6 +3967,31 @@ proxy-groups:
     }
 
     #[test]
+    fn desktop_mixed_port_never_collides_with_legacy_listeners() {
+        // Subscription with `port: 7890` + `socks-port: 7891` and no `mixed-port`:
+        // promoting `port` to `mixed-port` must drop `port` so mihomo does not bind 7890 twice.
+        let source = "port: 7890\nsocks-port: 7891\nmode: rule\n";
+        let (yaml, mixed) = apply_settings(source, &KernelSettings::default(), true).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(mixed, Some(7890));
+        assert_eq!(value["mixed-port"].as_i64(), Some(7890));
+        assert!(mapping_get(&value, "port").is_none());
+        assert_eq!(value["socks-port"].as_i64(), Some(7891));
+
+        // Explicit `settings.mixed_port` override replaces both `port` and `socks-port`.
+        let override_settings = KernelSettings {
+            mixed_port: Some(7891),
+            ..Default::default()
+        };
+        let (overridden, over_mixed) = apply_settings(source, &override_settings, true).unwrap();
+        let over_val: Value = serde_yaml::from_str(&overridden).unwrap();
+        assert_eq!(over_mixed, Some(7891));
+        assert_eq!(over_val["mixed-port"].as_i64(), Some(7891));
+        assert!(mapping_get(&over_val, "port").is_none());
+        assert!(mapping_get(&over_val, "socks-port").is_none());
+    }
+
+    #[test]
     fn mobile_runtime_owns_its_listeners_and_leaves_routing_to_vpn_service() {
         let source = "mixed-port: 7890\nport: 7891\nexternal-controller: 127.0.0.1:9090\ntun: {enable: true, auto-route: true, auto-detect-interface: true}\n";
         let (yaml, mixed) = apply_settings(source, &KernelSettings::default(), false).unwrap();
@@ -4528,7 +4693,11 @@ proxy-groups:
 
         #[cfg(unix)]
         {
-            runtime.set_kernel_path(Some(PathBuf::from("/usr/bin/yes")));
+            use std::os::unix::fs::PermissionsExt;
+            let stand_in = dir.0.join("stand-in.sh");
+            fs::write(&stand_in, "#!/bin/sh\nsleep 30\n").unwrap();
+            fs::set_permissions(&stand_in, fs::Permissions::from_mode(0o755)).unwrap();
+            runtime.set_kernel_path(Some(stand_in));
             runtime.start_or_reload(&config(7890)).unwrap();
             runtime.set_kernel_path(Some(PathBuf::from("/usr/bin/false")));
             assert_eq!(

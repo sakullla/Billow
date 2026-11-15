@@ -29,6 +29,7 @@ const error = ref<string | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
 const geoBusy = ref(false)
+const geoError = ref<string | null>(null)
 const progress = reactive<Record<string, RowProgress>>({})
 const allRunning = reactive<Record<'proxy' | 'rule', boolean>>({ proxy: false, rule: false })
 const allProgress = reactive<Record<'proxy' | 'rule', { done: number; total: number }>>({
@@ -142,15 +143,24 @@ async function retry(row: ProviderRow) {
 
 async function upgradeGeo() {
   geoBusy.value = true
+  geoError.value = null
   try {
     await store.backend.upgradeGeo()
+    geoError.value = null
     store.toast('GEO 数据库已更新', 'success')
     await loadGeo()
   } catch (err) {
-    store.toast(err instanceof Error ? err.message : String(err), 'error')
+    geoError.value = err instanceof Error ? err.message : String(err)
   } finally {
     geoBusy.value = false
   }
+}
+
+async function switchJsdelivrAndUpgrade() {
+  if (geoBusy.value) return
+  geoError.value = null
+  await store.saveSettings({ ...snap.value.settings, geo_source: 'jsdelivr' })
+  await upgradeGeo()
 }
 
 // ── GEO databases: file state plus the three choices people actually make ──
@@ -179,6 +189,7 @@ async function loadGeo() {
 }
 
 function saveGeo(patch: Partial<KernelSettings>) {
+  if (patch.geo_source !== undefined) geoError.value = null
   void store.saveSettings({ ...snap.value.settings, ...patch })
 }
 
@@ -257,7 +268,7 @@ onMounted(() => {
     <header class="page-head">
       <div>
         <h1>外部资源</h1>
-        <p class="muted small">配置中引用的代理集、规则集与 GEO 数据库</p>
+        <p class="muted small">代理集、规则集与分流数据库</p>
       </div>
       <div class="head-actions">
         <button
@@ -279,7 +290,7 @@ onMounted(() => {
       <header class="card-head">
         <div>
           <h2>GEO 数据库</h2>
-          <p class="muted small">GeoIP / GeoSite 规则依赖的数据文件</p>
+          <p class="muted small">分流规则依赖的地域与域名数据</p>
         </div>
         <button
           type="button"
@@ -303,6 +314,31 @@ onMounted(() => {
           </span>
         </li>
       </ul>
+      <div v-if="geoError" class="geo-alert" role="alert" data-testid="geo-error">
+        <Icon name="alert" :size="15" />
+        <span class="geo-alert-text small">{{ geoError }}</span>
+        <div class="geo-alert-actions">
+          <button
+            v-if="geoSettings.geo_source !== 'jsdelivr'"
+            type="button"
+            class="btn primary sm"
+            :disabled="!snap.kernel_running || geoBusy"
+            data-testid="geo-switch-jsdelivr"
+            @click="switchJsdelivrAndUpgrade"
+          >
+            切换 jsDelivr 重试
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="!snap.kernel_running || geoBusy"
+            data-testid="geo-retry"
+            @click="upgradeGeo"
+          >
+            重试
+          </button>
+        </div>
+      </div>
       <div class="setting-row">
         <div class="grow">
           <strong>自动更新</strong>
@@ -328,7 +364,7 @@ onMounted(() => {
       <div class="setting-row">
         <div class="grow">
           <strong>下载源</strong>
-          <p class="muted small">{{ geoSettings.geo_source ? 'MetaCubeX meta-rules-dat，覆盖配置中的 geox-url' : '使用配置中的 geox-url；没有写时用内核默认地址' }}</p>
+          <p class="muted small">{{ geoSettings.geo_source ? '覆盖配置中的 geox-url 下载地址' : '沿用配置 geox-url 或内核默认源' }}</p>
         </div>
         <Segmented
           :model-value="geoSettings.geo_source"
@@ -453,6 +489,7 @@ onMounted(() => {
               <span v-if="stateOf(row)?.state === 'pending' && stateOf(row)?.action === 'update'" class="spinner sm" />
               <Icon v-else name="refresh" />
             </button>
+            <span class="provider-chevron" aria-hidden="true"><Icon name="chevron-right" :size="15" /></span>
           </div>
         </div>
       </section>
@@ -468,10 +505,35 @@ onMounted(() => {
       @close="detail = null"
     >
       <div class="provider-detail" data-testid="provider-detail">
-        <p v-if="detail.data?.source && detail.data.source !== 'inline'" class="muted small mono ellipsis detail-source" :title="detail.data.source">{{ detail.data.source }}</p>
+        <div v-if="detail.data?.source && detail.data.source !== 'inline'" class="detail-source-row">
+          <p class="muted small mono ellipsis detail-source grow" :title="detail.data.source">{{ detail.data.source }}</p>
+          <button
+            type="button"
+            class="icon-btn sm"
+            title="复制来源地址"
+            aria-label="复制来源地址"
+            data-testid="copy-provider-source"
+            @click="store.copyText(detail.data.source, '已复制来源地址')"
+          >
+            <Icon name="copy" :size="13" />
+          </button>
+        </div>
         <div v-if="detail.data && (detail.data.proxies.length || detail.data.rules.length)" class="search">
           <Icon name="search" :size="16" />
           <input v-model="detailQuery" type="search" :placeholder="detail.row.kind === 'proxy' ? '搜索节点、协议或 UDP' : '搜索规则'" />
+          <span v-if="detailNeedle" class="small muted mono">
+            {{ detail.row.kind === 'proxy' ? detailProxies.length : detailRules.length }}
+          </span>
+          <button
+            v-if="detailQuery"
+            type="button"
+            class="icon-btn sm"
+            aria-label="清空搜索"
+            data-testid="clear-provider-search"
+            @click="detailQuery = ''"
+          >
+            <Icon name="x" :size="14" />
+          </button>
         </div>
         <p v-if="detail.error" class="field-error" role="alert">{{ detail.error }}</p>
         <div v-else-if="!detail.data" class="detail-loading muted small"><span class="spinner xs" /> 正在读取…</div>

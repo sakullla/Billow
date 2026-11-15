@@ -91,14 +91,39 @@ const proxyOptions = computed(() => [
   ...proxies.value.map(([name, count]) => ({ value: name, label: name, hint: String(count) })),
 ])
 
+const needle = computed(() => query.value.trim().toLowerCase())
+const isFiltered = computed(() => Boolean(needle.value) || kind.value !== 'all' || proxy.value !== 'all')
+
+interface HighlightPart {
+  text: string
+  hit: boolean
+}
+
+function highlight(value: string): HighlightPart[] {
+  const q = needle.value
+  if (!q || !value) return [{ text: value, hit: false }]
+  const lower = value.toLowerCase()
+  const parts: HighlightPart[] = []
+  let idx = 0
+  let found = lower.indexOf(q)
+  while (found >= 0) {
+    if (found > idx) parts.push({ text: value.slice(idx, found), hit: false })
+    parts.push({ text: value.slice(found, found + q.length), hit: true })
+    idx = found + q.length
+    found = lower.indexOf(q, idx)
+  }
+  if (idx < value.length) parts.push({ text: value.slice(idx), hit: false })
+  return parts.length ? parts : [{ text: value, hit: false }]
+}
+
 const filtered = computed(() => {
-  const needle = query.value.trim().toLowerCase()
+  const q = needle.value
   const indexed = rules.value.map((rule, index) => ({ rule, index }))
   const list = indexed.filter(({ rule }) => {
     if (kind.value !== 'all' && rule.kind !== kind.value) return false
     if (proxy.value !== 'all' && rule.proxy !== proxy.value) return false
-    if (!needle) return true
-    return [rule.kind, rule.payload, rule.proxy].some((text) => text.toLowerCase().includes(needle))
+    if (!q) return true
+    return [rule.kind, rule.payload, rule.proxy].some((text) => text.toLowerCase().includes(q))
   })
   if (sort.value === 'hits') {
     list.sort((a, b) => (b.rule.hit_count ?? -1) - (a.rule.hit_count ?? -1) || a.index - b.index)
@@ -207,7 +232,13 @@ onBeforeUnmount(() => { ++loadId })
       <div>
         <h1>规则</h1>
         <p class="muted small">
-          {{ rules.length ? `${rules.length} 条规则，自上而下匹配` : '运行中的内核按这些规则分流' }}
+          {{
+            rules.length
+              ? isFiltered
+                ? `匹配 ${filtered.length} / ${rules.length} 条规则，自上而下匹配`
+                : `${rules.length} 条规则，自上而下匹配`
+              : '运行中的内核按这些规则分流'
+          }}
           <template v-if="rules.length && hasHits"> · 命中信息来自内核</template>
         </p>
         <p v-if="rules.length && !hasHits" class="muted small" data-testid="rules-no-hits">
@@ -236,6 +267,16 @@ onBeforeUnmount(() => { ++loadId })
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索规则内容或策略" data-page-search />
+        <button
+          v-if="query"
+          type="button"
+          class="icon-btn sm"
+          aria-label="清空搜索"
+          data-testid="clear-rule-search"
+          @click="query = ''"
+        >
+          <Icon name="x" :size="14" />
+        </button>
       </div>
       <SelectField
         v-model="kind"
@@ -258,6 +299,9 @@ onBeforeUnmount(() => { ++loadId })
         data-testid="rule-proxy-filter"
       />
       <Segmented v-if="hasHits" v-model="sort" :options="SORTS" size="sm" label="排序" />
+      <button v-if="isFiltered" type="button" class="btn ghost sm" data-testid="reset-rule-toolbar" @click="resetFilters">
+        重置
+      </button>
     </div>
 
     <EmptyState v-if="!snap.kernel_running" variant="unavailable" title="内核未运行" description="连接后可以查看当前配置生效的分流规则。">
@@ -306,9 +350,20 @@ onBeforeUnmount(() => { ++loadId })
       >
         <span class="rule-index mono muted">{{ index + 1 }}</span>
         <span class="tag">{{ rule.kind }}</span>
-        <span class="rule-payload mono ellipsis" :title="rule.payload">{{ rule.payload || '—' }}</span>
+        <span class="rule-payload mono ellipsis" :title="rule.payload">
+          <template v-if="rule.payload">
+            <template v-for="(part, partIdx) in highlight(rule.payload)" :key="partIdx">
+              <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+            </template>
+          </template>
+          <template v-else>—</template>
+        </span>
         <span class="rule-proxy">
-          <span>{{ rule.proxy }}</span>
+          <span>
+            <template v-for="(part, partIdx) in highlight(rule.proxy)" :key="partIdx">
+              <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+            </template>
+          </span>
           <span v-if="rule.disabled" class="rule-flag small" data-rule-flag>临时，重启后恢复</span>
           <span v-else-if="!rule.key" class="rule-flag small muted">内核注入，无法临时禁用</span>
         </span>

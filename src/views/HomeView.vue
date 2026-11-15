@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
+import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
 import TrafficChart from '../components/TrafficChart.vue'
@@ -16,7 +17,7 @@ import {
   usagePercent,
 } from '../lib/format'
 import { useStore } from '../lib/store'
-import type { Mode } from '../lib/types'
+import type { Mode, ProfileItem } from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
 const appIcon = `${import.meta.env.BASE_URL}icon.png`
@@ -53,11 +54,51 @@ const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${
 
 const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual'))
 const manualGroups = computed(() => allManualGroups.value.slice(0, 8))
+const primaryGroup = computed(() => {
+  if (snap.value.mode === 'global') {
+    return snap.value.node_catalog.find((group) => group.name === 'GLOBAL') ?? allManualGroups.value[0] ?? null
+  }
+  return allManualGroups.value.find((group) => Boolean(group.now)) ?? allManualGroups.value[0] ?? null
+})
+const primaryNode = computed(() => (primaryGroup.value ? nodeOf(primaryGroup.value) : undefined))
+const profileSheetOpen = ref(false)
+const orderedProfiles = computed(() =>
+  [...snap.value.profiles].sort((a, b) => Number(b.current) - Number(a.current)),
+)
+function switchFromSheet(target: ProfileItem) {
+  profileSheetOpen.value = false
+  if (!target.current && !store.busy[`enable:${target.id}`]) {
+    void store.enable(target.id)
+  }
+}
+function addFromSheet() {
+  profileSheetOpen.value = false
+  store.adding.value = true
+}
+function manageFromSheet() {
+  profileSheetOpen.value = false
+  store.go('profiles')
+}
 const usage = computed(() => (profile.value ? usagePercent(profile.value.used, profile.value.total) : null))
+const remainingBytes = computed(() => {
+  const p = profile.value
+  return p && p.total != null && p.used != null && p.total > 0 ? Math.max(0, p.total - p.used) : null
+})
 const expireDays = computed(() => (profile.value?.expire ? daysLeft(profile.value.expire) : null))
 
 /** Home failure banner: the store owns it so a retry clears it even when the backend keeps the reason. */
 const failureText = computed(() => store.lastActionError.value)
+const failureSettingsAction = computed<{ label: string; tab: 'kernel' | 'tun' } | null>(() => {
+  const text = failureText.value
+  if (!text) return null
+  if (text.includes('混合端口') || (text.includes('端口') && text.includes('占用'))) {
+    return { label: '更换端口', tab: 'kernel' }
+  }
+  if (text.includes('TUN')) {
+    return { label: 'TUN 设置', tab: 'tun' }
+  }
+  return null
+})
 
 /** Only values the kernel actually reported survive; a missing reading hides the row (R24). */
 const runtime = computed(() => {
@@ -126,6 +167,15 @@ function onPrimary() {
       <Icon name="alert" />
       <span class="grow">{{ failureText }}</span>
       <button
+        v-if="failureSettingsAction"
+        type="button"
+        class="btn ghost sm"
+        data-testid="failure-open-settings"
+        @click="store.openSettings(failureSettingsAction.tab)"
+      >
+        {{ failureSettingsAction.label }}
+      </button>
+      <button
         v-if="store.lastFailedAction.value"
         type="button"
         class="btn ghost sm"
@@ -152,32 +202,83 @@ function onPrimary() {
       <!-- One hero owns state, the primary action and everything live: rates, the
            traffic chart and runtime facts, so no number is repeated elsewhere (R24). -->
       <section class="card hero" :class="[status.tone, { bare: snap.connected && !takeoverOn }]" data-testid="home-status">
+        <div v-if="compact" class="hero-mobile-top">
+          <span class="hero-status-pill">
+            <span class="hero-dot" aria-hidden="true" />
+            <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
+          </span>
+          <button
+            v-if="profile"
+            type="button"
+            class="hero-profile-pill"
+            data-testid="mobile-profile-trigger"
+            @click="profileSheetOpen = true"
+          >
+            <Icon :name="profile.kind === 'local' ? 'file' : 'link'" :size="13" />
+            <span class="hero-profile ellipsis">{{ profile.name }}</span>
+            <Icon name="chevron-down" :size="13" />
+          </button>
+        </div>
+
         <div class="hero-main">
           <div class="hero-state">
-            <p class="hero-eyebrow">
+            <p v-if="!compact" class="hero-eyebrow">
               <span class="hero-dot" aria-hidden="true" />
               <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
             </p>
             <h1 class="status-word" data-testid="status">{{ status.word }}</h1>
             <p v-if="store.connectStage.value" class="hero-sub muted" role="status">{{ store.connectStage.value }}</p>
+            <template v-else-if="compact">
+              <button
+                v-if="primaryGroup && snap.mode !== 'direct'"
+                type="button"
+                class="hero-node-pill"
+                data-testid="hero-node-pill"
+                @click="store.go('proxies', primaryGroup.name)"
+              >
+                <Icon name="globe" :size="14" class="hero-node-icon" />
+                <span class="hero-node-name ellipsis">{{ primaryGroup.now || primaryGroup.name }}</span>
+                <span
+                  v-if="primaryNode && (primaryNode.delay_ms != null || primaryNode.failed)"
+                  class="hero-node-delay mono"
+                  :class="delayTone(primaryNode.delay_ms, primaryNode.failed)"
+                >{{ delayText(primaryNode.delay_ms, primaryNode.failed) }}</span>
+                <Icon name="chevron-right" :size="13" class="muted" />
+              </button>
+              <p v-else-if="snap.mode === 'direct'" class="hero-sub muted">当前直连出站 · 不经过代理节点</p>
+              <p v-else-if="!profile" class="hero-sub muted">选择一份配置后连接</p>
+            </template>
             <p v-else-if="profile" class="hero-sub">
               <span class="hero-profile">{{ profile.name }}</span>
-              <!-- Phones show the mode switch right under the hero; repeating it here is noise. -->
-              <span v-if="activeMode && !compact" class="muted">· {{ activeMode.label }}模式</span>
-              <span v-if="snap.mixed_port" class="muted">· 端口 {{ snap.mixed_port }}</span>
+              <span v-if="activeMode" class="muted">· {{ activeMode.label }}模式</span>
+              <template v-if="snap.mixed_port">
+                <span class="muted">·</span>
+                <button
+                  v-if="!store.isAndroid.value"
+                  type="button"
+                  class="hero-port-btn"
+                  :title="`点击复制终端环境变量 (127.0.0.1:${snap.mixed_port})`"
+                  data-testid="copy-proxy-cmd"
+                  @click="store.copyProxyEnv()"
+                >
+                  端口 {{ snap.mixed_port }}
+                  <Icon name="copy" :size="12" />
+                </button>
+                <span v-else class="muted">端口 {{ snap.mixed_port }}</span>
+              </template>
             </p>
             <p v-else class="hero-sub muted">选择一份配置后连接</p>
           </div>
           <div v-if="snap.connected" class="hero-rates mono" data-testid="rates">
-            <div class="rate up">
-              <span class="rate-label"><Icon name="up" :size="13" />上传</span>
-              <span class="rate-value">{{ formatSpeed(snap.upload ?? 0) }}</span>
-              <span v-if="snap.upload_total != null" class="rate-total">本次 {{ formatBytes(snap.upload_total) }}</span>
-            </div>
             <div class="rate down">
               <span class="rate-label"><Icon name="down" :size="13" />下载</span>
               <span class="rate-value">{{ formatSpeed(snap.download ?? 0) }}</span>
               <span v-if="snap.download_total != null" class="rate-total">本次 {{ formatBytes(snap.download_total) }}</span>
+            </div>
+            <div class="rate up">
+              <span class="rate-label"><Icon name="up" :size="13" />上传</span>
+              <span class="rate-value">{{ formatSpeed(snap.upload ?? 0) }}</span>
+              <span v-if="snap.upload_total != null" class="rate-total">本次 {{ formatBytes(snap.upload_total) }}</span>
             </div>
           </div>
           <div class="hero-action" data-testid="home-action">
@@ -192,7 +293,7 @@ function onPrimary() {
             >
               <span class="connect-glyph">
                 <span v-if="store.connecting.value" class="spinner sm" />
-                <Icon v-else :name="connectIcon" :size="compact ? 26 : 20" :stroke="2.2" />
+                <Icon v-else :name="connectIcon" :size="compact ? 30 : 20" :stroke="2.2" />
               </span>
               <span class="connect-label">{{ connectLabel }}</span>
             </button>
@@ -292,8 +393,17 @@ function onPrimary() {
               <div v-if="usage != null" class="usage">
                 <div class="usage-bar"><span :style="{ width: `${usage}%` }" :class="{ warn: usage > 85 }" /></div>
                 <div class="usage-text small">
-                  <span class="mono">{{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}</span>
-                  <span v-if="profile.expire" :class="{ 'text-warn': expireDays != null && expireDays <= 7 }">
+                  <span class="mono">
+                    {{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}
+                    <span v-if="remainingBytes != null" class="muted">· 剩余 {{ formatBytes(remainingBytes) }}</span>
+                  </span>
+                  <span
+                    v-if="profile.expire"
+                    :class="{
+                      'text-error': expireDays != null && expireDays < 0,
+                      'text-warn': expireDays != null && expireDays >= 0 && expireDays <= 7,
+                    }"
+                  >
                     {{ expireDays != null && expireDays < 0 ? '已过期' : `${formatDate(profile.expire)} 到期 · 剩 ${expireDays} 天` }}
                   </span>
                 </div>
@@ -306,36 +416,71 @@ function onPrimary() {
         </div>
 
         <div class="home-col">
-          <section class="card home-groups" data-testid="groups-card">
+          <section class="card home-groups" :class="{ 'direct-dim': snap.mode === 'direct' }" data-testid="groups-card">
             <header class="card-head">
-              <h2>代理组<span v-if="allManualGroups.length" class="card-count">{{ allManualGroups.length }}</span></h2>
+              <h2>
+                代理组<span v-if="allManualGroups.length" class="card-count">{{ allManualGroups.length }}</span>
+                <span v-if="snap.mode === 'direct' && manualGroups.length" class="tag sm">直连中</span>
+              </h2>
               <button type="button" class="btn ghost sm" @click="store.go('proxies')">查看全部<Icon name="chevron-right" :size="14" /></button>
             </header>
+            <p v-if="snap.mode === 'direct' && manualGroups.length" class="card-note muted small">当前为直连模式，新发起的连接不经过代理组</p>
             <p v-if="!manualGroups.length" class="empty-line muted">{{ snap.nodes_notice ?? '这份配置没有可手动选择的代理组' }}</p>
-            <button
-              v-for="group in manualGroups"
-              :key="group.name"
-              type="button"
-              class="group-row"
-              :data-group="group.name"
-              @click="store.go('proxies', group.name)"
-            >
-              <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="compact ? 24 : 20" /></span>
-              <span class="group-row-text">
-                <span class="group-row-name">{{ group.name }}</span>
-                <span class="group-row-now">{{ group.now || '—' }}</span>
-              </span>
-              <span
-                v-if="nodeOf(group) && (nodeOf(group)!.delay_ms != null || nodeOf(group)!.failed)"
-                class="delay"
-                :class="delayTone(nodeOf(group)!.delay_ms, nodeOf(group)!.failed)"
-              >{{ delayText(nodeOf(group)!.delay_ms, nodeOf(group)!.failed) }}</span>
-              <Icon name="chevron-right" :size="16" class="muted" />
-            </button>
+            <div v-else class="home-groups-grid" :class="{ single: manualGroups.length === 1 }">
+              <button
+                v-for="group in manualGroups"
+                :key="group.name"
+                type="button"
+                class="group-row"
+                :data-group="group.name"
+                @click="store.go('proxies', group.name)"
+              >
+                <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="compact ? 22 : 20" /></span>
+                <span class="group-row-text">
+                  <span class="group-row-name">{{ group.name }}</span>
+                  <span class="group-row-now">{{ group.now || '—' }}</span>
+                </span>
+                <span
+                  v-if="nodeOf(group) && (nodeOf(group)!.delay_ms != null || nodeOf(group)!.failed)"
+                  class="delay"
+                  :class="delayTone(nodeOf(group)!.delay_ms, nodeOf(group)!.failed)"
+                >{{ delayText(nodeOf(group)!.delay_ms, nodeOf(group)!.failed) }}</span>
+                <Icon v-if="!compact" name="chevron-right" :size="16" class="muted" />
+              </button>
+            </div>
           </section>
         </div>
       </div>
     </div>
 
+    <Modal v-if="profileSheetOpen" title="切换配置" subtitle="点击立即启用，无需离开首页" @close="profileSheetOpen = false">
+      <div class="option-list" data-testid="home-profile-sheet">
+        <button
+          v-for="item in orderedProfiles"
+          :key="item.id"
+          type="button"
+          class="option-row profile-sheet-row"
+          :class="{ active: item.current }"
+          :data-testid="`sheet-profile-${item.id}`"
+          @click="switchFromSheet(item)"
+        >
+          <span class="sub-icon sm"><Icon :name="item.kind === 'local' ? 'file' : 'link'" :size="16" /></span>
+          <span class="profile-sheet-body">
+            <span class="option-label">{{ item.name }}</span>
+            <span class="muted small">
+              {{ item.proxy_count ? `${item.proxy_count} 个节点` : item.kind === 'local' ? '本地配置' : '远程订阅' }}
+              <template v-if="usagePercent(item.used, item.total) != null">
+                · 已用 {{ usagePercent(item.used, item.total) }}%
+              </template>
+            </span>
+          </span>
+          <Icon v-if="item.current" name="check" :size="18" class="option-check" />
+        </button>
+      </div>
+      <template #footer>
+        <button type="button" class="btn ghost" @click="manageFromSheet">管理配置</button>
+        <button type="button" class="btn primary" @click="addFromSheet"><Icon name="plus" :size="15" />添加新配置</button>
+      </template>
+    </Modal>
   </div>
 </template>

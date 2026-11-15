@@ -21,6 +21,22 @@ const subscriptions = computed(() => snap.value.profiles.filter((item) => item.k
 const DUPLICATE_HINT = '该订阅已存在'
 const quickUrl = ref('')
 const quickError = ref<string | null>(null)
+const quickInputEl = ref<HTMLInputElement | null>(null)
+
+async function pasteQuickUrl() {
+  try {
+    const text = await navigator.clipboard.readText()
+    if (text && text.trim()) {
+      quickUrl.value = text.trim()
+      quickError.value = null
+      quickInputEl.value?.focus()
+    } else {
+      store.toast('剪贴板为空', 'info')
+    }
+  } catch {
+    store.toast('无法读取剪贴板，请手动粘贴', 'error')
+  }
+}
 
 /** Move focus and the viewport to the profile that already owns this link (R27). */
 async function focusProfileCard(id: string) {
@@ -301,13 +317,36 @@ const updateAllLabel = computed(() => {
     <form class="quick-import" @submit.prevent="quickImport">
       <Icon name="link" :size="16" class="muted" />
       <input
+        ref="quickInputEl"
         v-model="quickUrl"
         type="url"
         placeholder="粘贴订阅链接，回车导入"
         spellcheck="false"
         :aria-invalid="quickError ? 'true' : undefined"
         :aria-describedby="quickError ? 'quick-import-error' : undefined"
+        @input="quickError = null"
       />
+      <button
+        v-if="!quickUrl"
+        type="button"
+        class="btn ghost sm"
+        title="从剪贴板粘贴订阅链接"
+        data-testid="quick-paste"
+        @click="pasteQuickUrl"
+      >
+        <Icon name="clipboard" :size="14" />粘贴
+      </button>
+      <button
+        v-else
+        type="button"
+        class="icon-btn sm"
+        aria-label="清空输入"
+        title="清空"
+        data-testid="quick-clear"
+        @click="quickUrl = ''; quickError = null; quickInputEl?.focus()"
+      >
+        <Icon name="x" :size="14" />
+      </button>
       <button type="submit" class="btn sm" :disabled="!quickUrl.trim() || store.busy.add">导入</button>
     </form>
     <p v-if="quickError" id="quick-import-error" class="field-error small" role="alert">{{ quickError }}</p>
@@ -336,6 +375,7 @@ const updateAllLabel = computed(() => {
             <div class="profile-name">
               <strong :title="profile.name">{{ profile.name }}</strong>
               <span v-if="profile.current" class="tag accent">使用中</span>
+              <span v-else-if="compact" class="tag profile-touch-cue" aria-hidden="true">启用</span>
               <span v-else class="profile-switch-hint" aria-hidden="true">点击启用</span>
             </div>
             <p class="muted small ellipsis">
@@ -380,9 +420,26 @@ const updateAllLabel = computed(() => {
         <div v-if="usagePercent(profile.used, profile.total) != null" class="usage">
           <div class="usage-bar"><span :style="{ width: `${usagePercent(profile.used, profile.total)}%` }" :class="{ warn: (usagePercent(profile.used, profile.total) ?? 0) > 85 }" /></div>
           <div class="usage-text small">
-            <span class="mono">{{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}</span>
-            <span v-if="profile.expire" :class="{ 'text-warn': daysLeft(profile.expire) <= 7 }">
-              {{ daysLeft(profile.expire) < 0 ? '已过期' : `${formatDate(profile.expire)} 到期` }}
+            <span class="mono">
+              {{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}
+              <span v-if="profile.total != null && profile.used != null && profile.total > 0" class="muted">
+                · 剩 {{ formatBytes(Math.max(0, profile.total - profile.used)) }}
+              </span>
+            </span>
+            <span
+              v-if="profile.expire"
+              :class="{
+                'text-error': daysLeft(profile.expire) < 0,
+                'text-warn': daysLeft(profile.expire) >= 0 && daysLeft(profile.expire) <= 7,
+              }"
+            >
+              {{
+                daysLeft(profile.expire) < 0
+                  ? '已过期'
+                  : daysLeft(profile.expire) <= 14
+                    ? `${formatDate(profile.expire)} 到期 · 剩 ${daysLeft(profile.expire)} 天`
+                    : `${formatDate(profile.expire)} 到期`
+              }}
             </span>
           </div>
         </div>

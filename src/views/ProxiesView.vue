@@ -112,11 +112,18 @@ function readOpen(): Set<string> | null {
 }
 
 function toggle(name: string) {
+  const wasOpen = open.value.has(name)
+  const card = wasOpen ? document.querySelector(`[data-group-card="${CSS.escape(name)}"]`) : null
+  const beforeTop = card instanceof HTMLElement ? card.getBoundingClientRect().top : null
+  const barBottom = toolbarEl.value?.getBoundingClientRect().bottom ?? 0
   const next = new Set(open.value)
-  if (next.has(name)) next.delete(name)
+  if (wasOpen) next.delete(name)
   else next.add(name)
   open.value = next
   persistOpen()
+  if (wasOpen && beforeTop != null && beforeTop < barBottom - 4) {
+    void scrollToGroup(name, 'instant')
+  }
 }
 
 /** Search matches the name, or exactly a protocol/tag ("udp", "reality", "vless"). */
@@ -222,6 +229,25 @@ function groupTestedAt(group: NodeGroup): number | null {
   return latest || null
 }
 
+const groupNamesSet = computed(() => new Set(catalog.value.map((group) => group.name)))
+
+function groupHealthText(group: NodeGroup): string {
+  let tested = 0
+  let ok = 0
+  for (const node of group.nodes) {
+    if (groupNamesSet.value.has(node.name)) continue
+    const state = nodeState(node)
+    if (state.failed) {
+      tested += 1
+    } else if (state.delay != null) {
+      tested += 1
+      ok += 1
+    }
+  }
+  if (!tested) return ''
+  return `可用 ${ok}/${tested}`
+}
+
 interface HighlightPart {
   text: string
   hit: boolean
@@ -280,12 +306,51 @@ async function scrollToGroup(name: string | null, behavior: ScrollBehavior = 'in
 /** The located ring is a short cue, not a lasting state: it fades and the request is cleared. */
 const LOCATE_CUE_MS = 1600
 let locateTimer: ReturnType<typeof setTimeout> | null = null
+const locatedNodeKey = ref<string | null>(null)
+let locateNodeTimer: ReturnType<typeof setTimeout> | null = null
 
 function scheduleLocateClear(name: string) {
   if (locateTimer) clearTimeout(locateTimer)
   locateTimer = setTimeout(() => {
     locateTimer = null
     if (store.focusGroup.value === name) store.focusGroup.value = null
+  }, LOCATE_CUE_MS)
+}
+
+const canLocateActive = computed(() => {
+  if (mode.value === 'global') {
+    const globalGroup = catalog.value.find((item) => item.name === 'GLOBAL')
+    if (globalGroup?.now) return true
+  }
+  return Boolean(currentManualGroup()?.now)
+})
+
+async function locateActiveNode() {
+  const preferred =
+    mode.value === 'global'
+      ? (catalog.value.find((item) => item.name === 'GLOBAL' && item.now) ?? currentManualGroup())
+      : currentManualGroup()
+  if (!preferred || !preferred.now) return
+  if (hideAuto.value && preferred.kind === 'auto') hideAuto.value = false
+  if (query.value) query.value = ''
+  if (!open.value.has(preferred.name)) {
+    open.value = new Set([...open.value, preferred.name])
+    persistOpen()
+  }
+  await nextTick()
+  const groupCard = document.querySelector(`[data-group-card="${CSS.escape(preferred.name)}"]`)
+  const nodeEl = groupCard?.querySelector(`[data-node="${CSS.escape(preferred.now)}"]`)
+  const target = nodeEl instanceof HTMLElement ? nodeEl : groupCard instanceof HTMLElement ? groupCard : null
+  if (target) {
+    const barH = toolbarEl.value?.getBoundingClientRect().height ?? 0
+    target.style.scrollMarginTop = `${Math.ceil(barH) + TOOLBAR_GAP + 52}px`
+    target.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  }
+  locatedNodeKey.value = `${preferred.name}::${preferred.now}`
+  if (locateNodeTimer) clearTimeout(locateNodeTimer)
+  locateNodeTimer = setTimeout(() => {
+    locateNodeTimer = null
+    locatedNodeKey.value = null
   }, LOCATE_CUE_MS)
 }
 
@@ -303,6 +368,21 @@ async function locate(name: string | null, behavior: ScrollBehavior = 'instant')
   }
   await scrollToGroup(name, behavior)
   scheduleLocateClear(name)
+}
+
+/**
+ * On phones, tapping the quick-jump pill bar switches focus cleanly to that
+ * single group (unless "展开全部" is active), avoiding a 3000px stack of open groups.
+ */
+async function jumpToGroup(name: string) {
+  if (props.compact && !allExpanded.value) {
+    open.value = new Set([name])
+    persistOpen()
+    await scrollToGroup(name, 'smooth')
+    scheduleLocateClear(name)
+    return
+  }
+  await locate(name, 'smooth')
 }
 
 onMounted(() => {
@@ -344,6 +424,8 @@ onBeforeUnmount(() => {
   toolbarObserver = null
   if (locateTimer) clearTimeout(locateTimer)
   locateTimer = null
+  if (locateNodeTimer) clearTimeout(locateNodeTimer)
+  locateNodeTimer = null
   // Leaving early must not keep the request alive for the next visit.
   if (store.focusGroup.value) store.focusGroup.value = null
 })
@@ -408,6 +490,28 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
       </div>
     </header>
 
+    <div
+      v-if="compact && !snap.kernel_running && snap.node_catalog.length"
+      class="proxies-connect-bar"
+      data-testid="proxies-connect-bar"
+    >
+      <span class="proxies-connect-text small">
+        <span class="proxies-connect-dot" aria-hidden="true" />
+        当前未连接，连接后即可测速与生效
+      </span>
+      <button
+        type="button"
+        class="btn primary sm"
+        :disabled="store.connecting.value"
+        data-testid="proxies-connect"
+        @click="store.connect()"
+      >
+        <span v-if="store.connecting.value" class="spinner xs" />
+        <Icon v-else name="power" :size="14" />
+        {{ store.connecting.value ? '连接中' : '立即连接' }}
+      </button>
+    </div>
+
     <div v-if="snap.node_catalog.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
@@ -436,6 +540,17 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
       <div v-if="showOptions" id="proxy-options" class="toolbar-options">
         <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
         <button
+          v-if="canLocateActive"
+          type="button"
+          class="icon-btn"
+          aria-label="定位当前选中节点"
+          title="定位当前选中节点"
+          data-testid="locate-active-node"
+          @click="locateActiveNode"
+        >
+          <Icon name="locate" />
+        </button>
+        <button
           type="button"
           class="icon-btn"
           :class="{ active: hideAuto }"
@@ -463,6 +578,26 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
           {{ allExpanded ? '收起全部' : '展开全部' }}
         </button>
       </div>
+
+      <nav
+        v-if="groups.length > 2 && !needle"
+        class="group-pills"
+        aria-label="代理组快速跳转"
+        data-testid="group-jump-bar"
+      >
+        <button
+          v-for="group in groups"
+          :key="group.name"
+          type="button"
+          class="group-pill"
+          :class="{ open: isOpen(group.name), focused: store.focusGroup.value === group.name }"
+          :data-testid="`jump-group-${group.name}`"
+          @click="jumpToGroup(group.name)"
+        >
+          <span class="group-pill-name">{{ group.name }}</span>
+          <span class="group-pill-count mono">{{ group.nodes.length }}</span>
+        </button>
+      </nav>
     </div>
 
     <div v-if="!snap.node_catalog.length" class="empty">
@@ -479,7 +614,7 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
     <section
       v-for="(group, index) in groups"
       :key="group.name"
-      v-memo="[group, isOpen(group.name), dense, needle, store.focusGroup.value, snap.kernel_running, store.testProgress.value, store.testResults.value, groupTestedAt(group), busyKeys]"
+      v-memo="[group, isOpen(group.name), dense, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, groupTestedAt(group), busyKeys]"
       class="card group"
       :class="{ open: isOpen(group.name), located: store.focusGroup.value === group.name }"
       :data-group-card="group.name"
@@ -499,6 +634,7 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
               <strong>{{ group.name }}</strong>
               <span class="tag">{{ groupTypeLabel(group) }}</span>
               <span class="muted small group-count">{{ group.nodes.length }} 个</span>
+              <span v-if="groupHealthText(group)" class="group-health muted small">{{ groupHealthText(group) }}</span>
             </span>
             <span class="group-now small">
               <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
@@ -532,7 +668,11 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
           v-for="node in group.nodes"
           :key="node.name"
           class="node"
-          :class="{ selected: node.selected, locked: group.kind !== 'manual' }"
+          :class="{
+            selected: node.selected,
+            locked: group.kind !== 'manual',
+            located: locatedNodeKey === `${group.name}::${node.name}`,
+          }"
           :data-node="node.name"
         >
           <button
@@ -541,6 +681,7 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
             :tabindex="group.kind === 'manual' ? undefined : -1"
             :aria-disabled="group.kind === 'manual' ? undefined : 'true'"
             :aria-pressed="group.kind === 'manual' ? node.selected : undefined"
+            :title="group.kind === 'manual' ? undefined : `${groupTypeLabel(group)}组由内核自动择优，不可手动切换`"
             :data-testid="`node-select-${node.name}`"
             @click="pick(group, node)"
             @keydown.enter.prevent="pick(group, node)"

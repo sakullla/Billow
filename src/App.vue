@@ -11,7 +11,7 @@ import { closeTopLayer as dismissTopLayer, layerDepth, onLayerChange } from './l
 import { useHotkeys } from './lib/ui/hotkeys'
 import { installInsets, syncSystemBars } from './lib/ui/insets'
 import { detectChrome, type WindowChrome } from './lib/ui/windowChrome'
-import { SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
+import { getShortcut, SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
 import AppsView from './views/AppsView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
 import HomeView from './views/HomeView.vue'
@@ -93,6 +93,10 @@ const url = ref('')
 const dragging = ref(false)
 const paletteOpen = ref(false)
 const helpOpen = ref(false)
+const paletteKey = shortcutKeyLabel(getShortcut('palette').combo)
+provide('openShortcuts', () => {
+  helpOpen.value = true
+})
 
 async function submitUrl() {
   const value = url.value.trim()
@@ -180,11 +184,28 @@ function onPaletteAction(id: string) {
     case 'add-profile':
       store.adding.value = true
       break
+    case 'mode-rule':
+      void store.setMode('rule')
+      break
+    case 'mode-global':
+      void store.setMode('global')
+      break
+    case 'mode-direct':
+      void store.setMode('direct')
+      break
+    case 'copy-proxy-env':
+      void store.copyProxyEnv()
+      break
     case 'toggle-theme':
       store.cycleTheme()
       break
     case 'open-logs':
       store.go('logs')
+      break
+    case 'open-shortcuts':
+      void nextTick(() => {
+        helpOpen.value = true
+      })
       break
   }
 }
@@ -435,6 +456,17 @@ defineExpose({ store })
         <span class="brand-mark"><img :src="appIcon" alt="" /></span>
         <span class="brand-name">Billow</span>
       </div>
+      <button
+        type="button"
+        class="side-search"
+        title="搜索页面、设置与快捷动作"
+        data-testid="open-palette"
+        @click="paletteOpen = true"
+      >
+        <Icon name="search" :size="15" />
+        <span class="side-search-label">搜索与命令</span>
+        <kbd class="palette-kbd">{{ paletteKey }}</kbd>
+      </button>
       <nav class="nav" aria-label="主导航">
         <div v-for="group in navGroups" :key="group.id" class="nav-group" role="group" :aria-label="group.label">
           <p class="nav-group-label">{{ group.label }}</p>
@@ -520,7 +552,15 @@ defineExpose({ store })
         :data-page="item.id"
         @click="store.go(item.id)"
       >
-        <Icon :name="item.icon" :size="22" />
+        <span class="tab-icon-wrap">
+          <Icon :name="item.icon" :size="21" />
+          <span
+            v-if="item.id === 'home' && (snap.connected || store.connecting.value)"
+            class="tab-live-dot"
+            :class="{ pending: store.connecting.value }"
+            aria-hidden="true"
+          />
+        </span>
         <span class="tab-label">{{ item.label }}<span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="update-dot" aria-label="有可用更新">•</span></span>
       </button>
     </nav>
@@ -530,6 +570,8 @@ defineExpose({ store })
       :platform="isAndroid ? 'android' : 'desktop'"
       :connected="snap.connected"
       :has-profiles="snap.profiles.length > 0"
+      :current-page="store.page.value"
+      :mode="snap.mode"
       @navigate="onPaletteNavigate"
       @open-settings="onPaletteSettings"
       @action="onPaletteAction"
@@ -600,9 +642,18 @@ defineExpose({ store })
 
     <div class="toasts" aria-live="polite">
       <TransitionGroup name="toast">
-        <div v-for="item in store.toasts.value" :key="item.id" class="toast" :class="item.tone">
+        <div
+          v-for="item in store.toasts.value"
+          :key="item.id"
+          class="toast"
+          :class="item.tone"
+          title="点击关闭"
+          @mouseenter="store.pauseToast(item.id)"
+          @mouseleave="store.resumeToast(item.id)"
+          @click="store.dismissToast(item.id)"
+        >
           <Icon :name="item.tone === 'error' ? 'alert' : item.tone === 'success' ? 'check' : 'info'" :size="16" />
-          <span>{{ item.text }}</span>
+          <span class="grow">{{ item.text }}</span>
         </div>
       </TransitionGroup>
     </div>

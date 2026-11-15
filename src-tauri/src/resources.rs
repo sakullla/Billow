@@ -252,29 +252,43 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>) -> Provid
 }
 
 /// GEO databases Mihomo may load, in the order users recognise them.
+/// Checks both lowercase (`geoip.dat`) and Android/Linux PascalCase (`GeoIP.dat`,
+/// `Country.mmdb`, `ASN.mmdb`) filenames so case-sensitive filesystems report
+/// bundled or downloaded databases accurately.
 pub fn geo_files(home: Option<&Path>) -> Vec<GeoFile> {
-    [
-        ("geoip", "GeoIP", "geoip.dat"),
-        ("geosite", "GeoSite", "geosite.dat"),
-        ("mmdb", "MMDB", "geoip.metadb"),
-        ("asn", "ASN", "GeoLite2-ASN.mmdb"),
-    ]
-    .into_iter()
-    .map(|(key, label, file)| {
-        let meta = home.and_then(|home| fs::metadata(home.join(file)).ok()).filter(|meta| meta.is_file());
-        GeoFile {
-            key: key.to_string(),
-            label: label.to_string(),
-            file: file.to_string(),
-            exists: meta.is_some(),
-            size: meta.as_ref().map(|meta| meta.len()),
-            modified_ms: meta
-                .and_then(|meta| meta.modified().ok())
-                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .map(|age| age.as_millis() as u64),
-        }
-    })
-    .collect()
+    let specs: [(&str, &str, &[&str]); 4] = [
+        ("geoip", "GeoIP", &["geoip.dat", "GeoIP.dat"]),
+        ("geosite", "GeoSite", &["geosite.dat", "GeoSite.dat"]),
+        ("mmdb", "MMDB", &["geoip.metadb", "GeoIP.metadb", "Country.mmdb", "country.mmdb"]),
+        ("asn", "ASN", &["GeoLite2-ASN.mmdb", "ASN.mmdb", "asn.mmdb"]),
+    ];
+    specs
+        .into_iter()
+        .map(|(key, label, candidates)| {
+            let matched = home.and_then(|dir| {
+                candidates
+                    .iter()
+                    .filter_map(|&name| {
+                        let meta = fs::metadata(dir.join(name)).ok().filter(|meta| meta.is_file())?;
+                        let modified_ms = meta
+                            .modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                            .map(|age| age.as_millis() as u64);
+                        Some((name, meta.len(), modified_ms))
+                    })
+                    .max_by_key(|&(_, size, modified_ms)| (size > 0, modified_ms.unwrap_or(0)))
+            });
+            GeoFile {
+                key: key.to_string(),
+                label: label.to_string(),
+                file: matched.map(|(name, _, _)| name).unwrap_or(candidates[0]).to_string(),
+                exists: matched.is_some(),
+                size: matched.map(|(_, size, _)| size),
+                modified_ms: matched.and_then(|(_, _, modified_ms)| modified_ms),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -376,6 +390,27 @@ rule-providers:
         assert!(!files[0].exists);
         assert_eq!((files[1].exists, files[1].size), (true, Some(10)));
         assert!(files[1].modified_ms.is_some());
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn geo_files_recognises_android_seeded_and_lowercase_filenames() {
+        let home = temp_home("geo-android");
+        fs::write(home.join("GeoIP.dat"), [1u8; 24]).unwrap();
+        fs::write(home.join("GeoSite.dat"), [2u8; 32]).unwrap();
+        fs::write(home.join("Country.mmdb"), [3u8; 16]).unwrap();
+        fs::write(home.join("ASN.mmdb"), [4u8; 12]).unwrap();
+        let files = geo_files(Some(&home));
+        assert!(files.iter().all(|file| file.exists));
+        assert_eq!(
+            files.iter().map(|file| (file.key.as_str(), file.file.as_str(), file.size)).collect::<Vec<_>>(),
+            [
+                ("geoip", "GeoIP.dat", Some(24)),
+                ("geosite", "GeoSite.dat", Some(32)),
+                ("mmdb", "Country.mmdb", Some(16)),
+                ("asn", "ASN.mmdb", Some(12)),
+            ]
+        );
         let _ = fs::remove_dir_all(home);
     }
 }

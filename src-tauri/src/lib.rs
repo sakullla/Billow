@@ -823,7 +823,12 @@ async fn provider_detail(app: AppHandle, kind: String, name: String) -> Result<r
 /// GEO database files in the kernel home, readable without a running kernel.
 #[tauri::command(async)]
 fn geo_files(app: AppHandle) -> Vec<resources::GeoFile> {
-    resources::geo_files(kernel_home(&app).as_deref())
+    let home = kernel_home(&app);
+    #[cfg(target_os = "android")]
+    if let (Some(apk), Some(dir)) = (kernel::android_app_dir("sourceDir"), home.as_deref()) {
+        let _ = android_geo::seed(&apk, dir);
+    }
+    resources::geo_files(home.as_deref())
 }
 
 #[tauri::command]
@@ -1177,7 +1182,8 @@ fn sync_tray(app: AppHandle) {
 fn release_proxy_on_exit(app: &AppHandle) {
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
-    let ProfileSession { book, proxy, .. } = &mut *session;
+    let ProfileSession { book, runtime, proxy, .. } = &mut *session;
+    runtime.shutdown();
     book.release_lingering_proxy(proxy);
 }
 

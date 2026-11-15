@@ -36,6 +36,8 @@ const props = withDefaults(
     actions?: readonly PaletteAction[]
     connected?: boolean
     hasProfiles?: boolean
+    currentPage?: string
+    mode?: string | null
     /** Android hides the TUN category in settings, so the palette must skip it too. */
     platform?: 'desktop' | 'android'
   }>(),
@@ -115,6 +117,30 @@ const defaultActions = computed<PaletteAction[]>(() => [
     reason: !props.hasProfiles ? '先添加配置' : undefined,
   },
   { id: 'add-profile', label: '添加配置', icon: 'plus' },
+  {
+    id: 'mode-rule',
+    label: '切换为规则模式',
+    icon: 'route',
+    hint: props.mode === 'rule' ? '当前' : 'Rule',
+  },
+  {
+    id: 'mode-global',
+    label: '切换为全局模式',
+    icon: 'globe',
+    hint: props.mode === 'global' ? '当前' : 'Global',
+  },
+  {
+    id: 'mode-direct',
+    label: '切换为直连模式',
+    icon: 'zap',
+    hint: props.mode === 'direct' ? '当前' : 'Direct',
+  },
+  ...(props.platform === 'android'
+    ? []
+    : [
+        { id: 'copy-proxy-env', label: '复制终端环境变量', icon: 'terminal', hint: 'HTTP / SOCKS5' },
+        { id: 'open-shortcuts', label: '查看快捷键说明', icon: 'keyboard', hint: '?' },
+      ]),
   { id: 'toggle-theme', label: '切换主题', icon: 'moon' },
   { id: 'open-logs', label: '打开日志', icon: 'terminal' },
 ])
@@ -169,7 +195,7 @@ const groups = computed(() => {
       '页面',
       props.pages,
       (item) => item.icon,
-      () => undefined,
+      (item) => (props.currentPage && item.id === props.currentPage ? '当前' : undefined),
       () => false,
       () => undefined,
     ),
@@ -292,6 +318,16 @@ useFocusTrap(() => panel.value, {
             spellcheck="false"
             @input="active = 0"
           />
+          <button
+            v-if="query"
+            type="button"
+            class="icon-btn sm"
+            aria-label="清空搜索"
+            data-testid="palette-clear"
+            @click="query = ''; inputEl?.focus()"
+          >
+            <Icon name="x" :size="14" />
+          </button>
           <kbd class="palette-kbd">{{ paletteKey }}</kbd>
           <button type="button" class="icon-btn sm" aria-label="关闭" @click="emit('close')">
             <Icon name="x" :size="15" />

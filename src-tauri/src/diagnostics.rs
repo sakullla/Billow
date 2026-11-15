@@ -721,22 +721,73 @@ pub fn provider_action(
 }
 
 /// Re-downloads GeoIP / GeoSite / MMDB / ASN databases named in the profile.
+/// Calls `/configs/geo` first and only falls back to `/upgrade/geo` when the
+/// kernel does not expose `/configs/geo` (404/405), avoiding duplicate 120s
+/// downloads when the upstream source fails.
 pub fn upgrade_geo(endpoint: &ControllerEndpoint) -> Result<(), String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err("内核没有运行".to_string());
     }
     let agent = controller_agent(Duration::from_secs(120));
-    for path in ["/upgrade/geo", "/configs/geo"] {
+    let mut last_detail: Option<String> = None;
+    let mut timed_out = false;
+    for path in ["/configs/geo", "/upgrade/geo"] {
         let url = format!("http://{}:{}{path}", endpoint.host, endpoint.port);
-        if authorize(agent.post(&url), endpoint)
+        match authorize(agent.post(&url), endpoint)
             .set("Content-Type", "application/json")
             .send_string("{}")
-            .is_ok()
         {
-            return Ok(());
+            Ok(_) => return Ok(()),
+            Err(ureq::Error::Status(code, response)) => {
+                let body = response.into_string().unwrap_or_default();
+                let message = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|json| json.get("message").and_then(|v| v.as_str()).map(str::to_string))
+                    .unwrap_or_else(|| body.trim().to_string());
+                if !message.is_empty() {
+                    last_detail = Some(message);
+                }
+                if code != 404 && code != 405 {
+                    break;
+                }
+            }
+            Err(ureq::Error::Transport(transport)) => {
+                timed_out = true;
+                last_detail = Some(transport.to_string());
+                break;
+            }
         }
     }
-    Err("GEO 数据库没有更新".to_string())
+    Err(format_geo_upgrade_error(last_detail.as_deref(), timed_out))
+}
+
+fn format_geo_upgrade_error(detail: Option<&str>, timed_out: bool) -> String {
+    let text = detail.map(str::trim).filter(|s| !s.is_empty());
+    let lower = text.unwrap_or_default().to_ascii_lowercase();
+    let network_blocked = timed_out
+        || [
+            "timeout",
+            "timed out",
+            "deadline",
+            "eof",
+            "reset",
+            "refused",
+            "connect",
+            "tls",
+            "handshake",
+            "github",
+            "raw.githubusercontent",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if network_blocked {
+        return "GEO 数据库下载超时或连接受阻，可切换下载源为「jsDelivr 加速」后重试".to_string();
+    }
+    if let Some(msg) = text {
+        let concise: String = msg.chars().take(96).collect();
+        return format!("GEO 数据库更新失败：{concise}");
+    }
+    "GEO 数据库没有更新，请检查网络或切换下载源后重试".to_string()
 }
 
 pub(crate) fn encode_path(value: &str) -> String {
@@ -1588,5 +1639,63 @@ rules:
         std::fs::write(&blocker, "file").unwrap();
         assert!(export_logs(&blocker, "x", 0).is_err());
         let _ = std::fs::remove_file(&blocker);
+    }
+
+    #[test]
+    fn upgrade_geo_prefers_configs_geo_and_surfaces_actionable_errors() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // 1. 404 on /configs/geo falls back to /upgrade/geo -> Ok(())
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            for reply in [
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 512];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let line = String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_string();
+                paths.push(line);
+                let _ = stream.write_all(reply.as_bytes());
+            }
+            paths
+        });
+        let ep = ControllerEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+            secret: String::new(),
+        };
+        assert!(upgrade_geo(&ep).is_ok());
+        let seen = handle.join().unwrap();
+        assert!(seen[0].starts_with("POST /configs/geo "));
+        assert!(seen[1].starts_with("POST /upgrade/geo "));
+
+        // 2. 500 timeout from /configs/geo stops immediately and advises jsDelivr
+        let listener2 = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port2 = listener2.local_addr().unwrap().port();
+        let handle2 = std::thread::spawn(move || {
+            let (mut stream, _) = listener2.accept().unwrap();
+            let mut buf = [0u8; 512];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"message":"Get https://github.com/MetaCubeX/meta-rules-dat: context deadline exceeded"}"#;
+            let resp = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        let ep2 = ControllerEndpoint {
+            host: "127.0.0.1".to_string(),
+            port: port2,
+            secret: String::new(),
+        };
+        let err = upgrade_geo(&ep2).unwrap_err();
+        assert!(err.contains("jsDelivr"), "{err}");
+        handle2.join().unwrap();
     }
 }

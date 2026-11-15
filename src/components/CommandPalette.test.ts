@@ -145,4 +145,34 @@ describe('CommandPalette', () => {
     expect(wrapper.emitted('open-settings')).toEqual([['dns']])
     wrapper.unmount()
   })
+
+  it('marks the current page, clears search inline and lists desktop-aware quick actions', async () => {
+    const { wrapper } = mountPalette({
+      platform: 'desktop',
+      currentPage: 'proxies',
+      mode: 'rule',
+    })
+    await settle()
+    expect(option('page:proxies')?.textContent).toContain('当前')
+    expect(option('action:mode-rule')?.textContent).toContain('当前')
+    expect(option('action:mode-global')?.textContent).toContain('Global')
+    expect(option('action:copy-proxy-env')).not.toBeNull()
+    expect(option('action:open-shortcuts')).not.toBeNull()
+
+    const input = search('全局')
+    await nextTick()
+    const clearBtn = document.body.querySelector<HTMLButtonElement>('[data-testid="palette-clear"]')
+    expect(clearBtn).not.toBeNull()
+    clearBtn?.click()
+    await nextTick()
+    expect(input.value).toBe('')
+    expect(document.activeElement).toBe(input)
+    wrapper.unmount()
+
+    const android = mountPalette({ platform: 'android' })
+    await settle()
+    expect(option('action:copy-proxy-env')).toBeNull()
+    expect(option('action:open-shortcuts')).toBeNull()
+    android.wrapper.unmount()
+  })
 })

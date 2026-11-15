@@ -18,6 +18,7 @@ const SORTS: { id: SortKey; label: string }[] = [
   { id: 'time', label: '时间' },
   { id: 'speed', label: '速度' },
   { id: 'download', label: '下载' },
+  { id: 'upload', label: '上传' },
   { id: 'host', label: '主机' },
 ]
 
@@ -26,6 +27,25 @@ const CARD_ROW = 100
 
 const query = ref('')
 const sortKey = ref<SortKey>('time')
+const sortDir = ref<'asc' | 'desc'>('desc')
+
+function setSort(key: SortKey) {
+  sortKey.value = key
+  sortDir.value = key === 'host' ? 'asc' : 'desc'
+}
+
+function toggleColumnSort(key: SortKey) {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    setSort(key)
+  }
+}
+
+function ariaSortOf(key: SortKey): 'ascending' | 'descending' | 'none' {
+  if (sortKey.value !== key) return 'none'
+  return sortDir.value === 'asc' ? 'ascending' : 'descending'
+}
 const paused = ref(false)
 const pausedAt = ref<number | null>(null)
 const frozenRows = shallowRef<ConnectionRow[]>([])
@@ -108,21 +128,22 @@ const rows = computed(() => {
           .some((text) => text.toLowerCase().includes(needle)),
       )
     : [...sourceRows.value]
+  const dir = sortDir.value === 'asc' ? -1 : 1
   switch (sortKey.value) {
     case 'speed':
-      list.sort((a, b) => rateOf(b).down + rateOf(b).up - (rateOf(a).down + rateOf(a).up))
+      list.sort((a, b) => dir * (rateOf(b).down + rateOf(b).up - (rateOf(a).down + rateOf(a).up)))
       break
     case 'download':
-      list.sort((a, b) => b.download - a.download)
+      list.sort((a, b) => dir * (b.download - a.download))
       break
     case 'upload':
-      list.sort((a, b) => b.upload - a.upload)
+      list.sort((a, b) => dir * (b.upload - a.upload))
       break
     case 'host':
-      list.sort((a, b) => a.host.localeCompare(b.host))
+      list.sort((a, b) => (sortDir.value === 'asc' ? 1 : -1) * a.host.localeCompare(b.host))
       break
     default:
-      list.sort((a, b) => Date.parse(b.start || '0') - Date.parse(a.start || '0'))
+      list.sort((a, b) => dir * (Date.parse(b.start || '0') - Date.parse(a.start || '0')))
   }
   return list
 })
@@ -145,7 +166,7 @@ onMounted(() => {
 // or window index; a filter or sort change returns to the first row (R31).
 watch(tableScroll, (el) => table.measure(el))
 watch(cardScroll, (el) => cards.measure(el))
-watch([query, sortKey], () => {
+watch([query, sortKey, sortDir], () => {
   table.reset(tableScroll.value)
   cards.reset(cardScroll.value)
 })
@@ -246,6 +267,34 @@ async function disconnectAll() {
 function resetFilters() {
   query.value = ''
 }
+
+function filterBy(value: string) {
+  if (!value) return
+  query.value = value
+  closeDetail()
+}
+
+function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly: boolean; title: string } {
+  const r = rateOf(row)
+  const total = r.down + r.up
+  if (total < 1) {
+    return { text: formatSpeed(0), idle: true, upOnly: false, title: '当前无活动传输' }
+  }
+  if (r.down < 1 && r.up >= 1) {
+    return {
+      text: `↑ ${formatSpeed(r.up)}`,
+      idle: false,
+      upOnly: true,
+      title: `上传 ${formatSpeed(r.up)} · 下载 ${formatSpeed(r.down)}`,
+    }
+  }
+  return {
+    text: formatSpeed(r.down),
+    idle: false,
+    upOnly: false,
+    title: r.up >= 1 ? `下载 ${formatSpeed(r.down)} · 上传 ${formatSpeed(r.up)}` : `下载 ${formatSpeed(r.down)}`,
+  }
+}
 </script>
 
 <template>
@@ -257,6 +306,7 @@ function resetFilters() {
           <template v-if="!snap.connected">未连接</template>
           <template v-else>
             {{ displayTotal }} 个活动连接
+            <template v-if="query.trim()"> · 匹配 {{ rows.length }} 条</template>
             <template v-if="hiddenRows"> · 显示前 {{ sourceRows.length }} 条</template>
             <template v-if="paused"> · 暂停于 {{ formatClock(pausedAt ?? 0) }}</template>
             <template v-if="paused && newCount"> · <span data-testid="new-connections">{{ newCount }} 条新连接</span></template>
@@ -294,8 +344,18 @@ function resetFilters() {
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="按主机、进程、规则或节点筛选" data-testid="connection-search" data-page-search />
+        <button
+          v-if="query"
+          type="button"
+          class="icon-btn sm"
+          aria-label="清空筛选"
+          data-testid="clear-connection-search"
+          @click="query = ''"
+        >
+          <Icon name="x" :size="14" />
+        </button>
       </div>
-      <Segmented v-model="sortKey" :options="SORTS" size="sm" label="排序" />
+      <Segmented :model-value="sortKey" :options="SORTS" size="sm" label="排序" @update:model-value="setSort" />
     </div>
 
     <EmptyState v-if="!snap.connected" variant="unavailable" title="未连接" description="连接后这里会实时显示经过 Billow 的连接。">
@@ -334,14 +394,39 @@ function resetFilters() {
       <table class="table virtual">
         <thead>
           <tr>
-            <th>主机</th>
+            <th :aria-sort="ariaSortOf('host')">
+              <button type="button" class="th-sort" :class="{ active: sortKey === 'host' }" @click="toggleColumnSort('host')">
+                主机
+                <Icon v-if="sortKey === 'host'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
+              </button>
+            </th>
             <th>进程</th>
             <th>规则</th>
             <th>代理链</th>
-            <th class="num">速度</th>
-            <th class="num">下载</th>
-            <th class="num">上传</th>
-            <th class="num">时长</th>
+            <th class="num" :aria-sort="ariaSortOf('speed')">
+              <button type="button" class="th-sort num" :class="{ active: sortKey === 'speed' }" @click="toggleColumnSort('speed')">
+                速度
+                <Icon v-if="sortKey === 'speed'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
+              </button>
+            </th>
+            <th class="num" :aria-sort="ariaSortOf('download')">
+              <button type="button" class="th-sort num" :class="{ active: sortKey === 'download' }" @click="toggleColumnSort('download')">
+                下载
+                <Icon v-if="sortKey === 'download'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
+              </button>
+            </th>
+            <th class="num" :aria-sort="ariaSortOf('upload')">
+              <button type="button" class="th-sort num" :class="{ active: sortKey === 'upload' }" @click="toggleColumnSort('upload')">
+                上传
+                <Icon v-if="sortKey === 'upload'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
+              </button>
+            </th>
+            <th class="num" :aria-sort="ariaSortOf('time')">
+              <button type="button" class="th-sort num" :class="{ active: sortKey === 'time' }" @click="toggleColumnSort('time')">
+                时长
+                <Icon v-if="sortKey === 'time'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
+              </button>
+            </th>
             <th />
           </tr>
         </thead>
@@ -369,7 +454,13 @@ function resetFilters() {
             <td class="muted ellipsis">{{ row.process || '—' }}</td>
             <td class="ellipsis"><span class="muted">{{ row.rule }}</span><span v-if="row.rule_payload" class="rule-payload-inline">{{ row.rule_payload }}</span></td>
             <td class="ellipsis">{{ row.outbound }}</td>
-            <td class="num mono">{{ formatSpeed(rateOf(row).down) }}</td>
+            <td
+              class="num mono"
+              :class="{ muted: speedDisplay(row).idle, 'conn-rate-up': speedDisplay(row).upOnly }"
+              :title="speedDisplay(row).title"
+            >
+              {{ speedDisplay(row).text }}
+            </td>
             <td class="num mono">{{ formatBytes(row.download) }}</td>
             <td class="num mono muted">{{ formatBytes(row.upload) }}</td>
             <td class="num muted">{{ formatDuration(row.start) }}</td>
@@ -404,7 +495,12 @@ function resetFilters() {
           <div class="conn-top">
             <span class="net" :class="row.network">{{ row.network.toUpperCase() || 'TCP' }}</span>
             <strong class="ellipsis grow">{{ row.host }}</strong>
-            <span class="mono small">{{ formatSpeed(rateOf(row).down) }}</span>
+            <span class="mono small" :class="{ muted: speedDisplay(row).idle, 'conn-rate-up': speedDisplay(row).upOnly }">
+              {{ speedDisplay(row).text }}
+            </span>
+            <button type="button" class="icon-btn sm" :aria-label="`断开 ${row.host}`" title="断开" @click.stop="closeOne(row)">
+              <Icon name="x" :size="14" />
+            </button>
           </div>
           <div class="conn-meta small muted">
             <span class="ellipsis">{{ row.outbound }}</span>
@@ -431,6 +527,34 @@ function resetFilters() {
           <dd class="mono">{{ value }}</dd>
         </template>
       </dl>
+      <div v-if="detailSource" class="chips conn-detail-chips">
+        <button
+          type="button"
+          class="chip"
+          data-testid="copy-conn-host"
+          @click="store.copyText(detailSource.host || detailSource.destination, '已复制目标主机')"
+        >
+          <Icon name="copy" :size="13" />复制主机
+        </button>
+        <button
+          v-if="detailSource.host"
+          type="button"
+          class="chip"
+          data-testid="filter-conn-host"
+          @click="filterBy(detailSource.host)"
+        >
+          <Icon name="filter" :size="13" />筛选此主机
+        </button>
+        <button
+          v-if="detailSource.process"
+          type="button"
+          class="chip"
+          data-testid="filter-conn-process"
+          @click="filterBy(detailSource.process)"
+        >
+          <Icon name="filter" :size="13" />筛选 {{ detailSource.process }}
+        </button>
+      </div>
       <template #footer>
         <button type="button" class="btn ghost" @click="closeDetail">关闭</button>
         <button type="button" class="btn ghost" data-testid="copy-connection" :disabled="!detailSource" @click="copySummary">
