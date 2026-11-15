@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeKernel, normalizeSnapshot } from './types'
+import { normalizeKernel, normalizeRuleRow, normalizeSnapshot } from './types'
 import { resolvePage } from './store'
 
 describe('normalizeSnapshot', () => {
@@ -10,6 +10,10 @@ describe('normalizeSnapshot', () => {
       expect(snapshot.platform).toBe('desktop')
       expect(snapshot.settings.mixed_port).toBeNull()
       expect(snapshot.connections).toEqual([])
+      expect(snapshot.kernel_memory).toBeNull()
+      expect(snapshot.kernel_uptime_secs).toBeNull()
+      expect(snapshot.connection_total).toBe(0)
+      expect(snapshot.connections_error).toBeNull()
     }
   })
 
@@ -34,6 +38,75 @@ describe('normalizeSnapshot', () => {
     expect(snapshot.connections[0].upload).toBe(0)
     expect(snapshot.logs[0].level).toBe('info')
     expect(snapshot.settings).toMatchObject({ mixed_port: 7891, allow_lan: true, log_level: null })
+  })
+
+  it('keeps only remote and inline group icons', () => {
+    const group = (icon: unknown) =>
+      normalizeSnapshot({ node_catalog: [{ name: 'G', kind: 'manual', icon }] }).node_catalog[0]
+
+    expect(group(' https://icons.example.com/a.png ').icon).toBe('https://icons.example.com/a.png')
+    expect(group('HTTP://icons.example.com/a.png').icon).toBe('HTTP://icons.example.com/a.png')
+    expect(group('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=').icon).toBe(
+      'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+    )
+    for (const icon of [
+      'file:///tmp/a.png',
+      'javascript:alert(1)',
+      'ftp://icons.example.com/a.png',
+      'https://icons.example.com/a b.png',
+      'data:text/html;base64,AAAA',
+      '',
+      null,
+      42,
+    ]) {
+      expect(group(icon).icon).toBeNull()
+    }
+    expect(normalizeSnapshot({ node_catalog: [{ name: 'G', kind: 'manual' }] }).node_catalog[0].icon).toBeNull()
+  })
+
+  it('keeps the reported runtime figures and leaves missing ones empty', () => {
+    const live = normalizeSnapshot({
+      kernel_memory: 134217728,
+      kernel_uptime_secs: 90,
+      connection_total: 620,
+      connections: [{ id: 'c', host: 'a.com', chains: ['x'] }],
+      connections_error: '连接没有读取',
+    })
+    expect(live.kernel_memory).toBe(134217728)
+    expect(live.kernel_uptime_secs).toBe(90)
+    expect(live.connection_total).toBe(620)
+    expect(live.connection_total).toBeGreaterThan(live.connections.length)
+    expect(live.connections_error).toBe('连接没有读取')
+
+    const hostile = normalizeSnapshot({ kernel_memory: -1, kernel_uptime_secs: 'x', connection_total: -5 })
+    expect(hostile.kernel_memory).toBeNull()
+    expect(hostile.kernel_uptime_secs).toBeNull()
+    expect(hostile.connection_total).toBe(0)
+  })
+
+  it('normalizes rule hit fields and drops unknown ones', () => {
+    expect(
+      normalizeRuleRow({
+        kind: 'DomainSuffix',
+        payload: 'example.com',
+        proxy: 'DIRECT',
+        hit_count: 7,
+        last_hit: '2026-11-15T10:00:00Z',
+        extra: { hitCount: 99 },
+        disabled: true,
+      }),
+    ).toEqual({
+      kind: 'DomainSuffix',
+      payload: 'example.com',
+      proxy: 'DIRECT',
+      hit_count: 7,
+      last_hit: '2026-11-15T10:00:00Z',
+    })
+    expect(normalizeRuleRow({ kind: 'Match', hit_count: '7', last_hit: '' })).toMatchObject({
+      hit_count: null,
+      last_hit: null,
+    })
+    expect(normalizeRuleRow({})).toEqual({ kind: '', payload: '', proxy: '', hit_count: null, last_hit: null })
   })
 
   it('reads kernel status', () => {

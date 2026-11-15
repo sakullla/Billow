@@ -39,6 +39,10 @@ pub struct RuleView {
     pub kind: String,
     pub payload: String,
     pub proxy: String,
+    /// `/rules` `extra.hitCount`; old kernels omit it.
+    pub hit_count: Option<u64>,
+    /// `/rules` `extra.lastHit`; old kernels omit it.
+    pub last_hit: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
@@ -137,15 +141,32 @@ pub fn push_logs(logs: &mut Vec<LogView>, incoming: impl IntoIterator<Item = Log
     }
 }
 
+/// One `/connections` read: the accepted rows, byte totals, the pre-truncation count and any failure.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConnectionsReading {
+    pub rows: Vec<ConnectionView>,
+    pub totals: Option<TrafficTotals>,
+    /// Open connections the kernel reported before the view keeps at most 500 rows.
+    pub total: usize,
+    /// Set only when the controller could not be read.
+    pub error: Option<String>,
+}
+
 /// Reads the controller `/connections` body into rows plus the running byte totals.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn connections_from_body(text: &str) -> Vec<ConnectionView> {
-    connections_and_totals(text).0
+    read_connections(text).rows
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn connections_and_totals(text: &str) -> (Vec<ConnectionView>, Option<TrafficTotals>) {
+    let reading = read_connections(text);
+    (reading.rows, reading.totals)
+}
+
+pub fn read_connections(text: &str) -> ConnectionsReading {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return (Vec::new(), None);
+        return ConnectionsReading::default();
     };
     let totals = match (
         json_u64(value.get("uploadTotal")),
@@ -155,8 +176,12 @@ pub fn connections_and_totals(text: &str) -> (Vec<ConnectionView>, Option<Traffi
         _ => None,
     };
     let Some(list) = value.get("connections").and_then(serde_json::Value::as_array) else {
-        return (Vec::new(), totals);
+        return ConnectionsReading {
+            totals,
+            ..Default::default()
+        };
     };
+    let total = list.len();
     let mut rows = Vec::new();
     for item in list {
         let metadata = item.get("metadata");
@@ -213,7 +238,12 @@ pub fn connections_and_totals(text: &str) -> (Vec<ConnectionView>, Option<Traffi
         rows.push(row);
     }
     rows.truncate(500);
-    (rows, totals)
+    ConnectionsReading {
+        rows,
+        totals,
+        total,
+        error: None,
+    }
 }
 
 fn controller_agent(read: Duration) -> ureq::Agent {
@@ -451,16 +481,35 @@ pub fn rules_from_body(text: &str) -> Vec<RuleView> {
         return Vec::new();
     };
     list.iter()
-        .map(|item| RuleView {
-            kind: clean_token(item.get("type").and_then(serde_json::Value::as_str).unwrap_or(""), 60),
-            payload: clean_token(
-                item.get("payload").and_then(serde_json::Value::as_str).unwrap_or(""),
-                400,
-            ),
-            proxy: clean_token(item.get("proxy").and_then(serde_json::Value::as_str).unwrap_or(""), 200),
+        .map(|item| {
+            let (hit_count, last_hit) = rule_hits(item);
+            RuleView {
+                kind: clean_token(item.get("type").and_then(serde_json::Value::as_str).unwrap_or(""), 60),
+                payload: clean_token(
+                    item.get("payload").and_then(serde_json::Value::as_str).unwrap_or(""),
+                    400,
+                ),
+                proxy: clean_token(item.get("proxy").and_then(serde_json::Value::as_str).unwrap_or(""), 200),
+                hit_count,
+                last_hit,
+            }
         })
         .filter(|rule| !rule.kind.is_empty())
         .collect()
+}
+
+/// Hit statistics live under `extra` and are absent on kernels that do not track them.
+fn rule_hits(item: &serde_json::Value) -> (Option<u64>, Option<String>) {
+    let Some(extra) = item.get("extra") else {
+        return (None, None);
+    };
+    let hit_count = json_u64(extra.get("hitCount"));
+    let last_hit = extra
+        .get("lastHit")
+        .and_then(serde_json::Value::as_str)
+        .map(|value| clean_token(value, 60))
+        .filter(|value| !value.is_empty());
+    (hit_count, last_hit)
 }
 
 pub fn parse_log_line(line: &str) -> Option<LogView> {
@@ -489,16 +538,23 @@ pub fn parse_log_line(line: &str) -> Option<LogView> {
     })
 }
 
-pub fn fetch_connections_with_totals(
-    endpoint: &ControllerEndpoint,
-) -> (Vec<ConnectionView>, Option<TrafficTotals>) {
+const CONNECTIONS_ERROR: &str = "连接没有读取";
+
+pub fn fetch_connections_with_totals(endpoint: &ControllerEndpoint) -> ConnectionsReading {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
-        return (Vec::new(), None);
+        return ConnectionsReading {
+            error: Some(CONNECTIONS_ERROR.to_string()),
+            ..Default::default()
+        };
     }
     let url = format!("http://{}:{}/connections", endpoint.host, endpoint.port);
     let agent = controller_agent(Duration::from_millis(800));
+    let failure = || ConnectionsReading {
+        error: Some(CONNECTIONS_ERROR.to_string()),
+        ..Default::default()
+    };
     let Ok(response) = authorize(agent.get(&url), endpoint).call() else {
-        return (Vec::new(), None);
+        return failure();
     };
     let mut body = String::new();
     if response
@@ -507,9 +563,35 @@ pub fn fetch_connections_with_totals(
         .read_to_string(&mut body)
         .is_err()
     {
-        return (Vec::new(), None);
+        return failure();
     }
-    connections_and_totals(&body)
+    read_connections(&body)
+}
+
+/// Kernel memory from `/memory`, in bytes. Missing or zero means the kernel did not report it.
+pub fn fetch_memory(endpoint: &ControllerEndpoint) -> Option<u64> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return None;
+    }
+    let url = format!("http://{}:{}/memory", endpoint.host, endpoint.port);
+    // Snapshot polling stays responsive even if the controller stalls.
+    let agent = controller_agent(Duration::from_millis(800));
+    let response = authorize(agent.get(&url), endpoint).call().ok()?;
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(16_384)
+        .read_to_string(&mut body)
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+    memory_inuse(&value)
+}
+
+fn memory_inuse(value: &serde_json::Value) -> Option<u64> {
+    ["inuse", "heapInuse", "used"]
+        .iter()
+        .find_map(|key| json_u64(value.get(*key)))
+        .filter(|bytes| *bytes > 0)
 }
 
 /// One controller sample is `{"up":bytes_per_second,"down":bytes_per_second}`.
@@ -786,12 +868,81 @@ mod tests {
     #[test]
     fn rules_body_is_read_into_type_payload_and_proxy() {
         let rules = rules_from_body(
-            r#"{"rules":[{"type":"DomainSuffix","payload":"google.com","proxy":"代理"},{"type":"Match","payload":"","proxy":"DIRECT"},{"payload":"x"}]}"#,
+            r#"{"rules":[{"type":"DomainSuffix","payload":"google.com","proxy":"代理","extra":{"hitCount":7,"lastHit":"2026-11-15T10:00:00Z"}},{"type":"Match","payload":"","proxy":"DIRECT"},{"payload":"x"}]}"#,
         );
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].kind, "DomainSuffix");
         assert_eq!(rules[0].proxy, "代理");
+        assert_eq!(rules[0].hit_count, Some(7));
+        assert_eq!(rules[0].last_hit.as_deref(), Some("2026-11-15T10:00:00Z"));
         assert_eq!(rules[1].kind, "Match");
+        assert_eq!(rules[1].hit_count, None, "a kernel without extra reports no hits");
+        assert_eq!(rules[1].last_hit, None);
+    }
+
+    #[test]
+    fn rule_hits_keep_a_zero_count_and_skip_blank_times() {
+        let rules = rules_from_body(
+            r#"{"rules":[{"type":"Match","proxy":"DIRECT","extra":{"hitCount":0,"lastHit":""}},{"type":"GeoIP","proxy":"DIRECT","extra":{}},{"type":"Domain","proxy":"DIRECT","extra":{"hitCount":"3","lastHit":7}}]}"#,
+        );
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].hit_count, Some(0));
+        assert_eq!(rules[0].last_hit, None);
+        assert_eq!(rules[1].hit_count, None);
+        assert_eq!(rules[2].hit_count, None, "a string count is not a hit number");
+        assert_eq!(rules[2].last_hit, None);
+    }
+
+    #[test]
+    fn connections_keep_the_count_before_the_view_truncates() {
+        let body = r#"{"connections":[
+            {"metadata":{"host":"a.com","destinationIP":"1.1.1.1"},"chains":["A"]},
+            {"metadata":{"host":"b.com","destinationIP":"1.1.1.2"},"chains":["A"]},
+            {"metadata":{"host":"c.com","destinationIP":"1.1.1.3"},"chains":["A"]}
+        ]}"#;
+        let reading = read_connections(body);
+        assert_eq!(reading.rows.len(), 3);
+        assert_eq!(reading.total, 3);
+        assert!(reading.error.is_none());
+        let empty = read_connections("{}");
+        assert_eq!(empty.total, 0);
+        assert!(empty.rows.is_empty() && empty.error.is_none());
+        let hostile = read_connections("not-json");
+        assert_eq!(hostile, ConnectionsReading::default());
+    }
+
+    #[test]
+    fn a_missing_controller_is_a_read_error_not_an_empty_list() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let reading = fetch_connections_with_totals(&ControllerEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+            secret: String::new(),
+        });
+        assert!(reading.rows.is_empty());
+        assert_eq!(reading.total, 0);
+        assert_eq!(reading.error.as_deref(), Some(CONNECTIONS_ERROR));
+        let remote = ControllerEndpoint {
+            host: "198.51.100.1".to_string(),
+            port: 80,
+            secret: String::new(),
+        };
+        assert_eq!(
+            fetch_connections_with_totals(&remote).error.as_deref(),
+            Some(CONNECTIONS_ERROR)
+        );
+    }
+
+    #[test]
+    fn memory_reads_the_first_reported_byte_count() {
+        let value = |text: &str| serde_json::from_str::<serde_json::Value>(text).unwrap();
+        assert_eq!(memory_inuse(&value(r#"{"inuse":1024,"oslimit":0}"#)), Some(1024));
+        assert_eq!(memory_inuse(&value(r#"{"heapInuse":2048}"#)), Some(2048));
+        assert_eq!(memory_inuse(&value(r#"{"used":4096}"#)), Some(4096));
+        assert_eq!(memory_inuse(&value(r#"{"inuse":0}"#)), None);
+        assert_eq!(memory_inuse(&value("{}")), None);
     }
 
     #[test]

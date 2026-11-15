@@ -354,7 +354,15 @@ pub struct ProfileSnapshot {
     pub nodes_error: Option<String>,
     pub nodes_profile_id: Option<String>,
     pub kernel_running: bool,
+    /// Kernel memory in bytes; `None` when the kernel does not report it.
+    pub kernel_memory: Option<u64>,
+    /// Seconds since the kernel process started; `None` while it is not running.
+    pub kernel_uptime_secs: Option<u64>,
     pub connections: Vec<ConnectionView>,
+    /// Open connections the kernel reported, even when the list keeps only 500 rows.
+    pub connection_total: usize,
+    /// Set when `/connections` could not be read; empty results are not failures.
+    pub connections_error: Option<String>,
     pub connection_query: String,
     pub logs: Vec<LogView>,
     pub log_filter: String,
@@ -398,6 +406,26 @@ pub trait KernelLaunch {
 
     fn connections(&mut self) -> Vec<ConnectionView> {
         Vec::new()
+    }
+
+    /// Open connections counted by the last `/connections` read, before the view keeps 500 rows.
+    fn connection_total(&mut self) -> Option<usize> {
+        None
+    }
+
+    /// Why the last `/connections` read failed, if it did.
+    fn connections_error(&mut self) -> Option<String> {
+        None
+    }
+
+    /// Kernel memory in bytes, from `/memory`. `None` when the kernel does not report it.
+    fn kernel_memory(&mut self) -> Option<u64> {
+        None
+    }
+
+    /// Seconds since this kernel process started, tracked by the app.
+    fn kernel_uptime_secs(&mut self) -> Option<u64> {
+        None
     }
 
     fn pull_logs(&mut self) -> Vec<LogView> {
@@ -483,6 +511,9 @@ pub struct ProcessRuntime {
     log_buffer: Option<CapturedLogs>,
     traffic_watch: Option<TrafficWatch>,
     totals: Option<TrafficTotals>,
+    connection_total: Option<usize>,
+    connections_error: Option<String>,
+    started: Option<Instant>,
 }
 
 struct TrafficWatch {
@@ -529,6 +560,9 @@ impl ProcessRuntime {
             log_buffer: None,
             traffic_watch: None,
             totals: None,
+            connection_total: None,
+            connections_error: None,
+            started: None,
         }
     }
 
@@ -559,6 +593,9 @@ impl ProcessRuntime {
         self.cached_now.clear();
         self.log_buffer = None;
         self.totals = None;
+        self.connection_total = None;
+        self.connections_error = None;
+        self.started = None;
     }
 
     fn halt_traffic(&mut self) {
@@ -658,6 +695,7 @@ impl KernelLaunch for ProcessRuntime {
         }
         let stdout = child.stdout.take();
         self.stop();
+        self.started = Some(Instant::now());
         self.child = Some(child);
         self.config_path = Some(config_path);
         self.controller = controller;
@@ -739,9 +777,34 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Vec::new();
         };
-        let (rows, totals) = diagnostics::fetch_connections_with_totals(&endpoint);
-        self.totals = totals;
-        rows
+        let reading = diagnostics::fetch_connections_with_totals(&endpoint);
+        self.totals = reading.totals;
+        self.connection_total = Some(reading.total);
+        self.connections_error = reading.error;
+        reading.rows
+    }
+
+    fn connection_total(&mut self) -> Option<usize> {
+        self.connection_total
+    }
+
+    fn connections_error(&mut self) -> Option<String> {
+        self.connections_error.clone()
+    }
+
+    fn kernel_memory(&mut self) -> Option<u64> {
+        if !self.running() {
+            return None;
+        }
+        let endpoint = self.controller.clone()?;
+        diagnostics::fetch_memory(&endpoint)
+    }
+
+    fn kernel_uptime_secs(&mut self) -> Option<u64> {
+        if !self.running() {
+            return None;
+        }
+        self.started.map(|start| start.elapsed().as_secs())
     }
 
     fn connection_totals(&mut self) -> Option<TrafficTotals> {
@@ -882,7 +945,11 @@ pub struct ProfileBook {
     auto_now: BTreeMap<String, String>,
     nodes_error: Option<String>,
     kernel_running: bool,
+    kernel_memory: Option<u64>,
+    kernel_uptime_secs: Option<u64>,
     connections: Vec<ConnectionView>,
+    connection_total: usize,
+    connections_error: Option<String>,
     connection_query: String,
     logs: Vec<LogView>,
     log_filter: String,
@@ -927,7 +994,11 @@ impl ProfileBook {
             auto_now: BTreeMap::new(),
             nodes_error: None,
             kernel_running: false,
+            kernel_memory: None,
+            kernel_uptime_secs: None,
             connections: Vec::new(),
+            connection_total: 0,
+            connections_error: None,
             connection_query: String::new(),
             logs: Vec::new(),
             log_filter: "all".to_string(),
@@ -993,10 +1064,18 @@ impl ProfileBook {
             nodes_error: self.nodes_error.clone(),
             nodes_profile_id,
             kernel_running: self.kernel_running,
+            kernel_memory: self.kernel_memory,
+            kernel_uptime_secs: self.kernel_uptime_secs,
             connections: if self.connected {
                 diagnostics::filter_connections(&self.connections, &self.connection_query)
             } else {
                 Vec::new()
+            },
+            connection_total: if self.connected { self.connection_total } else { 0 },
+            connections_error: if self.connected {
+                self.connections_error.clone()
+            } else {
+                None
             },
             connection_query: self.connection_query.clone(),
             logs: diagnostics::filter_logs(&self.logs, &self.log_filter),
@@ -1861,17 +1940,29 @@ impl ProfileBook {
         self.append_logs(kernel.pull_logs());
         if running {
             self.auto_now = kernel.auto_now();
+            self.kernel_memory = kernel.kernel_memory();
+            self.kernel_uptime_secs = kernel.kernel_uptime_secs();
             if self.connected {
                 self.connections = diagnostics::accept_connections(kernel.connections());
                 if let Some(totals) = kernel.connection_totals() {
                     self.totals = Some(totals);
                 }
+                self.connection_total = kernel
+                    .connection_total()
+                    .unwrap_or(self.connections.len());
+                self.connections_error = kernel.connections_error();
             } else {
                 self.connections.clear();
+                self.connection_total = 0;
+                self.connections_error = None;
             }
         } else {
             self.auto_now.clear();
             self.connections.clear();
+            self.kernel_memory = None;
+            self.kernel_uptime_secs = None;
+            self.connection_total = 0;
+            self.connections_error = None;
             // A stopped kernel is not connected. The system-proxy switch may stay on.
             self.connected = false;
         }
@@ -2171,6 +2262,7 @@ impl ProfileBook {
                 sort,
                 nodes,
                 group_type: group.group_type.clone(),
+                icon: group.icon.clone(),
             };
         }
         let chosen = profile
@@ -2200,6 +2292,7 @@ impl ProfileBook {
             sort,
             nodes,
             group_type: group.group_type.clone(),
+            icon: group.icon.clone(),
         }
     }
 
@@ -3953,12 +4046,14 @@ proxies:
 proxy-groups:
   - name: manual
     type: select
+    icon: https://icons.example.com/manual.png
     proxies:
       - z-node
       - m-node
       - a-node
   - name: auto
     type: url-test
+    icon: file:///tmp/local.png
     proxies:
       - z-node
       - m-node
@@ -4013,6 +4108,14 @@ proxy-groups:
         // Auto groups list their members for viewing; none is marked while the kernel is down.
         assert!(group(&listed.node_catalog, "auto").nodes.iter().all(|node| !node.selected));
         assert_eq!(group(&listed.node_catalog, "auto").kind, "auto");
+        assert_eq!(
+            group(&listed.node_catalog, "manual").icon.as_deref(),
+            Some("https://icons.example.com/manual.png")
+        );
+        assert!(
+            group(&listed.node_catalog, "auto").icon.is_none(),
+            "a local file icon is not passed through"
+        );
         assert_eq!(kernel.delay_calls, 0);
         assert!(listed.node_catalog.iter().all(|item| {
             item.nodes
@@ -4439,6 +4542,106 @@ proxy-groups:
                 .iter()
                 .any(|line| line.message == "注意一下")
         );
+    }
+
+    struct StatusKernel {
+        running: bool,
+        memory: Option<u64>,
+        uptime: Option<u64>,
+        total: usize,
+        error: Option<String>,
+        connections: Vec<ConnectionView>,
+    }
+
+    impl KernelLaunch for StatusKernel {
+        fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.running
+        }
+
+        fn connections(&mut self) -> Vec<ConnectionView> {
+            self.connections.clone()
+        }
+
+        fn connection_total(&mut self) -> Option<usize> {
+            Some(self.total)
+        }
+
+        fn connections_error(&mut self) -> Option<String> {
+            self.error.clone()
+        }
+
+        fn kernel_memory(&mut self) -> Option<u64> {
+            self.memory
+        }
+
+        fn kernel_uptime_secs(&mut self) -> Option<u64> {
+            self.uptime
+        }
+    }
+
+    #[test]
+    fn snapshot_reports_kernel_memory_uptime_connection_count_and_read_errors() {
+        let dir = temp_dir("status");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", &config(7890));
+        let mut kernel = StatusKernel {
+            running: false,
+            memory: None,
+            uptime: None,
+            total: 0,
+            error: None,
+            connections: Vec::new(),
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let idle = book.snapshot();
+        assert!(idle.kernel_running);
+        assert!(idle.kernel_memory.is_none());
+        assert!(idle.kernel_uptime_secs.is_none());
+        assert_eq!(idle.connection_total, 0);
+        assert!(idle.connections_error.is_none());
+
+        kernel.memory = Some(128 * 1024 * 1024);
+        kernel.uptime = Some(90);
+        kernel.total = 620;
+        kernel.connections = vec![ConnectionView {
+            host: "example.com".to_string(),
+            outbound: "香港节点".to_string(),
+            ..Default::default()
+        }];
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let live = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(live.kernel_memory, Some(128 * 1024 * 1024));
+        assert_eq!(live.kernel_uptime_secs, Some(90));
+        assert_eq!(live.connection_total, 620, "the count keeps the rows the view drops");
+        assert_eq!(live.connections.len(), 1);
+        assert!(live.connections_error.is_none());
+
+        kernel.error = Some("连接没有读取".to_string());
+        kernel.total = 0;
+        kernel.connections.clear();
+        kernel.memory = None;
+        book.sync_runtime(&mut kernel);
+        let failed = book.snapshot();
+        assert!(failed.connections.is_empty());
+        assert_eq!(failed.connection_total, 0);
+        assert_eq!(failed.connections_error.as_deref(), Some("连接没有读取"));
+        assert!(failed.kernel_memory.is_none());
+        assert_eq!(failed.kernel_uptime_secs, Some(90));
+
+        kernel.running = false;
+        book.sync_runtime(&mut kernel);
+        let stopped = book.snapshot();
+        assert!(stopped.kernel_memory.is_none());
+        assert!(stopped.kernel_uptime_secs.is_none());
+        assert_eq!(stopped.connection_total, 0);
+        assert!(stopped.connections_error.is_none());
     }
 
     #[test]

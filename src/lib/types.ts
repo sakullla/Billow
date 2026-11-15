@@ -42,6 +42,8 @@ export interface NodeGroup {
   sort: string
   nodes: NodeItem[]
   group_type: string
+  /** Config `proxy-groups[].icon`; only http(s) and image data survive normalization. */
+  icon: string | null
 }
 
 export interface ConnectionRow {
@@ -71,6 +73,10 @@ export interface RuleRow {
   kind: string
   payload: string
   proxy: string
+  /** `/rules` `extra.hitCount`; null when the kernel does not report hits. */
+  hit_count: number | null
+  /** `/rules` `extra.lastHit`; null when the kernel does not report hits. */
+  last_hit: string | null
 }
 
 export interface DnsSettings {
@@ -161,7 +167,15 @@ export interface Snapshot {
   nodes_notice: string | null
   nodes_error: string | null
   kernel_running: boolean
+  /** Kernel memory in bytes; null when the kernel does not report it. */
+  kernel_memory: number | null
+  /** Seconds since the kernel process started; null while it is not running. */
+  kernel_uptime_secs: number | null
   connections: ConnectionRow[]
+  /** Open connections the kernel reported, even if the list keeps only 500 rows. */
+  connection_total: number
+  /** Set when `/connections` could not be read; an empty list is not a failure. */
+  connections_error: string | null
   logs: LogLine[]
   upload: number | null
   download: number | null
@@ -277,7 +291,11 @@ export function emptySnapshot(): Snapshot {
     nodes_notice: null,
     nodes_error: null,
     kernel_running: false,
+    kernel_memory: null,
+    kernel_uptime_secs: null,
     connections: [],
+    connection_total: 0,
+    connections_error: null,
     logs: [],
     upload: null,
     download: null,
@@ -338,6 +356,28 @@ function normalizeGroup(raw: unknown): NodeGroup {
     sort: str(group.sort, 'default'),
     nodes: list(group.nodes).map(normalizeNode).filter((node) => node.name),
     group_type: str(group.group_type),
+    icon: normalizeIcon(group.icon),
+  }
+}
+
+/** Only remote http(s) images and inline image data are usable as group icons. */
+export function normalizeIcon(raw: unknown): string | null {
+  const text = str(raw).trim()
+  if (!text || /\s/.test(text)) return null
+  const lower = text.toLowerCase()
+  const allowed =
+    lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('data:image/')
+  return allowed ? text.slice(0, 2048) : null
+}
+
+export function normalizeRuleRow(raw: unknown): RuleRow {
+  const rule = obj(raw)
+  return {
+    kind: str(rule.kind),
+    payload: str(rule.payload),
+    proxy: str(rule.proxy),
+    hit_count: num(rule.hit_count),
+    last_hit: optStr(rule.last_hit),
   }
 }
 
@@ -444,6 +484,8 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
     nodes_notice: optStr(source.nodes_notice),
     nodes_error: optStr(source.nodes_error),
     kernel_running: Boolean(source.kernel_running),
+    kernel_memory: num(source.kernel_memory),
+    kernel_uptime_secs: num(source.kernel_uptime_secs),
     connections: list(source.connections).map((item) => {
       const row = obj(item)
       return {
@@ -463,6 +505,8 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
         start: str(row.start),
       }
     }),
+    connection_total: num(source.connection_total) ?? 0,
+    connections_error: optStr(source.connections_error),
     logs: list(source.logs).map((item) => {
       const line = obj(item)
       return { level: normalizeLevel(line.level), message: str(line.message), time_ms: num(line.time_ms) ?? 0 }

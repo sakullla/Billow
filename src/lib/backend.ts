@@ -1,5 +1,6 @@
 import {
   normalizeKernel,
+  normalizeRuleRow,
   normalizeSnapshot,
   type AppInfo,
   type KernelChannel,
@@ -141,7 +142,10 @@ function createTauriBackend(): Backend {
     closeConnection: (id) => snap('close_connection', { id }),
     rules: async () => {
       const raw = await call<RulesResult>('kernel_rules')
-      return { rules: Array.isArray(raw.rules) ? raw.rules : [], error: raw.error ?? null }
+      return {
+        rules: Array.isArray(raw.rules) ? raw.rules.map(normalizeRuleRow) : [],
+        error: raw.error ?? null,
+      }
     },
     providers: async () => {
       const raw = await call<ProvidersResult>('kernel_providers')

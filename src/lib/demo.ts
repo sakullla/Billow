@@ -49,10 +49,24 @@ function nodeNames(): string[] {
 interface DemoOptions {
   profiles?: boolean
   platform?: 'desktop' | 'android'
+  /** Group icons by group name; include an unreachable URL to exercise the fallback. */
+  groupIcons?: Record<string, string>
+  /** Simulate a `/connections` read failure while connected. */
+  connectionsFailure?: boolean
+  /** When false, `/rules` reports no hit statistics. */
+  rulesExtra?: boolean
+}
+
+const DEMO_GROUP_ICONS: Record<string, string> = {
+  流媒体: 'https://icons.example.com/media.png',
+  OpenAI: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+  国内网站: 'https://unreachable.invalid/cn.png',
 }
 
 export function createDemoBackend(options: DemoOptions = {}): Backend {
   const names = nodeNames()
+  const groupIcons = options.groupIcons ?? DEMO_GROUP_ICONS
+  const rulesExtra = options.rulesExtra !== false
   const types = new Map(names.map((name, index) => [name, TYPES[index % TYPES.length]]))
   const state: Snapshot = emptySnapshot()
   state.platform = options.platform ?? 'desktop'
@@ -73,6 +87,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   const autoNow = new Map<string, string>()
   let connections: ConnectionRow[] = []
   let totals = { up: 0, down: 0 }
+  let startedAt: number | null = null
   let nextId = 1
   const listeners = new Set<(snapshot: Snapshot) => void>()
   const contents = new Map<string, string>()
@@ -150,7 +165,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     state.excluded = ['com.tencent.mm']
   }
 
-  const rules: RuleRow[] = [
+  const ruleSeeds: { kind: string; payload: string; proxy: string }[] = [
     { kind: 'DomainSuffix', payload: 'openai.com', proxy: 'OpenAI' },
     { kind: 'DomainSuffix', payload: 'claude.ai', proxy: 'OpenAI' },
     { kind: 'DomainKeyword', payload: 'youtube', proxy: '流媒体' },
@@ -164,6 +179,12 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { kind: 'GeoIP', payload: 'CN', proxy: '国内网站' },
     { kind: 'Match', payload: '', proxy: '漏网之鱼' },
   ]
+  const ruleCounts = [18, 6, 130, 24, 91, 512, 77, 0, 1204, 880, 320, 46]
+  const rules: RuleRow[] = ruleSeeds.map((rule, index) => ({
+    ...rule,
+    hit_count: rulesExtra ? ruleCounts[index] ?? 0 : null,
+    last_hit: rulesExtra ? new Date(Date.now() - (index + 1) * 7 * 60_000).toISOString() : null,
+  }))
 
   const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
   const providerRows: ProviderRow[] = [
@@ -192,6 +213,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         now,
         sort: 'default',
         group_type: group.type,
+        icon: groupIcons[group.name] ?? null,
         nodes: group.proxies.map((name) => {
           const delay = delays.get(name)
           return {
@@ -258,7 +280,13 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   function snapshot(): Snapshot {
     tick()
     state.profiles.forEach((profile) => (profile.current = profile.id === state.active_id))
-    state.connections = [...connections]
+    const failure = Boolean(options.connectionsFailure) && state.connected
+    state.connections = failure ? [] : [...connections]
+    state.connection_total = state.connected && !failure ? connections.length : 0
+    state.connections_error = failure ? '连接没有读取' : null
+    state.kernel_memory = state.connected ? 128 * 1024 * 1024 : null
+    state.kernel_uptime_secs =
+      state.connected && startedAt !== null ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : null
     state.node_catalog = catalog()
     state.nodes_notice = state.active_id ? null : '需要先添加或更新配置'
     state.config_values = {
@@ -292,6 +320,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     state.kernel_running = true
     state.connected = true
     state.failure = null
+    startedAt = Date.now()
     autoNow.set('自动选择', names[1])
     autoNow.set('故障转移', names[0])
     log('info', `Mihomo ${kernel.version} started, mixed proxy listening at 127.0.0.1:${state.mixed_port ?? 7890}`)
@@ -461,6 +490,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       state.system_proxy = false
       state.tun = false
       state.vpn = false
+      startedAt = null
       autoNow.clear()
       log('info', '内核已停止')
       return done(0)
@@ -524,7 +554,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async rules() {
       await wait(200)
       if (!state.kernel_running) return { rules: [], error: '内核没有运行' }
-      return { rules, error: null }
+      return { rules: rules.map((row) => ({ ...row })), error: null }
     },
     async providers() {
       await wait(200)

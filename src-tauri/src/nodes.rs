@@ -28,6 +28,8 @@ pub struct ParsedGroup {
     pub manual: bool,
     pub proxies: Vec<String>,
     pub group_type: String,
+    /// Config-declared `icon`, kept only for remote http(s) or inline image data.
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -47,6 +49,7 @@ pub struct NodeGroupView {
     pub sort: String,
     pub nodes: Vec<NodeItemView>,
     pub group_type: String,
+    pub icon: Option<String>,
 }
 
 static TEST_URL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
@@ -129,9 +132,26 @@ pub fn parse_proxy_groups(value: &Value) -> Vec<ParsedGroup> {
             group_type: read_string(group, "type")
                 .unwrap_or_default()
                 .to_ascii_lowercase(),
+            icon: read_string(group, "icon").and_then(|icon| usable_icon(&icon)),
         });
     }
     parsed
+}
+
+/// The group header shows an image only for `http:`, `https:` and `data:image/`.
+pub fn usable_icon(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    if text.is_empty() || text.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    let allowed = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("data:image/");
+    if !allowed {
+        return None;
+    }
+    Some(text.chars().take(2048).collect())
 }
 
 pub fn sorted_nodes(nodes: Vec<NodeItemView>, sort: &str) -> Vec<NodeItemView> {
@@ -567,6 +587,7 @@ proxies:
 proxy-groups:
   - name: manual
     type: Select
+    icon: https://icons.example.com/manual.png
     proxies:
       - one
       - two
@@ -574,11 +595,13 @@ proxy-groups:
       - one
   - name: auto
     type: url-test
+    icon: file:///tmp/local.png
     proxies:
       - one
       - two
   - name: all
     type: selector
+    icon: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
     include-all: true
     proxies:
       - DIRECT
@@ -597,6 +620,44 @@ proxy-groups:
         assert_eq!(groups[1].proxies, ["one", "two"]);
         assert!(groups[2].manual);
         assert_eq!(groups[2].proxies, ["DIRECT", "one", "two"]);
+        assert_eq!(
+            groups[0].icon.as_deref(),
+            Some("https://icons.example.com/manual.png")
+        );
+        assert!(groups[1].icon.is_none(), "a local file is not a usable icon");
+        assert!(groups[2].icon.as_deref().is_some_and(|icon| icon.starts_with("data:image/")));
+    }
+
+    #[test]
+    fn group_icons_keep_remote_and_inline_images_only() {
+        assert_eq!(
+            usable_icon(" https://icons.example.com/a.png ").as_deref(),
+            Some("https://icons.example.com/a.png")
+        );
+        assert_eq!(
+            usable_icon("HTTP://icons.example.com/a.png").as_deref(),
+            Some("HTTP://icons.example.com/a.png")
+        );
+        assert!(usable_icon("data:image/png;base64,AAAA").is_some());
+        for rejected in [
+            "",
+            "   ",
+            "file:///tmp/a.png",
+            "javascript:alert(1)",
+            "ftp://icons.example.com/a.png",
+            "https://icons.example.com/a b.png",
+            "data:text/html;base64,AAAA",
+        ] {
+            assert!(usable_icon(rejected).is_none(), "{rejected}");
+        }
+        let yaml = r#"
+proxy-groups:
+  - name: plain
+    type: select
+    proxies: [DIRECT]
+"#;
+        let groups = parse_proxy_groups(&serde_yaml::from_str(yaml).unwrap());
+        assert!(groups[0].icon.is_none(), "missing icon stays empty");
     }
 
     #[test]
@@ -621,6 +682,7 @@ proxy-groups:
             now: "z-node".to_string(),
             sort: "default".to_string(),
             nodes: original,
+            icon: None,
         }];
         let (matched, none) = filter_visible(groups.clone(), "a-n");
         assert!(!none);
