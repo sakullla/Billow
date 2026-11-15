@@ -697,7 +697,11 @@ fn wintun_create_or_open() -> bool {
     }
 
     unsafe {
-        let dll = utf16z("wintun.dll");
+        // Never search the working directory for a privileged DLL.
+        let Ok(exe) = std::env::current_exe() else { return false; };
+        let Some(directory) = exe.parent() else { return false; };
+        use std::os::windows::ffi::OsStrExt;
+        let dll: Vec<u16> = directory.join("wintun.dll").as_os_str().encode_wide().chain(Some(0)).collect();
         let module = LoadLibraryW(dll.as_ptr());
         if module.is_null() {
             return false;
@@ -1346,6 +1350,7 @@ mod host_proxy {
     #[cfg(target_os = "windows")]
     mod windows {
         use std::process::Command;
+        use std::os::windows::process::CommandExt;
 
         use super::super::ProxyEndpoint;
 
@@ -1399,6 +1404,7 @@ mod host_proxy {
 
         fn reg(args: &[&str]) -> Result<(), String> {
             let status = Command::new("reg")
+                .creation_flags(0x08000000)
                 .args(args)
                 .status()
                 .map_err(|_| "系统代理没有打开".to_string())?;
@@ -1411,6 +1417,7 @@ mod host_proxy {
 
         fn reg_query(name: &str) -> Option<String> {
             let output = Command::new("reg")
+                .creation_flags(0x08000000)
                 .args(["query", KEY, "/v", name])
                 .output()
                 .ok()?;
@@ -1726,7 +1733,7 @@ mod tests {
         let again = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(again.system_proxy);
         assert!(!again.tun);
-        assert!(!again.connected);
+        assert!(again.connected, "denying TUN keeps the working system proxy connected");
         assert_eq!(again.failure.as_deref(), Some(TUN_DENIED));
         assert_eq!(proxy.sets, sets);
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
@@ -2240,7 +2247,7 @@ mod tests {
         let mut vpn = MemoryVpn::default();
         book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         let denied = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
-        assert!(!denied.connected && !denied.tun);
+        assert!(denied.connected && !denied.tun);
         assert!(denied.system_proxy);
         assert_eq!(denied.failure.as_deref(), Some(TUN_DENIED));
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
@@ -2283,10 +2290,10 @@ mod tests {
         let mut denied = HostTun::with_evidence(native_denial);
         let previous = proxy.sets;
         let rejected = book.set_tun(true, &mut kernel, &mut proxy, &mut denied, &mut vpn);
-        assert!(!rejected.connected && !rejected.tun);
+        assert!(rejected.connected && rejected.tun, "denied redundant enable preserves the existing TUN");
         assert!(rejected.system_proxy);
         assert_eq!(proxy.sets, previous);
-        assert_eq!(tun_enable(&kernel.last), Some(false));
+        assert_eq!(tun_enable(&kernel.last), Some(true));
     }
 
     #[test]

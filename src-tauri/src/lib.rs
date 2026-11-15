@@ -1,5 +1,7 @@
 mod app_update;
 mod diagnostics;
+#[cfg(target_os = "windows")]
+mod elevation;
 mod kernel;
 mod nodes;
 mod profile;
@@ -268,6 +270,10 @@ fn prepare_kernel(app: &tauri::App) {
     app.manage(KernelStore {
         manager: Mutex::new(manager),
     });
+    // An installed kernel is immediately usable; network upgrades are explicit in Settings.
+    if app.state::<KernelStore>().manager.lock().unwrap_or_else(|p| p.into_inner()).status().ready {
+        return;
+    }
     let handle = app.handle().clone();
     std::thread::spawn(move || {
         let store = handle.state::<KernelStore>();
@@ -306,13 +312,13 @@ fn set_last_entry(app: AppHandle, entry: String) -> ShellState {
     state.clone()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn kernel_state(app: AppHandle) -> KernelStatus {
     let store = app.state::<KernelStore>();
     lock_kernel(&store.manager).status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_kernel_channel(app: AppHandle, channel: String) -> KernelStatus {
     let store = app.state::<KernelStore>();
     let mut manager = lock_kernel(&store.manager);
@@ -343,7 +349,7 @@ impl From<ConnectResult> for ConnectStatus {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn connect_kernel(app: AppHandle) -> ConnectStatus {
     let store = app.state::<KernelStore>();
     let mut manager = lock_kernel(&store.manager);
@@ -405,54 +411,58 @@ fn with_session(
     change(&mut session)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn profile_state(app: AppHandle) -> ProfileSnapshot {
     profile_snapshot(&app)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn add_subscription_profile(app: AppHandle, url: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.add_subscription(&url))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn add_local_profile(app: AppHandle, name: String, content: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.add_local(&name, &content))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stage_install_link(app: AppHandle, link: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.stage_install_link(&link))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn confirm_install_link(app: AppHandle) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.confirm_pending())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cancel_install_link(app: AppHandle) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.cancel_pending())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn enable_profile(app: AppHandle, id: String) -> ProfileSnapshot {
     activate_profile(&app, &id, false)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn update_profile(app: AppHandle, id: String) -> ProfileSnapshot {
     activate_profile(&app, &id, true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_profile_override(app: AppHandle, id: String, text: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.save_override(&id, &text))
 }
 
-#[tauri::command]
-fn connect_session(app: AppHandle) -> ProfileSnapshot {
-    with_session(&app, |session| {
+#[tauri::command(async)]
+fn connect_session(app: AppHandle) -> Result<ProfileSnapshot, String> {
+    #[cfg(target_os = "windows")]
+    if !elevation::is_admin() && with_profile(&app, |session| session.book.snapshot().tun_wanted) {
+        return elevate_for_tun(&app);
+    }
+    Ok(with_session(&app, |session| {
         let ProfileSession {
             book,
             runtime,
@@ -461,10 +471,10 @@ fn connect_session(app: AppHandle) -> ProfileSnapshot {
             vpn,
         } = session;
         book.connect(runtime, proxy, tun, vpn)
-    })
+    }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession {
@@ -491,7 +501,7 @@ async fn prepare_app_update(app: AppHandle) -> Result<(), String> {
     }).await.map_err(|error| error.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_system_proxy(app: AppHandle, enabled: bool) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession {
@@ -505,9 +515,25 @@ fn set_system_proxy(app: AppHandle, enabled: bool) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
-fn set_tun_enabled(app: AppHandle, enabled: bool) -> ProfileSnapshot {
-    with_session(&app, |session| {
+#[cfg(target_os = "windows")]
+fn elevate_for_tun(app: &AppHandle) -> Result<ProfileSnapshot, String> {
+    elevation::relaunch_for_tun()?;
+    let next = with_profile(app, |session| {
+        session.book.release_lingering_proxy(&mut session.proxy);
+        session.runtime.shutdown();
+        session.book.snapshot()
+    });
+    app.exit(0);
+    Ok(next)
+}
+
+#[tauri::command(async)]
+fn set_tun_enabled(app: AppHandle, enabled: bool) -> Result<ProfileSnapshot, String> {
+    #[cfg(target_os = "windows")]
+    if enabled && !elevation::is_admin() {
+        return elevate_for_tun(&app);
+    }
+    Ok(with_session(&app, |session| {
         let ProfileSession {
             book,
             runtime,
@@ -516,10 +542,10 @@ fn set_tun_enabled(app: AppHandle, enabled: bool) -> ProfileSnapshot {
             vpn,
         } = session;
         book.set_tun(enabled, runtime, proxy, tun, vpn)
-    })
+    }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn exclude_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession {
@@ -529,7 +555,7 @@ fn exclude_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession {
@@ -539,7 +565,7 @@ fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn select_profile_node(app: AppHandle, group: String, node: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -547,7 +573,7 @@ fn select_profile_node(app: AppHandle, group: String, node: String) -> ProfileSn
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn test_profile_group(app: AppHandle, group: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -555,17 +581,17 @@ fn test_profile_group(app: AppHandle, group: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_node_query(app: AppHandle, query: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.set_node_query(&query))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_node_sort(app: AppHandle, group: String, sort: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.set_node_sort(&group, &sort))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_connection_query(app: AppHandle, query: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -573,7 +599,7 @@ fn set_connection_query(app: AppHandle, query: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_outbound_mode(app: AppHandle, mode: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -581,7 +607,7 @@ fn set_outbound_mode(app: AppHandle, mode: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_log_filter(app: AppHandle, level: String) -> ProfileSnapshot {
     with_profile(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -589,32 +615,32 @@ fn set_log_filter(app: AppHandle, level: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_profile(app: AppHandle, id: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.delete_profile(&id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn rename_profile(app: AppHandle, id: String, name: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.rename_profile(&id, &name))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_profile_source(app: AppHandle, id: String, url: String) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.set_profile_source(&id, &url))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_profile_interval(app: AppHandle, id: String, hours: u32) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.set_profile_interval(&id, hours))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn profile_content(app: AppHandle, id: String) -> Option<String> {
     with_profile(&app, |session| session.book.profile_content(&id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_profile_content(app: AppHandle, id: String, content: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -622,7 +648,7 @@ fn save_profile_content(app: AppHandle, id: String, content: String) -> ProfileS
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn refresh_profile(app: AppHandle, id: String) -> ProfileSnapshot {
     let client = HttpSubscriptionClient::new();
     with_session(&app, |session| {
@@ -631,7 +657,7 @@ fn refresh_profile(app: AppHandle, id: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn refresh_all_profiles(app: AppHandle) -> ProfileSnapshot {
     let ids = with_profile(&app, |session| session.book.subscription_ids());
     refresh_ids(&app, &ids)
@@ -650,7 +676,7 @@ fn refresh_ids(app: &AppHandle, ids: &[String]) -> ProfileSnapshot {
     last.unwrap_or_else(|| profile_snapshot(app))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_kernel_settings(app: AppHandle, settings: KernelSettings) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession {
@@ -664,7 +690,7 @@ fn save_kernel_settings(app: AppHandle, settings: KernelSettings) -> ProfileSnap
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn test_all_nodes(app: AppHandle) -> ProfileSnapshot {
     let events = app.clone();
     with_session_raw(&app, |session| {
@@ -684,7 +710,7 @@ fn test_all_nodes(app: AppHandle) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn test_node(app: AppHandle, node: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -692,7 +718,7 @@ fn test_node(app: AppHandle, node: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn close_connection(app: AppHandle, id: Option<String>) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -700,7 +726,7 @@ fn close_connection(app: AppHandle, id: Option<String>) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn kernel_rules(app: AppHandle) -> RulesSnapshot {
     with_session_raw(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -709,7 +735,7 @@ fn kernel_rules(app: AppHandle) -> RulesSnapshot {
 }
 
 /// Toggles one runtime rule. A failed hot reload restores the previous key set.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_rule_disabled(app: AppHandle, command: RuleToggle) -> Result<RulesSnapshot, String> {
     with_session_raw(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -717,7 +743,7 @@ fn set_rule_disabled(app: AppHandle, command: RuleToggle) -> Result<RulesSnapsho
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn kernel_providers(app: AppHandle) -> ProvidersSnapshot {
     with_session_raw(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -749,7 +775,7 @@ async fn upgrade_geo(app: AppHandle) -> Result<(), String> {
         .map_err(|err| err.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn flush_cache(app: AppHandle, which: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -757,14 +783,14 @@ fn flush_cache(app: AppHandle, which: String) -> ProfileSnapshot {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn clear_logs(app: AppHandle) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.clear_logs())
 }
 
 /// Writes the visible log text to Downloads (desktop) or the app's external
 /// documents directory (Android). A write failure leaves the log buffer alone.
-#[tauri::command]
+#[tauri::command(async)]
 fn export_logs(app: AppHandle, content: String) -> Result<String, String> {
     let directory = export_directory(&app)?;
     diagnostics::export_logs(&directory, &content, diagnostics::now_ms())
@@ -786,12 +812,12 @@ fn export_directory(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .map_err(|_| "日志没有导出".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn clear_notice(app: AppHandle) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.clear_notice())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn refresh_kernel(app: AppHandle) -> KernelStatus {
     let store = app.state::<KernelStore>();
     let mut manager = lock_kernel(&store.manager);
@@ -924,7 +950,7 @@ fn tray_action(app: &AppHandle, id: &str) {
             if connected {
                 disconnect_session(app.clone())
             } else {
-                connect_session(app.clone())
+                connect_session(app.clone()).unwrap_or_else(|message| with_profile(app, |s| s.book.report_failure(message)))
             }
         }
         "proxy" => {
@@ -933,7 +959,7 @@ fn tray_action(app: &AppHandle, id: &str) {
         }
         "tun" => {
             let on = with_profile(app, |session| session.book.snapshot().tun);
-            set_tun_enabled(app.clone(), !on)
+            set_tun_enabled(app.clone(), !on).unwrap_or_else(|message| with_profile(app, |s| s.book.report_failure(message)))
         }
         "rule" | "global" | "direct" => set_outbound_mode(app.clone(), id.to_string()),
         _ => return,
@@ -1012,7 +1038,11 @@ fn prepare_tray(app: &tauri::App) {
         .tooltip("Billow")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| tray_action(app, event.id().as_ref()))
+        .on_menu_event(|app, event| {
+            let handle = app.clone();
+            let id = event.id().as_ref().to_string();
+            std::thread::spawn(move || tray_action(&handle, &id));
+        })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
@@ -1031,7 +1061,7 @@ fn prepare_tray(app: &tauri::App) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sync_tray(app: AppHandle) {
     let snapshot = with_profile(&app, |session| session.book.snapshot());
     refresh_tray(&app, &snapshot);
@@ -1074,6 +1104,8 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    let enable_tun = elevation::startup_tun_requested();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init());
@@ -1144,11 +1176,24 @@ pub fn run() {
             provider_action,
             upgrade_geo
         ])
-        .setup(|app| {
+        .setup(move |app| {
             prepare_shell(app);
             prepare_kernel(app);
             prepare_profiles(app);
             spawn_auto_update(app.handle());
+            #[cfg(target_os = "windows")]
+            if enable_tun {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let next = with_session(&handle, |session| {
+                        let ProfileSession { book, runtime, proxy, tun, vpn } = session;
+                        let next = book.set_tun(true, runtime, proxy, tun, vpn);
+                        if next.tun { book.connect(runtime, proxy, tun, vpn) } else { next }
+                    });
+                    let _ = handle.emit("profile-changed", &next);
+                    refresh_tray(&handle, &next);
+                });
+            }
             #[cfg(desktop)]
             {
                 prepare_tray(app);

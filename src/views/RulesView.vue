@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
@@ -18,7 +18,7 @@ type SortKey = 'order' | 'hits'
 const ROW_HEIGHT = computed(() => (props.compact ? 88 : 52))
 const PAGE = 300
 
-const rules = ref<RuleRow[]>([])
+const rules = shallowRef<RuleRow[]>([])
 const error = ref<string | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
@@ -28,11 +28,14 @@ const proxy = ref('all')
 const sort = ref<SortKey>('order')
 const limit = ref(PAGE)
 const toggling = reactive<Record<string, boolean>>({})
+let loadId = 0
 
 async function load(quiet = false) {
+  const request = ++loadId
   if (!quiet) loading.value = true
   try {
     const result = await store.backend.rules()
+    if (request !== loadId) return
     if (result.error) {
       error.value = result.error
       rules.value = []
@@ -41,11 +44,14 @@ async function load(quiet = false) {
       error.value = null
     }
   } catch (err) {
+    if (request !== loadId) return
     error.value = err instanceof Error ? err.message : String(err)
     rules.value = []
   } finally {
-    loading.value = false
-    loaded.value = true
+    if (request === loadId) {
+      loading.value = false
+      loaded.value = true
+    }
   }
 }
 
@@ -141,8 +147,10 @@ async function toggle(rule: RuleRow) {
   if (!key || toggling[key]) return
   toggling[key] = true
   const disabling = !rule.disabled
+  const context = loadId
   try {
     const result = await store.backend.setRuleDisabled(key, disabling)
+    if (context !== loadId) return
     if (result.error) {
       store.toast(result.error, 'error')
       return
@@ -161,8 +169,12 @@ async function toggle(rule: RuleRow) {
 
 // A stopped kernel drops every row instead of keeping the previous session (R31).
 watch(
-  () => snap.value.kernel_running,
-  (running) => {
+  [() => snap.value.kernel_running, () => snap.value.active_id, () => store.current.value?.updated_ms],
+  ([running]) => {
+    ++loadId
+    rules.value = []
+    limit.value = PAGE
+    resetFilters()
     if (running) {
       void load()
       return
@@ -176,6 +188,7 @@ watch(
 )
 
 onMounted(() => void load())
+onBeforeUnmount(() => { ++loadId })
 </script>
 
 <template>

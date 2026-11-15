@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -73,9 +73,37 @@ struct Profile {
     interval_hours: u32,
     updated_ms: Option<u64>,
     proxy_count: usize,
+    node_metadata: OnceLock<Option<NodeMetadata>>,
 }
 
-/// Values the app writes over every profile before the kernel starts. `None` follows the profile.
+/// Cache only display metadata, not the full YAML tree or subscription credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NodeMetadata {
+    groups: Vec<ParsedGroup>,
+    types: BTreeMap<String, String>,
+    config: ConfigValues,
+}
+
+impl Profile {
+    fn node_metadata(&self) -> Option<&NodeMetadata> {
+        self.node_metadata.get_or_init(|| {
+            let value = document_value(self)?;
+            let flag = |name: &str| mapping_get(&value, name).and_then(Value::as_bool);
+            Some(NodeMetadata {
+                groups: nodes::parse_proxy_groups(&value),
+                types: nodes::proxy_types(&value),
+                config: ConfigValues {
+                    mixed_port: read_i64(&value, "mixed-port").or_else(|| read_i64(&value, "port")),
+                    allow_lan: flag("allow-lan"), ipv6: flag("ipv6"),
+                    log_level: read_string(&value, "log-level"),
+                    unified_delay: flag("unified-delay"), tcp_concurrent: flag("tcp-concurrent"),
+                    find_process_mode: read_string(&value, "find-process-mode"),
+                },
+            })
+        }).as_ref()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct KernelSettings {
     #[serde(default)]
@@ -357,6 +385,8 @@ pub struct ProfileSnapshot {
     pub tun_wanted: bool,
     pub excluded: Vec<String>,
     pub installed: Vec<crate::takeover::InstalledApp>,
+    // Legacy sorted view is kept for internal callers; the UI sorts node_catalog itself.
+    #[serde(skip_serializing)]
     pub node_groups: Vec<NodeGroupView>,
     pub node_catalog: Vec<NodeGroupView>,
     pub node_query: String,
@@ -432,6 +462,10 @@ pub trait KernelLaunch {
 
     fn auto_now(&mut self) -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
+        nodes::RuntimeCatalog { now: self.auto_now(), ..Default::default() }
     }
 
     fn connections(&mut self) -> Vec<ConnectionView> {
@@ -537,7 +571,8 @@ pub struct ProcessRuntime {
     child: Option<Child>,
     config_path: Option<PathBuf>,
     controller: Option<ControllerEndpoint>,
-    cached_now: BTreeMap<String, String>,
+    cached_catalog: nodes::RuntimeCatalog,
+    launched_kernel: Option<PathBuf>,
     log_buffer: Option<CapturedLogs>,
     traffic_watch: Option<TrafficWatch>,
     totals: Option<TrafficTotals>,
@@ -549,7 +584,6 @@ pub struct ProcessRuntime {
 struct TrafficWatch {
     latest: Arc<Mutex<Option<(u64, u64)>>>,
     stop: Arc<AtomicBool>,
-    waited: bool,
 }
 
 impl TrafficWatch {
@@ -562,7 +596,6 @@ impl TrafficWatch {
         Self {
             latest,
             stop,
-            waited: false,
         }
     }
 
@@ -586,7 +619,8 @@ impl ProcessRuntime {
             child: None,
             config_path: None,
             controller: None,
-            cached_now: BTreeMap::new(),
+            cached_catalog: nodes::RuntimeCatalog::default(),
+            launched_kernel: None,
             log_buffer: None,
             traffic_watch: None,
             totals: None,
@@ -599,6 +633,9 @@ impl ProcessRuntime {
     pub fn set_kernel_path(&mut self, path: Option<PathBuf>) {
         self.kernel_path = path;
     }
+
+    #[cfg(target_os = "windows")]
+    pub fn shutdown(&mut self) { self.stop(); }
 
     fn stop(&mut self) {
         self.halt_traffic();
@@ -620,7 +657,8 @@ impl ProcessRuntime {
             let _ = fs::remove_file(path);
         }
         self.controller = None;
-        self.cached_now.clear();
+        self.launched_kernel = None;
+        self.cached_catalog = nodes::RuntimeCatalog::default();
         self.log_buffer = None;
         self.totals = None;
         self.connection_total = None;
@@ -675,6 +713,11 @@ impl KernelLaunch for ProcessRuntime {
         if !path.is_file() {
             return Err(MISSING_KERNEL.to_string());
         }
+        if self.running() && self.launched_kernel.as_ref() == Some(&path)
+            && self.config_path.as_ref().and_then(|p| fs::read_to_string(p).ok()).as_deref() == Some(config_yaml)
+        {
+            return Ok(());
+        }
         fs::create_dir_all(&self.work_dir).map_err(|_| "配置没有写入".to_string())?;
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -701,6 +744,12 @@ impl KernelLaunch for ProcessRuntime {
             // Own process group so stopping the kernel does not signal this app.
             command.process_group(0);
         }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        self.stop();
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(_) => {
@@ -708,30 +757,44 @@ impl KernelLaunch for ProcessRuntime {
                 return Err(KERNEL_ERROR.to_string());
             }
         };
-        let deadline = std::time::Instant::now() + Duration::from_millis(300);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    let _ = fs::remove_file(&config_path);
-                    return Err(KERNEL_ERROR.to_string());
-                }
-                Ok(None) if std::time::Instant::now() >= deadline => break,
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(_) => {
-                    let _ = fs::remove_file(&config_path);
-                    return Err(KERNEL_ERROR.to_string());
-                }
-            }
-        }
         let stdout = child.stdout.take();
-        self.stop();
         self.started = Some(Instant::now());
         self.child = Some(child);
+        self.launched_kernel = Some(path);
         self.config_path = Some(config_path);
         self.controller = controller;
-        self.cached_now.clear();
+        self.cached_catalog = nodes::RuntimeCatalog::default();
         if let Some(stdout) = stdout {
             self.log_buffer = Some(spawn_log_buffer(stdout));
+        }
+        let config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
+        let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
+        let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
+        let wait = if self.controller.is_some() { Duration::from_secs(5) } else { Duration::from_millis(300) };
+        let deadline = Instant::now() + wait;
+        loop {
+            let failure = self.log_buffer.as_ref().and_then(|logs| {
+                let lines = logs.lines.lock().unwrap_or_else(|p| p.into_inner());
+                lines.iter().find(|line| line.level == "error" &&
+                    (line.message.contains("Start Mixed") || line.message.contains("Start TUN")))
+                    .map(|line| line.message.clone())
+            });
+            if let Some(message) = failure {
+                self.stop();
+                return Err(message);
+            }
+            if !self.running() {
+                self.stop();
+                return Err(KERNEL_ERROR.to_string());
+            }
+            if let Some(endpoint) = self.controller.as_ref() {
+                if nodes::listeners_ready(endpoint, mixed, tun) { break; }
+                if Instant::now() >= deadline {
+                    self.stop();
+                    return Err("内核监听未就绪，请检查端口占用、TUN 权限和日志".to_string());
+                }
+            } else if Instant::now() >= deadline { break; }
+            std::thread::sleep(Duration::from_millis(20));
         }
         if let Some(endpoint) = self.controller.clone() {
             self.traffic_watch = Some(TrafficWatch::spawn(endpoint));
@@ -747,7 +810,7 @@ impl KernelLaunch for ProcessRuntime {
         if !alive {
             self.child = None;
             self.controller = None;
-            self.cached_now.clear();
+            self.cached_catalog = nodes::RuntimeCatalog::default();
             self.halt_traffic();
         }
         alive
@@ -760,18 +823,7 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
-        let mut last = SELECT_FAILED.to_string();
-        for _ in 0..5 {
-            match nodes::put_selection(&endpoint, group, node) {
-                Ok(()) => return Ok(()),
-                Err(message) => last = message,
-            }
-            if !self.running() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Err(last)
+        nodes::put_selection(&endpoint, group, node)
     }
 
     fn probe_delays(&mut self, _group: &str, names: &[String]) -> Result<Vec<NodeDelay>, String> {
@@ -809,20 +861,16 @@ impl KernelLaunch for ProcessRuntime {
         nodes::put_config(&endpoint, config_yaml)
     }
 
-    fn auto_now(&mut self) -> BTreeMap<String, String> {
+    fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
         if !self.running() {
-            return BTreeMap::new();
+            return nodes::RuntimeCatalog::default();
         }
-        let Some(endpoint) = self.controller.clone() else {
-            return BTreeMap::new();
-        };
-        match nodes::fetch_now(&endpoint) {
-            Ok(now) => {
-                self.cached_now = now.clone();
-                now
+        if let Some(endpoint) = self.controller.clone() {
+            if let Ok(catalog) = nodes::fetch_catalog(&endpoint) {
+                self.cached_catalog = catalog;
             }
-            Err(_) => self.cached_now.clone(),
         }
+        self.cached_catalog.clone()
     }
 
     fn connections(&mut self) -> Vec<ConnectionView> {
@@ -904,18 +952,7 @@ impl KernelLaunch for ProcessRuntime {
         if let Some(sample) = watch.latest() {
             return Some(sample);
         }
-        // The controller emits the first sample after its one-second tick.
-        if watch.waited {
-            return None;
-        }
-        watch.waited = true;
-        let deadline = Instant::now() + Duration::from_millis(1200);
-        while Instant::now() < deadline {
-            if let Some(sample) = watch.latest() {
-                return Some(sample);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // Sampling runs in the background; never stall an IPC response waiting for a tick.
         watch.latest()
     }
 }
@@ -991,6 +1028,7 @@ pub struct ProfileBook {
     tun_wanted: bool,
     excluded: Vec<String>,
     installed: Vec<crate::takeover::InstalledApp>,
+    installed_checked_at: Option<Instant>,
     connected: bool,
     our_endpoint: Option<ProxyEndpoint>,
     pending_release: Option<PlatformRelease>,
@@ -998,6 +1036,7 @@ pub struct ProfileBook {
     node_sort: BTreeMap<String, String>,
     delays: BTreeMap<String, BTreeMap<String, BTreeMap<String, DelayMark>>>,
     auto_now: BTreeMap<String, String>,
+    runtime_catalog: nodes::RuntimeCatalog,
     nodes_error: Option<String>,
     kernel_running: bool,
     kernel_memory: Option<u64>,
@@ -1045,6 +1084,7 @@ impl ProfileBook {
             tun_wanted: false,
             excluded: Vec::new(),
             installed: Vec::new(),
+            installed_checked_at: None,
             connected: false,
             our_endpoint: None,
             pending_release: None,
@@ -1052,6 +1092,7 @@ impl ProfileBook {
             node_sort: BTreeMap::new(),
             delays: BTreeMap::new(),
             auto_now: BTreeMap::new(),
+            runtime_catalog: nodes::RuntimeCatalog::default(),
             nodes_error: None,
             kernel_running: false,
             kernel_memory: None,
@@ -1160,8 +1201,15 @@ impl ProfileBook {
     pub fn refresh_installed(&mut self, source: &mut dyn takeover::InstalledApps) {
         if self.platform != ClientPlatform::Android {
             self.installed.clear();
+            self.installed_checked_at = None;
             return;
         }
+        // PackageManager crosses JNI and enumerates every installed app. It must
+        // not run on each one-second traffic poll, including after a failed read.
+        if self.installed_checked_at.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+            return;
+        }
+        self.installed_checked_at = Some(Instant::now());
         if let Ok(apps) = source.list() {
             self.installed = takeover::normalize_installed(apps);
         }
@@ -1323,7 +1371,9 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
-        let _ = self.reload(kernel, false, None);
+        if self.takeover.tun || self.takeover.vpn {
+            let _ = self.reload(kernel, false, None);
+        }
         let mut model = self.link_model();
         takeover::disconnect(&mut model, proxy, tun, vpn);
         self.apply_model(model);
@@ -1402,7 +1452,6 @@ impl ProfileBook {
         if self.platform != ClientPlatform::Desktop {
             return self.snapshot();
         }
-        let previous = self.takeover.system_proxy;
         if !enabled {
             let _ = self.reload(kernel, false, None);
             let mut model = self.link_model();
@@ -1410,15 +1459,9 @@ impl ProfileBook {
             self.apply_model(model);
             return self.publish(kernel);
         }
-        if !matches!(tun.authorize(), Ok(true)) {
-            let _ = self.reload(kernel, false, None);
-            let _ = tun.set_enabled(false);
-            let mut model = self.link_model();
-            model.tun = false;
-            model.system_proxy = previous;
-            model.connected = false;
-            model.failure = Some(takeover::TUN_DENIED.to_string());
-            self.apply_model(model);
+        let grant = tun.authorize();
+        if !matches!(grant, Ok(true)) {
+            self.home_failure = Some(grant.err().unwrap_or_else(|| takeover::TUN_DENIED.to_string()));
             self.remember_current_failure();
             return self.publish(kernel);
         }
@@ -1660,6 +1703,8 @@ impl ProfileBook {
             }
         };
         let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&settled, &selected));
+        self.runtime_catalog = nodes::RuntimeCatalog::default();
+        self.auto_now.clear();
         if let Err(message) = kernel.start_or_reload(&yaml) {
             let message = if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -1675,11 +1720,13 @@ impl ProfileBook {
         {
             let profile = &mut self.profiles[index];
             if let Some(fetched) = fetched {
+                profile.node_metadata.take();
                 profile.content = fetched.content;
                 profile.usage = parse_userinfo(fetched.userinfo.as_deref());
                 profile.updated_ms = Some(now);
                 profile.proxy_count = count_proxies(&profile.content);
             }
+            profile.node_metadata.take();
             profile.applied_override = profile.override_text.clone();
             profile.override_error = None;
             profile.failure = None;
@@ -1691,6 +1738,8 @@ impl ProfileBook {
         self.chosen_mode = prepared.mode;
         self.home_failure = None;
         self.input_error = None;
+        self.runtime_catalog = kernel.node_catalog();
+        self.auto_now = self.runtime_catalog.now.clone();
         self.apply_live_selections(kernel);
         self.persist();
         self.publish(kernel)
@@ -1720,11 +1769,17 @@ impl ProfileBook {
         self.snapshot()
     }
 
+    pub fn report_failure(&mut self, message: String) -> ProfileSnapshot {
+        self.home_failure = Some(message);
+        self.remember_current_failure();
+        self.snapshot()
+    }
+
     fn remember_current_failure(&mut self) {
         let Some(message) = self.home_failure.clone() else {
             return;
         };
-        self.connections.clear();
+        if !self.connected { self.connections.clear(); }
         self.append_logs(vec![diagnostics::failure_log(&message)]);
     }
 
@@ -1766,6 +1821,8 @@ impl ProfileBook {
             diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
                 .map_err(StartError::Failed)?
         };
+        self.runtime_catalog = nodes::RuntimeCatalog::default();
+        self.auto_now.clear();
         kernel.start_or_reload(&yaml).map_err(|message| {
             StartError::Failed(if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -1774,6 +1831,8 @@ impl ProfileBook {
             })
         })?;
         self.runtime_base = Some(base);
+        self.runtime_catalog = kernel.node_catalog();
+        self.auto_now = self.runtime_catalog.now.clone();
         self.apply_live_selections(kernel);
         Ok(port)
     }
@@ -1862,6 +1921,7 @@ impl ProfileBook {
             interval_hours: 0,
             updated_ms: None,
             proxy_count: 0,
+            node_metadata: OnceLock::new(),
         });
         if let Some(profile) = self.profiles.last_mut() {
             profile.proxy_count = count_proxies(&profile.content);
@@ -1899,6 +1959,7 @@ impl ProfileBook {
                     last_success_ms: profile.last_success_ms,
                     usage,
                     proxy_count: 0,
+                    node_metadata: OnceLock::new(),
                     selected: profile.selected,
                     interval_hours: profile.interval_hours,
                     updated_ms: profile.updated_ms,
@@ -2020,7 +2081,8 @@ impl ProfileBook {
         self.kernel_running = running;
         self.append_logs(kernel.pull_logs());
         if running {
-            self.auto_now = kernel.auto_now();
+            self.runtime_catalog = kernel.node_catalog();
+            self.auto_now = self.runtime_catalog.now.clone();
             self.kernel_memory = kernel.kernel_memory();
             self.kernel_uptime_secs = kernel.kernel_uptime_secs();
             if self.connected {
@@ -2039,6 +2101,7 @@ impl ProfileBook {
             }
         } else {
             self.auto_now.clear();
+            self.runtime_catalog = nodes::RuntimeCatalog::default();
             self.connections.clear();
             self.kernel_memory = None;
             self.kernel_uptime_secs = None;
@@ -2146,7 +2209,7 @@ impl ProfileBook {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
-        let parsed = nodes::parse_proxy_groups(&document);
+        let parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
         let Some(found) = parsed.iter().find(|item| item.name == group_name) else {
             self.nodes_error = Some("没有这个代理组".to_string());
             return self.snapshot();
@@ -2172,6 +2235,9 @@ impl ProfileBook {
         self.profiles[index]
             .selected
             .insert(group_name.to_string(), node_name.to_string());
+        if self.kernel_running {
+            self.auto_now.insert(group_name.to_string(), node_name.to_string());
+        }
         self.nodes_error = None;
         self.persist();
         self.snapshot()
@@ -2191,7 +2257,7 @@ impl ProfileBook {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
-        let parsed = nodes::parse_proxy_groups(&document);
+        let parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
         let Some(found) = parsed.iter().find(|item| item.name == group.trim()) else {
             self.nodes_error = Some("没有这个代理组".to_string());
             return self.snapshot();
@@ -2282,7 +2348,7 @@ impl ProfileBook {
                 Some(profile_id),
             );
         }
-        let Some(document) = document_value(profile) else {
+        let Some(metadata) = profile.node_metadata() else {
             return (
                 Vec::new(),
                 Vec::new(),
@@ -2290,7 +2356,7 @@ impl ProfileBook {
                 Some(profile_id),
             );
         };
-        let parsed = nodes::parse_proxy_groups(&document);
+        let parsed = nodes::merge_runtime_groups(metadata.groups.clone(), &self.runtime_catalog);
         if parsed.is_empty() {
             return (
                 Vec::new(),
@@ -2299,7 +2365,8 @@ impl ProfileBook {
                 Some(profile_id),
             );
         }
-        let types = nodes::proxy_types(&document);
+        let mut types = metadata.types.clone();
+        types.extend(self.runtime_catalog.types.clone());
         let catalog: Vec<NodeGroupView> = parsed
             .iter()
             .map(|group| self.present_group(profile, group, &types))
@@ -2347,9 +2414,8 @@ impl ProfileBook {
                 icon: group.icon.clone(),
             };
         }
-        let chosen = profile
-            .selected
-            .get(&group.name)
+        let chosen = self.auto_now.get(&group.name)
+            .or_else(|| profile.selected.get(&group.name))
             .filter(|name| group.proxies.iter().any(|item| item == *name))
             .cloned();
         let now = chosen
@@ -2423,7 +2489,7 @@ impl ProfileBook {
         let Some(document) = document_value(profile) else {
             return;
         };
-        for group in nodes::parse_proxy_groups(&document) {
+        for group in nodes::resolved_groups(&document, &self.runtime_catalog) {
             if !group.manual {
                 continue;
             }
@@ -2629,19 +2695,7 @@ impl ProfileBook {
         else {
             return ConfigValues::default();
         };
-        let Some(value) = document_value(profile) else {
-            return ConfigValues::default();
-        };
-        let flag = |name: &str| mapping_get(&value, name).and_then(Value::as_bool);
-        ConfigValues {
-            mixed_port: read_i64(&value, "mixed-port").or_else(|| read_i64(&value, "port")),
-            allow_lan: flag("allow-lan"),
-            ipv6: flag("ipv6"),
-            log_level: read_string(&value, "log-level"),
-            unified_delay: flag("unified-delay"),
-            tcp_concurrent: flag("tcp-concurrent"),
-            find_process_mode: read_string(&value, "find-process-mode"),
-        }
+        profile.node_metadata().map(|metadata| metadata.config.clone()).unwrap_or_default()
     }
 
     fn index_of(&self, id: &str) -> Option<usize> {
@@ -2739,6 +2793,7 @@ impl ProfileBook {
             return self.snapshot();
         }
         let profile = &mut self.profiles[index];
+        profile.node_metadata.take();
         profile.content = content.to_string();
         profile.proxy_count = count_proxies(content);
         profile.updated_ms = Some(now_ms());
@@ -2795,6 +2850,7 @@ impl ProfileBook {
         let now = now_ms();
         {
             let profile = &mut self.profiles[index];
+            profile.node_metadata.take();
             profile.content = content;
             profile.usage = parse_userinfo(fetched.userinfo.as_deref());
             profile.proxy_count = count_proxies(&profile.content);
@@ -2898,7 +2954,7 @@ impl ProfileBook {
     fn tested_groups(&self, index: usize) -> Option<Vec<(String, Vec<String>)>> {
         let document = document_value(&self.profiles[index])?;
         Some(
-            nodes::parse_proxy_groups(&document)
+            nodes::resolved_groups(&document, &self.runtime_catalog)
                 .into_iter()
                 .map(|group| {
                     let mut members = group.proxies;
@@ -3536,6 +3592,92 @@ mod tests {
     }
 
     #[test]
+    fn cached_metadata_tracks_saved_content_and_only_applied_overrides() {
+        let dir = temp_dir("metadata");
+        let mut book = ProfileBook::open(&dir.0);
+        let yaml = |port, node: &str| format!(
+            "mixed-port: {port}\nproxies: [{{name: {node}, type: ss}}]\nproxy-groups: [{{name: manual, type: select, proxies: [{node}]}}]\n"
+        );
+        book.add_local("a.yaml", &yaml(7890, "first"));
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let before = book.snapshot();
+        assert_eq!(before.config_values.mixed_port, Some(7890));
+        assert_eq!(before.node_catalog[0].nodes[0].name, "first");
+        assert!(book.profiles[0].node_metadata.get().is_some());
+
+        let edited = book.save_profile_content("p1", &yaml(7999, "second"), &mut kernel);
+        assert_eq!(edited.config_values.mixed_port, Some(7999));
+        assert_eq!(edited.node_catalog[0].nodes[0].name, "second");
+        let draft = book.save_override("p1", "mixed-port: 8001\n");
+        assert_eq!(draft.config_values.mixed_port, Some(7999), "draft is not applied yet");
+        let applied = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(applied.config_values.mixed_port, Some(8001));
+        book.save_override("p1", "[\n");
+        let rejected = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(rejected.config_values.mixed_port, Some(8001));
+
+        let payload = serde_json::to_value(book.snapshot()).unwrap();
+        assert!(payload.get("node_groups").is_none(), "IPC sends one catalog, not two copies");
+        assert_eq!(payload["node_catalog"][0]["nodes"][0]["name"], "second");
+    }
+
+    #[test]
+    fn android_package_list_is_cached_between_traffic_polls_and_retries_after_expiry() {
+        struct Apps { reads: usize, fail: bool }
+        impl takeover::InstalledApps for Apps {
+            fn list(&mut self) -> Result<Vec<takeover::InstalledApp>, String> {
+                self.reads += 1;
+                if self.fail { return Err("unavailable".to_string()); }
+                Ok(vec![takeover::InstalledApp { name: "Browser".to_string(), package_name: "app.browser".to_string() }])
+            }
+        }
+        let dir = temp_dir("package-cache");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        let mut apps = Apps { reads: 0, fail: false };
+        for _ in 0..60 { book.refresh_installed(&mut apps); }
+        assert_eq!(apps.reads, 1);
+        assert_eq!(book.snapshot().installed.len(), 1);
+        book.installed_checked_at = Some(Instant::now() - Duration::from_secs(61));
+        apps.fail = true;
+        for _ in 0..60 { book.refresh_installed(&mut apps); }
+        assert_eq!(apps.reads, 2);
+        assert_eq!(book.snapshot().installed.len(), 1, "a failed refresh preserves the last list");
+        book.installed_checked_at = Some(Instant::now() - Duration::from_secs(61));
+        apps.fail = false;
+        book.refresh_installed(&mut apps);
+        assert_eq!(apps.reads, 3);
+    }
+
+    #[test]
+    #[ignore = "manual snapshot benchmark; no timing assertion on shared runners"]
+    fn benchmark_cached_snapshot() {
+        let dir = temp_dir("snapshot-bench");
+        let mut book = ProfileBook::open(&dir.0);
+        let names: Vec<String> = (0..500).map(|i| format!("node-{i}")).collect();
+        let mut yaml = String::from("mixed-port: 7890\nproxies:\n");
+        for name in &names { yaml.push_str(&format!("  - {{name: {name}, type: ss}}\n")); }
+        yaml.push_str("proxy-groups:\n");
+        for i in 0..16 {
+            yaml.push_str(&format!("  - {{name: group-{i}, type: select, proxies: [{}]}}\n", names.join(", ")));
+        }
+        book.add_local("benchmark.yaml", &yaml);
+        let start = Instant::now();
+        let mut bytes = 0;
+        for _ in 0..100 {
+            bytes = serde_json::to_vec(&book.snapshot()).unwrap().len();
+        }
+        eprintln!("8000-node snapshot+JSON: {:.2} ms/op, {bytes} bytes", start.elapsed().as_secs_f64() * 10.0);
+        let start = Instant::now();
+        for _ in 0..100 {
+            book.profiles[0].node_metadata.take();
+            std::hint::black_box(serde_json::to_vec(&book.snapshot()).unwrap());
+        }
+        eprintln!("8000-node snapshot+JSON with YAML reparse: {:.2} ms/op", start.elapsed().as_secs_f64() * 10.0);
+    }
+
+    #[test]
     fn delete_rename_and_edit_manage_saved_profiles() {
         let dir = temp_dir("manage");
         let mut book = ProfileBook::open(&dir.0);
@@ -4159,6 +4301,7 @@ mod tests {
         scripts: HashMap<String, Vec<NodeDelay>>,
         auto: BTreeMap<String, String>,
         reject_select: bool,
+        catalog: nodes::RuntimeCatalog,
     }
 
     impl KernelLaunch for NodeKernel {
@@ -4200,6 +4343,12 @@ mod tests {
                 .collect())
         }
 
+        fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
+            let mut catalog = self.catalog.clone();
+            catalog.now.extend(self.auto_now());
+            catalog
+        }
+
         fn auto_now(&mut self) -> BTreeMap<String, String> {
             if self.report_running {
                 self.auto.clone()
@@ -4219,7 +4368,52 @@ mod tests {
             scripts: HashMap::new(),
             auto: BTreeMap::new(),
             reject_select: false,
+            catalog: nodes::RuntimeCatalog::default(),
         }
+    }
+
+    #[test]
+    fn provider_members_can_be_selected_tested_and_are_cleared_on_stop() {
+        let dir = temp_dir("provider-members");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("provider", "mixed-port: 7890\nproxy-groups:\n  - {name: Available, type: select, use: [remote]}\n");
+        let mut kernel = node_kernel();
+        kernel.catalog = nodes::runtime_catalog(&serde_json::json!({"proxies": {
+            "Available": {"all":["HK", "JP"], "now":"JP", "type":"Selector"},
+            "HK":{"type":"Shadowsocks"}, "JP":{"type":"VLESS"}
+        }})).unwrap();
+        let ready = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(ready.node_catalog[0].nodes.len(), 2);
+        assert_eq!(ready.node_catalog[0].now, "JP");
+        assert!(ready.node_catalog[0].nodes[1].selected);
+        assert_eq!(ready.node_catalog[0].nodes[1].node_type, "VLESS");
+        let selected = book.select_node("Available", "HK", &mut kernel);
+        assert!(selected.nodes_error.is_none());
+        assert_eq!(selected.node_catalog[0].now, "HK");
+        assert_eq!(kernel.applied.last(), Some(&("Available".to_string(), "HK".to_string())));
+        kernel.scripts.insert("Available".to_string(), vec![NodeDelay { name:"HK".to_string(), delay_ms:Some(20) }]);
+        let tested = book.test_group("Available", &mut kernel);
+        assert_eq!(tested.node_catalog[0].nodes[0].delay_ms, Some(20));
+        kernel.report_running = false;
+        book.sync_runtime(&mut kernel);
+        assert!(book.snapshot().node_catalog[0].nodes.is_empty());
+    }
+
+    #[test]
+    fn disconnect_without_tun_does_not_restart_the_kernel() {
+        let dir = temp_dir("warm-disconnect");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("local", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = node_kernel();
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        let starts = kernel.calls;
+        let next = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!next.connected && !next.system_proxy);
+        assert_eq!(kernel.calls, starts);
     }
 
     fn grouped_config() -> String {
@@ -5366,9 +5560,14 @@ proxy-groups:
                 let _ = stream.flush();
             }
             listener.set_nonblocking(true).unwrap();
-            let mut first_stream = accept_for(&listener);
-            first_stream.set_nonblocking(false).unwrap();
-            let first_seen = read_headers(&mut first_stream);
+            let (mut first_stream, first_seen) = loop {
+                let mut stream = accept_for(&listener);
+                stream.set_nonblocking(false).unwrap();
+                let headers = read_headers(&mut stream);
+                if headers.contains("GET /configs") {
+                    write_json(&mut stream, r#"{"mixed-port":1,"tun":{"enable":false}}"#);
+                } else { break (stream, headers); }
+            };
             write_json(&mut first_stream, "{\"up\":4,\"down\":5}");
             drop(first_stream);
             let mut second_stream = accept_for(&listener);

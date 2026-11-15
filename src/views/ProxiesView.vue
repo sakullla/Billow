@@ -10,6 +10,9 @@ import type { Mode, NodeGroup, NodeItem } from '../lib/types'
 defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
+const catalog = computed(() => snap.value.node_catalog)
+const mode = computed(() => snap.value.mode)
+const busyKeys = computed(() => Object.keys(store.busy).join('\0'))
 
 type Sort = 'default' | 'delay' | 'name'
 const SORTS: { id: Sort; label: string }[] = [
@@ -110,6 +113,7 @@ function toggle(name: string) {
 }
 
 function sorted(nodes: NodeItem[]): NodeItem[] {
+  if (sort.value === 'default') return nodes
   const list = nodes.map((node, index) => ({ node, index }))
   if (sort.value === 'name') list.sort((a, b) => a.node.name.localeCompare(b.node.name, 'zh-CN') || a.index - b.index)
   if (sort.value === 'delay') {
@@ -120,9 +124,9 @@ function sorted(nodes: NodeItem[]): NodeItem[] {
 }
 
 const groups = computed(() => {
-  const source = snap.value.mode === 'global'
-    ? snap.value.node_catalog
-    : snap.value.node_catalog.filter((group) => group.name !== 'GLOBAL')
+  const source = mode.value === 'global'
+    ? catalog.value
+    : catalog.value.filter((group) => group.name !== 'GLOBAL')
   return source
     .filter((group) => !(hideAuto.value && group.kind === 'auto'))
     .map((group) => ({
@@ -139,7 +143,7 @@ const matchCount = computed(() =>
 /** Groups share nodes, so the page total counts distinct names instead of row copies. */
 const distinctNodeCount = computed(() => {
   const seen = new Set<string>()
-  snap.value.node_catalog.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
+  catalog.value.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
   return seen.size
 })
 
@@ -380,6 +384,7 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
     <section
       v-for="(group, index) in groups"
       :key="group.name"
+      v-memo="[group, isOpen(group.name), dense, needle, store.focusGroup.value, snap.kernel_running, store.testProgress.value, store.testResults.value, groupTestedAt(group), busyKeys]"
       class="card group"
       :class="{ open: isOpen(group.name), located: store.focusGroup.value === group.name }"
       :data-group-card="group.name"
@@ -425,6 +430,9 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
       </header>
 
       <div v-if="isOpen(group.name)" :id="`group-nodes-${index}`" class="nodes" :class="{ dense }">
+        <p v-if="!group.nodes.length" class="muted small">
+          {{ needle ? '没有匹配的节点' : snap.kernel_running ? '该组暂时没有可用节点，请检查资源页中的订阅源状态。' : '连接后加载订阅源节点。' }}
+        </p>
         <div
           v-for="node in group.nodes"
           :key="node.name"

@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::time::Duration;
 
 use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
 pub const NEED_PROFILE: &str = "需要先添加或更新配置";
@@ -41,6 +41,65 @@ pub struct ParsedGroup {
     pub group_type: String,
     /// Config-declared `icon`, kept only for remote http(s) or inline image data.
     pub icon: Option<String>,
+}
+
+/// The controller has already expanded providers and applied group filters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeCatalog {
+    pub members: BTreeMap<String, Vec<String>>,
+    pub now: BTreeMap<String, String>,
+    pub types: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct ControllerCatalog {
+    proxies: BTreeMap<String, ControllerProxy>,
+}
+
+/// Skip histories, health-check URLs and other fields while decoding: the UI
+/// needs only membership, selection and protocol, even for large providers.
+#[derive(Deserialize)]
+struct ControllerProxy {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    all: Option<Vec<String>>,
+    now: Option<String>,
+}
+
+fn catalog_from_reader(reader: impl Read) -> Result<RuntimeCatalog, String> {
+    let response: ControllerCatalog = serde_json::from_reader(reader)
+        .map_err(|_| "节点列表没有读取".to_string())?;
+    let mut catalog = RuntimeCatalog::default();
+    for (name, item) in response.proxies {
+        if let Some(kind) = item.kind {
+            catalog.types.insert(name.clone(), kind);
+        }
+        if let Some(all) = item.all {
+            catalog.members.insert(name.clone(), all);
+        }
+        if let Some(now) = item.now.filter(|s| !s.is_empty()) {
+            catalog.now.insert(name, now);
+        }
+    }
+    Ok(catalog)
+}
+
+#[cfg(test)]
+pub fn runtime_catalog(value: &serde_json::Value) -> Result<RuntimeCatalog, String> {
+    catalog_from_reader(serde_json::to_vec(value).unwrap().as_slice())
+}
+
+pub fn resolved_groups(value: &Value, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
+    merge_runtime_groups(parse_proxy_groups(value), runtime)
+}
+
+pub fn merge_runtime_groups(mut groups: Vec<ParsedGroup>, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
+    for group in &mut groups {
+        if let Some(members) = runtime.members.get(&group.name) {
+            group.proxies = members.clone();
+        }
+    }
+    groups
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -434,7 +493,7 @@ pub fn fetch_delays_with_progress(
         .collect())
 }
 
-pub fn fetch_now(endpoint: &ControllerEndpoint) -> Result<BTreeMap<String, String>, String> {
+pub fn fetch_catalog(endpoint: &ControllerEndpoint) -> Result<RuntimeCatalog, String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err(KERNEL_DOWN.to_string());
     }
@@ -447,21 +506,25 @@ pub fn fetch_now(endpoint: &ControllerEndpoint) -> Result<BTreeMap<String, Strin
         request.set("Authorization", &format!("Bearer {}", endpoint.secret))
     };
     let response = request.call().map_err(|_| KERNEL_DOWN.to_string())?;
-    let text = read_body(response).map_err(|_| KERNEL_DOWN.to_string())?;
-    let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|_| KERNEL_DOWN.to_string())?;
-    let mut out = BTreeMap::new();
-    let Some(proxies) = value.get("proxies").and_then(serde_json::Value::as_object) else {
-        return Ok(out);
-    };
-    for (name, item) in proxies {
-        if let Some(now) = item.get("now").and_then(serde_json::Value::as_str) {
-            if !now.is_empty() {
-                out.insert(name.clone(), now.to_string());
-            }
-        }
-    }
-    Ok(out)
+    catalog_from_reader(BufReader::new(response.into_reader().take(8_000_000)))
+}
+
+/// Read actual listener state; Mihomo can stay alive after failing to bind a port or TUN.
+pub fn listeners_ready(endpoint: &ControllerEndpoint, port: Option<u16>, tun: bool) -> bool {
+    if !loopback(&endpoint.host) || endpoint.port == 0 { return false; }
+    let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
+    let client = agent(Duration::from_millis(150));
+    let request = client.get(&url).set("Authorization", &format!("Bearer {}", endpoint.secret));
+    let Ok(response) = request.call() else { return false; };
+    let Ok(body) = read_body(response) else { return false; };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else { return false; };
+    let port_ready = port.is_none_or(|port| value.get("mixed-port").and_then(|p| p.as_u64()) == Some(u64::from(port)));
+    port_ready && (!tun || value.get("tun").and_then(|t| t.get("enable")).and_then(|v| v.as_bool()) == Some(true))
+}
+
+#[cfg(test)]
+pub fn fetch_now(endpoint: &ControllerEndpoint) -> Result<BTreeMap<String, String>, String> {
+    fetch_catalog(endpoint).map(|catalog| catalog.now)
 }
 
 enum ProbeFail {
@@ -618,6 +681,52 @@ fn mapping_get_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listener_readiness_requires_the_requested_port_and_tun_state() {
+        let responses = [
+            r#"{"mixed-port":0,"tun":{"enable":false}}"#,
+            r#"{"mixed-port":7890,"tun":{"enable":false}}"#,
+            r#"{"mixed-port":7890,"tun":{"enable":true}}"#,
+            r#"{"mixed-port":7890,"tun":{"enable":false}}"#,
+        ].into_iter().map(|body| http_response("200 OK", body)).collect();
+        let (port, server) = serve(responses);
+        let endpoint = ControllerEndpoint { host: "127.0.0.1".to_string(), port, secret: "test".to_string() };
+        assert!(!listeners_ready(&endpoint, Some(7890), false));
+        assert!(!listeners_ready(&endpoint, Some(7890), true));
+        assert!(listeners_ready(&endpoint, Some(7890), true));
+        assert!(listeners_ready(&endpoint, Some(7890), false));
+        let requests = server.join().unwrap();
+        assert!(requests.iter().all(|request| request.starts_with("GET /configs ")));
+    }
+
+    #[test]
+    fn catalog_skips_unneeded_history_and_rejects_incomplete_payloads() {
+        let history = "{\"time\":\"2026-01-01T00:00:00Z\",\"delay\":42},".repeat(20_000);
+        let body = format!(r#"{{"proxies":{{"a":{{"type":"VLESS","history":[{}{{"delay":0}}]}},"group":{{"all":["a"],"now":"a","type":"Selector"}}}}}}"#, history);
+        let parsed = catalog_from_reader(body.as_bytes()).unwrap();
+        assert_eq!(parsed.members["group"], ["a"]);
+        assert_eq!(parsed.types["a"], "VLESS");
+        assert_eq!(parsed.now["group"], "a");
+        assert!(catalog_from_reader(&body.as_bytes()[..body.len() - 1]).is_err());
+        assert!(catalog_from_reader(br#"{"message":"unauthorized"}"#.as_slice()).is_err());
+    }
+
+    #[test]
+    fn runtime_members_replace_static_lists_and_keep_provider_filters_and_selection() {
+        let document: Value = serde_yaml::from_str("proxy-groups:\n  - {name: Available, type: select, use: [remote]}\n  - {name: HK, type: url-test, use: [remote], filter: HK}\n").unwrap();
+        let runtime = runtime_catalog(&serde_json::json!({"proxies": {
+            "Available": {"type":"Selector", "all":["HK 1", "JP 1"], "now":"JP 1"},
+            "HK": {"type":"URLTest", "all":["HK 1"], "now":"HK 1"},
+            "HK 1": {"type":"Shadowsocks"}, "JP 1": {"type":"VLESS"}
+        }})).unwrap();
+        let groups = resolved_groups(&document, &runtime);
+        assert_eq!(groups[0].proxies, ["HK 1", "JP 1"]);
+        assert_eq!(groups[1].proxies, ["HK 1"]);
+        assert_eq!(runtime.now["Available"], "JP 1");
+        assert_eq!(runtime.types["JP 1"], "VLESS");
+        assert!(runtime_catalog(&serde_json::json!({"message":"unauthorized"})).is_err());
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;

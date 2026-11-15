@@ -8,6 +8,7 @@ import {
   type KernelSettings,
   type KernelStatus,
   type Mode,
+  type NodeGroup,
   type Snapshot,
   type ThemePreference,
 } from './types'
@@ -160,6 +161,38 @@ export function createStore(backend: Backend) {
   }
 
   function apply(next: Snapshot) {
+    // Polling changes traffic every second, but usually leaves the node catalog intact.
+    // Preserve its identity so proxy cards do not sort/render again on every tick.
+    const previous = snapshot.value.node_catalog
+    const sameGroup = (a: NodeGroup, b: NodeGroup) =>
+      a.name === b.name && a.kind === b.kind && a.now === b.now && a.sort === b.sort &&
+      a.group_type === b.group_type && a.icon === b.icon && a.nodes.length === b.nodes.length &&
+      a.nodes.every((node, index) => {
+        const other = b.nodes[index]!
+        return node.name === other.name && node.node_type === other.node_type &&
+          node.selected === other.selected && node.delay_ms === other.delay_ms && node.failed === other.failed
+      })
+    if (previous.length === next.node_catalog.length &&
+      previous.every((group, index) => sameGroup(group, next.node_catalog[index]!))) {
+      next = { ...next, node_catalog: previous }
+    } else {
+      const byName = new Map(previous.map((group) => [group.name, group]))
+      let reused = false
+      const catalog = next.node_catalog.map((group) => {
+        const old = byName.get(group.name)
+        if (!old || !sameGroup(old, group)) return group
+        reused = true
+        return old
+      })
+      if (reused) next = { ...next, node_catalog: catalog }
+    }
+    const logs = snapshot.value.logs
+    if (logs.length === next.logs.length && logs.every((line, index) => {
+      const other = next.logs[index]!
+      return line.time_ms === other.time_ms && line.level === other.level && line.message === other.message
+    })) {
+      next = { ...next, logs }
+    }
     snapshot.value = next
   }
 

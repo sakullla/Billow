@@ -48,6 +48,7 @@
     "allow-test-node",
     "allow-close-connection",
     "allow-kernel-rules",
+    "allow-set-rule-disabled",
     "allow-clear-logs",
     "allow-clear-notice",
     "allow-refresh-kernel",

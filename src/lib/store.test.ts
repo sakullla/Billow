@@ -38,6 +38,41 @@ afterEach(() => {
 })
 
 describe('store lifecycle', () => {
+  it('preserves unaffected groups and log rows when one group changes', async () => {
+    const { store, state } = setup()
+    const catalog: Snapshot['node_catalog'] = ['a', 'b'].map((name) => ({ name, kind: 'manual', now: '',
+      sort: 'default', group_type: 'select', icon: null, nodes: [] }))
+    const logs: Snapshot['logs'] = [{ level: 'info', message: 'ready', time_ms: 1 }]
+    state.mockResolvedValue({ ...emptySnapshot(), node_catalog: catalog, logs })
+    await store.start()
+    const changed = structuredClone(catalog)
+    changed[1]!.now = 'new'
+    state.mockResolvedValue({ ...emptySnapshot(), node_catalog: changed, logs: structuredClone(logs) })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.snapshot.value.node_catalog[0]).toBe(catalog[0])
+    expect(store.snapshot.value.node_catalog[1]!.now).toBe('new')
+    expect(store.snapshot.value.logs).toBe(logs)
+  })
+
+  it('keeps the proxy catalog stable on traffic-only polls, but applies changed members and selection', async () => {
+    const { store, state } = setup()
+    const catalog: Snapshot['node_catalog'] = [{ name: 'Available', kind: 'manual', now: 'a', sort: 'default',
+      group_type: 'select', icon: null, nodes: [{ name: 'a', node_type: 'ss', delay_ms: null, failed: false, selected: true }] }]
+    state.mockResolvedValue({ ...emptySnapshot(), node_catalog: catalog })
+    await store.start()
+    state.mockResolvedValue({ ...emptySnapshot(), upload: 10, node_catalog: structuredClone(catalog) })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.snapshot.value.node_catalog).toBe(catalog)
+    const changed = structuredClone(catalog)
+    changed[0]!.now = 'b'
+    changed[0]!.nodes[0]!.selected = false
+    changed[0]!.nodes.push({ name: 'b', node_type: 'vmess', delay_ms: 18, failed: false, selected: true })
+    state.mockResolvedValue({ ...emptySnapshot(), node_catalog: changed })
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.snapshot.value.node_catalog).toBe(changed)
+    expect(store.snapshot.value.node_catalog[0]!.now).toBe('b')
+  })
+
   it('suspends polling while hidden and refreshes immediately on return', async () => {
     const { store, state } = setup()
     await store.start()

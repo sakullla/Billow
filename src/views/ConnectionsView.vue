@@ -82,6 +82,8 @@ function pause() {
 function resume() {
   paused.value = false
   pausedAt.value = null
+  frozenRows.value = []
+  frozenIds.value = new Set()
 }
 
 function togglePause() {

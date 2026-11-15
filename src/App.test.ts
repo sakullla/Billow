@@ -1920,6 +1920,31 @@ describe('App', () => {
     expect(wrapper.text()).not.toContain('读取规则集失败')
   })
 
+  it('reloads rules when the active profile changes and ignores a late previous response', async () => {
+    const { wrapper, backend } = await mountApp()
+    const store = storeOf(wrapper)
+    store.stop()
+    store.snapshot.value = { ...store.snapshot.value, kernel_running: true, active_id: 'first' }
+    type Result = Awaited<ReturnType<typeof backend.rules>>
+    let finishOld!: (value: Result) => void
+    const pending = new Promise<Result>((resolve) => { finishOld = resolve })
+    const result = (payload: string): Result => ({ rules: [{ kind: 'Domain', payload, proxy: 'DIRECT', hit_count: null,
+      last_hit: null, key: payload, disabled: false }], error: null, disabled: [] })
+    const read = vi.spyOn(backend, 'rules').mockReturnValueOnce(pending).mockResolvedValue(result('new.example'))
+    await openPage(wrapper, 'rules')
+    store.snapshot.value = { ...store.snapshot.value, active_id: 'second' }
+    await flushPromises()
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('new.example')
+    finishOld(result('old.example'))
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('old.example')
+    store.snapshot.value = { ...store.snapshot.value, upload: 123 }
+    await flushPromises()
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('new.example')
+  })
+
   it('windows 500 connections and 300 rules to keep the DOM small', async () => {
     const demo = createDemoBackend()
     const read = demo.state
