@@ -38,20 +38,31 @@ function area(values: number[]): string {
   return path ? `${path} L${W},${H.value} L0,${H.value} Z` : ''
 }
 
+function last(values: number[]): number {
+  return values[values.length - 1] ?? 0
+}
+
 const downLine = computed(() => line(props.down))
 const upLine = computed(() => line(props.up))
 const downArea = computed(() => area(props.down))
 const upArea = computed(() => area(props.up))
+
+// The chart is the summary of the last minute, so the accessible name carries the numbers.
+const label = computed(
+  () =>
+    `最近一分钟流量，峰值 ${formatSpeed(peak.value)}，当前下载 ${formatSpeed(last(props.down))}，上传 ${formatSpeed(last(props.up))}`,
+)
 </script>
 
 <template>
   <div class="chart">
-    <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" :height="H" role="img" aria-label="最近一分钟流量">
+    <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" :height="H" role="img" :aria-label="label">
+      <title>{{ label }}</title>
       <line v-for="i in 3" :key="i" x1="0" :x2="W" :y1="(H / 4) * i" :y2="(H / 4) * i" class="chart-grid" />
       <path :d="downArea" class="chart-area down" />
       <path :d="upArea" class="chart-area up" />
-      <path :d="downLine" class="chart-line down" vector-effect="non-scaling-stroke" />
-      <path :d="upLine" class="chart-line up" vector-effect="non-scaling-stroke" />
+      <path :d="downLine" class="chart-line down" vector-effect="non-scaling-stroke" stroke-linecap="round" />
+      <path :d="upLine" class="chart-line up" vector-effect="non-scaling-stroke" stroke-linecap="round" />
     </svg>
     <span class="chart-peak">{{ formatSpeed(peak) }}</span>
   </div>

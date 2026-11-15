@@ -10,6 +10,7 @@ const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
     class="toggle"
     :class="{ on: modelValue, busy }"
     :aria-checked="modelValue"
+    :aria-busy="busy || undefined"
     :aria-label="label"
     :disabled="disabled || busy"
     @click="emit('update:modelValue', !modelValue)"

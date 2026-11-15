@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-const props = withDefaults(defineProps<{ name: string; size?: number; stroke?: number }>(), {
+// Sizes stay a plain number so callers can pick 12/14/16/18 (inline), 20/21 (navigation)
+// or 30/40 (empty states and the power action) without a second scale to maintain.
+const props = withDefaults(defineProps<{ name: string; size?: number; stroke?: number; label?: string }>(), {
   size: 18,
   stroke: 1.8,
 })
@@ -61,7 +63,18 @@ const PATHS: Record<string, string> = {
   'external': 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',
 }
 
-const d = computed(() => PATHS[props.name] ?? PATHS.info)
+// Kernel proxy-group types reuse the built-in group icons, so a group without a
+// usable image still shows a type-accurate glyph (R33 fallback).
+const ALIASES: Record<string, string> = {
+  selector: 'route',
+  relay: 'layers',
+  'url-test': 'network',
+  fallback: 'network',
+  'load-balance': 'network',
+  loadbalance: 'network',
+}
+
+const d = computed(() => PATHS[props.name] ?? PATHS[ALIASES[props.name] ?? ''] ?? PATHS.info)
 </script>
 
 <template>
@@ -75,7 +88,9 @@ const d = computed(() => PATHS[props.name] ?? PATHS.info)
     :stroke-width="stroke"
     stroke-linecap="round"
     stroke-linejoin="round"
-    aria-hidden="true"
+    :role="label ? 'img' : undefined"
+    :aria-label="label"
+    :aria-hidden="label ? undefined : 'true'"
   >
     <path :d="d" />
   </svg>
