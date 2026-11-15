@@ -263,7 +263,7 @@ function resetDns() {
       <section class="card">
         <header class="card-head"><h2>关于</h2></header>
         <div class="about">
-          <span class="brand-mark lg"><Icon name="logo" :size="26" :stroke="2" /></span>
+          <span class="brand-mark lg"><Icon name="logo" :size="36" :stroke="2.4" /></span>
           <div class="grow min0">
             <strong>Billow</strong>
             <p class="muted small">基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0</p>

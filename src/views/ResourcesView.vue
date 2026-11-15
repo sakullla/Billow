@@ -209,7 +209,18 @@ onMounted(() => void load())
 
     <EmptyState v-if="!snap.kernel_running" variant="unavailable" title="内核未运行" description="连接后可以查看并更新配置中的 proxy-providers 与 rule-providers。">
       <template #action>
-        <button type="button" class="btn ghost sm" @click="store.go('home')">前往首页连接</button>
+        <button
+          type="button"
+          class="btn primary sm"
+          :disabled="store.connecting.value"
+          :aria-busy="store.connecting.value || undefined"
+          data-testid="empty-connect"
+          @click="store.connect()"
+        >
+          <span v-if="store.connecting.value" class="spinner xs" aria-hidden="true" />
+          <Icon v-else :name="store.hasProfiles.value ? 'power' : 'plus'" :size="14" />
+          {{ store.hasProfiles.value ? (store.connecting.value ? '连接中' : '立即连接') : '添加配置' }}
+        </button>
       </template>
     </EmptyState>
     <EmptyState v-else-if="loaded && error && !providers.length" variant="error" title="读取失败" :description="error">

@@ -64,11 +64,14 @@ function closeProfileMenu(restoreFocus = false) {
 }
 
 function menuItems(profile: ProfileItem): MenuItem[] {
-  const items: MenuItem[] = [
+  const items: MenuItem[] = []
+  // Card clicks are pointer-only; the menu gives keyboard and screen-reader users the same switch.
+  if (!profile.current) items.push({ id: 'enable', label: '启用此配置', icon: 'check' })
+  items.push(
     { id: 'edit', label: '编辑信息', icon: 'edit' },
     { id: 'content', label: '编辑配置文件', icon: 'code' },
     { id: 'override', label: '覆写', icon: 'layers', mark: profile.override_text.trim().length > 0 },
-  ]
+  )
   if (profile.kind === 'subscription') items.push({ id: 'copy', label: '复制链接', icon: 'copy' })
   items.push({ id: 'remove', label: '删除', icon: 'trash', danger: true })
   return items
@@ -76,7 +79,8 @@ function menuItems(profile: ProfileItem): MenuItem[] {
 
 function selectMenuItem(profile: ProfileItem, item: MenuItem) {
   menuFor.value = null
-  if (item.id === 'edit') openEdit(profile)
+  if (item.id === 'enable') activate(profile)
+  else if (item.id === 'edit') openEdit(profile)
   else if (item.id === 'content') void openYaml(profile, 'content')
   else if (item.id === 'override') void openYaml(profile, 'override')
   else if (item.id === 'copy') void copyLink(profile)
@@ -318,6 +322,7 @@ const updateAllLabel = computed(() => {
             <div class="profile-name">
               <strong :title="profile.name">{{ profile.name }}</strong>
               <span v-if="profile.current" class="tag accent">使用中</span>
+              <span v-else class="profile-switch-hint" aria-hidden="true">点击启用</span>
             </div>
             <p class="muted small ellipsis">
               {{ profile.kind === 'local' ? '本地文件' : hostOf(profile.source) }}

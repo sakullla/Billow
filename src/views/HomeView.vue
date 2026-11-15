@@ -83,6 +83,17 @@ const takeoverSummary = computed(() => {
   return on.length ? `${on.join(' · ')} 已开启` : '未接管任何流量'
 })
 
+const takeoverOn = computed(() => (store.isAndroid.value ? snap.value.vpn : snap.value.system_proxy || snap.value.tun))
+
+/** The hero's first line answers "is my traffic going through Billow?", not just "is the kernel up?". */
+const heroEyebrow = computed(() => {
+  if (store.connecting.value) return '请稍候'
+  if (!snap.value.connected) return '代理未运行'
+  if (takeoverOn.value) return takeoverSummary.value
+  const port = snap.value.mixed_port
+  return port ? `未接管系统流量 · 仅端口 ${port} 可用` : '未接管系统流量'
+})
+
 function uptimeText(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds))
   const days = Math.floor(total / 86_400)
@@ -136,7 +147,7 @@ const apps = computed(() => {
     </div>
 
     <section v-if="!store.hasProfiles.value" class="card welcome" data-testid="welcome">
-      <span class="brand-mark lg"><Icon name="logo" :size="26" :stroke="2" /></span>
+      <span class="brand-mark lg"><Icon name="logo" :size="36" :stroke="2.4" /></span>
       <h1 class="status-word" data-testid="status">欢迎使用 Billow</h1>
       <p class="hero-sub muted">添加一个订阅或本地配置即可开始</p>
       <button type="button" class="connect-control" data-testid="power" @click="store.adding.value = true">
@@ -148,13 +159,50 @@ const apps = computed(() => {
 
     <div v-else class="home-grid">
       <div class="home-main">
-        <section class="card home-status" :class="status.tone" data-testid="home-status">
-          <h1 class="status-word" data-testid="status">{{ status.word }}</h1>
-          <p v-if="profile" class="hero-sub">
-            <span class="hero-profile">{{ profile.name }}</span>
-            <span v-if="snap.mixed_port" class="muted">· 端口 {{ snap.mixed_port }}</span>
-          </p>
-          <p v-else class="hero-sub muted">选择一份配置后连接</p>
+        <!-- One hero owns state, context and the primary action (R24). -->
+        <section class="card hero" :class="[status.tone, { bare: snap.connected && !takeoverOn }]" data-testid="home-status">
+          <div class="hero-top">
+            <div class="hero-state">
+              <p class="hero-eyebrow">
+                <span class="hero-dot" aria-hidden="true" />
+                <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
+              </p>
+              <h1 class="status-word" data-testid="status">{{ status.word }}</h1>
+              <p v-if="profile" class="hero-sub">
+                <span class="hero-profile">{{ profile.name }}</span>
+                <span v-if="activeMode" class="muted">· {{ activeMode.label }}模式</span>
+                <span v-if="snap.mixed_port" class="muted">· 端口 {{ snap.mixed_port }}</span>
+              </p>
+              <p v-else class="hero-sub muted">选择一份配置后连接</p>
+            </div>
+            <div class="hero-action" data-testid="home-action">
+              <button
+                type="button"
+                class="connect-control"
+                :class="status.tone"
+                :disabled="store.connecting.value"
+                :aria-busy="store.connecting.value || undefined"
+                data-testid="power"
+                @click="onPrimary"
+              >
+                <span class="connect-glyph">
+                  <span v-if="store.connecting.value" class="spinner sm" />
+                  <Icon v-else :name="connectIcon" :size="20" :stroke="2.2" />
+                </span>
+                <span class="connect-label">{{ connectLabel }}</span>
+              </button>
+            </div>
+          </div>
+          <div v-if="snap.connected" class="hero-rates mono" data-testid="rates">
+            <div class="rate up">
+              <span class="rate-label"><Icon name="up" :size="13" />上传</span>
+              <span class="rate-value">{{ formatSpeed(snap.upload ?? 0) }}</span>
+            </div>
+            <div class="rate down">
+              <span class="rate-label"><Icon name="down" :size="13" />下载</span>
+              <span class="rate-value">{{ formatSpeed(snap.download ?? 0) }}</span>
+            </div>
+          </div>
           <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
             <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">
               <dt>{{ item.label }}</dt>
@@ -163,32 +211,9 @@ const apps = computed(() => {
           </dl>
         </section>
 
-        <section class="card home-action" data-testid="home-action">
-          <button
-            type="button"
-            class="connect-control"
-            :class="status.tone"
-            :disabled="store.connecting.value"
-            :aria-busy="store.connecting.value || undefined"
-            data-testid="power"
-            @click="onPrimary"
-          >
-            <span class="connect-glyph">
-              <span v-if="store.connecting.value" class="spinner sm" />
-              <Icon v-else :name="connectIcon" :size="22" :stroke="2.2" />
-            </span>
-            <span class="connect-label">{{ connectLabel }}</span>
-          </button>
-          <div v-if="snap.connected" class="hero-rates mono" data-testid="rates">
-            <div class="rate up"><Icon name="up" :size="14" /><span>{{ formatSpeed(snap.upload ?? 0) }}</span></div>
-            <div class="rate down"><Icon name="down" :size="14" /><span>{{ formatSpeed(snap.download ?? 0) }}</span></div>
-          </div>
-        </section>
-
         <section class="card takeover-card" data-testid="takeover-card">
           <header class="card-head">
             <h2>网络接管</h2>
-            <span class="tag" data-testid="takeover-summary">{{ takeoverSummary }}</span>
           </header>
           <template v-if="!store.isAndroid.value">
             <div class="setting-row">
@@ -278,16 +303,11 @@ const apps = computed(() => {
               <span class="legend-item down">下载</span>
             </div>
           </header>
-          <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 110 : 120" />
+          <div class="traffic-chart" :class="{ idle: !snap.connected }">
+            <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 110 : 120" />
+            <p v-if="!snap.connected" class="chart-idle muted small">连接后显示实时流量</p>
+          </div>
           <div class="stats">
-            <div class="stat">
-              <span class="stat-label">上传速度</span>
-              <span class="stat-value mono">{{ snap.connected ? formatSpeed(snap.upload ?? 0) : '未连接' }}</span>
-            </div>
-            <div class="stat">
-              <span class="stat-label">下载速度</span>
-              <span class="stat-value mono">{{ snap.connected ? formatSpeed(snap.download ?? 0) : '未连接' }}</span>
-            </div>
             <div class="stat">
               <span class="stat-label">本次上传</span>
               <span class="stat-value mono">{{ formatBytes(snap.upload_total) }}</span>
@@ -296,9 +316,9 @@ const apps = computed(() => {
               <span class="stat-label">本次下载</span>
               <span class="stat-value mono">{{ formatBytes(snap.download_total) }}</span>
             </div>
-            <button type="button" class="stat link" @click="store.go('connections')">
+            <button type="button" class="stat link" :disabled="!snap.connected" @click="store.go('connections')">
               <span class="stat-label">活动连接</span>
-              <span class="stat-value mono">{{ snap.connected ? snap.connection_total : '未连接' }}</span>
+              <span class="stat-value mono">{{ snap.connected ? snap.connection_total : '—' }}</span>
             </button>
           </div>
         </section>

@@ -26,6 +26,10 @@ provide(STORE, store)
 const width = ref(props.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1024))
 const compact = computed(() => width.value < 760)
 const snap = computed(() => store.snapshot.value)
+const sideStatusWord = computed(() => {
+  if (store.connecting.value) return snap.value.connected ? '断开中…' : '连接中…'
+  return snap.value.connected ? '已连接' : '未连接'
+})
 
 const views = {
   home: HomeView,
@@ -339,7 +343,7 @@ defineExpose({ store })
   <div class="shell" :class="{ compact }">
     <aside v-if="!compact" class="sidebar">
       <div class="brand">
-        <span class="brand-mark"><Icon name="logo" :size="20" :stroke="2" /></span>
+        <span class="brand-mark"><Icon name="logo" :size="24" :stroke="2.4" /></span>
         <span class="brand-name">Billow</span>
       </div>
       <nav class="nav" aria-label="主导航">
@@ -373,16 +377,31 @@ defineExpose({ store })
           <Icon :name="settingsPage.icon" />
           <span>{{ settingsPage.label }}</span>
         </button>
-        <div class="side-status" :class="{ on: snap.connected }">
-          <div class="side-status-head">
-            <span class="dot" />
-            <span>{{ store.connecting.value ? '连接中…' : snap.connected ? '已连接' : '未连接' }}</span>
+        <div class="side-status" :class="{ on: snap.connected && !store.connecting.value, pending: store.connecting.value }" data-testid="side-status">
+          <div class="side-status-body">
+            <div class="side-status-head">
+              <span class="dot" />
+              <span>{{ sideStatusWord }}</span>
+            </div>
+            <div v-if="snap.connected" class="side-rates mono">
+              <span><Icon name="up" :size="12" />{{ formatSpeed(snap.upload ?? 0) }}</span>
+              <span><Icon name="down" :size="12" />{{ formatSpeed(snap.download ?? 0) }}</span>
+            </div>
+            <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? '还没有配置' }}</div>
           </div>
-          <div v-if="snap.connected" class="side-rates mono">
-            <span><Icon name="up" :size="12" />{{ formatSpeed(snap.upload ?? 0) }}</span>
-            <span><Icon name="down" :size="12" />{{ formatSpeed(snap.download ?? 0) }}</span>
-          </div>
-          <div v-else class="side-rates muted small">{{ store.current.value?.name ?? '还没有配置' }}</div>
+          <button
+            v-if="store.hasProfiles.value"
+            type="button"
+            class="side-power"
+            :disabled="store.connecting.value"
+            :aria-label="snap.connected ? '断开' : '连接'"
+            :title="snap.connected ? '断开' : '连接'"
+            data-testid="side-power"
+            @click="store.toggleConnection()"
+          >
+            <span v-if="store.connecting.value" class="spinner sm" />
+            <Icon v-else name="power" :size="16" :stroke="2.2" />
+          </button>
         </div>
       </div>
     </aside>
