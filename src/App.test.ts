@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import App from './App.vue'
 import GroupIcon from './components/GroupIcon.vue'
 import { createDemoBackend } from './lib/demo'
+import type { Store } from './lib/store'
 
 async function settle(ms = 1000) {
   await vi.advanceTimersByTimeAsync(ms)
@@ -56,6 +57,38 @@ async function searchPalette(value: string) {
 async function goBack() {
   window.history.back()
   await settle(20)
+}
+
+/** Pretend the sticky proxy toolbar is `height` tall so scroll offsets can be asserted. */
+function stubToolbarHeight(height: number) {
+  const proto = HTMLElement.prototype as unknown as { getBoundingClientRect: () => DOMRect }
+  const original = proto.getBoundingClientRect
+  proto.getBoundingClientRect = function (this: HTMLElement) {
+    const rect = original.call(this)
+    if (this.classList?.contains('proxies-toolbar')) {
+      return { ...rect, height, bottom: rect.top + height } as DOMRect
+    }
+    return rect
+  }
+  return () => {
+    proto.getBoundingClientRect = original
+  }
+}
+
+/** Record which group cards ask to be scrolled into view. */
+function recordScrollTargets() {
+  const proto = Element.prototype as unknown as { scrollIntoView?: (options?: ScrollIntoViewOptions) => void }
+  const original = proto.scrollIntoView
+  const targets: string[] = []
+  proto.scrollIntoView = function (this: Element) {
+    targets.push(this.getAttribute('data-group-card') ?? '')
+  }
+  return {
+    targets,
+    restore() {
+      proto.scrollIntoView = original
+    },
+  }
 }
 
 afterEach(() => {
@@ -661,12 +694,7 @@ describe('App', () => {
 
   it('locates the group requested from home and drops a filter that hides it', async () => {
     const { wrapper } = await mountApp()
-    const proto = Element.prototype as unknown as { scrollIntoView?: (options?: ScrollIntoViewOptions) => void }
-    const original = proto.scrollIntoView
-    const scrolled: string[] = []
-    proto.scrollIntoView = function (this: Element) {
-      scrolled.push(this.getAttribute('data-group-card') ?? '')
-    }
+    const scroll = recordScrollTargets()
     try {
       await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
       await flushPromises()
@@ -674,7 +702,7 @@ describe('App', () => {
       await flushPromises()
       expect(wrapper.find('[data-group-card="自动选择"]').exists()).toBe(false)
 
-      const store = (wrapper.vm as unknown as { store: { go: (page: string, group?: string) => void } }).store
+      const store = (wrapper.vm as unknown as { store: Store }).store
       store.go('home')
       await flushPromises()
       store.go('proxies', '自动选择')
@@ -682,10 +710,68 @@ describe('App', () => {
 
       expect(wrapper.find('[data-group-card="自动选择"]').classes()).toContain('open')
       expect(wrapper.find('[data-testid="toggle-hide-auto"]').attributes('aria-pressed')).toBe('false')
-      expect(scrolled).toContain('自动选择')
+      expect(scroll.targets).toContain('自动选择')
     } finally {
-      proto.scrollIntoView = original
+      scroll.restore()
     }
+  })
+
+  it('keeps a located group header below the sticky toolbar', async () => {
+    localStorage.clear()
+    const restoreRect = stubToolbarHeight(83)
+    const scroll = recordScrollTargets()
+    try {
+      const first = await mountApp()
+      await first.wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+      await flushPromises()
+      const defaultCard = first.wrapper.find('[data-group-card="节点选择"]').element as HTMLElement
+      expect(defaultCard.style.scrollMarginTop).toBe('95px')
+      expect(scroll.targets).toContain('节点选择')
+      first.wrapper.unmount()
+
+      localStorage.setItem('billow:proxy-open', JSON.stringify(['流媒体']))
+      const second = await mountApp()
+      await second.wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+      await flushPromises()
+      await second.wrapper.find('.sidebar [data-page="home"]').trigger('click')
+      await flushPromises()
+      await second.wrapper.find('[data-testid="groups-card"] [data-group="流媒体"]').trigger('click')
+      await flushPromises()
+      const target = second.wrapper.find('[data-group-card="流媒体"]').element as HTMLElement
+      expect(target.style.scrollMarginTop).toBe('95px')
+      expect(scroll.targets).toContain('流媒体')
+    } finally {
+      scroll.restore()
+      restoreRect()
+    }
+  })
+
+  it('keeps an intentionally collapsed set when returning to the proxies page', async () => {
+    localStorage.clear()
+    const { wrapper } = await mountApp()
+    const opened = () => wrapper.findAll('[data-group-card].open').map((card) => card.attributes('data-group-card'))
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(opened()).toEqual(['节点选择'])
+
+    await wrapper.find('[data-group-card="节点选择"] .group-toggle').trigger('click')
+    await flushPromises()
+    expect(opened()).toEqual([])
+    expect(JSON.parse(localStorage.getItem('billow:proxy-open') ?? 'null')).toEqual([])
+
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(opened()).toEqual([])
+    expect(JSON.parse(localStorage.getItem('billow:proxy-open') ?? 'null')).toEqual([])
+  })
+
+  it('counts nodes shared by several groups once in the page summary', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.page-head p').text()).toBe('7 个代理组 · 23 个节点')
   })
 
   it('highlights search matches and reports how many nodes match', async () => {
@@ -732,6 +818,7 @@ describe('App', () => {
 
   it('shows test-all progress and marks only failed nodes as timed out', async () => {
     const { wrapper } = await mountApp()
+    const store = (wrapper.vm as unknown as { store: Store }).store
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
     await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
@@ -745,12 +832,33 @@ describe('App', () => {
     expect(progress.exists()).toBe(true)
     expect(progress.text()).toMatch(/^已测 \d+\/23$/)
     expect(progress.text()).not.toBe('已测 23/23')
+    // Live stream results drive the rows while the test runs.
+    expect(Object.keys(store.testResults.value).length).toBeGreaterThan(0)
 
     await settle(1600)
     expect(wrapper.find('[data-testid="test-progress"]').text()).toBe('已测 23/23')
     expect(wrapper.find('[data-group-card="节点选择"] [data-node="新加坡 01"] .delay').text()).toBe('超时')
     expect(wrapper.find('[data-group-card="节点选择"] [data-node="香港 01"] .delay').text()).toMatch(/^\d+ ms$/)
     expect(wrapper.find('[data-group-card="节点选择"] .group-tested').text()).toContain('测速')
+    // The overlay is dropped so later polled delays are not shadowed by old ones.
+    expect(store.testResults.value).toEqual({})
+    expect(store.testTimes.value['香港 01']).toBeGreaterThan(0)
+  })
+
+  it('does not claim a test time when the kernel only reports it is unavailable', async () => {
+    const { wrapper } = await mountApp()
+    const store = (wrapper.vm as unknown as { store: Store }).store
+    store.go('proxies')
+    await flushPromises()
+
+    const pending = store.testAll()
+    await settle(100)
+    await pending
+    await flushPromises()
+    expect(store.testTimes.value).toEqual({})
+    expect(store.testResults.value).toEqual({})
+    expect(wrapper.find('[data-group-card] .group-tested').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="test-progress"]').exists()).toBe(false)
   })
 
   it('tests one group without toggling it and stamps the header result time', async () => {

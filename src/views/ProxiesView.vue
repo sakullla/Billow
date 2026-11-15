@@ -42,13 +42,16 @@ function writePref(key: string, value: unknown) {
 }
 
 const query = ref('')
+const toolbarEl = ref<HTMLElement | null>(null)
 const sort = ref<Sort>(readPref('proxy-sort', 'default'))
 const dense = ref<boolean>(readPref('proxy-dense', false))
 const hideAuto = ref<boolean>(readPref('proxy-hide-auto', false))
 /** Read once at setup so the first paint already has the right groups expanded (R26). */
 const storedOpen = readOpen()
 const open = ref<Set<string>>(storedOpen ?? defaultOpen())
-if (!storedOpen) persistOpen()
+// Only seed storage when there is a real default group; an empty catalog must not
+// be remembered as the user's "everything collapsed" choice (R26).
+if (!storedOpen && open.value.size > 0) persistOpen()
 
 watch(sort, (value) => writePref('proxy-sort', value))
 watch(dense, (value) => writePref('proxy-dense', value))
@@ -76,8 +79,9 @@ function persistOpen() {
 }
 
 /**
- * Saved names only survive while their groups still exist; corrupt JSON or a set
- * that no longer matches any group falls back to the default expansion (R26).
+ * Saved names only survive while their groups still exist. Missing or corrupt
+ * storage returns null (fall back to the default expansion); a saved empty array
+ * is a real "everything collapsed" state and stays empty (R26).
  */
 function readOpen(): Set<string> | null {
   try {
@@ -85,7 +89,10 @@ function readOpen(): Set<string> | null {
     if (raw == null) return null
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return null
+    if (parsed.length === 0) return new Set()
     const names = parsed.filter((item): item is string => typeof item === 'string')
+    // Non-string entries only: treat as corrupt rather than "all collapsed".
+    if (names.length === 0) return null
     const known = new Set(manifest().map((group) => group.name))
     const valid = names.filter((name) => known.has(name))
     return valid.length ? new Set(valid) : null
@@ -129,6 +136,13 @@ const matchCount = computed(() =>
   needle.value ? groups.value.reduce((total, group) => total + group.nodes.length, 0) : 0,
 )
 
+/** Groups share nodes, so the page total counts distinct names instead of row copies. */
+const distinctNodeCount = computed(() => {
+  const seen = new Set<string>()
+  snap.value.node_catalog.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
+  return seen.size
+})
+
 const allExpanded = computed(
   () => groups.value.length > 0 && groups.value.every((group) => open.value.has(group.name)),
 )
@@ -141,7 +155,7 @@ function toggleAll() {
   persistOpen()
 }
 
-/** Local test results land before the next snapshot, so rows read through them (R26). */
+/** A running test streams results before the next snapshot; afterwards rows use the snapshot (R26). */
 function nodeState(node: NodeItem): { delay: number | null; failed: boolean } {
   const result = store.testResults.value[node.name]
   return result ? { delay: result.delay, failed: result.failed } : { delay: node.delay_ms, failed: node.failed }
@@ -179,8 +193,8 @@ function groupNowTone(group: NodeGroup): string {
 function groupTestedAt(group: NodeGroup): number | null {
   let latest = 0
   group.nodes.forEach((node) => {
-    const result = store.testResults.value[node.name]
-    if (result && result.at > latest) latest = result.at
+    const at = store.testTimes.value[node.name]
+    if (at && at > latest) latest = at
   })
   return latest || null
 }
@@ -220,11 +234,19 @@ function isOpen(name: string) {
   return needle.value.length > 0 || open.value.has(name)
 }
 
+/** Gap between the sticky toolbar and a located group header. */
+const TOOLBAR_GAP = 12
+
 async function scrollToGroup(name: string | null) {
   if (!name) return
   await nextTick()
   const el = document.querySelector(`[data-group-card="${CSS.escape(name)}"]`)
-  if (el instanceof HTMLElement) el.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+  if (!(el instanceof HTMLElement)) return
+  // The toolbar is sticky and wraps to two rows on phones, so the located card
+  // needs a scroll margin equal to its measured height plus a gap (R26).
+  const toolbarHeight = toolbarEl.value?.getBoundingClientRect().height ?? 0
+  el.style.scrollMarginTop = `${Math.ceil(toolbarHeight) + TOOLBAR_GAP}px`
+  el.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
 }
 
 /** Home deep links win: open the group, drop a filter that hides it, then scroll to it (R26). */
@@ -261,7 +283,7 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
       <div>
         <h1>代理</h1>
         <p class="muted small">
-          <template v-if="snap.node_catalog.length">{{ snap.node_catalog.length }} 个代理组 · {{ snap.node_catalog.reduce((total, group) => total + group.nodes.length, 0) }} 个节点</template>
+          <template v-if="snap.node_catalog.length">{{ snap.node_catalog.length }} 个代理组 · {{ distinctNodeCount }} 个节点</template>
           <template v-else>{{ snap.nodes_notice ?? '没有代理组' }}</template>
         </p>
       </div>
@@ -300,7 +322,7 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
       </div>
     </header>
 
-    <div v-if="snap.node_catalog.length" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
+    <div v-if="snap.node_catalog.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索节点" data-testid="node-search" data-page-search />

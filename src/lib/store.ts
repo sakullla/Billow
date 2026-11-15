@@ -45,12 +45,10 @@ export type HomeAction =
   | { kind: 'takeover'; target: 'system_proxy' | 'tun'; on: boolean }
   | { kind: 'mode'; mode: Mode }
 
-/** One node result kept locally so rows update before the next snapshot (R26). */
+/** One node result kept locally while a test runs, so rows update before the next snapshot. */
 export interface NodeTestResult {
   delay: number | null
   failed: boolean
-  /** Local timestamp of the result; the UI shows "测速 …" only when it exists. */
-  at: number
 }
 
 const HISTORY = 60
@@ -80,8 +78,10 @@ export function createStore(backend: Backend) {
   /** Reason shown in the home failure banner; owned here so a retry can clear it (R24, R29). */
   const lastActionError = ref<string | null>(null)
   const lastFailedAction = ref<HomeAction | null>(null)
-  /** Latest per-node result from the `node-test` stream plus the local arrival time (R26). */
+  /** Overlay results from the `node-test` stream; dropped once the final snapshot lands (R26). */
   const testResults = ref<Record<string, NodeTestResult>>({})
+  /** Local completion time per node, so "测速 …" only appears after a real test (R26). */
+  const testTimes = ref<Record<string, number>>({})
   /** `已测/总数` for the running or just-finished test-all; zeroed when the target changes. */
   const testProgress = ref<{ tested: number; total: number }>({ tested: 0, total: 0 })
   let toastId = 0
@@ -154,31 +154,28 @@ export function createStore(backend: Backend) {
     if (event.node) {
       testResults.value = {
         ...testResults.value,
-        [event.node]: { delay: event.delay, failed: event.failed, at: Date.now() },
+        [event.node]: { delay: event.delay, failed: event.failed },
       }
+      testTimes.value = { ...testTimes.value, [event.node]: Date.now() }
     }
     testProgress.value = { tested: event.tested, total: event.total }
   }
 
   function clearTestProgress() {
     testResults.value = {}
+    testTimes.value = {}
     testProgress.value = { tested: 0, total: 0 }
   }
 
-  /** Single-node and per-group tests answer with a snapshot, so stamp their rows locally too. */
-  function stampTestedNodes(names: string[]) {
+  /** Single-node and per-group tests only stamp a time; values come from the fresh snapshot. */
+  function stampTestTimes(names: string[]) {
     if (!names.length) return
-    const lookup = new Map<string, { delay_ms: number | null; failed: boolean }>()
-    snapshot.value.node_catalog.forEach((group) =>
-      group.nodes.forEach((node) => lookup.set(node.name, node)),
-    )
     const at = Date.now()
-    const next = { ...testResults.value }
+    const next = { ...testTimes.value }
     names.forEach((name) => {
-      const node = lookup.get(name)
-      if (node) next[name] = { delay: node.delay_ms, failed: node.failed, at }
+      next[name] = at
     })
-    testResults.value = next
+    testTimes.value = next
   }
 
   /** A home-level attempt the failure banner can retry; `done` reads the outcome from the new snapshot. */
@@ -389,6 +386,7 @@ export function createStore(backend: Backend) {
     lastFailedAction,
     /** Per-node test results and `已测/总数` for the proxy page (R26). */
     testResults,
+    testTimes,
     testProgress,
     current,
     hasProfiles,
@@ -442,23 +440,29 @@ export function createStore(backend: Backend) {
     /** Per-group test stamps the local result time so headers can show "测速 …" (R26). */
     async testGroup(group: string) {
       const result = await act(`test:${group}`, () => backend.testGroup(group))
-      if (result) {
+      // A snapshot that only reports "kernel not running" is not a test result.
+      if (result && !result.nodes_error) {
         const names = snapshot.value.node_catalog.find((item) => item.name === group)?.nodes.map((item) => item.name) ?? []
-        stampTestedNodes(names)
+        stampTestTimes(names)
       }
       return result
     },
-    /** Test-all progress arrives through `node-test`; the counter survives until the next run (R26). */
+    /**
+     * Test-all progress arrives through `node-test`; the stream supplies both the
+     * per-node result and its time. Once the final snapshot lands the overlay is
+     * dropped so newer polled delays win instead of being shadowed forever (R26).
+     */
     async testAll() {
       testProgress.value = { tested: 0, total: 0 }
+      testResults.value = {}
       const result = await act('testAll', () => backend.testAll())
-      if (result) stampTestedNodes(snapshot.value.node_catalog.flatMap((group) => group.nodes.map((node) => node.name)))
+      if (result && !result.nodes_error) testResults.value = {}
       else clearTestProgress()
       return result
     },
     async testNode(node: string) {
       const result = await act(`node:${node}`, () => backend.testNode(node))
-      if (result) stampTestedNodes([node])
+      if (result && !result.nodes_error) stampTestTimes([node])
       return result
     },
 
