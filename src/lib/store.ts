@@ -1,4 +1,4 @@
-import { computed, inject, reactive, ref, shallowRef, type InjectionKey } from 'vue'
+import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey } from 'vue'
 import type { Backend } from './backend'
 import {
   emptySnapshot,
@@ -38,6 +38,12 @@ export interface Toast {
   text: string
 }
 
+/** The home-level action behind the last failure banner, so "重试" repeats it (R24). */
+export type HomeAction =
+  | { kind: 'connect' }
+  | { kind: 'takeover'; target: 'system_proxy' | 'tun'; on: boolean }
+  | { kind: 'mode'; mode: Mode }
+
 const HISTORY = 60
 
 export function applyTheme(preference: ThemePreference) {
@@ -62,12 +68,16 @@ export function createStore(backend: Backend) {
     down: Array(HISTORY).fill(0),
   })
   const adding = ref(false)
+  /** Reason shown in the home failure banner; owned here so a retry can clear it (R24, R29). */
+  const lastActionError = ref<string | null>(null)
+  const lastFailedAction = ref<HomeAction | null>(null)
   let toastId = 0
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let polling = false
   let stopped = false
   let queue: Promise<unknown> = Promise.resolve()
   let unlisten: (() => void) | null = null
+  let lastRunError: string | null = null
 
   const current = computed(() => snapshot.value.profiles.find((item) => item.current) ?? null)
   const hasProfiles = computed(() => snapshot.value.profiles.length > 0)
@@ -105,7 +115,8 @@ export function createStore(backend: Backend) {
         return result
       } catch (error) {
         console.error(error)
-        toast(error instanceof Error ? error.message : String(error), 'error')
+        lastRunError = error instanceof Error ? error.message : String(error)
+        toast(lastRunError, 'error')
         return undefined
       } finally {
         if (key) delete busy[key]
@@ -115,18 +126,65 @@ export function createStore(backend: Backend) {
     return task
   }
 
-  async function act(key: string | null, action: () => Promise<Snapshot>, success?: string) {
+  /** Failure text this call newly introduced, compared with the snapshot it started from. */
+  function newFailure(before: Snapshot, result: Snapshot): string | null {
+    if (result.failure && result.failure !== before.failure) return result.failure
+    if (result.notice && result.notice !== before.notice) return result.notice
+    if (result.input_error && result.input_error !== before.input_error) return result.input_error
+    if (result.nodes_error && result.nodes_error !== before.nodes_error) return result.nodes_error
+    return null
+  }
+
+  /** A home-level attempt the failure banner can retry; `done` reads the outcome from the new snapshot. */
+  interface HomeAttempt {
+    action: HomeAction
+    done: (next: Snapshot) => boolean
+  }
+
+  async function act(
+    key: string | null,
+    action: () => Promise<Snapshot>,
+    success?: string,
+    attempt?: HomeAttempt,
+  ) {
     const before = snapshot.value
+    lastRunError = null
+    if (attempt) {
+      // A new explicit attempt retires the previous banner before it runs (R24).
+      lastActionError.value = null
+      lastFailedAction.value = null
+    }
     const result = await run(key, action)
-    if (!result) return undefined
-    if (result.failure && result.failure !== before.failure) toast(result.failure, 'error')
-    else if (result.notice && result.notice !== before.notice) toast(result.notice, 'error')
-    else if (result.input_error && result.input_error !== before.input_error) toast(result.input_error, 'error')
-    else if (result.nodes_error && result.nodes_error !== before.nodes_error) toast(result.nodes_error, 'error')
-    else if (success) toast(success, 'success')
+    if (!result) {
+      if (attempt) {
+        lastActionError.value = lastRunError ?? '操作没有完成'
+        lastFailedAction.value = attempt.action
+      }
+      return undefined
+    }
+    const changed = newFailure(before, result)
+    const failed = attempt ? !attempt.done(result) : false
+    if (changed) toast(changed, 'error')
+    else if (!failed && success) toast(success, 'success')
+    if (attempt) {
+      if (failed) {
+        lastActionError.value = result.failure ?? changed ?? '操作没有完成'
+        lastFailedAction.value = attempt.action
+      } else if (changed) {
+        lastActionError.value = changed
+      }
+    }
     if (backend.live) void backend.syncTray()
     return result
   }
+
+  // A failure that arrives through polling still reaches the banner, without a retry target.
+  watch(
+    () => snapshot.value.failure,
+    (next, prev) => {
+      if (next && next !== prev) lastActionError.value = next
+    },
+  )
 
   async function poll() {
     if (stopped) return
@@ -205,12 +263,45 @@ export function createStore(backend: Backend) {
       adding.value = true
       return Promise.resolve(undefined)
     }
-    return act('connect', () => backend.connect(), '已连接')
+    return act('connect', () => backend.connect(), '已连接', {
+      action: { kind: 'connect' },
+      done: (next) => next.connected,
+    })
   }
 
   function disconnect() {
     if (connecting.value || !snapshot.value.connected) return Promise.resolve(undefined)
     return act('connect', () => backend.disconnect(), '已断开')
+  }
+
+  function setMode(mode: Mode) {
+    return act('mode', () => backend.setMode(mode), undefined, {
+      action: { kind: 'mode', mode },
+      done: (next) => next.mode === mode,
+    })
+  }
+
+  function setSystemProxy(on: boolean) {
+    return act('proxy', () => backend.setSystemProxy(on), undefined, {
+      action: { kind: 'takeover', target: 'system_proxy', on },
+      done: (next) => next.system_proxy === on,
+    })
+  }
+
+  function setTun(on: boolean) {
+    return act('tun', () => backend.setTun(on), undefined, {
+      action: { kind: 'takeover', target: 'tun', on },
+      done: (next) => next.tun === on,
+    })
+  }
+
+  /** Repeats the action behind the failure banner; success clears both the reason and the target. */
+  function retryLastAction() {
+    const action = lastFailedAction.value
+    if (!action) return Promise.resolve(undefined)
+    if (action.kind === 'mode') return setMode(action.mode)
+    if (action.kind === 'takeover') return action.target === 'tun' ? setTun(action.on) : setSystemProxy(action.on)
+    return connect()
   }
 
   return {
@@ -228,6 +319,9 @@ export function createStore(backend: Backend) {
     toasts,
     traffic,
     adding,
+    /** Home failure banner state (R24, R29). */
+    lastActionError,
+    lastFailedAction,
     current,
     hasProfiles,
     isAndroid,
@@ -239,6 +333,7 @@ export function createStore(backend: Backend) {
     setTheme,
     connect,
     disconnect,
+    retryLastAction,
     /** Cycle system → light → dark so the palette command never needs a submenu. */
     cycleTheme() {
       const order: ThemePreference[] = ['system', 'light', 'dark']
@@ -253,9 +348,9 @@ export function createStore(backend: Backend) {
       if (snapshot.value.connected) return disconnect()
       return connect()
     },
-    setMode: (mode: Mode) => act('mode', () => backend.setMode(mode)),
-    setSystemProxy: (on: boolean) => act('proxy', () => backend.setSystemProxy(on)),
-    setTun: (on: boolean) => act('tun', () => backend.setTun(on)),
+    setMode,
+    setSystemProxy,
+    setTun,
     exclude: (pkg: string) => act(null, () => backend.exclude(pkg)),
     include: (pkg: string) => act(null, () => backend.include(pkg)),
 

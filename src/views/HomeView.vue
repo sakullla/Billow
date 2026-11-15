@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
+import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
 import TrafficChart from '../components/TrafficChart.vue'
 import {
@@ -27,6 +28,7 @@ const MODES: { id: Mode; label: string; hint: string; icon: string }[] = [
   { id: 'global', label: '全局', hint: '全部流量走当前节点', icon: 'globe' },
   { id: 'direct', label: '直连', hint: '新连接都不经过代理', icon: 'zap' },
 ]
+const MODE_OPTIONS = MODES.map(({ id, label, icon }) => ({ id, label, icon }))
 
 const status = computed(() => {
   if (store.connecting.value) return { word: snap.value.connected ? '断开中' : '连接中', tone: 'pending' }
@@ -34,12 +36,72 @@ const status = computed(() => {
   return { word: '未连接', tone: 'off' }
 })
 
+/** One control owns connect, disconnect and the empty-state add action (R24). */
+const connectLabel = computed(() => {
+  if (!store.hasProfiles.value) return '添加配置'
+  if (store.connecting.value) return snap.value.connected ? '断开中' : '连接中'
+  return snap.value.connected ? '断开' : '连接'
+})
+const connectIcon = computed(() => (store.hasProfiles.value ? 'power' : 'plus'))
+
+const activeMode = computed(() => MODES.find((mode) => mode.id === snap.value.mode) ?? null)
+const modeHint = computed(() => activeMode.value?.hint ?? '还没有读到出站模式')
+const modeBusy = computed(() => Boolean(store.busy.mode))
+
+const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${profile.value.id}`]) : false))
+
 const manualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual').slice(0, 8))
 const usage = computed(() => (profile.value ? usagePercent(profile.value.used, profile.value.total) : null))
 const expireDays = computed(() => (profile.value?.expire ? daysLeft(profile.value.expire) : null))
 
+/** Home failure banner: the store owns it so a retry clears it even when the backend keeps the reason. */
+const failureText = computed(() => store.lastActionError.value)
+
+/** Only values the kernel actually reported survive; a missing reading hides the row (R24). */
+const runtime = computed(() => {
+  const items: { key: string; label: string; value: string }[] = []
+  const version = store.kernel.value.version
+  if (version) items.push({ key: 'kernel', label: '内核版本', value: version })
+  if (snap.value.kernel_memory != null) {
+    items.push({ key: 'memory', label: '内核内存', value: formatBytes(snap.value.kernel_memory) })
+  }
+  if (snap.value.kernel_uptime_secs != null) {
+    items.push({ key: 'uptime', label: '运行时长', value: uptimeText(snap.value.kernel_uptime_secs) })
+  }
+  if (snap.value.connected) {
+    items.push({ key: 'connections', label: '活动连接', value: String(snap.value.connection_total) })
+  }
+  return items
+})
+
+const takeoverSummary = computed(() => {
+  if (store.isAndroid.value) return snap.value.vpn ? 'VPN 已接管设备流量' : 'VPN 未开启'
+  const on: string[] = []
+  if (snap.value.system_proxy) on.push('系统代理')
+  if (snap.value.tun) on.push('TUN')
+  return on.length ? `${on.join(' · ')} 已开启` : '未接管任何流量'
+})
+
+function uptimeText(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const days = Math.floor(total / 86_400)
+  const hours = Math.floor((total % 86_400) / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  if (days > 0) return `${days} 天 ${hours} 时`
+  if (hours > 0) return `${hours} 时 ${minutes} 分`
+  return `${minutes} 分`
+}
+
 function nodeOf(group: { now: string; nodes: { name: string; delay_ms: number | null; failed: boolean }[] }) {
   return group.nodes.find((node) => node.name === group.now)
+}
+
+function onPrimary() {
+  if (!store.hasProfiles.value) {
+    store.adding.value = true
+    return
+  }
+  void store.toggleConnection()
 }
 
 // Android per-app exclusion
@@ -57,71 +119,75 @@ const apps = computed(() => {
 
 <template>
   <div class="page home">
-    <div v-if="snap.failure" class="banner error" role="alert" data-testid="home-failure">
+    <div v-if="store.hasProfiles.value && failureText" class="banner error" role="alert" data-testid="home-failure">
       <Icon name="alert" />
-      <span class="grow">{{ snap.failure }}</span>
+      <span class="grow">{{ failureText }}</span>
+      <button
+        v-if="store.lastFailedAction.value"
+        type="button"
+        class="btn ghost sm"
+        data-testid="retry"
+        @click="store.retryLastAction()"
+      >
+        重试
+      </button>
       <button type="button" class="btn ghost sm" @click="store.go('logs')">查看日志</button>
     </div>
 
-    <section class="card hero" :class="status.tone" data-testid="hero">
-      <button
-        type="button"
-        class="power"
-        :class="status.tone"
-        :disabled="store.connecting.value"
-        :aria-label="!store.hasProfiles.value ? '添加配置' : snap.connected ? '断开' : '连接'"
-        data-testid="power"
-        @click="store.toggleConnection()"
-      >
-        <span v-if="store.connecting.value" class="spinner lg" />
-        <Icon v-else :name="store.hasProfiles.value ? 'power' : 'plus'" :size="30" :stroke="2.2" />
+    <section v-if="!store.hasProfiles.value" class="card welcome" data-testid="welcome">
+      <span class="brand-mark lg"><Icon name="logo" :size="26" :stroke="2" /></span>
+      <h1 class="status-word" data-testid="status">欢迎使用 Billow</h1>
+      <p class="hero-sub muted">添加一个订阅或本地配置即可开始</p>
+      <button type="button" class="connect-control" data-testid="power" @click="store.adding.value = true">
+        <span class="connect-glyph"><Icon name="plus" :size="22" :stroke="2.2" /></span>
+        <span class="connect-label">添加配置</span>
       </button>
-      <div class="hero-text">
-        <h1 class="status-word" data-testid="status">{{ store.hasProfiles.value ? status.word : '欢迎使用 Billow' }}</h1>
+      <p class="muted small" data-testid="import-hint">支持订阅链接与 Clash / Mihomo YAML 文件；导入后在这里一键连接。</p>
+    </section>
+
+    <div v-else class="home-grid">
+      <section class="card home-status" :class="status.tone" data-testid="home-status">
+        <h1 class="status-word" data-testid="status">{{ status.word }}</h1>
         <p v-if="profile" class="hero-sub">
           <span class="hero-profile">{{ profile.name }}</span>
           <span v-if="snap.mixed_port" class="muted">· 端口 {{ snap.mixed_port }}</span>
         </p>
-        <p v-else-if="!store.hasProfiles.value" class="hero-sub muted">添加一个订阅或本地配置即可开始</p>
         <p v-else class="hero-sub muted">选择一份配置后连接</p>
-      </div>
-      <div v-if="snap.connected" class="hero-rates mono" data-testid="rates">
-        <div class="rate up"><Icon name="up" :size="14" /><span>{{ formatSpeed(snap.upload ?? 0) }}</span></div>
-        <div class="rate down"><Icon name="down" :size="14" /><span>{{ formatSpeed(snap.download ?? 0) }}</span></div>
-      </div>
-      <button v-else-if="!store.hasProfiles.value" type="button" class="btn primary" @click="store.adding.value = true">
-        <Icon name="plus" :size="16" /> 添加配置
-      </button>
-      <button v-else type="button" class="btn primary" :disabled="store.connecting.value" @click="store.toggleConnection()">
-        连接
-      </button>
-    </section>
+        <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
+          <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">
+            <dt>{{ item.label }}</dt>
+            <dd class="mono">{{ item.value }}</dd>
+          </div>
+        </dl>
+      </section>
 
-    <div v-if="store.hasProfiles.value" class="grid-2">
-      <section class="card" data-testid="mode-card">
-        <header class="card-head"><h2>出站模式</h2></header>
-        <div class="mode-cards" role="radiogroup" aria-label="出站模式">
-          <button
-            v-for="mode in MODES"
-            :key="mode.id"
-            type="button"
-            role="radio"
-            class="mode-card"
-            :class="{ active: snap.mode === mode.id }"
-            :aria-checked="snap.mode === mode.id"
-            :data-mode="mode.id"
-            :disabled="store.busy.mode"
-            @click="store.setMode(mode.id)"
-          >
-            <Icon :name="mode.icon" :size="20" />
-            <strong>{{ mode.label }}</strong>
-            <span>{{ mode.hint }}</span>
-          </button>
+      <section class="card home-action" data-testid="home-action">
+        <button
+          type="button"
+          class="connect-control"
+          :class="status.tone"
+          :disabled="store.connecting.value"
+          :aria-busy="store.connecting.value || undefined"
+          data-testid="power"
+          @click="onPrimary"
+        >
+          <span class="connect-glyph">
+            <span v-if="store.connecting.value" class="spinner sm" />
+            <Icon v-else :name="connectIcon" :size="22" :stroke="2.2" />
+          </span>
+          <span class="connect-label">{{ connectLabel }}</span>
+        </button>
+        <div v-if="snap.connected" class="hero-rates mono" data-testid="rates">
+          <div class="rate up"><Icon name="up" :size="14" /><span>{{ formatSpeed(snap.upload ?? 0) }}</span></div>
+          <div class="rate down"><Icon name="down" :size="14" /><span>{{ formatSpeed(snap.download ?? 0) }}</span></div>
         </div>
       </section>
 
-      <section class="card" data-testid="takeover-card">
-        <header class="card-head"><h2>网络接管</h2></header>
+      <section class="card takeover-card" data-testid="takeover-card">
+        <header class="card-head">
+          <h2>网络接管</h2>
+          <span class="tag" data-testid="takeover-summary">{{ takeoverSummary }}</span>
+        </header>
         <template v-if="!store.isAndroid.value">
           <div class="setting-row">
             <span class="row-icon"><Icon name="monitor" /></span>
@@ -142,13 +208,15 @@ const apps = computed(() => {
           </div>
         </template>
         <template v-else>
+          <!-- VPN follows the session on Android, so the switch reports takeover state instead of
+               becoming a second connect entry (R24). -->
           <div class="setting-row">
             <span class="row-icon"><Icon name="shield" /></span>
             <div class="grow">
               <strong>VPN</strong>
-              <p class="muted small">设备流量经由 Billow 处理</p>
+              <p class="muted small">开启 VPN 需连接；断开也请使用上方按钮</p>
             </div>
-            <Toggle :model-value="snap.vpn" :busy="store.connecting.value" label="VPN" @update:model-value="store.toggleConnection()" />
+            <Toggle :model-value="snap.vpn" disabled label="VPN（随连接开启）" data-testid="toggle-vpn" />
           </div>
           <button type="button" class="setting-row link" data-testid="open-apps" @click="appsOpen = true">
             <span class="row-icon"><Icon name="apps" /></span>
@@ -161,7 +229,44 @@ const apps = computed(() => {
         </template>
       </section>
 
-      <section class="card span-2 traffic-card" data-testid="traffic-card">
+      <section class="card mode-panel" data-testid="mode-card">
+        <header class="card-head">
+          <h2>出站模式</h2>
+          <span v-if="modeBusy" class="muted small" aria-live="polite">切换中</span>
+        </header>
+        <template v-if="compact">
+          <div class="mode-segmented" data-testid="mode-segmented">
+            <Segmented
+              :model-value="snap.mode"
+              :options="MODE_OPTIONS"
+              label="出站模式"
+              :disabled="modeBusy"
+              @update:model-value="store.setMode"
+            />
+          </div>
+          <p class="mode-hint" aria-live="polite" data-testid="mode-hint">{{ modeHint }}</p>
+        </template>
+        <div v-else class="mode-cards" role="radiogroup" aria-label="出站模式">
+          <button
+            v-for="mode in MODES"
+            :key="mode.id"
+            type="button"
+            role="radio"
+            class="mode-card"
+            :class="{ active: snap.mode === mode.id }"
+            :aria-checked="snap.mode === mode.id"
+            :data-mode="mode.id"
+            :disabled="modeBusy"
+            @click="store.setMode(mode.id)"
+          >
+            <Icon :name="mode.icon" :size="20" />
+            <strong>{{ mode.label }}</strong>
+            <span>{{ mode.hint }}</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="card traffic-card home-traffic" data-testid="traffic-card">
         <header class="card-head">
           <h2>实时流量</h2>
           <div class="legend">
@@ -169,15 +274,15 @@ const apps = computed(() => {
             <span class="legend-item down">下载</span>
           </div>
         </header>
-        <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 110 : 150" />
+        <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 110 : 120" />
         <div class="stats">
           <div class="stat">
             <span class="stat-label">上传速度</span>
-            <span class="stat-value mono">{{ snap.connected ? formatSpeed(snap.upload ?? 0) : '—' }}</span>
+            <span class="stat-value mono">{{ snap.connected ? formatSpeed(snap.upload ?? 0) : '未连接' }}</span>
           </div>
           <div class="stat">
             <span class="stat-label">下载速度</span>
-            <span class="stat-value mono">{{ snap.connected ? formatSpeed(snap.download ?? 0) : '—' }}</span>
+            <span class="stat-value mono">{{ snap.connected ? formatSpeed(snap.download ?? 0) : '未连接' }}</span>
           </div>
           <div class="stat">
             <span class="stat-label">本次上传</span>
@@ -189,12 +294,12 @@ const apps = computed(() => {
           </div>
           <button type="button" class="stat link" @click="store.go('connections')">
             <span class="stat-label">活动连接</span>
-            <span class="stat-value mono">{{ snap.connected ? snap.connections.length : '—' }}</span>
+            <span class="stat-value mono">{{ snap.connected ? snap.connection_total : '未连接' }}</span>
           </button>
         </div>
       </section>
 
-      <section class="card" data-testid="groups-card">
+      <section class="card home-groups" data-testid="groups-card">
         <header class="card-head">
           <h2>当前节点</h2>
           <button type="button" class="btn ghost sm" @click="store.go('proxies')">全部<Icon name="chevron-right" :size="14" /></button>
@@ -219,7 +324,7 @@ const apps = computed(() => {
         </button>
       </section>
 
-      <section class="card" data-testid="profile-card">
+      <section class="card home-subscription" data-testid="profile-card">
         <header class="card-head">
           <h2>订阅</h2>
           <button type="button" class="btn ghost sm" @click="store.go('profiles')">管理<Icon name="chevron-right" :size="14" /></button>
@@ -237,12 +342,14 @@ const apps = computed(() => {
             <button
               v-if="profile.kind === 'subscription'"
               type="button"
-              class="icon-btn"
-              title="更新订阅"
-              :disabled="store.busy[`update:${profile.id}`]"
+              class="btn ghost sm"
+              :disabled="updateBusy"
+              :aria-busy="updateBusy || undefined"
+              data-testid="update-subscription"
               @click="store.update(profile.id)"
             >
-              <Icon name="refresh" :class="{ spin: store.busy[`update:${profile.id}`] }" />
+              <span v-if="updateBusy" class="spinner xs" aria-hidden="true" />
+              {{ updateBusy ? '更新中' : '更新' }}
             </button>
           </div>
           <div v-if="usage != null" class="usage">

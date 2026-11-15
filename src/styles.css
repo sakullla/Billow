@@ -1223,66 +1223,174 @@ button.delay:hover:not(:disabled) {
 }
 
 /* ───────────── Home ───────────── */
-.hero {
+/* Desktop: main column keeps the conclusion, action, mode and takeover; the side
+   column carries traffic, the current node and the subscription (R24). */
+.home-grid {
+  display: grid;
+  gap: var(--row-gap);
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  grid-template-areas:
+    'status traffic'
+    'action groups'
+    'mode groups'
+    'takeover subscription';
+  align-items: start;
+}
+.home-status {
+  grid-area: status;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.home-action {
+  grid-area: action;
   display: flex;
   align-items: center;
-  gap: var(--space-5);
-  padding: var(--space-5) var(--space-6);
-  position: relative;
-  overflow: hidden;
-}
-.compact .hero {
-  flex-wrap: wrap;
-  padding: var(--space-4);
+  justify-content: space-between;
   gap: var(--space-4);
+  flex-wrap: wrap;
 }
-.power {
-  position: relative;
+.mode-panel {
+  grid-area: mode;
+}
+.takeover-card {
+  grid-area: takeover;
+}
+.home-traffic {
+  grid-area: traffic;
+}
+.home-groups {
+  grid-area: groups;
+}
+.home-subscription {
+  grid-area: subscription;
+}
+/* Below the desktop split the same DOM order is the reading order, and it puts
+   status, profile, the single connect control and takeover on the first screen. */
+@media (max-width: 960px) {
+  .home-grid {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-5);
+}
+.welcome .connect-control {
+  margin: var(--space-2) 0;
+}
+
+/* One control: the glyph and the 连接/断开 label share the same button (R24). */
+.connect-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: 3px var(--space-5) 3px 3px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: 650;
+  transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), color var(--dur-base) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.connect-control:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.connect-control:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.connect-control:disabled {
+  opacity: 0.72;
+}
+.connect-control.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.connect-control.on:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--on-accent);
+}
+.connect-control.pending {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.connect-glyph {
   display: grid;
   place-items: center;
-  width: 76px;
-  height: 76px;
+  width: 38px;
+  height: 38px;
   border-radius: var(--radius-pill);
   background: var(--sunken);
   color: var(--text-2);
-  border: 1px solid var(--border);
-  transition: background var(--dur-slow) var(--ease), color var(--dur-slow) var(--ease), box-shadow var(--dur-slow) var(--ease), transform var(--dur-fast) var(--ease);
   flex: none;
 }
-.power:hover:not(:disabled) {
-  color: var(--accent-ink);
-  border-color: var(--accent);
-}
-.power:active:not(:disabled) {
-  transform: scale(0.96);
-}
-.power.on {
-  background: var(--accent);
+.connect-control.on .connect-glyph {
+  background: color-mix(in srgb, var(--on-accent) 20%, transparent);
   color: var(--on-accent);
-  border-color: var(--accent);
-  box-shadow: 0 0 0 8px var(--accent-soft);
 }
-.power.on:hover:not(:disabled) {
-  color: var(--on-accent);
-  border-color: var(--accent-hover);
-  background: var(--accent-hover);
-}
-.power.pending {
+.connect-control.pending .connect-glyph {
   color: var(--accent-ink);
-  border-color: var(--accent);
 }
-.hero-text {
-  position: relative;
-  flex: 1;
-  min-width: 0;
+.connect-label {
+  padding-right: var(--space-2);
 }
+.compact .connect-control {
+  width: 100%;
+  min-height: 52px;
+  justify-content: center;
+}
+.compact .connect-label {
+  padding-right: 0;
+}
+.compact .home-action {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.runtime {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3) 0 0;
+  border-top: 1px solid var(--border);
+}
+.runtime-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 68px;
+}
+.runtime-item dt {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.runtime-item dd {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
 .status-word {
   font-size: var(--text-xl);
   font-weight: 750;
   letter-spacing: -0.02em;
   line-height: var(--leading-tight);
 }
-.hero.on .status-word {
+.home-status.on .status-word {
   color: var(--accent-ink);
 }
 .hero-sub {
@@ -1367,6 +1475,24 @@ button.delay:hover:not(:disabled) {
 .mode-card.active strong {
   color: var(--accent-ink);
 }
+/* Phones keep one row of segments and a single sentence under it (R24). */
+.mode-segmented {
+  display: flex;
+}
+.mode-hint {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+.compact .mode-segmented .segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  width: 100%;
+}
+.compact .mode-segmented .segment {
+  justify-content: center;
+  height: 38px;
+}
 
 .legend {
   display: flex;
@@ -1439,6 +1565,13 @@ button.delay:hover:not(:disabled) {
 }
 .compact .stats {
   grid-template-columns: repeat(2, 1fr);
+}
+/* The home side column is narrower than a full-width traffic card (R24). */
+.home-traffic .stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.compact .home-traffic .stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .stat {
   display: flex;

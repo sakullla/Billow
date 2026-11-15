@@ -430,4 +430,164 @@ describe('App', () => {
     await goBack()
     expect(wrapper.find('.main').attributes('data-page')).toBe('home')
   })
+
+  it('keeps one control for connect, disconnect and add-config', async () => {
+    const { wrapper } = await mountApp()
+    const power = wrapper.find('[data-testid="power"]')
+    expect(power.element.tagName).toBe('BUTTON')
+    expect(power.find('.connect-glyph .icon').exists()).toBe(true)
+    expect(power.text()).toBe('连接')
+    // The glyph and the label live in the same button; no second connect entry exists.
+    const duplicate = wrapper
+      .findAll('.home button')
+      .filter((button) => button.element !== power.element && ['连接', '断开'].includes(button.text().trim()))
+    expect(duplicate).toHaveLength(0)
+
+    await power.trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-testid="power"]').text()).toBe('断开')
+    expect(wrapper.find('[data-testid="rates"]').exists()).toBe(true)
+
+    wrapper.unmount()
+    const welcome = await mountApp({ profiles: false }, 390)
+    expect(welcome.wrapper.find('[data-testid="power"]').text()).toBe('添加配置')
+  })
+
+  it('keeps the Android VPN switch as takeover state, not a second connect entry', async () => {
+    const { wrapper } = await mountApp({ platform: 'android' }, 390)
+    const vpn = wrapper.find('[data-testid="toggle-vpn"]')
+    expect(vpn.attributes('role')).toBe('switch')
+    expect(vpn.attributes('aria-checked')).toBe('false')
+    expect(vpn.attributes('disabled')).not.toBeUndefined()
+    expect(wrapper.find('[data-testid="takeover-card"]').text()).toContain('开启 VPN 需连接')
+    expect(wrapper.findAll('[data-testid="power"]')).toHaveLength(1)
+  })
+
+  it('shows the mode row with one live sentence on phones and keeps desktop cards', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    const segments = wrapper.findAll('[data-testid="mode-segmented"] .segment')
+    expect(segments.map((segment) => segment.text())).toEqual(['规则', '全局', '直连'])
+    expect(wrapper.find('[data-testid="mode-card"] .mode-cards').exists()).toBe(false)
+    const hint = wrapper.find('[data-testid="mode-hint"]')
+    expect(hint.attributes('aria-live')).toBe('polite')
+    expect(hint.text()).toBe('按配置中的规则分流')
+
+    await wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').trigger('click')
+    await settle(300)
+    expect(wrapper.find('[data-testid="mode-hint"]').text()).toBe('新连接都不经过代理')
+    expect(wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').attributes('aria-checked')).toBe('true')
+
+    wrapper.unmount()
+    const desktop = await mountApp({}, 1200)
+    expect(desktop.wrapper.findAll('[data-mode]')).toHaveLength(3)
+    expect(desktop.wrapper.find('[data-testid="mode-card"]').text()).toContain('全部流量走当前节点')
+    expect(desktop.wrapper.find('[data-testid="mode-hint"]').exists()).toBe(false)
+  })
+
+  it('shows only the welcome, add-config and import hint without a profile', async () => {
+    const { wrapper } = await mountApp({ profiles: false }, 390)
+    expect(wrapper.find('[data-testid="welcome"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('欢迎使用 Billow')
+    expect(wrapper.find('[data-testid="power"]').text()).toBe('添加配置')
+    expect(wrapper.find('[data-testid="import-hint"]').text()).toContain('YAML')
+    for (const id of ['mode-card', 'takeover-card', 'traffic-card', 'groups-card', 'profile-card', 'runtime']) {
+      expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(false)
+    }
+  })
+
+  it('shows the connect failure with retry and clears it after the retry succeeds', async () => {
+    const { wrapper, backend } = await mountApp()
+    const original = backend.connect
+    let calls = 0
+    backend.connect = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) throw new Error('内核没有启动')
+      return original()
+    })
+
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    const banner = wrapper.find('[data-testid="home-failure"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain('内核没有启动')
+    expect(banner.text()).toContain('重试')
+    expect(banner.text()).toContain('查看日志')
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('未连接')
+
+    await wrapper.find('[data-testid="retry"]').trigger('click')
+    await settle(1500)
+    expect(backend.connect).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="home-failure"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('已连接')
+  })
+
+  it('retries the failed mode switch with the same mode', async () => {
+    const { wrapper, backend } = await mountApp()
+    const original = backend.setMode
+    let calls = 0
+    backend.setMode = vi.fn(async (mode: Parameters<typeof original>[0]) => {
+      calls += 1
+      if (calls === 1) throw new Error('模式没有切换')
+      return original(mode)
+    })
+
+    await wrapper.find('[data-mode="direct"]').trigger('click')
+    await settle(300)
+    expect(wrapper.find('[data-testid="home-failure"]').text()).toContain('模式没有切换')
+    expect(wrapper.find('[data-testid="home-failure"]').text()).toContain('重试')
+
+    await wrapper.find('[data-testid="retry"]').trigger('click')
+    await settle(300)
+    expect(backend.setMode).toHaveBeenCalledTimes(2)
+    expect(backend.setMode).toHaveBeenLastCalledWith('direct')
+    expect(wrapper.find('[data-testid="home-failure"]').exists()).toBe(false)
+    expect(wrapper.find('[data-mode="direct"]').attributes('aria-checked')).toBe('true')
+  })
+
+  it('hides runtime rows the kernel does not report and never shows a dash', async () => {
+    const demo = createDemoBackend()
+    const readState = demo.state
+    demo.state = async () => ({ ...(await readState.call(demo)), kernel_memory: null, kernel_uptime_secs: null })
+    vi.useFakeTimers()
+    const wrapper = mount(App, { props: { backend: demo, width: 1200 }, attachTo: document.body })
+    mounted.push(wrapper)
+    await settle(50)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+
+    expect(wrapper.find('[data-testid="runtime-kernel"]').text()).toContain('v1.19.17')
+    expect(wrapper.find('[data-testid="runtime-connections"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="runtime-memory"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="runtime-uptime"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="runtime"]').text()).not.toContain('—')
+    wrapper.unmount()
+
+    const full = await mountApp()
+    await full.wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(full.wrapper.find('[data-testid="runtime-memory"]').text()).toContain('128 MB')
+    expect(full.wrapper.find('[data-testid="runtime-uptime"]').text()).toBeTruthy()
+  })
+
+  it('orders the phone first screen before the mode switch', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    const order = wrapper.findAll('.home-grid > *').map((element) => element.attributes('data-testid'))
+    expect(order.slice(0, 4)).toEqual(['home-status', 'home-action', 'takeover-card', 'mode-card'])
+    expect(wrapper.find('[data-testid="home-status"]').text()).toContain('星河云')
+    expect(order.slice(-3)).toEqual(['traffic-card', 'groups-card', 'profile-card'])
+  })
+
+  it('replaces the spinning refresh glyph with update progress text', async () => {
+    const { wrapper } = await mountApp()
+    const button = () => wrapper.find('[data-testid="update-subscription"]')
+    expect(button().text()).toBe('更新')
+    await button().trigger('click')
+    await settle(100)
+    expect(button().text()).toContain('更新中')
+    expect(button().attributes('aria-busy')).toBe('true')
+    expect(button().find('.spin').exists()).toBe(false)
+    await settle(1200)
+    expect(button().text()).toBe('更新')
+    expect(button().attributes('aria-busy')).toBeUndefined()
+  })
 })
