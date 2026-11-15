@@ -38,14 +38,28 @@ const lineKey = (line: LogLine) => `${line.time_ms}|${line.level}|${line.message
 /** Pausing freezes the list and every count, while the store keeps buffering (R28). */
 const source = computed(() => (paused.value ? frozen.value : snap.value.logs))
 
-const lines = computed(() => {
+/**
+ * Filtered rows keep a content-stable key (`time|level|message` plus an
+ * occurrence counter for duplicate lines). Trimming the front of the capped
+ * buffer then leaves every surviving key intact, so v-memo only mounts the new
+ * lines instead of rebuilding the table (R31).
+ */
+const entries = computed(() => {
   const needle = query.value.trim().toLowerCase()
-  return source.value.filter(
-    (line) =>
-      (filter.value === 'all' || line.level === filter.value) &&
-      (!needle || line.message.toLowerCase().includes(needle)),
-  )
+  const seen = new Map<string, number>()
+  const result: { line: LogLine; key: string }[] = []
+  for (const line of source.value) {
+    const base = lineKey(line)
+    const occurrence = seen.get(base) ?? 0
+    seen.set(base, occurrence + 1)
+    if (filter.value !== 'all' && line.level !== filter.value) continue
+    if (needle && !line.message.toLowerCase().includes(needle)) continue
+    result.push({ line, key: `${base}#${occurrence}` })
+  }
+  return result
 })
+
+const lines = computed(() => entries.value.map((entry) => entry.line))
 
 const counts = computed(() => {
   const totals: Record<LogLevel, number> = { debug: 0, info: 0, warning: 0, error: 0 }
@@ -239,23 +253,24 @@ function resetFilters() {
           </template>
         </EmptyState>
         <div
-          v-for="(line, index) in lines"
-          :key="`${index}:${lineKey(line)}`"
-          v-memo="[line.time_ms, line.level, line.message]"
+          v-for="entry in entries"
+          :key="entry.key"
+          v-memo="[entry.line.time_ms, entry.line.level, entry.line.message]"
           class="log-line"
-          :class="line.level"
-          :data-log-line="lineKey(line)"
+          :class="entry.line.level"
+          :data-log-line="lineKey(entry.line)"
+          :data-log-key="entry.key"
         >
-          <span class="log-time mono">{{ formatClock(line.time_ms) }}</span>
-          <span class="log-level mono">{{ LABEL[line.level] }}</span>
-          <span class="log-msg mono">{{ line.message }}</span>
+          <span class="log-time mono">{{ formatClock(entry.line.time_ms) }}</span>
+          <span class="log-level mono">{{ LABEL[entry.line.level] }}</span>
+          <span class="log-msg mono">{{ entry.line.message }}</span>
           <button
             type="button"
             class="icon-btn sm log-copy"
-            :aria-label="`复制 ${formatClock(line.time_ms)} 的这行日志`"
+            :aria-label="`复制 ${formatClock(entry.line.time_ms)} 的这行日志`"
             title="复制这行"
             data-testid="copy-log-line"
-            @click="copyLine(line)"
+            @click="copyLine(entry.line)"
           >
             <Icon name="copy" :size="13" />
           </button>

@@ -1,4 +1,4 @@
-import { computed, ref, type Ref } from 'vue'
+import { computed, ref, watch, type Ref } from 'vue'
 
 /**
  * Fixed-row-height windowing shared by the connection table, the phone
@@ -31,10 +31,13 @@ export function useVirtualList(
   const window = computed<VirtualRange>(() => {
     const total = count.value
     if (total <= 0) return { start: 0, end: 0 }
+    // Never start past the last full screen, so a shrinking list cannot strand the
+    // window below the content with a blank viewport (R31).
+    const perScreen = Math.max(1, Math.floor(viewport.value / stride()))
     const visible = Math.ceil(viewport.value / stride()) + overscan * 2
     const start = Math.min(
       Math.max(0, Math.floor(scrollTop.value / stride()) - overscan),
-      Math.max(0, total - 1),
+      Math.max(0, total - perScreen),
     )
     return { start, end: Math.min(total, start + visible) }
   })
@@ -43,6 +46,12 @@ export function useVirtualList(
   const offset = computed(() => window.value.start * stride())
   /** Height of the rows below the window. */
   const tail = computed(() => Math.max(0, count.value - window.value.end) * stride())
+
+  // An empty list unmounts the container; when rows come back the window must
+  // start at the top even if the old offset was never re-measured (R31).
+  watch(count, (next, previous) => {
+    if (next > 0 && previous === 0) scrollTop.value = 0
+  })
 
   function onScroll(event: Event) {
     const el = event.currentTarget as HTMLElement | null
@@ -58,5 +67,14 @@ export function useVirtualList(
     measured.value = el.clientHeight
   }
 
-  return { window, offset, tail, onScroll, measure, scrollTop }
+  /**
+   * Return the window to the top. Filters, a remounted container and a reconnect
+   * must not keep the previous scroll offset (R31).
+   */
+  function reset(el: HTMLElement | null = null) {
+    scrollTop.value = 0
+    if (el) el.scrollTop = 0
+  }
+
+  return { window, offset, tail, onScroll, measure, reset, scrollTop }
 }

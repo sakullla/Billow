@@ -2497,6 +2497,15 @@ button.delay:hover:not(:disabled) {
 .log-line:focus-within .log-copy {
   opacity: 1;
 }
+/* Touch has no hover, so the copy control stays visible there (R30). */
+.compact .log-copy {
+  opacity: 1;
+}
+@media (hover: none), (pointer: coarse) {
+  .log-copy {
+    opacity: 1;
+  }
+}
 .log-scroll {
   outline: none;
 }

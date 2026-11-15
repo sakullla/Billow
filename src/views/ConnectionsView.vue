@@ -139,6 +139,15 @@ onMounted(() => {
   })
 })
 
+// Empty/error states unmount the list, so a remount must not reuse the old offset
+// or window index; a filter or sort change returns to the first row (R31).
+watch(tableScroll, (el) => table.measure(el))
+watch(cardScroll, (el) => cards.measure(el))
+watch([query, sortKey], () => {
+  table.reset(tableScroll.value)
+  cards.reset(cardScroll.value)
+})
+
 // Totals and the count stay frozen with the list; only the live source moves.
 const displayTotal = computed(() =>
   paused.value ? frozenTotal.value : snap.value.connection_total || snap.value.connections.length,

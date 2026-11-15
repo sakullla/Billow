@@ -1653,6 +1653,41 @@ describe('App', () => {
     expect(wrapper.findAll('.log-line')).toHaveLength(1000)
   })
 
+  it('keeps log row keys stable when the capped buffer trims from the front', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    const logs: LogLine[] = Array.from({ length: 1005 }, (_, index) => ({
+      level: 'info',
+      message: `row-${index}`,
+      time_ms: 1000 + index,
+    }))
+    logs.push({ level: 'info', message: 'repeat', time_ms: 4000 })
+    logs.push({ level: 'info', message: 'repeat', time_ms: 4000 })
+    demo.state = async () => ({ ...(await read.call(demo)), logs: logs.map((line) => ({ ...line })) })
+    const wrapper = await mountWith(demo)
+    await openPage(wrapper, 'logs')
+    await flushPromises()
+
+    const repeats = wrapper.findAll('[data-log-key^="4000|info|repeat#"]')
+    expect(repeats.map((row) => row.attributes('data-log-key'))).toEqual([
+      '4000|info|repeat#0',
+      '4000|info|repeat#1',
+    ])
+
+    const target = wrapper.find('[data-log-key="1900|info|row-900#0"]')
+    expect(target.exists()).toBe(true)
+    const element = target.element
+
+    logs.splice(0, 10)
+    await storeOf(wrapper).refresh()
+    await flushPromises()
+    expect(wrapper.findAll('.log-line')).toHaveLength(997)
+    const moved = wrapper.find('[data-log-key="1900|info|row-900#0"]')
+    expect(moved.exists()).toBe(true)
+    // The surviving row keeps its DOM node even though its index shifted by ten.
+    expect(moved.element).toBe(element)
+  })
+
   it('labels inline providers as no-update and retries a failed row in place', async () => {
     const { wrapper, backend } = await mountApp()
     await wrapper.find('[data-testid="power"]').trigger('click')
@@ -1810,6 +1845,107 @@ describe('App', () => {
     expect(rows.length).toBeGreaterThan(10)
     expect(rows.length).toBeLessThan(80)
     expect(wrapper.findAll('[data-rule-hit]').length).toBe(rows.length)
+  })
+
+  it('resets windowed lists after filters, empty states and a reconnect', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    const now = Date.now()
+    const connections: ConnectionRow[] = Array.from({ length: 200 }, (_, index) => ({
+      id: `c${index}`,
+      host: `${index < 120 ? 'keep' : 'other'}-${index}.example.com`,
+      outbound: '节点选择',
+      network: 'tcp',
+      conn_type: 'HTTP Connect',
+      destination: `10.0.0.${index % 250}:443`,
+      source: `127.0.0.1:${11000 + index}`,
+      process: 'chrome',
+      rule: 'Match',
+      rule_payload: '',
+      chains: ['节点选择'],
+      upload: index,
+      download: index * 10,
+      start: new Date(now - index * 1000).toISOString(),
+    }))
+    let online = true
+    demo.state = async () => ({
+      ...(await read.call(demo)),
+      connected: online,
+      kernel_running: online,
+      connections: online ? connections : [],
+      connection_total: online ? connections.length : 0,
+    })
+    demo.rules = async () => ({
+      rules: Array.from({ length: 300 }, (_, index) => ({
+        kind: index % 2 ? 'DomainSuffix' : 'GeoIP',
+        payload: `rule-${index}.com`,
+        proxy: index % 3 ? '节点选择' : 'DIRECT',
+        hit_count: index,
+        last_hit: new Date(now - index * 60_000).toISOString(),
+        key: `k${index}`,
+        disabled: false,
+      })),
+      error: null,
+      disabled: [],
+    })
+
+    const wrapper = await mountWith(demo)
+    await openPage(wrapper, 'connections')
+    const scroller = () => wrapper.find('[data-testid="connection-scroll"]')
+    ;(scroller().element as HTMLElement).scrollTop = 3000
+    await scroller().trigger('scroll')
+    expect(
+      Number(wrapper.find('[data-testid="connection-row"]').attributes('data-row-index')),
+    ).toBeGreaterThan(50)
+
+    await wrapper.find('[data-testid="connection-search"]').setValue('keep')
+    await flushPromises()
+    expect((scroller().element as HTMLElement).scrollTop).toBe(0)
+    expect(wrapper.find('[data-testid="connection-row"]').attributes('data-row-index')).toBe('0')
+
+    await wrapper.find('[data-testid="connection-search"]').setValue('zzz-nothing')
+    await flushPromises()
+    expect(wrapper.text()).toContain('没有匹配的连接')
+    await wrapper.find('[data-testid="clear-connection-filter"]').trigger('click')
+    await flushPromises()
+    expect(scroller().exists()).toBe(true)
+    expect((scroller().element as HTMLElement).scrollTop).toBe(0)
+    expect(wrapper.find('[data-testid="connection-row"]').attributes('data-row-index')).toBe('0')
+
+    ;(scroller().element as HTMLElement).scrollTop = 3000
+    await scroller().trigger('scroll')
+    online = false
+    await storeOf(wrapper).refresh()
+    await flushPromises()
+    expect(wrapper.text()).toContain('未连接')
+    online = true
+    await storeOf(wrapper).refresh()
+    await flushPromises()
+    await nextTick()
+    expect((scroller().element as HTMLElement).scrollTop).toBe(0)
+    expect(wrapper.find('[data-testid="connection-row"]').attributes('data-row-index')).toBe('0')
+
+    await openPage(wrapper, 'rules')
+    await settle(400)
+    const ruleScroller = () => wrapper.find('[data-testid="rule-scroll"]')
+    ;(ruleScroller().element as HTMLElement).scrollTop = 5000
+    await ruleScroller().trigger('scroll')
+    expect(
+      Number(wrapper.find('[data-testid="rule-row"]').attributes('data-row-index')),
+    ).toBeGreaterThan(50)
+
+    await wrapper.find('[data-testid="rule-kind-filter"]').setValue('GeoIP')
+    await flushPromises()
+    expect((ruleScroller().element as HTMLElement).scrollTop).toBe(0)
+    expect(wrapper.find('[data-testid="rule-row"]').attributes('data-row-index')).toBe('0')
+
+    await wrapper.find('.toolbar input[type="search"]').setValue('nothing-matches')
+    await flushPromises()
+    expect(wrapper.text()).toContain('没有匹配的规则')
+    await wrapper.find('[data-testid="clear-rule-filter"]').trigger('click')
+    await flushPromises()
+    expect(ruleScroller().exists()).toBe(true)
+    expect(wrapper.find('[data-testid="rule-row"]').attributes('data-row-index')).toBe('0')
   })
 
   it('drops frozen rows and rules when the kernel stops', async () => {

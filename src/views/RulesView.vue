@@ -105,8 +105,12 @@ onMounted(() => {
   void nextTick(() => virtual.measure(scroller.value))
 })
 
+// A remounted list (empty state round trip) and a changed filter both start at the
+// first row instead of the previous offset (R31).
+watch(scroller, (el) => virtual.measure(el))
 watch([query, kind, proxy, sort], () => {
   limit.value = PAGE
+  virtual.reset(scroller.value)
 })
 
 function resetFilters() {
