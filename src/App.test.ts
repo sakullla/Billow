@@ -1569,10 +1569,21 @@ describe('App', () => {
 
     const scroller = () => wrapper.find('[data-testid="log-scroll"]')
     const element = () => scroller().element as HTMLElement
+    let scrollTopValue = 0
     const layout = () => {
-      Object.defineProperty(element(), 'scrollHeight', { value: 28000, configurable: true })
-      Object.defineProperty(element(), 'clientHeight', { value: 500, configurable: true })
+      const el = element()
+      Object.defineProperty(el, 'scrollHeight', { value: 28000, configurable: true })
+      Object.defineProperty(el, 'clientHeight', { value: 500, configurable: true })
+      // Browsers clamp scrollTop to scrollHeight - clientHeight.
+      Object.defineProperty(el, 'scrollTop', {
+        configurable: true,
+        get: () => scrollTopValue,
+        set: (value: number) => {
+          scrollTopValue = Math.max(0, Math.min(value, 28000 - 500))
+        },
+      })
     }
+    const gap = () => Math.max(0, 28000 - element().scrollTop - 500)
     const appendOne = async (index: number) => {
       logs = [...logs.slice(1), { level: 'info', message: `cap-new-${index}`, time_ms: 9000 + index }]
       await storeOf(wrapper).refresh()
@@ -1583,30 +1594,37 @@ describe('App', () => {
     layout()
     expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
 
-    // The count is pinned at 1000, so only a newest-row watcher can re-pin the tail.
+    // The count is pinned at 1000, so only a row-list watcher can re-pin the tail.
     // Leaving scrollTop short of the bottom proves the follow path actually ran.
     for (let index = 0; index < 3; index += 1) {
-      layout()
       await appendOne(index)
-      expect(element().scrollTop).toBe(28000)
+      expect(gap()).toBe(0)
       expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
       expect(wrapper.findAll('.log-line')).toHaveLength(1000)
     }
     expect(wrapper.findAll('.log-line').at(-1)!.text()).toContain('cap-new-2')
 
-    layout()
     element().scrollTop = 1200
     await scroller().trigger('scroll')
     expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
     await appendOne(3)
     expect(element().scrollTop).toBe(1200)
+    expect(gap()).toBeGreaterThan(0)
     expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
 
+    // The jump control returns to the live tail.
+    await wrapper.find('[data-testid="log-jump"]').trigger('click')
+    await flushPromises()
+    expect(gap()).toBe(0)
+    expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
+
     // Reaching the bottom re-engages follow, and the next append pins the tail again.
+    element().scrollTop = 1200
+    await scroller().trigger('scroll')
     element().scrollTop = 27500
     await scroller().trigger('scroll')
     await appendOne(4)
-    expect(element().scrollTop).toBe(28000)
+    expect(gap()).toBe(0)
     expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
   })
 
