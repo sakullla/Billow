@@ -24,6 +24,13 @@ test('all installer types map to their matching updater packages', () => {
   assert.match(result.platforms['darwin-aarch64'].url, /\.app\.tar\.gz$/)
 })
 
+test('draft asset URLs become stable version URLs in the public manifest', () => {
+  const { release, signatures } = fixture()
+  for (const asset of release.assets) asset.browser_download_url = asset.browser_download_url.replace('/v0.1.0/', '/untagged-f9f630ed161dbfe5ea6e/')
+  const result = createManifest(release, signatures, 'sakullla/Billow', '0.1.0')
+  for (const platform of Object.values(result.platforms)) assert.match(platform.url, /\/v0\.1\.0\/Billow_0\.1\.0_/)
+})
+
 for (const mutation of [
   (release) => { release.assets = release.assets.filter((a) => !a.name.endsWith('.apk')) },
   (release) => { release.assets = release.assets.filter((a) => !a.name.endsWith('.exe.sig')) },

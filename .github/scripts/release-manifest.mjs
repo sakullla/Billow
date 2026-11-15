@@ -7,9 +7,16 @@ export function createManifest(release, signatures, repo, version) {
     const found = assets.filter((asset) => pattern.test(asset.name))
     if (found.length !== 1 || found[0].size <= 0) throw new Error(`Expected one nonempty asset matching ${pattern}`)
     const asset = found[0]
+    if (!asset.name.startsWith(`Billow_${version}_`)) throw new Error(`Asset version differs: ${asset.name}`)
     const expected = `https://github.com/${repo}/releases/download/v${version}/${asset.name}`
-    if (asset.browser_download_url !== expected) throw new Error(`Unexpected asset URL: ${asset.name}`)
-    return asset
+    // GitHub assigns untagged-* URLs to draft assets, even with tag_name set.
+    // Publish-time URLs use the chosen version tag; never ship temporary URLs.
+    const prefix = `https://github.com/${repo}/releases/download/`
+    const parts = asset.browser_download_url.startsWith(prefix)
+      ? asset.browser_download_url.slice(prefix.length).split('/') : []
+    const temporary = parts.length === 2 && /^untagged-[a-f0-9]+$/.test(parts[0]) && parts[1] === asset.name
+    if (asset.browser_download_url !== expected && !temporary) throw new Error(`Unexpected asset URL: ${asset.name}`)
+    return { ...asset, browser_download_url: expected }
   }
   select(/_aarch64\.dmg$/)
   select(/_amd64\.deb$/)
