@@ -1,0 +1,149 @@
+{
+  "attempt_id": "shell-navigation-A1",
+  "checkpoint_ref": "f196190fcb70d53d6d012859f02d91e6a34a3b3f",
+  "continuation": {
+    "artifact_ref": "task-runs/shell-navigation-run.md",
+    "attempt_id": "shell-navigation-A1",
+    "checkpoint_ref": "f196190fcb70d53d6d012859f02d91e6a34a3b3f",
+    "next_action": "task.record",
+    "owner": "execute-task-workflow",
+    "review_base_ref": "54552a878a2d641ef03e8c02d2f976771e5320b7",
+    "task_id": "shell-navigation",
+    "workflow_status": "active"
+  },
+  "created_at": "2026-11-15T04:09:29.553473Z",
+  "format": "sakullla_evidence_trace",
+  "observations": {
+    "delta": {
+      "entries": [
+        {
+          "path": "src/views/ConnectionsView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/views/LogsView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/views/ProxiesView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/views/RulesView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        }
+      ],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [],
+      "status": "completed",
+      "summary": "侧栏分组、命令面板、滚动记忆与返回桥接通",
+      "verification_refs": [
+        "tests:npm test 67 passed",
+        "tests:npm run build"
+      ]
+    }
+  },
+  "provenance": {
+    "artifact_refs": [
+      "task-runs/shell-navigation-run.md",
+      "54552a878a2d641ef03e8c02d2f976771e5320b7"
+    ],
+    "checkpoint_ref": "f196190fcb70d53d6d012859f02d91e6a34a3b3f",
+    "path_digests": {
+      "src/views/ConnectionsView.vue": "sha256:4d42eaf0a6134f7e59cf0064bee492d0b4b8a4705ff2739edb9d26dbed2e8fef",
+      "src/views/LogsView.vue": "sha256:d49891162f6c58afb7914d0c61d0f38edb058c80809f45654d5ed5acfa838045",
+      "src/views/ProxiesView.vue": "sha256:74918390207feeecf4fad7ba9d94ef14f9aaf17c4c116449bd8e2d4a8e13eeec",
+      "src/views/RulesView.vue": "sha256:06d7b9cbd951997e6b2c455b0478038e2db8f9bbd61a14160f14048453bdf71d"
+    },
+    "path_format": "repository_relative",
+    "paths": [
+      "src/views/ConnectionsView.vue",
+      "src/views/LogsView.vue",
+      "src/views/ProxiesView.vue",
+      "src/views/RulesView.vue"
+    ],
+    "repository_root": "C:\\Users\\12976\\project\\Billow"
+  },
+  "refs": {
+    "review_base": "54552a878a2d641ef03e8c02d2f976771e5320b7",
+    "task_run": "task-runs/shell-navigation-run.md"
+  },
+  "repository_root": "C:\\Users\\12976\\project\\Billow",
+  "source": {
+    "attempt_id": "shell-navigation-A1",
+    "delta": {
+      "entries": [
+        {
+          "path": "src/views/ConnectionsView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/views/LogsView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/views/ProxiesView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/views/RulesView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        }
+      ],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [],
+      "status": "completed",
+      "summary": "侧栏分组、命令面板、滚动记忆与返回桥接通",
+      "verification_refs": [
+        "tests:npm test 67 passed",
+        "tests:npm run build"
+      ]
+    },
+    "provenance": {
+      "artifact_refs": [
+        "task-runs/shell-navigation-run.md",
+        "54552a878a2d641ef03e8c02d2f976771e5320b7"
+      ],
+      "checkpoint_ref": "f196190fcb70d53d6d012859f02d91e6a34a3b3f",
+      "path_digests": {
+        "src/views/ConnectionsView.vue": "sha256:4d42eaf0a6134f7e59cf0064bee492d0b4b8a4705ff2739edb9d26dbed2e8fef",
+        "src/views/LogsView.vue": "sha256:d49891162f6c58afb7914d0c61d0f38edb058c80809f45654d5ed5acfa838045",
+        "src/views/ProxiesView.vue": "sha256:74918390207feeecf4fad7ba9d94ef14f9aaf17c4c116449bd8e2d4a8e13eeec",
+        "src/views/RulesView.vue": "sha256:06d7b9cbd951997e6b2c455b0478038e2db8f9bbd61a14160f14048453bdf71d"
+      },
+      "path_format": "repository_relative",
+      "paths": [
+        "src/views/ConnectionsView.vue",
+        "src/views/LogsView.vue",
+        "src/views/ProxiesView.vue",
+        "src/views/RulesView.vue"
+      ],
+      "repository_root": "C:\\Users\\12976\\project\\Billow"
+    },
+    "refs": {
+      "review_base": "54552a878a2d641ef03e8c02d2f976771e5320b7",
+      "task_run": "task-runs/shell-navigation-run.md"
+    },
+    "task_id": "shell-navigation",
+    "workflow_id": "2026-11-15-experience-upgrade"
+  },
+  "source_digest": "sha256:b276d0cd9a3da1ddcfa0adfa1f9dc0e7c9f705076262c595ff7180a75786b1f4",
+  "state_ref": "C:\\Users\\12976\\project\\Billow\\docs\\sakullla-workflow\\2026-11-15-experience-upgrade\\00-state.yaml",
+  "task_id": "shell-navigation",
+  "version": 1,
+  "workflow_id": "2026-11-15-experience-upgrade"
+}

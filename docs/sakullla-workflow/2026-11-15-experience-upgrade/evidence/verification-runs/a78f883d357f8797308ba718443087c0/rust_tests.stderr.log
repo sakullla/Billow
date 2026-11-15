@@ -1,0 +1,63 @@
+warning: methods `set_installed` and `matching_installed` are never used
+    --> src\profile.rs:1155:12
+     |
+1029 | impl ProfileBook {
+     | ---------------- methods in this implementation
+...
+1155 |     pub fn set_installed(&mut self, apps: Vec<crate::takeover::InstalledApp>) {
+     |            ^^^^^^^^^^^^^
+...
+1170 |     pub fn matching_installed(&self, query: &str) -> Vec<&crate::takeover::InstalledApp> {
+     |            ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `filter_installed` is never used
+  --> src\takeover.rs:74:8
+   |
+74 | pub fn filter_installed<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<&'a InstalledApp> {
+   |        ^^^^^^^^^^^^^^^^
+
+warning: methods `calls` and `last_excluded` are never used
+   --> src\takeover.rs:770:12
+    |
+756 | impl HostVpn {
+    | ------------ methods in this implementation
+...
+770 |     pub fn calls(&self) -> &[String] {
+    |            ^^^^^
+...
+774 |     pub fn last_excluded(&self) -> &[String] {
+    |            ^^^^^^^^^^^^^
+
+warning: struct `RecordingVpn` is never constructed
+   --> src\takeover.rs:804:12
+    |
+804 | pub struct RecordingVpn {
+    |            ^^^^^^^^^^^^
+
+warning: associated function `granted` is never used
+   --> src\takeover.rs:813:12
+    |
+812 | impl RecordingVpn {
+    | ----------------- associated function in this implementation
+813 |     pub fn granted() -> Self {
+    |            ^^^^^^^
+
+warning: function `parse_macos_proxy` is never used
+    --> src\takeover.rs:1196:8
+     |
+1196 | pub fn parse_macos_proxy(text: &str) -> Option<ProxyEndpoint> {
+     |        ^^^^^^^^^^^^^^^^^
+
+warning: function `parse_network_services` is never used
+    --> src\takeover.rs:1222:4
+     |
+1222 | fn parse_network_services(text: &str) -> Vec<String> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `billow` (lib) generated 7 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.99s
+     Running unittests src\lib.rs (C:/Users/12976/.cargo/target\debug\deps\billow_lib-358034f151efda59.exe)
+     Running unittests src\main.rs (C:/Users/12976/.cargo/target\debug\deps\billow-73f38386579d9934.exe)
+   Doc-tests billow_lib

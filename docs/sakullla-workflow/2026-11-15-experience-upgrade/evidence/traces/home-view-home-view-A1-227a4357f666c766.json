@@ -1,0 +1,97 @@
+{
+  "attempt_id": "home-view-A1",
+  "checkpoint_ref": "9118858292bab47870c747a8a4f677d5d7d4a160",
+  "continuation": {
+    "artifact_ref": "task-runs/home-view-run.md",
+    "attempt_id": "home-view-A1",
+    "checkpoint_ref": "9118858292bab47870c747a8a4f677d5d7d4a160",
+    "next_action": "task.record",
+    "owner": "execute-task-workflow",
+    "review_base_ref": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+    "task_id": "home-view",
+    "workflow_status": "active"
+  },
+  "created_at": "2026-11-15T05:13:19.813667Z",
+  "format": "sakullla_evidence_trace",
+  "observations": {
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [
+        "Android VPN 后端没有独立命令，开关当前只反映 VPN 状态并禁用，文案为“开启 VPN 需连接”；真正可切换的 VPN 接管需新增 set_vpn 命令，不在本 Task 范围",
+        "首屏与桌面布局仅在浏览器 demo 后端按 390×844 与 1440×900 目视核对，未在 Tauri/Android 实机验证安全区与触控目标",
+        "ProfilesView、ResourcesView、RulesView、SettingsView 仍引用已删除的 .spin 装饰类，属各自 Task 范围，本次只清理首页",
+        "HomeView 已不使用 .grid-2/.span-2 工具类，样式保留供其他页面"
+      ],
+      "status": "completed_with_concerns",
+      "summary": "首页单控件、模式分段、运行状态与失败重试已实现",
+      "verification_refs": [
+        "tests:npm test 78 passed",
+        "tests:npm run build"
+      ]
+    }
+  },
+  "provenance": {
+    "artifact_refs": [
+      "task-runs/home-view-run.md",
+      "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0"
+    ],
+    "checkpoint_ref": "9118858292bab47870c747a8a4f677d5d7d4a160",
+    "path_digests": {},
+    "path_format": "repository_relative",
+    "paths": [],
+    "repository_root": "C:\\Users\\12976\\project\\Billow"
+  },
+  "refs": {
+    "review_base": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+    "task_run": "task-runs/home-view-run.md"
+  },
+  "repository_root": "C:\\Users\\12976\\project\\Billow",
+  "source": {
+    "attempt_id": "home-view-A1",
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [
+        "Android VPN 后端没有独立命令，开关当前只反映 VPN 状态并禁用，文案为“开启 VPN 需连接”；真正可切换的 VPN 接管需新增 set_vpn 命令，不在本 Task 范围",
+        "首屏与桌面布局仅在浏览器 demo 后端按 390×844 与 1440×900 目视核对，未在 Tauri/Android 实机验证安全区与触控目标",
+        "ProfilesView、ResourcesView、RulesView、SettingsView 仍引用已删除的 .spin 装饰类，属各自 Task 范围，本次只清理首页",
+        "HomeView 已不使用 .grid-2/.span-2 工具类，样式保留供其他页面"
+      ],
+      "status": "completed_with_concerns",
+      "summary": "首页单控件、模式分段、运行状态与失败重试已实现",
+      "verification_refs": [
+        "tests:npm test 78 passed",
+        "tests:npm run build"
+      ]
+    },
+    "provenance": {
+      "artifact_refs": [
+        "task-runs/home-view-run.md",
+        "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0"
+      ],
+      "checkpoint_ref": "9118858292bab47870c747a8a4f677d5d7d4a160",
+      "path_digests": {},
+      "path_format": "repository_relative",
+      "paths": [],
+      "repository_root": "C:\\Users\\12976\\project\\Billow"
+    },
+    "refs": {
+      "review_base": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+      "task_run": "task-runs/home-view-run.md"
+    },
+    "task_id": "home-view",
+    "workflow_id": "2026-11-15-experience-upgrade"
+  },
+  "source_digest": "sha256:227a4357f666c766e433d3d8ddaf3eee5ee25c269445999eb59ced12545295f8",
+  "state_ref": "C:\\Users\\12976\\project\\Billow\\docs\\sakullla-workflow\\2026-11-15-experience-upgrade\\00-state.yaml",
+  "task_id": "home-view",
+  "version": 1,
+  "workflow_id": "2026-11-15-experience-upgrade"
+}

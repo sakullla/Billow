@@ -1,0 +1,453 @@
+format_version: 2
+workflow_id: 2026-11-15-experience-upgrade
+requirement_ref: C:\Users\12976\project\Billow\docs\requirements\2026-11-15-experience-upgrade.md
+requirement_version: sha256:99c8a06018e405c69cdb2b165ef1b7265507df60d0f9cffccca437c3c7dd7972
+requirement_ids: [R23, R24, R25, R26, R27, R28, R29, R30, R31, R32, R33]
+requirement_revision: 2
+revision_fence:
+  from_revision: 1
+  to_revision: 2
+  status: reconciled
+  preserved_active_task_ids: []
+  preserved_result_task_ids: []
+  preserved_review_task_ids: []
+  preserved_drafts: []
+  reused_task_ids: []
+  stale_task_ids: []
+  revision_attempt_task_ids: []
+  rebuilt_task_ids:
+    - token-system
+    - interaction-shell
+    - shell-navigation
+    - data-layer
+    - rule-runtime
+    - home-view
+    - proxy-view
+    - profiles-view
+    - diagnostics-view
+status: closed
+stages:
+  exploration: completed
+  solution: completed
+  plan: completed
+  execution: completed
+  delivery: completed
+gates:
+  solution: confirmed
+schedule_pending: false
+implementation_base_ref: 679b62ee57d8f0783742abaf2e8ef75e6cb6a9ba
+tasks:
+  - id: token-system
+    status: completed
+    task_run_ref: task-runs/token-system-run.md
+    recipe_digest: sha256:7b3644408a2c7eebec33238cd24a6fae42c583cf0c8c1df838b7fbe6ea686cd4
+    recipe_snapshot:
+      id: token-system
+      goal: 建立统一视觉 token 并修正对比度、圆角、动效与数字呈现，使全部页面消费同一套变量。
+      depends_on: []
+      covers: [R23, R30]
+      outcomes:
+        - 根与两套深色主题提供字号、行高、间距、圆角、动效与三级文字 token，页面不再新增字面量字号与圆角
+        - 浅色弱文字在四种底色达到 4.5:1，焦点环与边框达到 3:1，深色主按钮与语义标签文字达到 4.5:1
+        - 主按钮、分段选项与选中行统一圆角；强调色唯一，渐变只保留品牌与流量条
+        - 普通过渡不超过 200ms，减少动态效果下没有无限装饰循环，scroll-behavior 回到 auto
+        - 速率、延迟与流量数字使用 tabular-nums，延迟列宽度固定不抖动
+      test: reuse
+      scope:
+        - src/styles.css
+        - src/components/Segmented.vue
+        - src/components/Toggle.vue
+        - src/components/TrafficChart.vue
+        - src/components/Icon.vue
+    requirement_revision: 2
+    review_base_ref: 642e6566bc262eb19e8910b6eabe24bf9023ff1e
+    attempts:
+      - attempt_id: token-system-A1
+        message_id: token-system-A1-M1
+        recipe_digest: sha256:7b3644408a2c7eebec33238cd24a6fae42c583cf0c8c1df838b7fbe6ea686cd4
+        owner_mode: worker
+        baseline_ref: 642e6566bc262eb19e8910b6eabe24bf9023ff1e
+        checkpoint_ref: 910029627eba415bc945616be61ad1e366928e96
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 5
+        path_count: 5
+        review_evidence_refs: [evidence/reviews/4.json]
+        scope_ref: evidence/history/2.json#Attempt-History/token-system-A1/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/2.json#Attempt-History/token-system-A1/execution
+        execution_digest: sha256:94fbcec15fdfbdae8d2e35644a637395fb38a54da7da4b094ffeb19efee63784
+        review_ref: evidence/history/2.json#Attempt-History/token-system-A1/review
+        review_digest: sha256:2fa827c159e54a7a8164378463d4824b9cf3aebe1d548dca18e27ab8cfbec321
+    history_head_ref: evidence/history/2.json
+    history_count: 1
+  - id: interaction-shell
+    status: completed
+    task_run_ref: task-runs/interaction-shell-run.md
+    recipe_digest: sha256:fbff17e633b2be3dcde6843921c03c76a76e1418a8179e1bde41814a20761774
+    recipe_snapshot:
+      id: interaction-shell
+      goal: 提供带焦点陷阱的弹层、键盘菜单、命令面板、骨架与空状态等共享交互基础。
+      depends_on: [token-system]
+      covers: [R25, R29, R30]
+      outcomes:
+        - 弹层打开后聚焦首个控件、Tab 在层内循环、背景 inert 且不滚动，Esc 关闭后焦点回到触发控件
+        - Menu 支持上下键、Home/End、Esc 与外部点击关闭，关闭后焦点回到触发按钮
+        - 命令面板可按页面、设置分类与动作过滤，上下键与 Enter 执行，不可执行动作显示原因且不含删除动作
+        - EmptyState 区分加载、无数据、无匹配与失败并给出下一步动作；Skeleton 提供列表、卡片与详情形态
+        - 快捷键注册表集中导出，斜杠、问号与 Esc 在输入框中不误触发
+      test: new
+      scope:
+        - src/components/Modal.vue
+        - src/components/Menu.vue
+        - src/components/CommandPalette.vue
+        - src/components/EmptyState.vue
+        - src/components/Skeleton.vue
+        - src/lib/ui/focus.ts
+        - src/lib/ui/hotkeys.ts
+        - src/lib/ui/shortcuts.ts
+        - src/styles.css
+    requirement_revision: 2
+    review_base_ref: 0efe8834e54df624acedb509ec532ac887c75120
+    attempts:
+      - attempt_id: interaction-shell-A2
+        message_id: interaction-shell-A2-M1
+        recipe_digest: sha256:fbff17e633b2be3dcde6843921c03c76a76e1418a8179e1bde41814a20761774
+        owner_mode: worker
+        baseline_ref: 5496a32af276240f68bb2591a911ce3a42471791
+        checkpoint_ref: 54552a878a2d641ef03e8c02d2f976771e5320b7
+        execution_status: completed
+        review_decision: passed
+        finding_count: 4
+        path_count: 13
+        review_evidence_refs: [evidence/reviews/10.json]
+        scope_ref: evidence/history/5.json#Attempt-History/interaction-shell-A2/scope_delta
+        scope_digest: sha256:27be0723e6c3b2bcb756b18dcebf207e154cbd03b24050370b0b313ed080adaf
+        execution_ref: evidence/history/5.json#Attempt-History/interaction-shell-A2/execution
+        execution_digest: sha256:51cce35ef047849c392c8390c8e3614447dca24e6a5906ee4e4aa16ac77c3a3c
+        review_ref: evidence/history/5.json#Attempt-History/interaction-shell-A2/review
+        review_digest: sha256:4f38c39117485a7bdcbaa08e625b5996822d7caf799152b8986551cac5f87b12
+    history_head_ref: evidence/history/5.json
+    history_count: 2
+  - id: shell-navigation
+    status: completed
+    task_run_ref: task-runs/shell-navigation-run.md
+    recipe_digest: sha256:4b024404c421a90e27ee79d84fd3f599e0f5f73a85a2fb55675332b6c26c002e
+    recipe_snapshot:
+      id: shell-navigation
+      goal: 桌面侧栏按核心与工具分组并固定设置，接通命令面板、每页滚动记忆与移动端当前项语义。
+      depends_on: [interaction-shell]
+      covers: [R25, R29, R30]
+      outcomes:
+        - 桌面侧栏显示核心与工具两个分组标题，八项顺序不变，设置固定在底部；移动端仍为五项
+        - 规则、资源与日志页在移动端给设置标签 aria-current，切换后当前项立即正确且不出现空白页
+        - Ctrl/Cmd+K 在任意页打开命令面板并可执行连接、断开、测速、更新订阅、添加配置、切换主题与打开日志
+        - 切换页面保存并恢复滚动位置，窗口尺寸变化后回到顶部，代理组定位优先于恢复
+        - Android 返回键先关闭最上层弹层或菜单，再返回上一页
+      test: extend
+      scope: [src/App.vue, src/lib/store.ts, src/App.test.ts, src/styles.css]
+    requirement_revision: 2
+    review_base_ref: 54552a878a2d641ef03e8c02d2f976771e5320b7
+    attempts:
+      - attempt_id: shell-navigation-A2
+        message_id: shell-navigation-A2-M1
+        recipe_digest: sha256:4b024404c421a90e27ee79d84fd3f599e0f5f73a85a2fb55675332b6c26c002e
+        owner_mode: worker
+        baseline_ref: f196190fcb70d53d6d012859f02d91e6a34a3b3f
+        checkpoint_ref: cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0
+        execution_status: completed
+        review_decision: passed
+        finding_count: 4
+        path_count: 5
+        review_evidence_refs: [evidence/reviews/16.json]
+        scope_ref: evidence/history/8.json#Attempt-History/shell-navigation-A2/scope_delta
+        scope_digest: sha256:1c74722c32868107277b4bdd0d697afc00cbb873f5470e6bdd5f3f6abc54998e
+        execution_ref: evidence/history/8.json#Attempt-History/shell-navigation-A2/execution
+        execution_digest: sha256:4c140306fa7e591dbf16ae4ffcdb7edcaad5149337316b222978950dee630530
+        review_ref: evidence/history/8.json#Attempt-History/shell-navigation-A2/review
+        review_digest: sha256:b2d7294f65fad13c7237a4e023f1d34c6945280578e79b59f6085fca394b2a95
+    history_head_ref: evidence/history/8.json
+    history_count: 2
+  - id: data-layer
+    status: completed
+    task_run_ref: task-runs/data-layer-run.md
+    recipe_digest: sha256:1d75cd2f9107ef10328b3b3e382265ccde43ea1576acf2b5aa88f0a0627bcbda
+    recipe_snapshot:
+      id: data-layer
+      goal: 扩展 Rust 快照与前端绑定，提供组图标、内核内存与运行时长、连接总数与读取错误、规则命中数据。
+      depends_on: []
+      covers: [R24, R26, R28, R33]
+      outcomes:
+        - 配置 proxy-groups[].icon 经 http/https/data:image 校验后进入 ParsedGroup、NodeGroupView 与 NodeGroup，非法协议为 null
+        - 快照含内核内存、运行时长、连接总数与连接读取错误，缺失时为 null 或 0 且不伪造占位
+        - 规则行含命中次数与最后命中时间，内核不返回 extra 时两者为 null
+        - 前后端 normalize 与 demo 同步，未声明字段被丢弃而不是原样透传
+        - Rust 与前端类型测试覆盖 icon 解析、字段缺省与连接错误
+      test: extend
+      scope:
+        - src-tauri/src/nodes.rs
+        - src-tauri/src/profile.rs
+        - src-tauri/src/diagnostics.rs
+        - src-tauri/src/lib.rs
+        - src/lib/types.ts
+        - src/lib/backend.ts
+        - src/lib/demo.ts
+        - src/lib/types.test.ts
+    requirement_revision: 2
+    review_base_ref: 679b62ee57d8f0783742abaf2e8ef75e6cb6a9ba
+    attempts:
+      - attempt_id: data-layer-A1
+        message_id: data-layer-A1-M1
+        recipe_digest: sha256:1d75cd2f9107ef10328b3b3e382265ccde43ea1576acf2b5aa88f0a0627bcbda
+        owner_mode: worker
+        baseline_ref: 679b62ee57d8f0783742abaf2e8ef75e6cb6a9ba
+        checkpoint_ref: 642e6566bc262eb19e8910b6eabe24bf9023ff1e
+        execution_status: completed
+        review_decision: passed
+        finding_count: 2
+        path_count: 7
+        review_evidence_refs: [evidence/reviews/2.json]
+        scope_ref: evidence/history/1.json#Attempt-History/data-layer-A1/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/1.json#Attempt-History/data-layer-A1/execution
+        execution_digest: sha256:0330b3ce4abd786ccbabe635cf135ccb14ba1a72fa37b662a7c205d93d0b02cf
+        review_ref: evidence/history/1.json#Attempt-History/data-layer-A1/review
+        review_digest: sha256:b02d08f295ec30bd1b56f39ff2b2b2a653ccbcf8b1c04018833f2884f0607fe4
+    history_head_ref: evidence/history/1.json
+    history_count: 1
+  - id: rule-runtime
+    status: completed
+    task_run_ref: task-runs/rule-runtime-run.md
+    recipe_digest: sha256:1a7fe3b8fcef2d66d5727be2ac6ef189b13e13ab7197aaacb73fb08194c2eafa
+    recipe_snapshot:
+      id: rule-runtime
+      goal: 支持运行时临时禁用规则与日志导出，并提供全部测速的逐节点进度事件。
+      depends_on: [data-layer]
+      covers: [R26, R28]
+      outcomes:
+        - set_rule_disabled 生成过滤后的运行时配置并热重载，失败时恢复旧规则集并返回错误
+        - 禁用集合只存在于内存，重启后清空，快照暴露当前禁用键
+        - export_logs 写入下载目录或应用外部文档目录并返回路径，写入失败返回错误而不影响日志缓冲
+        - 全部测速逐节点发出包含节点、延迟、失败、已测与总数的进度事件，demo 以定时器模拟
+        - Rust 测试覆盖规则过滤、重载失败回滚、导出文件名与事件载荷
+      test: new
+      scope:
+        - src-tauri/src/profile.rs
+        - src-tauri/src/diagnostics.rs
+        - src-tauri/src/nodes.rs
+        - src-tauri/src/lib.rs
+        - src/lib/backend.ts
+        - src/lib/demo.ts
+    requirement_revision: 2
+    review_base_ref: 910029627eba415bc945616be61ad1e366928e96
+    attempts:
+      - attempt_id: rule-runtime-A2
+        message_id: rule-runtime-A2-M1
+        recipe_digest: sha256:1a7fe3b8fcef2d66d5727be2ac6ef189b13e13ab7197aaacb73fb08194c2eafa
+        owner_mode: worker
+        baseline_ref: f6dd065e3bd0539d945b114a98776071cf517b76
+        checkpoint_ref: 5496a32af276240f68bb2591a911ce3a42471791
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 4
+        path_count: 7
+        review_evidence_refs: [evidence/reviews/12.json]
+        scope_ref: evidence/history/6.json#Attempt-History/rule-runtime-A2/scope_delta
+        scope_digest: sha256:143aec8581181447ee0c90d3c46cc771b81e9e2fa4b0a5ffae73914c493b8b85
+        execution_ref: evidence/history/6.json#Attempt-History/rule-runtime-A2/execution
+        execution_digest: sha256:78ef468ffac1aa9e7e5121d46e2d8c975f4e31088d86bb72cccda1c5accbefab
+        review_ref: evidence/history/6.json#Attempt-History/rule-runtime-A2/review
+        review_digest: sha256:cf40905aa339c232e21e6b13e9b10480ce3b545feb3980d66b3f3f7f5bab0b78
+    history_head_ref: evidence/history/6.json
+    history_count: 2
+  - id: home-view
+    status: completed
+    task_run_ref: task-runs/home-view-run.md
+    recipe_digest: sha256:00d5d7edf4e1992ca4350ec0c5c0e6c27b0f575d3bcf998cd9184a9dbc317513
+    recipe_snapshot:
+      id: home-view
+      goal: 首页收敛为单一连接主操作，并按首屏优先级重排状态、配置、模式与接管。
+      depends_on: [shell-navigation, data-layer]
+      covers: [R24, R29, R30]
+      outcomes:
+        - 390×844 首屏可见状态、当前配置、唯一主操作与网络接管摘要，连接后同时显示上传与下载速率
+        - 电源图标与连接、断开或添加配置文字属于同一按钮，页面没有第二个同义主按钮
+        - 手机模式为单行分段控件并在下方显示当前模式说明，桌面保留每种模式的说明
+        - 无配置时只显示欢迎与添加配置；失败条显示原因、重试与查看日志，重试成功后消失
+        - 运行状态显示内核版本、内存、运行时长与活动连接数，内核未提供的项整行隐藏且不出现破折号
+      test: extend
+      scope: [src/views/HomeView.vue, src/lib/store.ts, src/styles.css, src/App.test.ts]
+    requirement_revision: 2
+    review_base_ref: cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0
+    attempts:
+      - attempt_id: home-view-A2
+        message_id: home-view-A2-M1
+        recipe_digest: sha256:00d5d7edf4e1992ca4350ec0c5c0e6c27b0f575d3bcf998cd9184a9dbc317513
+        owner_mode: worker
+        baseline_ref: 9118858292bab47870c747a8a4f677d5d7d4a160
+        checkpoint_ref: 35f130afd565b6d9c078f2736e646dec1fe44f8e
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 3
+        path_count: 4
+        review_evidence_refs: [evidence/reviews/20.json]
+        scope_ref: evidence/history/10.json#Attempt-History/home-view-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/10.json#Attempt-History/home-view-A2/execution
+        execution_digest: sha256:e2cca0e300d299d487446790aacce319a6baf49e319132e73a5e781b81eac5fb
+        review_ref: evidence/history/10.json#Attempt-History/home-view-A2/review
+        review_digest: sha256:d46e72936e55c706911e2c5f9f0444f49616242fa5950e73eb7aa81d03825f1f
+    history_head_ref: evidence/history/10.json
+    history_count: 2
+  - id: proxy-view
+    status: completed
+    task_run_ref: task-runs/proxy-view-run.md
+    recipe_digest: sha256:be8c2a0958abb3cfc5fa64b569f021be6215375c14d086d6fe4df8d70039f0e7
+    recipe_snapshot:
+      id: proxy-view
+      goal: 代理页默认展开当前组、改善搜索与测速反馈，并在组头与首页组行显示配置声明的组图标。
+      depends_on: [home-view]
+      covers: [R26, R30, R31, R33]
+      outcomes:
+        - 首次进入展开当前手动组并在没有选择时展开第一组且滚动到位，重启后沿用展开状态，从首页进入时优先定位目标组
+        - 组头与测速、节点行与测速是各自独立的焦点目标，节点行 Enter 或 Space 可选，自动组节点不可选
+        - 工具栏在滚动时保持可见，搜索高亮匹配文字并显示匹配数量，支持排序、隐藏自动组、紧凑视图与展开收起全部
+        - 全部测速显示已测与总数并逐节点更新，失败节点显示超时，已成功结果保留
+        - 配置提供 icon 时组头与首页组行显示图片，缺失或加载失败回退内置类型图标且不改变布局与焦点
+        - 390px 宽度下工具栏不横向溢出，图标不与组名重叠
+      test: extend
+      scope:
+        - src/views/ProxiesView.vue
+        - src/views/HomeView.vue
+        - src/components/GroupIcon.vue
+        - src/lib/store.ts
+        - src/styles.css
+        - src/App.test.ts
+        - src/lib/types.test.ts
+    requirement_revision: 2
+    review_base_ref: 35f130afd565b6d9c078f2736e646dec1fe44f8e
+    attempts:
+      - attempt_id: proxy-view-A2
+        message_id: proxy-view-A2-M1
+        recipe_digest: sha256:be8c2a0958abb3cfc5fa64b569f021be6215375c14d086d6fe4df8d70039f0e7
+        owner_mode: worker
+        baseline_ref: 782aa240daf1fb40814cccf95a5043a729f224c2
+        checkpoint_ref: 1aa68b1b33d0014338a67f872761ed3a6c766cc9
+        execution_status: completed
+        review_decision: passed
+        finding_count: 1
+        path_count: 4
+        review_evidence_refs: [evidence/reviews/24.json]
+        scope_ref: evidence/history/12.json#Attempt-History/proxy-view-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/12.json#Attempt-History/proxy-view-A2/execution
+        execution_digest: sha256:da37365565c7ece31b5f159d5a16d50ea087874bf0d88ec226d1a470d02ec1b1
+        review_ref: evidence/history/12.json#Attempt-History/proxy-view-A2/review
+        review_digest: sha256:8bdb4a4cafd26bcdb201d18c5dddf55b4820c68a6afba1dc8bfec17583e6365c
+    history_head_ref: evidence/history/12.json
+    history_count: 2
+  - id: profiles-view
+    status: completed
+    task_run_ref: task-runs/profiles-view-run.md
+    recipe_digest: sha256:9607aa137d205d9b857e48a81dd3486f846fb1b1f411ef23ecd753a227849699
+    recipe_snapshot:
+      id: profiles-view
+      goal: 配置页增加导入去重、可见的批量更新进度与编辑器未保存保护，并补菜单键盘操作。
+      depends_on: [proxy-view]
+      covers: [R27, R29, R30]
+      outcomes:
+        - 导入已存在的订阅链接时提示该订阅已存在，焦点移到已有卡片且配置数量不增加
+        - 全部更新显示已完成与总数以及逐卡更新中、成功或失败，失败原因留在卡片并可重试，切页后继续
+        - 编辑器行号与正文滚动同步，关闭有未保存修改时先确认，取消后内容、光标与未保存标记保留
+        - 保存失败时错误紧贴编辑器显示且弹层不关闭
+        - 操作菜单上下键可移动，Esc 关闭后焦点回到更多操作按钮
+      test: extend
+      scope:
+        - src/views/ProfilesView.vue
+        - src/lib/store.ts
+        - src-tauri/src/profile.rs
+        - src/lib/demo.ts
+        - src/styles.css
+        - src/App.test.ts
+    requirement_revision: 2
+    review_base_ref: 1aa68b1b33d0014338a67f872761ed3a6c766cc9
+    attempts:
+      - attempt_id: profiles-view-A1
+        message_id: profiles-view-A1-M1
+        recipe_digest: sha256:9607aa137d205d9b857e48a81dd3486f846fb1b1f411ef23ecd753a227849699
+        owner_mode: worker
+        baseline_ref: 1aa68b1b33d0014338a67f872761ed3a6c766cc9
+        checkpoint_ref: 1b1f8763407439904a7e451203324a989d0dfdfe
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 5
+        path_count: 6
+        review_evidence_refs: [evidence/reviews/26.json]
+        scope_ref: evidence/history/13.json#Attempt-History/profiles-view-A1/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/13.json#Attempt-History/profiles-view-A1/execution
+        execution_digest: sha256:c9db5387927ca80dad982a678b13ce4d4bd424a933f85041629f8f07823ad6fa
+        review_ref: evidence/history/13.json#Attempt-History/profiles-view-A1/review
+        review_digest: sha256:2a37ade659fb8978872002145f57f9a7fa69d2b7020e72d33d539a5294c6bf9f
+    history_head_ref: evidence/history/13.json
+    history_count: 1
+  - id: diagnostics-view
+    status: completed
+    task_run_ref: task-runs/diagnostics-view-run.md
+    recipe_digest: sha256:0a91288d19e3a95f355f4bb13b607e4e2824a6a336deee9ae40e9f032aa77b7d
+    recipe_snapshot:
+      id: diagnostics-view
+      goal: 连接、规则、日志与资源页补齐实时详情、暂停冻结、命中与临时禁用、行内反馈和大列表响应。
+      depends_on: [profiles-view, rule-runtime]
+      covers: [R28, R29, R30, R31]
+      outcomes:
+        - 连接详情按 id 随采样更新，连接消失后显示已断开并禁用断开，复制摘要含主机、进程、规则、代理链与上下行累计和时长
+        - 暂停连接列表时总数与累计流量冻结并显示暂停时刻和新增数量，继续后追平最新状态
+        - 手机连接卡片同时显示上传、下载与时长
+        - 规则命中字段存在时显示命中次数并可按命中排序、按类型或策略筛选，禁用后变暗标注且失败时回滚
+        - 日志暂停冻结列表与级别计数并显示暂停时刻与新日志数量，支持单条复制、筛选复制、导出、换行开关与清空确认
+        - 资源内联项标注无需更新且禁用更新，单个与全部更新显示进度，失败原因留在行内并可重试
+        - 1000 条日志、500 条连接与 300 条规则下滚动、筛选、暂停与复制在一秒内响应，追加日志不改变滚动位置
+      test: extend
+      scope:
+        - src/views/ConnectionsView.vue
+        - src/views/RulesView.vue
+        - src/views/LogsView.vue
+        - src/views/ResourcesView.vue
+        - src/lib/store.ts
+        - src/styles.css
+        - src/App.test.ts
+    requirement_revision: 2
+    review_base_ref: 1b1f8763407439904a7e451203324a989d0dfdfe
+    attempts:
+      - attempt_id: diagnostics-view-A4
+        message_id: diagnostics-view-A4-M1
+        recipe_digest: sha256:0a91288d19e3a95f355f4bb13b607e4e2824a6a336deee9ae40e9f032aa77b7d
+        owner_mode: worker
+        baseline_ref: 3768a79351500adedb08de5379dea220e9261db8
+        checkpoint_ref: 31ff2bd1d4ceb3996de84ef76604485f1c8b5509
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 2
+        review_evidence_refs: [evidence/reviews/34.json]
+        scope_ref: evidence/history/17.json#Attempt-History/diagnostics-view-A4/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/17.json#Attempt-History/diagnostics-view-A4/execution
+        execution_digest: sha256:daf442a8f960ced441bfb899190c979cccbcf6e2444f5aca3d2bb6c549e5cb83
+        review_ref: evidence/history/17.json#Attempt-History/diagnostics-view-A4/review
+        review_digest: sha256:455d7c51cddb335523aa6f1072da1cb97eb36b787936f511e6927adf6bedf80e
+    history_head_ref: evidence/history/17.json
+    history_count: 4
+blocker: null
+delivery:
+  status: completed
+plan_input_digest: sha256:482456237211bd3178ec28ca22972b72cb72c33daa3875e85cd3e207248dfe7a
+scheduling:
+  capacities: {}
+  capabilities: {}
+  leases: []
+  bypasses:
+    review:token-system-A1: 1
+    review:rule-runtime-A2: 1
+result_inbox_ref: evidence/results/108.json

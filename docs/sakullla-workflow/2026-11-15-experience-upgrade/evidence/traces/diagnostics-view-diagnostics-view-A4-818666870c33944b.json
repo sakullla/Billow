@@ -1,0 +1,95 @@
+{
+  "attempt_id": "diagnostics-view-A4",
+  "checkpoint_ref": "31ff2bd1d4ceb3996de84ef76604485f1c8b5509",
+  "continuation": {
+    "artifact_ref": "task-runs/diagnostics-view-run.md",
+    "attempt_id": "diagnostics-view-A4",
+    "checkpoint_ref": "31ff2bd1d4ceb3996de84ef76604485f1c8b5509",
+    "next_action": "task.record",
+    "owner": "execute-task-workflow",
+    "review_base_ref": "1b1f8763407439904a7e451203324a989d0dfdfe",
+    "task_id": "diagnostics-view",
+    "workflow_status": "active"
+  },
+  "created_at": "2026-11-15T08:46:33.857385Z",
+  "format": "sakullla_evidence_trace",
+  "observations": {
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [
+        "跟随关闭时原生滚动锚定会按被裁掉的行高下调 scrollTop（约 -36px/次），但标记行视口位置不变；若要同时保持 scrollTop 字面不变需顶部占位，与保留原生锚定冲突"
+      ],
+      "status": "completed_with_concerns",
+      "summary": "移除全局锚定禁用，跟随尾部与阅读位置均稳定",
+      "verification_refs": [
+        "tests:npm test 121 passed",
+        "tests:npm run build",
+        "browser:follow on gap 0 for 5 appends",
+        "browser:follow off marker offset unchanged"
+      ]
+    }
+  },
+  "provenance": {
+    "artifact_refs": [
+      "task-runs/diagnostics-view-run.md",
+      "1b1f8763407439904a7e451203324a989d0dfdfe"
+    ],
+    "checkpoint_ref": "31ff2bd1d4ceb3996de84ef76604485f1c8b5509",
+    "path_digests": {},
+    "path_format": "repository_relative",
+    "paths": [],
+    "repository_root": "C:\\Users\\12976\\project\\Billow"
+  },
+  "refs": {
+    "review_base": "1b1f8763407439904a7e451203324a989d0dfdfe",
+    "task_run": "task-runs/diagnostics-view-run.md"
+  },
+  "repository_root": "C:\\Users\\12976\\project\\Billow",
+  "source": {
+    "attempt_id": "diagnostics-view-A4",
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [
+        "跟随关闭时原生滚动锚定会按被裁掉的行高下调 scrollTop（约 -36px/次），但标记行视口位置不变；若要同时保持 scrollTop 字面不变需顶部占位，与保留原生锚定冲突"
+      ],
+      "status": "completed_with_concerns",
+      "summary": "移除全局锚定禁用，跟随尾部与阅读位置均稳定",
+      "verification_refs": [
+        "tests:npm test 121 passed",
+        "tests:npm run build",
+        "browser:follow on gap 0 for 5 appends",
+        "browser:follow off marker offset unchanged"
+      ]
+    },
+    "provenance": {
+      "artifact_refs": [
+        "task-runs/diagnostics-view-run.md",
+        "1b1f8763407439904a7e451203324a989d0dfdfe"
+      ],
+      "checkpoint_ref": "31ff2bd1d4ceb3996de84ef76604485f1c8b5509",
+      "path_digests": {},
+      "path_format": "repository_relative",
+      "paths": [],
+      "repository_root": "C:\\Users\\12976\\project\\Billow"
+    },
+    "refs": {
+      "review_base": "1b1f8763407439904a7e451203324a989d0dfdfe",
+      "task_run": "task-runs/diagnostics-view-run.md"
+    },
+    "task_id": "diagnostics-view",
+    "workflow_id": "2026-11-15-experience-upgrade"
+  },
+  "source_digest": "sha256:818666870c33944bbcdd43ddb8cc787c93bf28a3fa3acfcba2934706e20758d3",
+  "state_ref": "C:\\Users\\12976\\project\\Billow\\docs\\sakullla-workflow\\2026-11-15-experience-upgrade\\00-state.yaml",
+  "task_id": "diagnostics-view",
+  "version": 1,
+  "workflow_id": "2026-11-15-experience-upgrade"
+}

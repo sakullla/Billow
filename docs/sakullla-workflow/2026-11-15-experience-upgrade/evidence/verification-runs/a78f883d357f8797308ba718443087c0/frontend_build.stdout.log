@@ -1,0 +1,16 @@
+
+> billow@0.1.0 build
+> vue-tsc --noEmit && vite build
+
+vite v8.3.8 building client environment for production...
+transforming...
+✓ 62 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.40 kB │ gzip:  0.28 kB
+dist/assets/index-GG-BVvp2.css   48.91 kB │ gzip:  9.64 kB
+dist/assets/core-0_kFspMt.js      0.19 kB │ gzip:  0.14 kB
+dist/assets/event-DOZYaQlj.js     1.11 kB │ gzip:  0.58 kB
+dist/assets/index-CiaT59sD.js   254.19 kB │ gzip: 87.11 kB
+
+✓ built in 449ms
