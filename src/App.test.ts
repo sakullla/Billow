@@ -5,6 +5,7 @@ import App from './App.vue'
 import GroupIcon from './components/GroupIcon.vue'
 import { createDemoBackend } from './lib/demo'
 import type { Store } from './lib/store'
+import type { ConnectionRow, LogLine } from './lib/types'
 
 async function settle(ms = 1000) {
   await vi.advanceTimersByTimeAsync(ms)
@@ -20,6 +21,37 @@ async function mountApp(options: Parameters<typeof createDemoBackend>[0] = {}, w
   mounted.push(wrapper)
   await settle(50)
   return { wrapper, backend }
+}
+
+/** Mount a backend that a test has already wrapped with its own state. */
+async function mountWith(backend: ReturnType<typeof createDemoBackend>, width = 1200) {
+  vi.useFakeTimers()
+  const wrapper = mount(App, { props: { backend, width }, attachTo: document.body })
+  mounted.push(wrapper)
+  await settle(50)
+  return wrapper
+}
+
+async function openPage(
+  wrapper: Awaited<ReturnType<typeof mountApp>>['wrapper'],
+  page: string,
+) {
+  await wrapper.find(`.sidebar [data-page="${page}"]`).trigger('click')
+  await flushPromises()
+}
+
+function stubClipboard(ok = true) {
+  const writeText = ok
+    ? vi.fn(async (_text: string) => undefined)
+    : vi.fn(async (_text: string) => {
+        throw new Error('denied')
+      })
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+  return writeText
+}
+
+function storeOf(wrapper: Awaited<ReturnType<typeof mountApp>>['wrapper']) {
+  return (wrapper.vm as unknown as { store: Store }).store
 }
 
 function press(target: EventTarget, key: string, init: KeyboardEventInit = {}) {
@@ -1194,5 +1226,613 @@ describe('App', () => {
     for (const button of buttons) expect(button.findAll('button')).toHaveLength(0)
     expect(head.find('.group-toggle .group-icon').exists()).toBe(true)
     expect(head.find('.group-toggle .group-name strong').exists()).toBe(true)
+  })
+
+  it('keeps an open connection detail live, shows 已断开 and copies the summary', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    let download = 2048
+    let gone = false
+    demo.state = async () => {
+      const snap = await read.call(demo)
+      const seed = snap.connections[0]
+      if (!seed) return snap
+      download += 1024 * 1024
+      return {
+        ...snap,
+        connected: true,
+        connections: gone
+          ? []
+          : [
+              {
+                ...seed,
+                upload: 1024,
+                download: seed.download + download,
+                process: 'chrome',
+                rule: 'Match',
+                rule_payload: '',
+                chains: ['节点选择', '香港 01'],
+              },
+            ],
+        connection_total: gone ? 0 : 1,
+      }
+    }
+    const wrapper = await mountWith(demo)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'connections')
+    await settle(100)
+
+    const row = wrapper.find('[data-testid="connection-row"]')
+    expect(row.exists()).toBe(true)
+    await row.trigger('click')
+    await flushPromises()
+    const modalText = () => document.body.querySelector('.modal')?.textContent ?? ''
+    expect(modalText()).toContain('连接详情')
+
+    const first = modalText()
+    await storeOf(wrapper).refresh()
+    await flushPromises()
+    expect(modalText()).not.toBe(first)
+
+    const clipboard = stubClipboard()
+    bodyClick('[data-testid="copy-connection"]')
+    await flushPromises()
+    const copied = String(clipboard.mock.calls[0]?.[0] ?? '')
+    expect(copied).toContain('主机')
+    expect(copied).toContain('进程: chrome')
+    expect(copied).toContain('规则: Match')
+    expect(copied).toContain('代理链: 香港 01 → 节点选择')
+    expect(copied).toMatch(/上传: [\d.]+ (B|KB|MB)/)
+    expect(copied).toMatch(/下载: [\d.]+ (B|KB|MB)/)
+    expect(copied).toMatch(/持续: \d+ (秒|分)/)
+
+    gone = true
+    await storeOf(wrapper).refresh()
+    await flushPromises()
+    const disconnected = document.body.querySelector('[data-testid="detail-disconnected"]')
+    expect(disconnected?.textContent).toContain('已断开')
+    expect(
+      document.body.querySelector<HTMLButtonElement>('[data-testid="disconnect-connection"]')?.disabled,
+    ).toBe(true)
+
+    stubClipboard(false)
+    bodyClick('[data-testid="copy-connection"]')
+    await flushPromises()
+    expect(wrapper.findAll('.toast.error').at(-1)?.text()).toContain('无法写入剪贴板')
+  })
+
+  it('freezes connections, totals and the count while paused and catches up on resume', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    let extra = 0
+    demo.state = async () => {
+      const snap = await read.call(demo)
+      extra += 1
+      const seed = snap.connections[0]
+      const added = seed ? [{ ...seed, id: `extra-${extra}`, host: `extra-${extra}.example.com` }] : []
+      return {
+        ...snap,
+        connections: [...snap.connections, ...added],
+        connection_total: snap.connection_total + 1,
+      }
+    }
+    const wrapper = await mountWith(demo)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'connections')
+    await settle(100)
+
+    const summary = wrapper.find('[data-testid="connection-summary"]')
+    await wrapper.find('[data-testid="pause-connections"]').trigger('click')
+    await flushPromises()
+    // The new-connection badge is the one field that is expected to grow while frozen.
+    const frozen = summary.text().replace(/ · \d+ 条新连接/, '')
+    expect(frozen).toContain('暂停于')
+    expect(wrapper.find('[data-testid="pause-connections"]').attributes('aria-pressed')).toBe('true')
+
+    await settle(3000)
+    expect(summary.text().replace(/ · \d+ 条新连接/, '')).toBe(frozen)
+    expect(wrapper.find('[data-testid="new-connections"]').text()).toMatch(/^\d+ 条新连接$/)
+
+    await wrapper.find('[data-testid="pause-connections"]').trigger('click')
+    await flushPromises()
+    expect(summary.text()).not.toContain('暂停于')
+    expect(wrapper.find('[data-testid="new-connections"]').exists()).toBe(false)
+    expect(summary.text()).toContain(`${storeOf(wrapper).snapshot.value.connection_total} 个活动连接`)
+  })
+
+  it('shows upload, download and duration on phone connection cards', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await wrapper.find('.tabbar [data-page="connections"]').trigger('click')
+    await settle(1100)
+
+    const card = wrapper.find('.conn')
+    expect(card.exists()).toBe(true)
+    const traffic = card.find('[data-testid="connection-traffic"]').text()
+    expect(traffic).toContain('↑')
+    expect(traffic).toContain('↓')
+    expect(traffic).toMatch(/\d+ (秒|分|时|天)/)
+  })
+
+  it('confirms before disconnecting every connection', async () => {
+    const { wrapper, backend } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'connections')
+    await settle(1100)
+
+    const close = vi.spyOn(backend, 'closeConnection')
+    await wrapper.find('[data-testid="disconnect-all"]').trigger('click')
+    await flushPromises()
+    expect(document.body.textContent).toContain('已建立的连接会立即中断')
+    bodyClick('[data-testid="cancel-disconnect-all"]')
+    await flushPromises()
+    expect(close).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-testid="connection-row"]').length).toBeGreaterThan(0)
+
+    await wrapper.find('[data-testid="disconnect-all"]').trigger('click')
+    await flushPromises()
+    bodyClick('[data-testid="confirm-disconnect-all"]')
+    await settle(200)
+    expect(close).toHaveBeenCalledWith(null)
+    expect(document.body.querySelector('.modal')).toBeNull()
+    expect(wrapper.findAll('.toast.success').at(-1)?.text()).toContain('已断开全部连接')
+  })
+
+  it('distinguishes unconnected, empty and failed connection reads', async () => {
+    const first = await mountApp()
+    await openPage(first.wrapper, 'connections')
+    expect(first.wrapper.text()).toContain('未连接')
+    expect(first.wrapper.text()).toContain('前往首页连接')
+    first.wrapper.unmount()
+
+    const demo = createDemoBackend()
+    const read = demo.state
+    demo.state = async () => ({
+      ...(await read.call(demo)),
+      connected: true,
+      kernel_running: true,
+      connections: [],
+      connection_total: 0,
+    })
+    const empty = await mountWith(demo)
+    await openPage(empty, 'connections')
+    expect(empty.text()).toContain('没有当前连接')
+
+    const fail = await mountApp({ connectionsFailure: true })
+    await fail.wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(fail.wrapper, 'connections')
+    await settle(1100)
+    expect(fail.wrapper.text()).toContain('读取失败')
+    expect(fail.wrapper.find('[data-testid="retry-connections"]').exists()).toBe(true)
+    expect(fail.wrapper.findAll('[data-testid="connection-row"]')).toHaveLength(0)
+  })
+
+  it('shows a rule skeleton before the first payload arrives', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await wrapper.find('.sidebar [data-page="rules"]').trigger('click')
+    expect(wrapper.find('.skeleton').exists()).toBe(true)
+
+    await settle(400)
+    expect(wrapper.find('.skeleton').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="rule-row"]').length).toBeGreaterThan(0)
+  })
+
+  it('shows rule hits, sorts by them and disables a rule temporarily', async () => {
+    const { wrapper, backend } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'rules')
+    await settle(400)
+
+    expect(wrapper.find('[data-testid="rules-no-hits"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-rule-hit]').length).toBeGreaterThan(5)
+    await wrapper.find('.toolbar [data-value="hits"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-rule-hit]')[0].text()).toBe('1,204')
+
+    await wrapper.find('[data-testid="rule-kind-filter"]').setValue('GeoIP')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="rule-row"]')).toHaveLength(2)
+    expect(
+      wrapper.findAll('[data-testid="rule-row"]').every((item) => item.text().includes('GeoIP')),
+    ).toBe(true)
+    await wrapper.find('[data-testid="rule-proxy-filter"]').setValue('DIRECT')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="rule-row"]')).toHaveLength(1)
+    await wrapper.find('[data-testid="rule-kind-filter"]').setValue('all')
+    await wrapper.find('[data-testid="rule-proxy-filter"]').setValue('all')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="rule-row"]').length).toBeGreaterThan(5)
+
+    const row = wrapper.findAll('[data-testid="rule-row"]')[0]
+    const key = row.attributes('data-rule-key')!
+    const toggle = vi.spyOn(backend, 'setRuleDisabled')
+    await row.find('[data-testid="rule-toggle"]').trigger('click')
+    await settle(300)
+    expect(toggle).toHaveBeenCalledWith(key, true)
+
+    const disabled = wrapper
+      .findAll('[data-testid="rule-row"]')
+      .find((item) => item.attributes('data-rule-key') === key)!
+    expect(disabled.classes()).toContain('disabled')
+    expect(disabled.text()).toContain('临时，重启后恢复')
+    expect(disabled.find('[data-testid="rule-toggle"]').text()).toBe('启用')
+
+    await wrapper
+      .findAll('[data-testid="rule-row"]')
+      .find((item) => item.attributes('data-rule-key') === key)!
+      .find('[data-testid="rule-toggle"]')
+      .trigger('click')
+    await settle(300)
+    const restored = wrapper
+      .findAll('[data-testid="rule-row"]')
+      .find((item) => item.attributes('data-rule-key') === key)!
+    expect(restored.classes()).not.toContain('disabled')
+    expect(toggle).toHaveBeenLastCalledWith(key, false)
+
+    backend.setRuleDisabled = vi.fn(async () => {
+      throw new Error('重载失败')
+    })
+    const other = wrapper.findAll('[data-testid="rule-row"]')[1]
+    const otherKey = other.attributes('data-rule-key')!
+    await other.find('[data-testid="rule-toggle"]').trigger('click')
+    await settle(200)
+    const untouched = wrapper
+      .findAll('[data-testid="rule-row"]')
+      .find((item) => item.attributes('data-rule-key') === otherKey)!
+    expect(untouched.classes()).not.toContain('disabled')
+    expect(wrapper.findAll('.toast.error').at(-1)?.text()).toContain('规则没有修改：重载失败')
+  })
+
+  it('hides the hit column when the kernel reports no hit data', async () => {
+    const { wrapper } = await mountApp({ rulesExtra: false })
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'rules')
+    await settle(400)
+
+    expect(wrapper.findAll('[data-rule-hit]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="rules-no-hits"]').text()).toContain('不提供命中信息')
+    expect(wrapper.find('.toolbar [data-value="hits"]').exists()).toBe(false)
+  })
+
+  it('freezes logs while paused, counts new lines and copies the chosen range', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    let logs: LogLine[] = Array.from({ length: 20 }, (_, index) => ({
+      level: index % 5 === 0 ? 'error' : 'info',
+      message: `line-${index}`,
+      time_ms: 1000 + index,
+    }))
+    demo.state = async () => ({ ...(await read.call(demo)), logs: logs.map((line) => ({ ...line })) })
+    const wrapper = await mountWith(demo)
+    await openPage(wrapper, 'logs')
+    await flushPromises()
+    expect(wrapper.findAll('.log-line')).toHaveLength(20)
+
+    await wrapper.find('[data-testid="pause-logs"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('20 条')
+    const frozenHeader = wrapper.find('.page-head p').text()
+
+    logs = [...logs, { level: 'error', message: 'new-line', time_ms: 2000 }]
+    await storeOf(wrapper).refresh()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('20 条')
+    expect(wrapper.find('.page-head p').text()).toBe(frozenHeader)
+    expect(wrapper.find('[data-testid="log-new"]').text()).toBe('1')
+    expect(wrapper.findAll('.log-line')).toHaveLength(20)
+
+    const clipboard = stubClipboard()
+    await wrapper.findAll('[data-testid="copy-log-line"]')[0].trigger('click')
+    await flushPromises()
+    expect(String(clipboard.mock.calls[0]?.[0])).toContain('line-0')
+
+    await wrapper.find('.toolbar [data-value="error"]').trigger('click')
+    await flushPromises()
+    const visibleErrors = wrapper.findAll('[data-testid="copy-log-line"]').length
+    expect(visibleErrors).toBe(4)
+    await wrapper.find('[data-testid="copy-logs"]').trigger('click')
+    await flushPromises()
+    const copied = String(clipboard.mock.calls.at(-1)?.[0])
+    expect(copied.split('\n')).toHaveLength(visibleErrors)
+    expect(copied.split('\n').every((line) => line.includes('[error]'))).toBe(true)
+    expect(copied).not.toContain('new-line')
+
+    await wrapper.find('.toolbar [data-value="all"]').trigger('click')
+    await wrapper.find('[data-testid="pause-logs"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('21 条')
+    expect(wrapper.find('[data-testid="log-paused"]').exists()).toBe(false)
+    expect(wrapper.findAll('.log-line')).toHaveLength(21)
+  })
+
+  it('exports logs, toggles wrapping and confirms before clearing', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    const originalClear = demo.clearLogs.bind(demo)
+    let logs: LogLine[] = Array.from({ length: 20 }, (_, index) => ({
+      level: index % 4 === 0 ? 'error' : 'info',
+      message: `entry-${index}`,
+      time_ms: 1000 + index,
+    }))
+    demo.state = async () => ({ ...(await read.call(demo)), logs: logs.map((line) => ({ ...line })) })
+    demo.clearLogs = async () => {
+      logs = []
+      return originalClear()
+    }
+    const wrapper = await mountWith(demo)
+    await openPage(wrapper, 'logs')
+    await flushPromises()
+    expect(wrapper.findAll('.log-line')).toHaveLength(20)
+
+    const wrapToggle = wrapper.find('[data-testid="wrap-field"] .toggle')
+    expect(wrapToggle.attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="log-scroll"]').classes()).not.toContain('no-wrap')
+    await wrapToggle.trigger('click')
+    expect(wrapper.find('[data-testid="log-scroll"]').classes()).toContain('no-wrap')
+
+    const exported = vi.spyOn(demo, 'exportLogs')
+    await wrapper.find('[data-testid="export-logs"]').trigger('click')
+    await settle(200)
+    expect(exported).toHaveBeenCalled()
+    expect(wrapper.findAll('.toast').at(-1)?.text()).toContain('billow-logs')
+
+    await wrapper.find('[data-testid="clear-logs"]').trigger('click')
+    await flushPromises()
+    expect(document.body.textContent).toContain('操作无法撤销')
+    bodyClick('[data-testid="cancel-clear-logs"]')
+    await flushPromises()
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+
+    await wrapper.find('[data-testid="clear-logs"]').trigger('click')
+    await flushPromises()
+    bodyClick('[data-testid="confirm-clear-logs"]')
+    await settle(50)
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('0 条')
+    expect(wrapper.text()).toContain('暂无日志')
+  })
+
+  it('keeps the log scroll still when lines append while scrolled up', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    let logs: LogLine[] = Array.from({ length: 50 }, (_, index) => ({
+      level: 'info',
+      message: `m-${index}`,
+      time_ms: 1000 + index,
+    }))
+    demo.state = async () => ({ ...(await read.call(demo)), logs: logs.map((line) => ({ ...line })) })
+    const wrapper = await mountWith(demo)
+    await openPage(wrapper, 'logs')
+    await flushPromises()
+
+    const scroller = wrapper.find('[data-testid="log-scroll"]')
+    const element = scroller.element as HTMLElement
+    Object.defineProperty(element, 'scrollHeight', { value: 4000, configurable: true })
+    Object.defineProperty(element, 'clientHeight', { value: 500, configurable: true })
+    element.scrollTop = 1200
+    await scroller.trigger('scroll')
+    expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
+
+    logs = [...logs, { level: 'info', message: 'tail', time_ms: 2000 }]
+    await storeOf(wrapper).refresh()
+    await flushPromises()
+    expect(wrapper.findAll('.log-line')).toHaveLength(51)
+    expect((wrapper.find('[data-testid="log-scroll"]').element as HTMLElement).scrollTop).toBe(1200)
+    expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
+  })
+
+  it('keeps a 1000-line log buffer usable for filtering', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    const logs: LogLine[] = Array.from({ length: 1000 }, (_, index) => ({
+      level: index % 10 === 0 ? 'warning' : 'info',
+      message: `bulk-${index}`,
+      time_ms: 1000 + index,
+    }))
+    demo.state = async () => ({ ...(await read.call(demo)), logs: logs.map((line) => ({ ...line })) })
+    const wrapper = await mountWith(demo)
+    await openPage(wrapper, 'logs')
+    await flushPromises()
+    expect(wrapper.findAll('.log-line')).toHaveLength(1000)
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('1000 条')
+
+    await wrapper.find('.toolbar [data-value="warning"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.log-line')).toHaveLength(100)
+
+    await wrapper.find('.toolbar [data-value="all"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.log-line')).toHaveLength(1000)
+  })
+
+  it('labels inline providers as no-update and retries a failed row in place', async () => {
+    const { wrapper, backend } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(500)
+
+    const inline = wrapper.find('[data-provider="private"]')
+    expect(inline.text()).toContain('无需更新')
+    expect(inline.findAll('button')).toHaveLength(1)
+    expect(inline.find('button').attributes('disabled')).not.toBeUndefined()
+
+    const action = vi.spyOn(backend, 'providerAction')
+    action.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      throw new Error('订阅地址不可达')
+    })
+    const row = wrapper.find('[data-provider="机场订阅"]')
+    await row.findAll('button').at(-1)!.trigger('click')
+    await flushPromises()
+    expect(
+      wrapper.find('[data-provider="机场订阅"] [data-provider-state="pending"]').text(),
+    ).toContain('更新中')
+    await settle(400)
+    expect(wrapper.find('[data-provider="机场订阅"] [data-provider-state="error"]').text()).toContain(
+      '更新失败：订阅地址不可达',
+    )
+    expect(wrapper.find('[data-provider="自建节点"] [data-provider-state]').exists()).toBe(false)
+
+    await wrapper.find('[data-provider="机场订阅"] [data-testid="retry-provider"]').trigger('click')
+    await settle(1300)
+    expect(wrapper.find('[data-provider="机场订阅"] [data-provider-state="success"]').text()).toContain('已更新')
+    expect(wrapper.find('[data-provider="机场订阅"] [data-testid="retry-provider"]').exists()).toBe(false)
+  })
+
+  it('updates providers sequentially with a done/total counter', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(500)
+
+    await wrapper.find('[data-testid="update-all-proxy"]').trigger('click')
+    await settle(950)
+    const button = wrapper.find('[data-testid="update-all-proxy"]')
+    expect(button.text()).toContain('更新中 1/2')
+    expect(button.attributes('aria-busy')).toBe('true')
+    expect(wrapper.find('[data-provider="自建节点"] [data-provider-state="pending"]').exists()).toBe(true)
+
+    await settle(2500)
+    expect(wrapper.find('[data-testid="update-all-proxy"]').text()).toBe('全部更新')
+    expect(wrapper.findAll('.toast').at(-1)?.text()).toContain('2/2')
+  })
+
+  it('keeps a health check on its own row', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(500)
+
+    const row = wrapper.find('[data-provider="机场订阅"]')
+    await row.findAll('button').at(0)!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-provider="机场订阅"] [data-provider-state="pending"]').text()).toContain('检查中')
+    expect(wrapper.find('[data-provider="自建节点"] [data-provider-state]').exists()).toBe(false)
+
+    await settle(1000)
+    expect(wrapper.find('[data-provider="机场订阅"] [data-provider-state="success"]').text()).toContain('检查通过')
+    expect(wrapper.find('[data-provider="自建节点"] [data-provider-state]').exists()).toBe(false)
+  })
+
+  it('shows a retry error and drops stale rows when providers cannot be read', async () => {
+    const demo = createDemoBackend()
+    const readProviders = demo.providers.bind(demo)
+    demo.providers = async () => {
+      throw new Error('读取规则集失败')
+    }
+    const wrapper = await mountWith(demo)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(100)
+
+    expect(wrapper.text()).toContain('读取失败')
+    expect(wrapper.text()).toContain('读取规则集失败')
+    expect(wrapper.findAll('[data-provider]')).toHaveLength(0)
+
+    demo.providers = readProviders
+    await wrapper.find('[data-testid="retry-providers"]').trigger('click')
+    await settle(300)
+    expect(wrapper.findAll('[data-provider]').length).toBeGreaterThan(0)
+    expect(wrapper.text()).not.toContain('读取规则集失败')
+  })
+
+  it('windows 500 connections and 300 rules to keep the DOM small', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    const now = Date.now()
+    const connections: ConnectionRow[] = Array.from({ length: 500 }, (_, index) => ({
+      id: `c${index}`,
+      host: `host${index}.example.com`,
+      outbound: '节点选择',
+      network: 'tcp',
+      conn_type: 'HTTP Connect',
+      destination: `10.0.${Math.floor(index / 250)}.${index % 250}:443`,
+      source: `127.0.0.1:${10000 + index}`,
+      process: 'chrome',
+      rule: 'Match',
+      rule_payload: '',
+      chains: ['节点选择'],
+      upload: index,
+      download: index * 10,
+      start: new Date(now - index * 1000).toISOString(),
+    }))
+    demo.state = async () => ({
+      ...(await read.call(demo)),
+      connected: true,
+      kernel_running: true,
+      connections,
+      connection_total: 500,
+    })
+    demo.rules = async () => ({
+      rules: Array.from({ length: 300 }, (_, index) => ({
+        kind: index % 2 ? 'DomainSuffix' : 'GeoIP',
+        payload: `rule-${index}.com`,
+        proxy: index % 3 ? '节点选择' : 'DIRECT',
+        hit_count: index,
+        last_hit: new Date(now - index * 60_000).toISOString(),
+        key: `k${index}`,
+        disabled: false,
+      })),
+      error: null,
+      disabled: [],
+    })
+
+    const wrapper = await mountWith(demo)
+    await openPage(wrapper, 'connections')
+    const rendered = wrapper.findAll('[data-testid="connection-row"]')
+    expect(rendered.length).toBeGreaterThan(10)
+    expect(rendered.length).toBeLessThan(80)
+    expect(wrapper.find('[data-testid="connection-summary"]').text()).toContain('500 个活动连接')
+
+    const scroller = wrapper.find('[data-testid="connection-scroll"]')
+    ;(scroller.element as HTMLElement).scrollTop = 4000
+    await scroller.trigger('scroll')
+    const firstIndex = Number(
+      wrapper.find('[data-testid="connection-row"]').attributes('data-row-index'),
+    )
+    expect(firstIndex).toBeGreaterThan(80)
+
+    await openPage(wrapper, 'rules')
+    await settle(400)
+    const rows = wrapper.findAll('[data-testid="rule-row"]')
+    expect(rows.length).toBeGreaterThan(10)
+    expect(rows.length).toBeLessThan(80)
+    expect(wrapper.findAll('[data-rule-hit]').length).toBe(rows.length)
+  })
+
+  it('drops frozen rows and rules when the kernel stops', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'connections')
+    await settle(1100)
+    await wrapper.find('[data-testid="pause-connections"]').trigger('click')
+    await flushPromises()
+
+    await openPage(wrapper, 'home')
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(600)
+
+    await openPage(wrapper, 'connections')
+    expect(wrapper.text()).toContain('未连接')
+    expect(wrapper.findAll('[data-testid="connection-row"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="pause-connections"]').attributes('aria-pressed')).toBe('false')
+
+    await openPage(wrapper, 'rules')
+    await settle(300)
+    expect(wrapper.text()).toContain('内核未运行')
+    expect(wrapper.findAll('[data-testid="rule-row"]')).toHaveLength(0)
   })
 })

@@ -122,6 +122,22 @@ export function createStore(backend: Backend) {
     }, tone === 'error' ? 5200 : 2800)
   }
 
+  /**
+   * Clipboard writes report their own failure; copying a connection summary or a
+   * log line must never fail silently (R28, R29).
+   */
+  async function copyText(text: string, success: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast(success, 'success')
+      return true
+    } catch (error) {
+      console.error(error)
+      toast('无法写入剪贴板', 'error')
+      return false
+    }
+  }
+
   function pushTraffic(next: Snapshot) {
     const up = next.connected ? next.upload ?? 0 : 0
     const down = next.connected ? next.download ?? 0 : 0
@@ -478,6 +494,8 @@ export function createStore(backend: Backend) {
     isAndroid,
     connecting,
     toast,
+    /** Shared clipboard helper so a failure surfaces as a toast instead of silence (R28). */
+    copyText,
     start,
     stop,
     go,
