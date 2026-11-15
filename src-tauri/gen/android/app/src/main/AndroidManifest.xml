@@ -32,10 +32,10 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="billow" />
                 <data android:host="install-config" />
-                
-                
-                
-                
+
+
+
+
             </intent-filter>
             <!-- DEEP LINK PLUGIN. AUTO-GENERATED. DO NOT REMOVE. -->
         </activity>
