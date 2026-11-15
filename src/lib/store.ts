@@ -41,6 +41,7 @@ export interface Toast {
 /** The home-level action behind the last failure banner, so "重试" repeats it (R24). */
 export type HomeAction =
   | { kind: 'connect' }
+  | { kind: 'disconnect' }
   | { kind: 'takeover'; target: 'system_proxy' | 'tun'; on: boolean }
   | { kind: 'mode'; mode: Mode }
 
@@ -271,7 +272,10 @@ export function createStore(backend: Backend) {
 
   function disconnect() {
     if (connecting.value || !snapshot.value.connected) return Promise.resolve(undefined)
-    return act('connect', () => backend.disconnect(), '已断开')
+    return act('connect', () => backend.disconnect(), '已断开', {
+      action: { kind: 'disconnect' },
+      done: (next) => !next.connected,
+    })
   }
 
   function setMode(mode: Mode) {
@@ -300,6 +304,7 @@ export function createStore(backend: Backend) {
     const action = lastFailedAction.value
     if (!action) return Promise.resolve(undefined)
     if (action.kind === 'mode') return setMode(action.mode)
+    if (action.kind === 'disconnect') return disconnect()
     if (action.kind === 'takeover') return action.target === 'tun' ? setTun(action.on) : setSystemProxy(action.on)
     return connect()
   }

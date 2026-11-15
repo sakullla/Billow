@@ -1223,55 +1223,46 @@ button.delay:hover:not(:disabled) {
 }
 
 /* ───────────── Home ───────────── */
-/* Desktop: main column keeps the conclusion, action, mode and takeover; the side
-   column carries traffic, the current node and the subscription (R24). */
+/* Phones get one natural flow; ≥960px splits into independent main and side
+   columns so each column flows on its own without grid rows pairing cards of
+   different heights (R24). */
 .home-grid {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: var(--row-gap);
-  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
-  grid-template-areas:
-    'status traffic'
-    'action groups'
-    'mode groups'
-    'takeover subscription';
-  align-items: start;
+}
+.home-main,
+.home-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  min-width: 0;
 }
 .home-status {
-  grid-area: status;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
 }
 .home-action {
-  grid-area: action;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   flex-wrap: wrap;
 }
-.mode-panel {
-  grid-area: mode;
-}
-.takeover-card {
-  grid-area: takeover;
-}
-.home-traffic {
-  grid-area: traffic;
-}
-.home-groups {
-  grid-area: groups;
-}
-.home-subscription {
-  grid-area: subscription;
-}
-/* Below the desktop split the same DOM order is the reading order, and it puts
-   status, profile, the single connect control and takeover on the first screen. */
-@media (max-width: 960px) {
+@media (min-width: 960px) {
   .home-grid {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  /* Desktop order: status, action, mode, takeover. Phones keep takeover before
+     mode, which is the documented first-screen order (D3). */
+  .home-main .mode-panel {
+    order: 3;
+  }
+  .home-main .takeover-card {
+    order: 4;
   }
 }
 
@@ -1569,6 +1560,13 @@ button.delay:hover:not(:disabled) {
 /* The home side column is narrower than a full-width traffic card (R24). */
 .home-traffic .stats {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+/* The side column drops under ~330px between 960 and 1119px: three columns
+   would ellipsize the speeds. */
+@media (min-width: 960px) and (max-width: 1119px) {
+  .home-traffic .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 .compact .home-traffic .stats {
   grid-template-columns: repeat(2, minmax(0, 1fr));

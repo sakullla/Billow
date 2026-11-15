@@ -571,10 +571,38 @@ describe('App', () => {
 
   it('orders the phone first screen before the mode switch', async () => {
     const { wrapper } = await mountApp({}, 390)
-    const order = wrapper.findAll('.home-grid > *').map((element) => element.attributes('data-testid'))
-    expect(order.slice(0, 4)).toEqual(['home-status', 'home-action', 'takeover-card', 'mode-card'])
+    const main = wrapper.findAll('.home-main > *').map((element) => element.attributes('data-testid'))
+    const side = wrapper.findAll('.home-side > *').map((element) => element.attributes('data-testid'))
+    expect(main).toEqual(['home-status', 'home-action', 'takeover-card', 'mode-card'])
+    expect(side).toEqual(['traffic-card', 'groups-card', 'profile-card'])
     expect(wrapper.find('[data-testid="home-status"]').text()).toContain('星河云')
-    expect(order.slice(-3)).toEqual(['traffic-card', 'groups-card', 'profile-card'])
+    expect(wrapper.find('[data-testid="groups-card"]').text()).toContain('查看全部')
+  })
+
+  it('offers a retry when disconnecting fails', async () => {
+    const { wrapper, backend } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('已连接')
+
+    const original = backend.disconnect
+    let calls = 0
+    backend.disconnect = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) throw new Error('系统代理没有关闭')
+      return original()
+    })
+
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-testid="home-failure"]').text()).toContain('系统代理没有关闭')
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('已连接')
+
+    await wrapper.find('[data-testid="retry"]').trigger('click')
+    await settle(1500)
+    expect(backend.disconnect).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="home-failure"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('未连接')
   })
 
   it('replaces the spinning refresh glyph with update progress text', async () => {
