@@ -3,26 +3,42 @@ name: Release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish after verification (false keeps a draft)
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: billow-release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  validate:
-    uses: ./.github/workflows/ci.yml
+  gate:
+    name: Wait for the tagged commit to pass main CI
+    runs-on: ubuntu-22.04
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Resolve tag to commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Wait for main CI
+        uses: actions/github-script@v9
+        env:
+          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
+        with:
+          script: |
+            const { waitForMainCi } = require('./.github/scripts/wait-for-main-ci.cjs');
+            await waitForMainCi({ github, repo: context.repo, sha: process.env.RELEASE_SHA, log: core.info });
 
   prepare:
-    needs: validate
+    needs: gate
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -35,6 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
       - uses: actions/github-script@v9
         id: release
@@ -45,7 +62,7 @@ jobs:
             const version = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json')).version;
             const tag = `v${version}`;
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Only stable SemVer releases are supported');
-            if (context.eventName === 'push' && context.ref !== `refs/tags/${tag}`) throw new Error('Tag and app version differ');
+            if (context.eventName !== 'push' || context.ref !== `refs/tags/${tag}`) throw new Error('Release requires the matching version tag');
             if (JSON.parse(fs.readFileSync('package.json')).version !== version) throw new Error('package.json version differs');
             if (!fs.readFileSync('src-tauri/Cargo.toml', 'utf8').includes(`version = "${version}"`)) throw new Error('Cargo version differs');
             const sha = cp.execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
@@ -192,7 +209,7 @@ jobs:
           RELEASE_ID: ${{ needs.prepare.outputs.id }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
-          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         with:
           script: |
             const {pathToFileURL} = require('node:url');
@@ -213,7 +230,9 @@ jobs:
             const data = Buffer.from(JSON.stringify(manifest, null, 2));
             await github.rest.repos.uploadReleaseAsset({...context.repo, release_id, name: 'latest.json', data,
               headers: {'content-type': 'application/json', 'content-length': data.length}});
-            if (process.env.PUBLISH === 'true') {
-              await github.rest.repos.updateRelease({...context.repo, release_id, draft: false, make_latest: 'true'});
-            }
-            core.info(`Verified release: ${release.html_url}; published=${process.env.PUBLISH}`);
+            const {data: commit} = await github.rest.repos.getCommit({
+              ...context.repo, ref: `refs/tags/${process.env.RELEASE_TAG}`,
+            });
+            if (commit.sha !== process.env.RELEASE_SHA) throw new Error('Release tag moved after main CI verification');
+            await github.rest.repos.updateRelease({...context.repo, release_id, draft: false, make_latest: 'true'});
+            core.info(`Published verified release: ${release.html_url}`);

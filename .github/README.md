@@ -1,18 +1,20 @@
 # Billow 发布与更新
 
 `CI` 在 main 提交与 PR 上运行前端测试、生产构建、发布清单测试和 Rust 测试。
-`Release` 先运行这些检查，再并行构建 Windows x64 NSIS、macOS Apple Silicon DMG、
+`Release` 与 cliora 一样仅由推送 `v*` tag 触发，先等待该提交在 main 的最新 CI 成功，
+再创建发布草稿，并行构建 Windows x64 NSIS、macOS Apple Silicon DMG、
 Linux x64 deb/AppImage 和 Android ARM64 APK。全部成功后，由一个任务生成 `latest.json`，
-检查安装包与签名齐全，最后发布。任一平台失败时保留草稿，不影响已有稳定版。
+检查安装包与签名齐全、tag 仍指向已验证的提交，最后公开发布。
+任一平台失败时保留草稿，不影响已有稳定版。main 提交和 PR 不创建 Release。
 
 ## 发布新版本
 
 1. 同步修改 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、
    `src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 的应用版本。
-2. 提交并推送代码，然后推送相同版本的 tag，如 `v0.2.0`。
+2. 提交并推送代码到 main，然后推送相同版本的 tag，如 `git tag v0.2.0` 和 `git push origin v0.2.0`。
 3. 在 Actions 查看 Release；成功后安装包与更新清单出现在 GitHub Releases。
 
-也可手动运行 Release，默认 `publish=false`，用于验证构建并保留草稿。
+不提供手动创建 Release 的入口。Release 最多等待 main CI 一小时，不重复运行 CI。
 同一提交的失败任务可以重跑；已有正式版本或不同提交的同版本草稿会被拒绝覆盖。
 修订已构建版本时请使用新版本号，或删除尚未发布、无需保留的旧草稿再重新运行。
 
