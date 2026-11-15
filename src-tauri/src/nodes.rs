@@ -50,6 +50,19 @@ pub struct RuntimeCatalog {
     pub now: BTreeMap<String, String>,
     pub types: BTreeMap<String, String>,
     pub tags: BTreeMap<String, Vec<String>>,
+    pub providers: BTreeMap<String, String>,
+}
+
+impl RuntimeCatalog {
+    pub fn merge_providers(&mut self, other: &Self) {
+        for (name, provider) in &other.providers {
+            // Inline proxies and groups use /proxies, even if a provider repeats their name.
+            if self.types.contains_key(name) { continue; }
+            self.providers.insert(name.clone(), provider.clone());
+            if let Some(kind) = other.types.get(name) { self.types.insert(name.clone(), kind.clone()); }
+            if let Some(tags) = other.tags.get(name) { self.tags.insert(name.clone(), tags.clone()); }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -61,6 +74,7 @@ struct ControllerCatalog {
 /// needs only membership, selection and protocol, even for large providers.
 #[derive(Deserialize)]
 struct ControllerProxy {
+    name: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
     all: Option<Vec<String>>,
@@ -74,19 +88,42 @@ struct ControllerProxy {
     dialer_proxy: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ProviderCatalog { providers: BTreeMap<String, ProviderNodes> }
+
+#[derive(Deserialize)]
+struct ProviderNodes { proxies: Vec<ControllerProxy> }
+
+fn providers_from_reader(reader: impl Read) -> Result<RuntimeCatalog, String> {
+    let response: ProviderCatalog = serde_json::from_reader(reader)
+        .map_err(|_| "订阅节点资料没有读取".to_string())?;
+    let mut catalog = RuntimeCatalog::default();
+    for (provider, nodes) in response.providers {
+        for item in nodes.proxies {
+            let Some(name) = item.name.clone() else { continue; };
+            if catalog.providers.contains_key(&name) { continue; }
+            catalog.providers.insert(name.clone(), provider.clone());
+            add_proxy_metadata(&mut catalog, &name, &item);
+        }
+    }
+    Ok(catalog)
+}
+
+fn add_proxy_metadata(catalog: &mut RuntimeCatalog, name: &str, item: &ControllerProxy) {
+    let mut tags: Vec<String> = [(item.udp, "UDP"), (item.xudp, "XUDP"), (item.smux, "Mux"),
+        (item.tfo, "TFO"), (item.mptcp, "MPTCP")].into_iter()
+        .filter(|(on, _)| *on == Some(true)).map(|(_, tag)| tag.to_string()).collect();
+    if item.dialer_proxy.as_ref().is_some_and(|value| !value.is_empty()) { tags.push("链式".to_string()); }
+    if !tags.is_empty() { catalog.tags.insert(name.to_string(), tags); }
+    if let Some(kind) = &item.kind { catalog.types.insert(name.to_string(), kind.clone()); }
+}
+
 fn catalog_from_reader(reader: impl Read) -> Result<RuntimeCatalog, String> {
     let response: ControllerCatalog = serde_json::from_reader(reader)
         .map_err(|_| "节点列表没有读取".to_string())?;
     let mut catalog = RuntimeCatalog::default();
     for (name, item) in response.proxies {
-        let mut tags: Vec<String> = [(item.udp, "UDP"), (item.xudp, "XUDP"), (item.smux, "Mux"),
-            (item.tfo, "TFO"), (item.mptcp, "MPTCP")].into_iter()
-            .filter(|(on, _)| *on == Some(true)).map(|(_, tag)| tag.to_string()).collect();
-        if item.dialer_proxy.as_ref().is_some_and(|value| !value.is_empty()) { tags.push("链式".to_string()); }
-        if !tags.is_empty() { catalog.tags.insert(name.clone(), tags); }
-        if let Some(kind) = item.kind {
-            catalog.types.insert(name.clone(), kind);
-        }
+        add_proxy_metadata(&mut catalog, &name, &item);
         if let Some(all) = item.all {
             catalog.members.insert(name.clone(), all);
         }
@@ -505,6 +542,15 @@ pub fn fetch_delays_with_progress(
     nodes: &[String],
     on_result: &mut dyn FnMut(&str, Option<u64>, bool),
 ) -> Result<Vec<NodeDelay>, String> {
+    fetch_provider_delays(endpoint, nodes, &BTreeMap::new(), on_result)
+}
+
+pub fn fetch_provider_delays(
+    endpoint: &ControllerEndpoint,
+    nodes: &[String],
+    providers: &BTreeMap<String, String>,
+    on_result: &mut dyn FnMut(&str, Option<u64>, bool),
+) -> Result<Vec<NodeDelay>, String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err(KERNEL_DOWN.to_string());
     }
@@ -519,7 +565,7 @@ pub fn fetch_delays_with_progress(
             for (offset, name) in chunk.iter().enumerate() {
                 let sender = sender.clone();
                 scope.spawn(move || {
-                    let _ = sender.send((chunk_index * 16 + offset, delay_one(endpoint, name)));
+                    let _ = sender.send((chunk_index * 16 + offset, delay_one(endpoint, name, providers.get(name).map(String::as_str))));
                 });
             }
             drop(sender);
@@ -568,6 +614,15 @@ pub fn fetch_catalog(endpoint: &ControllerEndpoint) -> Result<RuntimeCatalog, St
     catalog_from_reader(BufReader::new(response.into_reader().take(8_000_000)))
 }
 
+pub fn fetch_provider_catalog(endpoint: &ControllerEndpoint) -> Result<RuntimeCatalog, String> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 { return Err(KERNEL_DOWN.to_string()); }
+    let url = format!("http://{}:{}/providers/proxies", endpoint.host, endpoint.port);
+    let response = agent(Duration::from_millis(800)).get(&url)
+        .set("Authorization", &format!("Bearer {}", endpoint.secret))
+        .call().map_err(|_| "订阅节点资料没有读取".to_string())?;
+    providers_from_reader(BufReader::new(response.into_reader().take(8_000_000)))
+}
+
 /// Read actual listener state; Mihomo can stay alive after failing to bind a port or TUN.
 pub fn listeners_ready(endpoint: &ControllerEndpoint, port: Option<u16>, tun: bool) -> bool {
     if !loopback(&endpoint.host) || endpoint.port == 0 { return false; }
@@ -591,12 +646,16 @@ enum ProbeFail {
     Node,
 }
 
-fn delay_one(endpoint: &ControllerEndpoint, name: &str) -> Result<u64, ProbeFail> {
+fn delay_one(endpoint: &ControllerEndpoint, name: &str, provider: Option<&str>) -> Result<u64, ProbeFail> {
+    let path = match provider {
+        Some(provider) => format!("providers/proxies/{}/{}/healthcheck", encode_segment(provider), encode_segment(name)),
+        None => format!("proxies/{}/delay", encode_segment(name)),
+    };
     let url = format!(
-        "http://{}:{}/proxies/{}/delay?timeout={}&url={}",
+        "http://{}:{}/{}?timeout={}&url={}",
         endpoint.host,
         endpoint.port,
-        encode_segment(name),
+        path,
         probe_timeout(),
         encode_segment(&probe_url())
     );
@@ -740,6 +799,26 @@ fn mapping_get_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_nodes_keep_protocol_and_use_the_provider_healthcheck_endpoint() {
+        let providers = providers_from_reader(br#"{"providers":{"local source":{"proxies":[{"name":"HK/1","type":"Shadowsocks","udp":true,"history":[{"delay":999}]}]}}}"#.as_slice()).unwrap();
+        let mut catalog = RuntimeCatalog::default();
+        catalog.merge_providers(&providers);
+        assert_eq!(catalog.types["HK/1"], "Shadowsocks");
+        assert_eq!(catalog.tags["HK/1"], ["UDP"]);
+        let (port, server) = serve(vec![http_response("200 OK", r#"{"delay":169}"#)]);
+        let endpoint = ControllerEndpoint { host: "127.0.0.1".to_string(), port, secret: String::new() };
+        let result = fetch_provider_delays(&endpoint, &["HK/1".to_string()], &catalog.providers, &mut |_, _, _| {}).unwrap();
+        assert_eq!(result[0].delay_ms, Some(169));
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /providers/proxies/local%20source/HK%2F1/healthcheck?"));
+        let mut inline = RuntimeCatalog::default();
+        inline.types.insert("HK/1".to_string(), "VLESS".to_string());
+        inline.merge_providers(&providers);
+        assert!(inline.providers.is_empty());
+        assert_eq!(inline.types["HK/1"], "VLESS");
+    }
 
     #[test]
     fn listener_readiness_requires_the_requested_port_and_tun_state() {

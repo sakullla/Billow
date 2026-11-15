@@ -123,6 +123,7 @@ export function createStore(backend: Backend) {
   const hasProfiles = computed(() => snapshot.value.profiles.length > 0)
   const isAndroid = computed(() => snapshot.value.platform === 'android')
   const connecting = computed(() => Boolean(busy.connect))
+  const connectStage = ref('')
   const appUpdate = createAppUpdater(nativeUpdateDriver(() => isAndroid.value))
 
   function toast(text: string, tone: Toast['tone'] = 'info') {
@@ -542,12 +543,18 @@ export function createStore(backend: Backend) {
       return Promise.resolve(undefined)
     }
     return act('connect', async () => {
-      if (!snapshot.value.active_id) {
-        const id = snapshot.value.profiles[0]!.id
-        const enabled = await backend.enable(id)
-        if (enabled.active_id !== id || enabled.failure) return enabled
+      try {
+        if (!snapshot.value.active_id) {
+          connectStage.value = '正在初始化内核和配置资源…'
+          const id = snapshot.value.profiles[0]!.id
+          const enabled = await backend.enable(id)
+          if (enabled.active_id !== id || enabled.failure) return enabled
+        }
+        connectStage.value = isAndroid.value ? '正在建立 VPN，请留意系统授权提示…' : '正在建立代理连接…'
+        return await backend.connect()
+      } finally {
+        connectStage.value = ''
       }
-      return backend.connect()
     }, '已连接', {
       action: { kind: 'connect' },
       done: (next) => next.connected,
@@ -625,6 +632,7 @@ export function createStore(backend: Backend) {
     hasProfiles,
     isAndroid,
     connecting,
+    connectStage,
     toast,
     /** Shared clipboard helper so a failure surfaces as a toast instead of silence (R28). */
     copyText,

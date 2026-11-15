@@ -180,6 +180,8 @@ jobs:
           cache: false
       - name: Build Android APK
         if: matrix.platform == 'android'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run tauri -- android build --target aarch64 --apk --split-per-abi
       - name: Verify and upload Android installer
         if: matrix.platform == 'android'

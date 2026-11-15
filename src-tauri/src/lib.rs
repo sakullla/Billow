@@ -1,4 +1,6 @@
 mod app_update;
+#[cfg(any(target_os = "android", test))]
+mod android_geo;
 mod diagnostics;
 #[cfg(target_os = "windows")]
 mod elevation;

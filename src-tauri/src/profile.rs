@@ -597,6 +597,7 @@ pub struct ProcessRuntime {
     config_path: Option<PathBuf>,
     controller: Option<ControllerEndpoint>,
     cached_catalog: nodes::RuntimeCatalog,
+    provider_catalog: Option<(Instant, nodes::RuntimeCatalog)>,
     launched_kernel: Option<PathBuf>,
     log_buffer: Option<CapturedLogs>,
     traffic_watch: Option<MetricWatch<(u64, u64)>>,
@@ -649,6 +650,7 @@ impl ProcessRuntime {
             config_path: None,
             controller: None,
             cached_catalog: nodes::RuntimeCatalog::default(),
+            provider_catalog: None,
             launched_kernel: None,
             log_buffer: None,
             traffic_watch: None,
@@ -689,6 +691,7 @@ impl ProcessRuntime {
         self.controller = None;
         self.launched_kernel = None;
         self.cached_catalog = nodes::RuntimeCatalog::default();
+        self.provider_catalog = None;
         self.log_buffer = None;
         self.totals = None;
         self.connection_total = None;
@@ -759,6 +762,12 @@ impl KernelLaunch for ProcessRuntime {
         let config_path = self.work_dir.join(format!("runtime-{nanos}.yaml"));
         fs::write(&config_path, config_yaml).map_err(|_| "配置没有写入".to_string())?;
         let controller = nodes::controller_from_yaml(config_yaml);
+        #[cfg(target_os = "android")]
+        {
+            let apk = crate::kernel::android_app_dir("sourceDir")
+                .ok_or_else(|| "无法读取安装包中的 GEO 数据".to_string())?;
+            crate::android_geo::seed(&apk, &self.work_dir)?;
+        }
         let mut command = Command::new(&path);
         #[cfg(target_os = "android")]
         command.arg("-d").arg(&self.work_dir);
@@ -870,7 +879,7 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
-        nodes::fetch_delays(&endpoint, names)
+        nodes::fetch_provider_delays(&endpoint, names, &self.cached_catalog.providers, &mut |_, _, _| {})
     }
 
     fn probe_delays_with_progress(
@@ -885,7 +894,7 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
-        nodes::fetch_delays_with_progress(&endpoint, names, on_result)
+        nodes::fetch_provider_delays(&endpoint, names, &self.cached_catalog.providers, on_result)
     }
 
     fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
@@ -903,7 +912,15 @@ impl KernelLaunch for ProcessRuntime {
             return nodes::RuntimeCatalog::default();
         }
         if let Some(endpoint) = self.controller.clone() {
-            if let Ok(catalog) = nodes::fetch_catalog(&endpoint) {
+            if let Ok(mut catalog) = nodes::fetch_catalog(&endpoint) {
+                if self.provider_catalog.as_ref().is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(30)) {
+                    if let Ok(providers) = nodes::fetch_provider_catalog(&endpoint) {
+                        self.provider_catalog = Some((Instant::now(), providers));
+                    }
+                }
+                if let Some((_, providers)) = &self.provider_catalog {
+                    catalog.merge_providers(providers);
+                }
                 self.cached_catalog = catalog;
             }
         }
@@ -2641,17 +2658,15 @@ fn apply_settings(
         }
     }
     if !desktop {
-        // VPN traffic enters through a TUN fd, not the subscription's desktop ports.
-        // Keep app-owned ports stable during this process and separate from other clients.
-        static PORTS: std::sync::OnceLock<(u16, u16)> = std::sync::OnceLock::new();
-        let ports = if let Some(ports) = PORTS.get() { *ports } else {
-            let mixed = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
+        // Keep the user-facing mixed port (normally 7890) for apps such as Telegram.
+        // Only the private controller needs an independent port.
+        static CONTROLLER: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+        let controller_port = if let Some(port) = CONTROLLER.get() { *port } else {
             let controller = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
-            *PORTS.get_or_init(|| (mixed.local_addr().unwrap().port(), controller.local_addr().unwrap().port()))
+            *CONTROLLER.get_or_init(|| controller.local_addr().unwrap().port())
         };
-        if settings.mixed_port.is_none() { map.insert(key("mixed-port"), Value::Number(i64::from(ports.0).into())); }
         for name in ["port", "socks-port", "redir-port", "tproxy-port"] { map.insert(key(name), Value::Number(0.into())); }
-        map.insert(key("external-controller"), Value::String(format!("127.0.0.1:{}", ports.1)));
+        map.insert(key("external-controller"), Value::String(format!("127.0.0.1:{controller_port}")));
         let mut tun = map.get(key("tun")).and_then(Value::as_mapping).cloned().unwrap_or_default();
         tun.insert(key("enable"), Value::Bool(false));
         tun.insert(key("auto-route"), Value::Bool(false));
@@ -3691,7 +3706,7 @@ mod tests {
         let source = "mixed-port: 7890\nport: 7891\nexternal-controller: 127.0.0.1:9090\ntun: {enable: true, auto-route: true, auto-detect-interface: true}\n";
         let (yaml, mixed) = apply_settings(source, &KernelSettings::default(), false).unwrap();
         let value: Value = serde_yaml::from_str(&yaml).unwrap();
-        assert!(mixed.unwrap() > 0);
+        assert_eq!(mixed, Some(7890));
         assert_eq!(value["port"].as_i64(), Some(0));
         assert_eq!(value["tun"]["enable"].as_bool(), Some(false));
         assert_eq!(value["tun"]["auto-route"].as_bool(), Some(false));

@@ -646,13 +646,22 @@ describe('App', () => {
 
   it('activates the only imported profile before the first connection', async () => {
     const { wrapper, backend } = await mountApp({ platform: 'android' }, 390)
-    const enable = vi.spyOn(backend, 'enable')
+    const originalEnable = backend.enable.bind(backend)
+    let resume = () => {}
+    const gate = new Promise<void>((resolve) => { resume = resolve })
+    const enable = vi.spyOn(backend, 'enable').mockImplementation(async (id) => {
+      await gate
+      return originalEnable(id)
+    })
     const connect = vi.spyOn(backend, 'connect')
     const store = storeOf(wrapper)
     store.stop()
     const only = { ...store.snapshot.value.profiles[0]!, current: false }
     store.snapshot.value = { ...store.snapshot.value, active_id: null, profiles: [only] }
     await wrapper.find('[data-testid="power"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[role="status"]').text()).toContain('正在初始化内核')
+    resume()
     await settle(1500)
     expect(enable).toHaveBeenCalledWith(only.id)
     expect(connect).toHaveBeenCalledOnce()

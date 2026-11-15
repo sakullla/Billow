@@ -157,7 +157,8 @@ function onPrimary() {
               <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
             </p>
             <h1 class="status-word" data-testid="status">{{ status.word }}</h1>
-            <p v-if="profile" class="hero-sub">
+            <p v-if="store.connectStage.value" class="hero-sub muted" role="status">{{ store.connectStage.value }}</p>
+            <p v-else-if="profile" class="hero-sub">
               <span class="hero-profile">{{ profile.name }}</span>
               <span v-if="activeMode" class="muted">· {{ activeMode.label }}模式</span>
               <span v-if="snap.mixed_port" class="muted">· 端口 {{ snap.mixed_port }}</span>

@@ -1,0 +1,10 @@
+{
+  "repository": "MetaCubeX/meta-rules-dat",
+  "ref": "release",
+  "files": [
+    { "source": "GeoLite2-ASN.mmdb", "name": "ASN.mmdb" },
+    { "source": "geoip.metadb", "name": "Country.mmdb" },
+    { "source": "geoip.dat", "name": "GeoIP.dat" },
+    { "source": "geosite.dat", "name": "GeoSite.dat" }
+  ]
+}
