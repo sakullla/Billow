@@ -118,7 +118,10 @@ async function toBottom(force = false) {
   follow.value = true
 }
 
-watch(() => lines.value.length, () => void toBottom())
+// The count stays pinned at the 1000-line cap, so a length watcher goes silent
+// there. Watching the row list itself re-pins follow-tail after every append or
+// trim, while a user-scrolled view is left exactly where it is (R31).
+watch(entries, () => void toBottom())
 watch(paused, (on) => {
   if (!on) void toBottom()
 })

@@ -1554,6 +1554,62 @@ describe('App', () => {
     expect(wrapper.findAll('.log-line')).toHaveLength(21)
   })
 
+  it('keeps follow-tail and user position at the 1000-line cap', async () => {
+    const demo = createDemoBackend()
+    const read = demo.state
+    let logs: LogLine[] = Array.from({ length: 1000 }, (_, index) => ({
+      level: 'info',
+      message: `cap-${index}`,
+      time_ms: 1000 + index,
+    }))
+    demo.state = async () => ({ ...(await read.call(demo)), logs: logs.map((line) => ({ ...line })) })
+    const wrapper = await mountWith(demo)
+    await openPage(wrapper, 'logs')
+    await flushPromises()
+
+    const scroller = () => wrapper.find('[data-testid="log-scroll"]')
+    const element = () => scroller().element as HTMLElement
+    const layout = () => {
+      Object.defineProperty(element(), 'scrollHeight', { value: 28000, configurable: true })
+      Object.defineProperty(element(), 'clientHeight', { value: 500, configurable: true })
+    }
+    const appendOne = async (index: number) => {
+      logs = [...logs.slice(1), { level: 'info', message: `cap-new-${index}`, time_ms: 9000 + index }]
+      await storeOf(wrapper).refresh()
+      await flushPromises()
+      await nextTick()
+    }
+
+    layout()
+    expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
+
+    // The count is pinned at 1000, so only a newest-row watcher can re-pin the tail.
+    // Leaving scrollTop short of the bottom proves the follow path actually ran.
+    for (let index = 0; index < 3; index += 1) {
+      layout()
+      await appendOne(index)
+      expect(element().scrollTop).toBe(28000)
+      expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
+      expect(wrapper.findAll('.log-line')).toHaveLength(1000)
+    }
+    expect(wrapper.findAll('.log-line').at(-1)!.text()).toContain('cap-new-2')
+
+    layout()
+    element().scrollTop = 1200
+    await scroller().trigger('scroll')
+    expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
+    await appendOne(3)
+    expect(element().scrollTop).toBe(1200)
+    expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
+
+    // Reaching the bottom re-engages follow, and the next append pins the tail again.
+    element().scrollTop = 27500
+    await scroller().trigger('scroll')
+    await appendOne(4)
+    expect(element().scrollTop).toBe(28000)
+    expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
+  })
+
   it('exports logs, toggles wrapping and confirms before clearing', async () => {
     const demo = createDemoBackend()
     const read = demo.state
