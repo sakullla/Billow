@@ -27,23 +27,72 @@ pub struct ParsedGroup {
     pub name: String,
     pub manual: bool,
     pub proxies: Vec<String>,
+    pub group_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct NodeItemView {
     pub name: String,
     pub delay_ms: Option<u64>,
     pub failed: bool,
     pub selected: bool,
+    pub node_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct NodeGroupView {
     pub name: String,
     pub kind: String,
     pub now: String,
     pub sort: String,
     pub nodes: Vec<NodeItemView>,
+    pub group_type: String,
+}
+
+static TEST_URL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+static TEST_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5000);
+
+/// The delay probe URL and timeout chosen in settings. Empty keeps the default.
+pub fn set_probe(url: &str, timeout_ms: u64) {
+    let mut guard = TEST_URL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = url.trim().to_string();
+    TEST_TIMEOUT_MS.store(timeout_ms.clamp(1000, 30000), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn probe_url() -> String {
+    let guard = TEST_URL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_empty() {
+        DELAY_URL.to_string()
+    } else {
+        guard.clone()
+    }
+}
+
+fn probe_timeout() -> u64 {
+    TEST_TIMEOUT_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+
+/// Proxy name → protocol type (`ss`, `vmess`, …) from the config's `proxies` list, and group types.
+pub fn proxy_types(value: &Value) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(list) = mapping_get(value, "proxies").and_then(Value::as_sequence) {
+        for item in list {
+            if let (Some(name), Some(kind)) = (read_string(item, "name"), read_string(item, "type")) {
+                out.insert(name, kind);
+            }
+        }
+    }
+    if let Some(list) = mapping_get(value, "proxy-groups").and_then(Value::as_sequence) {
+        for item in list {
+            if let (Some(name), Some(kind)) = (read_string(item, "name"), read_string(item, "type")) {
+                out.entry(name).or_insert(kind);
+            }
+        }
+    }
+    out.entry("DIRECT".to_string()).or_insert_with(|| "direct".to_string());
+    out.entry("REJECT".to_string()).or_insert_with(|| "reject".to_string());
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +126,9 @@ pub fn parse_proxy_groups(value: &Value) -> Vec<ParsedGroup> {
             name,
             manual: is_manual(group),
             proxies,
+            group_type: read_string(group, "type")
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
         });
     }
     parsed
@@ -272,32 +324,43 @@ pub fn fetch_delays(
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err(KERNEL_DOWN.to_string());
     }
-    let mut out = Vec::new();
-    let mut saw_controller = false;
-    for name in nodes {
-        match delay_one(endpoint, name) {
-            Ok(ms) => {
-                saw_controller = true;
-                out.push(NodeDelay {
-                    name: name.clone(),
-                    delay_ms: Some(ms),
-                });
-            }
-            Err(ProbeFail::Node) => {
-                saw_controller = true;
-                out.push(NodeDelay {
-                    name: name.clone(),
-                    delay_ms: None,
-                });
-            }
-            Err(ProbeFail::Unavailable) if !saw_controller => return Err(KERNEL_DOWN.to_string()),
-            Err(ProbeFail::Unavailable) => out.push(NodeDelay {
-                name: name.clone(),
-                delay_ms: None,
-            }),
+    if nodes.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Probe in parallel batches; the controller handles each node independently.
+    let mut results: Vec<Option<Result<u64, ProbeFail>>> = (0..nodes.len()).map(|_| None).collect();
+    for (chunk_index, chunk) in nodes.chunks(16).enumerate() {
+        let outcome: Vec<Result<u64, ProbeFail>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|name| scope.spawn(move || delay_one(endpoint, name)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(Err(ProbeFail::Node)))
+                .collect()
+        });
+        for (offset, item) in outcome.into_iter().enumerate() {
+            results[chunk_index * 16 + offset] = Some(item);
         }
     }
-    Ok(out)
+    let saw_controller = results
+        .iter()
+        .any(|item| !matches!(item, Some(Err(ProbeFail::Unavailable)) | None));
+    if !saw_controller {
+        return Err(KERNEL_DOWN.to_string());
+    }
+    Ok(nodes
+        .iter()
+        .zip(results)
+        .map(|(name, item)| NodeDelay {
+            name: name.clone(),
+            delay_ms: match item {
+                Some(Ok(ms)) => Some(ms),
+                _ => None,
+            },
+        })
+        .collect())
 }
 
 pub fn fetch_now(endpoint: &ControllerEndpoint) -> Result<BTreeMap<String, String>, String> {
@@ -337,13 +400,14 @@ enum ProbeFail {
 
 fn delay_one(endpoint: &ControllerEndpoint, name: &str) -> Result<u64, ProbeFail> {
     let url = format!(
-        "http://{}:{}/proxies/{}/delay?timeout=5000&url={}",
+        "http://{}:{}/proxies/{}/delay?timeout={}&url={}",
         endpoint.host,
         endpoint.port,
         encode_segment(name),
-        encode_segment(DELAY_URL)
+        probe_timeout(),
+        encode_segment(&probe_url())
     );
-    let agent = agent(Duration::from_millis(7000));
+    let agent = agent(Duration::from_millis(probe_timeout() + 2000));
     let request = agent.get(&url).set("User-Agent", "Billow");
     let request = if endpoint.secret.is_empty() {
         request
@@ -551,6 +615,7 @@ proxy-groups:
         assert_eq!(names(&original), ["z-node", "m-node", "a-node"]);
 
         let groups = vec![NodeGroupView {
+            group_type: String::new(),
             name: "manual".to_string(),
             kind: "manual".to_string(),
             now: "z-node".to_string(),
@@ -612,8 +677,10 @@ proxy-groups:
         };
         put_selection(&endpoint, "手动", "日本").unwrap();
         let delays = fetch_delays(&endpoint, &["甲".to_string(), "乙".to_string()]).unwrap();
-        assert_eq!(delays[0].delay_ms, Some(12));
-        assert_eq!(delays[1].delay_ms, None);
+        // Probes run in parallel, so which node gets which canned reply is not fixed.
+        let mut got: Vec<Option<u64>> = delays.iter().map(|item| item.delay_ms).collect();
+        got.sort();
+        assert_eq!(got, [None, Some(12)]);
         let now = fetch_now(&endpoint).unwrap();
         assert_eq!(now.get("auto").map(String::as_str), Some("beta"));
         let seen = handle.join().unwrap();
@@ -644,6 +711,7 @@ proxy-groups:
 
     fn item(name: &str, delay_ms: Option<u64>, failed: bool) -> NodeItemView {
         NodeItemView {
+            node_type: String::new(),
             name: name.to_string(),
             delay_ms,
             failed,

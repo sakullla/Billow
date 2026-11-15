@@ -19,6 +19,14 @@ pub struct ShellState {
     pub width: f64,
     #[serde(default = "default_height")]
     pub height: f64,
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
+    #[serde(default)]
+    pub silent_start: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_theme() -> String {
@@ -44,6 +52,8 @@ impl Default for ShellState {
             last_entry: default_entry(),
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
+            close_to_tray: true,
+            silent_start: false,
         }
     }
 }
@@ -51,7 +61,11 @@ impl Default for ShellState {
 pub fn resolve_entry(value: &str) -> &'static str {
     match value {
         "home" => "home",
-        "nodes" => "nodes",
+        "nodes" | "proxies" => "proxies",
+        "profiles" => "profiles",
+        "connections" => "connections",
+        "rules" => "rules",
+        "logs" => "logs",
         "settings" => "settings",
         _ => "home",
     }
@@ -125,9 +139,10 @@ mod tests {
 
     #[test]
     fn unknown_entry_returns_home_and_unknown_theme_follows_system() {
-        assert_eq!(resolve_entry("nodes"), "nodes");
+        assert_eq!(resolve_entry("nodes"), "proxies");
         assert_eq!(resolve_entry("settings"), "settings");
-        assert_eq!(resolve_entry("logs"), "home");
+        assert_eq!(resolve_entry("logs"), "logs");
+        assert_eq!(resolve_entry("diagnostics"), "home");
         assert_eq!(resolve_entry("theme"), "home");
         assert_eq!(resolve_theme("dark"), "dark");
         assert_eq!(resolve_theme("light"), "light");
@@ -168,9 +183,11 @@ mod tests {
         let (dir, path) = temporary_file("round");
         let state = ShellState {
             theme: "dark".to_string(),
-            last_entry: "nodes".to_string(),
+            last_entry: "proxies".to_string(),
             width: 1024.0,
             height: 700.0,
+            close_to_tray: false,
+            silent_start: true,
         };
         write_shell_state(&path, &state).unwrap();
         assert_eq!(read_shell_state(&path), state);
