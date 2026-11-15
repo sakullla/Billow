@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
+import SelectField from '../components/SelectField.vue'
 import Skeleton from '../components/Skeleton.vue'
 import { formatRelative } from '../lib/format'
 import { useStore } from '../lib/store'
@@ -23,8 +24,8 @@ const error = ref<string | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
 const query = ref('')
-const kind = ref('all')
-const proxy = ref('all')
+const kind = ref<string | number>('all')
+const proxy = ref<string | number>('all')
 const sort = ref<SortKey>('order')
 const limit = ref(PAGE)
 const toggling = reactive<Record<string, boolean>>({})
@@ -80,6 +81,15 @@ function countsOf(values: string[]): [string, number][] {
 
 const kinds = computed(() => countsOf(rules.value.map((rule) => rule.kind)))
 const proxies = computed(() => countsOf(rules.value.map((rule) => rule.proxy)))
+
+const kindOptions = computed(() => [
+  { value: 'all', label: '全部类型', hint: String(rules.value.length) },
+  ...kinds.value.map(([name, count]) => ({ value: name, label: name, hint: String(count) })),
+])
+const proxyOptions = computed(() => [
+  { value: 'all', label: '全部策略', hint: String(proxies.value.length) },
+  ...proxies.value.map(([name, count]) => ({ value: name, label: name, hint: String(count) })),
+])
 
 const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase()
@@ -227,14 +237,26 @@ onBeforeUnmount(() => { ++loadId })
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索规则内容或策略" data-page-search />
       </div>
-      <select v-model="kind" class="input sm rule-filter" aria-label="按类型筛选" data-testid="rule-kind-filter">
-        <option value="all">全部类型 ({{ rules.length }})</option>
-        <option v-for="[name, count] in kinds" :key="name" :value="name">{{ name }} ({{ count }})</option>
-      </select>
-      <select v-model="proxy" class="input sm rule-filter" aria-label="按策略筛选" data-testid="rule-proxy-filter">
-        <option value="all">全部策略 ({{ proxies.length }})</option>
-        <option v-for="[name, count] in proxies" :key="name" :value="name">{{ name }} ({{ count }})</option>
-      </select>
+      <SelectField
+        v-model="kind"
+        :options="kindOptions"
+        :sheet="compact"
+        size="sm"
+        label="按类型筛选"
+        class="rule-filter"
+        :class="{ filtered: kind !== 'all' }"
+        data-testid="rule-kind-filter"
+      />
+      <SelectField
+        v-model="proxy"
+        :options="proxyOptions"
+        :sheet="compact"
+        size="sm"
+        label="按策略筛选"
+        class="rule-filter"
+        :class="{ filtered: proxy !== 'all' }"
+        data-testid="rule-proxy-filter"
+      />
       <Segmented v-if="hasHits" v-model="sort" :options="SORTS" size="sm" label="排序" />
     </div>
 

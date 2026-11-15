@@ -3,6 +3,7 @@ import { computed, nextTick, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
+import SelectField from '../components/SelectField.vue'
 import YamlEditor from '../components/YamlEditor.vue'
 import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent } from '../lib/format'
 import { useStore } from '../lib/store'
@@ -429,9 +430,14 @@ const updateAllLabel = computed(() => {
           </label>
           <label class="field">
             <span>自动更新</span>
-            <select v-model.number="form.interval">
-              <option v-for="option in INTERVALS" :key="option.hours" :value="option.hours">{{ option.label }}</option>
-            </select>
+            <SelectField
+              :model-value="form.interval"
+              :options="INTERVALS.map((option) => ({ value: option.hours, label: option.label }))"
+              :sheet="compact"
+              label="自动更新"
+              class="field-select"
+              @update:model-value="(value) => (form.interval = Number(value))"
+            />
           </label>
         </template>
         <p v-if="snap.input_error" class="field-error">{{ snap.input_error }}</p>

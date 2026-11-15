@@ -2,6 +2,7 @@
 import { computed, inject, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
+import SelectField from '../components/SelectField.vue'
 import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import { useStore } from '../lib/store'
@@ -411,18 +412,28 @@ function resetDns() {
             <strong>日志级别</strong>
             <p class="muted small">配置中为 {{ snap.config_values.log_level ?? 'info' }}</p>
           </div>
-          <select class="input sm" :value="snap.settings.log_level ?? ''" aria-label="日志级别" @change="save({ log_level: ($event.target as HTMLSelectElement).value || null })">
-            <option v-for="level in LOG_LEVELS" :key="level.id" :value="level.id">{{ level.label }}</option>
-          </select>
+          <SelectField
+            :model-value="snap.settings.log_level ?? ''"
+            :options="LOG_LEVELS.map((level) => ({ value: level.id, label: level.label }))"
+            :sheet="compact"
+            size="sm"
+            label="日志级别"
+            @update:model-value="(value) => save({ log_level: String(value) || null })"
+          />
         </div>
         <div v-if="!store.isAndroid.value" class="setting-row">
           <div class="grow">
             <strong>进程匹配</strong>
             <p class="muted small">识别连接来自哪个应用，用于连接页与进程规则</p>
           </div>
-          <select class="input sm" :value="snap.settings.find_process_mode ?? ''" aria-label="进程匹配" @change="save({ find_process_mode: ($event.target as HTMLSelectElement).value || null })">
-            <option v-for="mode in PROCESS_MODES" :key="mode.id" :value="mode.id">{{ mode.label }}</option>
-          </select>
+          <SelectField
+            :model-value="snap.settings.find_process_mode ?? ''"
+            :options="PROCESS_MODES.map((mode) => ({ value: mode.id, label: mode.label }))"
+            :sheet="compact"
+            size="sm"
+            label="进程匹配"
+            @update:model-value="(value) => save({ find_process_mode: String(value) || null })"
+          />
         </div>
         <div class="setting-row">
           <div class="grow">

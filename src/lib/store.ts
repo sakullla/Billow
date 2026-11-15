@@ -252,6 +252,23 @@ export function createStore(backend: Backend) {
     testProgress.value = { tested: event.tested, total: event.total }
   }
 
+  /** One line after 全部测速: how many real nodes answered; nested group entries are skipped. */
+  function testSummary(result: Snapshot): string | null {
+    const groups = new Set(result.node_catalog.map((group) => group.name))
+    const seen = new Map<string, boolean>()
+    result.node_catalog.forEach((group) =>
+      group.nodes.forEach((node) => {
+        if (groups.has(node.name) || seen.has(node.name)) return
+        if (node.failed) seen.set(node.name, false)
+        else if (node.delay_ms != null) seen.set(node.name, true)
+      }),
+    )
+    if (!seen.size) return null
+    const ok = [...seen.values()].filter(Boolean).length
+    const failed = seen.size - ok
+    return failed ? `测速完成：${ok} 个可用，${failed} 个超时` : `测速完成：${ok} 个节点全部可用`
+  }
+
   function clearTestProgress() {
     testResults.value = {}
     testTimes.value = {}
@@ -703,8 +720,11 @@ export function createStore(backend: Backend) {
       testProgress.value = { tested: 0, total: 0 }
       testResults.value = {}
       const result = await act('testAll', () => backend.testAll())
-      if (result && !result.nodes_error) testResults.value = {}
-      else clearTestProgress()
+      if (result && !result.nodes_error) {
+        testResults.value = {}
+        const summary = testSummary(result)
+        if (summary) toast(summary, 'success')
+      } else clearTestProgress()
       return result
     },
     async testNode(node: string) {

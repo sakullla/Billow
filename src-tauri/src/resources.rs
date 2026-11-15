@@ -54,17 +54,14 @@ pub struct GeoFile {
     pub modified_ms: Option<u64>,
 }
 
+/// Desktop kernels run without `-d`, so their home is mihomo's default.
+#[cfg(not(target_os = "android"))]
 pub fn kernel_home() -> Option<PathBuf> {
-    #[cfg(target_os = "android")]
-    return crate::kernel::android_app_dir("dataDir").map(|dir| dir.join("profiles"));
-    #[cfg(not(target_os = "android"))]
-    {
     if let Some(dir) = std::env::var_os("CLASH_HOME_DIR").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(dir));
     }
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(PathBuf::from(home).join(".config").join("mihomo"))
-    }
 }
 
 fn md5_hex(text: &str) -> String {
@@ -194,7 +191,9 @@ fn parse_rules(body: &str, format: &str) -> RulePreview {
 /// Locate a rule provider's content from the effective config (`config_yaml`).
 pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>) -> ProviderDetail {
     let mut detail = ProviderDetail { kind: "rule".to_string(), name: name.to_string(), ..ProviderDetail::default() };
-    let config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
+    let mut config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
+    // Providers commonly share `<<: *anchor` defaults; `type` and `format` live there.
+    let _ = config.apply_merge();
     let Some(entry) = get(&config, "rule-providers").and_then(|providers| get(providers, name)) else {
         detail.notice = Some("当前配置里没有这个规则集".to_string());
         return detail;
@@ -231,7 +230,11 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>) -> Provid
             Some(body)
         });
         let Some(body) = body else {
-            detail.notice = Some("还没有找到可读取的规则文件；连接并更新这个规则集后再查看".to_string());
+            // Name the path that was tried so a mismatch can be read off the sheet.
+            detail.notice = Some(match path.as_ref() {
+                Some(path) => format!("还没有找到可读取的规则文件（{}）；连接并更新这个规则集后再查看", path.display()),
+                None => "还没有找到可读取的规则文件；连接并更新这个规则集后再查看".to_string(),
+            });
             return detail;
         };
         if body.len() as u64 > MAX_PREVIEW_BYTES {
@@ -307,6 +310,33 @@ rule-providers:
         assert!(rule_detail(config, "bin", Some(&home)).notice.unwrap().contains("MRS"));
         assert!(rule_detail(config, "missing", Some(&home)).notice.unwrap().contains("还没有找到"));
         assert!(rule_detail(config, "nope", Some(&home)).notice.is_some());
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn rule_providers_read_type_and_format_through_merge_keys() {
+        let home = temp_home("merge");
+        let url = "https://x/disney.yaml";
+        fs::write(home.join("rules").join(md5_hex(url)), "payload:
+  - 'DOMAIN,disney.com'
+").unwrap();
+        // Anchored defaults, and the literal `<<:` mapping a re-serialized config carries.
+        let anchored = format!("c: &c {{ type: http, behavior: classical, format: yaml }}
+rule-providers:
+  disney: {{ <<: *c, url: \"{url}\" }}
+");
+        let literal = format!("rule-providers:
+  disney:
+    <<:
+      type: http
+      format: yaml
+    url: {url}
+");
+        for config in [anchored, literal] {
+            let detail = rule_detail(&config, "disney", Some(&home));
+            assert_eq!(detail.rules, ["DOMAIN,disney.com"], "{config}");
+            assert!(detail.notice.is_none());
+        }
         let _ = fs::remove_dir_all(home);
     }
 

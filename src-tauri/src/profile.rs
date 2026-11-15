@@ -589,6 +589,60 @@ impl SubscriptionSource for HttpSubscriptionClient {
     }
 }
 
+/// Kernel listener failures arrive as raw Go errors; say what is wrong and what to do.
+fn friendly_listen_error(message: &str) -> String {
+    let lower = message.to_lowercase();
+    let in_use = lower.contains("only one usage of each socket address")
+        || lower.contains("address already in use")
+        || lower.contains("10048");
+    if message.contains("Start Mixed") && in_use {
+        let address = message
+            .split("listen tcp ")
+            .nth(1)
+            .and_then(|rest| rest.split(": bind").next())
+            .map(str::trim)
+            .filter(|address| !address.is_empty())
+            .unwrap_or("混合端口");
+        return format!(
+            "端口 {address} 已被其他程序占用，内核无法启动。请关闭占用它的程序（例如另一个 Clash / mihomo 客户端），或在设置中更换混合端口后重试"
+        );
+    }
+    if message.contains("Start TUN") {
+        if lower.contains("access is denied") || lower.contains("operation not permitted") || lower.contains("permission denied") {
+            return "TUN 启动失败：需要管理员权限。请以管理员身份运行 Billow 后重试".to_string();
+        }
+        if lower.contains("already exists") || in_use {
+            return "TUN 启动失败：系统里已有同名虚拟网卡或地址冲突，通常是另一个代理客户端的 TUN 模式仍在运行。请先关闭它，或在 TUN 设置中更换网卡名称".to_string();
+        }
+        return format!("TUN 启动失败：{message}");
+    }
+    message.to_string()
+}
+
+/// The kernels directory: `…/kernels/files/<hash>/core.exe` → `…/kernels`.
+/// Only app-managed kernels qualify; a kernel elsewhere never triggers a sweep.
+#[cfg(target_os = "windows")]
+fn kernel_root(kernel: &std::path::Path) -> Option<PathBuf> {
+    kernel
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name.eq_ignore_ascii_case("kernels")))
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Orphaned kernels leave their `runtime-*.yaml` behind; only the new one stays.
+#[cfg(target_os = "windows")]
+fn remove_stale_runtime_configs(work_dir: &std::path::Path, keep: &std::path::Path) {
+    let Ok(entries) = fs::read_dir(work_dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path != keep && name.starts_with("runtime-") && name.ends_with(".yaml") {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 /// Spawns the already installed kernel. Tests inject [`KernelLaunch`] instead.
 pub struct ProcessRuntime {
     kernel_path: Option<PathBuf>,
@@ -665,6 +719,7 @@ impl ProcessRuntime {
     pub fn set_kernel_path(&mut self, path: Option<PathBuf>) {
         self.kernel_path = path;
     }
+
 
     #[cfg(target_os = "windows")]
     pub fn shutdown(&mut self) { self.stop(); }
@@ -794,6 +849,22 @@ impl KernelLaunch for ProcessRuntime {
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
         self.stop();
+        // A kernel orphaned by an earlier app process still holds the mixed and
+        // controller ports; every new start would fail with "address in use".
+        #[cfg(target_os = "windows")]
+        {
+            let stuck = kernel_root(&path)
+                .map(|root| crate::win_process::end_stray_kernels(&root, None))
+                .unwrap_or_default();
+            if !stuck.is_empty() {
+                let _ = fs::remove_file(&config_path);
+                let pids = stuck.iter().map(|stray| stray.pid.to_string()).collect::<Vec<_>>().join("、");
+                return Err(format!(
+                    "上次运行留下的内核（PID {pids}）仍占用端口，结束它需要管理员权限。请在任务管理器中结束该进程，或以管理员身份重新打开 Billow 后重试"
+                ));
+            }
+            remove_stale_runtime_configs(&self.work_dir, &config_path);
+        }
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -801,6 +872,8 @@ impl KernelLaunch for ProcessRuntime {
                 return Err(format!("{KERNEL_ERROR}：{error}"));
             }
         };
+        #[cfg(target_os = "windows")]
+        crate::win_process::bind_to_app_lifetime(&child);
         let stdout = child.stdout.take();
         self.started = Some(Instant::now());
         self.child = Some(child);
@@ -825,7 +898,7 @@ impl KernelLaunch for ProcessRuntime {
             });
             if let Some(message) = failure {
                 self.stop();
-                return Err(message);
+                return Err(friendly_listen_error(&message));
             }
             if !self.running() {
                 self.stop();
@@ -3351,8 +3424,7 @@ fn document_value(profile: &Profile) -> Option<Value> {
 fn prepare(content: &str, override_text: &str) -> Result<Prepared, PrepareError> {
     let mut base = parse_config(content).map_err(|_| PrepareError::Content)?;
     if !override_text.trim().is_empty() {
-        let overlay =
-            serde_yaml::from_str::<Value>(override_text).map_err(|_| PrepareError::Override)?;
+        let overlay = parse_yaml(override_text).map_err(|_| PrepareError::Override)?;
         if !overlay.is_null() {
             merge(&mut base, &overlay);
         }
@@ -3368,8 +3440,21 @@ fn prepare(content: &str, override_text: &str) -> Result<Prepared, PrepareError>
     })
 }
 
+/// Parse YAML the way the kernel reads it: `<<` merge keys (usually `<<: *anchor`)
+/// are resolved, so fields such as a provider's `type` or a group's `type` are
+/// visible to the app and stay intact once the config is re-serialized.
+fn parse_yaml(text: &str) -> Result<Value, serde_yaml::Error> {
+    let mut value = serde_yaml::from_str::<Value>(text)?;
+    // A malformed merge is left for the kernel to report; the app keeps the raw value.
+    let raw = value.clone();
+    if value.apply_merge().is_err() {
+        value = raw;
+    }
+    Ok(value)
+}
+
 fn parse_config(text: &str) -> Result<Value, ()> {
-    let value = serde_yaml::from_str::<Value>(text).map_err(|_| ())?;
+    let value = parse_yaml(text).map_err(|_| ())?;
     if is_config(&value) {
         Ok(value)
     } else {
@@ -3637,6 +3722,46 @@ mod tests {
 
     use crate::nodes::{KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay};
     use crate::takeover::{MemoryProxy, MemoryTun, MemoryVpn};
+
+    #[test]
+    fn prepared_configs_resolve_merge_keys_like_the_kernel() {
+        let content = "p: &p {type: http, interval: 86400, behavior: classical}
+proxies: []
+rule-providers:
+  a: {<<: *p, url: 'https://x/a.yaml'}
+proxy-groups:
+  - {<<: {type: select}, name: G, proxies: [DIRECT]}
+";
+        let Ok(prepared) = prepare(content, "") else { panic!("config should prepare") };
+        let value: Value = serde_yaml::from_str(&prepared.yaml).unwrap();
+        assert_eq!(value["rule-providers"]["a"]["type"].as_str(), Some("http"));
+        assert_eq!(value["rule-providers"]["a"]["url"].as_str(), Some("https://x/a.yaml"));
+        assert_eq!(value["proxy-groups"][0]["type"].as_str(), Some("select"));
+        assert!(!prepared.yaml.contains("<<"), "{}", prepared.yaml);
+    }
+
+    #[test]
+    fn listener_failures_explain_the_port_or_tun_conflict() {
+        let mixed = friendly_listen_error(
+            "Start Mixed(http+socks) server error: listen tcp 127.0.0.1:7890: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.",
+        );
+        assert!(mixed.starts_with("端口 127.0.0.1:7890 已被其他程序占用"), "{mixed}");
+        let unix = friendly_listen_error("Start Mixed(http+socks) server error: listen tcp 127.0.0.1:7891: bind: address already in use");
+        assert!(unix.contains("127.0.0.1:7891"));
+        let denied = friendly_listen_error("Start TUN listening error: configure tun interface: Access is denied.");
+        assert!(denied.contains("管理员权限"));
+        let clash = friendly_listen_error("Start TUN listening error: Cannot create a file when that file already exists.");
+        assert!(clash.contains("另一个代理客户端"));
+        assert_eq!(friendly_listen_error("something else"), "something else");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn only_app_managed_kernels_are_swept() {
+        let kernel = PathBuf::from(r"C:\Users\a\AppData\Roaming\app.billow.client\kernels\files\abc\core.exe");
+        assert_eq!(kernel_root(&kernel), Some(PathBuf::from(r"C:\Users\a\AppData\Roaming\app.billow.client\kernels")));
+        assert_eq!(kernel_root(&PathBuf::from(r"C:\tools\mihomo.exe")), None);
+    }
 
     struct TempDir(PathBuf);
 

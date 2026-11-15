@@ -1264,6 +1264,51 @@ describe('App', () => {
     }
   })
 
+  it('lands on a group from home instantly and lets the located cue fade', async () => {
+    localStorage.clear()
+    const proto = Element.prototype as unknown as { scrollIntoView?: (options?: ScrollIntoViewOptions) => void }
+    const original = proto.scrollIntoView
+    const calls: (ScrollIntoViewOptions | undefined)[] = []
+    proto.scrollIntoView = function (options?: ScrollIntoViewOptions) {
+      calls.push(options)
+    }
+    try {
+      const { wrapper } = await mountApp({}, 390)
+      await wrapper.find('[data-testid="groups-card"] [data-group="OpenAI"]').trigger('click')
+      await flushPromises()
+      const card = () => wrapper.find('[data-group-card="OpenAI"]')
+      expect(card().classes()).toEqual(expect.arrayContaining(['open', 'located']))
+      // A page switch must not animate through every card above the target.
+      expect(calls.at(-1)?.behavior).toBe('instant')
+      await settle(1700)
+      expect(card().classes()).not.toContain('located')
+      expect(storeOf(wrapper).focusGroup.value).toBeNull()
+    } finally {
+      proto.scrollIntoView = original
+    }
+  })
+
+  it('filters rules on phones through a themed sheet instead of the native picker', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    storeOf(wrapper).go('rules')
+    await settle(400)
+    const trigger = wrapper.find('[data-testid="rule-kind-filter"]')
+    expect(trigger.element.tagName).toBe('BUTTON')
+    await trigger.trigger('click')
+    await flushPromises()
+    const option = [...document.body.querySelectorAll<HTMLElement>('.option-row')].find((row) => row.textContent?.includes('GeoIP'))
+    expect(option).toBeTruthy()
+    option!.click()
+    await flushPromises()
+    expect(document.body.querySelector('.option-list')).toBeNull()
+    expect(wrapper.find('[data-testid="rule-kind-filter"]').text()).toContain('GeoIP')
+    const rows = wrapper.findAll('[data-testid="rule-row"]')
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every((row) => row.text().includes('GeoIP'))).toBe(true)
+  })
+
   it('keeps an intentionally collapsed set when returning to the proxies page', async () => {
     localStorage.clear()
     const { wrapper } = await mountApp()
@@ -1354,7 +1399,9 @@ describe('App', () => {
     expect(Object.keys(store.testResults.value).length).toBeGreaterThan(0)
 
     await settle(1600)
-    expect(wrapper.find('[data-testid="test-progress"]').text()).toBe('已测 23/23')
+    // The counter only lives while the run does; a summary toast reports the result.
+    expect(wrapper.find('[data-testid="test-progress"]').exists()).toBe(false)
+    expect(wrapper.find('.toasts').text()).toMatch(/测速完成：\d+ 个可用/)
     expect(wrapper.find('[data-group-card="节点选择"] [data-node="新加坡 01"] .delay').text()).toBe('超时')
     expect(wrapper.find('[data-group-card="节点选择"] [data-node="香港 01"] .delay').text()).toMatch(/^\d+ ms$/)
     expect(wrapper.find('[data-group-card="节点选择"] .group-tested').text()).toContain('测速')
@@ -1483,14 +1530,18 @@ describe('App', () => {
     await nextTick()
     expect(sheet()?.querySelectorAll('.detail-proxy').length).toBeGreaterThan(0)
     for (const row of sheet()!.querySelectorAll('.detail-proxy')) expect(row.textContent).toContain('gRPC')
-    bodyClick('.modal-foot .btn.primary')
+    // The work action leads the footer; closing is the quiet secondary button.
+    expect(document.body.querySelector('.modal-foot .btn.primary')?.textContent).toContain('健康检查')
+    bodyClick('[data-testid="close-provider-detail"]')
     await flushPromises()
 
     await wrapper.find('[data-testid="open-provider-private"]').trigger('click')
     await settle(300)
     expect(sheet()?.querySelectorAll('.detail-rules li')).toHaveLength(6)
     expect(sheet()?.querySelector('.detail-rules .rule-type')?.textContent).toBe('DOMAIN-SUFFIX')
-    bodyClick('.modal-foot .btn.primary')
+    // Inline sets have nothing to fetch, so no update action is offered.
+    expect(document.body.querySelector('.modal-foot .btn.primary')).toBeNull()
+    bodyClick('[data-testid="close-provider-detail"]')
     await flushPromises()
 
     await wrapper.find('[data-testid="open-provider-cn-domains"]').trigger('click')

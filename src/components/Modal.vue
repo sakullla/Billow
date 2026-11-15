@@ -37,9 +37,18 @@ function onBackdrop() {
   if (props.closeOnBackdrop !== false) void requestClose()
 }
 
+/**
+ * Touch screens: opening a sheet must not pop the keyboard or paint a focus ring
+ * on the close button, so focus parks on the panel itself. Keyboards and mice
+ * keep the first-control focus.
+ */
+function coarsePointer(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true
+}
+
 useFocusTrap(() => panel.value, {
   onClose: () => void requestClose(),
-  initialFocus: () => props.initialFocus?.(),
+  initialFocus: () => props.initialFocus?.() ?? (coarsePointer() ? panel.value : undefined),
 })
 </script>
 

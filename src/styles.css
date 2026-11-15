@@ -556,7 +556,8 @@ hr {
 .main {
   overflow-y: auto;
   min-height: 0;
-  scroll-behavior: smooth;
+  /* No CSS smooth scrolling: page switches restore their offset and deep links
+     land on their target instantly; callers opt into smooth motion explicitly. */
 }
 
 .tabbar {
@@ -880,6 +881,72 @@ hr {
 }
 select.input {
   padding-right: 6px;
+}
+/* Phone select: looks like the field, opens a themed sheet. */
+.select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  padding-right: 10px;
+  text-align: left;
+  color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+}
+.select-trigger .icon {
+  flex: none;
+  color: var(--muted);
+}
+.select-trigger-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.option-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 calc(var(--space-2) * -1);
+}
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 48px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-control);
+  text-align: left;
+  font-size: var(--text-base);
+  -webkit-tap-highlight-color: transparent;
+}
+.option-row + .option-row {
+  margin-top: 2px;
+}
+.option-row:active,
+.option-row:hover {
+  background: var(--hover);
+}
+.option-row.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.option-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.option-hint {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.option-check {
+  flex: none;
+  color: var(--accent-ink);
 }
 .input-group {
   display: flex;
@@ -1813,8 +1880,18 @@ button.delay:hover:not(:disabled) {
   overflow: clip;
   scroll-margin-top: var(--space-4);
 }
+/* A deep link from home lands instantly; a short ring fade says "this one". */
 .group.located {
-  box-shadow: 0 0 0 2px var(--accent-ring);
+  animation: locate-cue 1.6s var(--ease) both;
+}
+@keyframes locate-cue {
+  0%,
+  45% {
+    box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px var(--accent-soft);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent;
+  }
 }
 /* Fixed decorative box: the image never changes header height or focus order (R33). */
 .group-icon {
@@ -1978,6 +2055,7 @@ button.delay:hover:not(:disabled) {
   cursor: default;
 }
 .node-name {
+  max-width: 100%;
   font-weight: 550;
   font-size: var(--text-md);
   overflow: hidden;
@@ -2480,6 +2558,19 @@ button.delay:hover:not(:disabled) {
   width: 132px;
   flex: none;
 }
+.rule-filter.filtered {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+/* Phones: search on its own row, the two filters split the next one. */
+.compact .rule-toolbar .search {
+  flex: 1 1 100%;
+}
+.compact .rule-toolbar .rule-filter {
+  flex: 1 1 0;
+  width: auto;
+  height: 38px;
+}
 .rule-scroll {
   overflow-y: auto;
   padding: 4px 0;
@@ -2730,6 +2821,9 @@ button.delay:hover:not(:disabled) {
   inset: 0;
   z-index: 100;
   display: grid;
+  /* A single shrinkable track: long URLs, node names or editor lines must never
+     widen the dialog past the viewport (the auto track would grow to min-content). */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: var(--space-5);
   background: rgba(8, 14, 26, 0.44);
@@ -2737,6 +2831,7 @@ button.delay:hover:not(:disabled) {
 }
 .modal {
   width: min(460px, 100%);
+  min-width: 0;
   max-height: calc(100vh - 40px);
   display: flex;
   flex-direction: column;
@@ -2748,6 +2843,9 @@ button.delay:hover:not(:disabled) {
 }
 .modal.wide {
   width: min(820px, 100%);
+}
+.modal:focus {
+  outline: none;
 }
 .modal-head {
   display: flex;
@@ -2765,7 +2863,10 @@ button.delay:hover:not(:disabled) {
 }
 .modal-body {
   padding: 10px var(--space-5) var(--space-5);
+  overflow-x: hidden;
   overflow-y: auto;
+  min-width: 0;
+  overscroll-behavior: contain;
 }
 .modal-foot {
   display: flex;
@@ -3087,6 +3188,11 @@ button.delay:hover:not(:disabled) {
   .sk-bar {
     animation: none !important;
   }
+  /* The located cue stays as a static ring until the request clears. */
+  .group.located {
+    animation: none !important;
+    box-shadow: 0 0 0 2px var(--accent);
+  }
 }
 
 /* Containers that manage their own inner spacing keep zero padding in compact layout too. */
@@ -3102,9 +3208,17 @@ button.delay:hover:not(:disabled) {
    segmented control or a long action row give it a full row instead. */
 .compact .page-head {
   align-items: center;
+  column-gap: var(--space-3);
+}
+/* The title block yields width first, so one or two actions stay beside the
+   title instead of dropping to a lonely row of their own. */
+.compact .page-head > div:first-child {
+  flex: 1 1 0;
+  min-width: 0;
 }
 .compact .head-actions {
   margin-left: auto;
+  flex: none;
 }
 .compact .page.settings .head-actions,
 .compact .page.proxies .head-actions,
@@ -3383,12 +3497,20 @@ html[data-keyboard] .compact .tabbar {
     padding-top: var(--space-2);
   }
   .modal-foot {
+    flex-wrap: wrap;
     padding-bottom: var(--space-3);
+  }
+  /* Footer notes (line counts, links) take their own row above the buttons. */
+  .modal-foot > .grow {
+    flex-basis: 100%;
   }
   .modal-foot .btn {
     flex: 1;
     justify-content: center;
     min-height: 44px;
+  }
+  .editor-hint {
+    display: none;
   }
 }
 
@@ -3960,6 +4082,127 @@ html[data-keyboard] .compact .tabbar {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.card-count {
+  margin-left: 6px;
+  font-weight: 500;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.group-row-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+/* Wide layouts: name left, current node right on one line. */
+.group-row-text {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Phone home ──
+   State and the power key share the first row so live numbers move up; the
+   key is lit (accent) while it invites a connection and turns into a calm
+   green "on" ring once traffic flows. */
+.compact .hero-main {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'state action' 'rates rates';
+  column-gap: var(--space-3);
+  row-gap: var(--space-4);
+  align-items: center;
+}
+.compact .hero .hero-action {
+  width: auto;
+}
+.compact .hero .connect-control {
+  width: auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--accent-ink);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  -webkit-tap-highlight-color: transparent;
+}
+.compact .hero .connect-glyph {
+  width: 64px;
+  height: 64px;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 36%, transparent);
+  transition: background var(--dur-base) var(--ease), color var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease);
+}
+.compact .hero .connect-label {
+  min-width: 0;
+  text-align: center;
+}
+.compact .hero .connect-control.on {
+  background: none;
+  border: 0;
+  box-shadow: none;
+  color: var(--text-2);
+}
+.compact .hero .connect-control.on .connect-glyph {
+  background: var(--good-soft);
+  color: var(--good-ink);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--good) 45%, transparent), 0 0 0 6px color-mix(in srgb, var(--good) 10%, transparent);
+}
+.compact .hero .connect-control.pending {
+  background: none;
+  color: var(--accent-ink);
+}
+.compact .hero .connect-control.pending .connect-glyph {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  box-shadow: none;
+}
+.compact .hero .connect-control:active:not(:disabled) .connect-glyph {
+  transform: scale(0.94);
+}
+.compact .hero.on {
+  border-color: color-mix(in srgb, var(--good) 28%, var(--border));
+}
+
+/* Group rows on phones: icon tile, name over the current node, delay, chevron. */
+.compact .home-groups .card-head {
+  margin-bottom: var(--space-1);
+}
+.compact .home-groups .group-row {
+  gap: var(--space-3);
+  min-height: 60px;
+  padding: var(--space-2);
+}
+.compact .group-row-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-control);
+  background: var(--sunken);
+}
+.compact .group-row-text {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.compact .home-groups .group-row-name {
+  max-width: 100%;
+  font-size: var(--text-base);
+}
+.compact .home-groups .group-row-now {
+  max-width: 100%;
+  flex: none;
+  text-align: left;
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+.compact .home-groups .delay {
+  flex: none;
 }
 
 /* ───────────── Node capability tags ───────────── */

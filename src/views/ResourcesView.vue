@@ -507,17 +507,31 @@ onMounted(() => {
           </ol>
         </template>
       </div>
+      <!-- The sheet's work action is primary; closing is the quiet way out. -->
       <template #footer>
+        <button type="button" class="btn ghost" data-testid="close-provider-detail" @click="detail = null">关闭</button>
         <button
           v-if="detail.row.kind === 'proxy'"
           type="button"
-          class="btn ghost"
+          class="btn primary"
           :disabled="!snap.kernel_running || fruitless(detail.row)"
+          :aria-busy="fruitless(detail.row) || undefined"
           @click="single(detail.row, 'healthcheck').then(() => detail && openDetail(detail.row))"
         >
-          <Icon name="zap" :size="15" />健康检查
+          <span v-if="fruitless(detail.row)" class="spinner sm" aria-hidden="true" />
+          <Icon v-else name="zap" :size="15" />{{ fruitless(detail.row) ? '检查中' : '健康检查' }}
         </button>
-        <button type="button" class="btn primary" @click="detail = null">关闭</button>
+        <button
+          v-else-if="!isInline(detail.row)"
+          type="button"
+          class="btn primary"
+          :disabled="!snap.kernel_running || fruitless(detail.row)"
+          :aria-busy="fruitless(detail.row) || undefined"
+          @click="single(detail.row, 'update').then(() => detail && openDetail(detail.row))"
+        >
+          <span v-if="fruitless(detail.row)" class="spinner sm" aria-hidden="true" />
+          <Icon v-else name="refresh" :size="15" />{{ fruitless(detail.row) ? '更新中' : '更新规则集' }}
+        </button>
       </template>
     </Modal>
   </div>

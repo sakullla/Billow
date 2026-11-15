@@ -51,7 +51,8 @@ const modeBusy = computed(() => Boolean(store.busy.mode))
 
 const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${profile.value.id}`]) : false))
 
-const manualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual').slice(0, 8))
+const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual'))
+const manualGroups = computed(() => allManualGroups.value.slice(0, 8))
 const usage = computed(() => (profile.value ? usagePercent(profile.value.used, profile.value.total) : null))
 const expireDays = computed(() => (profile.value?.expire ? daysLeft(profile.value.expire) : null))
 
@@ -101,7 +102,8 @@ function uptimeText(seconds: number): string {
   const minutes = Math.floor((total % 3600) / 60)
   if (days > 0) return `${days} 天 ${hours} 时`
   if (hours > 0) return `${hours} 时 ${minutes} 分`
-  return `${minutes} 分`
+  // "0 分" reads like a stalled counter right after connecting.
+  return minutes > 0 ? `${minutes} 分` : '不到 1 分'
 }
 
 function nodeOf(group: { now: string; nodes: { name: string; delay_ms: number | null; failed: boolean }[] }) {
@@ -160,7 +162,8 @@ function onPrimary() {
             <p v-if="store.connectStage.value" class="hero-sub muted" role="status">{{ store.connectStage.value }}</p>
             <p v-else-if="profile" class="hero-sub">
               <span class="hero-profile">{{ profile.name }}</span>
-              <span v-if="activeMode" class="muted">· {{ activeMode.label }}模式</span>
+              <!-- Phones show the mode switch right under the hero; repeating it here is noise. -->
+              <span v-if="activeMode && !compact" class="muted">· {{ activeMode.label }}模式</span>
               <span v-if="snap.mixed_port" class="muted">· 端口 {{ snap.mixed_port }}</span>
             </p>
             <p v-else class="hero-sub muted">选择一份配置后连接</p>
@@ -189,7 +192,7 @@ function onPrimary() {
             >
               <span class="connect-glyph">
                 <span v-if="store.connecting.value" class="spinner sm" />
-                <Icon v-else :name="connectIcon" :size="20" :stroke="2.2" />
+                <Icon v-else :name="connectIcon" :size="compact ? 26 : 20" :stroke="2.2" />
               </span>
               <span class="connect-label">{{ connectLabel }}</span>
             </button>
@@ -305,7 +308,7 @@ function onPrimary() {
         <div class="home-col">
           <section class="card home-groups" data-testid="groups-card">
             <header class="card-head">
-              <h2>代理组</h2>
+              <h2>代理组<span v-if="allManualGroups.length" class="card-count">{{ allManualGroups.length }}</span></h2>
               <button type="button" class="btn ghost sm" @click="store.go('proxies')">查看全部<Icon name="chevron-right" :size="14" /></button>
             </header>
             <p v-if="!manualGroups.length" class="empty-line muted">{{ snap.nodes_notice ?? '这份配置没有可手动选择的代理组' }}</p>
@@ -317,9 +320,11 @@ function onPrimary() {
               :data-group="group.name"
               @click="store.go('proxies', group.name)"
             >
-              <GroupIcon :icon="group.icon" :type="group.group_type" :size="20" />
-              <span class="group-row-name">{{ group.name }}</span>
-              <span class="group-row-now">{{ group.now || '—' }}</span>
+              <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="compact ? 24 : 20" /></span>
+              <span class="group-row-text">
+                <span class="group-row-name">{{ group.name }}</span>
+                <span class="group-row-now">{{ group.now || '—' }}</span>
+              </span>
               <span
                 v-if="nodeOf(group) && (nodeOf(group)!.delay_ms != null || nodeOf(group)!.failed)"
                 class="delay"

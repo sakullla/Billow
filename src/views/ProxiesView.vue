@@ -260,7 +260,12 @@ function isOpen(name: string) {
 /** Gap between the sticky toolbar and a located group header. */
 const TOOLBAR_GAP = 12
 
-async function scrollToGroup(name: string | null) {
+/**
+ * Landing on the page jumps straight to the group before the first paint; a long
+ * smooth scroll through every card above it reads as lag, especially on phones.
+ * Smooth scrolling is kept for moves within an already visible list.
+ */
+async function scrollToGroup(name: string | null, behavior: ScrollBehavior = 'instant') {
   if (!name) return
   await nextTick()
   const el = document.querySelector(`[data-group-card="${CSS.escape(name)}"]`)
@@ -269,20 +274,35 @@ async function scrollToGroup(name: string | null) {
   // needs a scroll margin equal to its measured height plus a gap (R26).
   const toolbarHeight = toolbarEl.value?.getBoundingClientRect().height ?? 0
   el.style.scrollMarginTop = `${Math.ceil(toolbarHeight) + TOOLBAR_GAP}px`
-  el.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+  el.scrollIntoView?.({ block: 'start', behavior })
+}
+
+/** The located ring is a short cue, not a lasting state: it fades and the request is cleared. */
+const LOCATE_CUE_MS = 1600
+let locateTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleLocateClear(name: string) {
+  if (locateTimer) clearTimeout(locateTimer)
+  locateTimer = setTimeout(() => {
+    locateTimer = null
+    if (store.focusGroup.value === name) store.focusGroup.value = null
+  }, LOCATE_CUE_MS)
 }
 
 /** Home deep links win: open the group, drop a filter that hides it, then scroll to it (R26). */
-async function locate(name: string | null) {
+async function locate(name: string | null, behavior: ScrollBehavior = 'instant') {
   if (!name) return
   const group = manifest().find((item) => item.name === name)
   if (!group) return
   if (hideAuto.value && group.kind === 'auto') hideAuto.value = false
+  // A search could hide the group or its nodes; the deep link wins.
+  if (query.value) query.value = ''
   if (!open.value.has(name)) {
     open.value = new Set([...open.value, name])
     persistOpen()
   }
-  await scrollToGroup(name)
+  await scrollToGroup(name, behavior)
+  scheduleLocateClear(name)
 }
 
 onMounted(() => {
@@ -300,7 +320,7 @@ onMounted(() => {
   })()
 })
 
-watch(() => store.focusGroup.value, (name) => void locate(name))
+watch(() => store.focusGroup.value, (name) => void locate(name, 'smooth'))
 
 function measureToolbar() {
   toolbarHeight.value = Math.ceil(toolbarEl.value?.getBoundingClientRect().height ?? 0)
@@ -322,6 +342,10 @@ watch(toolbarEl, (element, previous) => {
 onBeforeUnmount(() => {
   toolbarObserver?.disconnect()
   toolbarObserver = null
+  if (locateTimer) clearTimeout(locateTimer)
+  locateTimer = null
+  // Leaving early must not keep the request alive for the next visit.
+  if (store.focusGroup.value) store.focusGroup.value = null
 })
 
 /** Phones list one node per row and offer a two-column grid as the dense view; desktop is the reverse. */
@@ -352,15 +376,23 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
           @update:model-value="store.setMode"
         />
         <span
-          v-if="store.testProgress.value.total > 0"
+          v-if="store.busy.testAll && store.testProgress.value.total > 0"
           class="test-progress small mono"
           data-testid="test-progress"
           aria-live="polite"
         >已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
-        <span v-if="!snap.kernel_running" id="proxy-test-hint" class="test-hint muted small" data-testid="test-hint">
+        <span
+          v-if="!snap.kernel_running && snap.node_catalog.length"
+          id="proxy-test-hint"
+          class="test-hint muted small"
+          :class="{ 'sr-only': compact }"
+          data-testid="test-hint"
+        >
           连接后可测速
         </span>
+        <!-- Without groups there is nothing to test; the empty state below owns the next step. -->
         <button
+          v-if="snap.node_catalog.length"
           type="button"
           class="btn primary sm"
           :disabled="store.busy.testAll || !snap.kernel_running"

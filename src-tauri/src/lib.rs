@@ -11,6 +11,8 @@ mod shell;
 mod takeover;
 mod tray;
 mod resources;
+#[cfg(target_os = "windows")]
+mod win_process;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -188,6 +190,19 @@ fn kernel_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .join("kernels");
     std::fs::create_dir_all(&directory).map_err(|_| "内核目录不可用".to_string())?;
     Ok(directory)
+}
+
+/// The kernel's home, where provider caches and GEO files live. Android starts
+/// the kernel with `-d <profiles dir>`, so readers must use that same directory
+/// rather than re-deriving it through JNI; desktop kernels use mihomo's default.
+fn kernel_home(app: &AppHandle) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "android")]
+    return profiles_dir(app).ok();
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        resources::kernel_home()
+    }
 }
 
 fn profiles_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -792,8 +807,9 @@ async fn provider_action(app: AppHandle, kind: String, name: String, action: Str
 async fn provider_detail(app: AppHandle, kind: String, name: String) -> Result<resources::ProviderDetail, String> {
     if kind == "rule" {
         let config = with_profile(&app, |session| session.book.effective_config())?;
+        let home = kernel_home(&app);
         return tauri::async_runtime::spawn_blocking(move || {
-            resources::rule_detail(&config, &name, resources::kernel_home().as_deref())
+            resources::rule_detail(&config, &name, home.as_deref())
         })
         .await
         .map_err(|err| err.to_string());
@@ -806,8 +822,8 @@ async fn provider_detail(app: AppHandle, kind: String, name: String) -> Result<r
 
 /// GEO database files in the kernel home, readable without a running kernel.
 #[tauri::command(async)]
-fn geo_files() -> Vec<resources::GeoFile> {
-    resources::geo_files(resources::kernel_home().as_deref())
+fn geo_files(app: AppHandle) -> Vec<resources::GeoFile> {
+    resources::geo_files(kernel_home(&app).as_deref())
 }
 
 #[tauri::command]
