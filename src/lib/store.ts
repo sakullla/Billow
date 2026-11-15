@@ -21,7 +21,8 @@ export const PAGES: { id: PageId; label: string; icon: string; mobile: boolean; 
   { id: 'home', label: '首页', icon: 'home', mobile: true, group: 'core' },
   { id: 'proxies', label: '代理', icon: 'globe', mobile: true, group: 'core' },
   { id: 'profiles', label: '配置', icon: 'layers', mobile: true, group: 'core' },
-  { id: 'connections', label: '连接', icon: 'activity', mobile: true, group: 'core' },
+  // Phones keep four tabs; connections joins the tools reached from Settings.
+  { id: 'connections', label: '连接', icon: 'activity', mobile: false, group: 'core' },
   { id: 'rules', label: '规则', icon: 'route', mobile: false, group: 'tools' },
   { id: 'resources', label: '资源', icon: 'database', mobile: false, group: 'tools' },
   { id: 'logs', label: '日志', icon: 'terminal', mobile: false, group: 'tools' },

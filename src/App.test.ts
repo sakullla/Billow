@@ -146,7 +146,13 @@ describe('App', () => {
 
     const narrow = await mountApp({}, 390)
     expect(narrow.wrapper.find('.sidebar').exists()).toBe(false)
-    expect(narrow.wrapper.findAll('.tabbar [data-page]')).toHaveLength(5)
+    // Phones keep four tabs; connections moves behind Settings with the other tools.
+    expect(narrow.wrapper.findAll('.tabbar [data-page]').map((item) => item.attributes('data-page'))).toEqual([
+      'home',
+      'proxies',
+      'profiles',
+      'settings',
+    ])
   })
 
   it('connects from the power button and shows live rates', async () => {
@@ -211,9 +217,9 @@ describe('App', () => {
 
   it('switches outbound mode', async () => {
     const { wrapper } = await mountApp()
-    await wrapper.find('[data-mode="global"]').trigger('click')
+    await wrapper.find('[data-testid="mode-segmented"] [data-value="global"]').trigger('click')
     await settle(300)
-    expect(wrapper.find('[data-mode="global"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="mode-segmented"] [data-value="global"]').attributes('aria-checked')).toBe('true')
   })
 
   it('selects a node in a manual group and filters by name', async () => {
@@ -583,11 +589,27 @@ describe('App', () => {
     await settingsTab().trigger('click')
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
-    await wrapper.findAll('.shortcut-card .setting-row')[1].trigger('click')
+    const tools = wrapper.findAll('[data-testid="tool-grid"] [data-tool]').map((tile) => tile.attributes('data-tool'))
+    expect(tools).toEqual(['connections', 'logs', 'rules', 'resources'])
+    await wrapper.find('[data-tool="rules"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('rules')
     expect(settingsTab().attributes('aria-current')).toBe('page')
     expect(wrapper.find('.main .page').exists()).toBe(true)
+
+    // A visible back control returns to the page the tool was opened from.
+    const back = wrapper.find('[data-testid="page-back"]')
+    expect(back.text()).toBe('设置')
+    await back.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
+    expect(wrapper.find('[data-testid="page-back"]').exists()).toBe(false)
+  })
+
+  it('keeps the back control off desktop pages', async () => {
+    const { wrapper } = await mountApp()
+    await openPage(wrapper, 'rules')
+    expect(wrapper.find('[data-testid="page-back"]').exists()).toBe(false)
   })
 
   it('opens the command palette with Ctrl+K, filters and executes a page', async () => {
@@ -817,35 +839,33 @@ describe('App', () => {
     expect(welcome.wrapper.find('[data-testid="power"]').text()).toBe('添加配置')
   })
 
-  it('keeps the Android VPN switch as takeover state, not a second connect entry', async () => {
+  it('reports Android VPN state in the hero instead of a second, disabled switch', async () => {
     const { wrapper } = await mountApp({ platform: 'android' }, 390)
-    const vpn = wrapper.find('[data-testid="toggle-vpn"]')
-    expect(vpn.attributes('role')).toBe('switch')
-    expect(vpn.attributes('aria-checked')).toBe('false')
-    expect(vpn.attributes('disabled')).not.toBeUndefined()
-    expect(wrapper.find('[data-testid="takeover-card"]').text()).toContain('开启 VPN 需连接')
+    expect(wrapper.find('[data-testid="toggle-vpn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="takeover-card"] [data-testid="open-apps"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="power"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toBe('代理未运行')
+
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toBe('VPN 已接管设备流量')
   })
 
-  it('shows the mode row with one live sentence on phones and keeps desktop cards', async () => {
-    const { wrapper } = await mountApp({}, 390)
-    const segments = wrapper.findAll('[data-testid="mode-segmented"] .segment')
-    expect(segments.map((segment) => segment.text())).toEqual(['规则', '全局', '直连'])
-    expect(wrapper.find('[data-testid="mode-card"] .mode-cards').exists()).toBe(false)
-    const hint = wrapper.find('[data-testid="mode-hint"]')
-    expect(hint.attributes('aria-live')).toBe('polite')
-    expect(hint.text()).toBe('按配置中的规则分流')
+  it('shows the mode row with one live sentence on phones and desktop alike', async () => {
+    for (const width of [390, 1200]) {
+      const { wrapper } = await mountApp({}, width)
+      const segments = wrapper.findAll('[data-testid="mode-segmented"] .segment')
+      expect(segments.map((segment) => segment.text())).toEqual(['规则', '全局', '直连'])
+      const hint = wrapper.find('[data-testid="mode-hint"]')
+      expect(hint.attributes('aria-live')).toBe('polite')
+      expect(hint.text()).toBe('按配置中的规则分流')
 
-    await wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').trigger('click')
-    await settle(300)
-    expect(wrapper.find('[data-testid="mode-hint"]').text()).toBe('新连接都不经过代理')
-    expect(wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').attributes('aria-checked')).toBe('true')
-
-    wrapper.unmount()
-    const desktop = await mountApp({}, 1200)
-    expect(desktop.wrapper.findAll('[data-mode]')).toHaveLength(3)
-    expect(desktop.wrapper.find('[data-testid="mode-card"]').text()).toContain('全部流量走当前节点')
-    expect(desktop.wrapper.find('[data-testid="mode-hint"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').trigger('click')
+      await settle(300)
+      expect(wrapper.find('[data-testid="mode-hint"]').text()).toBe('新连接都不经过代理')
+      expect(wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').attributes('aria-checked')).toBe('true')
+      wrapper.unmount()
+    }
   })
 
   it('shows only the welcome, add-config and import hint without a profile', async () => {
@@ -895,7 +915,7 @@ describe('App', () => {
       return original(mode)
     })
 
-    await wrapper.find('[data-mode="direct"]').trigger('click')
+    await wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').trigger('click')
     await settle(300)
     expect(wrapper.find('[data-testid="home-failure"]').text()).toContain('模式没有切换')
     expect(wrapper.find('[data-testid="home-failure"]').text()).toContain('重试')
@@ -905,7 +925,7 @@ describe('App', () => {
     expect(backend.setMode).toHaveBeenCalledTimes(2)
     expect(backend.setMode).toHaveBeenLastCalledWith('direct')
     expect(wrapper.find('[data-testid="home-failure"]').exists()).toBe(false)
-    expect(wrapper.find('[data-mode="direct"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').attributes('aria-checked')).toBe('true')
   })
 
   it('hides runtime rows the kernel does not report and never shows a dash', async () => {
@@ -935,12 +955,20 @@ describe('App', () => {
 
   it('orders the phone first screen before the mode switch', async () => {
     const { wrapper } = await mountApp({}, 390)
-    const main = wrapper.findAll('.home-main > *').map((element) => element.attributes('data-testid'))
-    const side = wrapper.findAll('.home-side > *').map((element) => element.attributes('data-testid'))
-    expect(main).toEqual(['home-status', 'takeover-card', 'mode-card'])
+    const layout = wrapper.findAll('.home-layout > *').map((element) => element.attributes('data-testid') ?? element.classes()[0])
+    expect(layout).toEqual(['home-status', 'home-columns'])
     // The connect control lives inside the hero, next to the state it changes.
     expect(wrapper.find('[data-testid="home-status"] [data-testid="home-action"] [data-testid="power"]').exists()).toBe(true)
-    expect(side).toEqual(['traffic-card', 'groups-card', 'profile-card'])
+    // Mode and takeover share one control card, mode first.
+    const control = wrapper.findAll('[data-testid="control-card"] > *').map((element) => element.attributes('data-testid'))
+    expect(control).toEqual(['mode-card', 'takeover-card'])
+
+    // Live traffic and runtime live inside the hero only, so no number is shown twice.
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    for (const id of ['rates', 'traffic-card', 'runtime']) {
+      expect(wrapper.find(`[data-testid="home-status"] [data-testid="${id}"]`).exists()).toBe(true)
+    }
     expect(wrapper.find('[data-testid="home-status"]').text()).toContain('星河云')
     expect(wrapper.find('[data-testid="groups-card"]').text()).toContain('查看全部')
   })
@@ -1271,6 +1299,12 @@ describe('App', () => {
     const toolbar = wrapper.find('[data-testid="proxy-toolbar"]')
     expect(toolbar.exists()).toBe(true)
     expect(toolbar.find('[data-testid="node-search"]').exists()).toBe(true)
+    // Sort and view options fold behind one button so the sticky bar is a single row.
+    const options = toolbar.find('[data-testid="toggle-options"]')
+    expect(options.attributes('aria-expanded')).toBe('false')
+    expect(toolbar.find('[data-testid="toggle-dense"]').exists()).toBe(false)
+    await options.trigger('click')
+    expect(options.attributes('aria-expanded')).toBe('true')
     expect(toolbar.findAll('.segment')).toHaveLength(3)
     for (const id of ['toggle-hide-auto', 'toggle-dense', 'toggle-all']) {
       const button = toolbar.find(`[data-testid="${id}"]`)
@@ -1404,7 +1438,9 @@ describe('App', () => {
     const { wrapper } = await mountApp({}, 390)
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
-    await wrapper.find('.tabbar [data-page="connections"]').trigger('click')
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-tool="connections"]').trigger('click')
     await settle(1100)
 
     const card = wrapper.find('.conn')
@@ -2101,8 +2137,16 @@ describe('App', () => {
     await openPage(wrapper, 'connections')
     expect(wrapper.text()).toContain('未连接')
     expect(wrapper.findAll('[data-testid="connection-row"]')).toHaveLength(0)
+    // Nothing to pause or close while disconnected.
+    expect(wrapper.find('[data-testid="pause-connections"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="disconnect-all"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="empty-connect"]').trigger('click')
+    await settle(1500)
     expect(wrapper.find('[data-testid="pause-connections"]').attributes('aria-pressed')).toBe('false')
 
+    await openPage(wrapper, 'home')
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(600)
     await openPage(wrapper, 'rules')
     await settle(300)
     expect(wrapper.text()).toContain('内核未运行')

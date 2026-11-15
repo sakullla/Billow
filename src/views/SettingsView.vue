@@ -207,24 +207,29 @@ function resetDns() {
 
     <!-- ───────── 通用 ───────── -->
     <template v-if="store.settingsTab.value === 'general'">
-      <div v-if="compact" class="card shortcut-card">
-        <button type="button" class="setting-row link" @click="store.go('logs')">
-          <span class="row-icon"><Icon name="terminal" /></span>
-          <strong class="grow">日志</strong>
-          <span class="muted small">{{ snap.logs.length }}</span>
-          <Icon name="chevron-right" class="muted" />
+      <!-- Phones reach the tool pages from here (the tab bar keeps four entries). -->
+      <nav v-if="compact" class="tool-grid" aria-label="工具" data-testid="tool-grid">
+        <button type="button" class="tool-tile" data-tool="connections" @click="store.go('connections')">
+          <span class="tool-icon"><Icon name="activity" /></span>
+          <strong>连接</strong>
+          <span class="muted small">{{ snap.connected ? `${snap.connection_total} 个活动` : '未连接' }}</span>
         </button>
-        <button type="button" class="setting-row link" @click="store.go('rules')">
-          <span class="row-icon"><Icon name="route" /></span>
-          <strong class="grow">规则</strong>
-          <Icon name="chevron-right" class="muted" />
+        <button type="button" class="tool-tile" data-tool="logs" @click="store.go('logs')">
+          <span class="tool-icon"><Icon name="terminal" /></span>
+          <strong>日志</strong>
+          <span class="muted small">{{ snap.logs.length ? `${snap.logs.length} 条` : '暂无' }}</span>
         </button>
-        <button type="button" class="setting-row link" @click="store.go('resources')">
-          <span class="row-icon"><Icon name="database" /></span>
-          <strong class="grow">外部资源</strong>
-          <Icon name="chevron-right" class="muted" />
+        <button type="button" class="tool-tile" data-tool="rules" @click="store.go('rules')">
+          <span class="tool-icon"><Icon name="route" /></span>
+          <strong>规则</strong>
+          <span class="muted small">分流规则与命中</span>
         </button>
-      </div>
+        <button type="button" class="tool-tile" data-tool="resources" @click="store.go('resources')">
+          <span class="tool-icon"><Icon name="database" /></span>
+          <strong>外部资源</strong>
+          <span class="muted small">规则集与代理集</span>
+        </button>
+      </nav>
 
       <section class="card">
         <header class="card-head"><h2>外观</h2></header>

@@ -89,6 +89,8 @@ export interface Backend {
   syncTray(): Promise<void>
 
   onChange(handler: (snapshot: Snapshot) => void): Promise<() => void>
+  /** Desktop tray asks the window to open a page or the add-profile dialog. */
+  onTrayNavigate?(handler: (target: string) => void): Promise<() => void>
 }
 
 export function normalizeNodeTest(raw: unknown): NodeTestEvent {
@@ -207,9 +209,26 @@ function createTauriBackend(): Backend {
       const { listen } = await import('@tauri-apps/api/event')
       return listen<unknown>('profile-changed', (event) => handler(normalizeSnapshot(event.payload)))
     },
+
+    async onTrayNavigate(handler) {
+      const { listen } = await import('@tauri-apps/api/event')
+      return listen<unknown>('tray-navigate', (event) => {
+        if (typeof event.payload === 'string') handler(event.payload)
+      })
+    },
+  }
+}
+
+/** Browser previews can pick the demo shape: `?demo=android` and/or `?demo=empty`. */
+function demoOptionsFromUrl() {
+  if (typeof window === 'undefined') return {}
+  const flags = new URLSearchParams(window.location.search).getAll('demo').join(',').split(',')
+  return {
+    platform: flags.includes('android') ? ('android' as const) : ('desktop' as const),
+    profiles: !flags.includes('empty'),
   }
 }
 
 export function createBackend(): Backend {
-  return inTauri() ? createTauriBackend() : createDemoBackend()
+  return inTauri() ? createTauriBackend() : createDemoBackend(demoOptionsFromUrl())
 }

@@ -3,11 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } f
 import CommandPalette from './components/CommandPalette.vue'
 import Icon from './components/Icon.vue'
 import Modal from './components/Modal.vue'
+import TitleBar from './components/TitleBar.vue'
 import { createBackend, type Backend } from './lib/backend'
 import { formatSpeed } from './lib/format'
 import { createStore, PAGES, resolvePage, STORE, type PageId, type SettingsTab } from './lib/store'
 import { closeTopLayer as dismissTopLayer, layerDepth, onLayerChange } from './lib/ui/focus'
 import { useHotkeys } from './lib/ui/hotkeys'
+import { installInsets, syncSystemBars } from './lib/ui/insets'
+import { detectChrome, type WindowChrome } from './lib/ui/windowChrome'
 import { SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
 import ConnectionsView from './views/ConnectionsView.vue'
 import HomeView from './views/HomeView.vue'
@@ -18,7 +21,9 @@ import ResourcesView from './views/ResourcesView.vue'
 import RulesView from './views/RulesView.vue'
 import SettingsView from './views/SettingsView.vue'
 
-const props = defineProps<{ backend?: Backend; width?: number }>()
+const props = defineProps<{ backend?: Backend; width?: number; chrome?: WindowChrome }>()
+/** Custom title bar on Windows (undecorated) and macOS (overlay traffic lights). */
+const chrome = props.chrome !== undefined ? props.chrome : detectChrome()
 const appIcon = `${import.meta.env.BASE_URL}icon.png`
 
 const store = createStore(props.backend ?? createBackend())
@@ -49,11 +54,35 @@ const navGroups = [
   { id: 'tools', label: '工具', pages: PAGES.filter((page) => page.group === 'tools') },
 ]
 const settingsPage = PAGES.find((page) => page.id === 'settings')!
-const TOOL_PAGES: readonly PageId[] = ['rules', 'resources', 'logs']
+const TOOL_PAGES: readonly PageId[] = ['connections', 'rules', 'resources', 'logs']
 
-/** Rules/resources/logs live behind Settings on mobile, so Settings is the current tab there. */
+/** Connections/rules/resources/logs live behind Settings on mobile, so Settings is the current tab there. */
 function isTabCurrent(id: PageId): boolean {
   return store.page.value === id || (id === 'settings' && TOOL_PAGES.includes(store.page.value))
+}
+
+/** Phones reach tool pages from Settings, so they get a visible way back besides the system gesture. */
+const showBack = computed(() => compact.value && TOOL_PAGES.includes(store.page.value))
+/** The page a back press returns to; mirrors the top of the non-reactive page stack. */
+const backTo = ref<PageId | null>(null)
+const backLabel = computed(() => PAGES.find((page) => page.id === backTo.value)?.label ?? '设置')
+
+function goBack() {
+  const previous = backTo.value
+  if (historyReady && previous != null && guardActive) {
+    window.history.back()
+    return
+  }
+  store.go(previous ?? 'settings')
+}
+
+// ── System bars follow the effective theme (Android edge-to-edge) ──
+const prefersDark = ref(typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true)
+const darkTheme = computed(() => store.theme.value === 'dark' || (store.theme.value === 'system' && prefersDark.value))
+watch(darkTheme, (dark) => syncSystemBars(dark), { immediate: true })
+let darkQuery: MediaQueryList | null = null
+function onSchemeChange(event: MediaQueryListEvent) {
+  prefersDark.value = event.matches
 }
 
 // Add-profile dialog
@@ -115,6 +144,15 @@ const isAndroid = computed(() => store.isAndroid.value)
 function onPaletteNavigate(page: string) {
   paletteOpen.value = false
   store.go(resolvePage(page))
+}
+
+/** Tray menu targets: a page id, or the add-profile dialog. */
+function onTrayNavigate(target: string) {
+  if (target === 'add-profile') {
+    store.adding.value = true
+    return
+  }
+  store.go(resolvePage(target))
 }
 
 function onPaletteSettings(tab: string) {
@@ -217,6 +255,7 @@ watch(
   (next, prev) => {
     if (mainEl.value && prev) scrollPositions.set(prev, mainEl.value.scrollTop)
     if (prev) recordPageHistory(prev, next)
+    backTo.value = pageStack[pageStack.length - 1] ?? null
     void restorePageScroll(next)
   },
 )
@@ -253,6 +292,9 @@ let historyReady = false
 let ignorePageHistory = false
 let guardActive = false
 let releaseLayerWatch: (() => void) | null = null
+let releaseInsets: (() => void) | null = null
+let releaseTray: (() => void) | null = null
+let unmounted = false
 const pageStack: PageId[] = []
 
 function pushHistory(state: BillowHistoryState) {
@@ -323,6 +365,13 @@ function initHistory() {
 }
 
 onMounted(async () => {
+  releaseInsets = installInsets()
+  void store.backend.onTrayNavigate?.(onTrayNavigate).then((stop) => {
+    if (unmounted) stop()
+    else releaseTray = stop
+  })
+  darkQuery = window.matchMedia?.('(prefers-color-scheme: dark)') ?? null
+  darkQuery?.addEventListener?.('change', onSchemeChange)
   window.addEventListener('resize', onResize)
   window.addEventListener('popstate', onPopState)
   releaseLayerWatch = onLayerChange(handleLayerDepth)
@@ -334,6 +383,12 @@ onBeforeUnmount(() => {
   window.removeEventListener('popstate', onPopState)
   releaseLayerWatch?.()
   releaseLayerWatch = null
+  releaseInsets?.()
+  releaseInsets = null
+  unmounted = true
+  releaseTray?.()
+  releaseTray = null
+  darkQuery?.removeEventListener?.('change', onSchemeChange)
   store.stop()
 })
 
@@ -341,9 +396,11 @@ defineExpose({ store })
 </script>
 
 <template>
-  <div class="shell" :class="{ compact }">
+  <div class="shell" :class="[{ compact }, chrome ? `chrome chrome-${chrome}` : null]">
     <aside v-if="!compact" class="sidebar">
-      <div class="brand">
+      <!-- macOS: the traffic lights sit here; the strip still moves the window. -->
+      <div v-if="chrome === 'macos'" class="sidebar-drag" data-tauri-drag-region />
+      <div class="brand" :data-tauri-drag-region="chrome ? '' : undefined">
         <span class="brand-mark"><img :src="appIcon" alt="" /></span>
         <span class="brand-name">Billow</span>
       </div>
@@ -408,7 +465,15 @@ defineExpose({ store })
       </div>
     </aside>
 
+    <TitleBar v-if="chrome" :chrome="chrome" :brand="compact" />
+
     <main ref="mainEl" class="main" :data-page="store.page.value">
+      <div v-if="showBack" class="back-bar">
+        <button type="button" class="back-btn" data-testid="page-back" @click="goBack">
+          <Icon name="chevron-left" :size="18" />
+          <span>{{ backLabel }}</span>
+        </button>
+      </div>
       <component :is="view" v-if="store.loaded.value" :compact="compact" />
       <div v-else class="loading"><span class="spinner" /></div>
     </main>
@@ -424,8 +489,8 @@ defineExpose({ store })
         :data-page="item.id"
         @click="store.go(item.id)"
       >
-        <Icon :name="item.icon" :size="21" />
-        <span>{{ item.label }}<span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="update-dot" aria-label="有可用更新">•</span></span>
+        <Icon :name="item.icon" :size="22" />
+        <span class="tab-label">{{ item.label }}<span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="update-dot" aria-label="有可用更新">•</span></span>
       </button>
     </nav>
 
@@ -465,8 +530,9 @@ defineExpose({ store })
         <label class="field">
           <span>订阅地址</span>
           <div class="input-group">
-            <input v-model="url" type="url" placeholder="https://…" autocomplete="off" spellcheck="false" autofocus />
-            <button type="button" class="btn ghost" title="从剪贴板粘贴" @click="pasteUrl"><Icon name="clipboard" :size="16" /></button>
+            <!-- Phones open the sheet without the keyboard; paste or tap the field to type. -->
+            <input v-model="url" type="url" inputmode="url" enterkeyhint="go" placeholder="https://…" autocomplete="off" spellcheck="false" :autofocus="!compact" />
+            <button type="button" class="btn ghost" title="从剪贴板粘贴" data-testid="paste-url" @click="pasteUrl"><Icon name="clipboard" :size="16" />粘贴</button>
           </div>
         </label>
         <p v-if="snap.input_error" class="field-error" role="alert">{{ snap.input_error }}</p>

@@ -321,7 +321,7 @@ impl Default for Takeover {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ProfileView {
     pub id: String,
     pub name: String,
@@ -340,7 +340,7 @@ pub struct ProfileView {
     pub proxy_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ProfileSnapshot {
     pub profiles: Vec<ProfileView>,
     pub active_id: Option<String>,
