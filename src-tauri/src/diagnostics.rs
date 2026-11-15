@@ -1,4 +1,7 @@
+use std::collections::{BTreeSet, HashMap};
+use std::fs;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,6 +46,164 @@ pub struct RuleView {
     pub hit_count: Option<u64>,
     /// `/rules` `extra.lastHit`; old kernels omit it.
     pub last_hit: Option<String>,
+}
+
+/// Stable key for a runtime-disabled rule: type, payload, proxy and the occurrence
+/// of that triple in the rule list. Kinds are normalized so `/rules` (`DomainSuffix`)
+/// and config text (`DOMAIN-SUFFIX`) produce the same key.
+pub fn normalize_rule_kind(kind: &str) -> String {
+    kind.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+pub fn rule_key(kind: &str, payload: &str, proxy: &str, occurrence: usize) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        normalize_rule_kind(kind),
+        payload.trim(),
+        proxy.trim(),
+        occurrence
+    )
+}
+
+/// Keys for a `/rules` response, in the order the kernel reports them.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn rule_keys(rules: &[RuleView]) -> Vec<String> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    rules
+        .iter()
+        .map(|rule| {
+            let base = format!(
+                "{}|{}|{}",
+                normalize_rule_kind(&rule.kind),
+                rule.payload.trim(),
+                rule.proxy.trim()
+            );
+            let occurrence = seen.entry(base.clone()).or_insert(0);
+            let key = format!("{base}|{occurrence}");
+            *occurrence += 1;
+            key
+        })
+        .collect()
+}
+
+/// Splits one config rule line into kind, payload and proxy. Trailing modifiers
+/// such as `no-resolve` are ignored, and `MATCH`/`FINAL` have no payload.
+pub fn config_rule_parts(text: &str) -> Option<(String, String, String)> {
+    let segments: Vec<&str> = text.split(',').map(str::trim).collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let kind = segments[0].to_string();
+    let mut end = segments.len();
+    while end > 1
+        && matches!(
+            segments[end - 1].to_ascii_lowercase().as_str(),
+            "no-resolve" | "src"
+        )
+    {
+        end -= 1;
+    }
+    if end < 2 {
+        return None;
+    }
+    let proxy = segments[end - 1].to_string();
+    let normalized = normalize_rule_kind(&kind);
+    let payload = if normalized == "match" || normalized == "final" {
+        String::new()
+    } else {
+        segments[1..end - 1].join(",")
+    };
+    Some((kind, payload, proxy))
+}
+
+/// Drops disabled rules from the `rules:` list while keeping the occurrence
+/// counter over the full input, so keys stay stable as rows are toggled.
+pub fn filter_disabled_rules(yaml: &str, disabled: &BTreeSet<String>) -> Result<String, String> {
+    if disabled.is_empty() {
+        return Ok(yaml.to_string());
+    }
+    let error = || "配置无法应用".to_string();
+    let mut value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|_| error())?;
+    let Some(map) = value.as_mapping_mut() else {
+        return Err(error());
+    };
+    let rules_field = serde_yaml::Value::String("rules".to_string());
+    let Some(sequence) = map
+        .get_mut(&rules_field)
+        .and_then(|item| item.as_sequence_mut())
+    else {
+        return Ok(yaml.to_string());
+    };
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut kept = Vec::with_capacity(sequence.len());
+    for item in sequence.iter() {
+        let Some(text) = item.as_str() else {
+            kept.push(item.clone());
+            continue;
+        };
+        let Some((kind, payload, proxy)) = config_rule_parts(text) else {
+            kept.push(item.clone());
+            continue;
+        };
+        let base = format!(
+            "{}|{}|{}",
+            normalize_rule_kind(&kind),
+            payload.trim(),
+            proxy.trim()
+        );
+        let occurrence = seen.entry(base.clone()).or_insert(0);
+        let key = rule_key(&kind, &payload, &proxy, *occurrence);
+        *occurrence += 1;
+        if !disabled.contains(&key) {
+            kept.push(item.clone());
+        }
+    }
+    *sequence = kept;
+    serde_yaml::to_string(&value).map_err(|_| error())
+}
+
+/// Writes exported logs into `directory` and returns the path. The destination
+/// directory is created when missing; failures leave the caller's buffer alone.
+pub fn export_logs(directory: &Path, content: &str, now_ms: u64) -> Result<PathBuf, String> {
+    fs::create_dir_all(directory).map_err(|_| "日志没有导出".to_string())?;
+    let path = directory.join(log_file_name(now_ms));
+    fs::write(&path, content).map_err(|_| "日志没有导出".to_string())?;
+    Ok(path)
+}
+
+/// Timestamped export name in UTC, for example `billow-logs-20231114-221320.log`.
+pub fn log_file_name(now_ms: u64) -> String {
+    let seconds = now_ms / 1000;
+    let days = (seconds / 86_400) as i64;
+    let rest = seconds % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "billow-logs-{year:04}{month:02}{day:02}-{:02}{:02}{:02}.log",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+fn civil_from_days(days: i64) -> (i64, u64, u64) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = (z - era * 146_097) as u64;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i64 + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
@@ -974,5 +1135,108 @@ mod tests {
         assert_eq!(traffic_from_text("  {\"up\":0,\"down\":0}  "), Some((0, 0)));
         assert!(traffic_from_text("{\"upload\":1,\"download\":2}").is_none());
         assert!(traffic_from_text("not-json").is_none());
+    }
+
+    #[test]
+    fn disabled_rule_keys_normalize_kind_and_keep_duplicate_occurrences() {
+        let rules = vec![
+            RuleView {
+                kind: "DomainSuffix".to_string(),
+                payload: "google.com".to_string(),
+                proxy: "PROXY".to_string(),
+                hit_count: None,
+                last_hit: None,
+            },
+            RuleView {
+                kind: "DomainSuffix".to_string(),
+                payload: "google.com".to_string(),
+                proxy: "PROXY".to_string(),
+                hit_count: None,
+                last_hit: None,
+            },
+            RuleView {
+                kind: "Match".to_string(),
+                payload: String::new(),
+                proxy: "DIRECT".to_string(),
+                hit_count: None,
+                last_hit: None,
+            },
+        ];
+        let keys = rule_keys(&rules);
+        assert_eq!(keys[0], "domainsuffix|google.com|PROXY|0");
+        assert_eq!(keys[1], "domainsuffix|google.com|PROXY|1");
+        assert_eq!(keys[2], "match||DIRECT|0");
+    }
+
+    #[test]
+    fn runtime_config_drops_only_the_disabled_occurrence_and_keeps_modifiers() {
+        let yaml = "\
+rules:
+  - DOMAIN-SUFFIX,google.com,PROXY
+  - DOMAIN-SUFFIX,google.com,PROXY
+  - IP-CIDR,1.2.3.0/24,DIRECT,no-resolve
+  - MATCH,DIRECT
+proxies: []
+";
+        let mut disabled = BTreeSet::new();
+        disabled.insert("domainsuffix|google.com|PROXY|1".to_string());
+        let filtered = filter_disabled_rules(yaml, &disabled).unwrap();
+        assert!(filtered.contains("google.com,PROXY"), "the first occurrence stays");
+        assert_eq!(
+            filtered.matches("google.com,PROXY").count(),
+            1,
+            "only the disabled occurrence is dropped"
+        );
+        assert!(filtered.contains("1.2.3.0/24,DIRECT,no-resolve"));
+        assert!(filtered.contains("MATCH,DIRECT"));
+
+        disabled.insert("match||DIRECT|0".to_string());
+        let filtered = filter_disabled_rules(yaml, &disabled).unwrap();
+        assert!(!filtered.contains("MATCH,DIRECT"));
+        assert!(filtered.contains("1.2.3.0/24,DIRECT,no-resolve"));
+    }
+
+    #[test]
+    fn rule_parts_ignore_trailing_modifiers_and_match_has_no_payload() {
+        assert_eq!(
+            config_rule_parts("IP-CIDR,10.0.0.0/8,DIRECT,no-resolve").unwrap(),
+            ("IP-CIDR".to_string(), "10.0.0.0/8".to_string(), "DIRECT".to_string())
+        );
+        assert_eq!(
+            config_rule_parts("MATCH,漏网之鱼").unwrap(),
+            ("MATCH".to_string(), String::new(), "漏网之鱼".to_string())
+        );
+        assert!(config_rule_parts("MATCH").is_none());
+    }
+
+    #[test]
+    fn exported_log_name_is_timestamped_and_writes_the_content() {
+        assert_eq!(log_file_name(0), "billow-logs-19700101-000000.log");
+        assert_eq!(
+            log_file_name(1_700_000_000_000),
+            "billow-logs-20231114-221320.log"
+        );
+        let dir = std::env::temp_dir().join(format!(
+            "billow-export-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let path = export_logs(&dir, "line one\nline two\n", 0).unwrap();
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            "billow-logs-19700101-000000.log"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "line one\nline two\n");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let blocker = std::env::temp_dir().join(format!(
+            "billow-export-block-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&blocker);
+        std::fs::write(&blocker, "file").unwrap();
+        assert!(export_logs(&blocker, "x", 0).is_err());
+        let _ = std::fs::remove_file(&blocker);
     }
 }

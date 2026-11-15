@@ -1,4 +1,5 @@
-import type { Backend } from './backend'
+import type { Backend, NodeTestEvent } from './backend'
+import { ruleKeys } from './backend'
 import {
   emptyKernelSettings,
   emptySnapshot,
@@ -185,6 +186,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     hit_count: rulesExtra ? ruleCounts[index] ?? 0 : null,
     last_hit: rulesExtra ? new Date(Date.now() - (index + 1) * 7 * 60_000).toISOString() : null,
   }))
+  const ruleKeyList = ruleKeys(rules)
+  const disabledRules = new Set<string>()
+  const nodeTestListeners = new Set<(event: NodeTestEvent) => void>()
 
   const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
   const providerRows: ProviderRow[] = [
@@ -334,6 +338,43 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       else if (Math.random() < 0.08) delays.set(name, null)
       else delays.set(name, 40 + Math.floor(Math.random() * 900 * Math.random()))
     }
+  }
+
+  function rulesSnapshot() {
+    const disabled = [...disabledRules]
+    if (!state.kernel_running) return { rules: [], error: '内核没有运行', disabled }
+    return {
+      rules: rules.filter((_, index) => !disabledRules.has(ruleKeyList[index])).map((row) => ({ ...row })),
+      error: null,
+      disabled,
+    }
+  }
+
+  /** Emits one `node-test` event per node on a timer so progress is visible. */
+  function simulateTestAll(): Promise<void> {
+    const list = [...new Set(groupsDef().flatMap((group) => group.proxies))]
+    const total = list.length
+    return new Promise((resolve) => {
+      let index = 0
+      let tested = 0
+      const step = () => {
+        if (index >= list.length) {
+          resolve()
+          return
+        }
+        const name = list[index]
+        const delay =
+          name === 'DIRECT' ? 2 + (index % 6) : index % 9 === 8 ? null : 40 + ((index * 37) % 520)
+        delays.set(name, delay)
+        tested += 1
+        const event: NodeTestEvent = { node: name, delay, failed: delay === null, tested, total }
+        nodeTestListeners.forEach((handler) => handler(event))
+        index += 1
+        if (index < list.length) setTimeout(step, 70)
+        else resolve()
+      }
+      step()
+    })
   }
 
   return {
@@ -534,17 +575,22 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(0)
     },
     async testAll() {
-      if (!state.kernel_running) state.nodes_error = '内核没有运行'
-      else {
-        state.nodes_error = null
-        await probe([...new Set(groupsDef().flatMap((group) => group.proxies))])
+      if (!state.kernel_running) {
+        state.nodes_error = '内核没有运行'
+        return done(0)
       }
+      state.nodes_error = null
+      await simulateTestAll()
       return done(0)
     },
     async testNode(node) {
       if (!state.kernel_running) state.nodes_error = '内核没有运行'
       else await probe([node])
       return done(0)
+    },
+    async onNodeTest(handler) {
+      nodeTestListeners.add(handler)
+      return () => nodeTestListeners.delete(handler)
     },
 
     async closeConnection(id) {
@@ -553,8 +599,15 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async rules() {
       await wait(200)
-      if (!state.kernel_running) return { rules: [], error: '内核没有运行' }
-      return { rules: rules.map((row) => ({ ...row })), error: null }
+      return rulesSnapshot()
+    },
+    async setRuleDisabled(key, disabled) {
+      await wait(120)
+      if (!state.kernel_running) throw new Error('内核没有运行')
+      if (!ruleKeyList.includes(key)) throw new Error('没有这条规则')
+      if (disabled) disabledRules.add(key)
+      else disabledRules.delete(key)
+      return rulesSnapshot()
     },
     async providers() {
       await wait(200)
@@ -578,6 +631,15 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async clearLogs() {
       state.logs = []
       return done(0)
+    },
+    async exportLogs() {
+      await wait(80)
+      const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+      const directory =
+        state.platform === 'android'
+          ? '/storage/emulated/0/Android/data/app.billow/files/Documents'
+          : 'C:\\Users\\demo\\Downloads'
+      return `${directory}/billow-logs-${stamp}.log`
     },
     async clearNotice() {
       state.notice = null

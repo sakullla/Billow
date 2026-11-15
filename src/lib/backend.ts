@@ -8,12 +8,27 @@ import {
   type KernelStatus,
   type Mode,
   type ProvidersResult,
+  type RuleRow,
   type RulesResult,
   type ShellState,
   type Snapshot,
   type ThemePreference,
 } from './types'
 import { createDemoBackend } from './demo'
+
+/** Rule rows plus the runtime-disabled keys; the keys are never persisted. */
+export interface RulesSnapshot extends RulesResult {
+  disabled: string[]
+}
+
+/** One finished node from the `node-test` progress event. */
+export interface NodeTestEvent {
+  node: string
+  delay: number | null
+  failed: boolean
+  tested: number
+  total: number
+}
 
 /** Everything the UI can ask of the Rust side. Each mutating call returns the fresh snapshot. */
 export interface Backend {
@@ -58,19 +73,51 @@ export interface Backend {
   testGroup(group: string): Promise<Snapshot>
   testAll(): Promise<Snapshot>
   testNode(node: string): Promise<Snapshot>
+  /** Subscribes to per-node progress while `testAll` runs. Returns an unsubscribe callback. */
+  onNodeTest(handler: (event: NodeTestEvent) => void): Promise<() => void>
 
   closeConnection(id: string | null): Promise<Snapshot>
-  rules(): Promise<RulesResult>
+  rules(): Promise<RulesSnapshot>
+  setRuleDisabled(key: string, disabled: boolean): Promise<RulesSnapshot>
   providers(): Promise<ProvidersResult>
   providerAction(kind: 'proxy' | 'rule', name: string, action: 'update' | 'healthcheck'): Promise<void>
   upgradeGeo(): Promise<void>
   flushCache(which: 'fakeip' | 'dns'): Promise<Snapshot>
   clearLogs(): Promise<Snapshot>
+  exportLogs(content: string): Promise<string>
   clearNotice(): Promise<Snapshot>
   saveSettings(settings: KernelSettings): Promise<Snapshot>
   syncTray(): Promise<void>
 
   onChange(handler: (snapshot: Snapshot) => void): Promise<() => void>
+}
+
+/** Keys matching the Rust `type|payload|proxy|occurrence` rule toggle contract. */
+export function ruleKeys(rules: RuleRow[]): string[] {
+  const seen = new Map<string, number>()
+  return rules.map((rule) => {
+    const base = `${normalizeRuleKind(rule.kind)}|${rule.payload.trim()}|${rule.proxy.trim()}`
+    const occurrence = seen.get(base) ?? 0
+    seen.set(base, occurrence + 1)
+    return `${base}|${occurrence}`
+  })
+}
+
+function normalizeRuleKind(kind: string): string {
+  return kind.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+export function normalizeNodeTest(raw: unknown): NodeTestEvent {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const delay =
+    typeof value.delay === 'number' && Number.isFinite(value.delay) ? value.delay : null
+  return {
+    node: typeof value.node === 'string' ? value.node : '',
+    delay,
+    failed: Boolean(value.failed),
+    tested: typeof value.tested === 'number' ? value.tested : 0,
+    total: typeof value.total === 'number' ? value.total : 0,
+  }
 }
 
 export function inTauri(): boolean {
@@ -86,6 +133,16 @@ function createTauriBackend(): Backend {
     normalizeSnapshot(await call<unknown>(command, args))
   const kern = async (command: string, args?: Record<string, unknown>) =>
     normalizeKernel(await call<unknown>(command, args))
+  const rules = async (command: string, args?: Record<string, unknown>): Promise<RulesSnapshot> => {
+    const raw = await call<RulesResult & { disabled?: unknown }>(command, args)
+    return {
+      rules: Array.isArray(raw.rules) ? raw.rules.map(normalizeRuleRow) : [],
+      error: raw.error ?? null,
+      disabled: Array.isArray(raw.disabled)
+        ? raw.disabled.filter((key): key is string => typeof key === 'string')
+        : [],
+    }
+  }
 
   return {
     live: true,
@@ -138,15 +195,15 @@ function createTauriBackend(): Backend {
     testGroup: (group) => snap('test_profile_group', { group }),
     testAll: () => snap('test_all_nodes'),
     testNode: (node) => snap('test_node', { node }),
+    async onNodeTest(handler) {
+      const { listen } = await import('@tauri-apps/api/event')
+      return listen<unknown>('node-test', (event) => handler(normalizeNodeTest(event.payload)))
+    },
 
     closeConnection: (id) => snap('close_connection', { id }),
-    rules: async () => {
-      const raw = await call<RulesResult>('kernel_rules')
-      return {
-        rules: Array.isArray(raw.rules) ? raw.rules.map(normalizeRuleRow) : [],
-        error: raw.error ?? null,
-      }
-    },
+    rules: () => rules('kernel_rules'),
+    setRuleDisabled: (key, disabled) =>
+      rules('set_rule_disabled', { command: { key, disabled } }),
     providers: async () => {
       const raw = await call<ProvidersResult>('kernel_providers')
       return { providers: Array.isArray(raw.providers) ? raw.providers : [], error: raw.error ?? null }
@@ -155,6 +212,7 @@ function createTauriBackend(): Backend {
     upgradeGeo: () => call<void>('upgrade_geo'),
     flushCache: (which) => snap('flush_cache', { which }),
     clearLogs: () => snap('clear_logs'),
+    exportLogs: (content) => call<string>('export_logs', { content }),
     clearNotice: () => snap('clear_notice'),
     saveSettings: (settings) => snap('save_kernel_settings', { settings }),
     async syncTray() {

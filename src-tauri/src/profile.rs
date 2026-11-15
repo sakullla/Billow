@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -292,6 +292,15 @@ pub struct ProvidersSnapshot {
 pub struct RulesSnapshot {
     pub rules: Vec<RuleView>,
     pub error: Option<String>,
+    /// Rule keys disabled for this run; cleared when the app restarts.
+    pub disabled: Vec<String>,
+}
+
+/// One runtime rule toggle from the rules page.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuleToggle {
+    pub key: String,
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,6 +397,18 @@ pub trait SubscriptionSource {
 pub trait KernelLaunch {
     fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String>;
 
+    /// Applies a filtered runtime config without restarting the process, so the
+    /// rule list can be toggled while TUN/VPN stays up.
+    fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
+        self.start_or_reload(config_yaml)
+    }
+
+    /// The config text the running process was started with, when the backend
+    /// keeps it. Live rule reloads filter this copy so TUN fd and mode survive.
+    fn running_config(&mut self) -> Option<String> {
+        None
+    }
+
     fn running(&mut self) -> bool {
         false
     }
@@ -398,6 +419,20 @@ pub trait KernelLaunch {
 
     fn probe_delays(&mut self, _group: &str, _nodes: &[String]) -> Result<Vec<NodeDelay>, String> {
         Err(KERNEL_DOWN.to_string())
+    }
+
+    /// Reports each finished node as it returns, then the ordered results.
+    fn probe_delays_with_progress(
+        &mut self,
+        group: &str,
+        nodes: &[String],
+        on_result: &mut dyn FnMut(&str, Option<u64>, bool),
+    ) -> Result<Vec<NodeDelay>, String> {
+        let results = self.probe_delays(group, nodes)?;
+        for item in &results {
+            on_result(&item.name, item.delay_ms, item.delay_ms.is_none());
+        }
+        Ok(results)
     }
 
     fn auto_now(&mut self) -> BTreeMap<String, String> {
@@ -754,6 +789,40 @@ impl KernelLaunch for ProcessRuntime {
         nodes::fetch_delays(&endpoint, names)
     }
 
+    fn probe_delays_with_progress(
+        &mut self,
+        _group: &str,
+        names: &[String],
+        on_result: &mut dyn FnMut(&str, Option<u64>, bool),
+    ) -> Result<Vec<NodeDelay>, String> {
+        if !self.running() {
+            return Err(KERNEL_DOWN.to_string());
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return Err(KERNEL_DOWN.to_string());
+        };
+        nodes::fetch_delays_with_progress(&endpoint, names, on_result)
+    }
+
+    fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
+        if !self.running() {
+            return Err(KERNEL_DOWN.to_string());
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return Err(KERNEL_DOWN.to_string());
+        };
+        nodes::put_config(&endpoint, config_yaml)
+    }
+
+    fn running_config(&mut self) -> Option<String> {
+        if !self.running() {
+            return None;
+        }
+        self.config_path
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+    }
+
     fn auto_now(&mut self) -> BTreeMap<String, String> {
         if !self.running() {
             return BTreeMap::new();
@@ -953,6 +1022,8 @@ pub struct ProfileBook {
     connection_query: String,
     logs: Vec<LogView>,
     log_filter: String,
+    /// Runtime-only disabled rule keys; never persisted, so a restart re-enables rules.
+    disabled_rules: BTreeSet<String>,
     chosen_mode: Option<String>,
     upload: Option<u64>,
     download: Option<u64>,
@@ -1002,6 +1073,7 @@ impl ProfileBook {
             connection_query: String::new(),
             logs: Vec::new(),
             log_filter: "all".to_string(),
+            disabled_rules: BTreeSet::new(),
             chosen_mode: None,
             upload: None,
             download: None,
@@ -1731,6 +1803,12 @@ impl ProfileBook {
             None => yaml,
         };
         let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&yaml, &selected));
+        let yaml = if self.disabled_rules.is_empty() {
+            yaml
+        } else {
+            diagnostics::filter_disabled_rules(&yaml, &self.disabled_rules)
+                .map_err(StartError::Failed)?
+        };
         Ok((yaml, port))
     }
 
@@ -2828,7 +2906,13 @@ impl ProfileBook {
     }
 
     /// Tests every distinct node once and writes the result into every group that lists it.
-    pub fn test_all(&mut self, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+    /// Each finished node is reported with its `tested`/`total` counters for the
+    /// `node-test` progress event.
+    pub fn test_all_with_progress(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        on_progress: &mut dyn FnMut(&str, Option<u64>, bool, usize, usize),
+    ) -> ProfileSnapshot {
         self.sync_runtime(kernel);
         if !self.kernel_running {
             self.nodes_error = Some(KERNEL_DOWN.to_string());
@@ -2850,8 +2934,13 @@ impl ProfileBook {
                 }
             }
         }
+        let total = unique.len();
         let profile_id = self.profiles[index].id.clone();
-        match kernel.probe_delays("", &unique) {
+        let mut tested = 0usize;
+        match kernel.probe_delays_with_progress("", &unique, &mut |name, delay, failed| {
+            tested += 1;
+            on_progress(name, delay, failed, tested, total);
+        }) {
             Ok(results) => {
                 self.record_delays(&profile_id, &groups, results);
                 self.nodes_error = None;
@@ -2901,19 +2990,62 @@ impl ProfileBook {
     }
 
     pub fn rules(&mut self, kernel: &mut dyn KernelLaunch) -> RulesSnapshot {
+        let disabled = self.disabled_rules.iter().cloned().collect();
         match kernel.controller() {
             Some(endpoint) => match diagnostics::fetch_rules(&endpoint) {
-                Ok(rules) => RulesSnapshot { rules, error: None },
+                Ok(rules) => RulesSnapshot { rules, error: None, disabled },
                 Err(message) => RulesSnapshot {
                     rules: Vec::new(),
                     error: Some(message),
+                    disabled,
                 },
             },
             None => RulesSnapshot {
                 rules: Vec::new(),
                 error: Some(KERNEL_DOWN.to_string()),
+                disabled,
             },
         }
+    }
+
+    /// Temporarily disables or re-enables one rule. The filtered runtime config is
+    /// hot-reloaded; a failed reload restores the previous key set and returns the error.
+    pub fn set_rule_disabled(
+        &mut self,
+        command: RuleToggle,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<RulesSnapshot, String> {
+        self.sync_runtime(kernel);
+        if !self.kernel_running {
+            return Err(KERNEL_DOWN.to_string());
+        }
+        let key = command.key.trim().to_string();
+        if key.is_empty() {
+            return Err("没有这条规则".to_string());
+        }
+        let previous = self.disabled_rules.clone();
+        let changed = if command.disabled {
+            self.disabled_rules.insert(key)
+        } else {
+            self.disabled_rules.remove(&key)
+        };
+        if !changed {
+            return Ok(self.rules(kernel));
+        }
+        let tun = self.takeover.tun;
+        let outcome = match kernel.running_config() {
+            Some(running) => diagnostics::filter_disabled_rules(&running, &self.disabled_rules)
+                .and_then(|yaml| kernel.reload_config(&yaml)),
+            None => match self.kernel_yaml(tun, None) {
+                Ok((yaml, _)) => kernel.reload_config(&yaml),
+                Err(StartError::Idle(message)) | Err(StartError::Failed(message)) => Err(message),
+            },
+        };
+        if let Err(message) = outcome {
+            self.disabled_rules = previous;
+            return Err(message);
+        }
+        Ok(self.rules(kernel))
     }
 
     pub fn providers(&mut self, kernel: &mut dyn KernelLaunch) -> ProvidersSnapshot {
@@ -5218,5 +5350,154 @@ proxy-groups:
             std::thread::sleep(Duration::from_millis(20));
         }
         last
+    }
+
+    #[test]
+    fn rule_toggle_filters_the_runtime_config_and_rolls_back_a_failed_reload() {
+        struct RuleKernel {
+            running: bool,
+            reloaded: Vec<String>,
+            fail: bool,
+        }
+
+        impl KernelLaunch for RuleKernel {
+            fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+                self.running = true;
+                Ok(())
+            }
+
+            fn running(&mut self) -> bool {
+                self.running
+            }
+
+            fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
+                if self.fail {
+                    return Err("规则没有切换".to_string());
+                }
+                self.reloaded.push(config_yaml.to_string());
+                Ok(())
+            }
+        }
+
+        let dir = temp_dir("rule-toggle");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local(
+            "rules.yaml",
+            "mixed-port: 7890\nmode: rule\nproxies: []\nrules:\n  - DOMAIN-SUFFIX,google.com,PROXY\n  - DOMAIN-SUFFIX,google.com,PROXY\n  - MATCH,DIRECT\n",
+        );
+        let mut kernel = RuleKernel {
+            running: false,
+            reloaded: Vec::new(),
+            fail: false,
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+
+        let disabled_key = diagnostics::rule_key("DomainSuffix", "google.com", "PROXY", 0);
+        let snapshot = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: disabled_key.clone(),
+                    disabled: true,
+                },
+                &mut kernel,
+            )
+            .unwrap();
+        assert_eq!(snapshot.disabled, vec![disabled_key.clone()]);
+        assert_eq!(kernel.reloaded.len(), 1);
+        assert_eq!(
+            kernel.reloaded[0].matches("google.com,PROXY").count(),
+            1,
+            "one of two identical rules is hidden"
+        );
+        assert!(kernel.reloaded[0].contains("MATCH,DIRECT"));
+
+        kernel.fail = true;
+        let other = diagnostics::rule_key("Match", "", "DIRECT", 0);
+        let error = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: other.clone(),
+                    disabled: true,
+                },
+                &mut kernel,
+            )
+            .unwrap_err();
+        assert_eq!(error, "规则没有切换");
+        let after_failure = book.rules(&mut kernel);
+        assert_eq!(after_failure.disabled, vec![disabled_key.clone()]);
+        assert!(!after_failure.disabled.contains(&other));
+
+        kernel.fail = false;
+        let enabled = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: disabled_key.clone(),
+                    disabled: false,
+                },
+                &mut kernel,
+            )
+            .unwrap();
+        assert!(enabled.disabled.is_empty());
+        assert_eq!(
+            kernel.reloaded.last().unwrap().matches("google.com,PROXY").count(),
+            2,
+            "re-enabling restores every occurrence"
+        );
+
+        // The set lives only in memory, so reopening the app starts with no disabled rules.
+        book.set_rule_disabled(
+            RuleToggle {
+                key: disabled_key,
+                disabled: true,
+            },
+            &mut kernel,
+        )
+        .unwrap();
+        let mut reopened = ProfileBook::open(&dir.0);
+        let mut idle = RuleKernel {
+            running: true,
+            reloaded: Vec::new(),
+            fail: false,
+        };
+        assert!(reopened.rules(&mut idle).disabled.is_empty());
+    }
+
+    #[test]
+    fn test_all_reports_each_node_with_tested_and_total() {
+        let dir = temp_dir("test-all-progress");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("nodes.yaml", &grouped_config());
+        let mut kernel = node_kernel();
+        kernel.report_running = true;
+        kernel.scripts.insert(
+            String::new(),
+            vec![
+                NodeDelay {
+                    name: "z-node".to_string(),
+                    delay_ms: Some(20),
+                },
+                NodeDelay {
+                    name: "m-node".to_string(),
+                    delay_ms: None,
+                },
+                NodeDelay {
+                    name: "a-node".to_string(),
+                    delay_ms: Some(5),
+                },
+            ],
+        );
+        let mut events: Vec<(String, Option<u64>, bool, usize, usize)> = Vec::new();
+        let snapshot = book.test_all_with_progress(&mut kernel, &mut |node, delay, failed, tested, total| {
+            events.push((node.to_string(), delay, failed, tested, total));
+        });
+        assert!(snapshot.nodes_error.is_none());
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events.iter().map(|event| event.3).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(events.iter().all(|event| event.4 == 3));
+        assert!(events.iter().any(|event| event.0 == "m-node" && event.2 && event.1.is_none()));
+        assert!(events.iter().any(|event| event.0 == "a-node" && !event.2 && event.1 == Some(5)));
     }
 }

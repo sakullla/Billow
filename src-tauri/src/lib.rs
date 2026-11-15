@@ -15,7 +15,7 @@ use kernel::{
 };
 use profile::{
     HttpSubscriptionClient, KernelSettings, ProcessRuntime, ProfileBook, ProfileSnapshot,
-    ProvidersSnapshot, RulesSnapshot,
+    ProvidersSnapshot, RuleToggle, RulesSnapshot,
 };
 use shell::{ShellState, read_shell_state, resolve_entry, resolve_theme, write_shell_state};
 
@@ -652,9 +652,21 @@ fn save_kernel_settings(app: AppHandle, settings: KernelSettings) -> ProfileSnap
 
 #[tauri::command]
 fn test_all_nodes(app: AppHandle) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let events = app.clone();
+    with_session_raw(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
-        book.test_all(runtime)
+        book.test_all_with_progress(runtime, &mut |node, delay, failed, tested, total| {
+            let _ = events.emit(
+                "node-test",
+                nodes::NodeTestEvent {
+                    node: node.to_string(),
+                    delay,
+                    failed,
+                    tested,
+                    total,
+                },
+            );
+        })
     })
 }
 
@@ -679,6 +691,15 @@ fn kernel_rules(app: AppHandle) -> RulesSnapshot {
     with_session_raw(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
         book.rules(runtime)
+    })
+}
+
+/// Toggles one runtime rule. A failed hot reload restores the previous key set.
+#[tauri::command]
+fn set_rule_disabled(app: AppHandle, command: RuleToggle) -> Result<RulesSnapshot, String> {
+    with_session_raw(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.set_rule_disabled(command, runtime)
     })
 }
 
@@ -725,6 +746,30 @@ fn flush_cache(app: AppHandle, which: String) -> ProfileSnapshot {
 #[tauri::command]
 fn clear_logs(app: AppHandle) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.clear_logs())
+}
+
+/// Writes the visible log text to Downloads (desktop) or the app's external
+/// documents directory (Android). A write failure leaves the log buffer alone.
+#[tauri::command]
+fn export_logs(app: AppHandle, content: String) -> Result<String, String> {
+    let directory = export_directory(&app)?;
+    diagnostics::export_logs(&directory, &content, diagnostics::now_ms())
+        .map(|path| path.display().to_string())
+}
+
+#[cfg(target_os = "android")]
+fn export_directory(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .document_dir()
+        .map_err(|_| "日志没有导出".to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+fn export_directory(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .download_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|_| "日志没有导出".to_string())
 }
 
 #[tauri::command]
@@ -1064,7 +1109,9 @@ pub fn run() {
             test_node,
             close_connection,
             kernel_rules,
+            set_rule_disabled,
             clear_logs,
+            export_logs,
             clear_notice,
             refresh_kernel,
             app_info,

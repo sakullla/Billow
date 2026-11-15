@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::time::Duration;
 
+use base64::Engine;
 use serde::Serialize;
 use serde_yaml::Value;
 
@@ -20,6 +21,16 @@ const DELAY_URL: &str = "http://www.gstatic.com/generate_204";
 pub struct NodeDelay {
     pub name: String,
     pub delay_ms: Option<u64>,
+}
+
+/// Progress payload for the `node-test` event emitted by a full test run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NodeTestEvent {
+    pub node: String,
+    pub delay: Option<u64>,
+    pub failed: bool,
+    pub tested: usize,
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,9 +348,44 @@ pub fn put_selection(endpoint: &ControllerEndpoint, group: &str, node: &str) -> 
     }
 }
 
+/// Hot-reloads the controller with a filtered runtime config. The payload is
+/// base64-encoded like the kernel's `PUT /configs` contract.
+pub fn put_config(endpoint: &ControllerEndpoint, config_yaml: &str) -> Result<(), String> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return Err(KERNEL_DOWN.to_string());
+    }
+    let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
+    let payload = base64::engine::general_purpose::STANDARD.encode(config_yaml);
+    let body = serde_json::json!({ "payload": payload }).to_string();
+    let agent = agent(Duration::from_secs(5));
+    let request = agent
+        .put(&url)
+        .set("Content-Type", "application/json")
+        .set("User-Agent", "Billow");
+    let request = if endpoint.secret.is_empty() {
+        request
+    } else {
+        request.set("Authorization", &format!("Bearer {}", endpoint.secret))
+    };
+    match request.send_string(&body) {
+        Ok(_) => Ok(()),
+        Err(_) => Err("规则没有切换".to_string()),
+    }
+}
+
 pub fn fetch_delays(
     endpoint: &ControllerEndpoint,
     nodes: &[String],
+) -> Result<Vec<NodeDelay>, String> {
+    fetch_delays_with_progress(endpoint, nodes, &mut |_, _, _| {})
+}
+
+/// Same probes as [`fetch_delays`], reporting each finished node as soon as its
+/// parallel request returns. Used for the per-node `node-test` progress events.
+pub fn fetch_delays_with_progress(
+    endpoint: &ControllerEndpoint,
+    nodes: &[String],
+    on_result: &mut dyn FnMut(&str, Option<u64>, bool),
 ) -> Result<Vec<NodeDelay>, String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err(KERNEL_DOWN.to_string());
@@ -350,19 +396,24 @@ pub fn fetch_delays(
     // Probe in parallel batches; the controller handles each node independently.
     let mut results: Vec<Option<Result<u64, ProbeFail>>> = (0..nodes.len()).map(|_| None).collect();
     for (chunk_index, chunk) in nodes.chunks(16).enumerate() {
-        let outcome: Vec<Result<u64, ProbeFail>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|name| scope.spawn(move || delay_one(endpoint, name)))
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| handle.join().unwrap_or(Err(ProbeFail::Node)))
-                .collect()
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            for (offset, name) in chunk.iter().enumerate() {
+                let sender = sender.clone();
+                scope.spawn(move || {
+                    let _ = sender.send((chunk_index * 16 + offset, delay_one(endpoint, name)));
+                });
+            }
+            drop(sender);
+            for (index, outcome) in receiver {
+                let delay = match &outcome {
+                    Ok(ms) => Some(*ms),
+                    Err(_) => None,
+                };
+                on_result(&nodes[index], delay, delay.is_none());
+                results[index] = Some(outcome);
+            }
         });
-        for (offset, item) in outcome.into_iter().enumerate() {
-            results[chunk_index * 16 + offset] = Some(item);
-        }
     }
     let saw_controller = results
         .iter()
@@ -842,5 +893,32 @@ proxy-groups:
             Some(length) => buf.len() >= pos + 4 + length,
             None => true,
         }
+    }
+
+    #[test]
+    fn node_test_event_payload_carries_progress_and_failure() {
+        let event = NodeTestEvent {
+            node: "香港 01".to_string(),
+            delay: Some(120),
+            failed: false,
+            tested: 2,
+            total: 3,
+        };
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"node":"香港 01","delay":120,"failed":false,"tested":2,"total":3}"#
+        );
+        let failed = NodeTestEvent {
+            node: "日本 02".to_string(),
+            delay: None,
+            failed: true,
+            tested: 3,
+            total: 3,
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&failed).unwrap()).unwrap();
+        assert_eq!(value["delay"], serde_json::Value::Null);
+        assert_eq!(value["failed"], true);
+        assert_eq!(value["tested"], 3);
     }
 }
