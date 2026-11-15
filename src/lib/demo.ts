@@ -22,6 +22,15 @@ import {
 
 const REGIONS = ['香港', '日本', '新加坡', '美国', '台湾', '韩国', '德国', '英国']
 const TYPES = ['vless', 'trojan', 'ss', 'hysteria2', 'vmess', 'tuic']
+/** Demo capability tags per protocol, matching what the backend derives from a config. */
+const DEMO_TAGS: Record<string, string[]> = {
+  vless: ['UDP', 'Reality', 'Vision'],
+  trojan: ['UDP', 'WS'],
+  ss: ['UDP'],
+  hysteria2: ['UDP'],
+  vmess: ['TLS', 'gRPC'],
+  tuic: ['UDP'],
+}
 const HOSTS = [
   'www.google.com',
   'api.github.com',
@@ -233,6 +242,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
             failed: delay === null,
             selected: name === now,
             node_type: types.get(name) ?? groupsDef().find((g) => g.name === name)?.type ?? (name === 'DIRECT' ? 'direct' : ''),
+            tags: DEMO_TAGS[types.get(name) ?? ''] ?? [],
           }
         }),
       }

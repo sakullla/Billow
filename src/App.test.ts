@@ -1330,6 +1330,21 @@ describe('App', () => {
     }
   })
 
+  it('shows protocol and capability tags quietly and finds nodes by tag', async () => {
+    const { wrapper } = await mountApp()
+    await openPage(wrapper, 'proxies')
+    const meta = wrapper.find('[data-group-card="节点选择"] [data-node="香港 01"] [data-testid="node-meta"]')
+    expect(meta.findAll('.node-tag').map((tag) => tag.text())).toEqual(['UDP', 'Reality', 'Vision'])
+    expect(meta.attributes('title')).toBe('VLESS · UDP · Reality · Vision')
+    expect(meta.find('.node-tag.udp').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="node-search"]').setValue('grpc')
+    await flushPromises()
+    const names = wrapper.findAll('[data-group-card="节点选择"] [data-node]').map((node) => node.attributes('data-node'))
+    expect(names.length).toBeGreaterThan(0)
+    for (const name of names) expect(['日本 02', '美国 02', '德国 02']).toContain(name)
+  })
+
   it('keeps every proxy toolbar control reachable on a 390px screen', async () => {
     const { wrapper } = await mountApp({}, 390)
     await wrapper.find('.tabbar [data-page="proxies"]').trigger('click')

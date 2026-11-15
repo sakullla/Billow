@@ -2317,7 +2317,7 @@ impl ProfileBook {
                 Some(profile_id),
             );
         }
-        let types = nodes::proxy_types(&document);
+        let types = nodes::proxy_infos(&document);
         let catalog: Vec<NodeGroupView> = parsed
             .iter()
             .map(|group| self.present_group(profile, group, &types))
@@ -2342,7 +2342,7 @@ impl ProfileBook {
         &self,
         profile: &Profile,
         group: &ParsedGroup,
-        types: &BTreeMap<String, String>,
+        types: &BTreeMap<String, nodes::ProxyInfo>,
     ) -> NodeGroupView {
         let sort = self.sort_of(&group.name);
         if !group.manual {
@@ -2402,7 +2402,7 @@ impl ProfileBook {
         group: &str,
         name: &str,
         selected: bool,
-        types: &BTreeMap<String, String>,
+        types: &BTreeMap<String, nodes::ProxyInfo>,
     ) -> nodes::NodeItemView {
         let mark = self
             .delays
@@ -2414,7 +2414,8 @@ impl ProfileBook {
             delay_ms: mark.and_then(|item| item.delay_ms),
             failed: mark.is_some_and(|item| item.failed),
             selected,
-            node_type: types.get(name).cloned().unwrap_or_default(),
+            node_type: types.get(name).map(|info| info.kind.clone()).unwrap_or_default(),
+            tags: types.get(name).map(|info| info.tags.clone()).unwrap_or_default(),
         }
     }
 

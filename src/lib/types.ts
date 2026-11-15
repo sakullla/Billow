@@ -33,6 +33,8 @@ export interface NodeItem {
   failed: boolean
   selected: boolean
   node_type: string
+  /** Capability tags from the config: UDP, Reality/TLS, transport, Vision, Mux, TFO, MPTCP, 链式. */
+  tags: string[]
 }
 
 export interface NodeGroup {
@@ -348,6 +350,7 @@ function normalizeNode(raw: unknown): NodeItem {
     failed,
     selected: Boolean(node.selected),
     node_type: str(node.node_type),
+    tags: Array.isArray(node.tags) ? node.tags.filter((tag): tag is string => typeof tag === 'string' && tag.length > 0) : [],
   }
 }
 

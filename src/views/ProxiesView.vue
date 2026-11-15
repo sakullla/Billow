@@ -116,6 +116,18 @@ function toggle(name: string) {
   persistOpen()
 }
 
+/** Search matches the name, or exactly a protocol/tag ("udp", "reality", "vless"). */
+function matches(node: NodeItem): boolean {
+  if (node.name.toLowerCase().includes(needle.value)) return true
+  const labels = [node.node_type, protocolLabel(node.node_type), ...node.tags].map((label) => label.toLowerCase())
+  return labels.includes(needle.value)
+}
+
+/** Full protocol and tag list for the tooltip; rows may clip the tail. */
+function metaTitle(node: NodeItem): string {
+  return [protocolLabel(node.node_type), ...node.tags].filter(Boolean).join(' · ')
+}
+
 function sorted(nodes: NodeItem[]): NodeItem[] {
   const list = nodes.map((node, index) => ({ node, index }))
   if (sort.value === 'name') list.sort((a, b) => a.node.name.localeCompare(b.node.name, 'zh-CN') || a.index - b.index)
@@ -134,7 +146,7 @@ const groups = computed(() => {
     .filter((group) => !(hideAuto.value && group.kind === 'auto'))
     .map((group) => ({
       ...group,
-      nodes: sorted(needle.value ? group.nodes.filter((node) => node.name.toLowerCase().includes(needle.value)) : group.nodes),
+      nodes: sorted(needle.value ? group.nodes.filter(matches) : group.nodes),
     }))
     .filter((group) => !needle.value || group.nodes.length > 0 || group.name.toLowerCase().includes(needle.value))
 })
@@ -363,7 +375,7 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
     <div v-if="snap.node_catalog.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索节点" data-testid="node-search" data-page-search />
+        <input v-model="query" type="search" placeholder="搜索节点、协议或 UDP 等标签" data-testid="node-search" data-page-search />
         <button v-if="query" type="button" class="icon-btn sm" aria-label="清空搜索" data-testid="clear-search" @click="query = ''">
           <Icon name="x" :size="14" />
         </button>
@@ -499,7 +511,10 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
                 <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
               </template>
             </span>
-            <span v-if="!dense" class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
+            <span v-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
+              <span class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
+              <span v-for="tag in node.tags" :key="tag" class="node-tag" :class="{ udp: tag === 'UDP' }">{{ tag }}</span>
+            </span>
           </button>
           <button
             type="button"

@@ -3961,3 +3961,38 @@ html[data-keyboard] .compact .tabbar {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ───────────── Node capability tags ───────────── */
+/* Protocol first, then capability words separated by quiet dots: the row
+   still reads as "name + protocol", tags are there when you look for them.
+   The name never yields space to tags; the tail clips and the tooltip has all. */
+.node-meta {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.node-tag::before {
+  content: '·';
+  margin: 0 4px;
+  color: var(--border-strong);
+  font-weight: 400;
+}
+/* UDP decides games, calls and QUIC; it gets the secondary text colour. */
+.node-tag.udp {
+  color: var(--text-2);
+  font-weight: 550;
+}
+.node.selected .node-meta {
+  color: color-mix(in srgb, var(--accent-ink) 70%, var(--muted));
+}
+.compact .nodes:not(.dense) .node-name {
+  flex: 0 1 auto;
+}
+.compact .nodes:not(.dense) .node-meta {
+  flex: 0 10 auto;
+}

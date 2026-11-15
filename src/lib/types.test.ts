@@ -32,7 +32,7 @@ describe('normalizeSnapshot', () => {
     expect(snapshot.platform).toBe('android')
     expect(snapshot.node_catalog).toHaveLength(1)
     expect(snapshot.node_catalog[0].nodes).toEqual([
-      { name: 'n', delay_ms: null, failed: true, selected: false, node_type: '' },
+      { name: 'n', delay_ms: null, failed: true, selected: false, node_type: '', tags: [] },
     ])
     expect(snapshot.connections[0].chains).toEqual(['x'])
     expect(snapshot.connections[0].upload).toBe(0)
