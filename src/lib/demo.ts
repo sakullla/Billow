@@ -56,7 +56,11 @@ interface DemoOptions {
   connectionsFailure?: boolean
   /** When false, `/rules` reports no hit statistics. */
   rulesExtra?: boolean
+  /** Fail every refresh of this profile, so partial update-all and retry can be exercised. */
+  failRefreshId?: string
 }
+
+const DUPLICATE_ERROR = '该订阅已存在'
 
 const DEMO_GROUP_ICONS: Record<string, string> = {
   流媒体: 'https://icons.example.com/media.png',
@@ -68,6 +72,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   const names = nodeNames()
   const groupIcons = options.groupIcons ?? DEMO_GROUP_ICONS
   const rulesExtra = options.rulesExtra !== false
+  const failRefreshId = options.failRefreshId ?? null
   const types = new Map(names.map((name, index) => [name, TYPES[index % TYPES.length]]))
   const state: Snapshot = emptySnapshot()
   state.platform = options.platform ?? 'desktop'
@@ -419,8 +424,13 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       try {
         const parsed = new URL(url.trim())
         if (!/^https?:$/.test(parsed.protocol)) throw new Error('scheme')
-        addProfile({ name: parsed.host, source: url.trim() })
-        state.input_error = null
+        const source = url.trim()
+        if (state.profiles.some((item) => item.source.trim() === source)) {
+          state.input_error = DUPLICATE_ERROR
+        } else {
+          addProfile({ name: parsed.host, source })
+          state.input_error = null
+        }
       } catch {
         state.input_error = '订阅链接不可用'
       }
@@ -436,8 +446,15 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done()
     },
     async confirmInstall() {
-      if (state.pending_url) addProfile({ name: new URL(state.pending_url).host, source: state.pending_url })
+      const pending = state.pending_url
+      if (!pending) return done()
+      if (state.profiles.some((item) => item.source.trim() === pending.trim())) {
+        state.input_error = DUPLICATE_ERROR
+        return done()
+      }
       state.pending_url = null
+      state.input_error = null
+      addProfile({ name: new URL(pending).host, source: pending })
       return done()
     },
     async cancelInstall() {
@@ -461,7 +478,11 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       if (item) {
         await wait(900)
         item.updated_ms = Date.now()
-        item.last_success_ms = Date.now()
+        if (failRefreshId === id) item.failure = '订阅没有取回'
+        else {
+          item.last_success_ms = Date.now()
+          item.failure = null
+        }
       }
       return done()
     },

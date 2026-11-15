@@ -51,6 +51,19 @@ export interface NodeTestResult {
   failed: boolean
 }
 
+/** Per-card subscription update state; lives in the store so it survives page switches (R27). */
+export interface ProfileUpdateState {
+  state: 'updating' | 'success' | 'failure'
+  reason: string | null
+}
+
+/** Completed/total/failed counts for the sequential update-all run (R27, R29). */
+export interface ProfileRefreshProgress {
+  done: number
+  total: number
+  failed: number
+}
+
 const HISTORY = 60
 
 export function applyTheme(preference: ThemePreference) {
@@ -84,6 +97,9 @@ export function createStore(backend: Backend) {
   const testTimes = ref<Record<string, number>>({})
   /** `已测/总数` for the running or just-finished test-all; zeroed when the target changes. */
   const testProgress = ref<{ tested: number; total: number }>({ tested: 0, total: 0 })
+  /** Card-level update feedback and the batch counters, kept here so a page switch keeps them. */
+  const profileUpdates = reactive<Record<string, ProfileUpdateState>>({})
+  const refreshProgress = ref<ProfileRefreshProgress>({ done: 0, total: 0, failed: 0 })
   let toastId = 0
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let polling = false
@@ -91,7 +107,7 @@ export function createStore(backend: Backend) {
   let queue: Promise<unknown> = Promise.resolve()
   let unlisten: (() => void) | null = null
   let unlistenNodeTest: (() => void) | null = null
-  let lastRunError: string | null = null
+  const lastRunError = ref<string | null>(null)
 
   const current = computed(() => snapshot.value.profiles.find((item) => item.current) ?? null)
   const hasProfiles = computed(() => snapshot.value.profiles.length > 0)
@@ -129,8 +145,8 @@ export function createStore(backend: Backend) {
         return result
       } catch (error) {
         console.error(error)
-        lastRunError = error instanceof Error ? error.message : String(error)
-        toast(lastRunError, 'error')
+        lastRunError.value = error instanceof Error ? error.message : String(error)
+        toast(lastRunError.value, 'error')
         return undefined
       } finally {
         if (key) delete busy[key]
@@ -191,7 +207,7 @@ export function createStore(backend: Backend) {
     attempt?: HomeAttempt,
   ) {
     const before = snapshot.value
-    lastRunError = null
+    lastRunError.value = null
     if (attempt) {
       // A new explicit attempt retires the previous banner before it runs (R24).
       lastActionError.value = null
@@ -200,7 +216,7 @@ export function createStore(backend: Backend) {
     const result = await run(key, action)
     if (!result) {
       if (attempt) {
-        lastActionError.value = lastRunError ?? '操作没有完成'
+        lastActionError.value = lastRunError.value ?? '操作没有完成'
         lastFailedAction.value = attempt.action
       }
       return undefined
@@ -219,6 +235,70 @@ export function createStore(backend: Backend) {
     }
     if (backend.live) void backend.syncTray()
     return result
+  }
+
+  /**
+   * One subscription fetch with card feedback. A failed fetch is normal for a
+   * dead subscription URL, so it is recorded on the card instead of aborting
+   * the sequential update-all loop (R27).
+   */
+  async function trackUpdate(id: string, fetch: () => Promise<Snapshot>, quiet = false) {
+    const before = snapshot.value
+    profileUpdates[id] = { state: 'updating', reason: null }
+    lastRunError.value = null
+    const result = await run(`update:${id}`, fetch)
+    let reason: string | null = null
+    if (!result) reason = lastRunError.value ?? '订阅没有更新'
+    else {
+      const profile = result.profiles.find((item) => item.id === id)
+      reason = profile?.failure ?? newFailure(before, result)
+    }
+    if (reason) {
+      profileUpdates[id] = { state: 'failure', reason }
+      if (!quiet) toast(reason, 'error')
+      if (backend.live) void backend.syncTray()
+      return false
+    }
+    profileUpdates[id] = { state: 'success', reason: null }
+    if (!quiet) toast('订阅已更新', 'success')
+    if (backend.live) void backend.syncTray()
+    return true
+  }
+
+  /** Subscriptions in card order, used by update-all and the palette action. */
+  function subscribeIds() {
+    return snapshot.value.profiles.filter((item) => item.kind === 'subscription').map((item) => item.id)
+  }
+
+  /**
+   * Sequential update-all driven here rather than by one blocking backend call:
+   * each card paints 更新中/成功/失败, a failure leaves a retry, and the counters
+   * live in the store so leaving the page does not lose progress (R27, R29).
+   */
+  async function updateAll() {
+    if (busy.refreshAll) return
+    const ids = subscribeIds()
+    busy.refreshAll = true
+    refreshProgress.value = { done: 0, total: ids.length, failed: 0 }
+    try {
+      for (const id of ids) {
+        const ok = await trackUpdate(id, () => backend.refresh(id), true)
+        refreshProgress.value = {
+          done: refreshProgress.value.done + 1,
+          total: ids.length,
+          failed: refreshProgress.value.failed + (ok ? 0 : 1),
+        }
+      }
+      const { done, total, failed } = refreshProgress.value
+      if (total) {
+        toast(
+          failed ? `更新完成：${done}/${total}，${failed} 个订阅失败` : '全部订阅已更新',
+          failed ? 'error' : 'success',
+        )
+      }
+    } finally {
+      delete busy.refreshAll
+    }
   }
 
   // A failure that arrives through polling still reaches the banner, without a retry target.
@@ -388,6 +468,11 @@ export function createStore(backend: Backend) {
     testResults,
     testTimes,
     testProgress,
+    /** Per-card subscription update state and update-all counters (R27). */
+    profileUpdates,
+    refreshProgress,
+    /** Last thrown backend message, so inline errors can show the real reason (R29). */
+    lastRunError,
     current,
     hasProfiles,
     isAndroid,
@@ -426,8 +511,11 @@ export function createStore(backend: Backend) {
     cancelInstall: () => act(null, () => backend.cancelInstall()),
     enable: (id: string) => act(`enable:${id}`, () => backend.enable(id), '已切换配置'),
     update: (id: string) =>
-      act(`update:${id}`, () => (snapshot.value.active_id === id ? backend.update(id) : backend.refresh(id)), '订阅已更新'),
-    refreshAll: () => act('refreshAll', () => backend.refreshAll(), '全部订阅已更新'),
+      trackUpdate(id, () =>
+        snapshot.value.active_id === id ? backend.update(id) : backend.refresh(id),
+      ),
+    updateAll,
+    refreshAll: () => updateAll(),
     remove: (id: string) => act(`remove:${id}`, () => backend.remove(id)),
     rename: (id: string, name: string) => act(null, () => backend.rename(id, name)),
     setSource: (id: string, url: string) => act(null, () => backend.setSource(id, url)),

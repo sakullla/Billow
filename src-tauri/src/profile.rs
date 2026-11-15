@@ -29,6 +29,7 @@ const MISSING_KERNEL: &str = "没有本地内核";
 const LINK_ERROR: &str = "不支持这个导入链接";
 const ONE_LINK_ERROR: &str = "需要一条订阅链接";
 const URL_ERROR: &str = "订阅链接不可用";
+const DUPLICATE_ERROR: &str = "该订阅已存在";
 const MISSING_PROFILE: &str = "没有这份配置";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1201,14 +1202,24 @@ impl ProfileBook {
     pub fn add_subscription(&mut self, url: &str) -> ProfileSnapshot {
         match validate_subscription_url(url.trim()) {
             Ok(url) => {
-                self.push_profile(
-                    ProfileKind::Subscription,
-                    subscription_name(&url),
-                    url,
-                    String::new(),
-                );
-                self.input_error = None;
-                self.persist();
+                // Trimmed comparison against existing sources: deep links and other
+                // entry points cannot silently add a duplicate card (R27).
+                if self
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.kind == ProfileKind::Subscription && profile.source.trim() == url)
+                {
+                    self.input_error = Some(DUPLICATE_ERROR.to_string());
+                } else {
+                    self.push_profile(
+                        ProfileKind::Subscription,
+                        subscription_name(&url),
+                        url,
+                        String::new(),
+                    );
+                    self.input_error = None;
+                    self.persist();
+                }
             }
             Err(message) => self.input_error = Some(message),
         }
@@ -3823,6 +3834,40 @@ mod tests {
         let local = book.add_local("home.yaml", &config(1));
         assert_eq!(local.profiles.len(), 3);
         assert_eq!(local.profiles[2].kind, "local");
+    }
+
+    #[test]
+    fn duplicate_subscription_urls_are_rejected_without_adding() {
+        let dir = temp_dir("duplicate");
+        let mut book = ProfileBook::open(&dir.0);
+        let first = book.add_subscription(" https://example.com/sub ");
+        assert_eq!(first.profiles.len(), 1);
+        assert_eq!(first.profiles[0].source, "https://example.com/sub");
+        assert_eq!(first.input_error, None);
+
+        let doubled = book.add_subscription("https://example.com/sub");
+        assert_eq!(doubled.profiles.len(), 1);
+        assert_eq!(doubled.input_error.as_deref(), Some(DUPLICATE_ERROR));
+
+        let spaced = book.add_subscription("  https://example.com/sub  ");
+        assert_eq!(spaced.profiles.len(), 1);
+        assert_eq!(spaced.input_error.as_deref(), Some(DUPLICATE_ERROR));
+
+        let other = book.add_subscription("https://example.com/other");
+        assert_eq!(other.profiles.len(), 2);
+        assert_eq!(other.input_error, None);
+
+        // A deep link reaches the same guard and keeps the pending link for a retry.
+        book.stage_install_link(
+            "billow://install-config?url=https%3A%2F%2Fexample.com%2Fsub",
+        );
+        let confirmed = book.confirm_pending();
+        assert_eq!(confirmed.profiles.len(), 2);
+        assert_eq!(confirmed.input_error.as_deref(), Some(DUPLICATE_ERROR));
+        assert_eq!(
+            confirmed.pending_url.as_deref(),
+            Some("https://example.com/sub")
+        );
     }
 
     #[test]

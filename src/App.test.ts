@@ -171,6 +171,248 @@ describe('App', () => {
     expect(wrapper.findAll('[data-profile]')[0].attributes('data-profile')).toBe('p2')
   })
 
+  async function openProfiles(wrapper: Awaited<ReturnType<typeof mountApp>>['wrapper']) {
+    await wrapper.find('.sidebar [data-page="profiles"]').trigger('click')
+    await flushPromises()
+  }
+
+  async function openProfileMenu(wrapper: Awaited<ReturnType<typeof mountApp>>['wrapper'], id = 'p1') {
+    await wrapper.find(`[data-profile="${id}"] [aria-label="更多操作"]`).trigger('click')
+    await flushPromises()
+    await nextTick()
+    await flushPromises()
+  }
+
+  /** Dialogs are teleported to <body>, so their controls are outside the wrapper. */
+  function bodyClick(selector: string) {
+    const element = document.body.querySelector<HTMLElement>(selector)
+    if (!element) throw new Error(`missing ${selector}`)
+    element.click()
+  }
+
+  it('rejects a duplicate subscription import and focuses the existing card', async () => {
+    const { wrapper, backend } = await mountApp()
+    await openProfiles(wrapper)
+    const before = wrapper.findAll('[data-profile]').length
+
+    // The demo backend mirrors the Rust guard, so deep links cannot bypass it either.
+    const directTask = backend.addSubscription(
+      ' https://sub.example.com/api/v1/client/subscribe?token=demo ',
+    )
+    await vi.advanceTimersByTimeAsync(200)
+    const direct = await directTask
+    await flushPromises()
+    expect(direct.profiles).toHaveLength(before)
+    expect(direct.input_error).toBe('该订阅已存在')
+
+    const add = vi.spyOn(backend, 'addSubscription')
+    const form = wrapper.find('.quick-import')
+    await form
+      .find('input')
+      .setValue('  https://sub.example.com/api/v1/client/subscribe?token=demo  ')
+    await form.trigger('submit')
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.find('.quick-import + .field-error').text()).toContain('该订阅已存在')
+    expect(wrapper.findAll('[data-profile]')).toHaveLength(before)
+    expect(add).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(wrapper.find('[data-profile="p1"]').element)
+  })
+
+  it('shows update-all progress, keeps partial failures after a page switch, and retries', async () => {
+    const { wrapper, backend } = await mountApp({ failRefreshId: 'p2' })
+    await openProfiles(wrapper)
+    const button = () => wrapper.find('[data-testid="update-all-profiles"]')
+    expect(button().text()).toContain('全部更新')
+
+    await button().trigger('click')
+    await settle(50)
+    expect(button().text()).toContain('正在更新 1/2')
+    expect(button().attributes('aria-busy')).toBe('true')
+    expect(button().find('.spin').exists()).toBe(false)
+    expect(wrapper.find('[data-profile="p1"] [data-update-state]').attributes('data-update-state')).toBe('updating')
+
+    // Leaving the page mid-run must not lose progress or results.
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await settle(2200)
+    await openProfiles(wrapper)
+    expect(button().text()).toContain('已完成 2/2')
+    expect(button().text()).toContain('1 个失败')
+    expect(wrapper.find('[data-profile="p1"] [data-update-state]').attributes('data-update-state')).toBe('success')
+    expect(wrapper.find('[data-profile="p1"] [data-update-state]').text()).toContain('已更新')
+    const failed = wrapper.find('[data-profile="p2"] [data-update-state]')
+    expect(failed.attributes('data-update-state')).toBe('failure')
+    expect(failed.text()).toContain('订阅没有取回')
+    expect(wrapper.find('[data-profile="p1"]').find('[data-testid="retry-update"]').exists()).toBe(false)
+
+    // Retrying the failed card succeeds once the source is reachable again.
+    const readState = backend.state
+    backend.refresh = vi.fn(async () => {
+      const snap = await readState()
+      return {
+        ...snap,
+        profiles: snap.profiles.map((item) =>
+          item.id === 'p2'
+            ? { ...item, failure: null, updated_ms: Date.now(), last_success_ms: Date.now() }
+            : item,
+        ),
+      }
+    })
+    await wrapper.find('[data-profile="p2"] [data-testid="retry-update"]').trigger('click')
+    await settle(1000)
+    expect(backend.refresh).toHaveBeenCalledWith('p2')
+    expect(wrapper.find('[data-profile="p2"] [data-update-state]').attributes('data-update-state')).toBe('success')
+    expect(wrapper.find('[data-profile="p2"] [data-testid="retry-update"]').exists()).toBe(false)
+    expect(wrapper.find('[data-profile="p2"]').text()).not.toContain('订阅没有取回')
+  })
+
+  it('guards unsaved editor changes and keeps text and caret when cancelling', async () => {
+    const { wrapper } = await mountApp()
+    await openProfiles(wrapper)
+    await openProfileMenu(wrapper, 'p1')
+    await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
+    await flushPromises()
+    const editor = () => document.body.querySelector<HTMLTextAreaElement>('.editor-text')
+    const area = editor()
+    expect(area).not.toBeNull()
+    area!.value = `${area!.value}\n# draft`
+    area!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    area!.focus()
+    area!.setSelectionRange(2, 5)
+    expect(document.body.textContent).toContain('未保存')
+
+    bodyClick('[data-testid="cancel-editor"]')
+    await flushPromises()
+    expect(document.body.textContent).toContain('放弃未保存的修改')
+    expect(editor()).not.toBeNull()
+
+    bodyClick('[data-testid="keep-editing"]')
+    await flushPromises()
+    await nextTick()
+    expect(document.body.textContent).not.toContain('放弃未保存的修改')
+    const kept = editor()!
+    expect(kept.value).toContain('# draft')
+    expect(kept.selectionStart).toBe(2)
+    expect(kept.selectionEnd).toBe(5)
+    expect(document.activeElement).toBe(kept)
+    expect(document.body.textContent).toContain('未保存')
+
+    // Escape goes through the Modal close guard as well.
+    press(document, 'Escape')
+    await flushPromises()
+    expect(document.body.textContent).toContain('放弃未保存的修改')
+    bodyClick('[data-testid="keep-editing"]')
+    await flushPromises()
+    await nextTick()
+    expect(editor()).not.toBeNull()
+
+    bodyClick('[data-testid="cancel-editor"]')
+    await flushPromises()
+    bodyClick('[data-testid="discard-edits"]')
+    await flushPromises()
+    await nextTick()
+    expect(editor()).toBeNull()
+    expect(document.activeElement).toBe(
+      wrapper.find('[data-profile="p1"] [aria-label="更多操作"]').element,
+    )
+  })
+
+  it('shows a save failure under the editor and keeps the dialog open', async () => {
+    const { wrapper, backend } = await mountApp()
+    const originalSave = backend.saveContent
+    backend.saveContent = vi.fn(async (id: string) => {
+      const snapshot = await originalSave(id, '')
+      return { ...snapshot, input_error: '配置无法应用' }
+    })
+    await openProfiles(wrapper)
+    await openProfileMenu(wrapper, 'p1')
+    await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
+    await flushPromises()
+
+    bodyClick('.modal-foot .btn.primary')
+    await settle(200)
+    const error = document.body.querySelector('.editor-error')
+    expect(error?.textContent).toContain('配置无法应用')
+    expect(document.body.querySelector('.editor-text')).not.toBeNull()
+    expect(document.body.querySelector('.editor-error')?.getAttribute('role')).toBe('alert')
+  })
+
+  it('moves the editor gutter with the textarea scroll', async () => {
+    const { wrapper } = await mountApp()
+    await openProfiles(wrapper)
+    await openProfileMenu(wrapper, 'p1')
+    await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
+    await flushPromises()
+    const area = document.body.querySelector<HTMLTextAreaElement>('.editor-text')!
+    const gutter = document.body.querySelector<HTMLElement>('.editor-gutter')!
+    expect(gutter.querySelectorAll('span')).toHaveLength(area.value.split('\n').length)
+
+    area.scrollTop = 96
+    area.dispatchEvent(new Event('scroll'))
+    await nextTick()
+    expect(gutter.style.transform).toBe('translateY(-96px)')
+  })
+
+  it('moves through the profile menu with keys and returns focus to 更多操作', async () => {
+    const { wrapper } = await mountApp()
+    await openProfiles(wrapper)
+    const more = wrapper.find('[data-profile="p1"] [aria-label="更多操作"]')
+    await openProfileMenu(wrapper, 'p1')
+    const menu = wrapper.find('[role="menu"]')
+    expect(menu.exists()).toBe(true)
+    const items = () => menu.findAll('[role="menuitem"]')
+    expect(items().length).toBe(5)
+    expect(document.activeElement).toBe(items()[0].element)
+
+    press(menu.element, 'ArrowDown')
+    expect(document.activeElement).toBe(items()[1].element)
+    press(menu.element, 'ArrowDown')
+    expect(document.activeElement).toBe(items()[2].element)
+    press(menu.element, 'ArrowUp')
+    expect(document.activeElement).toBe(items()[1].element)
+    press(menu.element, 'End')
+    expect(document.activeElement).toBe(items()[items().length - 1].element)
+    press(menu.element, 'Home')
+    expect(document.activeElement).toBe(items()[0].element)
+
+    press(menu.element, 'Escape')
+    await flushPromises()
+    await nextTick()
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(more.element)
+
+    await openProfileMenu(wrapper, 'p1')
+    await wrapper.find('[data-profile="p1"] [data-menu-item="remove"]').trigger('click')
+    await flushPromises()
+    expect(document.body.textContent).toContain('确定删除')
+    bodyClick('.modal-foot .btn.ghost')
+    await flushPromises()
+    expect(wrapper.find('[data-profile="p1"]').exists()).toBe(true)
+  })
+
+  it('keeps content-tight profile cards readable at 390px', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    await wrapper.find('.tabbar [data-page="profiles"]').trigger('click')
+    await flushPromises()
+    const cards = wrapper.findAll('[data-profile]')
+    expect(cards).toHaveLength(3)
+    expect(cards[0].attributes('data-profile')).toBe('p1')
+    expect(cards[0].classes()).toContain('current')
+    expect(wrapper.find('.shell').classes()).toContain('compact')
+    expect(cards[0].attributes('style')).toBeUndefined()
+
+    const first = cards[0].text()
+    expect(first).toContain('星河云')
+    expect(first).toContain('sub.example.com')
+    expect(first).toContain('86.4 GB / 200 GB')
+    expect(first).toContain('节点')
+    for (const card of cards) {
+      expect(card.find('[aria-label="更多操作"]').exists()).toBe(true)
+    }
+  })
+
   it('shows connections after connecting and filters them', async () => {
     const { wrapper } = await mountApp()
     await wrapper.find('[data-testid="power"]').trigger('click')

@@ -1954,6 +1954,7 @@ button.delay:hover:not(:disabled) {
 .profile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  align-items: start;
   gap: var(--space-3);
 }
 .compact .profile-grid {
@@ -1971,6 +1972,11 @@ button.delay:hover:not(:disabled) {
 .profile:hover {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-md);
+}
+/* Programmatic focus after a duplicate import must be visible, not just hover (R27, R30). */
+.profile:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 .profile.current {
   border-color: var(--accent);
@@ -2011,6 +2017,28 @@ button.delay:hover:not(:disabled) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+.profile-update {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.profile-update .field-error {
+  margin: 0;
+}
+.profile-update .text-good {
+  color: var(--good-ink);
+}
+/* 390px cards stay content-tight: names and hosts wrap instead of truncating (R27, R30). */
+.compact .profile-name strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.compact .profile-head .ellipsis {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .menu-anchor {
   position: relative;
@@ -2107,6 +2135,10 @@ button.delay:hover:not(:disabled) {
   border-right: 1px solid var(--border);
   min-width: 42px;
   overflow: hidden;
+  will-change: transform;
+}
+.editor-error {
+  margin-top: var(--space-2);
 }
 .editor-text {
   flex: 1;
