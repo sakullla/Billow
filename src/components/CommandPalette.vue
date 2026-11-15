@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
 import { getFocusable, useFocusTrap } from '../lib/ui/focus'
-import { shortcutKeyLabel } from '../lib/ui/shortcuts'
+import { getShortcut, shortcutKeyLabel } from '../lib/ui/shortcuts'
 import { PAGES } from '../lib/store'
 import Icon from './Icon.vue'
 
@@ -36,6 +36,8 @@ const props = withDefaults(
     actions?: readonly PaletteAction[]
     connected?: boolean
     hasProfiles?: boolean
+    /** Android hides the TUN category in settings, so the palette must skip it too. */
+    platform?: 'desktop' | 'android'
   }>(),
   {
     pages: () =>
@@ -48,6 +50,7 @@ const props = withDefaults(
     ],
     connected: false,
     hasProfiles: true,
+    platform: 'desktop',
   },
 )
 const emit = defineEmits<{
@@ -77,6 +80,10 @@ const titleId = useId()
 const listId = useId()
 const query = ref('')
 const active = ref(0)
+const paletteKey = shortcutKeyLabel(getShortcut('palette').combo)
+const settings = computed(() =>
+  props.settings.filter((item) => !(props.platform === 'android' && item.id === 'tun')),
+)
 
 const defaultActions = computed<PaletteAction[]>(() => [
   {
@@ -169,7 +176,7 @@ const groups = computed(() => {
     build(
       'setting',
       '设置',
-      props.settings,
+      settings.value,
       (item) => item.icon,
       (item) => item.description,
       () => false,
@@ -285,7 +292,7 @@ useFocusTrap(() => panel.value, {
             spellcheck="false"
             @input="active = 0"
           />
-          <kbd class="palette-kbd">{{ shortcutKeyLabel('mod+k') }}</kbd>
+          <kbd class="palette-kbd">{{ paletteKey }}</kbd>
           <button type="button" class="icon-btn sm" aria-label="关闭" @click="emit('close')">
             <Icon name="x" :size="15" />
           </button>

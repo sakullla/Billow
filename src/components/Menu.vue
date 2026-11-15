@@ -89,7 +89,7 @@ function onKeydown(event: KeyboardEvent) {
 function choose(item: MenuItem) {
   if (item.disabled) return
   emit('select', item)
-  close(false)
+  close(true)
 }
 
 function onOutside(event: Event) {

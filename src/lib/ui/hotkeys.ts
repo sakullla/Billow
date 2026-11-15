@@ -1,5 +1,5 @@
 import { onBeforeUnmount, onMounted } from 'vue'
-import { isEditableElement } from './focus'
+import { hasOpenOverlay, isEditableElement } from './focus'
 
 export interface HotkeyCombo {
   key: string
@@ -16,6 +16,8 @@ export interface HotkeyBinding {
   handler: (event: KeyboardEvent) => void
   /** Skip the default input guard, e.g. Escape that intentionally clears a search box. */
   allowInInput?: boolean
+  /** Run while a focus-trapped overlay is open; global shortcuts skip overlays by default. */
+  allowInOverlay?: boolean
   /** Optional extra guard; the shortcut only runs when it returns true. */
   when?: () => boolean
   /** Defaults to true so browser defaults (quick find, `/` insertion) do not fire. */
@@ -86,7 +88,9 @@ export function matchesCombo(event: KeyboardEvent, combo: string | HotkeyCombo):
 
 /**
  * Bind keyboard shortcuts on the document. Text fields own their input: `/`, `?`
- * and Escape do not fire there unless a binding opts in with `allowInInput` (R30).
+ * and Escape do not fire there unless a binding opts in with `allowInInput`.
+ * Focus-trapped overlays own the keyboard too: global bindings skip them unless
+ * they opt in with `allowInOverlay` (R30).
  */
 export function useHotkeys(bindings: readonly HotkeyBinding[], options: UseHotkeysOptions = {}) {
   const enabled = options.enabled ?? (() => true)
@@ -95,8 +99,10 @@ export function useHotkeys(bindings: readonly HotkeyBinding[], options: UseHotke
   function onKeydown(event: KeyboardEvent): void {
     if (event.defaultPrevented || event.isComposing || event.repeat) return
     if (!enabled()) return
+    const overlayOpen = hasOpenOverlay()
     const fromInput = isEditableElement(event.target)
     for (const binding of bindings) {
+      if (overlayOpen && !binding.allowInOverlay) continue
       if (fromInput && !binding.allowInInput) continue
       if (binding.when && !binding.when()) continue
       if (!matchesCombo(event, binding.combo)) continue

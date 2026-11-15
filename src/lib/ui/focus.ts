@@ -110,6 +110,16 @@ let scrollLocks = 0
 let scrollTarget: HTMLElement | null = null
 let scrollPrevious = ''
 
+/** Number of focus-trapped overlays currently open. */
+export function overlayDepth(): number {
+  return traps.length
+}
+
+/** True while a dialog, command palette or confirmation layer owns the screen. */
+export function hasOpenOverlay(): boolean {
+  return traps.length > 0
+}
+
 function lockBackgroundScroll(): void {
   scrollLocks += 1
   if (scrollLocks > 1) return
