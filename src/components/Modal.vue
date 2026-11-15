@@ -1,28 +1,66 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { ref, useId } from 'vue'
+import { useFocusTrap } from '../lib/ui/focus'
 import Icon from './Icon.vue'
 
-const props = defineProps<{ title: string; wide?: boolean; subtitle?: string }>()
+const props = defineProps<{
+  title: string
+  wide?: boolean
+  subtitle?: string
+  /** Return false (or resolve false) to keep the dialog open, e.g. unsaved editor changes. */
+  beforeClose?: () => boolean | Promise<boolean>
+  /** Override the default first focus target. */
+  initialFocus?: () => HTMLElement | null | undefined
+  closeOnBackdrop?: boolean
+}>()
 const emit = defineEmits<{ close: [] }>()
 
-function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape') emit('close')
+const panel = ref<HTMLElement | null>(null)
+const titleId = useId()
+const subtitleId = useId()
+const closing = ref(false)
+
+async function requestClose() {
+  if (closing.value) return
+  closing.value = true
+  try {
+    if (props.beforeClose && !(await props.beforeClose())) return
+    emit('close')
+  } catch (error) {
+    console.error(error)
+  } finally {
+    closing.value = false
+  }
 }
-onMounted(() => window.addEventListener('keydown', onKey))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
-void props
+
+function onBackdrop() {
+  if (props.closeOnBackdrop !== false) void requestClose()
+}
+
+useFocusTrap(() => panel.value, {
+  onClose: () => void requestClose(),
+  initialFocus: () => props.initialFocus?.(),
+})
 </script>
 
 <template>
   <Teleport to="body">
-    <div class="overlay" @mousedown.self="emit('close')">
-      <section class="modal" :class="{ wide }" role="dialog" aria-modal="true" :aria-label="title">
+    <div class="overlay" @mousedown.self="onBackdrop">
+      <section
+        ref="panel"
+        class="modal"
+        :class="{ wide }"
+        role="dialog"
+        aria-modal="true"
+        :aria-labelledby="titleId"
+        :aria-describedby="subtitle ? subtitleId : undefined"
+      >
         <header class="modal-head">
           <div>
-            <h2>{{ title }}</h2>
-            <p v-if="subtitle" class="muted small">{{ subtitle }}</p>
+            <h2 :id="titleId">{{ title }}</h2>
+            <p v-if="subtitle" :id="subtitleId" class="muted small">{{ subtitle }}</p>
           </div>
-          <button type="button" class="icon-btn" aria-label="关闭" @click="emit('close')">
+          <button type="button" class="icon-btn" aria-label="关闭" @click="requestClose">
             <Icon name="x" />
           </button>
         </header>
