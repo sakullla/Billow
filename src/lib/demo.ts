@@ -1,5 +1,5 @@
 import type { Backend, NodeTestEvent } from './backend'
-import { ruleKeys } from './backend'
+import { ruleKeys } from './rule-keys'
 import {
   emptyKernelSettings,
   emptySnapshot,
@@ -181,12 +181,14 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { kind: 'Match', payload: '', proxy: '漏网之鱼' },
   ]
   const ruleCounts = [18, 6, 130, 24, 91, 512, 77, 0, 1204, 880, 320, 46]
+  const ruleKeyList = ruleKeys(ruleSeeds)
   const rules: RuleRow[] = ruleSeeds.map((rule, index) => ({
     ...rule,
     hit_count: rulesExtra ? ruleCounts[index] ?? 0 : null,
     last_hit: rulesExtra ? new Date(Date.now() - (index + 1) * 7 * 60_000).toISOString() : null,
+    key: ruleKeyList[index],
+    disabled: false,
   }))
-  const ruleKeyList = ruleKeys(rules)
   const disabledRules = new Set<string>()
   const nodeTestListeners = new Set<(event: NodeTestEvent) => void>()
 
@@ -344,7 +346,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     const disabled = [...disabledRules]
     if (!state.kernel_running) return { rules: [], error: '内核没有运行', disabled }
     return {
-      rules: rules.filter((_, index) => !disabledRules.has(ruleKeyList[index])).map((row) => ({ ...row })),
+      rules: rules.map((row) => ({ ...row, disabled: row.key !== null && disabledRules.has(row.key) })),
       error: null,
       disabled,
     }

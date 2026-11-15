@@ -48,6 +48,31 @@ pub struct RuleView {
     pub last_hit: Option<String>,
 }
 
+/// One rule from the profile's full `rules:` list. The key is computed over the
+/// full list, so it stays stable while disabled rules are filtered out of the
+/// config actually sent to the kernel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigRule {
+    pub key: String,
+    pub kind: String,
+    pub payload: String,
+    pub proxy: String,
+}
+
+/// A rule row for the UI. Kernel rows keep their hit data; rules the kernel
+/// omits because they are disabled are added back with `disabled: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct RuleRowView {
+    pub kind: String,
+    pub payload: String,
+    pub proxy: String,
+    pub hit_count: Option<u64>,
+    pub last_hit: Option<String>,
+    /// Toggle key; `None` for kernel-injected rules that are not in the config.
+    pub key: Option<String>,
+    pub disabled: bool,
+}
+
 /// Stable key for a runtime-disabled rule: type, payload, proxy and the occurrence
 /// of that triple in the rule list. Kinds are normalized so `/rules` (`DomainSuffix`)
 /// and config text (`DOMAIN-SUFFIX`) produce the same key.
@@ -68,6 +93,15 @@ pub fn rule_key(kind: &str, payload: &str, proxy: &str, occurrence: usize) -> St
     )
 }
 
+fn rule_base(kind: &str, payload: &str, proxy: &str) -> String {
+    format!(
+        "{}|{}|{}",
+        normalize_rule_kind(kind),
+        payload.trim(),
+        proxy.trim()
+    )
+}
+
 /// Keys for a `/rules` response, in the order the kernel reports them.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn rule_keys(rules: &[RuleView]) -> Vec<String> {
@@ -75,18 +109,132 @@ pub fn rule_keys(rules: &[RuleView]) -> Vec<String> {
     rules
         .iter()
         .map(|rule| {
-            let base = format!(
-                "{}|{}|{}",
-                normalize_rule_kind(&rule.kind),
-                rule.payload.trim(),
-                rule.proxy.trim()
-            );
+            let base = rule_base(&rule.kind, &rule.payload, &rule.proxy);
             let occurrence = seen.entry(base.clone()).or_insert(0);
             let key = format!("{base}|{occurrence}");
             *occurrence += 1;
             key
         })
         .collect()
+}
+
+/// Full config rule list with keys based on the original order, including
+/// duplicates as separate occurrences.
+pub fn config_rules(value: &serde_yaml::Value) -> Vec<ConfigRule> {
+    let Some(sequence) = value
+        .as_mapping()
+        .and_then(|map| map.get(serde_yaml::Value::String("rules".to_string())))
+        .and_then(serde_yaml::Value::as_sequence)
+    else {
+        return Vec::new();
+    };
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut rules = Vec::new();
+    for item in sequence {
+        let Some(text) = item.as_str() else {
+            continue;
+        };
+        let Some((kind, payload, proxy)) = config_rule_parts(text) else {
+            continue;
+        };
+        let base = rule_base(&kind, &payload, &proxy);
+        let occurrence = seen.entry(base.clone()).or_insert(0);
+        let key = rule_key(&kind, &payload, &proxy, *occurrence);
+        *occurrence += 1;
+        rules.push(ConfigRule {
+            key,
+            kind,
+            payload,
+            proxy,
+        });
+    }
+    rules
+}
+
+fn config_matches_kernel(config: &ConfigRule, kernel: &RuleView) -> bool {
+    rule_base(&config.kind, &config.payload, &config.proxy)
+        == rule_base(&kernel.kind, &kernel.payload, &kernel.proxy)
+}
+
+/// Builds UI rows from the full config list and the kernel's (possibly filtered)
+/// rows. Matching walks both lists in order so duplicate rules keep the
+/// occurrence that belongs to their config position.
+pub fn rule_rows(
+    config: &[ConfigRule],
+    kernel: &[RuleView],
+    disabled: &BTreeSet<String>,
+) -> Vec<RuleRowView> {
+    let mut matched: Vec<Option<usize>> = vec![None; kernel.len()];
+    let mut used = vec![false; config.len()];
+    for (kernel_index, row) in kernel.iter().enumerate() {
+        // Disabled entries are normally absent from the kernel response, so skip
+        // them first and only fall back to them for a stale, unfiltered response.
+        let mut found = config.iter().enumerate().position(|(index, rule)| {
+            !used[index] && !disabled.contains(&rule.key) && config_matches_kernel(rule, row)
+        });
+        if found.is_none() {
+            found = config.iter().enumerate().position(|(index, rule)| {
+                !used[index] && config_matches_kernel(rule, row)
+            });
+        }
+        if let Some(config_index) = found {
+            matched[kernel_index] = Some(config_index);
+            used[config_index] = true;
+        }
+    }
+    let mut rows = Vec::with_capacity(config.len().max(kernel.len()));
+    for (config_index, rule) in config.iter().enumerate() {
+        let kernel_row = matched
+            .iter()
+            .position(|item| *item == Some(config_index))
+            .map(|kernel_index| &kernel[kernel_index]);
+        let disabled = disabled.contains(&rule.key);
+        if kernel_row.is_none() && !disabled {
+            // Keep the kernel's real rows; only add back rules it omitted because
+            // they are disabled.
+            continue;
+        }
+        let (kind, payload, proxy, hit_count, last_hit) = match kernel_row {
+            Some(row) => (
+                row.kind.clone(),
+                row.payload.clone(),
+                row.proxy.clone(),
+                row.hit_count,
+                row.last_hit.clone(),
+            ),
+            None => (
+                rule.kind.clone(),
+                rule.payload.clone(),
+                rule.proxy.clone(),
+                None,
+                None,
+            ),
+        };
+        rows.push(RuleRowView {
+            kind,
+            payload,
+            proxy,
+            hit_count,
+            last_hit,
+            key: Some(rule.key.clone()),
+            disabled,
+        });
+    }
+    for (kernel_index, row) in kernel.iter().enumerate() {
+        if matched[kernel_index].is_some() {
+            continue;
+        }
+        rows.push(RuleRowView {
+            kind: row.kind.clone(),
+            payload: row.payload.clone(),
+            proxy: row.proxy.clone(),
+            hit_count: row.hit_count,
+            last_hit: row.last_hit.clone(),
+            key: None,
+            disabled: false,
+        });
+    }
+    rows
 }
 
 /// Splits one config rule line into kind, payload and proxy. Trailing modifiers
@@ -1207,6 +1355,71 @@ proxies: []
             ("MATCH".to_string(), String::new(), "漏网之鱼".to_string())
         );
         assert!(config_rule_parts("MATCH").is_none());
+    }
+
+    #[test]
+    fn rule_rows_keep_duplicate_occurrence_and_expose_disabled_rows() {
+        let yaml = "\
+rules:
+  - DOMAIN-SUFFIX,google.com,PROXY
+  - DOMAIN-SUFFIX,google.com,PROXY
+  - MATCH,DIRECT
+";
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let config = config_rules(&value);
+        assert_eq!(config[0].key, "domainsuffix|google.com|PROXY|0");
+        assert_eq!(config[1].key, "domainsuffix|google.com|PROXY|1");
+        assert_eq!(config[2].key, "match||DIRECT|0");
+
+        // The kernel only returns the kept duplicate after the first one is disabled.
+        let kernel = vec![
+            RuleView {
+                kind: "DomainSuffix".to_string(),
+                payload: "google.com".to_string(),
+                proxy: "PROXY".to_string(),
+                hit_count: Some(4),
+                last_hit: Some("2026-11-15T10:00:00Z".to_string()),
+            },
+            RuleView {
+                kind: "Match".to_string(),
+                payload: String::new(),
+                proxy: "DIRECT".to_string(),
+                hit_count: Some(9),
+                last_hit: None,
+            },
+        ];
+        let disabled = BTreeSet::from([config[0].key.clone()]);
+        let rows = rule_rows(&config, &kernel, &disabled);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].key.as_deref(), Some(config[0].key.as_str()));
+        assert!(rows[0].disabled, "the omitted first duplicate stays visible");
+        assert_eq!(rows[0].kind, "DOMAIN-SUFFIX");
+        assert_eq!(rows[0].hit_count, None);
+        assert_eq!(rows[1].key.as_deref(), Some(config[1].key.as_str()));
+        assert!(!rows[1].disabled);
+        assert_eq!(rows[1].hit_count, Some(4), "hit data follows the kept occurrence");
+        assert_eq!(rows[2].key.as_deref(), Some(config[2].key.as_str()));
+        assert!(!rows[2].disabled);
+        assert_eq!(rows[2].hit_count, Some(9));
+
+        // A non-disabled rule the kernel does not return is not invented.
+        let omitted = rule_rows(&config, &kernel[1..], &BTreeSet::new());
+        assert_eq!(omitted.len(), 1);
+        assert_eq!(omitted[0].kind, "Match");
+
+        // A kernel-only rule has no config key, so the UI cannot toggle it.
+        let mut extra = kernel.clone();
+        extra.push(RuleView {
+            kind: "Process".to_string(),
+            payload: "chrome".to_string(),
+            proxy: "DIRECT".to_string(),
+            hit_count: None,
+            last_hit: None,
+        });
+        let rows = rule_rows(&config, &extra, &BTreeSet::new());
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2].key, None);
+        assert!(!rows[2].disabled);
     }
 
     #[test]

@@ -84,7 +84,7 @@ describe('normalizeSnapshot', () => {
     expect(hostile.connection_total).toBe(0)
   })
 
-  it('normalizes rule hit fields and drops unknown ones', () => {
+  it('normalizes rule hit, identity and disabled fields and drops unknown ones', () => {
     expect(
       normalizeRuleRow({
         kind: 'DomainSuffix',
@@ -92,8 +92,9 @@ describe('normalizeSnapshot', () => {
         proxy: 'DIRECT',
         hit_count: 7,
         last_hit: '2026-11-15T10:00:00Z',
-        extra: { hitCount: 99 },
+        key: 'domainsuffix|example.com|DIRECT|0',
         disabled: true,
+        extra: { hitCount: 99 },
       }),
     ).toEqual({
       kind: 'DomainSuffix',
@@ -101,12 +102,24 @@ describe('normalizeSnapshot', () => {
       proxy: 'DIRECT',
       hit_count: 7,
       last_hit: '2026-11-15T10:00:00Z',
+      key: 'domainsuffix|example.com|DIRECT|0',
+      disabled: true,
     })
-    expect(normalizeRuleRow({ kind: 'Match', hit_count: '7', last_hit: '' })).toMatchObject({
+    expect(normalizeRuleRow({ kind: 'Match', hit_count: '7', last_hit: '', key: 7 })).toMatchObject({
       hit_count: null,
       last_hit: null,
+      key: null,
+      disabled: false,
     })
-    expect(normalizeRuleRow({})).toEqual({ kind: '', payload: '', proxy: '', hit_count: null, last_hit: null })
+    expect(normalizeRuleRow({})).toEqual({
+      kind: '',
+      payload: '',
+      proxy: '',
+      hit_count: null,
+      last_hit: null,
+      key: null,
+      disabled: false,
+    })
   })
 
   it('reads kernel status', () => {

@@ -11,7 +11,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-use crate::diagnostics::{self, ConnectionView, LogView, RuleView, TrafficTotals};
+use crate::diagnostics::{self, ConnectionView, LogView, TrafficTotals};
 use crate::nodes::{
     self, ControllerEndpoint, KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay,
     NodeGroupView, ParsedGroup, SELECT_FAILED,
@@ -290,9 +290,9 @@ pub struct ProvidersSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RulesSnapshot {
-    pub rules: Vec<RuleView>,
+    pub rules: Vec<diagnostics::RuleRowView>,
     pub error: Option<String>,
-    /// Rule keys disabled for this run; cleared when the app restarts.
+    /// Rule keys disabled for this run; cleared when the app restarts or the config changes.
     pub disabled: Vec<String>,
 }
 
@@ -401,12 +401,6 @@ pub trait KernelLaunch {
     /// rule list can be toggled while TUN/VPN stays up.
     fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
         self.start_or_reload(config_yaml)
-    }
-
-    /// The config text the running process was started with, when the backend
-    /// keeps it. Live rule reloads filter this copy so TUN fd and mode survive.
-    fn running_config(&mut self) -> Option<String> {
-        None
     }
 
     fn running(&mut self) -> bool {
@@ -814,15 +808,6 @@ impl KernelLaunch for ProcessRuntime {
         nodes::put_config(&endpoint, config_yaml)
     }
 
-    fn running_config(&mut self) -> Option<String> {
-        if !self.running() {
-            return None;
-        }
-        self.config_path
-            .as_ref()
-            .and_then(|path| fs::read_to_string(path).ok())
-    }
-
     fn auto_now(&mut self) -> BTreeMap<String, String> {
         if !self.running() {
             return BTreeMap::new();
@@ -1024,6 +1009,9 @@ pub struct ProfileBook {
     log_filter: String,
     /// Runtime-only disabled rule keys; never persisted, so a restart re-enables rules.
     disabled_rules: BTreeSet<String>,
+    /// Last unfiltered runtime config, kept so later toggles filter the full rule
+    /// list (stable occurrence keys) while preserving TUN fd and settings.
+    runtime_base: Option<String>,
     chosen_mode: Option<String>,
     upload: Option<u64>,
     download: Option<u64>,
@@ -1074,6 +1062,7 @@ impl ProfileBook {
             logs: Vec::new(),
             log_filter: "all".to_string(),
             disabled_rules: BTreeSet::new(),
+            runtime_base: None,
             chosen_mode: None,
             upload: None,
             download: None,
@@ -1669,6 +1658,8 @@ impl ProfileBook {
             self.fail_activation(index, message);
             return self.publish(kernel);
         }
+        self.runtime_base = Some(yaml);
+        self.disabled_rules.clear();
         let now = now_ms();
         {
             let profile = &mut self.profiles[index];
@@ -1757,7 +1748,13 @@ impl ProfileBook {
         tun_enable: bool,
         fd: Option<i32>,
     ) -> Result<u16, StartError> {
-        let (yaml, port) = self.kernel_yaml(tun_enable, fd)?;
+        let (base, port) = self.kernel_yaml(tun_enable, fd)?;
+        let yaml = if self.disabled_rules.is_empty() {
+            base.clone()
+        } else {
+            diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
+                .map_err(StartError::Failed)?
+        };
         kernel.start_or_reload(&yaml).map_err(|message| {
             StartError::Failed(if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -1765,6 +1762,7 @@ impl ProfileBook {
                 message
             })
         })?;
+        self.runtime_base = Some(base);
         self.apply_live_selections(kernel);
         Ok(port)
     }
@@ -1803,12 +1801,6 @@ impl ProfileBook {
             None => yaml,
         };
         let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&yaml, &selected));
-        let yaml = if self.disabled_rules.is_empty() {
-            yaml
-        } else {
-            diagnostics::filter_disabled_rules(&yaml, &self.disabled_rules)
-                .map_err(StartError::Failed)?
-        };
         Ok((yaml, port))
     }
 
@@ -2041,6 +2033,7 @@ impl ProfileBook {
             self.kernel_uptime_secs = None;
             self.connection_total = 0;
             self.connections_error = None;
+            self.runtime_base = None;
             // A stopped kernel is not connected. The system-proxy switch may stay on.
             self.connected = false;
         }
@@ -2664,6 +2657,8 @@ impl ProfileBook {
         self.delays.remove(id);
         if active {
             self.active_id = None;
+            self.disabled_rules.clear();
+            self.runtime_base = None;
             self.recompute_effective();
         }
         self.notice = None;
@@ -2741,6 +2736,7 @@ impl ProfileBook {
         let active = self.active_id.as_deref() == Some(id);
         self.persist();
         if active {
+            self.disabled_rules.clear();
             self.recompute_effective();
             if kernel.running() && self.platform == ClientPlatform::Desktop {
                 let tun = self.takeover.tun;
@@ -2797,6 +2793,7 @@ impl ProfileBook {
         }
         self.persist();
         if self.active_id.as_deref() == Some(id) {
+            self.disabled_rules.clear();
             self.recompute_effective();
             if kernel.running() && self.platform == ClientPlatform::Desktop {
                 let tun = self.takeover.tun;
@@ -2989,13 +2986,33 @@ impl ProfileBook {
         self.publish(kernel)
     }
 
+    /// Full rule list from the active profile, keys computed over the original order.
+    fn active_config_rules(&self) -> Vec<diagnostics::ConfigRule> {
+        let Some(profile) = self
+            .active_id
+            .as_deref()
+            .and_then(|id| self.profiles.iter().find(|profile| profile.id == id))
+        else {
+            return Vec::new();
+        };
+        let Some(value) = document_value(profile) else {
+            return Vec::new();
+        };
+        diagnostics::config_rules(&value)
+    }
+
     pub fn rules(&mut self, kernel: &mut dyn KernelLaunch) -> RulesSnapshot {
         let disabled = self.disabled_rules.iter().cloned().collect();
+        let config = self.active_config_rules();
         match kernel.controller() {
             Some(endpoint) => match diagnostics::fetch_rules(&endpoint) {
-                Ok(rules) => RulesSnapshot { rules, error: None, disabled },
+                Ok(kernel_rules) => RulesSnapshot {
+                    rules: diagnostics::rule_rows(&config, &kernel_rules, &self.disabled_rules),
+                    error: None,
+                    disabled,
+                },
                 Err(message) => RulesSnapshot {
-                    rules: Vec::new(),
+                    rules: diagnostics::rule_rows(&config, &[], &self.disabled_rules),
                     error: Some(message),
                     disabled,
                 },
@@ -3009,7 +3026,7 @@ impl ProfileBook {
     }
 
     /// Temporarily disables or re-enables one rule. The filtered runtime config is
-    /// hot-reloaded; a failed reload restores the previous key set and returns the error.
+    /// hot-reloaded; unknown keys and failed reloads leave the previous key set.
     pub fn set_rule_disabled(
         &mut self,
         command: RuleToggle,
@@ -3020,7 +3037,7 @@ impl ProfileBook {
             return Err(KERNEL_DOWN.to_string());
         }
         let key = command.key.trim().to_string();
-        if key.is_empty() {
+        if !self.active_config_rules().iter().any(|rule| rule.key == key) {
             return Err("没有这条规则".to_string());
         }
         let previous = self.disabled_rules.clone();
@@ -3033,11 +3050,12 @@ impl ProfileBook {
             return Ok(self.rules(kernel));
         }
         let tun = self.takeover.tun;
-        let outcome = match kernel.running_config() {
-            Some(running) => diagnostics::filter_disabled_rules(&running, &self.disabled_rules)
+        let outcome = match self.runtime_base.clone() {
+            Some(base) => diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
                 .and_then(|yaml| kernel.reload_config(&yaml)),
             None => match self.kernel_yaml(tun, None) {
-                Ok((yaml, _)) => kernel.reload_config(&yaml),
+                Ok((base, _)) => diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
+                    .and_then(|yaml| kernel.reload_config(&yaml)),
                 Err(StartError::Idle(message)) | Err(StartError::Failed(message)) => Err(message),
             },
         };
@@ -5393,6 +5411,23 @@ proxy-groups:
         book.enable("p1", &RejectSource, &mut kernel);
 
         let disabled_key = diagnostics::rule_key("DomainSuffix", "google.com", "PROXY", 0);
+        let second_key = diagnostics::rule_key("DomainSuffix", "google.com", "PROXY", 1);
+        let other = diagnostics::rule_key("Match", "", "DIRECT", 0);
+
+        // An unknown identity is rejected without changing the set.
+        let unknown = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: "domainsuffix|missing.example|PROXY|0".to_string(),
+                    disabled: true,
+                },
+                &mut kernel,
+            )
+            .unwrap_err();
+        assert_eq!(unknown, "没有这条规则");
+        assert!(book.rules(&mut kernel).disabled.is_empty());
+        assert!(kernel.reloaded.is_empty());
+
         let snapshot = book
             .set_rule_disabled(
                 RuleToggle {
@@ -5411,8 +5446,42 @@ proxy-groups:
         );
         assert!(kernel.reloaded[0].contains("MATCH,DIRECT"));
 
+        // The second identical rule keeps its own identity even though the kernel
+        // now only returns the remaining occurrence.
+        let both = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: second_key.clone(),
+                    disabled: true,
+                },
+                &mut kernel,
+            )
+            .unwrap();
+        assert_eq!(both.disabled, vec![disabled_key.clone(), second_key.clone()]);
+        assert_eq!(kernel.reloaded.len(), 2);
+        assert_eq!(
+            kernel.reloaded[1].matches("google.com,PROXY").count(),
+            0,
+            "the second occurrence is removed from the full config, not the filtered one"
+        );
+
+        let first_back = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: disabled_key.clone(),
+                    disabled: false,
+                },
+                &mut kernel,
+            )
+            .unwrap();
+        assert_eq!(first_back.disabled, vec![second_key.clone()]);
+        assert_eq!(
+            kernel.reloaded[2].matches("google.com,PROXY").count(),
+            1,
+            "re-enabling the first occurrence restores exactly one"
+        );
+
         kernel.fail = true;
-        let other = diagnostics::rule_key("Match", "", "DIRECT", 0);
         let error = book
             .set_rule_disabled(
                 RuleToggle {
@@ -5424,14 +5493,15 @@ proxy-groups:
             .unwrap_err();
         assert_eq!(error, "规则没有切换");
         let after_failure = book.rules(&mut kernel);
-        assert_eq!(after_failure.disabled, vec![disabled_key.clone()]);
+        assert_eq!(after_failure.disabled, vec![second_key.clone()]);
         assert!(!after_failure.disabled.contains(&other));
+        assert_eq!(kernel.reloaded.len(), 3, "a failed reload does not push a config");
 
         kernel.fail = false;
         let enabled = book
             .set_rule_disabled(
                 RuleToggle {
-                    key: disabled_key.clone(),
+                    key: second_key.clone(),
                     disabled: false,
                 },
                 &mut kernel,
@@ -5444,10 +5514,22 @@ proxy-groups:
             "re-enabling restores every occurrence"
         );
 
+        // Activating a config starts from a clean runtime rule set.
+        book.set_rule_disabled(
+            RuleToggle {
+                key: disabled_key.clone(),
+                disabled: true,
+            },
+            &mut kernel,
+        )
+        .unwrap();
+        book.enable("p1", &RejectSource, &mut kernel);
+        assert!(book.rules(&mut kernel).disabled.is_empty());
+
         // The set lives only in memory, so reopening the app starts with no disabled rules.
         book.set_rule_disabled(
             RuleToggle {
-                key: disabled_key,
+                key: disabled_key.clone(),
                 disabled: true,
             },
             &mut kernel,

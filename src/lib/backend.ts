@@ -8,7 +8,6 @@ import {
   type KernelStatus,
   type Mode,
   type ProvidersResult,
-  type RuleRow,
   type RulesResult,
   type ShellState,
   type Snapshot,
@@ -90,21 +89,6 @@ export interface Backend {
   syncTray(): Promise<void>
 
   onChange(handler: (snapshot: Snapshot) => void): Promise<() => void>
-}
-
-/** Keys matching the Rust `type|payload|proxy|occurrence` rule toggle contract. */
-export function ruleKeys(rules: RuleRow[]): string[] {
-  const seen = new Map<string, number>()
-  return rules.map((rule) => {
-    const base = `${normalizeRuleKind(rule.kind)}|${rule.payload.trim()}|${rule.proxy.trim()}`
-    const occurrence = seen.get(base) ?? 0
-    seen.set(base, occurrence + 1)
-    return `${base}|${occurrence}`
-  })
-}
-
-function normalizeRuleKind(kind: string): string {
-  return kind.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
 export function normalizeNodeTest(raw: unknown): NodeTestEvent {

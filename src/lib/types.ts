@@ -77,6 +77,10 @@ export interface RuleRow {
   hit_count: number | null
   /** `/rules` `extra.lastHit`; null when the kernel does not report hits. */
   last_hit: string | null
+  /** Stable toggle key; null for kernel-injected rules absent from the config. */
+  key: string | null
+  /** True while the rule is temporarily removed from the runtime config. */
+  disabled: boolean
 }
 
 export interface DnsSettings {
@@ -378,6 +382,8 @@ export function normalizeRuleRow(raw: unknown): RuleRow {
     proxy: str(rule.proxy),
     hit_count: num(rule.hit_count),
     last_hit: optStr(rule.last_hit),
+    key: optStr(rule.key),
+    disabled: Boolean(rule.disabled),
   }
 }
 
