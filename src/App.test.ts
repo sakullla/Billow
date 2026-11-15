@@ -1345,6 +1345,56 @@ describe('App', () => {
     for (const name of names) expect(['日本 02', '美国 02', '德国 02']).toContain(name)
   })
 
+  it('opens provider details: nodes with tags, rules, and a notice for binary sets', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(400)
+
+    await wrapper.find('[data-testid="open-provider-机场订阅"]').trigger('click')
+    await settle(300)
+    const sheet = () => document.body.querySelector('[data-testid="provider-detail"]')
+    expect(sheet()?.querySelectorAll('.detail-proxy')).toHaveLength(19)
+    expect(sheet()?.querySelector('.detail-proxy .node-tag.udp')?.textContent).toBe('UDP')
+    const search = sheet()!.querySelector<HTMLInputElement>('input[type="search"]')!
+    search.value = 'grpc'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(sheet()?.querySelectorAll('.detail-proxy').length).toBeGreaterThan(0)
+    for (const row of sheet()!.querySelectorAll('.detail-proxy')) expect(row.textContent).toContain('gRPC')
+    bodyClick('.modal-foot .btn.primary')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="open-provider-private"]').trigger('click')
+    await settle(300)
+    expect(sheet()?.querySelectorAll('.detail-rules li')).toHaveLength(6)
+    expect(sheet()?.querySelector('.detail-rules .rule-type')?.textContent).toBe('DOMAIN-SUFFIX')
+    bodyClick('.modal-foot .btn.primary')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="open-provider-cn-domains"]').trigger('click')
+    await settle(300)
+    expect(document.body.querySelector('[data-testid="provider-notice"]')?.textContent).toContain('MRS')
+  })
+
+  it('shows GEO files and saves auto-update and source as kernel settings', async () => {
+    const { wrapper, backend } = await mountApp()
+    const save = vi.spyOn(backend, 'saveSettings')
+    await openPage(wrapper, 'resources')
+    await settle(300)
+    const files = wrapper.findAll('[data-testid="geo-files"] li').map((item) => item.find('strong').text())
+    expect(files).toEqual(['GeoIP', 'GeoSite', 'MMDB'])
+    expect(wrapper.find('[data-testid="upgrade-geo"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('[data-testid="geo-auto-update"]').trigger('click')
+    await settle(500)
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geo_auto_update: true, geo_update_interval: 24 }))
+    await wrapper.find('[data-testid="geo-source"] [data-value="jsdelivr"]').trigger('click')
+    await settle(200)
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geo_source: 'jsdelivr', geo_auto_update: true }))
+  })
+
   it('keeps every proxy toolbar control reachable on a 390px screen', async () => {
     const { wrapper } = await mountApp({}, 390)
     await wrapper.find('.tabbar [data-page="proxies"]').trigger('click')
@@ -1923,8 +1973,8 @@ describe('App', () => {
 
     const inline = wrapper.find('[data-provider="private"]')
     expect(inline.text()).toContain('无需更新')
-    expect(inline.findAll('button')).toHaveLength(1)
-    expect(inline.find('button').attributes('disabled')).not.toBeUndefined()
+    expect(inline.findAll('.provider-actions button')).toHaveLength(1)
+    expect(inline.find('.provider-actions button').attributes('disabled')).not.toBeUndefined()
 
     const action = vi.spyOn(backend, 'providerAction')
     action.mockImplementationOnce(async () => {
@@ -1976,7 +2026,7 @@ describe('App', () => {
     await settle(500)
 
     const row = wrapper.find('[data-provider="机场订阅"]')
-    await row.findAll('button').at(0)!.trigger('click')
+    await row.findAll('.provider-actions button').at(0)!.trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-provider="机场订阅"] [data-provider-state="pending"]').text()).toContain('检查中')
     expect(wrapper.find('[data-provider="自建节点"] [data-provider-state]').exists()).toBe(false)

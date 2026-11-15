@@ -6,6 +6,7 @@ mod profile;
 mod shell;
 mod takeover;
 mod tray;
+mod resources;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -747,6 +748,29 @@ async fn provider_action(app: AppHandle, kind: String, name: String, action: Str
     .map_err(|err| err.to_string())?
 }
 
+/// Nodes of a proxy provider (live from the kernel) or rules of a rule provider (from its file).
+#[tauri::command]
+async fn provider_detail(app: AppHandle, kind: String, name: String) -> Result<resources::ProviderDetail, String> {
+    if kind == "rule" {
+        let config = with_profile(&app, |session| session.book.effective_config())?;
+        return tauri::async_runtime::spawn_blocking(move || {
+            resources::rule_detail(&config, &name, resources::kernel_home().as_deref())
+        })
+        .await
+        .map_err(|err| err.to_string());
+    }
+    let endpoint = controller(&app)?;
+    tauri::async_runtime::spawn_blocking(move || resources::proxy_detail(&endpoint, &name))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+/// GEO database files in the kernel home, readable without a running kernel.
+#[tauri::command]
+fn geo_files() -> Vec<resources::GeoFile> {
+    resources::geo_files(resources::kernel_home().as_deref())
+}
+
 #[tauri::command]
 async fn upgrade_geo(app: AppHandle) -> Result<(), String> {
     let endpoint = controller(&app)?;
@@ -1201,7 +1225,9 @@ pub fn run() {
             flush_cache,
             kernel_providers,
             provider_action,
-            upgrade_geo
+            upgrade_geo,
+            provider_detail,
+            geo_files
         ])
         .setup(|app| {
             prepare_shell(app);

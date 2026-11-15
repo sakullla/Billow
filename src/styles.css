@@ -3996,3 +3996,122 @@ html[data-keyboard] .compact .tabbar {
 .compact .nodes:not(.dense) .node-meta {
   flex: 0 10 auto;
 }
+
+/* ───────────── Resources: GEO and provider details ───────────── */
+.geo-files {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+}
+.geo-files li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.geo-files li.missing strong {
+  color: var(--text-3);
+}
+.geo-card .setting-row + .setting-row,
+.geo-files + .setting-row {
+  border-top: 1px solid var(--border);
+}
+.compact .geo-card .setting-row:has(> .segmented) {
+  flex-wrap: wrap;
+}
+.compact .geo-card .setting-row > .segmented {
+  width: 100%;
+}
+
+/* The whole row opens the detail; action buttons sit above the hit area. */
+.provider {
+  position: relative;
+}
+.provider-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: var(--radius-control);
+}
+.provider-open:hover {
+  background: var(--hover);
+}
+.provider-open:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
+}
+.provider-main > :not(.provider-open),
+.provider-actions {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+.provider-actions,
+.provider-main button:not(.provider-open) {
+  pointer-events: auto;
+}
+
+.provider-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 240px;
+}
+.detail-source {
+  margin: 0;
+}
+.detail-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 200px;
+}
+.banner.info {
+  background: var(--accent-soft);
+  color: var(--text-2);
+}
+.detail-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(52vh, 480px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.detail-list > li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: 6px var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.detail-list > li:first-child {
+  border-top: 0;
+}
+.detail-proxy .grow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.detail-rules > li {
+  min-height: 34px;
+  font-size: var(--text-sm);
+}
+.detail-rules .rule-type {
+  flex: none;
+  color: var(--data-up);
+  font-weight: 600;
+}
+.detail-list .empty-line {
+  justify-content: center;
+}

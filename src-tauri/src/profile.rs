@@ -106,6 +106,30 @@ pub struct KernelSettings {
     pub dns: DnsSettings,
     #[serde(default)]
     pub tun: TunSettings,
+    /// GEO databases: `None` follows the profile.
+    #[serde(default)]
+    pub geo_auto_update: Option<bool>,
+    #[serde(default)]
+    pub geo_update_interval: Option<u32>,
+    /// Download source for GEO databases: `""` follows the profile's `geox-url`.
+    #[serde(default)]
+    pub geo_source: String,
+}
+
+/// `geox-url` for a named GEO source; `None` leaves the profile's own value.
+pub fn geo_source_urls(source: &str) -> Option<[(&'static str, String); 4]> {
+    let base = match source {
+        "github" => "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest",
+        "jsdelivr" => "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release",
+        "testingcf" => "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release",
+        _ => return None,
+    };
+    Some([
+        ("geoip", format!("{base}/geoip.dat")),
+        ("geosite", format!("{base}/geosite.dat")),
+        ("mmdb", format!("{base}/geoip.metadb")),
+        ("asn", format!("{base}/GeoLite2-ASN.mmdb")),
+    ])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2551,6 +2575,19 @@ fn apply_settings(
     if settings.dns_override {
         map.insert(key("dns"), settings.dns.to_value());
     }
+    if let Some(flag) = settings.geo_auto_update {
+        map.insert(key("geo-auto-update"), Value::Bool(flag));
+    }
+    if let Some(hours) = settings.geo_update_interval.filter(|hours| *hours > 0) {
+        map.insert(key("geo-update-interval"), Value::Number(i64::from(hours).into()));
+    }
+    if let Some(urls) = geo_source_urls(&settings.geo_source) {
+        let mut geox = serde_yaml::Mapping::new();
+        for (name, url) in urls {
+            geox.insert(key(name), Value::String(url));
+        }
+        map.insert(key("geox-url"), Value::Mapping(geox));
+    }
     if let Some(flag) = settings.sniffer {
         if flag {
             map.insert(key("sniffer"), default_sniffer());
@@ -3608,6 +3645,32 @@ mod tests {
         assert_eq!(read_i64(&running, "mixed-port"), Some(7999));
         assert_eq!(mapping_get(&running, "allow-lan").and_then(Value::as_bool), Some(true));
         assert_eq!(ProfileBook::open(&dir.0).snapshot().settings.mixed_port, Some(7999));
+    }
+
+    #[test]
+    fn geo_settings_override_auto_update_interval_and_source() {
+        let base = "mixed-port: 7890\ngeox-url:\n  geoip: https://mine/geoip.dat\n";
+        let (kept, _) = apply_settings(base, &KernelSettings::default(), true).unwrap();
+        let kept: Value = serde_yaml::from_str(&kept).unwrap();
+        assert_eq!(read_string(mapping_get(&kept, "geox-url").unwrap(), "geoip").as_deref(), Some("https://mine/geoip.dat"));
+        assert!(mapping_get(&kept, "geo-auto-update").is_none());
+
+        let settings = KernelSettings {
+            geo_auto_update: Some(true),
+            geo_update_interval: Some(72),
+            geo_source: "jsdelivr".to_string(),
+            ..Default::default()
+        };
+        let (yaml, _) = apply_settings(base, &settings, true).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(mapping_get(&value, "geo-auto-update").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_i64(&value, "geo-update-interval"), Some(72));
+        let geox = mapping_get(&value, "geox-url").unwrap();
+        assert_eq!(
+            read_string(geox, "geosite").as_deref(),
+            Some("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat")
+        );
+        assert!(read_string(geox, "asn").unwrap().ends_with("GeoLite2-ASN.mmdb"));
     }
 
     #[test]

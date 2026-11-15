@@ -127,3 +127,13 @@ commands.allow = ["upgrade_geo"]
 identifier = "allow-effective-config"
 description = "Enables the effective_config command without any pre-configured scope."
 commands.allow = ["effective_config"]
+
+[[permission]]
+identifier = "allow-provider-detail"
+description = "Enables the provider_detail command without any pre-configured scope."
+commands.allow = ["provider_detail"]
+
+[[permission]]
+identifier = "allow-geo-files"
+description = "Enables the geo_files command without any pre-configured scope."
+commands.allow = ["geo_files"]

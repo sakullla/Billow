@@ -8,6 +8,8 @@ import {
   type KernelStatus,
   type Mode,
   type ProvidersResult,
+  type ProviderDetail,
+  type GeoFile,
   type RulesResult,
   type ShellState,
   type Snapshot,
@@ -83,6 +85,10 @@ export interface Backend {
   providers(): Promise<ProvidersResult>
   providerAction(kind: 'proxy' | 'rule', name: string, action: 'update' | 'healthcheck'): Promise<void>
   upgradeGeo(): Promise<void>
+  /** Nodes of a proxy provider or rules of a rule provider. */
+  providerDetail(kind: 'proxy' | 'rule', name: string): Promise<ProviderDetail>
+  /** GEO database files the kernel loads, with size and modification time. */
+  geoFiles(): Promise<GeoFile[]>
   flushCache(which: 'fakeip' | 'dns'): Promise<Snapshot>
   clearLogs(): Promise<Snapshot>
   exportLogs(content: string): Promise<string>
@@ -199,6 +205,8 @@ function createTauriBackend(): Backend {
     },
     providerAction: (kind, name, action) => call<void>('provider_action', { kind, name, action }),
     upgradeGeo: () => call<void>('upgrade_geo'),
+    providerDetail: (kind, name) => call<ProviderDetail>('provider_detail', { kind, name }),
+    geoFiles: () => call<GeoFile[]>('geo_files'),
     flushCache: (which) => snap('flush_cache', { which }),
     clearLogs: () => snap('clear_logs'),
     exportLogs: (content) => call<string>('export_logs', { content }),

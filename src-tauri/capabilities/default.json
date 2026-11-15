@@ -59,6 +59,8 @@
     "allow-flush-cache",
     "allow-kernel-providers",
     "allow-provider-action",
-    "allow-upgrade-geo"
+    "allow-upgrade-geo",
+    "allow-provider-detail",
+    "allow-geo-files"
   ]
 }

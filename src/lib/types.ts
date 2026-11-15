@@ -141,6 +141,40 @@ export interface KernelSettings {
   dns_override: boolean
   dns: DnsSettings
   tun: TunSettings
+  /** GEO databases; null follows the profile. */
+  geo_auto_update: boolean | null
+  geo_update_interval: number | null
+  /** '' follows the profile's geox-url; otherwise a named mirror. */
+  geo_source: GeoSource
+}
+
+export type GeoSource = '' | 'github' | 'jsdelivr' | 'testingcf'
+
+export interface GeoFile {
+  key: string
+  label: string
+  file: string
+  exists: boolean
+  size: number | null
+  modified_ms: number | null
+}
+
+export interface ProviderProxy {
+  name: string
+  node_type: string
+  tags: string[]
+  delay_ms: number | null
+  alive: boolean | null
+}
+
+export interface ProviderDetail {
+  kind: 'proxy' | 'rule'
+  name: string
+  proxies: ProviderProxy[]
+  rules: string[]
+  total: number
+  notice: string | null
+  source: string | null
 }
 
 export interface ConfigValues {
@@ -260,6 +294,9 @@ export function defaultTun(): TunSettings {
 
 export function emptyKernelSettings(): KernelSettings {
   return {
+    geo_auto_update: null,
+    geo_update_interval: null,
+    geo_source: '',
     sniffer: null,
     dns_override: false,
     dns: defaultDns(),
@@ -431,7 +468,11 @@ function normalizeTun(raw: unknown): TunSettings {
 
 function normalizeSettings(raw: unknown): KernelSettings {
   const value = obj(raw)
+  const geoSource = str(value.geo_source)
   return {
+    geo_auto_update: optBool(value.geo_auto_update),
+    geo_update_interval: num(value.geo_update_interval),
+    geo_source: geoSource === 'github' || geoSource === 'jsdelivr' || geoSource === 'testingcf' ? geoSource : '',
     sniffer: optBool(value.sniffer),
     dns_override: Boolean(value.dns_override),
     dns: normalizeDns(value.dns),

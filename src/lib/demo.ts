@@ -215,6 +215,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { name: 'private', kind: 'rule', vehicle: 'Inline', behavior: 'Classical', format: '', count: 6, updated_at: hoursAgo(20), used: null, total: null, expire: null },
   ]
 
+  let geoUpdatedAt = Date.now() - 3 * 86_400_000
+
   function log(level: LogLine['level'], message: string) {
     state.logs.push({ level, message, time_ms: Date.now() })
     if (state.logs.length > 1000) state.logs.splice(0, state.logs.length - 1000)
@@ -663,7 +665,38 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async upgradeGeo() {
       await wait(1500)
+      geoUpdatedAt = Date.now()
       log('info', 'GEO 数据库已更新')
+    },
+    async providerDetail(kind, name) {
+      await wait(200)
+      const row = providerRows.find((item) => item.kind === kind && item.name === name)
+      if (!row) throw new Error('没有这个资源')
+      if (kind === 'proxy') {
+        const proxies = names.slice(0, row.count).map((node, index) => ({
+          name: node,
+          node_type: types.get(node) ?? 'ss',
+          tags: DEMO_TAGS[types.get(node) ?? ''] ?? [],
+          delay_ms: state.kernel_running && index % 7 !== 3 ? 60 + index * 23 : null,
+          alive: state.kernel_running ? index % 7 !== 3 : null,
+        }))
+        return { kind, name, proxies, rules: [], total: proxies.length, notice: null, source: null }
+      }
+      if (row.format === 'MrsRule') {
+        return { kind, name, proxies: [], rules: [], total: 0, notice: 'MRS 是二进制格式，无法逐条预览', source: 'https://example.com/cn.mrs' }
+      }
+      const rules = row.vehicle === 'Inline'
+        ? ['DOMAIN-SUFFIX,local', 'DOMAIN-SUFFIX,lan', 'IP-CIDR,10.0.0.0/8', 'IP-CIDR,172.16.0.0/12', 'IP-CIDR,192.168.0.0/16', 'IP-CIDR,127.0.0.0/8']
+        : Array.from({ length: row.count }, (_, index) => `91.108.${4 + index}.0/22`)
+      return { kind, name, proxies: [], rules, total: rules.length, notice: null, source: row.vehicle === 'Inline' ? 'inline' : 'https://example.com/telegram.yaml' }
+    },
+    async geoFiles() {
+      return [
+        { key: 'geoip', label: 'GeoIP', file: 'geoip.dat', exists: true, size: 11_534_336, modified_ms: geoUpdatedAt },
+        { key: 'geosite', label: 'GeoSite', file: 'geosite.dat', exists: true, size: 5_976_883, modified_ms: geoUpdatedAt },
+        { key: 'mmdb', label: 'MMDB', file: 'geoip.metadb', exists: true, size: 9_123_456, modified_ms: geoUpdatedAt },
+        { key: 'asn', label: 'ASN', file: 'GeoLite2-ASN.mmdb', exists: false, size: null, modified_ms: null },
+      ]
     },
     async flushCache(which) {
       log('info', which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除')
