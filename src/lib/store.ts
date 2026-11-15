@@ -13,16 +13,18 @@ import {
 
 export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings'
 export type SettingsTab = 'general' | 'kernel' | 'tun' | 'dns'
+/** Desktop sidebar grouping; settings is pinned below both groups (R25). */
+export type PageGroup = 'core' | 'tools' | null
 
-export const PAGES: { id: PageId; label: string; icon: string; mobile: boolean }[] = [
-  { id: 'home', label: '首页', icon: 'home', mobile: true },
-  { id: 'proxies', label: '代理', icon: 'globe', mobile: true },
-  { id: 'profiles', label: '配置', icon: 'layers', mobile: true },
-  { id: 'connections', label: '连接', icon: 'activity', mobile: true },
-  { id: 'rules', label: '规则', icon: 'route', mobile: false },
-  { id: 'resources', label: '资源', icon: 'database', mobile: false },
-  { id: 'logs', label: '日志', icon: 'terminal', mobile: false },
-  { id: 'settings', label: '设置', icon: 'settings', mobile: true },
+export const PAGES: { id: PageId; label: string; icon: string; mobile: boolean; group: PageGroup }[] = [
+  { id: 'home', label: '首页', icon: 'home', mobile: true, group: 'core' },
+  { id: 'proxies', label: '代理', icon: 'globe', mobile: true, group: 'core' },
+  { id: 'profiles', label: '配置', icon: 'layers', mobile: true, group: 'core' },
+  { id: 'connections', label: '连接', icon: 'activity', mobile: true, group: 'core' },
+  { id: 'rules', label: '规则', icon: 'route', mobile: false, group: 'tools' },
+  { id: 'resources', label: '资源', icon: 'database', mobile: false, group: 'tools' },
+  { id: 'logs', label: '日志', icon: 'terminal', mobile: false, group: 'tools' },
+  { id: 'settings', label: '设置', icon: 'settings', mobile: true, group: null },
 ]
 
 export function resolvePage(value: string | null | undefined): PageId {
@@ -196,6 +198,21 @@ export function createStore(backend: Backend) {
     void backend.setTheme(next).catch(console.error)
   }
 
+  /** Explicit connect used by the command palette; no implicit add-profile dialog. */
+  function connect() {
+    if (connecting.value || snapshot.value.connected) return Promise.resolve(undefined)
+    if (!hasProfiles.value) {
+      adding.value = true
+      return Promise.resolve(undefined)
+    }
+    return act('connect', () => backend.connect(), '已连接')
+  }
+
+  function disconnect() {
+    if (connecting.value || !snapshot.value.connected) return Promise.resolve(undefined)
+    return act('connect', () => backend.disconnect(), '已断开')
+  }
+
   return {
     backend,
     snapshot,
@@ -220,16 +237,21 @@ export function createStore(backend: Backend) {
     stop,
     go,
     setTheme,
+    connect,
+    disconnect,
+    /** Cycle system → light → dark so the palette command never needs a submenu. */
+    cycleTheme() {
+      const order: ThemePreference[] = ['system', 'light', 'dark']
+      const next = order[(order.indexOf(theme.value) + 1) % order.length] ?? 'system'
+      setTheme(next)
+      return next
+    },
     refresh: () => run(null, () => backend.state()),
 
     toggleConnection() {
-      if (connecting.value) return
-      if (!hasProfiles.value) {
-        adding.value = true
-        return
-      }
-      if (snapshot.value.connected) return act('connect', () => backend.disconnect(), '已断开')
-      return act('connect', () => backend.connect(), '已连接')
+      if (connecting.value) return Promise.resolve(undefined)
+      if (snapshot.value.connected) return disconnect()
+      return connect()
     },
     setMode: (mode: Mode) => act('mode', () => backend.setMode(mode)),
     setSystemProxy: (on: boolean) => act('proxy', () => backend.setSystemProxy(on)),

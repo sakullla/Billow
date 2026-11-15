@@ -96,7 +96,7 @@ async function copyAll() {
     <div class="toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索日志" />
+        <input v-model="query" type="search" placeholder="搜索日志" data-page-search />
       </div>
       <Segmented v-model="filter" :options="FILTERS" size="sm" label="日志级别" />
     </div>

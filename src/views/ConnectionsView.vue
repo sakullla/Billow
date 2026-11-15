@@ -134,7 +134,7 @@ async function closeOne(row: ConnectionRow) {
     <div class="toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="按主机、进程、规则或节点筛选" data-testid="connection-search" />
+        <input v-model="query" type="search" placeholder="按主机、进程、规则或节点筛选" data-testid="connection-search" data-page-search />
       </div>
       <Segmented v-model="sortKey" :options="SORTS" size="sm" label="排序" />
     </div>

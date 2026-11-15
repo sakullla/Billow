@@ -151,7 +151,7 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
     <div v-if="snap.node_catalog.length" class="toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索节点" data-testid="node-search" />
+        <input v-model="query" type="search" placeholder="搜索节点" data-testid="node-search" data-page-search />
         <button v-if="query" type="button" class="icon-btn sm" aria-label="清空" @click="query = ''"><Icon name="x" :size="14" /></button>
       </div>
       <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />

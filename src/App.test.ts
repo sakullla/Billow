@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
 import App from './App.vue'
 import { createDemoBackend } from './lib/demo'
 
@@ -8,15 +9,56 @@ async function settle(ms = 1000) {
   await flushPromises()
 }
 
+const mounted: { unmount: () => void }[] = []
+
 async function mountApp(options: Parameters<typeof createDemoBackend>[0] = {}, width = 1200) {
   vi.useFakeTimers()
   const backend = createDemoBackend(options)
   const wrapper = mount(App, { props: { backend, width }, attachTo: document.body })
+  mounted.push(wrapper)
   await settle(50)
   return { wrapper, backend }
 }
 
+function press(target: EventTarget, key: string, init: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init })
+  target.dispatchEvent(event)
+  return event
+}
+
+async function openPalette() {
+  press(document, 'k', { ctrlKey: true })
+  await flushPromises()
+  await nextTick()
+  await flushPromises()
+}
+
+function paletteOption(key: string) {
+  return document.body.querySelector<HTMLElement>(`[data-command="${key}"]`)
+}
+
+function paletteInput() {
+  return document.body.querySelector<HTMLInputElement>('.palette-search input')
+}
+
+async function searchPalette(value: string) {
+  const input = paletteInput()
+  if (!input) throw new Error('palette input missing')
+  input.value = value
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  await nextTick()
+  await flushPromises()
+  return input
+}
+
 afterEach(() => {
+  while (mounted.length) {
+    try {
+      mounted.pop()?.unmount()
+    } catch {
+      /* already unmounted */
+    }
+  }
   vi.useRealTimers()
   document.body.innerHTML = ''
 })
@@ -151,5 +193,194 @@ describe('App', () => {
     expect(wrapper.find('[data-provider="机场订阅"]').exists()).toBe(true)
     expect(wrapper.find('[data-provider="cn-domains"]').text()).toContain('112,480 条规则')
     expect(wrapper.find('[data-testid="upgrade-geo"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('groups the desktop sidebar into core and tools with settings pinned last', async () => {
+    const { wrapper } = await mountApp()
+    expect(wrapper.findAll('.sidebar .nav-group-label').map((label) => label.text())).toEqual(['核心', '工具'])
+    expect(wrapper.findAll('.nav-group').map((group) => group.findAll('[data-page]').length)).toEqual([4, 3])
+    expect(wrapper.find('.side-foot [data-page="settings"]').exists()).toBe(true)
+    expect(wrapper.find('.nav [data-page="settings"]').exists()).toBe(false)
+    const order = wrapper.findAll('.sidebar [data-page]').map((item) => item.attributes('data-page'))
+    expect(order).toEqual(['home', 'proxies', 'profiles', 'connections', 'rules', 'resources', 'logs', 'settings'])
+    expect(order[order.length - 1]).toBe('settings')
+  })
+
+  it('marks the mobile settings tab current while a tools page is open', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    const settingsTab = () => wrapper.find('.tabbar [data-page="settings"]')
+    expect(settingsTab().attributes('aria-current')).toBeUndefined()
+    await settingsTab().trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
+    await wrapper.findAll('.shortcut-card .setting-row')[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('rules')
+    expect(settingsTab().attributes('aria-current')).toBe('page')
+    expect(wrapper.find('.main .page').exists()).toBe(true)
+  })
+
+  it('opens the command palette with Ctrl+K, filters and executes a page', async () => {
+    const { wrapper } = await mountApp()
+    await openPalette()
+    expect(paletteInput()).not.toBeNull()
+    expect(paletteOption('action:test-all')?.textContent).toContain('连接后可测速')
+    expect(document.body.textContent).not.toContain('删除配置')
+
+    const input = await searchPalette('代理')
+    expect(paletteOption('page:proxies')).not.toBeNull()
+    expect(paletteOption('page:home')).toBeNull()
+    press(input, 'Enter')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
+    expect(document.body.querySelector('.palette')).toBeNull()
+  })
+
+  it('lists page, settings and non-destructive actions and hides TUN on Android', async () => {
+    const { wrapper } = await mountApp({ platform: 'android' }, 1200)
+    await openPalette()
+    expect(paletteOption('page:logs')).not.toBeNull()
+    expect(paletteOption('setting:dns')).not.toBeNull()
+    expect(paletteOption('setting:tun')).toBeNull()
+    for (const id of ['connect', 'disconnect', 'test-all', 'refresh-profiles', 'add-profile', 'toggle-theme', 'open-logs']) {
+      expect(paletteOption(`action:${id}`)).not.toBeNull()
+    }
+    expect(paletteOption('action:remove')).toBeNull()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+  })
+
+  it('executes palette actions and opens a settings category', async () => {
+    const { wrapper } = await mountApp()
+    await openPalette()
+    let input = await searchPalette('打开日志')
+    press(input, 'Enter')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('logs')
+
+    await openPalette()
+    input = await searchPalette('Fake-IP')
+    press(input, 'Enter')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
+    expect(wrapper.find('[data-testid="dns-settings"]').exists()).toBe(true)
+  })
+
+  it('closes the palette with Escape and returns focus to the opener', async () => {
+    const { wrapper } = await mountApp()
+    const trigger = wrapper.find('.sidebar [data-page="home"]').element as HTMLElement
+    trigger.focus()
+    await openPalette()
+    expect(document.activeElement).toBe(paletteInput())
+    press(document.activeElement ?? document, 'Escape')
+    await flushPromises()
+    await nextTick()
+    await flushPromises()
+    expect(document.body.querySelector('.palette')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('focuses the page search with / but leaves the key alone inside inputs', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="logs"]').trigger('click')
+    await flushPromises()
+    const search = wrapper.find('[data-page-search]').element as HTMLInputElement
+    search.focus()
+    const inside = press(search, '/')
+    expect(inside.defaultPrevented).toBe(false)
+    expect(document.activeElement).toBe(search)
+
+    search.blur()
+    press(document.body, '/')
+    expect(document.activeElement).toBe(search)
+  })
+
+  it('opens the shortcut sheet with ? outside inputs and clears search with Escape', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="logs"]').trigger('click')
+    await flushPromises()
+    const search = wrapper.find('[data-page-search]').element as HTMLInputElement
+    search.focus()
+    press(search, '?')
+    await flushPromises()
+    expect(document.body.querySelector('.shortcut-list')).toBeNull()
+
+    search.value = 'error'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    press(search, 'Escape')
+    await flushPromises()
+    expect(search.value).toBe('')
+
+    search.blur()
+    press(document.body, '?')
+    await flushPromises()
+    expect(document.body.querySelector('.shortcut-list')).not.toBeNull()
+    press(document.activeElement ?? document, 'Escape')
+    await flushPromises()
+    expect(document.body.querySelector('.shortcut-list')).toBeNull()
+  })
+
+  it('restores per-page scroll but lets a proxy group target win', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    const main = wrapper.find('.main').element as HTMLElement
+    main.scrollTop = 260
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await flushPromises()
+    expect(main.scrollTop).toBe(0)
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(main.scrollTop).toBe(260)
+
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="groups-card"] [data-group="节点选择"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
+    expect(main.scrollTop).toBe(0)
+
+    window.dispatchEvent(new Event('resize'))
+    expect(main.scrollTop).toBe(0)
+    expect(wrapper.find('.sidebar').exists()).toBe(true)
+  })
+
+  it('closes an open menu on back before leaving the page', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="profiles"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[aria-label="更多操作"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true)
+
+    window.dispatchEvent(new PopStateEvent('popstate', { state: { billow: 'overlay' } }))
+    await flushPromises()
+    await nextTick()
+    await flushPromises()
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false)
+    expect(wrapper.find('.main').attributes('data-page')).toBe('profiles')
+  })
+
+  it('closes the topmost layer before navigating back on popstate', async () => {
+    const { wrapper } = await mountApp()
+    await openPalette()
+    expect(document.body.querySelector('.palette')).not.toBeNull()
+
+    window.dispatchEvent(new PopStateEvent('popstate', { state: { billow: 'overlay' } }))
+    await flushPromises()
+    await nextTick()
+    await flushPromises()
+    expect(document.body.querySelector('.palette')).toBeNull()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+
+    await wrapper.find('.sidebar [data-page="logs"]').trigger('click')
+    await flushPromises()
+    window.dispatchEvent(new PopStateEvent('popstate', { state: { billow: 'page', page: 'home' } }))
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }))
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
   })
 })

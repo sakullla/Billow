@@ -64,7 +64,7 @@ onMounted(load)
     <div v-if="rules.length" class="toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索规则内容或策略" />
+        <input v-model="query" type="search" placeholder="搜索规则内容或策略" data-page-search />
       </div>
     </div>
     <div v-if="kinds.length && !query" class="chips">
