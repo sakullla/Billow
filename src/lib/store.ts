@@ -1,5 +1,5 @@
 import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey } from 'vue'
-import type { Backend } from './backend'
+import type { Backend, NodeTestEvent } from './backend'
 import {
   emptySnapshot,
   type AppInfo,
@@ -45,6 +45,14 @@ export type HomeAction =
   | { kind: 'takeover'; target: 'system_proxy' | 'tun'; on: boolean }
   | { kind: 'mode'; mode: Mode }
 
+/** One node result kept locally so rows update before the next snapshot (R26). */
+export interface NodeTestResult {
+  delay: number | null
+  failed: boolean
+  /** Local timestamp of the result; the UI shows "测速 …" only when it exists. */
+  at: number
+}
+
 const HISTORY = 60
 
 export function applyTheme(preference: ThemePreference) {
@@ -72,12 +80,17 @@ export function createStore(backend: Backend) {
   /** Reason shown in the home failure banner; owned here so a retry can clear it (R24, R29). */
   const lastActionError = ref<string | null>(null)
   const lastFailedAction = ref<HomeAction | null>(null)
+  /** Latest per-node result from the `node-test` stream plus the local arrival time (R26). */
+  const testResults = ref<Record<string, NodeTestResult>>({})
+  /** `已测/总数` for the running or just-finished test-all; zeroed when the target changes. */
+  const testProgress = ref<{ tested: number; total: number }>({ tested: 0, total: 0 })
   let toastId = 0
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let polling = false
   let stopped = false
   let queue: Promise<unknown> = Promise.resolve()
   let unlisten: (() => void) | null = null
+  let unlistenNodeTest: (() => void) | null = null
   let lastRunError: string | null = null
 
   const current = computed(() => snapshot.value.profiles.find((item) => item.current) ?? null)
@@ -136,6 +149,38 @@ export function createStore(backend: Backend) {
     return null
   }
 
+  /** `node-test` progress: every finished node is kept so rows paint 超时/延迟 before the next snapshot. */
+  function recordNodeTest(event: NodeTestEvent) {
+    if (event.node) {
+      testResults.value = {
+        ...testResults.value,
+        [event.node]: { delay: event.delay, failed: event.failed, at: Date.now() },
+      }
+    }
+    testProgress.value = { tested: event.tested, total: event.total }
+  }
+
+  function clearTestProgress() {
+    testResults.value = {}
+    testProgress.value = { tested: 0, total: 0 }
+  }
+
+  /** Single-node and per-group tests answer with a snapshot, so stamp their rows locally too. */
+  function stampTestedNodes(names: string[]) {
+    if (!names.length) return
+    const lookup = new Map<string, { delay_ms: number | null; failed: boolean }>()
+    snapshot.value.node_catalog.forEach((group) =>
+      group.nodes.forEach((node) => lookup.set(node.name, node)),
+    )
+    const at = Date.now()
+    const next = { ...testResults.value }
+    names.forEach((name) => {
+      const node = lookup.get(name)
+      if (node) next[name] = { delay: node.delay_ms, failed: node.failed, at }
+    })
+    testResults.value = next
+  }
+
   /** A home-level attempt the failure banner can retry; `done` reads the outcome from the new snapshot. */
   interface HomeAttempt {
     action: HomeAction
@@ -187,6 +232,14 @@ export function createStore(backend: Backend) {
     },
   )
 
+  // A different config or a stopped kernel invalidates the per-node test results (R26).
+  watch(
+    () => [snapshot.value.active_id, snapshot.value.kernel_running] as const,
+    ([id, running], [prevId, prevRunning]) => {
+      if (id !== prevId || (prevRunning && !running)) clearTestProgress()
+    },
+  )
+
   async function poll() {
     if (stopped) return
     const visible = typeof document === 'undefined' || document.visibilityState !== 'hidden'
@@ -231,6 +284,11 @@ export function createStore(backend: Backend) {
     } catch (error) {
       console.error(error)
     }
+    try {
+      unlistenNodeTest = await backend.onNodeTest(recordNodeTest)
+    } catch (error) {
+      console.error(error)
+    }
     pollTimer = setTimeout(poll, 1000)
   }
 
@@ -238,6 +296,8 @@ export function createStore(backend: Backend) {
     stopped = true
     if (pollTimer) clearTimeout(pollTimer)
     unlisten?.()
+    unlistenNodeTest?.()
+    unlistenNodeTest = null
   }
 
   function openSettings(tab: SettingsTab) {
@@ -327,6 +387,9 @@ export function createStore(backend: Backend) {
     /** Home failure banner state (R24, R29). */
     lastActionError,
     lastFailedAction,
+    /** Per-node test results and `已测/总数` for the proxy page (R26). */
+    testResults,
+    testProgress,
     current,
     hasProfiles,
     isAndroid,
@@ -375,9 +438,29 @@ export function createStore(backend: Backend) {
     saveOverride: (id: string, text: string) => act('override', () => backend.saveOverride(id, text)),
 
     selectNode: (group: string, node: string) => act(null, () => backend.selectNode(group, node)),
-    testGroup: (group: string) => act(`test:${group}`, () => backend.testGroup(group)),
-    testAll: () => act('testAll', () => backend.testAll()),
-    testNode: (node: string) => act(`node:${node}`, () => backend.testNode(node)),
+
+    /** Per-group test stamps the local result time so headers can show "测速 …" (R26). */
+    async testGroup(group: string) {
+      const result = await act(`test:${group}`, () => backend.testGroup(group))
+      if (result) {
+        const names = snapshot.value.node_catalog.find((item) => item.name === group)?.nodes.map((item) => item.name) ?? []
+        stampTestedNodes(names)
+      }
+      return result
+    },
+    /** Test-all progress arrives through `node-test`; the counter survives until the next run (R26). */
+    async testAll() {
+      testProgress.value = { tested: 0, total: 0 }
+      const result = await act('testAll', () => backend.testAll())
+      if (result) stampTestedNodes(snapshot.value.node_catalog.flatMap((group) => group.nodes.map((node) => node.name)))
+      else clearTestProgress()
+      return result
+    },
+    async testNode(node: string) {
+      const result = await act(`node:${node}`, () => backend.testNode(node))
+      if (result) stampTestedNodes([node])
+      return result
+    },
 
     closeConnection: (id: string | null) => act(null, () => backend.closeConnection(id)),
     clearLogs: () => act(null, () => backend.clearLogs()),

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
-import { delayText, delayTone, protocolLabel } from '../lib/format'
+import { delayText, delayTone, formatRelative, protocolLabel } from '../lib/format'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
 
@@ -21,6 +22,8 @@ const MODES: { id: Mode; label: string }[] = [
   { id: 'global', label: '全局' },
   { id: 'direct', label: '直连' },
 ]
+
+const OPEN_KEY = 'proxy-open'
 
 function readPref<T>(key: string, fallback: T): T {
   try {
@@ -41,19 +44,62 @@ function writePref(key: string, value: unknown) {
 const query = ref('')
 const sort = ref<Sort>(readPref('proxy-sort', 'default'))
 const dense = ref<boolean>(readPref('proxy-dense', false))
-const open = ref<Set<string>>(new Set(readPref<string[]>('proxy-open', [])))
 const hideAuto = ref<boolean>(readPref('proxy-hide-auto', false))
+/** Read once at setup so the first paint already has the right groups expanded (R26). */
+const storedOpen = readOpen()
+const open = ref<Set<string>>(storedOpen ?? defaultOpen())
+if (!storedOpen) persistOpen()
 
 watch(sort, (value) => writePref('proxy-sort', value))
 watch(dense, (value) => writePref('proxy-dense', value))
 watch(hideAuto, (value) => writePref('proxy-hide-auto', value))
+
+const needle = computed(() => query.value.trim().toLowerCase())
+
+function manifest(): NodeGroup[] {
+  return snap.value.node_catalog
+}
+
+/** The group a first visit opens: the selected manual group, else the first manual one (R26). */
+function currentManualGroup(): NodeGroup | null {
+  const manual = snap.value.node_catalog.filter((group) => group.kind === 'manual')
+  return manual.find((group) => Boolean(group.now)) ?? manual[0] ?? null
+}
+
+function defaultOpen(): Set<string> {
+  const group = currentManualGroup()
+  return new Set(group ? [group.name] : [])
+}
+
+function persistOpen() {
+  writePref(OPEN_KEY, [...open.value])
+}
+
+/**
+ * Saved names only survive while their groups still exist; corrupt JSON or a set
+ * that no longer matches any group falls back to the default expansion (R26).
+ */
+function readOpen(): Set<string> | null {
+  try {
+    const raw = localStorage.getItem(`billow:${OPEN_KEY}`)
+    if (raw == null) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return null
+    const names = parsed.filter((item): item is string => typeof item === 'string')
+    const known = new Set(manifest().map((group) => group.name))
+    const valid = names.filter((name) => known.has(name))
+    return valid.length ? new Set(valid) : null
+  } catch {
+    return null
+  }
+}
 
 function toggle(name: string) {
   const next = new Set(open.value)
   if (next.has(name)) next.delete(name)
   else next.add(name)
   open.value = next
-  writePref('proxy-open', [...next])
+  persistOpen()
 }
 
 function sorted(nodes: NodeItem[]): NodeItem[] {
@@ -67,7 +113,6 @@ function sorted(nodes: NodeItem[]): NodeItem[] {
 }
 
 const groups = computed(() => {
-  const needle = query.value.trim().toLowerCase()
   const source = snap.value.mode === 'global'
     ? snap.value.node_catalog
     : snap.value.node_catalog.filter((group) => group.name !== 'GLOBAL')
@@ -75,21 +120,95 @@ const groups = computed(() => {
     .filter((group) => !(hideAuto.value && group.kind === 'auto'))
     .map((group) => ({
       ...group,
-      nodes: sorted(needle ? group.nodes.filter((node) => node.name.toLowerCase().includes(needle)) : group.nodes),
+      nodes: sorted(needle.value ? group.nodes.filter((node) => node.name.toLowerCase().includes(needle.value)) : group.nodes),
     }))
-    .filter((group) => !needle || group.nodes.length > 0 || group.name.toLowerCase().includes(needle))
+    .filter((group) => !needle.value || group.nodes.length > 0 || group.name.toLowerCase().includes(needle.value))
 })
 
-const testedCount = computed(() => {
-  const seen = new Map<string, NodeItem>()
-  snap.value.node_catalog.forEach((group) => group.nodes.forEach((node) => seen.set(node.name, node)))
-  const all = [...seen.values()].filter((node) => node.delay_ms != null)
-  return { total: seen.size, ok: all.length }
-})
+const matchCount = computed(() =>
+  needle.value ? groups.value.reduce((total, group) => total + group.nodes.length, 0) : 0,
+)
 
-function groupTone(group: NodeGroup) {
-  const now = group.nodes.find((node) => node.name === group.now)
-  return now ? delayTone(now.delay_ms, now.failed) : 'none'
+const allExpanded = computed(
+  () => groups.value.length > 0 && groups.value.every((group) => open.value.has(group.name)),
+)
+
+function toggleAll() {
+  const next = new Set(open.value)
+  if (allExpanded.value) groups.value.forEach((group) => next.delete(group.name))
+  else groups.value.forEach((group) => next.add(group.name))
+  open.value = next
+  persistOpen()
+}
+
+/** Local test results land before the next snapshot, so rows read through them (R26). */
+function nodeState(node: NodeItem): { delay: number | null; failed: boolean } {
+  const result = store.testResults.value[node.name]
+  return result ? { delay: result.delay, failed: result.failed } : { delay: node.delay_ms, failed: node.failed }
+}
+
+function nodeDelay(node: NodeItem): string {
+  const state = nodeState(node)
+  return delayText(state.delay, state.failed)
+}
+
+function nodeTone(node: NodeItem): string {
+  const state = nodeState(node)
+  return delayTone(state.delay, state.failed)
+}
+
+function groupNowNode(group: NodeGroup): NodeItem | undefined {
+  return group.nodes.find((node) => node.name === group.now)
+}
+
+function groupNowDelay(group: NodeGroup): string {
+  const node = groupNowNode(group)
+  if (!node) return ''
+  const state = nodeState(node)
+  return delayText(state.delay, state.failed)
+}
+
+function groupNowTone(group: NodeGroup): string {
+  const node = groupNowNode(group)
+  if (!node) return 'none'
+  const state = nodeState(node)
+  return delayTone(state.delay, state.failed)
+}
+
+/** Latest local test time in the group; unknown groups show nothing rather than a fake time. */
+function groupTestedAt(group: NodeGroup): number | null {
+  let latest = 0
+  group.nodes.forEach((node) => {
+    const result = store.testResults.value[node.name]
+    if (result && result.at > latest) latest = result.at
+  })
+  return latest || null
+}
+
+interface HighlightPart {
+  text: string
+  hit: boolean
+}
+
+function highlight(name: string): HighlightPart[] {
+  const text = needle.value
+  if (!text) return [{ text: name, hit: false }]
+  const lower = name.toLowerCase()
+  const parts: HighlightPart[] = []
+  let index = 0
+  let found = lower.indexOf(text)
+  while (found >= 0) {
+    if (found > index) parts.push({ text: name.slice(index, found), hit: false })
+    parts.push({ text: name.slice(found, found + text.length), hit: true })
+    index = found + text.length
+    found = lower.indexOf(text, index)
+  }
+  if (index < name.length) parts.push({ text: name.slice(index), hit: false })
+  return parts.length ? parts : [{ text: name, hit: false }]
+}
+
+function groupTypeLabel(group: NodeGroup): string {
+  return protocolLabel(group.group_type) || (group.kind === 'manual' ? '手选' : '自动')
 }
 
 function pick(group: NodeGroup, node: NodeItem) {
@@ -98,18 +217,41 @@ function pick(group: NodeGroup, node: NodeItem) {
 }
 
 function isOpen(name: string) {
-  return query.value.trim().length > 0 || open.value.has(name)
+  return needle.value.length > 0 || open.value.has(name)
 }
 
-async function locate(name: string | null) {
+async function scrollToGroup(name: string | null) {
   if (!name) return
-  if (!open.value.has(name)) toggle(name)
   await nextTick()
   const el = document.querySelector(`[data-group-card="${CSS.escape(name)}"]`)
   if (el instanceof HTMLElement) el.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
 }
 
-onMounted(() => void locate(store.focusGroup.value))
+/** Home deep links win: open the group, drop a filter that hides it, then scroll to it (R26). */
+async function locate(name: string | null) {
+  if (!name) return
+  const group = manifest().find((item) => item.name === name)
+  if (!group) return
+  if (hideAuto.value && group.kind === 'auto') hideAuto.value = false
+  if (!open.value.has(name)) {
+    open.value = new Set([...open.value, name])
+    persistOpen()
+  }
+  await scrollToGroup(name)
+}
+
+onMounted(() => {
+  void (async () => {
+    const target = store.focusGroup.value
+    if (target) {
+      await locate(target)
+      return
+    }
+    // Only a first visit scrolls to the default group; a saved state stays where the user left it.
+    if (!storedOpen) await scrollToGroup(currentManualGroup()?.name ?? null)
+  })()
+})
+
 watch(() => store.focusGroup.value, (name) => void locate(name))
 </script>
 
@@ -119,7 +261,7 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
       <div>
         <h1>代理</h1>
         <p class="muted small">
-          <template v-if="snap.node_catalog.length">{{ snap.node_catalog.length }} 个代理组 · {{ testedCount.total }} 个节点</template>
+          <template v-if="snap.node_catalog.length">{{ snap.node_catalog.length }} 个代理组 · {{ snap.node_catalog.reduce((total, group) => total + group.nodes.length, 0) }} 个节点</template>
           <template v-else>{{ snap.nodes_notice ?? '没有代理组' }}</template>
         </p>
       </div>
@@ -133,10 +275,20 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
           :disabled="store.busy.mode"
           @update:model-value="store.setMode"
         />
+        <span
+          v-if="store.testProgress.value.total > 0"
+          class="test-progress small mono"
+          data-testid="test-progress"
+          aria-live="polite"
+        >已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
+        <span v-if="!snap.kernel_running" id="proxy-test-hint" class="test-hint muted small" data-testid="test-hint">
+          连接后可测速
+        </span>
         <button
           type="button"
           class="btn primary sm"
           :disabled="store.busy.testAll || !snap.kernel_running"
+          :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
           :title="snap.kernel_running ? '测试全部节点延迟' : '连接后才能测速'"
           data-testid="test-all"
           @click="store.testAll()"
@@ -148,18 +300,44 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
       </div>
     </header>
 
-    <div v-if="snap.node_catalog.length" class="toolbar">
+    <div v-if="snap.node_catalog.length" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索节点" data-testid="node-search" data-page-search />
-        <button v-if="query" type="button" class="icon-btn sm" aria-label="清空" @click="query = ''"><Icon name="x" :size="14" /></button>
+        <button v-if="query" type="button" class="icon-btn sm" aria-label="清空搜索" data-testid="clear-search" @click="query = ''">
+          <Icon name="x" :size="14" />
+        </button>
       </div>
+      <span v-if="needle && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite">
+        匹配 {{ matchCount }} 个节点
+      </span>
       <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
-      <button type="button" class="icon-btn" :class="{ active: hideAuto }" :title="hideAuto ? '显示自动组' : '隐藏自动组'" @click="hideAuto = !hideAuto">
+      <button
+        type="button"
+        class="icon-btn"
+        :class="{ active: hideAuto }"
+        :aria-pressed="hideAuto"
+        :aria-label="hideAuto ? '显示自动组' : '隐藏自动组'"
+        :title="hideAuto ? '显示自动组' : '隐藏自动组'"
+        data-testid="toggle-hide-auto"
+        @click="hideAuto = !hideAuto"
+      >
         <Icon name="cpu" />
       </button>
-      <button type="button" class="icon-btn" :title="dense ? '卡片视图' : '紧凑视图'" @click="dense = !dense">
+      <button
+        type="button"
+        class="icon-btn"
+        :class="{ active: dense }"
+        :aria-pressed="dense"
+        :aria-label="dense ? '卡片视图' : '紧凑视图'"
+        :title="dense ? '卡片视图' : '紧凑视图'"
+        data-testid="toggle-dense"
+        @click="dense = !dense"
+      >
         <Icon :name="dense ? 'grid' : 'list'" />
+      </button>
+      <button type="button" class="btn ghost sm" data-testid="toggle-all" @click="toggleAll">
+        {{ allExpanded ? '收起全部' : '展开全部' }}
       </button>
     </div>
 
@@ -169,71 +347,98 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
       <p class="muted">添加并启用一份配置后，这里会列出它的代理组与节点。</p>
       <button type="button" class="btn primary" @click="store.go('profiles')">前往配置</button>
     </div>
-    <div v-else-if="!groups.length" class="empty small">
+    <div v-else-if="!groups.length" class="empty small" data-testid="no-match">
       <h3>没有匹配的节点</h3>
       <button type="button" class="btn ghost" @click="query = ''">清空搜索</button>
     </div>
 
     <section
-      v-for="group in groups"
+      v-for="(group, index) in groups"
       :key="group.name"
       class="card group"
       :class="{ open: isOpen(group.name), located: store.focusGroup.value === group.name }"
       :data-group-card="group.name"
     >
-      <header class="group-head" role="button" tabindex="0" :aria-expanded="isOpen(group.name)" @click="toggle(group.name)" @keydown.enter.prevent="toggle(group.name)" @keydown.space.prevent="toggle(group.name)">
-        <span class="group-badge" :class="groupTone(group)" />
-        <div class="group-title">
-          <div class="group-name">
-            <strong>{{ group.name }}</strong>
-            <span class="tag">{{ protocolLabel(group.group_type) || (group.kind === 'manual' ? '手选' : '自动') }}</span>
-            <span class="muted small">{{ group.nodes.length }}</span>
-          </div>
-          <div class="group-now small">
-            <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
-            <span>{{ group.now || (group.kind === 'auto' ? '连接后显示' : '—') }}</span>
-          </div>
-        </div>
+      <header class="group-head">
+        <span class="group-badge" :class="groupNowTone(group)" />
         <button
           type="button"
-          class="icon-btn"
+          class="group-toggle"
+          :aria-expanded="isOpen(group.name)"
+          :aria-controls="`group-nodes-${index}`"
+          :data-testid="`group-toggle-${group.name}`"
+          @click="toggle(group.name)"
+        >
+          <GroupIcon :icon="group.icon" :type="group.group_type" :size="24" />
+          <span class="group-title">
+            <span class="group-name">
+              <strong>{{ group.name }}</strong>
+              <span class="tag">{{ groupTypeLabel(group) }}</span>
+              <span class="muted small group-count">{{ group.nodes.length }} 个</span>
+            </span>
+            <span class="group-now small">
+              <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
+              <span class="group-now-name">{{ group.now || (group.kind === 'auto' ? '连接后显示' : '—') }}</span>
+              <span v-if="groupNowDelay(group)" class="group-delay mono" :class="groupNowTone(group)">{{ groupNowDelay(group) }}</span>
+              <span v-if="groupTestedAt(group)" class="group-tested">测速 {{ formatRelative(groupTestedAt(group)!) }}</span>
+            </span>
+          </span>
+          <Icon name="chevron-down" class="chevron" />
+        </button>
+        <button
+          type="button"
+          class="icon-btn group-test"
+          :aria-label="`测速 ${group.name}`"
+          :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
           :title="snap.kernel_running ? '测试该组延迟' : '连接后才能测速'"
           :disabled="!snap.kernel_running || store.busy[`test:${group.name}`]"
-          @click.stop="store.testGroup(group.name)"
+          :data-testid="`test-group-${group.name}`"
+          @click="store.testGroup(group.name)"
         >
           <span v-if="store.busy[`test:${group.name}`]" class="spinner sm" />
           <Icon v-else name="zap" />
         </button>
-        <Icon name="chevron-down" class="chevron" />
       </header>
 
-      <div v-if="isOpen(group.name)" class="nodes" :class="{ dense }">
+      <div v-if="isOpen(group.name)" :id="`group-nodes-${index}`" class="nodes" :class="{ dense }">
         <div
           v-for="node in group.nodes"
           :key="node.name"
           class="node"
           :class="{ selected: node.selected, locked: group.kind !== 'manual' }"
-          :role="group.kind === 'manual' ? 'button' : undefined"
-          :tabindex="group.kind === 'manual' ? 0 : undefined"
-          :aria-pressed="group.kind === 'manual' ? node.selected : undefined"
           :data-node="node.name"
-          @click="pick(group, node)"
-          @keydown.enter.prevent="pick(group, node)"
         >
-          <div class="node-main">
-            <span class="node-name" :title="node.name">{{ node.name }}</span>
+          <button
+            type="button"
+            class="node-select"
+            :tabindex="group.kind === 'manual' ? undefined : -1"
+            :aria-disabled="group.kind === 'manual' ? undefined : 'true'"
+            :aria-pressed="group.kind === 'manual' ? node.selected : undefined"
+            :data-testid="`node-select-${node.name}`"
+            @click="pick(group, node)"
+            @keydown.enter.prevent="pick(group, node)"
+            @keydown.space.prevent="pick(group, node)"
+          >
+            <span class="node-name" :title="node.name">
+              <template v-for="(part, partIndex) in highlight(node.name)" :key="partIndex">
+                <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+              </template>
+            </span>
             <span v-if="!dense" class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
-          </div>
+          </button>
           <button
             type="button"
             class="delay"
-            :class="[delayTone(node.delay_ms, node.failed), { busy: store.busy[`node:${node.name}`] }]"
+            :class="[nodeTone(node), { busy: store.busy[`node:${node.name}`] }]"
+            :aria-label="`测速 ${node.name}`"
+            :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
             :disabled="!snap.kernel_running"
             :title="snap.kernel_running ? '测试延迟' : '连接后才能测速'"
-            @click.stop="store.testNode(node.name)"
+            :data-testid="`test-node-${node.name}`"
+            @click="store.testNode(node.name)"
           >
             <span v-if="store.busy[`node:${node.name}`]" class="spinner xs" />
-            <template v-else>{{ delayText(node.delay_ms, node.failed) || '测速' }}</template>
+            <template v-else>{{ nodeDelay(node) || '测速' }}</template>
           </button>
           <Icon v-if="node.selected" name="check" :size="14" class="node-check" :stroke="2.6" />
         </div>

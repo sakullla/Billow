@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import App from './App.vue'
+import GroupIcon from './components/GroupIcon.vue'
 import { createDemoBackend } from './lib/demo'
 
 async function settle(ms = 1000) {
@@ -66,6 +67,7 @@ afterEach(() => {
     }
   }
   vi.useRealTimers()
+  localStorage.clear()
   document.body.innerHTML = ''
 })
 
@@ -112,9 +114,8 @@ describe('App', () => {
     const { wrapper } = await mountApp()
     await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[data-group-card="节点选择"] .group-head').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"]').trigger('click')
+    expect(wrapper.find('[data-group-card="节点选择"]').classes()).toContain('open')
+    await wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"] .node-select').trigger('click')
     await settle(200)
     expect(wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"]').classes()).toContain('selected')
 
@@ -617,5 +618,231 @@ describe('App', () => {
     await settle(1200)
     expect(button().text()).toBe('更新')
     expect(button().attributes('aria-busy')).toBeUndefined()
+  })
+
+  it('opens the current manual group on the first proxy visit and restores the saved set', async () => {
+    localStorage.clear()
+    const card = (wrapper: Awaited<ReturnType<typeof mountApp>>['wrapper'], name: string) =>
+      wrapper.find(`[data-group-card="${name}"]`).classes()
+
+    const first = await mountApp()
+    await first.wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(card(first.wrapper, '节点选择')).toContain('open')
+    expect(card(first.wrapper, '流媒体')).not.toContain('open')
+
+    await first.wrapper.find('[data-group-card="节点选择"] .group-toggle').trigger('click')
+    await first.wrapper.find('[data-group-card="流媒体"] .group-toggle').trigger('click')
+    await flushPromises()
+    expect(card(first.wrapper, '节点选择')).not.toContain('open')
+    expect(card(first.wrapper, '流媒体')).toContain('open')
+    first.wrapper.unmount()
+
+    const second = await mountApp()
+    await second.wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(card(second.wrapper, '流媒体')).toContain('open')
+    expect(card(second.wrapper, '节点选择')).not.toContain('open')
+    second.wrapper.unmount()
+
+    localStorage.setItem('billow:proxy-open', '{ this is not json')
+    const third = await mountApp()
+    await third.wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(card(third.wrapper, '节点选择')).toContain('open')
+    third.wrapper.unmount()
+
+    localStorage.setItem('billow:proxy-open', JSON.stringify(['已删除的组']))
+    const fourth = await mountApp()
+    await fourth.wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(card(fourth.wrapper, '节点选择')).toContain('open')
+  })
+
+  it('locates the group requested from home and drops a filter that hides it', async () => {
+    const { wrapper } = await mountApp()
+    const proto = Element.prototype as unknown as { scrollIntoView?: (options?: ScrollIntoViewOptions) => void }
+    const original = proto.scrollIntoView
+    const scrolled: string[] = []
+    proto.scrollIntoView = function (this: Element) {
+      scrolled.push(this.getAttribute('data-group-card') ?? '')
+    }
+    try {
+      await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+      await flushPromises()
+      await wrapper.find('[data-testid="toggle-hide-auto"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-group-card="自动选择"]').exists()).toBe(false)
+
+      const store = (wrapper.vm as unknown as { store: { go: (page: string, group?: string) => void } }).store
+      store.go('home')
+      await flushPromises()
+      store.go('proxies', '自动选择')
+      await flushPromises()
+
+      expect(wrapper.find('[data-group-card="自动选择"]').classes()).toContain('open')
+      expect(wrapper.find('[data-testid="toggle-hide-auto"]').attributes('aria-pressed')).toBe('false')
+      expect(scrolled).toContain('自动选择')
+    } finally {
+      proto.scrollIntoView = original
+    }
+  })
+
+  it('highlights search matches and reports how many nodes match', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="node-search"]').setValue('新加坡')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="match-count"]').text()).toBe('匹配 10 个节点')
+    const marks = wrapper.findAll('[data-group-card] mark')
+    expect(marks).toHaveLength(10)
+    expect(marks.every((mark) => mark.text() === '新加坡')).toBe(true)
+
+    await wrapper.find('[data-testid="clear-search"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="match-count"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-group-card] mark')).toHaveLength(0)
+    expect(wrapper.findAll('[data-group-card="节点选择"] [data-node]')).toHaveLength(22)
+  })
+
+  it('selects a manual node with Space while auto-group rows stay inert', async () => {
+    const { wrapper, backend } = await mountApp()
+    const select = vi.spyOn(backend, 'selectNode')
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+
+    const manual = wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"] .node-select')
+    expect(manual.element.tagName).toBe('BUTTON')
+    press(manual.element, ' ')
+    await settle(200)
+    expect(select).toHaveBeenCalledWith('节点选择', '日本 02')
+    expect(wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"]').classes()).toContain('selected')
+
+    await wrapper.find('[data-group-card="自动选择"] .group-toggle').trigger('click')
+    await flushPromises()
+    const auto = wrapper.find('[data-group-card="自动选择"] [data-node="香港 01"] .node-select')
+    expect(auto.attributes('aria-disabled')).toBe('true')
+    expect(auto.attributes('tabindex')).toBe('-1')
+    await auto.trigger('click')
+    await settle(100)
+    expect(select).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows test-all progress and marks only failed nodes as timed out', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="test-hint"]').exists()).toBe(false)
+    expect(wrapper.find('[data-group-card="节点选择"] .group-tested').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="test-all"]').trigger('click')
+    await settle(400)
+    const progress = wrapper.find('[data-testid="test-progress"]')
+    expect(progress.exists()).toBe(true)
+    expect(progress.text()).toMatch(/^已测 \d+\/23$/)
+    expect(progress.text()).not.toBe('已测 23/23')
+
+    await settle(1600)
+    expect(wrapper.find('[data-testid="test-progress"]').text()).toBe('已测 23/23')
+    expect(wrapper.find('[data-group-card="节点选择"] [data-node="新加坡 01"] .delay').text()).toBe('超时')
+    expect(wrapper.find('[data-group-card="节点选择"] [data-node="香港 01"] .delay').text()).toMatch(/^\d+ ms$/)
+    expect(wrapper.find('[data-group-card="节点选择"] .group-tested').text()).toContain('测速')
+  })
+
+  it('tests one group without toggling it and stamps the header result time', async () => {
+    const { wrapper, backend } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    const groupTest = vi.spyOn(backend, 'testGroup')
+
+    await wrapper.find('[data-testid="test-group-节点选择"]').trigger('click')
+    await settle(900)
+    expect(groupTest).toHaveBeenCalledWith('节点选择')
+    expect(wrapper.find('[data-group-card="节点选择"]').classes()).toContain('open')
+    const tested = wrapper.find('[data-group-card="节点选择"] .group-tested')
+    expect(tested.exists()).toBe(true)
+    expect(tested.text()).toContain('测速')
+  })
+
+  it('renders configured group icons and falls back to the type glyph', async () => {
+    const { wrapper } = await mountApp()
+    const homeIcon = wrapper.find('[data-testid="groups-card"] [data-group="流媒体"] .group-icon img')
+    expect(homeIcon.exists()).toBe(true)
+    expect(homeIcon.attributes('src')).toBe('https://icons.example.com/media.png')
+    expect(homeIcon.attributes('alt')).toBe('')
+    expect(homeIcon.attributes('aria-hidden')).toBe('true')
+    expect(homeIcon.attributes('tabindex')).toBeUndefined()
+    expect(wrapper.find('[data-testid="groups-card"] [data-group="流媒体"] .group-icon').attributes('style')).toContain('width: 20px')
+
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    const media = wrapper.find('[data-group-card="流媒体"] .group-toggle img')
+    expect(media.exists()).toBe(true)
+    expect(media.attributes('src')).toBe('https://icons.example.com/media.png')
+    expect(media.attributes('loading')).toBe('lazy')
+    expect(media.attributes('decoding')).toBe('async')
+    expect(wrapper.find('[data-group-card="流媒体"] .group-toggle .group-icon').attributes('style')).toContain('width: 24px')
+
+    const unreachable = wrapper.find('[data-group-card="国内网站"] .group-toggle img')
+    expect(unreachable.attributes('src')).toBe('https://unreachable.invalid/cn.png')
+    await unreachable.trigger('error')
+    await nextTick()
+    const fallback = wrapper.find('[data-group-card="国内网站"] .group-toggle .group-icon svg path')
+    expect(fallback.exists()).toBe(true)
+    expect(fallback.attributes('d')).toContain('M6 19a2 2')
+  })
+
+  it('swaps a group icon with the config URL and picks a fallback glyph per group type', async () => {
+    const view = mount(GroupIcon, { props: { icon: 'https://a.example.com/a.png', type: 'relay', size: 24 } })
+    expect(view.find('img').attributes('src')).toBe('https://a.example.com/a.png')
+    await view.find('img').trigger('error')
+    expect(view.find('svg path').attributes('d')).toContain('m12 3 9 5')
+    await view.setProps({ icon: 'data:image/png;base64,AAAA' })
+    expect(view.find('img').attributes('src')).toBe('data:image/png;base64,AAAA')
+    view.unmount()
+
+    for (const [type, shape] of [
+      ['select', 'M6 19a2 2'],
+      ['selector', 'M6 19a2 2'],
+      ['url-test', 'M9 3h6v5'],
+      ['urltest', 'M9 3h6v5'],
+      ['fallback', 'M9 3h6v5'],
+      ['load-balance', 'M9 3h6v5'],
+      ['relay', 'm12 3 9 5'],
+      ['unknown', 'M12 21a9 9'],
+    ] as const) {
+      const icon = mount(GroupIcon, { props: { type, size: 20 } })
+      expect(icon.attributes('style')).toContain('width: 20px')
+      expect(icon.find('svg path').attributes('d')).toContain(shape)
+      icon.unmount()
+    }
+  })
+
+  it('keeps every proxy toolbar control reachable on a 390px screen', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    await wrapper.find('.tabbar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    const toolbar = wrapper.find('[data-testid="proxy-toolbar"]')
+    expect(toolbar.exists()).toBe(true)
+    expect(toolbar.find('[data-testid="node-search"]').exists()).toBe(true)
+    expect(toolbar.findAll('.segment')).toHaveLength(3)
+    for (const id of ['toggle-hide-auto', 'toggle-dense', 'toggle-all']) {
+      const button = toolbar.find(`[data-testid="${id}"]`)
+      expect(button.exists()).toBe(true)
+      expect(button.attributes('aria-label') ?? button.text()).toBeTruthy()
+    }
+
+    const head = wrapper.find('[data-group-card="节点选择"] .group-head')
+    const buttons = head.findAll('button')
+    expect(buttons).toHaveLength(2)
+    for (const button of buttons) expect(button.findAll('button')).toHaveLength(0)
+    expect(head.find('.group-toggle .group-icon').exists()).toBe(true)
+    expect(head.find('.group-toggle .group-name strong').exists()).toBe(true)
   })
 })

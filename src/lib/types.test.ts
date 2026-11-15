@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeKernel, normalizeRuleRow, normalizeSnapshot } from './types'
+import { normalizeIcon, normalizeKernel, normalizeRuleRow, normalizeSnapshot } from './types'
 import { resolvePage } from './store'
 
 describe('normalizeSnapshot', () => {
@@ -62,6 +62,30 @@ describe('normalizeSnapshot', () => {
       expect(group(icon).icon).toBeNull()
     }
     expect(normalizeSnapshot({ node_catalog: [{ name: 'G', kind: 'manual' }] }).node_catalog[0].icon).toBeNull()
+  })
+
+  it('accepts only http(s) and image data through normalizeIcon', () => {
+    expect(normalizeIcon('https://icons.example.com/a.png')).toBe('https://icons.example.com/a.png')
+    expect(normalizeIcon('http://icons.example.com/a.png')).toBe('http://icons.example.com/a.png')
+    expect(normalizeIcon('  data:image/png;base64,AAAA  ')).toBe('data:image/png;base64,AAAA')
+    for (const rejected of [
+      'ftp://icons.example.com/a.png',
+      'file:///tmp/a.png',
+      'javascript:alert(1)',
+      'blob:https://icons.example.com/a',
+      '//icons.example.com/a.png',
+      'https://icons.example.com/a b.png',
+      'data:text/html;base64,AAAA',
+      '',
+      null,
+      undefined,
+      42,
+      { src: 'https://icons.example.com/a.png' },
+    ]) {
+      expect(normalizeIcon(rejected)).toBeNull()
+    }
+    const long = `https://icons.example.com/${'a'.repeat(4000)}.png`
+    expect(normalizeIcon(long)).toHaveLength(2048)
   })
 
   it('keeps the reported runtime figures and leaves missing ones empty', () => {

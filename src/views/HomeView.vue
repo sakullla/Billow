@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
@@ -316,6 +317,7 @@ const apps = computed(() => {
             :data-group="group.name"
             @click="store.go('proxies', group.name)"
           >
+            <GroupIcon :icon="group.icon" :type="group.group_type" :size="20" />
             <span class="group-row-name">{{ group.name }}</span>
             <span class="group-row-now">{{ group.now || '—' }}</span>
             <span
