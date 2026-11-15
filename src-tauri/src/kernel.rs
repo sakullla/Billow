@@ -662,6 +662,7 @@ pub struct KernelStatus {
     pub channel: String,
     pub failure: Option<String>,
     pub ready: bool,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -722,10 +723,18 @@ impl KernelManager {
             .installed_path()
             .map(|path| path.is_file())
             .unwrap_or(false);
+        let version = self
+            .state
+            .installed
+            .as_ref()
+            .and_then(|item| item.identity.split(':').next())
+            .map(str::to_string)
+            .filter(|tag| !tag.is_empty());
         KernelStatus {
             channel: self.state.channel.as_str().to_string(),
             failure: self.state.failure.clone(),
             ready,
+            version,
         }
     }
 

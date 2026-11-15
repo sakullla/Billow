@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Billow 主窗口使用的默认权限",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "allow-shell-state",
@@ -31,6 +33,31 @@
     "allow-set-node-query",
     "allow-set-node-sort",
     "allow-set-connection-query",
-    "allow-set-log-filter"
+    "allow-set-log-filter",
+    "allow-set-outbound-mode",
+    "allow-delete-profile",
+    "allow-rename-profile",
+    "allow-set-profile-source",
+    "allow-set-profile-interval",
+    "allow-profile-content",
+    "allow-save-profile-content",
+    "allow-refresh-profile",
+    "allow-refresh-all-profiles",
+    "allow-save-kernel-settings",
+    "allow-test-all-nodes",
+    "allow-test-node",
+    "allow-close-connection",
+    "allow-kernel-rules",
+    "allow-clear-logs",
+    "allow-clear-notice",
+    "allow-refresh-kernel",
+    "allow-app-info",
+    "allow-set-autostart",
+    "allow-set-app-behavior",
+    "allow-sync-tray",
+    "allow-flush-cache",
+    "allow-kernel-providers",
+    "allow-provider-action",
+    "allow-upgrade-geo"
   ]
 }

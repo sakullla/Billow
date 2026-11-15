@@ -11,7 +11,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-use crate::diagnostics::{self, ConnectionView, LogView};
+use crate::diagnostics::{self, ConnectionView, LogView, RuleView, TrafficTotals};
 use crate::nodes::{
     self, ControllerEndpoint, KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay,
     NodeGroupView, ParsedGroup, SELECT_FAILED,
@@ -69,6 +69,229 @@ struct Profile {
     last_success_ms: Option<u64>,
     usage: Option<Usage>,
     selected: BTreeMap<String, String>,
+    interval_hours: u32,
+    updated_ms: Option<u64>,
+    proxy_count: usize,
+}
+
+/// Values the app writes over every profile before the kernel starts. `None` follows the profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KernelSettings {
+    #[serde(default)]
+    pub mixed_port: Option<u16>,
+    #[serde(default)]
+    pub allow_lan: Option<bool>,
+    #[serde(default)]
+    pub ipv6: Option<bool>,
+    #[serde(default)]
+    pub log_level: Option<String>,
+    #[serde(default)]
+    pub unified_delay: Option<bool>,
+    #[serde(default)]
+    pub tcp_concurrent: Option<bool>,
+    #[serde(default)]
+    pub find_process_mode: Option<String>,
+    #[serde(default)]
+    pub test_url: String,
+    #[serde(default)]
+    pub test_timeout_ms: u64,
+    /// Domain sniffing; `None` follows the profile.
+    #[serde(default)]
+    pub sniffer: Option<bool>,
+    /// When on, the app's `dns` block replaces the profile's.
+    #[serde(default)]
+    pub dns_override: bool,
+    #[serde(default)]
+    pub dns: DnsSettings,
+    #[serde(default)]
+    pub tun: TunSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DnsSettings {
+    pub enhanced_mode: String,
+    pub fake_ip_range: String,
+    pub fake_ip_filter: Vec<String>,
+    pub ipv6: bool,
+    pub use_hosts: bool,
+    pub respect_rules: bool,
+    pub default_nameserver: Vec<String>,
+    pub nameserver: Vec<String>,
+    pub fallback: Vec<String>,
+    pub proxy_server_nameserver: Vec<String>,
+    pub direct_nameserver: Vec<String>,
+}
+
+impl Default for DnsSettings {
+    fn default() -> Self {
+        let list = |items: &[&str]| items.iter().map(|item| item.to_string()).collect();
+        Self {
+            enhanced_mode: "fake-ip".to_string(),
+            fake_ip_range: "198.18.0.1/16".to_string(),
+            fake_ip_filter: list(&[
+                "*.lan",
+                "*.local",
+                "*.localdomain",
+                "localhost.ptlogin2.qq.com",
+                "+.msftconnecttest.com",
+                "+.msftncsi.com",
+                "+.stun.*.*",
+                "+.stun.*.*.*",
+                "time.*.com",
+                "ntp.*.com",
+                "+.market.xiaomi.com",
+            ]),
+            ipv6: false,
+            use_hosts: true,
+            respect_rules: false,
+            default_nameserver: list(&["223.5.5.5", "119.29.29.29"]),
+            nameserver: list(&["https://doh.pub/dns-query", "https://dns.alidns.com/dns-query"]),
+            fallback: Vec::new(),
+            proxy_server_nameserver: list(&["https://doh.pub/dns-query"]),
+            direct_nameserver: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TunSettings {
+    pub stack: String,
+    pub auto_route: bool,
+    pub auto_detect_interface: bool,
+    pub strict_route: bool,
+    pub dns_hijack: Vec<String>,
+    pub mtu: u32,
+    pub device: String,
+}
+
+impl Default for TunSettings {
+    fn default() -> Self {
+        Self {
+            stack: "mixed".to_string(),
+            auto_route: true,
+            auto_detect_interface: true,
+            strict_route: false,
+            dns_hijack: vec!["any:53".to_string(), "tcp://any:53".to_string()],
+            mtu: 1500,
+            device: String::new(),
+        }
+    }
+}
+
+fn clean_list(items: Vec<String>, limit: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let item: String = item.trim().chars().filter(|ch| !ch.is_control()).take(300).collect();
+        if !item.is_empty() && !out.contains(&item) {
+            out.push(item);
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+impl DnsSettings {
+    fn normalized(mut self) -> Self {
+        let fallback = Self::default();
+        self.enhanced_mode = match self.enhanced_mode.trim().to_ascii_lowercase().as_str() {
+            "redir-host" => "redir-host".to_string(),
+            "normal" => "normal".to_string(),
+            _ => "fake-ip".to_string(),
+        };
+        self.fake_ip_range = self.fake_ip_range.trim().to_string();
+        if self.fake_ip_range.is_empty() || !self.fake_ip_range.contains('/') {
+            self.fake_ip_range = fallback.fake_ip_range;
+        }
+        self.fake_ip_filter = clean_list(self.fake_ip_filter, 500);
+        self.default_nameserver = clean_list(self.default_nameserver, 20);
+        self.nameserver = clean_list(self.nameserver, 20);
+        self.fallback = clean_list(self.fallback, 20);
+        self.proxy_server_nameserver = clean_list(self.proxy_server_nameserver, 20);
+        self.direct_nameserver = clean_list(self.direct_nameserver, 20);
+        if self.nameserver.is_empty() {
+            self.nameserver = fallback.nameserver;
+        }
+        if self.default_nameserver.is_empty() {
+            self.default_nameserver = fallback.default_nameserver;
+        }
+        self
+    }
+
+    fn to_value(&self) -> Value {
+        let key = |name: &str| Value::String(name.to_string());
+        let strings =
+            |items: &[String]| Value::Sequence(items.iter().map(|item| Value::String(item.clone())).collect());
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(key("enable"), Value::Bool(true));
+        map.insert(key("ipv6"), Value::Bool(self.ipv6));
+        map.insert(key("use-hosts"), Value::Bool(self.use_hosts));
+        map.insert(key("respect-rules"), Value::Bool(self.respect_rules));
+        map.insert(key("enhanced-mode"), Value::String(self.enhanced_mode.clone()));
+        if self.enhanced_mode == "fake-ip" {
+            map.insert(key("fake-ip-range"), Value::String(self.fake_ip_range.clone()));
+            map.insert(key("fake-ip-filter"), strings(&self.fake_ip_filter));
+        }
+        map.insert(key("default-nameserver"), strings(&self.default_nameserver));
+        map.insert(key("nameserver"), strings(&self.nameserver));
+        if !self.fallback.is_empty() {
+            map.insert(key("fallback"), strings(&self.fallback));
+        }
+        if !self.proxy_server_nameserver.is_empty() {
+            map.insert(key("proxy-server-nameserver"), strings(&self.proxy_server_nameserver));
+        }
+        if !self.direct_nameserver.is_empty() {
+            map.insert(key("direct-nameserver"), strings(&self.direct_nameserver));
+        }
+        Value::Mapping(map)
+    }
+}
+
+impl TunSettings {
+    fn normalized(mut self) -> Self {
+        self.stack = match self.stack.trim().to_ascii_lowercase().as_str() {
+            "system" => "system".to_string(),
+            "gvisor" => "gvisor".to_string(),
+            _ => "mixed".to_string(),
+        };
+        self.dns_hijack = clean_list(self.dns_hijack, 20);
+        self.mtu = if self.mtu == 0 { 0 } else { self.mtu.clamp(576, 9000) };
+        self.device = self
+            .device
+            .trim()
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+            .take(32)
+            .collect();
+        self
+    }
+}
+
+/// What the active profile itself says, so the settings page can show "follow profile" values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ConfigValues {
+    pub mixed_port: Option<i64>,
+    pub allow_lan: Option<bool>,
+    pub ipv6: Option<bool>,
+    pub log_level: Option<String>,
+    pub unified_delay: Option<bool>,
+    pub tcp_concurrent: Option<bool>,
+    pub find_process_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProvidersSnapshot {
+    pub providers: Vec<diagnostics::ProviderView>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RulesSnapshot {
+    pub rules: Vec<RuleView>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +325,9 @@ pub struct ProfileView {
     pub total: Option<u64>,
     pub expire: Option<u64>,
     pub last_success_ms: Option<u64>,
+    pub interval_hours: u32,
+    pub updated_ms: Option<u64>,
+    pub proxy_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -134,6 +360,11 @@ pub struct ProfileSnapshot {
     pub log_filter: String,
     pub upload: Option<u64>,
     pub download: Option<u64>,
+    pub upload_total: Option<u64>,
+    pub download_total: Option<u64>,
+    pub settings: KernelSettings,
+    pub config_values: ConfigValues,
+    pub notice: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +409,16 @@ pub trait KernelLaunch {
     }
 
     fn traffic(&mut self) -> Option<(u64, u64)> {
+        None
+    }
+
+    /// Byte totals from the last `/connections` read.
+    fn connection_totals(&mut self) -> Option<TrafficTotals> {
+        None
+    }
+
+    /// Loopback controller of the running kernel, for one-off reads such as rules.
+    fn controller(&mut self) -> Option<ControllerEndpoint> {
         None
     }
 }
@@ -241,6 +482,7 @@ pub struct ProcessRuntime {
     cached_now: BTreeMap<String, String>,
     log_buffer: Option<CapturedLogs>,
     traffic_watch: Option<TrafficWatch>,
+    totals: Option<TrafficTotals>,
 }
 
 struct TrafficWatch {
@@ -286,6 +528,7 @@ impl ProcessRuntime {
             cached_now: BTreeMap::new(),
             log_buffer: None,
             traffic_watch: None,
+            totals: None,
         }
     }
 
@@ -315,6 +558,7 @@ impl ProcessRuntime {
         self.controller = None;
         self.cached_now.clear();
         self.log_buffer = None;
+        self.totals = None;
     }
 
     fn halt_traffic(&mut self) {
@@ -495,7 +739,20 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Vec::new();
         };
-        diagnostics::fetch_connections(&endpoint)
+        let (rows, totals) = diagnostics::fetch_connections_with_totals(&endpoint);
+        self.totals = totals;
+        rows
+    }
+
+    fn connection_totals(&mut self) -> Option<TrafficTotals> {
+        self.totals
+    }
+
+    fn controller(&mut self) -> Option<ControllerEndpoint> {
+        if !self.running() {
+            return None;
+        }
+        self.controller.clone()
     }
 
     fn pull_logs(&mut self) -> Vec<LogView> {
@@ -565,6 +822,8 @@ struct DiskState {
     profiles: Vec<DiskProfile>,
     #[serde(default)]
     chosen_mode: Option<String>,
+    #[serde(default)]
+    settings: KernelSettings,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -593,6 +852,10 @@ struct DiskProfile {
     expire: Option<u64>,
     #[serde(default)]
     selected: BTreeMap<String, String>,
+    #[serde(default)]
+    interval_hours: u32,
+    #[serde(default)]
+    updated_ms: Option<u64>,
 }
 
 pub struct ProfileBook {
@@ -626,6 +889,9 @@ pub struct ProfileBook {
     chosen_mode: Option<String>,
     upload: Option<u64>,
     download: Option<u64>,
+    totals: Option<TrafficTotals>,
+    settings: KernelSettings,
+    notice: Option<String>,
 }
 
 struct DelayMark {
@@ -668,6 +934,9 @@ impl ProfileBook {
             chosen_mode: None,
             upload: None,
             download: None,
+            totals: None,
+            settings: KernelSettings::default(),
+            notice: None,
         };
         book.load();
         book
@@ -695,6 +964,9 @@ impl ProfileBook {
                 total: profile.usage.as_ref().and_then(|usage| usage.total),
                 expire: profile.usage.as_ref().and_then(|usage| usage.expire),
                 last_success_ms: profile.last_success_ms,
+                interval_hours: profile.interval_hours,
+                updated_ms: profile.updated_ms,
+                proxy_count: profile.proxy_count,
             })
             .collect();
         let (node_catalog, node_groups, nodes_notice, nodes_profile_id) = self.node_views();
@@ -731,6 +1003,11 @@ impl ProfileBook {
             log_filter: self.log_filter.clone(),
             upload: self.upload,
             download: self.download,
+            upload_total: self.totals.map(|item| item.upload),
+            download_total: self.totals.map(|item| item.download),
+            settings: self.settings.clone(),
+            config_values: self.config_values(),
+            notice: self.notice.clone(),
         }
     }
 
@@ -1221,8 +1498,17 @@ impl ProfileBook {
             }
         };
         let selected = self.profiles[index].selected.clone();
-        let yaml =
-            nodes::ensure_controller(&nodes::prioritize_selections(&prepared.yaml, &selected));
+        let desktop = self.platform == ClientPlatform::Desktop;
+        let (settled, settled_port) = match apply_settings(&prepared.yaml, &self.settings, desktop)
+            .and_then(|(yaml, port)| ensure_tun_dns(&yaml, &self.settings).map(|yaml| (yaml, port)))
+        {
+            Ok(result) => result,
+            Err(message) => {
+                self.fail_activation(index, message);
+                return self.publish(kernel);
+            }
+        };
+        let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&settled, &selected));
         if let Err(message) = kernel.start_or_reload(&yaml) {
             let message = if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -1238,6 +1524,8 @@ impl ProfileBook {
             if let Some(fetched) = fetched {
                 profile.content = fetched.content;
                 profile.usage = parse_userinfo(fetched.userinfo.as_deref());
+                profile.updated_ms = Some(now);
+                profile.proxy_count = count_proxies(&profile.content);
             }
             profile.applied_override = profile.override_text.clone();
             profile.override_error = None;
@@ -1245,7 +1533,7 @@ impl ProfileBook {
             profile.last_success_ms = Some(now);
             self.active_id = Some(profile.id.clone());
         }
-        self.mixed_port = prepared.mixed_port;
+        self.mixed_port = settled_port.or(prepared.mixed_port);
         self.mode = prepared.mode.clone();
         self.chosen_mode = prepared.mode;
         self.home_failure = None;
@@ -1341,6 +1629,14 @@ impl ProfileBook {
             Ok(prepared) => prepared,
             Err(_) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
         };
+        let (settled, settled_port) =
+            apply_settings(&prepared.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
+                .map_err(StartError::Failed)?;
+        let prepared = Prepared {
+            mixed_port: settled_port.or(prepared.mixed_port),
+            mode: prepared.mode,
+            yaml: settled,
+        };
         let Some(port) = prepared
             .mixed_port
             .and_then(|value| u16::try_from(value).ok())
@@ -1350,6 +1646,7 @@ impl ProfileBook {
         };
         let selected = profile.selected.clone();
         let yaml = force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?;
+        let yaml = ensure_tun_dns(&yaml, &self.settings).map_err(StartError::Failed)?;
         let yaml = match self.mode.as_deref().and_then(normalize_outbound) {
             Some(mode) => force_mode(&yaml, mode).map_err(StartError::Failed)?,
             None => yaml,
@@ -1402,7 +1699,16 @@ impl ProfileBook {
             last_success_ms: None,
             usage: None,
             selected: BTreeMap::new(),
+            interval_hours: 0,
+            updated_ms: None,
+            proxy_count: 0,
         });
+        if let Some(profile) = self.profiles.last_mut() {
+            profile.proxy_count = count_proxies(&profile.content);
+            if profile.kind == ProfileKind::Local {
+                profile.updated_ms = Some(now_ms());
+            }
+        }
     }
 
     fn load(&mut self) {
@@ -1432,10 +1738,18 @@ impl ProfileBook {
                     failure: profile.failure,
                     last_success_ms: profile.last_success_ms,
                     usage,
+                    proxy_count: 0,
                     selected: profile.selected,
+                    interval_hours: profile.interval_hours,
+                    updated_ms: profile.updated_ms,
                 }
             })
             .collect();
+        for profile in &mut self.profiles {
+            profile.proxy_count = count_proxies(&profile.content);
+        }
+        self.settings = disk.settings;
+        nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
         let known = self
             .profiles
             .iter()
@@ -1508,6 +1822,7 @@ impl ProfileBook {
                 .map(|endpoint| endpoint.host.clone()),
             proxy_port: self.our_endpoint.as_ref().map(|endpoint| endpoint.port),
             chosen_mode: self.chosen_mode.clone(),
+            settings: self.settings.clone(),
             profiles: self
                 .profiles
                 .iter()
@@ -1526,6 +1841,8 @@ impl ProfileBook {
                     total: profile.usage.as_ref().and_then(|usage| usage.total),
                     expire: profile.usage.as_ref().and_then(|usage| usage.expire),
                     selected: profile.selected.clone(),
+                    interval_hours: profile.interval_hours,
+                    updated_ms: profile.updated_ms,
                 })
                 .collect(),
         };
@@ -1546,6 +1863,9 @@ impl ProfileBook {
             self.auto_now = kernel.auto_now();
             if self.connected {
                 self.connections = diagnostics::accept_connections(kernel.connections());
+                if let Some(totals) = kernel.connection_totals() {
+                    self.totals = Some(totals);
+                }
             } else {
                 self.connections.clear();
             }
@@ -1564,6 +1884,7 @@ impl ProfileBook {
         } else {
             self.upload = None;
             self.download = None;
+            self.totals = None;
         }
     }
 
@@ -1805,9 +2126,10 @@ impl ProfileBook {
                 Some(profile_id),
             );
         }
+        let types = nodes::proxy_types(&document);
         let catalog: Vec<NodeGroupView> = parsed
             .iter()
-            .map(|group| self.present_group(profile, group))
+            .map(|group| self.present_group(profile, group, &types))
             .collect();
         let mut visible = catalog.clone();
         for group in &mut visible {
@@ -1825,21 +2147,30 @@ impl ProfileBook {
         (catalog, visible, None, Some(profile_id))
     }
 
-    fn present_group(&self, profile: &Profile, group: &ParsedGroup) -> NodeGroupView {
+    fn present_group(
+        &self,
+        profile: &Profile,
+        group: &ParsedGroup,
+        types: &BTreeMap<String, String>,
+    ) -> NodeGroupView {
         let sort = self.sort_of(&group.name);
         if !group.manual {
             let now = self.auto_now.get(&group.name).cloned().unwrap_or_default();
-            let nodes = if now.is_empty() {
-                Vec::new()
-            } else {
-                vec![self.node_item(profile, &group.name, &now, false)]
-            };
+            let mut members = group.proxies.clone();
+            if !now.is_empty() && !members.iter().any(|item| item == &now) {
+                members.push(now.clone());
+            }
+            let nodes = members
+                .iter()
+                .map(|name| self.node_item(profile, &group.name, name, !now.is_empty() && *name == now, types))
+                .collect();
             return NodeGroupView {
                 name: group.name.clone(),
                 kind: "auto".to_string(),
                 now,
                 sort,
                 nodes,
+                group_type: group.group_type.clone(),
             };
         }
         let chosen = profile
@@ -1859,7 +2190,7 @@ impl ProfileBook {
                     Some(choice) => choice == name,
                     None => group.proxies.first() == Some(name),
                 };
-                self.node_item(profile, &group.name, name, selected)
+                self.node_item(profile, &group.name, name, selected, types)
             })
             .collect();
         NodeGroupView {
@@ -1868,6 +2199,7 @@ impl ProfileBook {
             now,
             sort,
             nodes,
+            group_type: group.group_type.clone(),
         }
     }
 
@@ -1877,6 +2209,7 @@ impl ProfileBook {
         group: &str,
         name: &str,
         selected: bool,
+        types: &BTreeMap<String, String>,
     ) -> nodes::NodeItemView {
         let mark = self
             .delays
@@ -1888,6 +2221,7 @@ impl ProfileBook {
             delay_ms: mark.and_then(|item| item.delay_ms),
             failed: mark.is_some_and(|item| item.failed),
             selected,
+            node_type: types.get(name).cloned().unwrap_or_default(),
         }
     }
 
@@ -1934,6 +2268,593 @@ impl ProfileBook {
             tun,
             vpn,
         };
+    }
+}
+
+impl KernelSettings {
+    pub fn test_timeout_ms_or_default(&self) -> u64 {
+        if self.test_timeout_ms == 0 {
+            5000
+        } else {
+            self.test_timeout_ms
+        }
+    }
+
+    fn normalized(mut self) -> Self {
+        self.mixed_port = self.mixed_port.filter(|port| *port > 0);
+        self.log_level = self
+            .log_level
+            .map(|level| level.trim().to_ascii_lowercase())
+            .filter(|level| matches!(level.as_str(), "debug" | "info" | "warning" | "error" | "silent"));
+        self.find_process_mode = self
+            .find_process_mode
+            .map(|mode| mode.trim().to_ascii_lowercase())
+            .filter(|mode| matches!(mode.as_str(), "always" | "strict" | "off"));
+        self.test_url = self.test_url.trim().chars().take(500).collect();
+        if !self.test_url.is_empty()
+            && !(self.test_url.starts_with("http://") || self.test_url.starts_with("https://"))
+        {
+            self.test_url.clear();
+        }
+        if self.test_timeout_ms != 0 {
+            self.test_timeout_ms = self.test_timeout_ms.clamp(1000, 30000);
+        }
+        self.dns = self.dns.normalized();
+        self.tun = self.tun.normalized();
+        self
+    }
+
+    /// Everything except the delay probe, which never needs a kernel restart.
+    fn kernel_part(&self) -> Self {
+        let mut copy = self.clone();
+        copy.test_url.clear();
+        copy.test_timeout_ms = 0;
+        copy
+    }
+}
+
+/// Default port written when neither the profile nor settings name one.
+const FALLBACK_MIXED_PORT: i64 = 7890;
+
+fn apply_settings(
+    yaml: &str,
+    settings: &KernelSettings,
+    desktop: bool,
+) -> Result<(String, Option<i64>), String> {
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let Some(map) = value.as_mapping_mut() else {
+        return Err(CONTENT_ERROR.to_string());
+    };
+    let key = |name: &str| Value::String(name.to_string());
+    if let Some(port) = settings.mixed_port {
+        map.insert(key("mixed-port"), Value::Number(i64::from(port).into()));
+    } else if !map.contains_key(key("mixed-port")) && !map.contains_key(key("port")) {
+        map.insert(key("mixed-port"), Value::Number(FALLBACK_MIXED_PORT.into()));
+    } else if !map.contains_key(key("mixed-port")) {
+        // Only an HTTP `port`: reuse it as the mixed listener so system proxy has a target.
+        if let Some(port) = map.get(key("port")).and_then(Value::as_i64) {
+            map.insert(key("mixed-port"), Value::Number(port.into()));
+        }
+    }
+    if let Some(flag) = settings.allow_lan {
+        map.insert(key("allow-lan"), Value::Bool(flag));
+    }
+    if let Some(flag) = settings.ipv6 {
+        map.insert(key("ipv6"), Value::Bool(flag));
+    }
+    if let Some(level) = &settings.log_level {
+        map.insert(key("log-level"), Value::String(level.clone()));
+    }
+    if let Some(flag) = settings.unified_delay {
+        map.insert(key("unified-delay"), Value::Bool(flag));
+    }
+    if let Some(flag) = settings.tcp_concurrent {
+        map.insert(key("tcp-concurrent"), Value::Bool(flag));
+    }
+    if let Some(mode) = &settings.find_process_mode {
+        map.insert(key("find-process-mode"), Value::String(mode.clone()));
+    }
+    if settings.dns_override {
+        map.insert(key("dns"), settings.dns.to_value());
+    }
+    if let Some(flag) = settings.sniffer {
+        if flag {
+            map.insert(key("sniffer"), default_sniffer());
+        } else {
+            let mut off = serde_yaml::Mapping::new();
+            off.insert(key("enable"), Value::Bool(false));
+            map.insert(key("sniffer"), Value::Mapping(off));
+        }
+    }
+    if desktop {
+        // Android hands the kernel a VPN fd; routing options there belong to the system.
+        let mut tun = map
+            .get(key("tun"))
+            .and_then(Value::as_mapping)
+            .cloned()
+            .unwrap_or_default();
+        let tun_settings = &settings.tun;
+        tun.insert(key("stack"), Value::String(tun_settings.stack.clone()));
+        tun.insert(key("auto-route"), Value::Bool(tun_settings.auto_route));
+        tun.insert(key("auto-detect-interface"), Value::Bool(tun_settings.auto_detect_interface));
+        tun.insert(key("strict-route"), Value::Bool(tun_settings.strict_route));
+        tun.insert(
+            key("dns-hijack"),
+            Value::Sequence(tun_settings.dns_hijack.iter().map(|item| Value::String(item.clone())).collect()),
+        );
+        if tun_settings.mtu > 0 {
+            tun.insert(key("mtu"), Value::Number(u64::from(tun_settings.mtu).into()));
+        }
+        if !tun_settings.device.is_empty() {
+            tun.insert(key("device"), Value::String(tun_settings.device.clone()));
+        }
+        map.insert(key("tun"), Value::Mapping(tun));
+    }
+    let port = map.get(key("mixed-port")).and_then(Value::as_i64);
+    let text = serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())?;
+    Ok((text, port))
+}
+
+fn default_sniffer() -> Value {
+    serde_yaml::from_str(
+        "enable: true\nforce-dns-mapping: true\nparse-pure-ip: true\nsniff:\n  HTTP:\n    ports: [80, 8080-8880]\n    override-destination: true\n  TLS:\n    ports: [443, 8443]\n  QUIC:\n    ports: [443, 8443]\nskip-domain:\n  - Mijia Cloud\n  - +.push.apple.com\n",
+    )
+    .unwrap_or(Value::Null)
+}
+
+/// TUN hijacks DNS, so the kernel must answer it. Without a `dns` block that is enabled,
+/// a profile written for system-proxy use would leave every lookup unanswered under TUN.
+fn ensure_tun_dns(yaml: &str, settings: &KernelSettings) -> Result<String, String> {
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let Some(map) = value.as_mapping_mut() else {
+        return Err(CONTENT_ERROR.to_string());
+    };
+    let key = |name: &str| Value::String(name.to_string());
+    let tun_on = map
+        .get(key("tun"))
+        .and_then(|tun| tun.get("enable"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !tun_on {
+        return Ok(yaml.to_string());
+    }
+    let dns_on = map
+        .get(key("dns"))
+        .and_then(|dns| dns.get("enable"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if dns_on {
+        return Ok(yaml.to_string());
+    }
+    map.insert(key("dns"), settings.dns.clone().normalized().to_value());
+    serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
+}
+
+fn count_proxies(content: &str) -> usize {
+    if content.trim().is_empty() {
+        return 0;
+    }
+    let Ok(value) = serde_yaml::from_str::<Value>(content) else {
+        return 0;
+    };
+    mapping_get(&value, "proxies")
+        .and_then(Value::as_sequence)
+        .map(|list| list.len())
+        .unwrap_or(0)
+}
+
+const REFRESH_SLACK_MS: u64 = 60_000;
+
+impl ProfileBook {
+    fn config_values(&self) -> ConfigValues {
+        let Some(profile) = self
+            .active_id
+            .as_deref()
+            .and_then(|id| self.profiles.iter().find(|profile| profile.id == id))
+        else {
+            return ConfigValues::default();
+        };
+        let Some(value) = document_value(profile) else {
+            return ConfigValues::default();
+        };
+        let flag = |name: &str| mapping_get(&value, name).and_then(Value::as_bool);
+        ConfigValues {
+            mixed_port: read_i64(&value, "mixed-port").or_else(|| read_i64(&value, "port")),
+            allow_lan: flag("allow-lan"),
+            ipv6: flag("ipv6"),
+            log_level: read_string(&value, "log-level"),
+            unified_delay: flag("unified-delay"),
+            tcp_concurrent: flag("tcp-concurrent"),
+            find_process_mode: read_string(&value, "find-process-mode"),
+        }
+    }
+
+    fn index_of(&self, id: &str) -> Option<usize> {
+        self.profiles.iter().position(|profile| profile.id == id)
+    }
+
+    pub fn clear_notice(&mut self) -> ProfileSnapshot {
+        self.notice = None;
+        self.snapshot()
+    }
+
+    /// Removes a profile. The active one can go only while nothing is connected.
+    pub fn delete_profile(&mut self, id: &str) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let active = self.active_id.as_deref() == Some(id);
+        if active && (self.connected || self.kernel_running) {
+            self.notice = Some("请先断开连接再删除当前配置".to_string());
+            return self.snapshot();
+        }
+        self.profiles.remove(index);
+        self.delays.remove(id);
+        if active {
+            self.active_id = None;
+            self.recompute_effective();
+        }
+        self.notice = None;
+        self.persist();
+        self.snapshot()
+    }
+
+    pub fn rename_profile(&mut self, id: &str, name: &str) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let name = clean_name(name, &self.profiles[index].name.clone());
+        self.profiles[index].name = name;
+        self.persist();
+        self.snapshot()
+    }
+
+    pub fn set_profile_source(&mut self, id: &str, url: &str) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if self.profiles[index].kind != ProfileKind::Subscription {
+            return self.snapshot();
+        }
+        match validate_subscription_url(url.trim()) {
+            Ok(url) => {
+                self.profiles[index].source = url;
+                self.input_error = None;
+                self.persist();
+            }
+            Err(message) => self.input_error = Some(message),
+        }
+        self.snapshot()
+    }
+
+    pub fn set_profile_interval(&mut self, id: &str, hours: u32) -> ProfileSnapshot {
+        if let Some(index) = self.index_of(id) {
+            self.profiles[index].interval_hours = hours.min(24 * 30);
+            self.persist();
+        }
+        self.snapshot()
+    }
+
+    pub fn profile_content(&self, id: &str) -> Option<String> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .map(|profile| profile.content.clone())
+    }
+
+    /// Replaces a profile's saved YAML after checking it is a usable config.
+    pub fn save_profile_content(
+        &mut self,
+        id: &str,
+        content: &str,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if parse_config(content).is_err() {
+            self.profiles[index].failure = Some(CONTENT_ERROR.to_string());
+            self.input_error = Some(CONTENT_ERROR.to_string());
+            return self.snapshot();
+        }
+        let profile = &mut self.profiles[index];
+        profile.content = content.to_string();
+        profile.proxy_count = count_proxies(content);
+        profile.updated_ms = Some(now_ms());
+        profile.failure = None;
+        self.input_error = None;
+        let active = self.active_id.as_deref() == Some(id);
+        self.persist();
+        if active {
+            self.recompute_effective();
+            if kernel.running() && self.platform == ClientPlatform::Desktop {
+                let tun = self.takeover.tun;
+                if let Err(StartError::Failed(message)) | Err(StartError::Idle(message)) =
+                    self.reload(kernel, tun, None)
+                {
+                    self.notice = Some(message);
+                }
+            }
+        }
+        self.publish(kernel)
+    }
+
+    /// Fetches a subscription again without switching the active profile.
+    pub fn refresh_profile(
+        &mut self,
+        id: &str,
+        source: &dyn SubscriptionSource,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if self.profiles[index].kind != ProfileKind::Subscription {
+            return self.snapshot();
+        }
+        let fetched = match source.fetch(&self.profiles[index].source) {
+            Ok(fetched) => fetched,
+            Err(_) => {
+                self.profiles[index].failure = Some(FETCH_ERROR.to_string());
+                // A failed attempt still counts as a try so the timer does not spin.
+                self.profiles[index].updated_ms = Some(now_ms());
+                self.persist();
+                return self.snapshot();
+            }
+        };
+        let content = normalize_subscription_content(&fetched.content);
+        if parse_config(&content).is_err() {
+            self.profiles[index].failure = Some(CONTENT_ERROR.to_string());
+            self.profiles[index].updated_ms = Some(now_ms());
+            self.persist();
+            return self.snapshot();
+        }
+        let now = now_ms();
+        {
+            let profile = &mut self.profiles[index];
+            profile.content = content;
+            profile.usage = parse_userinfo(fetched.userinfo.as_deref());
+            profile.proxy_count = count_proxies(&profile.content);
+            profile.updated_ms = Some(now);
+            profile.last_success_ms = Some(now);
+            profile.failure = None;
+        }
+        self.persist();
+        if self.active_id.as_deref() == Some(id) {
+            self.recompute_effective();
+            if kernel.running() && self.platform == ClientPlatform::Desktop {
+                let tun = self.takeover.tun;
+                if let Err(StartError::Failed(message)) | Err(StartError::Idle(message)) =
+                    self.reload(kernel, tun, None)
+                {
+                    self.notice = Some(message);
+                }
+            }
+        }
+        self.publish(kernel)
+    }
+
+    /// Subscriptions whose update interval has passed.
+    pub fn due_profiles(&self, now: u64) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.kind == ProfileKind::Subscription && profile.interval_hours > 0)
+            .filter(|profile| {
+                let every = u64::from(profile.interval_hours) * 3_600_000;
+                match profile.updated_ms.or(profile.last_success_ms) {
+                    Some(last) => now.saturating_add(REFRESH_SLACK_MS) >= last.saturating_add(every),
+                    None => true,
+                }
+            })
+            .map(|profile| profile.id.clone())
+            .collect()
+    }
+
+    pub fn subscription_ids(&self) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.kind == ProfileKind::Subscription)
+            .map(|profile| profile.id.clone())
+            .collect()
+    }
+
+    pub fn save_settings(
+        &mut self,
+        settings: KernelSettings,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let settings = settings.normalized();
+        let restart = settings.kernel_part() != self.settings.kernel_part();
+        self.settings = settings;
+        nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
+        self.recompute_effective();
+        self.persist();
+        if !restart || self.platform != ClientPlatform::Desktop || !kernel.running() {
+            return self.publish(kernel);
+        }
+        if self.takeover.system_proxy {
+            return self.set_system_proxy(true, kernel, proxy, tun, vpn);
+        }
+        let tun_on = self.takeover.tun;
+        if let Err(StartError::Failed(message)) | Err(StartError::Idle(message)) =
+            self.reload(kernel, tun_on, None)
+        {
+            self.home_failure = Some(message);
+            self.remember_current_failure();
+        }
+        self.publish(kernel)
+    }
+
+    fn record_delays(&mut self, profile_id: &str, groups: &[(String, Vec<String>)], results: Vec<NodeDelay>) {
+        let marks: BTreeMap<String, Option<u64>> = results
+            .into_iter()
+            .map(|item| (item.name, item.delay_ms))
+            .collect();
+        let profile_slot = self.delays.entry(profile_id.to_string()).or_default();
+        for (group, members) in groups {
+            let slot = profile_slot.entry(group.clone()).or_default();
+            for name in members {
+                let Some(delay) = marks.get(name) else {
+                    continue;
+                };
+                slot.insert(
+                    name.clone(),
+                    DelayMark {
+                        delay_ms: *delay,
+                        failed: delay.is_none(),
+                    },
+                );
+            }
+        }
+    }
+
+    fn tested_groups(&self, index: usize) -> Option<Vec<(String, Vec<String>)>> {
+        let document = document_value(&self.profiles[index])?;
+        Some(
+            nodes::parse_proxy_groups(&document)
+                .into_iter()
+                .map(|group| {
+                    let mut members = group.proxies;
+                    if let Some(now) = self.auto_now.get(&group.name) {
+                        if !members.iter().any(|item| item == now) {
+                            members.push(now.clone());
+                        }
+                    }
+                    (group.name, members)
+                })
+                .collect(),
+        )
+    }
+
+    /// Tests every distinct node once and writes the result into every group that lists it.
+    pub fn test_all(&mut self, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        self.sync_runtime(kernel);
+        if !self.kernel_running {
+            self.nodes_error = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        }
+        let Some(index) = self.nodes_profile_index() else {
+            self.nodes_error = Some(NEED_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let Some(groups) = self.tested_groups(index) else {
+            self.nodes_error = Some(NO_NODES.to_string());
+            return self.snapshot();
+        };
+        let mut unique: Vec<String> = Vec::new();
+        for (_, members) in &groups {
+            for name in members {
+                if !unique.iter().any(|item| item == name) {
+                    unique.push(name.clone());
+                }
+            }
+        }
+        let profile_id = self.profiles[index].id.clone();
+        match kernel.probe_delays("", &unique) {
+            Ok(results) => {
+                self.record_delays(&profile_id, &groups, results);
+                self.nodes_error = None;
+            }
+            Err(message) => {
+                self.nodes_error = Some(if message.is_empty() { KERNEL_DOWN.to_string() } else { message });
+            }
+        }
+        self.snapshot()
+    }
+
+    pub fn test_node(&mut self, node: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        self.sync_runtime(kernel);
+        if !self.kernel_running {
+            self.nodes_error = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        }
+        let Some(index) = self.nodes_profile_index() else {
+            self.nodes_error = Some(NEED_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let Some(groups) = self.tested_groups(index) else {
+            self.nodes_error = Some(NO_NODES.to_string());
+            return self.snapshot();
+        };
+        let node = node.trim().to_string();
+        let profile_id = self.profiles[index].id.clone();
+        match kernel.probe_delays("", std::slice::from_ref(&node)) {
+            Ok(results) => {
+                self.record_delays(&profile_id, &groups, results);
+                self.nodes_error = None;
+            }
+            Err(message) => {
+                self.nodes_error = Some(if message.is_empty() { KERNEL_DOWN.to_string() } else { message });
+            }
+        }
+        self.snapshot()
+    }
+
+    pub fn close_connections(&mut self, id: Option<&str>, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        if let Some(endpoint) = kernel.controller() {
+            if let Err(message) = diagnostics::close_connections(&endpoint, id) {
+                self.notice = Some(message);
+            }
+        }
+        self.publish(kernel)
+    }
+
+    pub fn rules(&mut self, kernel: &mut dyn KernelLaunch) -> RulesSnapshot {
+        match kernel.controller() {
+            Some(endpoint) => match diagnostics::fetch_rules(&endpoint) {
+                Ok(rules) => RulesSnapshot { rules, error: None },
+                Err(message) => RulesSnapshot {
+                    rules: Vec::new(),
+                    error: Some(message),
+                },
+            },
+            None => RulesSnapshot {
+                rules: Vec::new(),
+                error: Some(KERNEL_DOWN.to_string()),
+            },
+        }
+    }
+
+    pub fn providers(&mut self, kernel: &mut dyn KernelLaunch) -> ProvidersSnapshot {
+        let Some(endpoint) = kernel.controller() else {
+            return ProvidersSnapshot { providers: Vec::new(), error: Some(KERNEL_DOWN.to_string()) };
+        };
+        match diagnostics::fetch_providers(&endpoint) {
+            Ok(providers) => ProvidersSnapshot { providers, error: None },
+            Err(message) => ProvidersSnapshot { providers: Vec::new(), error: Some(message) },
+        }
+    }
+
+    /// The controller endpoint for slow calls made without holding the session lock.
+    pub fn controller_of(kernel: &mut dyn KernelLaunch) -> Option<ControllerEndpoint> {
+        kernel.controller()
+    }
+
+    /// Drops the kernel's fake-ip mapping or DNS cache.
+    pub fn flush_cache(&mut self, which: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        let Some(endpoint) = kernel.controller() else {
+            self.notice = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        };
+        let result = match which {
+            "fakeip" => diagnostics::flush_cache(&endpoint, "fakeip"),
+            _ => diagnostics::flush_cache(&endpoint, "dns"),
+        };
+        self.notice = result.err();
+        self.publish(kernel)
+    }
+
+    pub fn clear_logs(&mut self) -> ProfileSnapshot {
+        self.logs.clear();
+        self.snapshot()
     }
 }
 
@@ -2358,6 +3279,123 @@ mod tests {
 
     fn config(port: i64) -> String {
         format!("mixed-port: {port}\nmode: rule\nproxies: []\n")
+    }
+
+    #[test]
+    fn delete_rename_and_edit_manage_saved_profiles() {
+        let dir = temp_dir("manage");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", &config(7890));
+        book.add_local("b.yaml", &config(7891));
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+
+        let renamed = book.rename_profile("p2", "  办公  ");
+        assert_eq!(renamed.profiles[1].name, "办公");
+
+        let bad = book.save_profile_content("p2", "- not a map", &mut kernel);
+        assert!(bad.input_error.is_some());
+        assert_eq!(book.profile_content("p2").unwrap(), config(7891));
+        book.save_profile_content("p2", "mixed-port: 7000\nproxies:\n  - {name: a, type: ss}\n", &mut kernel);
+        let listed = book.snapshot();
+        assert_eq!(listed.profiles[1].proxy_count, 1);
+
+        let removed = book.delete_profile("p2");
+        assert_eq!(removed.profiles.len(), 1);
+        let reopened = ProfileBook::open(&dir.0).snapshot();
+        assert_eq!(reopened.profiles.len(), 1);
+        assert_eq!(reopened.profiles[0].id, "p1");
+    }
+
+    #[test]
+    fn kernel_settings_overwrite_the_profile_and_a_missing_port_gets_a_default() {
+        let dir = temp_dir("settings");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", "mode: rule\nproxies: []\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        let enabled = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(enabled.mixed_port, Some(7890));
+
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let settings = KernelSettings {
+            mixed_port: Some(7999),
+            allow_lan: Some(true),
+            log_level: Some("WARNING".to_string()),
+            test_url: "ftp://nope".to_string(),
+            ..Default::default()
+        };
+        let saved = book.save_settings(settings, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(saved.settings.log_level.as_deref(), Some("warning"));
+        assert!(saved.settings.test_url.is_empty());
+        let again = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(again.mixed_port, Some(7999));
+        let running: Value = serde_yaml::from_str(kernel.running.as_deref().unwrap()).unwrap();
+        assert_eq!(read_i64(&running, "mixed-port"), Some(7999));
+        assert_eq!(mapping_get(&running, "allow-lan").and_then(Value::as_bool), Some(true));
+        assert_eq!(ProfileBook::open(&dir.0).snapshot().settings.mixed_port, Some(7999));
+    }
+
+    #[test]
+    fn tun_gets_routing_and_dns_and_dns_override_replaces_the_profile_block() {
+        let dir = temp_dir("tun-dns");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nproxies: []\ndns:\n  enable: false\n  nameserver: [1.1.1.1]\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let (yaml, _) = book.kernel_yaml(true, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        let tun = mapping_get(&running, "tun").unwrap();
+        assert_eq!(mapping_get(tun, "enable").and_then(Value::as_bool), Some(true));
+        assert_eq!(mapping_get(tun, "auto-route").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_string(tun, "stack").as_deref(), Some("mixed"));
+        let dns = mapping_get(&running, "dns").unwrap();
+        assert_eq!(mapping_get(dns, "enable").and_then(Value::as_bool), Some(true), "TUN turns DNS on");
+
+        let (plain, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let plain: Value = serde_yaml::from_str(&plain).unwrap();
+        assert_eq!(
+            mapping_get(mapping_get(&plain, "dns").unwrap(), "enable").and_then(Value::as_bool),
+            Some(false),
+            "without TUN the profile's DNS stays as written"
+        );
+
+        let mut proxy = MemoryProxy::default();
+        let mut tun_grant = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let mut settings = KernelSettings { dns_override: true, sniffer: Some(true), ..Default::default() };
+        settings.dns.enhanced_mode = "redir-host".to_string();
+        settings.dns.nameserver = vec![" https://1.1.1.1/dns-query ".to_string(), String::new()];
+        settings.tun.stack = "GVISOR".to_string();
+        let saved = book.save_settings(settings, &mut kernel, &mut proxy, &mut tun_grant, &mut vpn);
+        assert_eq!(saved.settings.tun.stack, "gvisor");
+        assert_eq!(saved.settings.dns.nameserver, ["https://1.1.1.1/dns-query"]);
+        let (yaml, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        let dns = mapping_get(&running, "dns").unwrap();
+        assert_eq!(read_string(dns, "enhanced-mode").as_deref(), Some("redir-host"));
+        assert!(mapping_get(dns, "fake-ip-range").is_none());
+        assert_eq!(mapping_get(mapping_get(&running, "sniffer").unwrap(), "enable").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_string(mapping_get(&running, "tun").unwrap(), "stack").as_deref(), Some("gvisor"));
+    }
+
+    #[test]
+    fn subscriptions_with_an_interval_become_due_after_it_passes() {
+        let dir = temp_dir("due");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_subscription("https://example.com/sub");
+        book.add_local("a.yaml", &config(7890));
+        assert!(book.due_profiles(now_ms()).is_empty());
+        book.set_profile_interval("p1", 6);
+        assert_eq!(book.due_profiles(now_ms()), ["p1"]);
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        let failed = book.refresh_profile("p1", &RejectSource, &mut kernel);
+        assert_eq!(failed.profiles[0].failure.as_deref(), Some(FETCH_ERROR));
+        assert!(book.due_profiles(now_ms()).is_empty());
+        assert_eq!(book.due_profiles(now_ms() + 6 * 3_600_000), ["p1"]);
+        assert_eq!(book.subscription_ids(), ["p1"]);
     }
 
     fn current_ids(snapshot: &ProfileSnapshot) -> Vec<&str> {
@@ -2972,7 +4010,8 @@ proxy-groups:
             ["z-node", "m-node", "a-node"]
         );
         assert!(group(&listed.node_catalog, "manual").nodes[0].selected);
-        assert!(group(&listed.node_catalog, "auto").nodes.is_empty());
+        // Auto groups list their members for viewing; none is marked while the kernel is down.
+        assert!(group(&listed.node_catalog, "auto").nodes.iter().all(|node| !node.selected));
         assert_eq!(group(&listed.node_catalog, "auto").kind, "auto");
         assert_eq!(kernel.delay_calls, 0);
         assert!(listed.node_catalog.iter().all(|item| {
@@ -3081,8 +4120,8 @@ proxy-groups:
         book.sync_runtime(&mut kernel);
         let current = book.snapshot();
         let auto = group(&current.node_groups, "auto");
-        assert_eq!(node_names(auto), ["z-node"]);
-        assert!(!auto.nodes[0].selected);
+        assert_eq!(auto.now, "z-node");
+        assert!(auto.nodes.iter().any(|node| node.name == "z-node" && node.selected));
     }
 
     #[test]
@@ -3330,21 +4369,25 @@ proxy-groups:
                 ConnectionView {
                     host: "Example.COM".to_string(),
                     outbound: "香港节点".to_string(),
-                },
+    ..Default::default()
+},
                 ConnectionView {
                     host: "other.test".to_string(),
                     outbound: "直连".to_string(),
-                },
+    ..Default::default()
+},
             ],
             logs: vec![
                 LogView {
                     level: "info".to_string(),
                     message: "普通记录".to_string(),
-                },
+    ..Default::default()
+},
                 LogView {
                     level: "warning".to_string(),
                     message: "注意一下".to_string(),
-                },
+    ..Default::default()
+},
             ],
         };
         book.enable("p1", &RejectSource, &mut kernel);
@@ -3364,7 +4407,7 @@ proxy-groups:
         assert_eq!(filtered.connections[0].host, "Example.COM");
         assert_eq!(filtered.connections[0].outbound, "香港节点");
         let encoded = serde_json::to_value(&filtered.connections[0]).unwrap();
-        assert_eq!(encoded.as_object().unwrap().len(), 2);
+        assert_eq!(encoded["host"], "Example.COM");
         assert!(
             book.set_connection_query("直连", &mut kernel)
                 .connections
@@ -3385,7 +4428,8 @@ proxy-groups:
         kernel.connections.push(ConnectionView {
             host: "example.com".to_string(),
             outbound: "香港节点".to_string(),
-        });
+    ..Default::default()
+});
         let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!disconnected.connected);
         assert!(disconnected.connections.is_empty());
@@ -3408,7 +4452,8 @@ proxy-groups:
             connections: vec![ConnectionView {
                 host: "stale.example".to_string(),
                 outbound: "旧出站".to_string(),
-            }],
+    ..Default::default()
+}],
             logs: Vec::new(),
         };
         let failed = book.enable("p1", &RejectSource, &mut kernel);
@@ -3427,7 +4472,8 @@ proxy-groups:
         kernel.logs.push(LogView {
             level: "info".to_string(),
             message: "普通记录".to_string(),
-        });
+    ..Default::default()
+});
         book.sync_runtime(&mut kernel);
         let info = book.set_log_filter("info", &mut kernel);
         assert!(info.logs.iter().all(|line| line.level == "info"));
@@ -3514,7 +4560,8 @@ proxy-groups:
         kernel.rows.push(ConnectionView {
             host: "example.com".to_string(),
             outbound: "香港节点".to_string(),
-        });
+    ..Default::default()
+});
         let opened = book.set_log_filter("all", &mut kernel);
         assert_eq!(opened.connections.len(), 1);
         assert_eq!(opened.connections[0].host, "example.com");
@@ -3531,11 +4578,13 @@ proxy-groups:
         kernel.rows.push(ConnectionView {
             host: "fresh.example".to_string(),
             outbound: "日本节点".to_string(),
-        });
+    ..Default::default()
+});
         kernel.pending_logs.push(LogView {
             level: "info".to_string(),
             message: "新的流量".to_string(),
-        });
+    ..Default::default()
+});
         let sampled = book.set_log_filter("info", &mut kernel);
         assert!(
             sampled
@@ -3575,7 +4624,8 @@ proxy-groups:
         kernel.rows.push(ConnectionView {
             host: "stale.example".to_string(),
             outbound: "香港节点".to_string(),
-        });
+    ..Default::default()
+});
         let live = book.set_log_filter("all", &mut kernel);
         assert_eq!(live.connections.len(), 1);
 
