@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { registerLayer } from '../lib/ui/focus'
 import Icon from './Icon.vue'
 
 export interface MenuItem {
@@ -29,6 +30,7 @@ const emit = defineEmits<{ select: [item: MenuItem]; close: [] }>()
 const root = ref<HTMLElement | null>(null)
 const active = ref(0)
 let trigger: HTMLElement | null = null
+let releaseLayer: (() => void) | null = null
 
 function buttons(): HTMLButtonElement[] {
   return Array.from(root.value?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])
@@ -117,10 +119,15 @@ onMounted(() => {
     anchorEl?.querySelector<HTMLElement>('[aria-haspopup], button, [role="button"]') ??
     null
   document.addEventListener('mousedown', onOutside)
+  releaseLayer = registerLayer(() => close(true))
   void nextTick(() => focusItem(active.value))
 })
 
-onBeforeUnmount(() => document.removeEventListener('mousedown', onOutside))
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onOutside)
+  releaseLayer?.()
+  releaseLayer = null
+})
 </script>
 
 <template>

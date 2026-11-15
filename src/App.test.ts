@@ -51,6 +51,12 @@ async function searchPalette(value: string) {
   return input
 }
 
+/** Drive the real WebView history the way a back button does. */
+async function goBack() {
+  window.history.back()
+  await settle(20)
+}
+
 afterEach(() => {
   while (mounted.length) {
     try {
@@ -339,48 +345,89 @@ describe('App', () => {
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
     expect(main.scrollTop).toBe(0)
-
-    window.dispatchEvent(new Event('resize'))
-    expect(main.scrollTop).toBe(0)
-    expect(wrapper.find('.sidebar').exists()).toBe(true)
   })
 
-  it('closes an open menu on back before leaving the page', async () => {
+  it('top-scrolls when the requested proxy group cannot be found', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    const main = wrapper.find('.main').element as HTMLElement
+    main.scrollTop = 240
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await flushPromises()
+
+    const store = (wrapper.vm as unknown as { store: { go: (page: string, group?: string) => void } }).store
+    store.go('proxies', '不存在的组')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
+    expect(main.scrollTop).toBe(0)
+  })
+
+  it('resets scroll on width changes but keeps it on height-only resizes', async () => {
+    const original = window.innerWidth
+    try {
+      vi.useFakeTimers()
+      const backend = createDemoBackend()
+      const wrapper = mount(App, { props: { backend }, attachTo: document.body })
+      mounted.push(wrapper)
+      await settle(50)
+      await wrapper.find('.sidebar [data-page="logs"]').trigger('click')
+      await flushPromises()
+      const main = wrapper.find('.main').element as HTMLElement
+      main.scrollTop = 180
+      window.dispatchEvent(new Event('resize'))
+      expect(main.scrollTop).toBe(180)
+
+      window.innerWidth = original - 400
+      window.dispatchEvent(new Event('resize'))
+      expect(main.scrollTop).toBe(0)
+    } finally {
+      window.innerWidth = original
+    }
+  })
+
+  it('closes an open menu on back, then returns to the previous page on the next back', async () => {
     const { wrapper } = await mountApp()
     await wrapper.find('.sidebar [data-page="profiles"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[aria-label="更多操作"]').trigger('click')
+    const more = wrapper.find('[aria-label="更多操作"]')
+    await more.trigger('click')
     await flushPromises()
     expect(wrapper.find('[role="menu"]').exists()).toBe(true)
-
-    window.dispatchEvent(new PopStateEvent('popstate', { state: { billow: 'overlay' } }))
+    press(document, 'k', { ctrlKey: true })
     await flushPromises()
-    await nextTick()
+    expect(document.body.querySelector('.palette')).toBeNull()
+
+    const moreEl = more.element as HTMLElement
+    moreEl.focus()
+    press(moreEl, 'Escape')
     await flushPromises()
     expect(wrapper.find('[role="menu"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(moreEl)
+
+    await more.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true)
+    await goBack()
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false)
     expect(wrapper.find('.main').attributes('data-page')).toBe('profiles')
+
+    await goBack()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
   })
 
-  it('closes the topmost layer before navigating back on popstate', async () => {
+  it('closes a dialog on back and keeps the page history for the next back', async () => {
     const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="logs"]').trigger('click')
+    await flushPromises()
     await openPalette()
     expect(document.body.querySelector('.palette')).not.toBeNull()
 
-    window.dispatchEvent(new PopStateEvent('popstate', { state: { billow: 'overlay' } }))
-    await flushPromises()
-    await nextTick()
-    await flushPromises()
+    await goBack()
     expect(document.body.querySelector('.palette')).toBeNull()
-    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+    expect(wrapper.find('.main').attributes('data-page')).toBe('logs')
 
-    await wrapper.find('.sidebar [data-page="logs"]').trigger('click')
-    await flushPromises()
-    window.dispatchEvent(new PopStateEvent('popstate', { state: { billow: 'page', page: 'home' } }))
-    await flushPromises()
-    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
-
-    window.dispatchEvent(new PopStateEvent('popstate', { state: null }))
-    await flushPromises()
+    await goBack()
     expect(wrapper.find('.main').attributes('data-page')).toBe('home')
   })
 })

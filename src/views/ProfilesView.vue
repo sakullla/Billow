@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
 import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent } from '../lib/format'
+import { registerLayer } from '../lib/ui/focus'
 import { useStore } from '../lib/store'
 import type { ProfileItem } from '../lib/types'
 
@@ -29,11 +30,34 @@ async function quickImport() {
 
 // Card menu
 const menuFor = ref<string | null>(null)
-function closeMenu(event: MouseEvent) {
-  if (!(event.target as HTMLElement).closest?.('.menu-anchor')) menuFor.value = null
+let menuLayer: (() => void) | null = null
+
+function closeProfileMenu(restoreFocus = false) {
+  const id = menuFor.value
+  if (restoreFocus && id) {
+    document.querySelector<HTMLElement>(`[data-menu-trigger="${CSS.escape(id)}"]`)?.focus({ preventScroll: true })
+  }
+  menuFor.value = null
 }
+
+function closeMenu(event: MouseEvent) {
+  if (!(event.target as HTMLElement).closest?.('.menu-anchor')) closeProfileMenu()
+}
+
+watch(menuFor, (id) => {
+  menuLayer?.()
+  menuLayer = null
+  // The inline menu participates in the shared layer stack so Android back and
+  // global shortcut guards can dismiss it (R30).
+  if (id) menuLayer = registerLayer(() => closeProfileMenu(true))
+})
+
 onMounted(() => document.addEventListener('click', closeMenu))
-onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closeMenu)
+  menuLayer?.()
+  menuLayer = null
+})
 
 // Edit info
 const editing = ref<ProfileItem | null>(null)
@@ -194,11 +218,11 @@ function activate(profile: ProfileItem) {
           >
             <Icon name="refresh" :class="{ spin: store.busy[`update:${profile.id}`] }" />
           </button>
-          <div class="menu-anchor" @click.stop>
-            <button type="button" class="icon-btn" aria-label="更多操作" :aria-expanded="menuFor === profile.id" @click="menuFor = menuFor === profile.id ? null : profile.id">
+          <div class="menu-anchor" @click.stop @keydown.esc.stop.prevent="closeProfileMenu(true)">
+            <button type="button" class="icon-btn" aria-label="更多操作" :aria-expanded="menuFor === profile.id" :data-menu-trigger="profile.id" @click="menuFor = menuFor === profile.id ? null : profile.id">
               <Icon name="more" />
             </button>
-            <div v-if="menuFor === profile.id" class="menu" role="menu">
+            <div v-if="menuFor === profile.id" class="menu" role="menu" @keydown.esc.stop.prevent="closeProfileMenu(true)">
               <button type="button" role="menuitem" @click="openEdit(profile)"><Icon name="edit" :size="15" />编辑信息</button>
               <button type="button" role="menuitem" @click="openYaml(profile, 'content')"><Icon name="code" :size="15" />编辑配置文件</button>
               <button type="button" role="menuitem" @click="openYaml(profile, 'override')"><Icon name="layers" :size="15" />覆写<span v-if="profile.override_text.trim()" class="dot-mark" /></button>

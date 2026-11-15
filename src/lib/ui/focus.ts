@@ -110,14 +110,66 @@ let scrollLocks = 0
 let scrollTarget: HTMLElement | null = null
 let scrollPrevious = ''
 
-/** Number of focus-trapped overlays currently open. */
+interface LayerEntry {
+  id: number
+  close: () => void
+}
+
+/**
+ * One ordered stack for every dismissible layer — focus-trapped dialogs, the
+ * command palette and keyboard menus. The back bridge and global shortcut guards
+ * read this instead of guessing from the DOM (R30).
+ */
+const layers: LayerEntry[] = []
+let nextLayerId = 0
+const layerListeners = new Set<(depth: number) => void>()
+
+function notifyLayers(): void {
+  for (const listener of [...layerListeners]) listener(layers.length)
+}
+
+/** Register a dismissible layer; the returned function removes it. */
+export function registerLayer(close: () => void): () => void {
+  const entry = { id: ++nextLayerId, close }
+  layers.push(entry)
+  notifyLayers()
+  return () => {
+    const index = layers.lastIndexOf(entry)
+    if (index < 0) return
+    layers.splice(index, 1)
+    notifyLayers()
+  }
+}
+
+/** Subscribe to layer open/close changes; returns an unsubscribe function. */
+export function onLayerChange(listener: (depth: number) => void): () => void {
+  layerListeners.add(listener)
+  return () => {
+    layerListeners.delete(listener)
+  }
+}
+
+/** Number of dismissible layers currently open. */
+export function layerDepth(): number {
+  return layers.length
+}
+
+/** Ask the topmost layer to close. Returns false when nothing was open. */
+export function closeTopLayer(): boolean {
+  const top = layers[layers.length - 1]
+  if (!top) return false
+  top.close()
+  return true
+}
+
+/** Number of focus-trapped dialogs currently open. */
 export function overlayDepth(): number {
   return traps.length
 }
 
-/** True while a dialog, command palette or confirmation layer owns the screen. */
+/** True while a dialog, command palette, confirmation layer or menu owns the keyboard. */
 export function hasOpenOverlay(): boolean {
-  return traps.length > 0
+  return layers.length > 0
 }
 
 function lockBackgroundScroll(): void {
@@ -182,6 +234,7 @@ export function useFocusTrap(
   let trigger: HTMLElement | null = null
   let inerted: HTMLElement[] = []
   let scrollLocked = false
+  let releaseLayer: (() => void) | null = null
 
   function onKeydown(event: KeyboardEvent): void {
     if (!active || !isTopmost(id)) return
@@ -214,6 +267,7 @@ export function useFocusTrap(
     id = ++nextTrapId
     traps.push(id)
     active = true
+    releaseLayer = registerLayer(() => options.onClose?.())
     if (container) {
       if (options.inert !== false) inerted = inertBackground(topLevelElement(container))
       if (options.lockScroll !== false) {
@@ -234,6 +288,8 @@ export function useFocusTrap(
     const wasTopmost = isTopmost(id)
     const index = traps.lastIndexOf(id)
     if (index >= 0) traps.splice(index, 1)
+    releaseLayer?.()
+    releaseLayer = null
     releaseInert(inerted)
     inerted = []
     if (scrollLocked) {

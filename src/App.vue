@@ -6,7 +6,7 @@ import Modal from './components/Modal.vue'
 import { createBackend, type Backend } from './lib/backend'
 import { formatSpeed } from './lib/format'
 import { createStore, PAGES, resolvePage, STORE, type PageId, type SettingsTab } from './lib/store'
-import { hasOpenOverlay } from './lib/ui/focus'
+import { closeTopLayer as dismissTopLayer, layerDepth, onLayerChange } from './lib/ui/focus'
 import { useHotkeys } from './lib/ui/hotkeys'
 import { SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -145,9 +145,9 @@ function onPaletteAction(id: string) {
 }
 
 // ── Shortcuts ──
-/** Menus are plain popovers (not focus traps), so check both before claiming a global key. */
+/** Every dialog, palette and menu registers in the shared layer stack. */
 function layerOpen(): boolean {
-  return hasOpenOverlay() || Boolean(document.querySelector('[role="menu"]'))
+  return layerDepth() > 0
 }
 
 function currentSearch(): HTMLInputElement | null {
@@ -196,8 +196,14 @@ async function restorePageScroll(page: PageId) {
   if (store.page.value !== page) return
   const main = mainEl.value
   if (!main) return
-  // A group target owns the landing position on the proxy page (D2).
-  if (page === 'proxies' && store.focusGroup.value) return
+  // A group target owns the landing position on the proxy page (D2). If the
+  // requested group does not exist, fall back to the top instead of the old offset.
+  if (page === 'proxies' && store.focusGroup.value) {
+    const target = document.querySelector(`[data-group-card="${CSS.escape(store.focusGroup.value)}"]`)
+    if (target) return
+    main.scrollTop = 0
+    return
+  }
   main.scrollTop = scrollPositions.get(page) ?? 0
 }
 
@@ -205,34 +211,44 @@ watch(
   () => store.page.value,
   (next, prev) => {
     if (mainEl.value && prev) scrollPositions.set(prev, mainEl.value.scrollTop)
-    recordPageHistory(next)
+    if (prev) recordPageHistory(prev, next)
     void restorePageScroll(next)
   },
 )
 
+let lastWidth = width.value
+
 function onResize() {
-  if (props.width == null) width.value = window.innerWidth
-  // Window size changes invalidate saved offsets; start the current page at the top (R25).
+  const nextWidth = props.width ?? window.innerWidth
+  if (props.width == null) width.value = nextWidth
+  // Only width changes invalidate saved offsets. Android soft-keyboard resizes
+  // change height alone and must keep the current scroll position (R25).
+  if (nextWidth === lastWidth) return
+  lastWidth = nextWidth
   scrollPositions.clear()
   if (mainEl.value) mainEl.value.scrollTop = 0
 }
 
 // ── Android back bridge (R30) ──
-// Tauri Android forwards hardware back to the WebView history. We keep one guarded
-// history entry while any dialog/palette/menu is open: a back press pops that entry
-// and closes the topmost layer (Escape reaches the focus trap or the keyboard menu).
-// Page switches push their own entries so the next back returns to the previous page.
-// With no Billow entry left, popstate is ignored and the platform handles the exit.
+// Tauri Android forwards hardware back to the WebView history. The app keeps one
+// sentinel entry above the current URL while it has something back should do (an
+// open layer or an earlier page). Each pop consumes the sentinel and the popstate
+// handler decides from the shared layer stack and an explicit page stack:
+//   - layer open: dismiss the topmost layer and re-arm the sentinel, no navigation;
+//   - otherwise: move to the previous app page, re-arming the sentinel while more
+//     pages remain;
+//   - neither: leave the sentinel consumed so the platform handles the next back.
+// `popstate.state` is deliberately ignored: it describes the entry we landed on,
+// not the guard we popped.
 interface BillowHistoryState {
-  billow?: 'page' | 'overlay'
-  page?: PageId
+  billow: 'base' | 'guard'
 }
 
 let historyReady = false
 let ignorePageHistory = false
-let overlayHistory = false
-let suppressPop = 0
-let layerObserver: MutationObserver | null = null
+let guardActive = false
+let releaseLayerWatch: (() => void) | null = null
+const pageStack: PageId[] = []
 
 function pushHistory(state: BillowHistoryState) {
   try {
@@ -250,101 +266,69 @@ function replaceHistory(state: BillowHistoryState) {
   }
 }
 
-function recordPageHistory(page: PageId) {
+/** Keep exactly one sentinel above the current URL while the app can go back. */
+function ensureGuard() {
+  if (!historyReady || guardActive) return
+  guardActive = true
+  pushHistory({ billow: 'guard' })
+}
+
+function recordPageHistory(prev: PageId, next: PageId) {
   if (!historyReady || ignorePageHistory) {
     ignorePageHistory = false
     return
   }
-  // Navigating from the palette closes its overlay in the same tick; turn the guard
-  // entry into the page entry instead of stacking a page above a stale guard.
-  if (overlayHistory) {
-    overlayHistory = false
-    replaceHistory({ billow: 'page', page })
+  if (prev !== next) pageStack.push(prev)
+  ensureGuard()
+}
+
+/** Layer depth is the single source of truth; never infer it from popstate state. */
+function handleLayerDepth(depth: number) {
+  if (depth > 0) ensureGuard()
+}
+
+function onPopState() {
+  if (!historyReady) return
+  // The sentinel (or, when exhausted, the base entry) was popped.
+  guardActive = false
+  if (layerDepth() > 0) {
+    // Re-arm before closing when more app history exists (or another layer sits
+    // underneath), so a second back is routed by the app rather than a page entry.
+    if (pageStack.length > 0 || layerDepth() > 1) ensureGuard()
+    dismissTopLayer()
     return
   }
-  pushHistory({ billow: 'page', page })
-}
-
-function layerCount(): number {
-  return document.querySelectorAll('.overlay, [role="menu"]').length
-}
-
-function syncOverlayHistory() {
-  const count = layerCount()
-  if (count > 0 && !overlayHistory) {
-    overlayHistory = true
-    pushHistory({ billow: 'overlay' })
-  } else if (count === 0 && overlayHistory) {
-    overlayHistory = false
-    // The guard is only removable while it is the current entry. If a page push
-    // already happened above it, leave it for the popstate handler to ignore.
-    if (window.history?.state?.billow === 'overlay') {
-      suppressPop += 1
-      window.history.back()
-    }
-  }
-}
-
-function closeTopLayer() {
-  const active = document.activeElement
-  const target = active instanceof HTMLElement && active !== document.body ? active : document
-  target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
-}
-
-async function closeLayerFromBack() {
-  closeTopLayer()
-  await nextTick()
-  if (layerCount() > 0 && !overlayHistory && !hasOpenOverlay()) {
-    // Inline menus that predate the shared Menu only close on an outside click.
-    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await nextTick()
-  }
-  // Dialogs may keep themselves open (e.g. an unsaved-editor guard); restore the
-  // guard entry so the next back press is still handled by the layer.
-  if (layerCount() > 0 && !overlayHistory) {
-    overlayHistory = true
-    pushHistory({ billow: 'overlay' })
-  }
-}
-
-function onPopState(event: PopStateEvent) {
-  if (suppressPop > 0) {
-    suppressPop -= 1
-    return
-  }
-  const state = event.state as BillowHistoryState | null
-  if (layerCount() > 0) {
-    if (state?.billow === 'overlay') overlayHistory = false
-    void closeLayerFromBack()
-    return
-  }
-  if (state?.billow === 'page' && state.page && state.page !== store.page.value) {
+  const previous = pageStack.pop()
+  if (previous != null) {
     ignorePageHistory = true
-    store.go(state.page)
+    store.go(previous)
+    if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
+    return
   }
-  // `state === null` means no Billow entry is left; let the system handle the back.
+  // Nothing app-owned is left; let the system handle the next back.
 }
 
 function initHistory() {
   if (typeof window === 'undefined' || !window.history) return
-  replaceHistory({ billow: 'page', page: store.page.value })
+  replaceHistory({ billow: 'base' })
   historyReady = true
+  // Do not arm a sentinel at the root: with no pages or layers, back belongs to
+  // the platform. Navigation and layer opens arm it through ensureGuard().
+  if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
 }
 
 onMounted(async () => {
   window.addEventListener('resize', onResize)
   window.addEventListener('popstate', onPopState)
-  if (typeof MutationObserver !== 'undefined') {
-    layerObserver = new MutationObserver(syncOverlayHistory)
-    layerObserver.observe(document.body, { childList: true, subtree: true })
-  }
+  releaseLayerWatch = onLayerChange(handleLayerDepth)
   await store.start()
   initHistory()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
   window.removeEventListener('popstate', onPopState)
-  layerObserver?.disconnect()
+  releaseLayerWatch?.()
+  releaseLayerWatch = null
   store.stop()
 })
 
