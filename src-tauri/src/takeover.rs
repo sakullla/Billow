@@ -1046,7 +1046,7 @@ pub fn report_vpn_fd(fd: i32) {
 
 /// Kotlin `BillowVpnBridge.nativeConsent` reports the system dialog here.
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeConsent(
     _env: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,
@@ -1157,7 +1157,7 @@ fn java_string(
 
 /// Kotlin reports the TUN fd after `VpnService.Builder.establish`.
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeTunFd(
     _env: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,

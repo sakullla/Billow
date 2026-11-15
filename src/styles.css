@@ -379,6 +379,10 @@ hr {
   height: 100%;
   border-radius: inherit;
 }
+.update-dot {
+  margin-left: 4px;
+  color: var(--accent);
+}
 
 .brand-name {
   font-size: var(--text-lg);
@@ -877,11 +881,15 @@ select.input {
   flex: 1;
 }
 .input-pair {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 80px;
   gap: 6px;
+  width: 346px;
+  max-width: 100%;
+  min-width: 0;
 }
 .input-pair .input:first-child {
-  width: 260px;
+  width: 100%;
 }
 .field-error {
   color: var(--poor-ink);

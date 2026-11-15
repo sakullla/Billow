@@ -425,8 +425,7 @@ defineExpose({ store })
         @click="store.go(item.id)"
       >
         <Icon :name="item.icon" :size="21" />
-        <span>{{ item.label }}</span>
-        <span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="small">· 更新</span>
+        <span>{{ item.label }}<span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="update-dot" aria-label="有可用更新">•</span></span>
       </button>
     </nav>
 

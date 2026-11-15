@@ -28,6 +28,8 @@ def main():
     existing = json.loads(run(["gh", "secret", "list", "-R", REPO, "--json", "name"]))
     if any(item["name"] == "TAURI_SIGNING_PRIVATE_KEY" for item in existing) and not (KEYS / "updater.key").exists():
         raise SystemExit("Remote updater key already exists. Restore its local backup; do not rotate it.")
+    if any(item["name"] == "ANDROID_KEY_BASE64" for item in existing) and not (KEYS / "android.p12").exists():
+        raise SystemExit("Remote Android key already exists. Restore its local backup; do not rotate it.")
     KEYS.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         user = run(["whoami"]).decode().strip()
@@ -36,6 +38,8 @@ def main():
         KEYS.chmod(0o700)
     passwords = KEYS / "passwords.json"
     if not passwords.exists():
+        if (KEYS / "updater.key").exists() or (KEYS / "android.p12").exists():
+            raise SystemExit("Signing keys exist but their passwords are missing. Restore the password backup.")
         passwords.write_text(json.dumps({"updater": secrets.token_urlsafe(32), "android": secrets.token_urlsafe(32)}))
         if os.name != "nt":
             passwords.chmod(0o600)
