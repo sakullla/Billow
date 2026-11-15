@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "updater-android",
+  "description": "Checks Billow releases and opens their Android installer",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": [
+    "allow-check-android-app-update",
+    { "identifier": "opener:allow-open-url", "allow": [{ "url": "https://github.com/sakullla/Billow/releases/download/*" }] }
+  ]
+}

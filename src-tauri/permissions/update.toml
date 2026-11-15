@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-prepare-app-update"
+description = "Disconnects the proxy before installing or restarting an app update."
+commands.allow = ["prepare_app_update"]
+
+[[permission]]
+identifier = "allow-check-android-app-update"
+description = "Reads stable Billow releases for Android update checks."
+commands.allow = ["check_android_app_update"]

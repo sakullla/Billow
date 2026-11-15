@@ -1,0 +1,217 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish after verification (false keeps a draft)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: billow-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  prepare:
+    needs: validate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.release.outputs.id }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@v9
+        id: release
+        with:
+          script: |
+            const fs = require('node:fs');
+            const cp = require('node:child_process');
+            const version = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json')).version;
+            const tag = `v${version}`;
+            if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Only stable SemVer releases are supported');
+            if (context.eventName === 'push' && context.ref !== `refs/tags/${tag}`) throw new Error('Tag and app version differ');
+            if (JSON.parse(fs.readFileSync('package.json')).version !== version) throw new Error('package.json version differs');
+            if (!fs.readFileSync('src-tauri/Cargo.toml', 'utf8').includes(`version = "${version}"`)) throw new Error('Cargo version differs');
+            const sha = cp.execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+            const all = await github.paginate(github.rest.repos.listReleases, {...context.repo, per_page: 100});
+            let release = all.find((item) => item.tag_name === tag);
+            if (release && (!release.draft || release.target_commitish !== sha)) throw new Error('Release already published or draft belongs to another commit');
+            if (!release) {
+              const notes = await github.rest.repos.generateReleaseNotes({...context.repo, tag_name: tag, target_commitish: sha});
+              release = (await github.rest.repos.createRelease({
+                ...context.repo, tag_name: tag, target_commitish: sha, name: `Billow ${tag}`,
+                draft: true, prerelease: false,
+                body: `${notes.data.body}\n\nWindows x64: NSIS · macOS Apple Silicon: DMG · Linux x64: deb/AppImage · Android ARM64: APK。\n\nmacOS 使用 ad-hoc 签名，未经过 Apple 公证。`,
+              })).data;
+            }
+            for (const [key, value] of Object.entries({id: release.id, tag, version, sha})) core.setOutput(key, value);
+
+  build:
+    needs: prepare
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            target: x86_64-pc-windows-msvc
+            mobile: ''
+            args: --target x86_64-pc-windows-msvc --bundles nsis -- --locked
+          - os: macos-latest
+            platform: macos
+            target: aarch64-apple-darwin
+            mobile: ''
+            args: --target aarch64-apple-darwin --bundles app,dmg -- --locked
+          - os: ubuntu-22.04
+            platform: linux
+            target: x86_64-unknown-linux-gnu
+            mobile: ''
+            args: --target x86_64-unknown-linux-gnu --bundles deb,appimage -- --locked
+          - os: ubuntu-22.04
+            platform: android
+            target: aarch64-linux-android
+            mobile: android
+            args: --target aarch64 --apk --split-per-abi
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - if: matrix.platform == 'linux'
+        run: bash .github/scripts/install-linux-deps.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-${{ matrix.target }}
+      - run: npm ci
+      - uses: actions/setup-java@v5
+        if: matrix.platform == 'android'
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        if: matrix.platform == 'android'
+      - name: Configure Android SDK and signing
+        if: matrix.platform == 'android'
+        shell: bash
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEY_BASE64" && test -n "$ANDROID_KEY_ALIAS" && test -n "$ANDROID_KEY_PASSWORD"
+          sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;28.2.13676358"
+          ndk="$ANDROID_HOME/ndk/28.2.13676358"
+          echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/billow.p12"
+          {
+            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'password=%s\n' "$ANDROID_KEY_PASSWORD"
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/billow.p12"
+          } > src-tauri/gen/android/keystore.properties
+      - name: Build signed release artifacts
+        if: matrix.platform != 'android'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.prepare.outputs.id }}
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseDraft: true
+          uploadUpdaterJson: false
+          mobile: ${{ matrix.mobile }}
+          args: ${{ matrix.args }}
+          retryAttempts: 1
+      - name: Build Android APK
+        if: matrix.platform == 'android'
+        run: npm run tauri -- android build --target aarch64 --apk --split-per-abi
+      - name: Verify and upload Android installer
+        if: matrix.platform == 'android'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' ! -name '*-unsigned.apk')
+          test "${#apks[@]}" -eq 1
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose "${apks[0]}"
+          abis=$(unzip -Z1 "${apks[0]}" | sed -nE 's#^lib/([^/]+)/.*\.so$#\1#p' | sort -u)
+          test "$abis" = 'arm64-v8a'
+          cp "${apks[0]}" "$RUNNER_TEMP/Billow_${RELEASE_VERSION}_arm64.apk"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/Billow_${RELEASE_VERSION}_arm64.apk" --clobber
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/github-script@v9
+        env:
+          RELEASE_ID: ${{ needs.prepare.outputs.id }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+        with:
+          script: |
+            const {pathToFileURL} = require('node:url');
+            const {createManifest} = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/.github/scripts/release-manifest.mjs`));
+            const release_id = Number(process.env.RELEASE_ID);
+            const {data: release} = await github.rest.repos.getRelease({...context.repo, release_id});
+            if (release.target_commitish !== process.env.RELEASE_SHA) throw new Error('Draft commit changed');
+            const signatures = {};
+            for (const asset of release.assets.filter((item) => item.name.endsWith('.sig'))) {
+              const {data} = await github.rest.repos.getReleaseAsset({
+                ...context.repo, asset_id: asset.id, headers: {accept: 'application/octet-stream'},
+              });
+              signatures[asset.name] = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
+            }
+            const manifest = createManifest(release, signatures, `${context.repo.owner}/${context.repo.repo}`, process.env.RELEASE_VERSION);
+            const old = release.assets.find((asset) => asset.name === 'latest.json');
+            if (old) await github.rest.repos.deleteReleaseAsset({...context.repo, asset_id: old.id});
+            const data = Buffer.from(JSON.stringify(manifest, null, 2));
+            await github.rest.repos.uploadReleaseAsset({...context.repo, release_id, name: 'latest.json', data,
+              headers: {'content-type': 'application/json', 'content-length': data.length}});
+            if (process.env.PUBLISH === 'true') {
+              await github.rest.repos.updateRelease({...context.repo, release_id, draft: false, make_latest: 'true'});
+            }
+            core.info(`Verified release: ${release.html_url}; published=${process.env.PUBLISH}`);

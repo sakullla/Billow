@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -151,43 +151,40 @@ pub fn config_rules(value: &serde_yaml::Value) -> Vec<ConfigRule> {
     rules
 }
 
-fn config_matches_kernel(config: &ConfigRule, kernel: &RuleView) -> bool {
-    rule_base(&config.kind, &config.payload, &config.proxy)
-        == rule_base(&kernel.kind, &kernel.payload, &kernel.proxy)
-}
-
 /// Builds UI rows from the full config list and the kernel's (possibly filtered)
-/// rows. Matching walks both lists in order so duplicate rules keep the
-/// occurrence that belongs to their config position.
+/// rows. Index each kernel identity once, keeping occurrence order for duplicates.
+/// This avoids rescanning and normalizing whole lists for every rule.
 pub fn rule_rows(
     config: &[ConfigRule],
     kernel: &[RuleView],
     disabled: &BTreeSet<String>,
 ) -> Vec<RuleRowView> {
-    let mut matched: Vec<Option<usize>> = vec![None; kernel.len()];
-    let mut used = vec![false; config.len()];
+    let mut available: HashMap<String, VecDeque<usize>> = HashMap::new();
     for (kernel_index, row) in kernel.iter().enumerate() {
-        // Disabled entries are normally absent from the kernel response, so skip
-        // them first and only fall back to them for a stale, unfiltered response.
-        let mut found = config.iter().enumerate().position(|(index, rule)| {
-            !used[index] && !disabled.contains(&rule.key) && config_matches_kernel(rule, row)
-        });
-        if found.is_none() {
-            found = config.iter().enumerate().position(|(index, rule)| {
-                !used[index] && config_matches_kernel(rule, row)
-            });
-        }
-        if let Some(config_index) = found {
-            matched[kernel_index] = Some(config_index);
-            used[config_index] = true;
+        available.entry(rule_base(&row.kind, &row.payload, &row.proxy))
+            .or_default()
+            .push_back(kernel_index);
+    }
+    let mut matched = vec![false; kernel.len()];
+    let mut config_matches = vec![None; config.len()];
+    // Prefer enabled duplicates; disabled occurrences only consume leftover rows
+    // from a stale, unfiltered kernel response.
+    for disabled_pass in [false, true] {
+        for (config_index, rule) in config.iter().enumerate() {
+            if disabled.contains(&rule.key) != disabled_pass {
+                continue;
+            }
+            let base = rule_base(&rule.kind, &rule.payload, &rule.proxy);
+            if let Some(kernel_index) = available.get_mut(&base).and_then(VecDeque::pop_front) {
+                config_matches[config_index] = Some(kernel_index);
+                matched[kernel_index] = true;
+            }
         }
     }
+    drop(available);
     let mut rows = Vec::with_capacity(config.len().max(kernel.len()));
     for (config_index, rule) in config.iter().enumerate() {
-        let kernel_row = matched
-            .iter()
-            .position(|item| *item == Some(config_index))
-            .map(|kernel_index| &kernel[kernel_index]);
+        let kernel_row = config_matches[config_index].map(|kernel_index| &kernel[kernel_index]);
         let disabled = disabled.contains(&rule.key);
         if kernel_row.is_none() && !disabled {
             // Keep the kernel's real rows; only add back rules it omitted because
@@ -221,7 +218,7 @@ pub fn rule_rows(
         });
     }
     for (kernel_index, row) in kernel.iter().enumerate() {
-        if matched[kernel_index].is_some() {
+        if matched[kernel_index] {
             continue;
         }
         rows.push(RuleRowView {
@@ -491,7 +488,7 @@ pub fn read_connections(text: &str) -> ConnectionsReading {
         };
     };
     let total = list.len();
-    let mut rows = Vec::new();
+    let mut rows = Vec::with_capacity(total.min(500));
     for item in list {
         let metadata = item.get("metadata");
         let host = text_field(metadata, "host")
@@ -545,8 +542,10 @@ pub fn read_connections(text: &str) -> ConnectionsReading {
         row.download = json_u64(item.get("download")).unwrap_or(0);
         row.start = clean_token(item.get("start").and_then(serde_json::Value::as_str).unwrap_or(""), 60);
         rows.push(row);
+        if rows.len() == 500 {
+            break;
+        }
     }
-    rows.truncate(500);
     ConnectionsReading {
         rows,
         totals,
@@ -1221,6 +1220,27 @@ mod tests {
     }
 
     #[test]
+    fn connection_limit_keeps_first_valid_rows_and_full_totals() {
+        let mut connections = vec![serde_json::json!({"metadata": {}}); 10];
+        connections.extend((0..2000).map(|i| serde_json::json!({
+            "id": format!("connection-{i}"),
+            "metadata": {"host": format!("{i}.example.com")},
+            "chains": ["PROXY"]
+        })));
+        let body = serde_json::json!({
+            "connections": connections,
+            "uploadTotal": 1234,
+            "downloadTotal": 5678
+        }).to_string();
+        let reading = read_connections(&body);
+        assert_eq!(reading.total, 2010);
+        assert_eq!(reading.rows.len(), 500);
+        assert_eq!(reading.rows[0].id, "connection-0");
+        assert_eq!(reading.rows[499].id, "connection-499");
+        assert_eq!(reading.totals, Some(TrafficTotals { upload: 1234, download: 5678 }));
+    }
+
+    #[test]
     fn a_missing_controller_is_a_read_error_not_an_empty_list() {
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = closed.local_addr().unwrap().port();
@@ -1420,6 +1440,63 @@ rules:
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[2].key, None);
         assert!(!rows[2].disabled);
+    }
+
+    #[test]
+    fn rule_rows_match_enabled_duplicates_before_stale_disabled_rows() {
+        let value = serde_yaml::from_str("rules:\n  - DOMAIN,x.com,A\n  - DOMAIN,x.com,A\n  - DOMAIN,x.com,A\n  - MATCH,DIRECT\n").unwrap();
+        let config = config_rules(&value);
+        let disabled = BTreeSet::from([config[0].key.clone(), config[2].key.clone()]);
+        let mut kernel: Vec<_> = (1..=4).map(|hit| RuleView {
+            kind: "Domain".to_string(),
+            payload: "x.com".to_string(),
+            proxy: "A".to_string(),
+            hit_count: Some(hit),
+            ..Default::default()
+        }).collect();
+        kernel.insert(1, RuleView {
+            kind: "Match".to_string(),
+            proxy: "DIRECT".to_string(),
+            hit_count: Some(10),
+            ..Default::default()
+        });
+        let rows = rule_rows(&config, &kernel, &disabled);
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.iter().map(|row| row.hit_count).collect::<Vec<_>>(),
+            vec![Some(2), Some(1), Some(3), Some(10), Some(4)]);
+        assert!(rows[0].disabled && rows[2].disabled);
+        assert!(!rows[1].disabled);
+        for (row, rule) in rows.iter().zip(&config) {
+            assert_eq!(row.key.as_ref(), Some(&rule.key));
+        }
+        assert_eq!(rows[4].key, None);
+    }
+
+    #[test]
+    #[ignore = "manual rule matching benchmark; run with --ignored --nocapture"]
+    fn rule_rows_large_catalog_benchmark() {
+        let config: Vec<_> = (0..3000)
+            .map(|i| ConfigRule {
+                key: rule_key("DOMAIN-SUFFIX", &format!("{i}.example.com"), "PROXY", 0),
+                kind: "DOMAIN-SUFFIX".to_string(),
+                payload: format!("{i}.example.com"),
+                proxy: "PROXY".to_string(),
+            })
+            .collect();
+        let kernel: Vec<_> = config.iter().rev().map(|rule| RuleView {
+            kind: "DomainSuffix".to_string(),
+            payload: rule.payload.clone(),
+            proxy: rule.proxy.clone(),
+            ..Default::default()
+        }).collect();
+        let started = std::time::Instant::now();
+        let rows = rule_rows(&config, &kernel, &BTreeSet::new());
+        eprintln!("rule_rows: 3000 reversed rules in {:?}", started.elapsed());
+        assert_eq!(rows.len(), config.len());
+        for (row, rule) in rows.iter().zip(&config) {
+            assert_eq!(row.key.as_ref(), Some(&rule.key));
+            assert_eq!(row.payload, rule.payload);
+        }
     }
 
     #[test]

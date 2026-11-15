@@ -96,6 +96,7 @@ function pause() {
 function resume() {
   paused.value = false
   pausedAt.value = null
+  frozen.value = []
   if (follow.value) void toBottom(true)
 }
 

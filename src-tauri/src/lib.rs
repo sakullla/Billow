@@ -1,3 +1,4 @@
+mod app_update;
 mod diagnostics;
 mod kernel;
 mod nodes;
@@ -475,6 +476,19 @@ fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
         } = session;
         book.disconnect(runtime, proxy, tun, vpn)
     })
+}
+
+#[tauri::command]
+async fn prepare_app_update(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let next = disconnect_session(app.clone());
+        let _ = app.emit("profile-changed", &next);
+        refresh_tray(&app, &next);
+        if next.system_proxy || next.tun || next.vpn || next.connected {
+            return Err("代理连接未能安全关闭，请手动断开后重试更新".to_string());
+        }
+        Ok(())
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1060,14 +1074,21 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_deep_link::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_opener::init());
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_autostart::init(
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         Some(vec!["--autostart"]),
     ));
     builder
         .invoke_handler(tauri::generate_handler![
+            app_update::check_android_app_update,
+            prepare_app_update,
             shell_state,
             set_theme,
             set_last_entry,

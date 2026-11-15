@@ -1,5 +1,6 @@
 import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey } from 'vue'
 import type { Backend, NodeTestEvent } from './backend'
+import { createAppUpdater, nativeUpdateDriver } from './appUpdate'
 import {
   emptySnapshot,
   type AppInfo,
@@ -73,7 +74,8 @@ export function applyTheme(preference: ThemePreference) {
 }
 
 export function createStore(backend: Backend) {
-  const snapshot = ref<Snapshot>(emptySnapshot())
+  // Backend snapshots are replaced as a whole; large lists need no deep proxies.
+  const snapshot = shallowRef<Snapshot>(emptySnapshot())
   const kernel = ref<KernelStatus>({ channel: 'stable', failure: null, ready: false, version: null })
   const app = ref<AppInfo | null>(null)
   const theme = ref<ThemePreference>('system')
@@ -104,6 +106,9 @@ export function createStore(backend: Backend) {
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let polling = false
   let stopped = false
+  let generation = 0
+  let starting: Promise<void> | null = null
+  const toastTimers = new Map<number, ReturnType<typeof setTimeout>>()
   let queue: Promise<unknown> = Promise.resolve()
   let unlisten: (() => void) | null = null
   let unlistenNodeTest: (() => void) | null = null
@@ -113,13 +118,20 @@ export function createStore(backend: Backend) {
   const hasProfiles = computed(() => snapshot.value.profiles.length > 0)
   const isAndroid = computed(() => snapshot.value.platform === 'android')
   const connecting = computed(() => Boolean(busy.connect))
+  const appUpdate = createAppUpdater(nativeUpdateDriver(() => isAndroid.value))
 
   function toast(text: string, tone: Toast['tone'] = 'info') {
+    if (stopped) return
     const id = ++toastId
+    for (const item of toasts.value.slice(0, -3)) {
+      clearTimeout(toastTimers.get(item.id))
+      toastTimers.delete(item.id)
+    }
     toasts.value = [...toasts.value.slice(-3), { id, tone, text }]
-    setTimeout(() => {
+    toastTimers.set(id, setTimeout(() => {
+      toastTimers.delete(id)
       toasts.value = toasts.value.filter((item) => item.id !== id)
-    }, tone === 'error' ? 5200 : 2800)
+    }, tone === 'error' ? 5200 : 2800))
   }
 
   /**
@@ -184,11 +196,8 @@ export function createStore(backend: Backend) {
   /** `node-test` progress: every finished node is kept so rows paint 超时/延迟 before the next snapshot. */
   function recordNodeTest(event: NodeTestEvent) {
     if (event.node) {
-      testResults.value = {
-        ...testResults.value,
-        [event.node]: { delay: event.delay, failed: event.failed },
-      }
-      testTimes.value = { ...testTimes.value, [event.node]: Date.now() }
+      testResults.value[event.node] = { delay: event.delay, failed: event.failed }
+      testTimes.value[event.node] = Date.now()
     }
     testProgress.value = { tested: event.tested, total: event.total }
   }
@@ -203,11 +212,9 @@ export function createStore(backend: Backend) {
   function stampTestTimes(names: string[]) {
     if (!names.length) return
     const at = Date.now()
-    const next = { ...testTimes.value }
     names.forEach((name) => {
-      next[name] = at
+      testTimes.value[name] = at
     })
-    testTimes.value = next
   }
 
   /** A home-level attempt the failure banner can retry; `done` reads the outcome from the new snapshot. */
@@ -333,13 +340,35 @@ export function createStore(backend: Backend) {
     },
   )
 
-  async function poll() {
-    if (stopped) return
-    const visible = typeof document === 'undefined' || document.visibilityState !== 'hidden'
-    if (visible && !polling && Object.keys(busy).length === 0) {
+  const isCurrent = (session: number) => !stopped && session === generation
+  const isVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+
+  function cancelPoll() {
+    if (pollTimer !== null) clearTimeout(pollTimer)
+    pollTimer = null
+  }
+
+  function schedulePoll(session: number, delay: number) {
+    if (!isCurrent(session) || !isVisible()) return
+    cancelPoll()
+    pollTimer = setTimeout(() => {
+      pollTimer = null
+      void poll(session)
+    }, delay)
+  }
+
+  function onVisibilityChange() {
+    cancelPoll()
+    if (isVisible()) void poll(generation)
+  }
+
+  async function poll(session: number) {
+    if (!isCurrent(session) || !isVisible()) return
+    if (!polling && Object.keys(busy).length === 0) {
       polling = true
       try {
         const next = await backend.state()
+        if (!isCurrent(session)) return
         if (Object.keys(busy).length === 0) apply(next)
         pushTraffic(next)
       } catch (error) {
@@ -347,50 +376,91 @@ export function createStore(backend: Backend) {
       } finally {
         polling = false
       }
-    } else if (visible) {
+    } else {
       pushTraffic(snapshot.value)
     }
     const fast = snapshot.value.kernel_running || snapshot.value.connected
-    pollTimer = setTimeout(poll, fast ? 1000 : 3000)
+    schedulePoll(session, fast ? 1000 : 3000)
   }
 
-  async function start() {
-    stopped = false
+  async function initialize(session: number) {
     try {
       const shell = await backend.shell()
+      if (!isCurrent(session)) return
       theme.value = shell.theme
       page.value = resolvePage(shell.last_entry)
     } catch (error) {
       console.error(error)
     }
+    if (!isCurrent(session)) return
     applyTheme(theme.value)
     try {
-      apply(await backend.state())
+      const next = await backend.state()
+      if (!isCurrent(session)) return
+      apply(next)
     } catch (error) {
       console.error(error)
     }
+    if (!isCurrent(session)) return
     loaded.value = true
-    void backend.kernel().then((value) => (kernel.value = value)).catch(console.error)
-    void backend.appInfo().then((value) => (app.value = value)).catch(console.error)
+    if (backend.live) void appUpdate.check(true)
+    void backend.kernel().then((value) => {
+      if (isCurrent(session)) kernel.value = value
+    }).catch(console.error)
+    void backend.appInfo().then((value) => {
+      if (isCurrent(session)) app.value = value
+    }).catch(console.error)
     try {
-      unlisten = await backend.onChange((next) => apply(next))
+      const release = await backend.onChange((next) => {
+        if (isCurrent(session)) apply(next)
+      })
+      if (!isCurrent(session)) {
+        release()
+        return
+      }
+      unlisten = release
     } catch (error) {
       console.error(error)
     }
+    if (!isCurrent(session)) return
     try {
-      unlistenNodeTest = await backend.onNodeTest(recordNodeTest)
+      const release = await backend.onNodeTest((event) => {
+        if (isCurrent(session)) recordNodeTest(event)
+      })
+      if (!isCurrent(session)) {
+        release()
+        return
+      }
+      unlistenNodeTest = release
     } catch (error) {
       console.error(error)
     }
-    pollTimer = setTimeout(poll, 1000)
+    if (!isCurrent(session)) return
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    schedulePoll(session, 1000)
+  }
+
+  function start() {
+    if (starting) return starting
+    stopped = false
+    starting = initialize(++generation)
+    return starting
   }
 
   function stop() {
+    appUpdate.stop()
     stopped = true
-    if (pollTimer) clearTimeout(pollTimer)
+    generation += 1
+    starting = null
+    cancelPoll()
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     unlisten?.()
+    unlisten = null
     unlistenNodeTest?.()
     unlistenNodeTest = null
+    toastTimers.forEach((timer) => clearTimeout(timer))
+    toastTimers.clear()
+    toasts.value = []
   }
 
   function openSettings(tab: SettingsTab) {
@@ -464,6 +534,7 @@ export function createStore(backend: Backend) {
 
   return {
     backend,
+    appUpdate,
     snapshot,
     kernel,
     app,

@@ -3,11 +3,13 @@ import { computed, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
+import AppUpdateCard from '../components/AppUpdateCard.vue'
 import { useStore } from '../lib/store'
 import { defaultDns, defaultTun, type DnsSettings, type KernelChannel, type KernelSettings, type ThemePreference, type TunSettings } from '../lib/types'
 import type { SettingsTab } from '../lib/store'
 
 const props = defineProps<{ compact?: boolean }>()
+const appIcon = `${import.meta.env.BASE_URL}icon.png`
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const app = computed(() => store.app.value)
@@ -260,10 +262,12 @@ function resetDns() {
         </div>
       </section>
 
+      <AppUpdateCard />
+
       <section class="card">
         <header class="card-head"><h2>关于</h2></header>
         <div class="about">
-          <span class="brand-mark lg"><Icon name="logo" :size="36" :stroke="2.4" /></span>
+          <span class="brand-mark lg"><img :src="appIcon" alt="" /></span>
           <div class="grow min0">
             <strong>Billow</strong>
             <p class="muted small">基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0</p>

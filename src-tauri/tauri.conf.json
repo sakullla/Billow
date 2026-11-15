@@ -29,11 +29,27 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["billow"]
+        "schemes": [
+          "billow"
+        ]
       },
       "mobile": [
-        { "scheme": ["billow"], "host": "install-config" }
+        {
+          "scheme": [
+            "billow"
+          ],
+          "host": "install-config"
+        }
       ]
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzMzRGNTU3RDBCOUM4QUQKUldTdHlMblFWL1UwbzhEcFZmTDR4NlJ5ejlpcGhnR3pnM2RzeVNxdmM4UnZ5aDVIM1hZZ1pnZXQK",
+      "endpoints": [
+        "https://github.com/sakullla/Billow/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {
@@ -52,10 +68,12 @@
     "shortDescription": "Billow",
     "longDescription": "Billow。以 GPL-3 许可发布。",
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     },
     "android": {
       "debugApplicationIdSuffix": ".debug"
-    }
+    },
+    "createUpdaterArtifacts": true
   }
 }

@@ -13,10 +13,14 @@
     "build:macos": "tauri build",
     "build:windows": "tauri build --target x86_64-pc-windows-msvc",
     "build:linux": "tauri build --target x86_64-unknown-linux-gnu",
-    "build:android": "tauri android build"
+    "build:android": "tauri android build",
+    "icons": "tauri icon assets/icon.png && python tool/sync_icons.py"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-opener": "^2.7.3",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "vue": "^3.5.45"
   },
   "devDependencies": {

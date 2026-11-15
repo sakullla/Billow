@@ -1,0 +1,10 @@
+Model: gpt-image-2.6
+
+Use case: logo-brand
+Asset type: production app icon for Billow, a desktop and Android network client.
+Primary request: create one original flowing blue billow emblem, a compact rising ocean swell made of three broad gently curved ribbons, unified into one memorable rounded silhouette. Suggest effortless movement and a clear open passage through the center.
+Style: polished minimal 2D icon art, crisp contours, subtly tapered ends, generous negative space, just one restrained pale blue highlight. Flat readable shapes, no hairline detail.
+Composition: centered emblem occupying 66 percent of a square canvas, straight-on. Flat warm-white background #f7f9fc extending to every edge, no rounded outer frame or border; the operating system supplies the mask.
+Palette: Billow cobalt blue #1d6fdb, light azure #8bbcff, a small deep blue accent. No rainbow colors.
+Constraints: one symbol only; recognizable at 16 pixels; no text, letters, watermark, shield, lock, globe, generic infinity loop, character, mockup, photographic texture, drop shadow or 3D extrusion.
+Output: one square 1024x1024 PNG icon.

@@ -19,6 +19,7 @@ import RulesView from './views/RulesView.vue'
 import SettingsView from './views/SettingsView.vue'
 
 const props = defineProps<{ backend?: Backend; width?: number }>()
+const appIcon = `${import.meta.env.BASE_URL}icon.png`
 
 const store = createStore(props.backend ?? createBackend())
 provide(STORE, store)
@@ -343,7 +344,7 @@ defineExpose({ store })
   <div class="shell" :class="{ compact }">
     <aside v-if="!compact" class="sidebar">
       <div class="brand">
-        <span class="brand-mark"><Icon name="logo" :size="24" :stroke="2.4" /></span>
+        <span class="brand-mark"><img :src="appIcon" alt="" /></span>
         <span class="brand-name">Billow</span>
       </div>
       <nav class="nav" aria-label="主导航">
@@ -376,6 +377,7 @@ defineExpose({ store })
         >
           <Icon :name="settingsPage.icon" />
           <span>{{ settingsPage.label }}</span>
+          <span v-if="store.appUpdate.offer.value" class="tag">更新</span>
         </button>
         <div class="side-status" :class="{ on: snap.connected && !store.connecting.value, pending: store.connecting.value }" data-testid="side-status">
           <div class="side-status-body">
@@ -424,6 +426,7 @@ defineExpose({ store })
       >
         <Icon :name="item.icon" :size="21" />
         <span>{{ item.label }}</span>
+        <span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="small">· 更新</span>
       </button>
     </nav>
 
