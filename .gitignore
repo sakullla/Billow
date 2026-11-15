@@ -10,3 +10,4 @@ src-tauri/gen/schemas
 **/keystore.properties
 __pycache__/
 src-tauri/icons/ios/
+/docs/sakullla-workflow
