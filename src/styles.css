@@ -4115,3 +4115,255 @@ html[data-keyboard] .compact .tabbar {
 .detail-list .empty-line {
   justify-content: center;
 }
+
+/* ───────────── Settings (phone) ───────────── */
+/* A grouped list like the system settings app: a quiet label above each group,
+   rows with a tinted icon, the current value on the right, and a chevron for
+   rows that drill in. Sub-pages swap the tab bar for a back control. */
+.settings-group-label {
+  margin: var(--space-2) var(--space-1) calc(var(--row-gap) * -1 + var(--space-2));
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-3);
+}
+.settings-list {
+  padding: 0;
+  overflow: hidden;
+}
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 56px;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--dur-fast) var(--ease);
+}
+.nav-row {
+  position: relative;
+}
+/* Inset divider: starts after the icon, the way grouped system lists draw it. */
+.nav-row + .nav-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 60px;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+}
+button.nav-row:active {
+  background: var(--hover);
+}
+.nav-row-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: #fff;
+}
+.nav-row-icon .icon {
+  width: 18px;
+  height: 18px;
+}
+.nav-row-icon.green { background: #22a35a; }
+.nav-row-icon.blue { background: var(--accent); }
+.nav-row-icon.violet { background: #7c5cd6; }
+.nav-row-icon.amber { background: #d98a0b; }
+.nav-row-icon.slate { background: #5b6b80; }
+.nav-row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-base);
+  font-weight: 550;
+  color: var(--text);
+}
+.nav-row-value {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-md);
+  color: var(--text-3);
+}
+.nav-row.static .segmented {
+  flex: none;
+}
+.settings-subhead {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.settings-subhead .back-btn {
+  margin-left: calc(var(--space-2) * -1);
+}
+.settings-subhead h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+/* Sub-page cards read as one form, not a stack of boxes. */
+.settings-phone .card-note {
+  margin-bottom: var(--space-2);
+}
+.settings-phone .setting-row strong {
+  font-size: var(--text-base);
+}
+.settings-phone .save-bar {
+  position: sticky;
+  bottom: calc(var(--space-2));
+  z-index: 3;
+  margin: var(--space-3) calc(var(--card-pad) * -1) calc(var(--card-pad) * -1);
+  padding: var(--space-3) var(--card-pad);
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
+}
+
+/* ───────────── App access control ───────────── */
+.apps-saving {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.apps-mode {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.apps-mode .segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+}
+.apps-mode .segment {
+  justify-content: center;
+  height: 38px;
+}
+.apps-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  flex-wrap: nowrap;
+  margin: 0 calc(var(--page-pad-x) * -1);
+  padding: var(--space-2) var(--page-pad-x);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.apps-toolbar .search {
+  min-width: 0;
+  height: 40px;
+}
+.chip-btn {
+  flex: none;
+  height: 34px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 550;
+}
+.chip-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.app-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+.app-list li + li .app-row {
+  box-shadow: inset 0 1px 0 var(--border);
+}
+.app-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 60px;
+  padding: var(--space-2) var(--space-4);
+  text-align: left;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
+  -webkit-tap-highlight-color: transparent;
+}
+.app-row:active {
+  background: var(--hover);
+}
+.app-icon {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+.app-icon.letter {
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: var(--text-lg);
+  color: hsl(var(--hue) 55% 38%);
+  background: hsl(var(--hue) 70% 92%);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .app-icon.letter {
+    color: hsl(var(--hue) 70% 78%);
+    background: hsl(var(--hue) 35% 22%);
+  }
+}
+:root[data-theme='dark'] .app-icon.letter {
+  color: hsl(var(--hue) 70% 78%);
+  background: hsl(var(--hue) 35% 22%);
+}
+.app-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+.app-text strong {
+  font-size: var(--text-base);
+  font-weight: 550;
+}
+.app-text .tag {
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+.check-box {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 1.5px solid var(--border-strong);
+  color: var(--on-accent);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.app-row[aria-checked='true'] .check-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* The sub-page title already names the section; keep only the card action. */
+.settings-phone [data-testid='dns-settings'] > .card-head h2,
+.settings-phone [data-testid='tun-settings'] > .card-head h2 {
+  display: none;
+}
+.settings-phone [data-testid='dns-settings'] > .card-head,
+.settings-phone [data-testid='tun-settings'] > .card-head {
+  justify-content: flex-end;
+  margin-bottom: 0;
+}

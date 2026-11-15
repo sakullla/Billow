@@ -380,6 +380,10 @@ pub struct ProfileSnapshot {
     pub platform: String,
     pub tun_wanted: bool,
     pub excluded: Vec<String>,
+    /// Apps that use the VPN when `app_mode` is `include`.
+    pub included: Vec<String>,
+    /// `exclude` (listed apps bypass the VPN) or `include` (only listed apps use it).
+    pub app_mode: String,
     pub installed: Vec<crate::takeover::InstalledApp>,
     pub node_groups: Vec<NodeGroupView>,
     pub node_catalog: Vec<NodeGroupView>,
@@ -956,6 +960,11 @@ struct DiskState {
     tun_wanted: bool,
     #[serde(default)]
     excluded_packages: Vec<String>,
+    /// Allowlist for the include app mode.
+    #[serde(default)]
+    included_packages: Vec<String>,
+    #[serde(default)]
+    app_mode: String,
     #[serde(default)]
     proxy_host: Option<String>,
     #[serde(default)]
@@ -1014,6 +1023,8 @@ pub struct ProfileBook {
     platform: ClientPlatform,
     tun_wanted: bool,
     excluded: Vec<String>,
+    included: Vec<String>,
+    app_mode: String,
     installed: Vec<crate::takeover::InstalledApp>,
     connected: bool,
     our_endpoint: Option<ProxyEndpoint>,
@@ -1068,6 +1079,8 @@ impl ProfileBook {
             platform: ClientPlatform::current(),
             tun_wanted: false,
             excluded: Vec::new(),
+            included: Vec::new(),
+            app_mode: takeover::APP_MODE_EXCLUDE.to_string(),
             installed: Vec::new(),
             connected: false,
             our_endpoint: None,
@@ -1142,6 +1155,8 @@ impl ProfileBook {
             platform: self.platform.as_str().to_string(),
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
+            included: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             installed: self.installed.clone(),
             node_groups,
             node_catalog,
@@ -1545,7 +1560,7 @@ impl ProfileBook {
             self.remember_current_failure();
             return self.publish(kernel);
         }
-        let fd = match vpn.establish(&self.excluded) {
+        let fd = match vpn.establish(&self.link_model().app_filter()) {
             Ok(fd) => fd,
             Err(_) => {
                 let _ = vpn.close();
@@ -1578,6 +1593,24 @@ impl ProfileBook {
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
         self.change_exclusion(package_name, false, kernel, vpn)
+    }
+
+    /// Replace one mode's app list and make it current (Android access control).
+    pub fn set_app_rules(
+        &mut self,
+        mode: &str,
+        packages: &[String],
+        kernel: &mut dyn KernelLaunch,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let mut model = self.link_model();
+        let fd = takeover::set_app_rules(&mut model, mode, packages, vpn);
+        if let Some(fd) = fd {
+            return self.finish_android_fd(kernel, vpn, model, fd);
+        }
+        self.apply_model(model);
+        self.persist();
+        self.snapshot()
     }
 
     fn change_exclusion(
@@ -1862,6 +1895,8 @@ impl ProfileBook {
             platform: self.platform,
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
+            included: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             system_proxy: self.takeover.system_proxy,
             tun: self.takeover.tun,
             vpn: self.takeover.vpn,
@@ -1875,6 +1910,8 @@ impl ProfileBook {
         self.platform = model.platform;
         self.tun_wanted = model.tun_wanted;
         self.excluded = model.excluded;
+        self.included = model.included;
+        self.app_mode = model.app_mode;
         self.takeover.system_proxy = model.system_proxy;
         self.takeover.tun = model.tun;
         self.takeover.vpn = model.vpn;
@@ -1964,6 +2001,8 @@ impl ProfileBook {
             .map(|package| package.trim().to_string())
             .filter(|package| !package.is_empty())
             .collect();
+        self.included = takeover::clean_packages(&disk.included_packages);
+        self.app_mode = takeover::normalize_app_mode(&disk.app_mode).to_string();
         self.our_endpoint = match (disk.proxy_host, disk.proxy_port) {
             (Some(host), Some(port)) if !host.is_empty() && port > 0 => {
                 Some(ProxyEndpoint { host, port })
@@ -2018,6 +2057,8 @@ impl ProfileBook {
             home_failure: self.home_failure.clone(),
             tun_wanted: self.tun_wanted,
             excluded_packages: self.excluded.clone(),
+            included_packages: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             proxy_host: self
                 .our_endpoint
                 .as_ref()

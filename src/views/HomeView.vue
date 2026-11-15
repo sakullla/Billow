@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
-import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
 import TrafficChart from '../components/TrafficChart.vue'
@@ -116,17 +115,6 @@ function onPrimary() {
   void store.toggleConnection()
 }
 
-// Android per-app exclusion
-const appsOpen = ref(false)
-const appQuery = ref('')
-const apps = computed(() => {
-  const needle = appQuery.value.trim().toLowerCase()
-  const list = [...snap.value.installed].sort(
-    (a, b) => Number(snap.value.excluded.includes(b.package_name)) - Number(snap.value.excluded.includes(a.package_name)),
-  )
-  if (!needle) return list
-  return list.filter((app) => app.name.toLowerCase().includes(needle) || app.package_name.toLowerCase().includes(needle))
-})
 </script>
 
 <template>
@@ -244,36 +232,26 @@ const apps = computed(() => {
                 />
               </div>
             </div>
-            <div class="control-block takeover" data-testid="takeover-card">
-              <template v-if="!store.isAndroid.value">
-                <div class="setting-row">
-                  <span class="row-icon"><Icon name="monitor" /></span>
-                  <div class="grow">
-                    <strong>系统代理</strong>
-                    <p class="muted small">浏览器和遵守系统设置的应用</p>
-                  </div>
-                  <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" label="系统代理" data-testid="toggle-proxy" @update:model-value="store.setSystemProxy" />
-                </div>
-                <div class="setting-row">
-                  <span class="row-icon"><Icon name="shield" /></span>
-                  <div class="grow">
-                    <strong>TUN 模式</strong>
-                    <p class="muted small">接管全部流量，包括不支持代理的应用</p>
-                  </div>
-                  <button type="button" class="icon-btn" title="TUN 设置" aria-label="TUN 设置" data-testid="tun-settings-link" @click="store.openSettings('tun')"><Icon name="sliders" :size="16" /></button>
-                  <Toggle :model-value="snap.tun" :busy="store.busy.tun" label="TUN 模式" data-testid="toggle-tun" @update:model-value="store.setTun" />
-                </div>
-              </template>
-              <!-- Android: the VPN follows the connection and the hero reports it, so only
-                   the per-app choice lives here instead of a disabled switch (R24). -->
-              <button v-else type="button" class="setting-row link" data-testid="open-apps" @click="appsOpen = true">
-                <span class="row-icon"><Icon name="apps" /></span>
+            <!-- Android: the VPN follows the connection and the hero reports it; per-app
+                 access control lives in Settings (R24). -->
+            <div v-if="!store.isAndroid.value" class="control-block takeover" data-testid="takeover-card">
+              <div class="setting-row">
+                <span class="row-icon"><Icon name="monitor" /></span>
                 <div class="grow">
-                  <strong>分应用代理</strong>
-                  <p class="muted small">{{ snap.excluded.length ? `已排除 ${snap.excluded.length} 个应用，其余经过 VPN` : '所有应用都经过 VPN' }}</p>
+                  <strong>系统代理</strong>
+                  <p class="muted small">浏览器和遵守系统设置的应用</p>
                 </div>
-                <Icon name="chevron-right" class="muted" />
-              </button>
+                <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" label="系统代理" data-testid="toggle-proxy" @update:model-value="store.setSystemProxy" />
+              </div>
+              <div class="setting-row">
+                <span class="row-icon"><Icon name="shield" /></span>
+                <div class="grow">
+                  <strong>TUN 模式</strong>
+                  <p class="muted small">接管全部流量，包括不支持代理的应用</p>
+                </div>
+                <button type="button" class="icon-btn" title="TUN 设置" aria-label="TUN 设置" data-testid="tun-settings-link" @click="store.openSettings('tun')"><Icon name="sliders" :size="16" /></button>
+                <Toggle :model-value="snap.tun" :busy="store.busy.tun" label="TUN 模式" data-testid="toggle-tun" @update:model-value="store.setTun" />
+              </div>
             </div>
           </section>
 
@@ -352,25 +330,5 @@ const apps = computed(() => {
       </div>
     </div>
 
-    <Modal v-if="appsOpen" title="分应用代理" subtitle="打开开关的应用将不经过 VPN" @close="appsOpen = false">
-      <div class="search">
-        <Icon name="search" :size="16" />
-        <input v-model="appQuery" type="search" placeholder="搜索应用" />
-      </div>
-      <p v-if="!apps.length" class="empty-line muted">{{ appQuery ? '没有匹配的应用' : '没有读取到已安装的应用' }}</p>
-      <ul class="app-list">
-        <li v-for="app in apps" :key="app.package_name" class="setting-row">
-          <div class="grow">
-            <strong>{{ app.name }}</strong>
-            <p class="muted small mono">{{ app.package_name }}</p>
-          </div>
-          <Toggle
-            :model-value="snap.excluded.includes(app.package_name)"
-            :label="`排除 ${app.name}`"
-            @update:model-value="(on) => (on ? store.exclude(app.package_name) : store.include(app.package_name))"
-          />
-        </li>
-      </ul>
-    </Modal>
   </div>
 </template>

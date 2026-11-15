@@ -25,7 +25,12 @@ export interface ProfileItem {
 export interface InstalledApp {
   name: string
   package_name: string
+  /** Preinstalled system app; hidden from the access-control list by default. */
+  system: boolean
 }
+
+/** Android access control: listed apps bypass the VPN, or only listed apps use it. */
+export type AppMode = 'exclude' | 'include'
 
 export interface NodeItem {
   name: string
@@ -202,6 +207,9 @@ export interface Snapshot {
   platform: Platform
   tun_wanted: boolean
   excluded: string[]
+  /** Allowlist used in `include` mode. */
+  included: string[]
+  app_mode: AppMode
   installed: InstalledApp[]
   node_catalog: NodeGroup[]
   nodes_notice: string | null
@@ -329,6 +337,8 @@ export function emptySnapshot(): Snapshot {
     platform: 'desktop',
     tun_wanted: false,
     excluded: [],
+    included: [],
+    app_mode: 'exclude',
     installed: [],
     node_catalog: [],
     nodes_notice: null,
@@ -527,8 +537,10 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
     platform: source.platform === 'android' ? 'android' : 'desktop',
     tun_wanted: Boolean(source.tun_wanted),
     excluded: list(source.excluded).filter((item): item is string => typeof item === 'string'),
+    included: list(source.included).filter((item): item is string => typeof item === 'string'),
+    app_mode: source.app_mode === 'include' ? 'include' : 'exclude',
     installed: list(source.installed)
-      .map((item) => ({ name: str(obj(item).name), package_name: str(obj(item).package_name) }))
+      .map((item) => ({ name: str(obj(item).name), package_name: str(obj(item).package_name), system: Boolean(obj(item).system) }))
       .filter((app) => app.package_name),
     node_catalog: list(source.node_catalog).map(normalizeGroup).filter((group) => group.name),
     nodes_notice: optStr(source.nodes_notice),

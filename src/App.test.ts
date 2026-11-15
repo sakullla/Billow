@@ -557,14 +557,69 @@ describe('App', () => {
     expect(wrapper.text()).toContain('没有匹配的连接')
   })
 
-  it('offers per-app exclusion on Android instead of system proxy and TUN', async () => {
-    const { wrapper } = await mountApp({ platform: 'android' }, 390)
+  it('keeps Android access control in Settings with bypass and allowlist modes', async () => {
+    const { wrapper, backend } = await mountApp({ platform: 'android' }, 390)
+    const save = vi.spyOn(backend, 'setAppRules')
+    // Home carries neither desktop takeover switches nor the per-app entry.
     expect(wrapper.find('[data-testid="toggle-proxy"]').exists()).toBe(false)
+    expect(wrapper.find('.home [data-testid="open-apps"]').exists()).toBe(false)
+
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="open-apps"]').text()).toContain('绕过 1 个')
     await wrapper.find('[data-testid="open-apps"]').trigger('click')
     await flushPromises()
-    expect(document.body.textContent).toContain('微信')
-    expect(document.body.textContent).toContain('com.tencent.mm')
+    expect(wrapper.find('.main').attributes('data-page')).toBe('apps')
+    expect(wrapper.find('[data-testid="page-back"]').text()).toBe('设置')
+
+    // Selected apps lead; system apps stay hidden until asked for.
+    const rows = () => wrapper.findAll('.app-row').map((row) => row.attributes('data-app'))
+    expect(rows()[0]).toBe('com.tencent.mm')
+    expect(rows()).not.toContain('com.android.systemui')
+    await wrapper.find('[data-testid="apps-system"]').trigger('click')
+    expect(rows()).toContain('com.android.systemui')
+
+    // Taps batch into one save; the row under the finger does not move.
+    await wrapper.find('.app-row[data-app="org.telegram.messenger"]').trigger('click')
+    await wrapper.find('.app-row[data-app="tv.danmaku.bili"]').trigger('click')
+    const order = rows()
+    expect(save).not.toHaveBeenCalled()
+    await settle(800)
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenLastCalledWith('exclude', ['com.tencent.mm', 'org.telegram.messenger', 'tv.danmaku.bili'])
+    expect(rows()).toEqual(order)
+    expect(wrapper.find('[data-testid="apps-summary"]').text()).toContain('3 个应用绕过 VPN')
+
+    // The allowlist keeps its own (empty) list and says what an empty allowlist means.
+    await wrapper.find('[data-testid="apps-mode"] [data-value="include"]').trigger('click')
+    await settle(300)
+    expect(save).toHaveBeenLastCalledWith('include', [])
+    expect(wrapper.find('[data-testid="apps-summary"]').text()).toContain('所有应用都经过 VPN')
+    await wrapper.find('.app-row[data-app="com.android.chrome"]').trigger('click')
+    expect(wrapper.find('.app-row[data-app="com.android.chrome"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('.app-row[data-app="com.tencent.mm"]').attributes('aria-checked')).toBe('false')
+    await settle(800)
+    expect(save).toHaveBeenLastCalledWith('include', ['com.android.chrome'])
+    expect(storeOf(wrapper).snapshot.value.excluded).toEqual(['com.tencent.mm', 'org.telegram.messenger', 'tv.danmaku.bili'])
   })
+
+  it('drills into phone settings sections and comes back to the list', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="settings-tabs"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-dns"]').text()).toContain('跟随配置')
+    await wrapper.find('[data-testid="open-dns"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.settings-subhead h1').text()).toBe('DNS')
+    expect(wrapper.find('[data-testid="dns-settings"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="settings-back"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="open-tun"]').text()).toContain('关闭')
+  })
+
   it('opens TUN settings from home and saves a changed stack', async () => {
     const { wrapper } = await mountApp()
     await wrapper.find('[data-testid="tun-settings-link"]').trigger('click')
@@ -880,7 +935,7 @@ describe('App', () => {
   it('reports Android VPN state in the hero instead of a second, disabled switch', async () => {
     const { wrapper } = await mountApp({ platform: 'android' }, 390)
     expect(wrapper.find('[data-testid="toggle-vpn"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="takeover-card"] [data-testid="open-apps"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="takeover-card"]').exists()).toBe(false)
     expect(wrapper.findAll('[data-testid="power"]')).toHaveLength(1)
     expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toBe('代理未运行')
 

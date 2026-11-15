@@ -12,6 +12,7 @@ import { useHotkeys } from './lib/ui/hotkeys'
 import { installInsets, syncSystemBars } from './lib/ui/insets'
 import { detectChrome, type WindowChrome } from './lib/ui/windowChrome'
 import { SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
+import AppsView from './views/AppsView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
 import HomeView from './views/HomeView.vue'
 import LogsView from './views/LogsView.vue'
@@ -46,6 +47,7 @@ const views = {
   resources: ResourcesView,
   logs: LogsView,
   settings: SettingsView,
+  apps: AppsView,
 } as const
 const view = computed(() => views[store.page.value])
 const mobilePages = PAGES.filter((page) => page.mobile)
@@ -54,7 +56,7 @@ const navGroups = [
   { id: 'tools', label: '工具', pages: PAGES.filter((page) => page.group === 'tools') },
 ]
 const settingsPage = PAGES.find((page) => page.id === 'settings')!
-const TOOL_PAGES: readonly PageId[] = ['connections', 'rules', 'resources', 'logs']
+const TOOL_PAGES: readonly PageId[] = ['connections', 'rules', 'resources', 'logs', 'apps']
 
 /** Connections/rules/resources/logs live behind Settings on mobile, so Settings is the current tab there. */
 function isTabCurrent(id: PageId): boolean {
@@ -329,6 +331,30 @@ function recordPageHistory(prev: PageId, next: PageId) {
   ensureGuard()
 }
 
+/**
+ * Phone settings drill into kernel/TUN/DNS sub-pages. Entering one records a
+ * `settings` step so system back returns to the settings list first.
+ */
+watch(
+  () => store.settingsTab.value,
+  (next, prev) => {
+    if (!compact.value || store.page.value !== 'settings' || !historyReady) return
+    if (prev === 'general' && next !== 'general') {
+      pageStack.push('settings')
+      ensureGuard()
+    }
+  },
+)
+
+/** Phone settings sub-page back: consume the recorded step when it is on top, else just switch. */
+provide('settingsBack', () => {
+  if (historyReady && guardActive && pageStack[pageStack.length - 1] === 'settings') {
+    window.history.back()
+    return
+  }
+  store.settingsTab.value = 'general'
+})
+
 /** Layer depth is the single source of truth; never infer it from popstate state. */
 function handleLayerDepth(depth: number) {
   if (depth > 0) ensureGuard()
@@ -346,6 +372,11 @@ function onPopState() {
     return
   }
   const previous = pageStack.pop()
+  if (previous === 'settings' && store.page.value === 'settings' && store.settingsTab.value !== 'general') {
+    store.settingsTab.value = 'general'
+    if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
+    return
+  }
   if (previous != null) {
     ignorePageHistory = true
     store.go(previous)

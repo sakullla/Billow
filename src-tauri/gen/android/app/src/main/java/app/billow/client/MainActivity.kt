@@ -24,6 +24,7 @@ class MainActivity : TauriActivity() {
     override fun onWebViewCreate(webView: WebView) {
         this.webView = webView
         webView.addJavascriptInterface(InsetsBridge(), "BillowInsets")
+        webView.addJavascriptInterface(AppIconBridge(), "BillowApps")
         // Edge-to-edge windows no longer resize for the keyboard, and some WebView
         // builds report env(safe-area-inset-*) as 0. Measure the insets here, hand
         // them to CSS, and shrink the WebView by the IME height so the page layout
@@ -69,6 +70,32 @@ class MainActivity : TauriActivity() {
                 controller.isAppearanceLightStatusBars = light
                 controller.isAppearanceLightNavigationBars = light
             }
+        }
+    }
+
+    /** App icons for the access-control list, as small PNG data URLs, cached per package. */
+    private inner class AppIconBridge {
+        private val cache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        @JavascriptInterface
+        fun icon(packageName: String): String {
+            cache[packageName]?.let { return it }
+            val url = try {
+                val drawable = packageManager.getApplicationIcon(packageName)
+                val size = (40 * resources.displayMetrics.density).toInt().coerceIn(48, 128)
+                val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(bitmap)
+                drawable.setBounds(0, 0, size, size)
+                drawable.draw(canvas)
+                val out = java.io.ByteArrayOutputStream()
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                bitmap.recycle()
+                "data:image/png;base64," + android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+            } catch (_: Exception) {
+                ""
+            }
+            cache[packageName] = url
+            return url
         }
     }
 

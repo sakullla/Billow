@@ -28,6 +28,7 @@
     "allow-set-tun-enabled",
     "allow-exclude-package",
     "allow-include-package",
+    "allow-set-app-rules",
     "allow-select-profile-node",
     "allow-test-profile-group",
     "allow-set-node-query",

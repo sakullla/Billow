@@ -541,6 +541,17 @@ fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     })
 }
 
+/// Android app access control: `mode` is `exclude` or `include`, `packages` replaces that mode's list.
+#[tauri::command]
+fn set_app_rules(app: AppHandle, mode: String, packages: Vec<String>) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession {
+            book, runtime, vpn, ..
+        } = session;
+        book.set_app_rules(&mode, &packages, runtime, vpn)
+    })
+}
+
 #[tauri::command]
 fn select_profile_node(app: AppHandle, group: String, node: String) -> ProfileSnapshot {
     with_session(&app, |session| {
@@ -1192,6 +1203,7 @@ pub fn run() {
             set_tun_enabled,
             exclude_package,
             include_package,
+            set_app_rules,
             select_profile_node,
             test_profile_group,
             set_node_query,

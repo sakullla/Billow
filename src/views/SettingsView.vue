@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
@@ -112,6 +112,16 @@ void props
 
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
+/** Phone sub-pages go back through the app history when possible (App provides it). */
+const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab.value = 'general'))
+const SUB_TITLES: Record<SettingsTab, string> = { general: '设置', kernel: '内核', tun: 'TUN 模式', dns: 'DNS' }
+
+const appSummary = computed(() => {
+  const s = snap.value
+  if (s.app_mode === 'include' && s.included.length) return `仅 ${s.included.length} 个应用`
+  return s.excluded.length ? `绕过 ${s.excluded.length} 个` : '全部应用'
+})
+
 const TABS = computed(() =>
   [
     { id: 'general' as SettingsTab, label: '通用' },
@@ -189,8 +199,21 @@ function resetDns() {
 </script>
 
 <template>
-  <div class="page settings">
-    <header class="page-head">
+  <div class="page settings" :class="{ 'settings-phone': compact }">
+    <!-- Phone sub-page: a back control and the section title replace the tab bar. -->
+    <header v-if="compact && store.settingsTab.value !== 'general'" class="settings-subhead">
+      <button type="button" class="back-btn" data-testid="settings-back" @click="settingsBack">
+        <Icon name="chevron-left" :size="18" /><span>设置</span>
+      </button>
+      <h1>{{ SUB_TITLES[store.settingsTab.value] }}</h1>
+    </header>
+    <header v-else-if="compact" class="page-head">
+      <div>
+        <h1>设置</h1>
+        <p class="muted small">Billow {{ app?.version ?? '' }}<template v-if="kernel.version"> · Mihomo {{ kernel.version }}</template></p>
+      </div>
+    </header>
+    <header v-else class="page-head">
       <div>
         <h1>设置</h1>
         <p class="muted small">Billow {{ app?.version ?? '' }}</p>
@@ -231,7 +254,47 @@ function resetDns() {
         </button>
       </nav>
 
-      <section class="card">
+      <!-- Phone: grouped list in the shape of the system settings app; each row says its current value. -->
+      <template v-if="compact">
+        <p class="settings-group-label">网络</p>
+        <section class="card list-card settings-list" data-testid="settings-network">
+          <button v-if="store.isAndroid.value" type="button" class="nav-row" data-testid="open-apps" @click="store.go('apps')">
+            <span class="nav-row-icon green"><Icon name="apps" /></span>
+            <span class="nav-row-title">应用访问控制</span>
+            <span class="nav-row-value">{{ appSummary }}</span>
+            <Icon name="chevron-right" :size="16" class="muted" />
+          </button>
+          <button v-else type="button" class="nav-row" data-testid="open-tun" @click="store.settingsTab.value = 'tun'">
+            <span class="nav-row-icon blue"><Icon name="shield" /></span>
+            <span class="nav-row-title">TUN 模式</span>
+            <span class="nav-row-value">{{ snap.tun ? '已开启' : '关闭' }}</span>
+            <Icon name="chevron-right" :size="16" class="muted" />
+          </button>
+          <button type="button" class="nav-row" data-testid="open-dns" @click="store.settingsTab.value = 'dns'">
+            <span class="nav-row-icon violet"><Icon name="globe" /></span>
+            <span class="nav-row-title">DNS</span>
+            <span class="nav-row-value">{{ snap.settings.dns_override ? '已覆写' : '跟随配置' }}</span>
+            <Icon name="chevron-right" :size="16" class="muted" />
+          </button>
+          <button type="button" class="nav-row" data-testid="open-kernel" @click="store.settingsTab.value = 'kernel'">
+            <span class="nav-row-icon amber"><Icon name="cpu" /></span>
+            <span class="nav-row-title">内核</span>
+            <span class="nav-row-value">{{ kernel.ready ? (kernel.version ?? '已安装') : '未安装' }}{{ overridden ? ' · 已调整' : '' }}</span>
+            <Icon name="chevron-right" :size="16" class="muted" />
+          </button>
+        </section>
+
+        <p class="settings-group-label">外观</p>
+        <section class="card list-card settings-list">
+          <div class="nav-row static">
+            <span class="nav-row-icon slate"><Icon :name="THEMES.find((theme) => theme.id === store.theme.value)?.icon ?? 'laptop'" /></span>
+            <span class="nav-row-title">主题</span>
+            <Segmented :model-value="store.theme.value" :options="THEMES.map(({ id, label }) => ({ id, label: id === 'system' ? '自动' : label }))" size="sm" label="主题" @update:model-value="store.setTheme" />
+          </div>
+        </section>
+      </template>
+
+      <section v-else class="card">
         <header class="card-head"><h2>外观</h2></header>
         <div class="setting-row">
           <div class="grow">

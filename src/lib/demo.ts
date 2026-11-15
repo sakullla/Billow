@@ -92,7 +92,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   let app: AppInfo = {
     version: '0.2.0',
     platform: 'demo',
-    autostart: false,
+    // Android has no autostart or tray; the real shell reports null there.
+    autostart: options.platform === 'android' ? null : false,
     close_to_tray: true,
     silent_start: false,
     data_dir: null,
@@ -170,12 +171,17 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
 
   if (state.platform === 'android') {
     state.installed = [
-      { name: 'Chrome', package_name: 'com.android.chrome' },
-      { name: 'Telegram', package_name: 'org.telegram.messenger' },
-      { name: '微信', package_name: 'com.tencent.mm' },
-      { name: '支付宝', package_name: 'com.eg.android.AlipayGphone' },
-      { name: 'YouTube', package_name: 'com.google.android.youtube' },
-      { name: '哔哩哔哩', package_name: 'tv.danmaku.bili' },
+      { name: 'Chrome', package_name: 'com.android.chrome', system: false },
+      { name: 'Telegram', package_name: 'org.telegram.messenger', system: false },
+      { name: '微信', package_name: 'com.tencent.mm', system: false },
+      { name: '支付宝', package_name: 'com.eg.android.AlipayGphone', system: false },
+      { name: 'YouTube', package_name: 'com.google.android.youtube', system: false },
+      { name: '哔哩哔哩', package_name: 'tv.danmaku.bili', system: false },
+      { name: 'GitHub', package_name: 'com.github.android', system: false },
+      { name: '招商银行', package_name: 'cmb.pb', system: false },
+      { name: 'Google Play 服务', package_name: 'com.google.android.gms', system: true },
+      { name: '设置', package_name: 'com.android.settings', system: true },
+      { name: '系统界面', package_name: 'com.android.systemui', system: true },
     ]
     state.excluded = ['com.tencent.mm']
   }
@@ -598,6 +604,13 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async exclude(pkg) {
       if (!state.excluded.includes(pkg)) state.excluded.push(pkg)
       return done()
+    },
+    async setAppRules(mode, packages) {
+      const clean = [...new Set(packages.map((item) => item.trim()).filter(Boolean))]
+      state.app_mode = mode
+      if (mode === 'include') state.included = clean
+      else state.excluded = clean
+      return done(200)
     },
     async include(pkg) {
       state.excluded = state.excluded.filter((item) => item !== pkg)

@@ -8,6 +8,7 @@ import {
   type KernelStatus,
   type Mode,
   type ProvidersResult,
+  type AppMode,
   type ProviderDetail,
   type GeoFile,
   type RulesResult,
@@ -71,6 +72,8 @@ export interface Backend {
   setMode(mode: Mode): Promise<Snapshot>
   exclude(pkg: string): Promise<Snapshot>
   include(pkg: string): Promise<Snapshot>
+  /** Replace one access-control mode's app list and make that mode current. */
+  setAppRules(mode: AppMode, packages: string[]): Promise<Snapshot>
 
   selectNode(group: string, node: string): Promise<Snapshot>
   testGroup(group: string): Promise<Snapshot>
@@ -185,6 +188,7 @@ function createTauriBackend(): Backend {
     setMode: (mode) => snap('set_outbound_mode', { mode }),
     exclude: (packageName) => snap('exclude_package', { packageName }),
     include: (packageName) => snap('include_package', { packageName }),
+    setAppRules: (mode, packages) => snap('set_app_rules', { mode, packages }),
 
     selectNode: (group, node) => snap('select_profile_node', { group, node }),
     testGroup: (group) => snap('test_profile_group', { group }),
