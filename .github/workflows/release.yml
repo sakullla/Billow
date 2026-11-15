@@ -130,7 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$ANDROID_KEY_BASE64" && test -n "$ANDROID_KEY_ALIAS" && test -n "$ANDROID_KEY_PASSWORD"
-          sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;28.2.13676358"
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
           ndk="$ANDROID_HOME/ndk/28.2.13676358"
           echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
@@ -170,7 +170,7 @@ jobs:
           set -euo pipefail
           mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' ! -name '*-unsigned.apk')
           test "${#apks[@]}" -eq 1
-          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose "${apks[0]}"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "${apks[0]}"
           abis=$(unzip -Z1 "${apks[0]}" | sed -nE 's#^lib/([^/]+)/.*\.so$#\1#p' | sort -u)
           test "$abis" = 'arm64-v8a'
           cp "${apks[0]}" "$RUNNER_TEMP/Billow_${RELEASE_VERSION}_arm64.apk"
