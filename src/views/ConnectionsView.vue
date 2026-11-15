@@ -297,7 +297,18 @@ function resetFilters() {
 
     <EmptyState v-if="!snap.connected" variant="unavailable" title="未连接" description="连接后这里会实时显示经过 Billow 的连接。">
       <template #action>
-        <button type="button" class="btn ghost sm" @click="store.go('home')">前往首页连接</button>
+        <button
+          type="button"
+          class="btn primary sm"
+          :disabled="store.connecting.value"
+          :aria-busy="store.connecting.value || undefined"
+          data-testid="empty-connect"
+          @click="store.connect()"
+        >
+          <span v-if="store.connecting.value" class="spinner xs" aria-hidden="true" />
+          <Icon v-else :name="store.hasProfiles.value ? 'power' : 'plus'" :size="14" />
+          {{ store.hasProfiles.value ? (store.connecting.value ? '连接中' : '立即连接') : '添加配置' }}
+        </button>
       </template>
     </EmptyState>
     <EmptyState v-else-if="snap.connections_error" variant="error" title="读取失败" :description="snap.connections_error">

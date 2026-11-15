@@ -160,6 +160,47 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="toggle-tun"]').attributes('aria-checked')).toBe('false')
   })
 
+  it('says in the hero whether traffic is taken over, not only that the kernel runs', async () => {
+    const { wrapper } = await mountApp()
+    expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toBe('代理未运行')
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toContain('系统代理')
+    await wrapper.find('[data-testid="toggle-proxy"]').trigger('click')
+    await settle(500)
+    expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toContain('未接管系统流量')
+    expect(wrapper.find('[data-testid="home-status"]').classes()).toContain('bare')
+  })
+
+  it('connects and disconnects from the sidebar on any page', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="rules"]').trigger('click')
+    await settle(50)
+    expect(wrapper.find('[data-testid="side-status"]').text()).toContain('未连接')
+    await wrapper.find('[data-testid="side-power"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-testid="side-status"]').text()).toContain('已连接')
+    expect(wrapper.find('[data-testid="side-power"]').attributes('aria-label')).toBe('断开')
+    await wrapper.find('[data-testid="side-power"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-testid="side-status"]').text()).toContain('未连接')
+  })
+
+  it('marks untested nodes with a quiet test glyph instead of repeating 测速', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await settle(50)
+    const pill = wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"] .delay')
+    expect(pill.classes()).toContain('untested')
+    expect(pill.text()).toBe('')
+    expect(pill.attributes('aria-label')).toBe('测速 日本 02')
+  })
+
+  it('hides the side connect control until a profile exists', async () => {
+    const { wrapper } = await mountApp({ profiles: false })
+    expect(wrapper.find('[data-testid="side-power"]').exists()).toBe(false)
+  })
+
   it('opens the add dialog straight from home when no profile exists', async () => {
     const { wrapper } = await mountApp({ profiles: false })
     expect(wrapper.find('[data-testid="status"]').text()).toBe('欢迎使用 Billow')
@@ -385,6 +426,21 @@ describe('App', () => {
     area.dispatchEvent(new Event('scroll'))
     await nextTick()
     expect(gutter.style.transform).toBe('translateY(-96px)')
+  })
+
+  it('switches to another profile from its menu, without a pointer', async () => {
+    const { wrapper } = await mountApp()
+    await openProfiles(wrapper)
+    await openProfileMenu(wrapper, 'p1')
+    expect(wrapper.find('[data-profile="p1"] [data-menu-item="enable"]').exists()).toBe(false)
+    press(wrapper.find('[role="menu"]').element, 'Escape')
+    await flushPromises()
+
+    await openProfileMenu(wrapper, 'p2')
+    await wrapper.find('[data-profile="p2"] [data-menu-item="enable"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-profile="p2"]').attributes('aria-current')).toBe('true')
+    expect(wrapper.find('[data-profile="p1"]').attributes('aria-current')).toBeUndefined()
   })
 
   it('moves through the profile menu with keys and returns focus to 更多操作', async () => {
@@ -881,7 +937,9 @@ describe('App', () => {
     const { wrapper } = await mountApp({}, 390)
     const main = wrapper.findAll('.home-main > *').map((element) => element.attributes('data-testid'))
     const side = wrapper.findAll('.home-side > *').map((element) => element.attributes('data-testid'))
-    expect(main).toEqual(['home-status', 'home-action', 'takeover-card', 'mode-card'])
+    expect(main).toEqual(['home-status', 'takeover-card', 'mode-card'])
+    // The connect control lives inside the hero, next to the state it changes.
+    expect(wrapper.find('[data-testid="home-status"] [data-testid="home-action"] [data-testid="power"]').exists()).toBe(true)
     expect(side).toEqual(['traffic-card', 'groups-card', 'profile-card'])
     expect(wrapper.find('[data-testid="home-status"]').text()).toContain('星河云')
     expect(wrapper.find('[data-testid="groups-card"]').text()).toContain('查看全部')
@@ -998,9 +1056,9 @@ describe('App', () => {
       const first = await mountApp()
       await first.wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
       await flushPromises()
-      const defaultCard = first.wrapper.find('[data-group-card="节点选择"]').element as HTMLElement
-      expect(defaultCard.style.scrollMarginTop).toBe('95px')
-      expect(scroll.targets).toContain('节点选择')
+      // The default group already leads the list: no scroll, so the page head stays visible.
+      expect(first.wrapper.find('[data-group-card]').attributes('data-group-card')).toBe('节点选择')
+      expect(scroll.targets).not.toContain('节点选择')
       first.wrapper.unmount()
 
       localStorage.setItem('billow:proxy-open', JSON.stringify(['流媒体']))
@@ -1386,7 +1444,12 @@ describe('App', () => {
     const first = await mountApp()
     await openPage(first.wrapper, 'connections')
     expect(first.wrapper.text()).toContain('未连接')
-    expect(first.wrapper.text()).toContain('前往首页连接')
+    expect(first.wrapper.text()).toContain('立即连接')
+    // The empty state connects in place instead of sending the user back home.
+    await first.wrapper.find('[data-testid="empty-connect"]').trigger('click')
+    await settle(1500)
+    expect(first.wrapper.find('.main').attributes('data-page')).toBe('connections')
+    expect(first.wrapper.find('[data-testid="connection-summary"]').text()).not.toBe('未连接')
     first.wrapper.unmount()
 
     const demo = createDemoBackend()

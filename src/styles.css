@@ -1,28 +1,33 @@
 /* ───────────── Tokens ───────────── */
 /* Colour, type, spacing, radius and motion live here (R23). Components below
-   consume tokens only: no literal font sizes, radii or transition durations. */
+   consume tokens only: no literal font sizes, radii or transition durations.
+   Palette: the accent is the app icon blue (#1d6fdb) so window, tray and
+   in-app brand agree; neutrals are cool and lightly blue-tinted. Blue stays
+   clear of the green used for healthy delays and the amber/red warnings. */
 :root {
   color-scheme: light;
 
-  /* Surfaces */
-  --bg: #f4f6f9;
+  /* Surfaces: page < sidebar < card; sunken sits inside cards */
+  --bg: #f3f5f8;
+  --chrome: #eaeef4; /* sidebar and tab bar */
   --surface: #ffffff;
-  --surface-2: #f7f8fa;
-  --sunken: #eef1f5;
-  --border: #e3e7ee; /* decorative hairline: card edges, dividers, table rows */
-  --border-strong: #7d8794; /* control boundary, ≥3:1 on every surface */
+  --surface-2: #f7f9fb;
+  --sunken: #eceff4;
+  --hover: rgba(20, 40, 80, 0.05);
+  --border: #e1e6ee; /* decorative hairline: card edges, dividers, table rows */
+  --border-strong: #7a8698; /* control boundary, ≥3:1 on every surface */
 
   /* Text: primary, secondary, tertiary */
-  --text: #141a23;
-  --text-2: #4a5566;
-  --text-3: #5f6a79; /* ≥4.8:1 on bg, surface, surface-2 and sunken */
+  --text: #111827;
+  --text-2: #424d5e;
+  --text-3: #5a6678; /* ≥4.8:1 on bg, surface, surface-2 and sunken */
   --muted: var(--text-3);
 
-  /* One emphasis colour; --accent-ink is the readable text variant */
-  --accent: #2b63f0;
-  --accent-hover: #1f54d8;
-  --accent-ink: #1f56d6;
-  --accent-soft: rgba(43, 99, 240, 0.1);
+  /* One emphasis colour, the app icon blue; --accent-ink is the readable text variant */
+  --accent: #1d6fdb;
+  --accent-hover: #185fc0;
+  --accent-ink: #1a62c4;
+  --accent-soft: rgba(29, 111, 219, 0.1);
   --accent-ring: var(--accent);
   --on-accent: #ffffff;
 
@@ -34,15 +39,16 @@
   --fair-soft: rgba(217, 119, 6, 0.13);
   --fair-ink: #8a5a00;
   --poor: #dc2626;
-  --poor-soft: rgba(220, 38, 38, 0.11);
+  --poor-soft: rgba(220, 38, 38, 0.1);
   --poor-ink: #b91c1c;
   --on-poor: #ffffff;
   /* Success icon on the inverse (dark) toast surface, ≥3:1 */
   --on-inverse-good: #4ade80;
 
-  /* Traffic data: download keeps the accent, upload stays neutral */
+  /* Traffic data: download keeps the accent, upload is violet so the two
+     series stay apart by hue and by lightness */
   --data-down: var(--accent);
-  --data-up: #64748b;
+  --data-up: #9a6ee0;
   --up: var(--data-up);
   --down: var(--data-down);
 
@@ -53,6 +59,7 @@
   --text-base: 14px;
   --text-lg: 16px;
   --text-xl: 20px;
+  --text-2xl: 26px;
   --leading-tight: 1.25;
   --leading-normal: 1.5;
   --leading-relaxed: 1.65;
@@ -65,16 +72,16 @@
   --space-5: 20px;
   --space-6: 24px;
   /* Desktop is the compact density; `.compact` (phones) switches to comfortable. */
-  --page-pad: 16px;
-  --page-pad-x: 20px;
-  --card-pad: 14px;
-  --row-gap: 12px;
+  --page-pad: 20px;
+  --page-pad-x: 24px;
+  --card-pad: 16px;
+  --row-gap: 14px;
 
   /* Radius */
   --radius-xs: 4px;
-  --radius-control: 10px;
-  --radius-card: 12px;
-  --radius-panel: 16px;
+  --radius-control: 9px;
+  --radius-card: 14px;
+  --radius-panel: 18px;
   --radius-pill: 999px;
 
   /* Motion: these three durations are the only ones allowed */
@@ -83,15 +90,16 @@
   --dur-slow: 200ms;
   --ease: cubic-bezier(0.2, 0, 0.2, 1);
 
-  /* The only gradients: brand mark and traffic progress */
-  --brand-gradient: linear-gradient(135deg, #5b8cff, var(--accent));
-  --flow-gradient: linear-gradient(90deg, var(--accent), #6f9bff);
+  /* The only gradients: hero wash and traffic progress */
+  --brand-gradient: #1d6fdb; /* flat, exactly the app icon; it never changes with theme */
+  --hero-wash: linear-gradient(120deg, rgba(29, 111, 219, 0.08), rgba(29, 111, 219, 0) 62%);
+  --flow-gradient: linear-gradient(90deg, var(--accent), #5b9cf2);
   --flow-gradient-warn: linear-gradient(90deg, var(--fair), var(--poor));
 
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
-  --shadow-md: 0 8px 24px rgba(16, 24, 40, 0.08), 0 2px 6px rgba(16, 24, 40, 0.05);
-  --shadow-lg: 0 24px 64px rgba(16, 24, 40, 0.18);
-  --sidebar: 216px;
+  --shadow-sm: 0 1px 2px rgba(16, 28, 48, 0.05), 0 0 0 1px rgba(16, 28, 48, 0.01);
+  --shadow-md: 0 10px 28px rgba(16, 28, 48, 0.09), 0 2px 6px rgba(16, 28, 48, 0.05);
+  --shadow-lg: 0 24px 64px rgba(16, 28, 48, 0.2);
+  --sidebar: 220px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Noto Sans SC', system-ui, sans-serif;
   --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 }
@@ -99,20 +107,22 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
     color-scheme: dark;
-    --bg: #0d1117;
-    --surface: #151b23;
-    --surface-2: #1a212b;
-    --sunken: #0f141b;
-    --border: #262e3a;
-    --border-strong: #67717f; /* ≥3.2:1 against the darkest and lightest panels */
-    --text: #e8edf4;
-    --text-2: #b4bfcd;
-    --text-3: #8b96a7; /* ≥5.4:1 on every dark surface */
-    --accent: #5b8cff;
-    --accent-hover: #7aa2ff;
-    --accent-ink: #b9ccff;
-    --accent-soft: rgba(91, 140, 255, 0.16);
-    --on-accent: #0b1220;
+    --bg: #0c1016;
+    --chrome: #0f141b;
+    --surface: #151b24;
+    --surface-2: #1a212c;
+    --sunken: #10151c;
+    --hover: rgba(190, 210, 255, 0.06);
+    --border: #242c38;
+    --border-strong: #6a7587; /* ≥3.2:1 against the darkest and lightest panels */
+    --text: #e6ebf2;
+    --text-2: #b3bdcb;
+    --text-3: #8a95a6; /* ≥5.3:1 on every dark surface */
+    --accent: #2a6bd4;
+    --accent-hover: #3577de;
+    --accent-ink: #aac8ff;
+    --accent-soft: rgba(77, 143, 245, 0.18);
+    --on-accent: #ffffff;
     --good: #34d399;
     --good-soft: rgba(52, 211, 153, 0.14);
     --good-ink: #4ade80;
@@ -125,30 +135,33 @@
     --on-poor: #2a0b0b;
     /* Dark mode flips the toast to a light surface, so the icon needs dark ink */
     --on-inverse-good: #0f7a37;
-    --data-up: #94a3b8;
-    --flow-gradient: linear-gradient(90deg, var(--accent), #9dbcff);
+    --data-up: #b69bf5;
+    --hero-wash: linear-gradient(120deg, rgba(77, 143, 245, 0.13), rgba(77, 143, 245, 0) 62%);
+    --flow-gradient: linear-gradient(90deg, var(--accent), #9cc0ff);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
-    --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55);
+    --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
   }
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #0d1117;
-  --surface: #151b23;
-  --surface-2: #1a212b;
-  --sunken: #0f141b;
-  --border: #262e3a;
-  --border-strong: #67717f;
-  --text: #e8edf4;
-  --text-2: #b4bfcd;
-  --text-3: #8b96a7;
-  --accent: #5b8cff;
-  --accent-hover: #7aa2ff;
-  --accent-ink: #b9ccff;
-  --accent-soft: rgba(91, 140, 255, 0.16);
-  --on-accent: #0b1220;
+  --bg: #0c1016;
+  --chrome: #0f141b;
+  --surface: #151b24;
+  --surface-2: #1a212c;
+  --sunken: #10151c;
+  --hover: rgba(190, 210, 255, 0.06);
+  --border: #242c38;
+  --border-strong: #6a7587; /* ≥3.2:1 against the darkest and lightest panels */
+  --text: #e6ebf2;
+  --text-2: #b3bdcb;
+  --text-3: #8a95a6; /* ≥5.3:1 on every dark surface */
+  --accent: #2a6bd4;
+  --accent-hover: #3577de;
+  --accent-ink: #aac8ff;
+  --accent-soft: rgba(77, 143, 245, 0.18);
+  --on-accent: #ffffff;
   --good: #34d399;
   --good-soft: rgba(52, 211, 153, 0.14);
   --good-ink: #4ade80;
@@ -160,11 +173,12 @@
   --poor-ink: #f87171;
   --on-poor: #2a0b0b;
   --on-inverse-good: #0f7a37;
-  --data-up: #94a3b8;
-  --flow-gradient: linear-gradient(90deg, var(--accent), #9dbcff);
+  --data-up: #b69bf5;
+  --hero-wash: linear-gradient(120deg, rgba(77, 143, 245, 0.13), rgba(77, 143, 245, 0) 62%);
+  --flow-gradient: linear-gradient(90deg, var(--accent), #9cc0ff);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
 }
 
 /* Phones are comfortable: the same tokens with roomier padding and gaps than desktop. */
@@ -226,6 +240,13 @@ button:disabled {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+/* Text fields draw their own focus (border + soft ring, or the container's
+   :focus-within), so the generic outline would double up. */
+input:not([type='checkbox']):not([type='radio']):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
 }
 
 h1,
@@ -325,7 +346,7 @@ hr {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4) var(--space-3) var(--space-3);
-  background: var(--surface);
+  background: var(--chrome);
   border-right: 1px solid var(--border);
   min-height: 0;
 }
@@ -402,11 +423,18 @@ hr {
   margin-top: var(--space-2);
 }
 .nav-item:hover {
-  background: var(--sunken);
+  background: var(--hover);
   color: var(--text);
 }
+/* The current page reads as a raised card, the same object language as the
+   content: surface fill, hairline edge, and an accent glyph. */
 .nav-item.active {
-  background: var(--accent-soft);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--border);
+}
+.nav-item.active .icon {
   color: var(--accent-ink);
 }
 .nav-item.active .icon {
@@ -423,15 +451,23 @@ hr {
   color: var(--muted);
 }
 .nav-item.active .nav-count {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
 }
 
 .side-status {
-  padding: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   border-radius: var(--radius-card);
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.side-status-body {
+  flex: 1;
+  min-width: 0;
 }
 .side-status-head {
   display: flex;
@@ -439,6 +475,34 @@ hr {
   gap: var(--space-2);
   font-weight: 600;
   font-size: var(--text-md);
+}
+/* Quick connect from any page: the same action as the home power control. */
+.side-power {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  flex: none;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.side-power:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.side-status.on .side-power {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.side-status.on .side-power:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.side-power:disabled {
+  opacity: 0.7;
 }
 .side-status .dot {
   width: 8px;
@@ -450,12 +514,16 @@ hr {
   background: var(--good);
   box-shadow: 0 0 0 3px var(--good-soft);
 }
+.side-status.pending .dot {
+  background: var(--fair);
+  box-shadow: 0 0 0 3px var(--fair-soft);
+}
 .side-rates {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 6px;
-  font-size: var(--text-sm);
+  margin-top: 2px;
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
   color: var(--text-2);
   overflow: hidden;
@@ -478,7 +546,9 @@ hr {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
   border-top: 1px solid var(--border);
   padding: 6px var(--space-1) calc(6px + env(safe-area-inset-bottom));
 }
@@ -492,8 +562,18 @@ hr {
   color: var(--muted);
   border-radius: var(--radius-control);
 }
+.tab .icon {
+  padding: 2px 14px;
+  box-sizing: content-box;
+  border-radius: var(--radius-pill);
+  transition: background var(--dur-fast) var(--ease);
+}
 .tab.active {
   color: var(--accent-ink);
+  font-weight: 600;
+}
+.tab.active .icon {
+  background: var(--accent-soft);
 }
 .tab.active .icon {
   stroke-width: 2.2;
@@ -513,6 +593,12 @@ hr {
   display: flex;
   flex-direction: column;
   gap: var(--row-gap);
+}
+
+/* Forms read best at a measured width; long toggles rows on a 1280px window
+   put the label and its switch a full screen apart. */
+.page.settings {
+  max-width: 880px;
 }
 
 .page-head {
@@ -555,6 +641,13 @@ hr {
   flex: 1 1 160px;
   min-width: 0;
 }
+/* Phones: search owns the first row, view controls share the second. */
+.compact .proxies-toolbar .search {
+  flex-basis: 100%;
+}
+.compact .proxies-toolbar [data-testid='toggle-all'] {
+  margin-left: auto;
+}
 .toolbar-count {
   color: var(--text-2);
   white-space: nowrap;
@@ -566,6 +659,23 @@ hr {
 }
 .test-hint {
   white-space: nowrap;
+}
+
+/* List pages fill the viewport: the page is exactly as tall as the scroll
+   container and the list card takes whatever the head and toolbar leave,
+   so the list ends at the window edge on every size without magic offsets. */
+.page.rules,
+.page.logs,
+.page.connections {
+  height: 100%;
+  min-height: 420px;
+}
+.rule-scroll,
+.log-card,
+.conn-table,
+.conn-list-scroll {
+  flex: 1 1 0;
+  min-height: 240px;
 }
 
 /* ───────────── Cards ───────────── */
@@ -841,9 +951,9 @@ select.input {
 }
 .segment.active {
   background: var(--surface);
-  border-color: var(--accent);
+  border-color: var(--border);
   color: var(--accent-ink);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 1px 3px rgba(16, 28, 48, 0.12);
   font-weight: 600;
 }
 .segment:disabled {
@@ -987,6 +1097,21 @@ button.delay:hover:not(:disabled) {
 }
 .delay:disabled {
   cursor: default;
+}
+/* No result yet: a quiet test glyph that firms up when the node is hovered,
+   instead of a 测速 label repeated on every card. */
+.delay.untested {
+  min-width: 32px;
+  background: transparent;
+  color: var(--text-3);
+}
+.node:hover .delay.untested:not(:disabled),
+.delay.untested:focus-visible {
+  background: var(--sunken);
+  color: var(--accent-ink);
+}
+.delay.untested:disabled {
+  opacity: 0.45;
 }
 
 /* Spinner: the only looping animation left, because it carries state. */
@@ -1265,26 +1390,14 @@ button.delay:hover:not(:disabled) {
   gap: var(--row-gap);
   min-width: 0;
 }
-.home-status {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.home-action {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
 @media (min-width: 960px) {
   .home-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
     align-items: start;
   }
-  /* Desktop order: status, action, mode, takeover. Phones keep takeover before
-     mode, which is the documented first-screen order (D3). */
+  /* Desktop order: hero, mode, takeover. Phones keep takeover before mode,
+     which is the documented first-screen order (D3). */
   .home-main .mode-panel {
     order: 3;
   }
@@ -1299,91 +1412,221 @@ button.delay:hover:not(:disabled) {
   align-items: center;
   text-align: center;
   gap: var(--space-2);
-  padding: var(--space-6) var(--space-5);
+  padding: 56px var(--space-5) 48px;
+  background-image: var(--hero-wash);
+}
+.welcome .status-word {
+  font-size: var(--text-2xl);
+  margin-top: var(--space-3);
 }
 .welcome .connect-control {
   margin: var(--space-2) 0;
 }
 
-/* One control: the glyph and the 连接/断开 label share the same button (R24). */
+/* ── Hero: state, context and the one primary action (R24) ── */
+.hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  overflow: hidden;
+  transition: border-color var(--dur-slow) var(--ease);
+}
+/* Connected heroes pick up a faint accent wash so state reads at a glance
+   without a second colour. */
+.hero.on {
+  background-image: var(--hero-wash);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+.hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.hero-state {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.hero-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-3);
+}
+.hero-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--text-3);
+  flex: none;
+}
+.hero.on .hero-dot {
+  background: var(--good);
+  box-shadow: 0 0 0 3px var(--good-soft);
+}
+.hero.pending .hero-dot {
+  background: var(--fair);
+  box-shadow: 0 0 0 3px var(--fair-soft);
+}
+.hero.on .hero-eyebrow {
+  color: var(--good-ink);
+}
+/* Connected without system proxy / TUN: only apps pointed at the port are proxied. */
+.hero.on.bare .hero-dot {
+  background: var(--fair);
+  box-shadow: 0 0 0 3px var(--fair-soft);
+}
+.hero.on.bare .hero-eyebrow {
+  color: var(--fair-ink);
+}
+.hero .status-word {
+  font-size: var(--text-2xl);
+}
+.hero-action {
+  display: flex;
+  flex: none;
+}
+
+/* One control: the glyph and the 连接/断开 label share the same button (R24).
+   Disconnected, it is the page's primary call to action; connected, it steps
+   back to an outline so 断开 is available but not shouting. */
 .connect-control {
   display: inline-flex;
   align-items: center;
   gap: var(--space-3);
-  min-height: 44px;
-  padding: 3px var(--space-5) 3px 3px;
+  min-height: 48px;
+  padding: 4px var(--space-6) 4px 4px;
   border-radius: var(--radius-pill);
-  border: 1px solid var(--border-strong);
-  background: var(--surface-2);
-  color: var(--text);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
   font-size: var(--text-lg);
   font-weight: 650;
-  transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), color var(--dur-base) var(--ease), transform var(--dur-fast) var(--ease);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 28%, transparent);
+  transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), color var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .connect-control:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent-ink);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 .connect-control:active:not(:disabled) {
   transform: scale(0.98);
 }
 .connect-control:disabled {
-  opacity: 0.72;
+  opacity: 0.8;
 }
 .connect-control.on {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
 }
-.connect-control.on:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  color: var(--on-accent);
+/* Hover previews the destructive turn only where hover exists: on touch the
+   state would stick after the tap and paint the next 连接 red. */
+@media (hover: hover) {
+  .connect-control.on:hover:not(:disabled) {
+    background: var(--poor-soft);
+    border-color: var(--poor);
+    color: var(--poor-ink);
+  }
+  .connect-control.on:hover:not(:disabled) .connect-glyph {
+    background: var(--poor);
+    color: var(--on-poor);
+  }
 }
 .connect-control.pending {
+  background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent-ink);
+  box-shadow: none;
 }
 .connect-glyph {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-pill);
-  background: var(--sunken);
-  color: var(--text-2);
+  background: color-mix(in srgb, var(--on-accent) 18%, transparent);
+  color: inherit;
   flex: none;
 }
 .connect-control.on .connect-glyph {
-  background: color-mix(in srgb, var(--on-accent) 20%, transparent);
+  background: var(--accent);
   color: var(--on-accent);
 }
 .connect-control.pending .connect-glyph {
-  color: var(--accent-ink);
+  background: var(--surface);
 }
 .connect-label {
-  padding-right: var(--space-2);
+  min-width: 2.5em;
+  text-align: left;
+}
+.compact .hero-action {
+  width: 100%;
 }
 .compact .connect-control {
   width: 100%;
   min-height: 52px;
   justify-content: center;
+  padding-right: var(--space-5);
 }
-.compact .connect-label {
-  padding-right: 0;
+
+.hero-rates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
 }
-.compact .home-action {
+.rate {
+  display: flex;
   flex-direction: column;
-  align-items: stretch;
+  gap: 2px;
+  padding: 10px var(--space-3);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.rate-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.rate-value {
+  font-size: var(--text-xl);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rate.up .icon {
+  color: var(--data-up);
+}
+.rate.down .icon {
+  color: var(--data-down);
 }
 
 .runtime {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2) var(--space-5);
-  margin: var(--space-3) 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
   padding: var(--space-3) 0 0;
   border-top: 1px solid var(--border);
+}
+.compact .runtime {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .runtime-item {
   display: flex;
@@ -1397,7 +1640,7 @@ button.delay:hover:not(:disabled) {
 }
 .runtime-item dd {
   margin: 0;
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
@@ -1407,9 +1650,6 @@ button.delay:hover:not(:disabled) {
   font-weight: 750;
   letter-spacing: -0.02em;
   line-height: var(--leading-tight);
-}
-.home-status.on .status-word {
-  color: var(--accent-ink);
 }
 .hero-sub {
   margin-top: 4px;
@@ -1422,35 +1662,6 @@ button.delay:hover:not(:disabled) {
 .hero-profile {
   font-weight: 600;
   color: var(--text-2);
-}
-.hero-rates {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 130px;
-}
-.compact .hero-rates {
-  flex-direction: row;
-  gap: var(--space-4);
-  width: 100%;
-}
-.rate {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--text-base);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.rate span {
-  min-width: 7ch;
-}
-.rate.up .icon {
-  color: var(--data-up);
-}
-.rate.down .icon {
-  color: var(--data-down);
 }
 
 .mode-cards {
@@ -1537,6 +1748,22 @@ button.delay:hover:not(:disabled) {
   position: relative;
   margin: 0 -4px;
 }
+.traffic-chart {
+  position: relative;
+}
+/* Disconnected: the empty grid stays as a placeholder with one plain sentence
+   instead of a flat line and a 0 B/s scale. */
+.traffic-chart.idle .chart-line,
+.traffic-chart.idle .chart-area,
+.traffic-chart.idle .chart-peak {
+  visibility: hidden;
+}
+.chart-idle {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
 .chart svg {
   display: block;
   width: 100%;
@@ -1588,29 +1815,30 @@ button.delay:hover:not(:disabled) {
 .home-traffic .stats {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
-/* The side column drops under ~330px between 960 and 1119px: three columns
-   would ellipsize the speeds. */
-@media (min-width: 960px) and (max-width: 1119px) {
-  .home-traffic .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 .compact .home-traffic .stats {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
 }
 .stat {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 10px var(--space-3);
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-control);
   background: var(--surface-2);
   border: 1px solid var(--border);
   text-align: left;
   min-width: 0;
 }
-.stat.link:hover {
+.stat.link {
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.stat.link:hover:not(:disabled) {
   border-color: var(--accent);
+  background: var(--surface);
+}
+.stat.link:disabled {
+  cursor: default;
 }
 .stat-label {
   font-size: var(--text-xs);
@@ -1732,8 +1960,7 @@ button.delay:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  padding-left: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-2);
 }
 /* Expand and test are separate focus targets; the header is only a container (R30). */
 .group-toggle {
@@ -1752,23 +1979,6 @@ button.delay:hover:not(:disabled) {
 }
 .group-test {
   flex: none;
-}
-.group-badge {
-  width: 4px;
-  height: 34px;
-  border-radius: var(--radius-xs);
-  background: var(--border-strong);
-  flex: none;
-}
-.group-badge.good {
-  background: var(--good);
-}
-.group-badge.fair {
-  background: var(--fair);
-}
-.group-badge.poor,
-.group-badge.fail {
-  background: var(--poor);
 }
 .group-title {
   flex: 1;
@@ -1836,9 +2046,9 @@ button.delay:hover:not(:disabled) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-4) var(--space-4);
+  padding: var(--space-3) var(--space-4) var(--space-4);
   border-top: 1px solid var(--border);
-  padding-top: var(--space-3);
+  background: var(--surface-2);
 }
 .compact .nodes {
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -1853,10 +2063,10 @@ button.delay:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 10px 10px 10px var(--space-3);
+  padding: 10px 8px 10px var(--space-3);
   border-radius: var(--radius-control);
   border: 1px solid var(--border);
-  background: var(--surface-2);
+  background: var(--surface);
   cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
   min-width: 0;
@@ -1865,8 +2075,9 @@ button.delay:hover:not(:disabled) {
   padding: 6px var(--space-2) 6px 10px;
   border-radius: var(--radius-control);
 }
-.node:hover {
+.node:hover:not(.selected) {
   border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 .node.locked {
   cursor: default;
@@ -1985,6 +2196,25 @@ button.delay:hover:not(:disabled) {
 }
 .profile.busy {
   opacity: 0.7;
+}
+/* Pointer affordance for the whole-card switch; hidden on touch, where the
+   tap target is obvious and a lingering hover label would only add noise. */
+.profile-switch-hint {
+  display: none;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+@media (hover: hover) {
+  .profile-switch-hint {
+    display: inline;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease);
+  }
+  .profile:hover .profile-switch-hint {
+    opacity: 1;
+  }
 }
 .profile-head {
   display: flex;
@@ -2299,7 +2529,6 @@ button.delay:hover:not(:disabled) {
 }
 /* Windowed lists keep a fixed row stride; the spacers restore the missing height (R31). */
 .conn-table {
-  max-height: calc(100dvh - 250px);
   overflow-y: auto;
 }
 .table.virtual tbody tr {
@@ -2321,7 +2550,6 @@ button.delay:hover:not(:disabled) {
   outline-offset: -2px;
 }
 .conn-list-scroll {
-  max-height: calc(100dvh - 250px);
   overflow-y: auto;
 }
 .conn-list .v-spacer {
@@ -2344,8 +2572,6 @@ button.delay:hover:not(:disabled) {
   flex: none;
 }
 .rule-scroll {
-  height: calc(100dvh - 270px);
-  min-height: 260px;
   overflow-y: auto;
   padding: 4px 0;
 }
@@ -2460,18 +2686,16 @@ button.delay:hover:not(:disabled) {
 /* ───────────── Logs ───────────── */
 .log-card {
   position: relative;
+  display: flex;
+  flex-direction: column;
   padding: 0;
   overflow: hidden;
 }
 .log-scroll {
-  height: calc(100vh - 230px);
-  height: calc(100dvh - 230px);
-  min-height: 260px;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-2) 0;
-}
-.compact .log-scroll {
-  height: calc(100dvh - 290px);
 }
 .log-line {
   display: grid;
@@ -2599,7 +2823,7 @@ button.delay:hover:not(:disabled) {
   display: grid;
   place-items: center;
   padding: var(--space-5);
-  background: rgba(10, 14, 22, 0.42);
+  background: rgba(8, 14, 26, 0.44);
   animation: fade var(--dur-fast) var(--ease);
 }
 .modal {
@@ -2866,10 +3090,11 @@ button.delay:hover:not(:disabled) {
 }
 
 /* ───────────── Toasts ───────────── */
+/* Bottom-right on desktop: never covers page-head actions or card headers. */
 .toasts {
   position: fixed;
-  top: var(--space-4);
-  right: var(--space-4);
+  bottom: var(--space-5);
+  right: var(--space-5);
   z-index: 200;
   display: flex;
   flex-direction: column;
@@ -2957,14 +3182,17 @@ button.delay:hover:not(:disabled) {
 .compact .list-card {
   padding: 4px 0;
 }
-.compact .rule-scroll {
-  height: calc(100dvh - 330px);
-}
-.compact .conn-table,
-.compact .conn-list-scroll {
-  max-height: calc(100dvh - 330px);
+/* Phones keep one or two head actions beside the title; pages with a
+   segmented control or a long action row give it a full row instead. */
+.compact .page-head {
+  align-items: center;
 }
 .compact .head-actions {
+  margin-left: auto;
+}
+.compact .page.settings .head-actions,
+.compact .page.proxies .head-actions,
+.compact .page.logs .head-actions {
   width: 100%;
 }
 
@@ -3032,6 +3260,15 @@ textarea.input {
 .compact .page-head .segmented .segment {
   flex: 1;
   justify-content: center;
+}
+/* Proxies: mode switch and 全部测速 share one row so nodes start higher. */
+.compact .page.proxies .head-actions {
+  flex-wrap: nowrap;
+}
+.compact .page.proxies .page-head .segmented {
+  width: auto;
+  flex: 1;
+  min-width: 0;
 }
 
 /* ───────────── Resources ───────────── */

@@ -270,7 +270,10 @@ onMounted(() => {
       return
     }
     // Only a first visit scrolls to the default group; a saved state stays where the user left it.
-    if (!storedOpen) await scrollToGroup(currentManualGroup()?.name ?? null)
+    // When that group already leads the list, scrolling would only hide the page head and its
+    // 全部测速 action, so the page stays at the top.
+    const fallback = currentManualGroup()?.name ?? null
+    if (!storedOpen && fallback && groups.value[0]?.name !== fallback) await scrollToGroup(fallback)
   })()
 })
 
@@ -382,7 +385,6 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
       :data-group-card="group.name"
     >
       <header class="group-head">
-        <span class="group-badge" :class="groupNowTone(group)" />
         <button
           type="button"
           class="group-toggle"
@@ -451,7 +453,7 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
           <button
             type="button"
             class="delay"
-            :class="[nodeTone(node), { busy: store.busy[`node:${node.name}`] }]"
+            :class="[nodeTone(node), { busy: store.busy[`node:${node.name}`], untested: !nodeDelay(node) }]"
             :aria-label="`测速 ${node.name}`"
             :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
             :disabled="!snap.kernel_running"
@@ -460,7 +462,8 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
             @click="store.testNode(node.name)"
           >
             <span v-if="store.busy[`node:${node.name}`]" class="spinner xs" />
-            <template v-else>{{ nodeDelay(node) || '测速' }}</template>
+            <template v-else-if="nodeDelay(node)">{{ nodeDelay(node) }}</template>
+            <Icon v-else name="zap" :size="13" />
           </button>
           <Icon v-if="node.selected" name="check" :size="14" class="node-check" :stroke="2.6" />
         </div>
