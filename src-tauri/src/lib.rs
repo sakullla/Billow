@@ -616,6 +616,11 @@ fn profile_content(app: AppHandle, id: String) -> Option<String> {
 }
 
 #[tauri::command]
+fn effective_config(app: AppHandle) -> Result<String, String> {
+    with_profile(&app, |session| session.book.effective_config())
+}
+
+#[tauri::command]
 fn save_profile_content(app: AppHandle, id: String, content: String) -> ProfileSnapshot {
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
@@ -1175,6 +1180,7 @@ pub fn run() {
             set_profile_source,
             set_profile_interval,
             profile_content,
+            effective_config,
             save_profile_content,
             refresh_profile,
             refresh_all_profiles,

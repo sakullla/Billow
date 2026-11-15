@@ -1778,6 +1778,24 @@ impl ProfileBook {
         Ok(port)
     }
 
+    /// The YAML the kernel runs (or would run) for the active profile: content,
+    /// applied override, kernel settings, TUN, mode and controller, in launch order.
+    /// While a kernel config is loaded this is exactly that YAML (with rules
+    /// disabled at runtime removed); otherwise it previews the next launch.
+    pub fn effective_config(&self) -> Result<String, String> {
+        if let Some(base) = &self.runtime_base {
+            if self.disabled_rules.is_empty() {
+                return Ok(base.clone());
+            }
+            return diagnostics::filter_disabled_rules(base, &self.disabled_rules);
+        }
+        self.kernel_yaml(self.takeover.tun, None)
+            .map(|(yaml, _)| yaml)
+            .map_err(|error| match error {
+                StartError::Idle(message) | StartError::Failed(message) => message,
+            })
+    }
+
     fn kernel_yaml(&self, tun_enable: bool, fd: Option<i32>) -> Result<(String, u16), StartError> {
         let Some(active) = self.active_id.clone() else {
             return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
@@ -3993,6 +4011,14 @@ mod tests {
         assert!(applied.system_proxy && applied.vpn);
         let running: Value = serde_yaml::from_str(kernel.running.as_deref().unwrap()).unwrap();
         assert_eq!(read_i64(&running, "mixed-port"), Some(8000));
+        // The effective-config view shows exactly what the kernel was given.
+        let effective: Value = serde_yaml::from_str(&book.effective_config().unwrap()).unwrap();
+        assert_eq!(read_i64(&effective, "mixed-port"), Some(8000));
+        assert_eq!(
+            mapping_get(mapping_get(&effective, "dns").unwrap(), "enable").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(read_string(&effective, "external-controller").as_deref(), Some("127.0.0.1:17690"));
         let dns = mapping_get(&running, "dns").unwrap();
         assert_eq!(read_string(dns, "listen").as_deref(), Some("127.0.0.1:53"));
         assert_eq!(
@@ -4012,6 +4038,9 @@ mod tests {
 
         book.save_override("p1", "");
         assert_eq!(book.snapshot().mixed_port, Some(8000));
+        // A saved but not yet applied override is not what runs.
+        let effective: Value = serde_yaml::from_str(&book.effective_config().unwrap()).unwrap();
+        assert_eq!(read_i64(&effective, "mixed-port"), Some(8000));
         assert_eq!(kernel.calls, 4);
         let cleared = book.enable("p1", &RejectSource, &mut kernel);
         assert_eq!(cleared.mixed_port, Some(7890));

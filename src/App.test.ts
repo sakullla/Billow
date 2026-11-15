@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import App from './App.vue'
 import GroupIcon from './components/GroupIcon.vue'
@@ -13,6 +13,11 @@ async function settle(ms = 1000) {
 }
 
 const mounted: { unmount: () => void }[] = []
+
+// The YAML editor is a lazy chunk; load it once so fake timers do not race the import.
+beforeAll(async () => {
+  await import('./lib/yaml/editor')
+}, 20_000)
 
 async function mountApp(options: Parameters<typeof createDemoBackend>[0] = {}, width = 1200) {
   vi.useFakeTimers()
@@ -30,6 +35,20 @@ async function mountWith(backend: ReturnType<typeof createDemoBackend>, width = 
   mounted.push(wrapper)
   await settle(50)
   return wrapper
+}
+
+/** The CodeMirror view of the open YAML dialog, once its lazy chunk has mounted. */
+async function editorView() {
+  const { EditorView } = await import('@codemirror/view')
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await flushPromises()
+    const editors = document.body.querySelectorAll<HTMLElement>('.cm-editor')
+    const element = editors[editors.length - 1]
+    const view = element ? EditorView.findFromDOM(element) : null
+    if (view) return view
+    await vi.advanceTimersByTimeAsync(20)
+  }
+  throw new Error('editor did not mount')
 }
 
 async function openPage(
@@ -351,31 +370,26 @@ describe('App', () => {
     await openProfiles(wrapper)
     await openProfileMenu(wrapper, 'p1')
     await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
-    await flushPromises()
-    const editor = () => document.body.querySelector<HTMLTextAreaElement>('.editor-text')
-    const area = editor()
-    expect(area).not.toBeNull()
-    area!.value = `${area!.value}\n# draft`
-    area!.dispatchEvent(new Event('input', { bubbles: true }))
+    const view = await editorView()
+    expect(view.state.doc.toString()).toContain('proxies')
+    view.dispatch({ changes: { from: view.state.doc.length, insert: '\n# draft' }, selection: { anchor: 2, head: 5 } })
     await nextTick()
-    area!.focus()
-    area!.setSelectionRange(2, 5)
     expect(document.body.textContent).toContain('未保存')
 
     bodyClick('[data-testid="cancel-editor"]')
     await flushPromises()
     expect(document.body.textContent).toContain('放弃未保存的修改')
-    expect(editor()).not.toBeNull()
+    expect(document.body.querySelector('.cm-editor')).not.toBeNull()
 
     bodyClick('[data-testid="keep-editing"]')
     await flushPromises()
     await nextTick()
     expect(document.body.textContent).not.toContain('放弃未保存的修改')
-    const kept = editor()!
-    expect(kept.value).toContain('# draft')
-    expect(kept.selectionStart).toBe(2)
-    expect(kept.selectionEnd).toBe(5)
-    expect(document.activeElement).toBe(kept)
+    const kept = await editorView()
+    expect(kept).toBe(view)
+    expect(kept.state.doc.toString()).toContain('# draft')
+    expect(kept.state.selection.main.from).toBe(2)
+    expect(kept.state.selection.main.to).toBe(5)
     expect(document.body.textContent).toContain('未保存')
 
     // Escape goes through the Modal close guard as well.
@@ -385,14 +399,14 @@ describe('App', () => {
     bodyClick('[data-testid="keep-editing"]')
     await flushPromises()
     await nextTick()
-    expect(editor()).not.toBeNull()
+    expect(document.body.querySelector('.cm-editor')).not.toBeNull()
 
     bodyClick('[data-testid="cancel-editor"]')
     await flushPromises()
     bodyClick('[data-testid="discard-edits"]')
     await flushPromises()
     await nextTick()
-    expect(editor()).toBeNull()
+    expect(document.body.querySelector('.cm-editor')).toBeNull()
     expect(document.activeElement).toBe(
       wrapper.find('[data-profile="p1"] [aria-label="更多操作"]').element,
     )
@@ -408,30 +422,53 @@ describe('App', () => {
     await openProfiles(wrapper)
     await openProfileMenu(wrapper, 'p1')
     await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
-    await flushPromises()
+    await editorView()
 
     bodyClick('.modal-foot .btn.primary')
     await settle(200)
     const error = document.body.querySelector('.editor-error')
     expect(error?.textContent).toContain('配置无法应用')
-    expect(document.body.querySelector('.editor-text')).not.toBeNull()
+    expect(document.body.querySelector('.cm-editor')).not.toBeNull()
     expect(document.body.querySelector('.editor-error')?.getAttribute('role')).toBe('alert')
   })
 
-  it('moves the editor gutter with the textarea scroll', async () => {
-    const { wrapper } = await mountApp()
+  it('saves from the editor with Ctrl+S and highlights YAML', async () => {
+    const { wrapper, backend } = await mountApp()
+    const save = vi.spyOn(backend, 'saveOverride')
     await openProfiles(wrapper)
     await openProfileMenu(wrapper, 'p1')
-    await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
-    await flushPromises()
-    const area = document.body.querySelector<HTMLTextAreaElement>('.editor-text')!
-    const gutter = document.body.querySelector<HTMLElement>('.editor-gutter')!
-    expect(gutter.querySelectorAll('span')).toHaveLength(area.value.split('\n').length)
-
-    area.scrollTop = 96
-    area.dispatchEvent(new Event('scroll'))
+    await wrapper.find('[data-profile="p1"] [data-menu-item="override"]').trigger('click')
+    const view = await editorView()
+    view.dispatch({ changes: { from: 0, insert: 'mixed-port: 7891\n' } })
     await nextTick()
-    expect(gutter.style.transform).toBe('translateY(-96px)')
+    expect(document.body.querySelector('.cm-content')?.textContent).toContain('mixed-port')
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }))
+    await settle(200)
+    expect(save).toHaveBeenCalledWith('p1', 'mixed-port: 7891\n')
+  })
+
+  it('opens the effective config read-only from the running profile only', async () => {
+    const { wrapper } = await mountApp()
+    await openProfiles(wrapper)
+    await openProfileMenu(wrapper, 'p2')
+    expect(wrapper.find('[data-profile="p2"] [data-menu-item="effective"]').exists()).toBe(false)
+    press(document, 'Escape')
+    await flushPromises()
+
+    await openProfileMenu(wrapper, 'p1')
+    await wrapper.find('[data-profile="p1"] [data-menu-item="effective"]').trigger('click')
+    const view = await editorView()
+    expect(document.body.textContent).toContain('生效配置')
+    expect(view.state.readOnly).toBe(true)
+    expect(view.state.doc.toString()).toContain('mixed-port')
+
+    // The override editor links to the same view, quietly.
+    bodyClick('.modal-foot .btn.primary')
+    await flushPromises()
+    await openProfileMenu(wrapper, 'p1')
+    await wrapper.find('[data-profile="p1"] [data-menu-item="override"]').trigger('click')
+    await editorView()
+    expect(document.body.querySelector('[data-testid="open-effective"]')?.textContent).toBe('查看生效配置')
   })
 
   it('switches to another profile from its menu, without a pointer', async () => {
@@ -457,7 +494,8 @@ describe('App', () => {
     const menu = wrapper.find('[role="menu"]')
     expect(menu.exists()).toBe(true)
     const items = () => menu.findAll('[role="menuitem"]')
-    expect(items().length).toBe(5)
+    // edit, content, override, effective config (current profile only), copy, remove
+    expect(items().length).toBe(6)
     expect(document.activeElement).toBe(items()[0].element)
 
     press(menu.element, 'ArrowDown')

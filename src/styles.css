@@ -2228,20 +2228,53 @@ button.delay:hover:not(:disabled) {
 }
 .editor:focus-within {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.editor-gutter {
+.editor.readonly:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: none;
+}
+.yaml-editor-host {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.yaml-editor:not(.ready) .yaml-editor-host {
+  display: none;
+}
+.yaml-editor-loading {
   display: flex;
-  flex-direction: column;
-  padding: 10px var(--space-2);
-  text-align: right;
-  color: var(--muted);
-  font-size: var(--text-md);
-  line-height: var(--leading-relaxed);
-  user-select: none;
-  border-right: 1px solid var(--border);
-  min-width: 42px;
-  overflow: hidden;
-  will-change: transform;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  flex: 1;
+}
+.editor-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px var(--space-2);
+}
+.editor-hint {
+  color: var(--text-3);
+}
+.compact .editor-hint {
+  display: none;
+}
+/* A quiet text link for secondary entries (e.g. the effective config). */
+.link-btn {
+  padding: 0;
+  color: var(--accent-ink);
+  font-size: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-ink) 35%, transparent);
+  text-underline-offset: 3px;
+}
+.link-btn:hover {
+  text-decoration-color: currentColor;
+}
+.compact .editor {
+  height: min(62dvh, 520px);
 }
 .editor-error {
   margin-top: var(--space-2);

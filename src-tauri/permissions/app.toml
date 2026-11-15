@@ -122,3 +122,8 @@ commands.allow = ["provider_action"]
 identifier = "allow-upgrade-geo"
 description = "Enables the upgrade_geo command without any pre-configured scope."
 commands.allow = ["upgrade_geo"]
+
+[[permission]]
+identifier = "allow-effective-config"
+description = "Enables the effective_config command without any pre-configured scope."
+commands.allow = ["effective_config"]

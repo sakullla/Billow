@@ -58,6 +58,8 @@ export interface Backend {
   setInterval(id: string, hours: number): Promise<Snapshot>
   content(id: string): Promise<string>
   saveContent(id: string, content: string): Promise<Snapshot>
+  /** The YAML the kernel runs for the active profile (or would run on the next connect). */
+  effectiveConfig(): Promise<string>
   saveOverride(id: string, text: string): Promise<Snapshot>
 
   connect(): Promise<Snapshot>
@@ -167,6 +169,7 @@ function createTauriBackend(): Backend {
     setInterval: (id, hours) => snap('set_profile_interval', { id, hours }),
     content: async (id) => (await call<string | null>('profile_content', { id })) ?? '',
     saveContent: (id, content) => snap('save_profile_content', { id, content }),
+    effectiveConfig: () => call<string>('effective_config'),
     saveOverride: (id, text) => snap('save_profile_override', { id, text }),
 
     connect: () => snap('connect_session'),

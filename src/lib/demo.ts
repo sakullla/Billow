@@ -527,6 +527,14 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       contents.set(id, content)
       return done()
     },
+    async effectiveConfig() {
+      const active = state.active_id ? profile(state.active_id) : null
+      if (!active) throw new Error('还没有启用配置')
+      const override = active.override_text.trim()
+      const base = contents.get(active.id) ?? ''
+      const head = `mixed-port: ${state.mixed_port ?? 7890}\nmode: ${state.mode ?? 'rule'}\nexternal-controller: 127.0.0.1:9090\n`
+      return `${head}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
+    },
     async saveOverride(id, text) {
       const item = profile(id)
       if (item) {
