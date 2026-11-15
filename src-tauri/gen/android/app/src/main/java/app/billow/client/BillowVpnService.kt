@@ -1,5 +1,10 @@
 package app.billow.client
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.os.Build
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -13,6 +18,33 @@ import java.io.FileDescriptor
  * This class only opens the TUN and returns the fd.
  */
 class BillowVpnService : VpnService() {
+    private var tunnel: ParcelFileDescriptor? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        val manager = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26) {
+            manager.createNotificationChannel(NotificationChannel("vpn", "VPN 连接", NotificationManager.IMPORTANCE_LOW))
+        }
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val notification = (if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, "vpn") else Notification.Builder(this))
+            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setContentTitle("Billow VPN")
+            .setContentText("代理连接运行中")
+            .setContentIntent(open)
+            .setOngoing(true)
+            .build()
+        startForeground(1, notification)
+    }
+
+    override fun onDestroy() {
+        tunnel?.close()
+        tunnel = null
+        BillowVpnBridge.reportFd(-1)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val packages = intent?.getStringArrayListExtra(EXTRA_EXCLUDED) ?: arrayListOf()
         val only = intent?.getBooleanExtra(EXTRA_ONLY, false) ?: false
@@ -23,7 +55,7 @@ class BillowVpnService : VpnService() {
             return START_NOT_STICKY
         }
         BillowVpnBridge.reportFd(fd)
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onRevoke() {
@@ -37,8 +69,11 @@ class BillowVpnService : VpnService() {
             .setMtu(1500)
             .addAddress("172.19.0.1", 30)
             .addRoute("0.0.0.0", 0)
+            .addDnsServer("172.19.0.2")
+        // The core shares our UID; its upstream sockets must not re-enter its own VPN.
+        if (!only) builder.addDisallowedApplication(packageName)
         // Allowed and disallowed lists cannot be mixed on one Builder.
-        for (packageName in packages) {
+        for (packageName in packages.filter { it != this.packageName }) {
             try {
                 if (only) builder.addAllowedApplication(packageName)
                 else builder.addDisallowedApplication(packageName)
@@ -47,20 +82,10 @@ class BillowVpnService : VpnService() {
             }
         }
         val opened = builder.establish() ?: return null
-        val fd = opened.detachFd()
-        clearCloseOnExec(fd)
-        return fd
-    }
-
-    private fun clearCloseOnExec(fd: Int) {
-        try {
-            val descriptor = FileDescriptor()
-            val field = FileDescriptor::class.java.getDeclaredField("descriptor")
-            field.isAccessible = true
-            field.setInt(descriptor, fd)
-            android.system.Os.fcntlInt(descriptor, android.system.OsConstants.F_SETFD, 0)
-        } catch (_: Exception) {
-        }
+        android.system.Os.fcntlInt(opened.fileDescriptor, android.system.OsConstants.F_SETFD, 0)
+        tunnel?.close()
+        tunnel = opened
+        return opened.fd
     }
 
     companion object {
@@ -73,14 +98,23 @@ class BillowVpnBridge {
     companion object {
         const val REQUEST_CONSENT = 44
 
+        private var activityRef = java.lang.ref.WeakReference<Activity>(null)
+
+        fun attach(activity: Activity) { activityRef = java.lang.ref.WeakReference(activity) }
+
         @JvmStatic
-        fun prepare(activity: Activity): Boolean {
-            val intent = VpnService.prepare(activity)
+        fun prepare(context: Context): Boolean {
+            val intent = VpnService.prepare(context)
             if (intent == null) {
                 reportConsent(true)
                 return true
             }
-            activity.startActivityForResult(intent, REQUEST_CONSENT)
+            val activity = activityRef.get()
+            if (activity == null) {
+                reportConsent(false)
+                return false
+            }
+            activity.runOnUiThread { activity.startActivityForResult(intent, REQUEST_CONSENT) }
             return false
         }
 
@@ -94,7 +128,7 @@ class BillowVpnBridge {
             val intent = Intent(context, BillowVpnService::class.java)
             intent.putStringArrayListExtra(BillowVpnService.EXTRA_EXCLUDED, ArrayList(packages))
             intent.putExtra(BillowVpnService.EXTRA_ONLY, only)
-            context.startService(intent)
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         }
 
         @JvmStatic

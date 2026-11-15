@@ -960,6 +960,8 @@ impl VpnBridge for OsVpnBridge {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static VPN_CONSENT: AtomicBool = AtomicBool::new(false);
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+static VPN_CONSENT_READY: AtomicBool = AtomicBool::new(false);
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static VPN_FD: AtomicI32 = AtomicI32::new(-1);
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static VPN_FD_READY: AtomicBool = AtomicBool::new(false);
@@ -968,9 +970,26 @@ static VPN_READY: Condvar = Condvar::new();
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static VPN_LOCK: Mutex<()> = Mutex::new(());
 
+// Rust worker threads attach with the system class loader. Resolve our bridge through
+// the Activity's loader, otherwise FindClass throws and terminates the app on connect.
+#[cfg(target_os = "android")]
+fn vpn_bridge_class<'local>(env: &mut jni::JNIEnv<'local>, activity: &jni::objects::JObject<'_>) -> Result<jni::objects::JClass<'local>, String> {
+    let result = (|| -> jni::errors::Result<jni::objects::JClass<'local>> {
+        let loader = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+        let name = env.new_string("app.billow.client.BillowVpnBridge")?;
+        let class = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[jni::objects::JValue::Object(&name)])?.l()?;
+        Ok(jni::objects::JClass::from(class))
+    })();
+    result.map_err(|error| {
+        let _ = env.exception_clear();
+        format!("VPN 桥接不可用：{error}")
+    })
+}
+
 #[cfg(target_os = "android")]
 fn android_prepare() -> Result<bool, String> {
     VPN_CONSENT.store(false, Ordering::SeqCst);
+    VPN_CONSENT_READY.store(false, Ordering::SeqCst);
     // BillowVpnBridge.prepare shows the system dialog and reports back through nativeConsent.
     let ctx = ndk_context::android_context();
     let vm =
@@ -979,14 +998,15 @@ fn android_prepare() -> Result<bool, String> {
         .attach_current_thread()
         .map_err(|_| "VPN 不可用".to_string())?;
     let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+    let bridge = vpn_bridge_class(&mut env, &activity)?;
     let already = env
         .call_static_method(
-            "app/billow/client/BillowVpnBridge",
+            bridge,
             "prepare",
-            "(Landroid/app/Activity;)Z",
+            "(Landroid/content/Context;)Z",
             &[jni::objects::JValue::Object(&activity)],
         )
-        .map_err(|_| "VPN 不可用".to_string())?
+        .map_err(|_| { let _ = env.exception_clear(); "VPN 不可用".to_string() })?
         .z()
         .map_err(|_| "VPN 不可用".to_string())?;
     if already {
@@ -994,7 +1014,7 @@ fn android_prepare() -> Result<bool, String> {
     }
     let guard = VPN_LOCK.lock().map_err(|_| "VPN 不可用".to_string())?;
     let _guard = VPN_READY
-        .wait_timeout(guard, std::time::Duration::from_secs(120))
+        .wait_timeout_while(guard, std::time::Duration::from_secs(120), |_| !VPN_CONSENT_READY.load(Ordering::SeqCst))
         .map_err(|_| "VPN 授权被拒绝".to_string())?;
     Ok(VPN_CONSENT.load(Ordering::SeqCst))
 }
@@ -1064,8 +1084,9 @@ fn android_start(filter: &AppFilter) -> Result<i32, String> {
         .map_err(|_| "VPN 没有建立".to_string())?;
     }
     let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+    let bridge = vpn_bridge_class(&mut env, &context)?;
     env.call_static_method(
-        "app/billow/client/BillowVpnBridge",
+        bridge,
         "start",
         "(Landroid/content/Context;Ljava/util/List;Z)V",
         &[
@@ -1074,7 +1095,7 @@ fn android_start(filter: &AppFilter) -> Result<i32, String> {
             jni::objects::JValue::Bool(u8::from(filter.only)),
         ],
     )
-    .map_err(|_| "VPN 没有建立".to_string())?;
+    .map_err(|_| { let _ = env.exception_clear(); "VPN 没有建立".to_string() })?;
     wait_for_written_vpn_fd(std::time::Duration::from_secs(15))
 }
 
@@ -1085,8 +1106,9 @@ fn android_stop() {
         let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|_| ())?;
         let mut env = vm.attach_current_thread().map_err(|_| ())?;
         let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+        let bridge = vpn_bridge_class(&mut env, &context).map_err(|_| ())?;
         env.call_static_method(
-            "app/billow/client/BillowVpnBridge",
+            bridge,
             "stop",
             "(Landroid/content/Context;)V",
             &[jni::objects::JValue::Object(&context)],
@@ -1107,6 +1129,7 @@ fn signal_vpn() {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub fn report_vpn_consent(granted: bool) {
     VPN_CONSENT.store(granted, Ordering::SeqCst);
+    VPN_CONSENT_READY.store(true, Ordering::SeqCst);
     #[cfg(target_os = "android")]
     signal_vpn();
 }

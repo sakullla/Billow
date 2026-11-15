@@ -19,6 +19,7 @@ import { useStore } from '../lib/store'
 import type { Mode } from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
+const appIcon = `${import.meta.env.BASE_URL}icon.png`
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const profile = computed(() => store.current.value)
@@ -135,7 +136,7 @@ function onPrimary() {
     </div>
 
     <section v-if="!store.hasProfiles.value" class="card welcome" data-testid="welcome">
-      <span class="brand-mark lg"><Icon name="logo" :size="36" :stroke="2.4" /></span>
+      <span class="brand-mark lg"><img :src="appIcon" alt="" /></span>
       <h1 class="status-word" data-testid="status">欢迎使用 Billow</h1>
       <p class="hero-sub muted">添加一个订阅或本地配置即可开始</p>
       <button type="button" class="connect-control" data-testid="power" @click="store.adding.value = true">

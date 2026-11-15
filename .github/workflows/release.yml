@@ -173,6 +173,11 @@ jobs:
           mobile: ${{ matrix.mobile }}
           args: ${{ matrix.args }}
           retryAttempts: 1
+      - uses: actions/setup-go@v7
+        if: matrix.platform == 'android'
+        with:
+          go-version: '1.26.11'
+          cache: false
       - name: Build Android APK
         if: matrix.platform == 'android'
         run: npm run tauri -- android build --target aarch64 --apk --split-per-abi

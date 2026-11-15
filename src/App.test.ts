@@ -627,6 +627,38 @@ describe('App', () => {
     expect(storeOf(wrapper).snapshot.value.excluded).toContain('tv.danmaku.bili')
   })
 
+  it('bounds mounted app rows and still finds apps near the end of a large list', async () => {
+    const { wrapper } = await mountApp({ platform: 'android' }, 390)
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await wrapper.find('[data-testid="open-apps"]').trigger('click')
+    const store = storeOf(wrapper)
+    store.stop()
+    store.snapshot.value = { ...store.snapshot.value, installed: Array.from({ length: 700 }, (_, i) => ({
+      name: `Application ${i}`, package_name: `com.example.app${i}`, system: false,
+    })) }
+    await nextTick()
+    expect(wrapper.findAll('.app-row').length).toBeLessThan(30)
+    await wrapper.find('[data-testid="apps-search"]').setValue('com.example.app699')
+    await nextTick()
+    expect(wrapper.findAll('.app-row')).toHaveLength(1)
+    expect(wrapper.find('.app-row').attributes('data-app')).toBe('com.example.app699')
+  })
+
+  it('activates the only imported profile before the first connection', async () => {
+    const { wrapper, backend } = await mountApp({ platform: 'android' }, 390)
+    const enable = vi.spyOn(backend, 'enable')
+    const connect = vi.spyOn(backend, 'connect')
+    const store = storeOf(wrapper)
+    store.stop()
+    const only = { ...store.snapshot.value.profiles[0]!, current: false }
+    store.snapshot.value = { ...store.snapshot.value, active_id: null, profiles: [only] }
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(enable).toHaveBeenCalledWith(only.id)
+    expect(connect).toHaveBeenCalledOnce()
+    expect(store.snapshot.value.connected).toBe(true)
+  })
+
   it('drills into phone settings sections and comes back to the list', async () => {
     const { wrapper } = await mountApp({}, 390)
     await wrapper.find('.tabbar [data-page="settings"]').trigger('click')

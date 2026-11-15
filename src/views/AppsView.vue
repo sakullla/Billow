@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
 import Segmented from '../components/Segmented.vue'
@@ -94,6 +94,36 @@ const visible = computed(() => {
     .filter((app) => !term || app.name.toLowerCase().includes(term) || app.package_name.toLowerCase().includes(term))
     .sort((a, b) => Number(pinned.value.has(b.package_name)) - Number(pinned.value.has(a.package_name)))
 })
+// Mount only the page viewport so app icon textures and DOM do not grow with scrolling.
+const listElement = ref<HTMLElement | null>(null)
+const pageOffset = ref(0)
+const pageHeight = ref(600)
+const APP_ROW = 72
+let pageScroller: HTMLElement | null = null
+let scrollFrame = 0
+const rowStart = computed(() => Math.min(Math.max(0, Math.floor(pageOffset.value / APP_ROW) - 4), Math.max(0, visible.value.length - 1)))
+const rowEnd = computed(() => Math.min(visible.value.length, rowStart.value + Math.ceil(pageHeight.value / APP_ROW) + 8))
+const rendered = computed(() => visible.value.slice(rowStart.value, rowEnd.value))
+function measurePage() {
+  scrollFrame = 0
+  if (!listElement.value || !pageScroller) return
+  pageOffset.value = Math.max(0, pageScroller.getBoundingClientRect().top - listElement.value.getBoundingClientRect().top)
+  pageHeight.value = pageScroller.clientHeight || 600
+}
+function pageScroll() {
+  if (!scrollFrame) scrollFrame = requestAnimationFrame(measurePage)
+}
+watch(visible, () => void nextTick(measurePage))
+watch(listElement, (element) => {
+  pageScroller?.removeEventListener('scroll', pageScroll)
+  pageScroller = element?.closest<HTMLElement>('.main') ?? null
+  pageScroller?.addEventListener('scroll', pageScroll, { passive: true })
+  measurePage()
+})
+watch([needle, showSystem, mode], () => {
+  pageOffset.value = 0
+  if (pageScroller) pageScroller.scrollTop = 0
+})
 const systemCount = computed(() => snap.value.installed.filter((app) => app.system).length)
 
 // ── Bulk actions ──
@@ -156,7 +186,6 @@ const hint = computed(() =>
 // ── Icons: native bridge, loaded lazily as rows scroll into view ──
 const icons = shallowRef<Record<string, string>>({})
 const bridge = typeof window !== 'undefined' ? (window as Window & { BillowApps?: { icon(pkg: string): string } }).BillowApps : undefined
-let observer: IntersectionObserver | null = null
 let disposed = false
 let iconTimer: ReturnType<typeof setTimeout> | null = null
 const iconQueue: string[] = []
@@ -182,20 +211,16 @@ function loadIcon(pkg: string) {
 }
 
 function observe(element: unknown) {
-  if (!(element instanceof HTMLElement) || !bridge) return
-  if (!observer && typeof IntersectionObserver !== 'undefined') {
-    observer = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting) continue
-        const pkg = (entry.target as HTMLElement).dataset.app
-        if (pkg) loadIcon(pkg)
-        observer?.unobserve(entry.target)
-      }
-    }, { rootMargin: '200px 0px' })
-  }
-  if (observer) observer.observe(element)
-  else if (element.dataset.app) loadIcon(element.dataset.app)
+  if (element instanceof HTMLElement && element.dataset.app) loadIcon(element.dataset.app)
 }
+
+watch(rendered, (rows) => {
+  const keep = new Set(rows.map((row) => row.package_name))
+  icons.value = Object.fromEntries(Object.entries(icons.value).filter(([pkg]) => keep.has(pkg)))
+  for (let i = iconQueue.length - 1; i >= 0; i--) {
+    if (!keep.has(iconQueue[i])) iconQueue.splice(i, 1)
+  }
+})
 
 const AVATAR_HUES = [210, 260, 160, 20, 330, 190, 40]
 function avatarHue(name: string): number {
@@ -204,10 +229,18 @@ function avatarHue(name: string): number {
   return AVATAR_HUES[hash % AVATAR_HUES.length]
 }
 
-onMounted(() => reorder())
+onMounted(() => {
+  reorder()
+  pageScroller = listElement.value?.closest<HTMLElement>('.main') ?? null
+  pageScroller?.addEventListener('scroll', pageScroll, { passive: true })
+  window.addEventListener('resize', pageScroll)
+  measurePage()
+})
 onBeforeUnmount(() => {
   disposed = true
-  observer?.disconnect()
+  pageScroller?.removeEventListener('scroll', pageScroll)
+  window.removeEventListener('resize', pageScroll)
+  if (scrollFrame) cancelAnimationFrame(scrollFrame)
   if (iconTimer !== null) clearTimeout(iconTimer)
   iconQueue.length = 0
   icons.value = {}
@@ -283,8 +316,9 @@ watch(
       <button v-if="!showSystem && systemCount" type="button" class="btn ghost" @click="showSystem = true">包含系统应用</button>
     </div>
 
-    <ul v-else class="card list-card app-list" data-testid="app-list">
-      <li v-for="app in visible" :key="app.package_name">
+    <ul v-else ref="listElement" class="card list-card app-list" data-testid="app-list">
+      <li v-if="rowStart" aria-hidden="true" :style="{ height: `${rowStart * APP_ROW}px` }" />
+      <li v-for="app in rendered" :key="app.package_name">
         <button
           :ref="observe"
           type="button"
@@ -303,6 +337,7 @@ watch(
           <span class="check-box" aria-hidden="true"><Icon v-if="selected.has(app.package_name)" name="check" :size="14" :stroke="2.6" /></span>
         </button>
       </li>
+      <li v-if="rowEnd < visible.length" aria-hidden="true" :style="{ height: `${(visible.length - rowEnd) * APP_ROW}px` }" />
     </ul>
   </div>
 </template>

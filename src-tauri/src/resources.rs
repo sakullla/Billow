@@ -55,11 +55,16 @@ pub struct GeoFile {
 }
 
 pub fn kernel_home() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    return crate::kernel::android_app_dir("dataDir").map(|dir| dir.join("profiles"));
+    #[cfg(not(target_os = "android"))]
+    {
     if let Some(dir) = std::env::var_os("CLASH_HOME_DIR").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(dir));
     }
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(PathBuf::from(home).join(".config").join("mihomo"))
+    }
 }
 
 fn md5_hex(text: &str) -> String {

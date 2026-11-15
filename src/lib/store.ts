@@ -536,7 +536,19 @@ export function createStore(backend: Backend) {
       adding.value = true
       return Promise.resolve(undefined)
     }
-    return act('connect', () => backend.connect(), '已连接', {
+    if (!snapshot.value.active_id && snapshot.value.profiles.length > 1) {
+      go('profiles')
+      toast('请先选择要使用的配置', 'info')
+      return Promise.resolve(undefined)
+    }
+    return act('connect', async () => {
+      if (!snapshot.value.active_id) {
+        const id = snapshot.value.profiles[0]!.id
+        const enabled = await backend.enable(id)
+        if (enabled.active_id !== id || enabled.failure) return enabled
+      }
+      return backend.connect()
+    }, '已连接', {
       action: { kind: 'connect' },
       done: (next) => next.connected,
     })

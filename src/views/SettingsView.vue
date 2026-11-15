@@ -370,9 +370,9 @@ function resetDns() {
         <div class="setting-row">
           <div class="grow">
             <strong>检查更新</strong>
-            <p class="muted small">{{ kernel.failure ?? '启动时会自动检查所选渠道的最新内核' }}</p>
+            <p class="muted small">{{ kernel.failure ?? (store.isAndroid.value ? '内核随 Billow 更新，安装后即可使用' : '已安装的内核直接使用；可手动检查新版本') }}</p>
           </div>
-          <button type="button" class="btn ghost sm" :disabled="store.busy.kernel" @click="store.refreshKernel()">
+          <button type="button" class="btn ghost sm" :disabled="store.busy.kernel" @click="store.isAndroid.value ? store.appUpdate.check() : store.refreshKernel()">
             <Icon name="refresh" :size="15" :class="{ spin: store.busy.kernel }" />检查
           </button>
         </div>

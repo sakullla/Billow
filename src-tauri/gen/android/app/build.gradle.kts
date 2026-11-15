@@ -40,6 +40,10 @@ android {
             }
         }
     }
+    packaging {
+        jniLibs.useLegacyPackaging = true
+        jniLibs.keepDebugSymbols.add("**/libmihomo.so")
+    }
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"

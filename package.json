@@ -1,13 +1,13 @@
 {
   "name": "billow",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Billow",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "node tool/prepare_android_kernel.mjs && vue-tsc --noEmit && vite build",
     "test": "vitest run",
     "tauri": "tauri",
     "build:macos": "tauri build",

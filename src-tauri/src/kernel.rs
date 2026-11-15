@@ -675,11 +675,30 @@ pub struct ConnectResult {
     pub kernel_path: Option<PathBuf>,
 }
 
+#[cfg(target_os = "android")]
+pub fn android_app_dir(field: &str) -> Option<PathBuf> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+    let info = env.call_method(&activity, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;", &[]).ok()?.l().ok()?;
+    let directory = env.get_field(&info, field, "Ljava/lang/String;").ok()?.l().ok()?;
+    let directory: String = env.get_string(&jni::objects::JString::from(directory)).ok()?.into();
+    Some(PathBuf::from(directory))
+}
+
+#[cfg(target_os = "android")]
+fn bundled_android_kernel() -> Option<(PathBuf, String)> {
+    let manifest: serde_json::Value = serde_json::from_str(include_str!("../android-kernel.json")).ok()?;
+    Some((android_app_dir("nativeLibraryDir")?.join("libmihomo.so"), manifest["version"].as_str()?.to_string()))
+}
+
 pub struct KernelManager {
     root: PathBuf,
     target: PlatformTarget,
     state: KernelState,
     running: Option<InstalledKernel>,
+    bundled: Option<(PathBuf, String)>,
 }
 
 impl KernelManager {
@@ -692,6 +711,10 @@ impl KernelManager {
             target,
             state,
             running: None,
+            #[cfg(target_os = "android")]
+            bundled: bundled_android_kernel(),
+            #[cfg(not(target_os = "android"))]
+            bundled: None,
         }
     }
 
@@ -705,6 +728,10 @@ impl KernelManager {
     }
 
     pub fn installed_path(&self) -> Option<PathBuf> {
+        if let Some((path, _)) = &self.bundled { return Some(path.clone()); }
+        #[cfg(target_os = "android")]
+        return None;
+        #[cfg(not(target_os = "android"))]
         self.state
             .installed
             .as_ref()
@@ -719,6 +746,9 @@ impl KernelManager {
     }
 
     pub fn status(&self) -> KernelStatus {
+        if let Some((path, version)) = &self.bundled {
+            return KernelStatus { channel: "stable".to_string(), failure: if path.is_file() { self.state.failure.clone() } else { Some("安装包缺少内核，请更新或重新安装 Billow".to_string()) }, ready: path.is_file(), version: Some(version.clone()) };
+        }
         let ready = self
             .installed_path()
             .map(|path| path.is_file())
@@ -745,6 +775,10 @@ impl KernelManager {
     }
 
     pub fn sync(&mut self, requested: Channel, source: &dyn ReleaseSource) -> KernelStatus {
+        if self.bundled.is_some() || cfg!(target_os = "android") {
+            self.state.failure = if requested == Channel::Preview { Some("Android 内核随应用更新，暂不提供独立预览渠道".to_string()) } else { None };
+            return self.status();
+        }
         let previous = self.state.clone();
         match self.stage(requested, source) {
             Ok(installed) => {
@@ -784,6 +818,9 @@ impl KernelManager {
     /// Select the staged kernel for the next launch.
     /// Without a local file the result is a failure and takeover stays off.
     pub fn connect(&mut self) -> ConnectResult {
+        if let Some((path, _)) = &self.bundled {
+            return if path.is_file() { ConnectResult { failed: false, failure: None, system_proxy: false, tun: false, vpn: false, kernel_path: Some(path.clone()) } } else { no_kernel() };
+        }
         let Some(installed) = self.state.installed.clone() else {
             self.running = None;
             return no_kernel();
@@ -988,6 +1025,25 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn bundled_kernel_is_ready_offline_and_never_replaced_by_a_download() {
+        let dir = temp_dir("bundled");
+        let path = dir.0.join("libmihomo.so");
+        fs::write(&path, b"bundled").unwrap();
+        let mut manager = KernelManager::open(&dir.0, linux_amd64());
+        manager.bundled = Some((path.clone(), "v1.19.34".to_string()));
+        let unavailable = MapSource { releases: HashMap::new(), files: HashMap::new() };
+        assert!(manager.sync(Channel::Stable, &unavailable).ready);
+        assert_eq!(manager.connect().kernel_path, Some(path.clone()));
+        assert!(manager.sync(Channel::Preview, &unavailable).failure.is_some());
+        assert_eq!(manager.status().channel, "stable");
+        assert_eq!(fs::read(&path).unwrap(), b"bundled");
+        fs::remove_file(path).unwrap();
+        assert!(!manager.status().ready);
+        assert!(manager.connect().failed);
+        assert!(manager.status().failure.unwrap().contains("安装包缺少内核"));
     }
 
     #[test]

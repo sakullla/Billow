@@ -760,6 +760,8 @@ impl KernelLaunch for ProcessRuntime {
         fs::write(&config_path, config_yaml).map_err(|_| "配置没有写入".to_string())?;
         let controller = nodes::controller_from_yaml(config_yaml);
         let mut command = Command::new(&path);
+        #[cfg(target_os = "android")]
+        command.arg("-d").arg(&self.work_dir);
         command
             .arg("-f")
             .arg(&config_path)
@@ -785,9 +787,9 @@ impl KernelLaunch for ProcessRuntime {
         self.stop();
         let mut child = match command.spawn() {
             Ok(child) => child,
-            Err(_) => {
+            Err(error) => {
                 let _ = fs::remove_file(&config_path);
-                return Err(KERNEL_ERROR.to_string());
+                return Err(format!("{KERNEL_ERROR}：{error}"));
             }
         };
         let stdout = child.stdout.take();
@@ -803,7 +805,7 @@ impl KernelLaunch for ProcessRuntime {
         let config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
         let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
         let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
-        let wait = if self.controller.is_some() { Duration::from_secs(5) } else { Duration::from_millis(300) };
+        let wait = if self.controller.is_some() { Duration::from_secs(90) } else { Duration::from_millis(300) };
         let deadline = Instant::now() + wait;
         loop {
             let failure = self.log_buffer.as_ref().and_then(|logs| {
@@ -823,8 +825,9 @@ impl KernelLaunch for ProcessRuntime {
             if let Some(endpoint) = self.controller.as_ref() {
                 if nodes::listeners_ready(endpoint, mixed, tun) { break; }
                 if Instant::now() >= deadline {
+                    let reason = self.log_buffer.as_ref().and_then(|logs| logs.lines.lock().ok()?.last().map(|line| line.message.clone()));
                     self.stop();
-                    return Err("内核监听未就绪，请检查端口占用、TUN 权限和日志".to_string());
+                    return Err(format!("内核初始化超时：{}", reason.as_deref().unwrap_or("请检查网络、端口占用和 TUN 权限")));
                 }
             } else if Instant::now() >= deadline { break; }
             std::thread::sleep(Duration::from_millis(20));
@@ -2637,6 +2640,25 @@ fn apply_settings(
             map.insert(key("mixed-port"), Value::Number(port.into()));
         }
     }
+    if !desktop {
+        // VPN traffic enters through a TUN fd, not the subscription's desktop ports.
+        // Keep app-owned ports stable during this process and separate from other clients.
+        static PORTS: std::sync::OnceLock<(u16, u16)> = std::sync::OnceLock::new();
+        let ports = if let Some(ports) = PORTS.get() { *ports } else {
+            let mixed = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
+            let controller = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
+            *PORTS.get_or_init(|| (mixed.local_addr().unwrap().port(), controller.local_addr().unwrap().port()))
+        };
+        if settings.mixed_port.is_none() { map.insert(key("mixed-port"), Value::Number(i64::from(ports.0).into())); }
+        for name in ["port", "socks-port", "redir-port", "tproxy-port"] { map.insert(key(name), Value::Number(0.into())); }
+        map.insert(key("external-controller"), Value::String(format!("127.0.0.1:{}", ports.1)));
+        let mut tun = map.get(key("tun")).and_then(Value::as_mapping).cloned().unwrap_or_default();
+        tun.insert(key("enable"), Value::Bool(false));
+        tun.insert(key("auto-route"), Value::Bool(false));
+        tun.insert(key("auto-detect-interface"), Value::Bool(false));
+        tun.insert(key("dns-hijack"), Value::Sequence(vec![Value::String("any:53".to_string())]));
+        map.insert(key("tun"), Value::Mapping(tun));
+    }
     if let Some(flag) = settings.allow_lan {
         map.insert(key("allow-lan"), Value::Bool(flag));
     }
@@ -3662,6 +3684,21 @@ mod tests {
 
     fn config(port: i64) -> String {
         format!("mixed-port: {port}\nmode: rule\nproxies: []\n")
+    }
+
+    #[test]
+    fn mobile_runtime_owns_its_listeners_and_leaves_routing_to_vpn_service() {
+        let source = "mixed-port: 7890\nport: 7891\nexternal-controller: 127.0.0.1:9090\ntun: {enable: true, auto-route: true, auto-detect-interface: true}\n";
+        let (yaml, mixed) = apply_settings(source, &KernelSettings::default(), false).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert!(mixed.unwrap() > 0);
+        assert_eq!(value["port"].as_i64(), Some(0));
+        assert_eq!(value["tun"]["enable"].as_bool(), Some(false));
+        assert_eq!(value["tun"]["auto-route"].as_bool(), Some(false));
+        assert_eq!(value["tun"]["auto-detect-interface"].as_bool(), Some(false));
+        assert!(value["external-controller"].as_str().unwrap().starts_with("127.0.0.1:"));
+        let again = apply_settings(source, &KernelSettings::default(), false).unwrap();
+        assert_eq!(again, (yaml, mixed));
     }
 
     #[test]
