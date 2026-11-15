@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-set-rule-disabled"
+description = "Temporarily enables or disables an existing rule in the active profile."
+commands.allow = ["set_rule_disabled"]

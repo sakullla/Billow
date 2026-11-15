@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::time::Duration;
 
-use serde::Serialize;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
 pub const NEED_PROFILE: &str = "需要先添加或更新配置";
@@ -22,28 +23,251 @@ pub struct NodeDelay {
     pub delay_ms: Option<u64>,
 }
 
+/// Progress payload for the `node-test` event emitted by a full test run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NodeTestEvent {
+    pub node: String,
+    pub delay: Option<u64>,
+    pub failed: bool,
+    pub tested: usize,
+    pub total: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedGroup {
     pub name: String,
     pub manual: bool,
     pub proxies: Vec<String>,
+    pub group_type: String,
+    /// Config-declared `icon`, kept only for remote http(s) or inline image data.
+    pub icon: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// The controller has already expanded providers and applied group filters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeCatalog {
+    pub members: BTreeMap<String, Vec<String>>,
+    pub now: BTreeMap<String, String>,
+    pub types: BTreeMap<String, String>,
+    pub tags: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct ControllerCatalog {
+    proxies: BTreeMap<String, ControllerProxy>,
+}
+
+/// Skip histories, health-check URLs and other fields while decoding: the UI
+/// needs only membership, selection and protocol, even for large providers.
+#[derive(Deserialize)]
+struct ControllerProxy {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    all: Option<Vec<String>>,
+    now: Option<String>,
+    udp: Option<bool>,
+    xudp: Option<bool>,
+    smux: Option<bool>,
+    tfo: Option<bool>,
+    mptcp: Option<bool>,
+    #[serde(rename = "dialer-proxy")]
+    dialer_proxy: Option<String>,
+}
+
+fn catalog_from_reader(reader: impl Read) -> Result<RuntimeCatalog, String> {
+    let response: ControllerCatalog = serde_json::from_reader(reader)
+        .map_err(|_| "节点列表没有读取".to_string())?;
+    let mut catalog = RuntimeCatalog::default();
+    for (name, item) in response.proxies {
+        let mut tags: Vec<String> = [(item.udp, "UDP"), (item.xudp, "XUDP"), (item.smux, "Mux"),
+            (item.tfo, "TFO"), (item.mptcp, "MPTCP")].into_iter()
+            .filter(|(on, _)| *on == Some(true)).map(|(_, tag)| tag.to_string()).collect();
+        if item.dialer_proxy.as_ref().is_some_and(|value| !value.is_empty()) { tags.push("链式".to_string()); }
+        if !tags.is_empty() { catalog.tags.insert(name.clone(), tags); }
+        if let Some(kind) = item.kind {
+            catalog.types.insert(name.clone(), kind);
+        }
+        if let Some(all) = item.all {
+            catalog.members.insert(name.clone(), all);
+        }
+        if let Some(now) = item.now.filter(|s| !s.is_empty()) {
+            catalog.now.insert(name, now);
+        }
+    }
+    Ok(catalog)
+}
+
+#[cfg(test)]
+pub fn runtime_catalog(value: &serde_json::Value) -> Result<RuntimeCatalog, String> {
+    catalog_from_reader(serde_json::to_vec(value).unwrap().as_slice())
+}
+
+pub fn resolved_groups(value: &Value, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
+    merge_runtime_groups(parse_proxy_groups(value), runtime)
+}
+
+pub fn merge_runtime_groups(mut groups: Vec<ParsedGroup>, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
+    for group in &mut groups {
+        if let Some(members) = runtime.members.get(&group.name) {
+            group.proxies = members.clone();
+        }
+    }
+    groups
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct NodeItemView {
     pub name: String,
     pub delay_ms: Option<u64>,
     pub failed: bool,
     pub selected: bool,
+    pub node_type: String,
+    /// Capability tags in display order (UDP, Reality/TLS, transport, …); see `proxy_tags`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct NodeGroupView {
     pub name: String,
     pub kind: String,
     pub now: String,
     pub sort: String,
     pub nodes: Vec<NodeItemView>,
+    pub group_type: String,
+    pub icon: Option<String>,
+}
+
+static TEST_URL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+static TEST_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5000);
+
+/// The delay probe URL and timeout chosen in settings. Empty keeps the default.
+pub fn set_probe(url: &str, timeout_ms: u64) {
+    let mut guard = TEST_URL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = url.trim().to_string();
+    TEST_TIMEOUT_MS.store(timeout_ms.clamp(1000, 30000), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn probe_url() -> String {
+    let guard = TEST_URL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_empty() {
+        DELAY_URL.to_string()
+    } else {
+        guard.clone()
+    }
+}
+
+fn probe_timeout() -> u64 {
+    TEST_TIMEOUT_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+
+/// Proxy name → protocol type (`ss`, `vmess`, …) from the config's `proxies` list, and group types.
+pub fn proxy_types(value: &Value) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(list) = mapping_get(value, "proxies").and_then(Value::as_sequence) {
+        for item in list {
+            if let (Some(name), Some(kind)) = (read_string(item, "name"), read_string(item, "type")) {
+                out.insert(name, kind);
+            }
+        }
+    }
+    if let Some(list) = mapping_get(value, "proxy-groups").and_then(Value::as_sequence) {
+        for item in list {
+            if let (Some(name), Some(kind)) = (read_string(item, "name"), read_string(item, "type")) {
+                out.entry(name).or_insert(kind);
+            }
+        }
+    }
+    out.entry("DIRECT".to_string()).or_insert_with(|| "direct".to_string());
+    out.entry("REJECT".to_string()).or_insert_with(|| "reject".to_string());
+    out
+}
+
+/// Protocol and capability tags of one proxy, read from the config.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProxyInfo {
+    pub kind: String,
+    pub tags: Vec<String>,
+}
+
+fn read_bool(value: &Value, key: &str) -> Option<bool> {
+    mapping_get(value, key).and_then(|item| match item {
+        Value::Bool(flag) => Some(*flag),
+        Value::String(text) => match text.to_ascii_lowercase().as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Tags users act on, most decisive first: UDP support (games, calls, QUIC),
+/// the security layer, the transport, then tuning flags. Protocols that always
+/// carry UDP or TLS (hysteria2, tuic, wireguard) do not repeat what the type says.
+pub fn proxy_tags(item: &Value) -> Vec<String> {
+    let kind = read_string(item, "type").unwrap_or_default().to_ascii_lowercase();
+    let mut tags = Vec::new();
+    let udp_native = matches!(kind.as_str(), "hysteria" | "hysteria2" | "tuic" | "wireguard");
+    if udp_native || read_bool(item, "udp") == Some(true) {
+        tags.push("UDP".to_string());
+    }
+    if read_bool(item, "xudp") == Some(true) || mapping_get(item, "packet-encoding").and_then(Value::as_str) == Some("xudp") {
+        tags.push("XUDP".to_string());
+    }
+    if mapping_get(item, "reality-opts").is_some_and(|value| value.is_mapping()) {
+        tags.push("Reality".to_string());
+    } else if read_bool(item, "tls") == Some(true) && !matches!(kind.as_str(), "trojan" | "hysteria" | "hysteria2" | "tuic" | "anytls") {
+        tags.push("TLS".to_string());
+    }
+    if let Some(network) = mapping_get(item, "network").and_then(Value::as_str) {
+        let label = match network.to_ascii_lowercase().as_str() {
+            "ws" => Some("WS"),
+            "grpc" => Some("gRPC"),
+            "h2" => Some("H2"),
+            "http" => Some("HTTP"),
+            "xhttp" => Some("XHTTP"),
+            _ => None,
+        };
+        if let Some(label) = label {
+            tags.push(label.to_string());
+        }
+    }
+    if mapping_get(item, "flow").and_then(Value::as_str).is_some_and(|flow| flow.contains("vision")) {
+        tags.push("Vision".to_string());
+    }
+    if mapping_get(item, "smux").and_then(|smux| read_bool(smux, "enabled")) == Some(true) {
+        tags.push("Mux".to_string());
+    }
+    if read_bool(item, "tfo") == Some(true) {
+        tags.push("TFO".to_string());
+    }
+    if read_bool(item, "mptcp") == Some(true) {
+        tags.push("MPTCP".to_string());
+    }
+    if mapping_get(item, "dialer-proxy").and_then(Value::as_str).is_some_and(|value| !value.is_empty()) {
+        tags.push("链式".to_string());
+    }
+    tags
+}
+
+/// Proxy name → protocol and tags; groups only carry their type.
+pub fn proxy_infos(value: &Value) -> BTreeMap<String, ProxyInfo> {
+    let mut out: BTreeMap<String, ProxyInfo> = proxy_types(value)
+        .into_iter()
+        .map(|(name, kind)| (name, ProxyInfo { kind, tags: Vec::new() }))
+        .collect();
+    if let Some(list) = mapping_get(value, "proxies").and_then(Value::as_sequence) {
+        for item in list {
+            if let Some(name) = read_string(item, "name") {
+                if let Some(info) = out.get_mut(&name) {
+                    info.tags = proxy_tags(item);
+                }
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,52 +301,29 @@ pub fn parse_proxy_groups(value: &Value) -> Vec<ParsedGroup> {
             name,
             manual: is_manual(group),
             proxies,
+            group_type: read_string(group, "type")
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            icon: read_string(group, "icon").and_then(|icon| usable_icon(&icon)),
         });
     }
     parsed
 }
 
-pub fn sorted_nodes(nodes: Vec<NodeItemView>, sort: &str) -> Vec<NodeItemView> {
-    let mut indexed: Vec<(usize, NodeItemView)> = nodes.into_iter().enumerate().collect();
-    match sort {
-        "name" => indexed.sort_by(|left, right| {
-            left.1
-                .name
-                .to_lowercase()
-                .cmp(&right.1.name.to_lowercase())
-                .then(left.0.cmp(&right.0))
-        }),
-        "delay" => indexed
-            .sort_by(|left, right| delay_key(&left.1, left.0).cmp(&delay_key(&right.1, right.0))),
-        _ => {}
+/// The group header shows an image only for `http:`, `https:` and `data:image/`.
+pub fn usable_icon(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    if text.is_empty() || text.chars().any(char::is_whitespace) {
+        return None;
     }
-    indexed.into_iter().map(|(_, node)| node).collect()
-}
-
-fn delay_key(node: &NodeItemView, index: usize) -> (u8, u64, usize) {
-    if node.delay_ms.is_some() && !node.failed {
-        (0, node.delay_ms.unwrap_or(0), index)
-    } else if node.failed {
-        (2, 0, index)
-    } else {
-        (1, 0, index)
+    let lower = text.to_ascii_lowercase();
+    let allowed = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("data:image/");
+    if !allowed {
+        return None;
     }
-}
-
-/// Name filtering hides rows only. An empty result means nothing matched.
-pub fn filter_visible(mut groups: Vec<NodeGroupView>, query: &str) -> (Vec<NodeGroupView>, bool) {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return (groups, false);
-    }
-    for group in &mut groups {
-        group
-            .nodes
-            .retain(|node| node.name.to_lowercase().contains(&query));
-    }
-    groups.retain(|group| !group.nodes.is_empty());
-    let none = groups.is_empty();
-    (groups, none)
+    Some(text.chars().take(2048).collect())
 }
 
 pub fn normalize_sort(sort: &str) -> &'static str {
@@ -265,42 +466,93 @@ pub fn put_selection(endpoint: &ControllerEndpoint, group: &str, node: &str) -> 
     }
 }
 
+/// Hot-reloads the controller with a filtered runtime config. The payload is
+/// base64-encoded like the kernel's `PUT /configs` contract.
+pub fn put_config(endpoint: &ControllerEndpoint, config_yaml: &str) -> Result<(), String> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return Err(KERNEL_DOWN.to_string());
+    }
+    let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
+    let payload = base64::engine::general_purpose::STANDARD.encode(config_yaml);
+    let body = serde_json::json!({ "payload": payload }).to_string();
+    let agent = agent(Duration::from_secs(5));
+    let request = agent
+        .put(&url)
+        .set("Content-Type", "application/json")
+        .set("User-Agent", "Billow");
+    let request = if endpoint.secret.is_empty() {
+        request
+    } else {
+        request.set("Authorization", &format!("Bearer {}", endpoint.secret))
+    };
+    match request.send_string(&body) {
+        Ok(_) => Ok(()),
+        Err(_) => Err("规则没有切换".to_string()),
+    }
+}
+
 pub fn fetch_delays(
     endpoint: &ControllerEndpoint,
     nodes: &[String],
 ) -> Result<Vec<NodeDelay>, String> {
+    fetch_delays_with_progress(endpoint, nodes, &mut |_, _, _| {})
+}
+
+/// Same probes as [`fetch_delays`], reporting each finished node as soon as its
+/// parallel request returns. Used for the per-node `node-test` progress events.
+pub fn fetch_delays_with_progress(
+    endpoint: &ControllerEndpoint,
+    nodes: &[String],
+    on_result: &mut dyn FnMut(&str, Option<u64>, bool),
+) -> Result<Vec<NodeDelay>, String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err(KERNEL_DOWN.to_string());
     }
-    let mut out = Vec::new();
-    let mut saw_controller = false;
-    for name in nodes {
-        match delay_one(endpoint, name) {
-            Ok(ms) => {
-                saw_controller = true;
-                out.push(NodeDelay {
-                    name: name.clone(),
-                    delay_ms: Some(ms),
-                });
-            }
-            Err(ProbeFail::Node) => {
-                saw_controller = true;
-                out.push(NodeDelay {
-                    name: name.clone(),
-                    delay_ms: None,
-                });
-            }
-            Err(ProbeFail::Unavailable) if !saw_controller => return Err(KERNEL_DOWN.to_string()),
-            Err(ProbeFail::Unavailable) => out.push(NodeDelay {
-                name: name.clone(),
-                delay_ms: None,
-            }),
-        }
+    if nodes.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(out)
+    // Probe in parallel batches; the controller handles each node independently.
+    let mut results: Vec<Option<Result<u64, ProbeFail>>> = (0..nodes.len()).map(|_| None).collect();
+    for (chunk_index, chunk) in nodes.chunks(16).enumerate() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            for (offset, name) in chunk.iter().enumerate() {
+                let sender = sender.clone();
+                scope.spawn(move || {
+                    let _ = sender.send((chunk_index * 16 + offset, delay_one(endpoint, name)));
+                });
+            }
+            drop(sender);
+            for (index, outcome) in receiver {
+                let delay = match &outcome {
+                    Ok(ms) => Some(*ms),
+                    Err(_) => None,
+                };
+                on_result(&nodes[index], delay, delay.is_none());
+                results[index] = Some(outcome);
+            }
+        });
+    }
+    let saw_controller = results
+        .iter()
+        .any(|item| !matches!(item, Some(Err(ProbeFail::Unavailable)) | None));
+    if !saw_controller {
+        return Err(KERNEL_DOWN.to_string());
+    }
+    Ok(nodes
+        .iter()
+        .zip(results)
+        .map(|(name, item)| NodeDelay {
+            name: name.clone(),
+            delay_ms: match item {
+                Some(Ok(ms)) => Some(ms),
+                _ => None,
+            },
+        })
+        .collect())
 }
 
-pub fn fetch_now(endpoint: &ControllerEndpoint) -> Result<BTreeMap<String, String>, String> {
+pub fn fetch_catalog(endpoint: &ControllerEndpoint) -> Result<RuntimeCatalog, String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err(KERNEL_DOWN.to_string());
     }
@@ -313,21 +565,25 @@ pub fn fetch_now(endpoint: &ControllerEndpoint) -> Result<BTreeMap<String, Strin
         request.set("Authorization", &format!("Bearer {}", endpoint.secret))
     };
     let response = request.call().map_err(|_| KERNEL_DOWN.to_string())?;
-    let text = read_body(response).map_err(|_| KERNEL_DOWN.to_string())?;
-    let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|_| KERNEL_DOWN.to_string())?;
-    let mut out = BTreeMap::new();
-    let Some(proxies) = value.get("proxies").and_then(serde_json::Value::as_object) else {
-        return Ok(out);
-    };
-    for (name, item) in proxies {
-        if let Some(now) = item.get("now").and_then(serde_json::Value::as_str) {
-            if !now.is_empty() {
-                out.insert(name.clone(), now.to_string());
-            }
-        }
-    }
-    Ok(out)
+    catalog_from_reader(BufReader::new(response.into_reader().take(8_000_000)))
+}
+
+/// Read actual listener state; Mihomo can stay alive after failing to bind a port or TUN.
+pub fn listeners_ready(endpoint: &ControllerEndpoint, port: Option<u16>, tun: bool) -> bool {
+    if !loopback(&endpoint.host) || endpoint.port == 0 { return false; }
+    let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
+    let client = agent(Duration::from_millis(150));
+    let request = client.get(&url).set("Authorization", &format!("Bearer {}", endpoint.secret));
+    let Ok(response) = request.call() else { return false; };
+    let Ok(body) = read_body(response) else { return false; };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else { return false; };
+    let port_ready = port.is_none_or(|port| value.get("mixed-port").and_then(|p| p.as_u64()) == Some(u64::from(port)));
+    port_ready && (!tun || value.get("tun").and_then(|t| t.get("enable")).and_then(|v| v.as_bool()) == Some(true))
+}
+
+#[cfg(test)]
+pub fn fetch_now(endpoint: &ControllerEndpoint) -> Result<BTreeMap<String, String>, String> {
+    fetch_catalog(endpoint).map(|catalog| catalog.now)
 }
 
 enum ProbeFail {
@@ -337,13 +593,14 @@ enum ProbeFail {
 
 fn delay_one(endpoint: &ControllerEndpoint, name: &str) -> Result<u64, ProbeFail> {
     let url = format!(
-        "http://{}:{}/proxies/{}/delay?timeout=5000&url={}",
+        "http://{}:{}/proxies/{}/delay?timeout={}&url={}",
         endpoint.host,
         endpoint.port,
         encode_segment(name),
-        encode_segment(DELAY_URL)
+        probe_timeout(),
+        encode_segment(&probe_url())
     );
-    let agent = agent(Duration::from_millis(7000));
+    let agent = agent(Duration::from_millis(probe_timeout() + 2000));
     let request = agent.get(&url).set("User-Agent", "Billow");
     let request = if endpoint.secret.is_empty() {
         request
@@ -483,6 +740,52 @@ fn mapping_get_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listener_readiness_requires_the_requested_port_and_tun_state() {
+        let responses = [
+            r#"{"mixed-port":0,"tun":{"enable":false}}"#,
+            r#"{"mixed-port":7890,"tun":{"enable":false}}"#,
+            r#"{"mixed-port":7890,"tun":{"enable":true}}"#,
+            r#"{"mixed-port":7890,"tun":{"enable":false}}"#,
+        ].into_iter().map(|body| http_response("200 OK", body)).collect();
+        let (port, server) = serve(responses);
+        let endpoint = ControllerEndpoint { host: "127.0.0.1".to_string(), port, secret: "test".to_string() };
+        assert!(!listeners_ready(&endpoint, Some(7890), false));
+        assert!(!listeners_ready(&endpoint, Some(7890), true));
+        assert!(listeners_ready(&endpoint, Some(7890), true));
+        assert!(listeners_ready(&endpoint, Some(7890), false));
+        let requests = server.join().unwrap();
+        assert!(requests.iter().all(|request| request.starts_with("GET /configs ")));
+    }
+
+    #[test]
+    fn catalog_skips_unneeded_history_and_rejects_incomplete_payloads() {
+        let history = "{\"time\":\"2026-01-01T00:00:00Z\",\"delay\":42},".repeat(20_000);
+        let body = format!(r#"{{"proxies":{{"a":{{"type":"VLESS","history":[{}{{"delay":0}}]}},"group":{{"all":["a"],"now":"a","type":"Selector"}}}}}}"#, history);
+        let parsed = catalog_from_reader(body.as_bytes()).unwrap();
+        assert_eq!(parsed.members["group"], ["a"]);
+        assert_eq!(parsed.types["a"], "VLESS");
+        assert_eq!(parsed.now["group"], "a");
+        assert!(catalog_from_reader(&body.as_bytes()[..body.len() - 1]).is_err());
+        assert!(catalog_from_reader(br#"{"message":"unauthorized"}"#.as_slice()).is_err());
+    }
+
+    #[test]
+    fn runtime_members_replace_static_lists_and_keep_provider_filters_and_selection() {
+        let document: Value = serde_yaml::from_str("proxy-groups:\n  - {name: Available, type: select, use: [remote]}\n  - {name: HK, type: url-test, use: [remote], filter: HK}\n").unwrap();
+        let runtime = runtime_catalog(&serde_json::json!({"proxies": {
+            "Available": {"type":"Selector", "all":["HK 1", "JP 1"], "now":"JP 1"},
+            "HK": {"type":"URLTest", "all":["HK 1"], "now":"HK 1"},
+            "HK 1": {"type":"Shadowsocks"}, "JP 1": {"type":"VLESS"}
+        }})).unwrap();
+        let groups = resolved_groups(&document, &runtime);
+        assert_eq!(groups[0].proxies, ["HK 1", "JP 1"]);
+        assert_eq!(groups[1].proxies, ["HK 1"]);
+        assert_eq!(runtime.now["Available"], "JP 1");
+        assert_eq!(runtime.types["JP 1"], "VLESS");
+        assert!(runtime_catalog(&serde_json::json!({"message":"unauthorized"})).is_err());
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -503,6 +806,7 @@ proxies:
 proxy-groups:
   - name: manual
     type: Select
+    icon: https://icons.example.com/manual.png
     proxies:
       - one
       - two
@@ -510,11 +814,13 @@ proxy-groups:
       - one
   - name: auto
     type: url-test
+    icon: file:///tmp/local.png
     proxies:
       - one
       - two
   - name: all
     type: selector
+    icon: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
     include-all: true
     proxies:
       - DIRECT
@@ -533,36 +839,44 @@ proxy-groups:
         assert_eq!(groups[1].proxies, ["one", "two"]);
         assert!(groups[2].manual);
         assert_eq!(groups[2].proxies, ["DIRECT", "one", "two"]);
+        assert_eq!(
+            groups[0].icon.as_deref(),
+            Some("https://icons.example.com/manual.png")
+        );
+        assert!(groups[1].icon.is_none(), "a local file is not a usable icon");
+        assert!(groups[2].icon.as_deref().is_some_and(|icon| icon.starts_with("data:image/")));
     }
 
     #[test]
-    fn sort_and_filter_only_change_the_view() {
-        let nodes = vec![
-            item("z-node", Some(20), false),
-            item("m-node", None, true),
-            item("a-node", Some(5), false),
-        ];
-        let by_delay = sorted_nodes(nodes.clone(), "delay");
-        assert_eq!(names(&by_delay), ["a-node", "z-node", "m-node"]);
-        assert!(by_delay[2].failed);
-        let by_name = sorted_nodes(nodes.clone(), "name");
-        assert_eq!(names(&by_name), ["a-node", "m-node", "z-node"]);
-        let original = sorted_nodes(nodes, "default");
-        assert_eq!(names(&original), ["z-node", "m-node", "a-node"]);
-
-        let groups = vec![NodeGroupView {
-            name: "manual".to_string(),
-            kind: "manual".to_string(),
-            now: "z-node".to_string(),
-            sort: "default".to_string(),
-            nodes: original,
-        }];
-        let (matched, none) = filter_visible(groups.clone(), "a-n");
-        assert!(!none);
-        assert_eq!(names(&matched[0].nodes), ["a-node"]);
-        let (empty, none) = filter_visible(groups.clone(), "missing");
-        assert!(none && empty.is_empty());
-        assert_eq!(groups[0].nodes.len(), 3);
+    fn group_icons_keep_remote_and_inline_images_only() {
+        assert_eq!(
+            usable_icon(" https://icons.example.com/a.png ").as_deref(),
+            Some("https://icons.example.com/a.png")
+        );
+        assert_eq!(
+            usable_icon("HTTP://icons.example.com/a.png").as_deref(),
+            Some("HTTP://icons.example.com/a.png")
+        );
+        assert!(usable_icon("data:image/png;base64,AAAA").is_some());
+        for rejected in [
+            "",
+            "   ",
+            "file:///tmp/a.png",
+            "javascript:alert(1)",
+            "ftp://icons.example.com/a.png",
+            "https://icons.example.com/a b.png",
+            "data:text/html;base64,AAAA",
+        ] {
+            assert!(usable_icon(rejected).is_none(), "{rejected}");
+        }
+        let yaml = r#"
+proxy-groups:
+  - name: plain
+    type: select
+    proxies: [DIRECT]
+"#;
+        let groups = parse_proxy_groups(&serde_yaml::from_str(yaml).unwrap());
+        assert!(groups[0].icon.is_none(), "missing icon stays empty");
     }
 
     #[test]
@@ -612,8 +926,10 @@ proxy-groups:
         };
         put_selection(&endpoint, "手动", "日本").unwrap();
         let delays = fetch_delays(&endpoint, &["甲".to_string(), "乙".to_string()]).unwrap();
-        assert_eq!(delays[0].delay_ms, Some(12));
-        assert_eq!(delays[1].delay_ms, None);
+        // Probes run in parallel, so which node gets which canned reply is not fixed.
+        let mut got: Vec<Option<u64>> = delays.iter().map(|item| item.delay_ms).collect();
+        got.sort();
+        assert_eq!(got, [None, Some(12)]);
         let now = fetch_now(&endpoint).unwrap();
         assert_eq!(now.get("auto").map(String::as_str), Some("beta"));
         let seen = handle.join().unwrap();
@@ -640,19 +956,6 @@ proxy-groups:
         assert!(put_selection(&remote, "manual", "one").is_err());
         assert!(fetch_delays(&remote, &["one".to_string()]).is_err());
         assert!(fetch_now(&remote).is_err());
-    }
-
-    fn item(name: &str, delay_ms: Option<u64>, failed: bool) -> NodeItemView {
-        NodeItemView {
-            name: name.to_string(),
-            delay_ms,
-            failed,
-            selected: false,
-        }
-    }
-
-    fn names(nodes: &[NodeItemView]) -> Vec<&str> {
-        nodes.iter().map(|node| node.name.as_str()).collect()
     }
 
     fn http_response(status: &str, body: &str) -> String {
@@ -712,5 +1015,57 @@ proxy-groups:
             Some(length) => buf.len() >= pos + 4 + length,
             None => true,
         }
+    }
+
+    #[test]
+    fn node_test_event_payload_carries_progress_and_failure() {
+        let event = NodeTestEvent {
+            node: "香港 01".to_string(),
+            delay: Some(120),
+            failed: false,
+            tested: 2,
+            total: 3,
+        };
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"node":"香港 01","delay":120,"failed":false,"tested":2,"total":3}"#
+        );
+        let failed = NodeTestEvent {
+            node: "日本 02".to_string(),
+            delay: None,
+            failed: true,
+            tested: 3,
+            total: 3,
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&failed).unwrap()).unwrap();
+        assert_eq!(value["delay"], serde_json::Value::Null);
+        assert_eq!(value["failed"], true);
+        assert_eq!(value["tested"], 3);
+    }
+
+    #[test]
+    fn proxy_tags_follow_config_capabilities_without_repeating_the_protocol() {
+        let config: Value = serde_yaml::from_str(
+            r#"
+proxies:
+  - { name: a, type: vless, udp: true, tls: true, network: grpc, flow: xtls-rprx-vision, reality-opts: { public-key: k } }
+  - { name: b, type: hysteria2, server: x, port: 1 }
+  - { name: c, type: trojan, tls: true, udp: "true", network: ws, smux: { enabled: true }, tfo: true, mptcp: true }
+  - { name: d, type: vmess, tls: true, dialer-proxy: a }
+  - { name: e, type: ss }
+proxy-groups:
+  - { name: G, type: select, proxies: [a] }
+"#,
+        )
+        .unwrap();
+        let infos = proxy_infos(&config);
+        assert_eq!(infos["a"].tags, ["UDP", "Reality", "gRPC", "Vision"]);
+        assert_eq!(infos["b"].tags, ["UDP"]);
+        assert_eq!(infos["c"].tags, ["UDP", "WS", "Mux", "TFO", "MPTCP"]);
+        assert_eq!(infos["d"].tags, ["TLS", "链式"]);
+        assert!(infos["e"].tags.is_empty());
+        assert_eq!(infos["G"].kind, "select");
+        assert!(infos["G"].tags.is_empty());
     }
 }

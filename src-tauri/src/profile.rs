@@ -1,17 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-use crate::diagnostics::{self, ConnectionView, LogView};
+use crate::diagnostics::{self, ConnectionView, LogView, TrafficTotals};
 use crate::nodes::{
     self, ControllerEndpoint, KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay,
     NodeGroupView, ParsedGroup, SELECT_FAILED,
@@ -29,6 +29,7 @@ const MISSING_KERNEL: &str = "没有本地内核";
 const LINK_ERROR: &str = "不支持这个导入链接";
 const ONE_LINK_ERROR: &str = "需要一条订阅链接";
 const URL_ERROR: &str = "订阅链接不可用";
+const DUPLICATE_ERROR: &str = "该订阅已存在";
 const MISSING_PROFILE: &str = "没有这份配置";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +70,290 @@ struct Profile {
     last_success_ms: Option<u64>,
     usage: Option<Usage>,
     selected: BTreeMap<String, String>,
+    interval_hours: u32,
+    updated_ms: Option<u64>,
+    proxy_count: usize,
+    node_metadata: OnceLock<Option<NodeMetadata>>,
+}
+
+/// Cache only display metadata, not the full YAML tree or subscription credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NodeMetadata {
+    groups: Vec<ParsedGroup>,
+    types: BTreeMap<String, nodes::ProxyInfo>,
+    config: ConfigValues,
+}
+
+impl Profile {
+    fn node_metadata(&self) -> Option<&NodeMetadata> {
+        self.node_metadata.get_or_init(|| {
+            let value = document_value(self)?;
+            let flag = |name: &str| mapping_get(&value, name).and_then(Value::as_bool);
+            Some(NodeMetadata {
+                groups: nodes::parse_proxy_groups(&value),
+                types: nodes::proxy_infos(&value),
+                config: ConfigValues {
+                    mixed_port: read_i64(&value, "mixed-port").or_else(|| read_i64(&value, "port")),
+                    allow_lan: flag("allow-lan"), ipv6: flag("ipv6"),
+                    log_level: read_string(&value, "log-level"),
+                    unified_delay: flag("unified-delay"), tcp_concurrent: flag("tcp-concurrent"),
+                    find_process_mode: read_string(&value, "find-process-mode"),
+                },
+            })
+        }).as_ref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KernelSettings {
+    #[serde(default)]
+    pub mixed_port: Option<u16>,
+    #[serde(default)]
+    pub allow_lan: Option<bool>,
+    #[serde(default)]
+    pub ipv6: Option<bool>,
+    #[serde(default)]
+    pub log_level: Option<String>,
+    #[serde(default)]
+    pub unified_delay: Option<bool>,
+    #[serde(default)]
+    pub tcp_concurrent: Option<bool>,
+    #[serde(default)]
+    pub find_process_mode: Option<String>,
+    #[serde(default)]
+    pub test_url: String,
+    #[serde(default)]
+    pub test_timeout_ms: u64,
+    /// Domain sniffing; `None` follows the profile.
+    #[serde(default)]
+    pub sniffer: Option<bool>,
+    /// When on, the app's `dns` block replaces the profile's.
+    #[serde(default)]
+    pub dns_override: bool,
+    #[serde(default)]
+    pub dns: DnsSettings,
+    #[serde(default)]
+    pub tun: TunSettings,
+    /// GEO databases: `None` follows the profile.
+    #[serde(default)]
+    pub geo_auto_update: Option<bool>,
+    #[serde(default)]
+    pub geo_update_interval: Option<u32>,
+    /// Download source for GEO databases: `""` follows the profile's `geox-url`.
+    #[serde(default)]
+    pub geo_source: String,
+}
+
+/// `geox-url` for a named GEO source; `None` leaves the profile's own value.
+pub fn geo_source_urls(source: &str) -> Option<[(&'static str, String); 4]> {
+    let base = match source {
+        "github" => "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest",
+        "jsdelivr" => "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release",
+        "testingcf" => "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release",
+        _ => return None,
+    };
+    Some([
+        ("geoip", format!("{base}/geoip.dat")),
+        ("geosite", format!("{base}/geosite.dat")),
+        ("mmdb", format!("{base}/geoip.metadb")),
+        ("asn", format!("{base}/GeoLite2-ASN.mmdb")),
+    ])
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DnsSettings {
+    pub enhanced_mode: String,
+    pub fake_ip_range: String,
+    pub fake_ip_filter: Vec<String>,
+    pub ipv6: bool,
+    pub use_hosts: bool,
+    pub respect_rules: bool,
+    pub default_nameserver: Vec<String>,
+    pub nameserver: Vec<String>,
+    pub fallback: Vec<String>,
+    pub proxy_server_nameserver: Vec<String>,
+    pub direct_nameserver: Vec<String>,
+}
+
+impl Default for DnsSettings {
+    fn default() -> Self {
+        let list = |items: &[&str]| items.iter().map(|item| item.to_string()).collect();
+        Self {
+            enhanced_mode: "fake-ip".to_string(),
+            fake_ip_range: "198.18.0.1/16".to_string(),
+            fake_ip_filter: list(&[
+                "*.lan",
+                "*.local",
+                "*.localdomain",
+                "localhost.ptlogin2.qq.com",
+                "+.msftconnecttest.com",
+                "+.msftncsi.com",
+                "+.stun.*.*",
+                "+.stun.*.*.*",
+                "time.*.com",
+                "ntp.*.com",
+                "+.market.xiaomi.com",
+            ]),
+            ipv6: false,
+            use_hosts: true,
+            respect_rules: false,
+            default_nameserver: list(&["223.5.5.5", "119.29.29.29"]),
+            nameserver: list(&["https://doh.pub/dns-query", "https://dns.alidns.com/dns-query"]),
+            fallback: Vec::new(),
+            proxy_server_nameserver: list(&["https://doh.pub/dns-query"]),
+            direct_nameserver: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TunSettings {
+    pub stack: String,
+    pub auto_route: bool,
+    pub auto_detect_interface: bool,
+    pub strict_route: bool,
+    pub dns_hijack: Vec<String>,
+    pub mtu: u32,
+    pub device: String,
+}
+
+impl Default for TunSettings {
+    fn default() -> Self {
+        Self {
+            stack: "mixed".to_string(),
+            auto_route: true,
+            auto_detect_interface: true,
+            strict_route: false,
+            dns_hijack: vec!["any:53".to_string(), "tcp://any:53".to_string()],
+            mtu: 1500,
+            device: String::new(),
+        }
+    }
+}
+
+fn clean_list(items: Vec<String>, limit: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let item: String = item.trim().chars().filter(|ch| !ch.is_control()).take(300).collect();
+        if !item.is_empty() && !out.contains(&item) {
+            out.push(item);
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+impl DnsSettings {
+    fn normalized(mut self) -> Self {
+        let fallback = Self::default();
+        self.enhanced_mode = match self.enhanced_mode.trim().to_ascii_lowercase().as_str() {
+            "redir-host" => "redir-host".to_string(),
+            "normal" => "normal".to_string(),
+            _ => "fake-ip".to_string(),
+        };
+        self.fake_ip_range = self.fake_ip_range.trim().to_string();
+        if self.fake_ip_range.is_empty() || !self.fake_ip_range.contains('/') {
+            self.fake_ip_range = fallback.fake_ip_range;
+        }
+        self.fake_ip_filter = clean_list(self.fake_ip_filter, 500);
+        self.default_nameserver = clean_list(self.default_nameserver, 20);
+        self.nameserver = clean_list(self.nameserver, 20);
+        self.fallback = clean_list(self.fallback, 20);
+        self.proxy_server_nameserver = clean_list(self.proxy_server_nameserver, 20);
+        self.direct_nameserver = clean_list(self.direct_nameserver, 20);
+        if self.nameserver.is_empty() {
+            self.nameserver = fallback.nameserver;
+        }
+        if self.default_nameserver.is_empty() {
+            self.default_nameserver = fallback.default_nameserver;
+        }
+        self
+    }
+
+    fn to_value(&self) -> Value {
+        let key = |name: &str| Value::String(name.to_string());
+        let strings =
+            |items: &[String]| Value::Sequence(items.iter().map(|item| Value::String(item.clone())).collect());
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(key("enable"), Value::Bool(true));
+        map.insert(key("ipv6"), Value::Bool(self.ipv6));
+        map.insert(key("use-hosts"), Value::Bool(self.use_hosts));
+        map.insert(key("respect-rules"), Value::Bool(self.respect_rules));
+        map.insert(key("enhanced-mode"), Value::String(self.enhanced_mode.clone()));
+        if self.enhanced_mode == "fake-ip" {
+            map.insert(key("fake-ip-range"), Value::String(self.fake_ip_range.clone()));
+            map.insert(key("fake-ip-filter"), strings(&self.fake_ip_filter));
+        }
+        map.insert(key("default-nameserver"), strings(&self.default_nameserver));
+        map.insert(key("nameserver"), strings(&self.nameserver));
+        if !self.fallback.is_empty() {
+            map.insert(key("fallback"), strings(&self.fallback));
+        }
+        if !self.proxy_server_nameserver.is_empty() {
+            map.insert(key("proxy-server-nameserver"), strings(&self.proxy_server_nameserver));
+        }
+        if !self.direct_nameserver.is_empty() {
+            map.insert(key("direct-nameserver"), strings(&self.direct_nameserver));
+        }
+        Value::Mapping(map)
+    }
+}
+
+impl TunSettings {
+    fn normalized(mut self) -> Self {
+        self.stack = match self.stack.trim().to_ascii_lowercase().as_str() {
+            "system" => "system".to_string(),
+            "gvisor" => "gvisor".to_string(),
+            _ => "mixed".to_string(),
+        };
+        self.dns_hijack = clean_list(self.dns_hijack, 20);
+        self.mtu = if self.mtu == 0 { 0 } else { self.mtu.clamp(576, 9000) };
+        self.device = self
+            .device
+            .trim()
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+            .take(32)
+            .collect();
+        self
+    }
+}
+
+/// What the active profile itself says, so the settings page can show "follow profile" values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ConfigValues {
+    pub mixed_port: Option<i64>,
+    pub allow_lan: Option<bool>,
+    pub ipv6: Option<bool>,
+    pub log_level: Option<String>,
+    pub unified_delay: Option<bool>,
+    pub tcp_concurrent: Option<bool>,
+    pub find_process_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProvidersSnapshot {
+    pub providers: Vec<diagnostics::ProviderView>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RulesSnapshot {
+    pub rules: Vec<diagnostics::RuleRowView>,
+    pub error: Option<String>,
+    /// Rule keys disabled for this run; cleared when the app restarts or the config changes.
+    pub disabled: Vec<String>,
+}
+
+/// One runtime rule toggle from the rules page.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuleToggle {
+    pub key: String,
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +373,7 @@ impl Default for Takeover {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ProfileView {
     pub id: String,
     pub name: String,
@@ -102,9 +387,12 @@ pub struct ProfileView {
     pub total: Option<u64>,
     pub expire: Option<u64>,
     pub last_success_ms: Option<u64>,
+    pub interval_hours: u32,
+    pub updated_ms: Option<u64>,
+    pub proxy_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ProfileSnapshot {
     pub profiles: Vec<ProfileView>,
     pub active_id: Option<String>,
@@ -120,20 +408,36 @@ pub struct ProfileSnapshot {
     pub platform: String,
     pub tun_wanted: bool,
     pub excluded: Vec<String>,
+    /// Apps that use the VPN when `app_mode` is `include`.
+    pub included: Vec<String>,
+    /// `exclude` (listed apps bypass the VPN) or `include` (only listed apps use it).
+    pub app_mode: String,
     pub installed: Vec<crate::takeover::InstalledApp>,
-    pub node_groups: Vec<NodeGroupView>,
     pub node_catalog: Vec<NodeGroupView>,
     pub node_query: String,
     pub nodes_notice: Option<String>,
     pub nodes_error: Option<String>,
     pub nodes_profile_id: Option<String>,
     pub kernel_running: bool,
+    /// Kernel memory in bytes; `None` when the kernel does not report it.
+    pub kernel_memory: Option<u64>,
+    /// Seconds since the kernel process started; `None` while it is not running.
+    pub kernel_uptime_secs: Option<u64>,
     pub connections: Vec<ConnectionView>,
+    /// Open connections the kernel reported, even when the list keeps only 500 rows.
+    pub connection_total: usize,
+    /// Set when `/connections` could not be read; empty results are not failures.
+    pub connections_error: Option<String>,
     pub connection_query: String,
     pub logs: Vec<LogView>,
     pub log_filter: String,
     pub upload: Option<u64>,
     pub download: Option<u64>,
+    pub upload_total: Option<u64>,
+    pub download_total: Option<u64>,
+    pub settings: KernelSettings,
+    pub config_values: ConfigValues,
+    pub notice: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +453,12 @@ pub trait SubscriptionSource {
 pub trait KernelLaunch {
     fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String>;
 
+    /// Applies a filtered runtime config without restarting the process, so the
+    /// rule list can be toggled while TUN/VPN stays up.
+    fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
+        self.start_or_reload(config_yaml)
+    }
+
     fn running(&mut self) -> bool {
         false
     }
@@ -161,12 +471,50 @@ pub trait KernelLaunch {
         Err(KERNEL_DOWN.to_string())
     }
 
+    /// Reports each finished node as it returns, then the ordered results.
+    fn probe_delays_with_progress(
+        &mut self,
+        group: &str,
+        nodes: &[String],
+        on_result: &mut dyn FnMut(&str, Option<u64>, bool),
+    ) -> Result<Vec<NodeDelay>, String> {
+        let results = self.probe_delays(group, nodes)?;
+        for item in &results {
+            on_result(&item.name, item.delay_ms, item.delay_ms.is_none());
+        }
+        Ok(results)
+    }
+
     fn auto_now(&mut self) -> BTreeMap<String, String> {
         BTreeMap::new()
     }
 
+    fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
+        nodes::RuntimeCatalog { now: self.auto_now(), ..Default::default() }
+    }
+
     fn connections(&mut self) -> Vec<ConnectionView> {
         Vec::new()
+    }
+
+    /// Open connections counted by the last `/connections` read, before the view keeps 500 rows.
+    fn connection_total(&mut self) -> Option<usize> {
+        None
+    }
+
+    /// Why the last `/connections` read failed, if it did.
+    fn connections_error(&mut self) -> Option<String> {
+        None
+    }
+
+    /// Kernel memory in bytes, from `/memory`. `None` when the kernel does not report it.
+    fn kernel_memory(&mut self) -> Option<u64> {
+        None
+    }
+
+    /// Seconds since this kernel process started, tracked by the app.
+    fn kernel_uptime_secs(&mut self) -> Option<u64> {
+        None
     }
 
     fn pull_logs(&mut self) -> Vec<LogView> {
@@ -178,6 +526,16 @@ pub trait KernelLaunch {
     }
 
     fn traffic(&mut self) -> Option<(u64, u64)> {
+        None
+    }
+
+    /// Byte totals from the last `/connections` read.
+    fn connection_totals(&mut self) -> Option<TrafficTotals> {
+        None
+    }
+
+    /// Loopback controller of the running kernel, for one-off reads such as rules.
+    fn controller(&mut self) -> Option<ControllerEndpoint> {
         None
     }
 }
@@ -238,32 +596,39 @@ pub struct ProcessRuntime {
     child: Option<Child>,
     config_path: Option<PathBuf>,
     controller: Option<ControllerEndpoint>,
-    cached_now: BTreeMap<String, String>,
+    cached_catalog: nodes::RuntimeCatalog,
+    launched_kernel: Option<PathBuf>,
     log_buffer: Option<CapturedLogs>,
-    traffic_watch: Option<TrafficWatch>,
+    traffic_watch: Option<MetricWatch<(u64, u64)>>,
+    memory_watch: Option<MetricWatch<u64>>,
+    totals: Option<TrafficTotals>,
+    connection_total: Option<usize>,
+    connections_error: Option<String>,
+    started: Option<Instant>,
 }
 
-struct TrafficWatch {
-    latest: Arc<Mutex<Option<(u64, u64)>>>,
+struct MetricWatch<T> {
+    latest: Arc<Mutex<Option<T>>>,
     stop: Arc<AtomicBool>,
-    waited: bool,
 }
 
-impl TrafficWatch {
-    fn spawn(endpoint: ControllerEndpoint) -> Self {
+impl<T: Copy + Send + 'static> MetricWatch<T> {
+    fn spawn(
+        endpoint: ControllerEndpoint,
+        watch: impl FnOnce(ControllerEndpoint, Arc<Mutex<Option<T>>>, Arc<AtomicBool>) + Send + 'static,
+    ) -> Self {
         let latest = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::clone(&latest);
         let flag = Arc::clone(&stop);
-        std::thread::spawn(move || diagnostics::watch_traffic(endpoint, shared, flag));
+        std::thread::spawn(move || watch(endpoint, shared, flag));
         Self {
             latest,
             stop,
-            waited: false,
         }
     }
 
-    fn latest(&self) -> Option<(u64, u64)> {
+    fn latest(&self) -> Option<T> {
         *self
             .latest
             .lock()
@@ -283,9 +648,15 @@ impl ProcessRuntime {
             child: None,
             config_path: None,
             controller: None,
-            cached_now: BTreeMap::new(),
+            cached_catalog: nodes::RuntimeCatalog::default(),
+            launched_kernel: None,
             log_buffer: None,
             traffic_watch: None,
+            memory_watch: None,
+            totals: None,
+            connection_total: None,
+            connections_error: None,
+            started: None,
         }
     }
 
@@ -293,8 +664,11 @@ impl ProcessRuntime {
         self.kernel_path = path;
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn shutdown(&mut self) { self.stop(); }
+
     fn stop(&mut self) {
-        self.halt_traffic();
+        self.halt_metrics();
         if let Some(mut child) = self.child.take() {
             #[cfg(unix)]
             {
@@ -313,12 +687,20 @@ impl ProcessRuntime {
             let _ = fs::remove_file(path);
         }
         self.controller = None;
-        self.cached_now.clear();
+        self.launched_kernel = None;
+        self.cached_catalog = nodes::RuntimeCatalog::default();
         self.log_buffer = None;
+        self.totals = None;
+        self.connection_total = None;
+        self.connections_error = None;
+        self.started = None;
     }
 
-    fn halt_traffic(&mut self) {
+    fn halt_metrics(&mut self) {
         if let Some(watch) = self.traffic_watch.take() {
+            watch.halt();
+        }
+        if let Some(watch) = self.memory_watch.take() {
             watch.halt();
         }
     }
@@ -364,6 +746,11 @@ impl KernelLaunch for ProcessRuntime {
         if !path.is_file() {
             return Err(MISSING_KERNEL.to_string());
         }
+        if self.running() && self.launched_kernel.as_ref() == Some(&path)
+            && self.config_path.as_ref().and_then(|p| fs::read_to_string(p).ok()).as_deref() == Some(config_yaml)
+        {
+            return Ok(());
+        }
         fs::create_dir_all(&self.work_dir).map_err(|_| "配置没有写入".to_string())?;
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -390,6 +777,12 @@ impl KernelLaunch for ProcessRuntime {
             // Own process group so stopping the kernel does not signal this app.
             command.process_group(0);
         }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        self.stop();
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(_) => {
@@ -397,32 +790,48 @@ impl KernelLaunch for ProcessRuntime {
                 return Err(KERNEL_ERROR.to_string());
             }
         };
-        let deadline = std::time::Instant::now() + Duration::from_millis(300);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    let _ = fs::remove_file(&config_path);
-                    return Err(KERNEL_ERROR.to_string());
-                }
-                Ok(None) if std::time::Instant::now() >= deadline => break,
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(_) => {
-                    let _ = fs::remove_file(&config_path);
-                    return Err(KERNEL_ERROR.to_string());
-                }
-            }
-        }
         let stdout = child.stdout.take();
-        self.stop();
+        self.started = Some(Instant::now());
         self.child = Some(child);
+        self.launched_kernel = Some(path);
         self.config_path = Some(config_path);
         self.controller = controller;
-        self.cached_now.clear();
+        self.cached_catalog = nodes::RuntimeCatalog::default();
         if let Some(stdout) = stdout {
             self.log_buffer = Some(spawn_log_buffer(stdout));
         }
+        let config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
+        let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
+        let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
+        let wait = if self.controller.is_some() { Duration::from_secs(5) } else { Duration::from_millis(300) };
+        let deadline = Instant::now() + wait;
+        loop {
+            let failure = self.log_buffer.as_ref().and_then(|logs| {
+                let lines = logs.lines.lock().unwrap_or_else(|p| p.into_inner());
+                lines.iter().find(|line| line.level == "error" &&
+                    (line.message.contains("Start Mixed") || line.message.contains("Start TUN")))
+                    .map(|line| line.message.clone())
+            });
+            if let Some(message) = failure {
+                self.stop();
+                return Err(message);
+            }
+            if !self.running() {
+                self.stop();
+                return Err(KERNEL_ERROR.to_string());
+            }
+            if let Some(endpoint) = self.controller.as_ref() {
+                if nodes::listeners_ready(endpoint, mixed, tun) { break; }
+                if Instant::now() >= deadline {
+                    self.stop();
+                    return Err("内核监听未就绪，请检查端口占用、TUN 权限和日志".to_string());
+                }
+            } else if Instant::now() >= deadline { break; }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         if let Some(endpoint) = self.controller.clone() {
-            self.traffic_watch = Some(TrafficWatch::spawn(endpoint));
+            self.traffic_watch = Some(MetricWatch::spawn(endpoint.clone(), diagnostics::watch_traffic));
+            self.memory_watch = Some(MetricWatch::spawn(endpoint, diagnostics::watch_memory));
         }
         Ok(())
     }
@@ -435,8 +844,8 @@ impl KernelLaunch for ProcessRuntime {
         if !alive {
             self.child = None;
             self.controller = None;
-            self.cached_now.clear();
-            self.halt_traffic();
+            self.cached_catalog = nodes::RuntimeCatalog::default();
+            self.halt_metrics();
         }
         alive
     }
@@ -448,18 +857,7 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
-        let mut last = SELECT_FAILED.to_string();
-        for _ in 0..5 {
-            match nodes::put_selection(&endpoint, group, node) {
-                Ok(()) => return Ok(()),
-                Err(message) => last = message,
-            }
-            if !self.running() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Err(last)
+        nodes::put_selection(&endpoint, group, node)
     }
 
     fn probe_delays(&mut self, _group: &str, names: &[String]) -> Result<Vec<NodeDelay>, String> {
@@ -472,20 +870,41 @@ impl KernelLaunch for ProcessRuntime {
         nodes::fetch_delays(&endpoint, names)
     }
 
-    fn auto_now(&mut self) -> BTreeMap<String, String> {
+    fn probe_delays_with_progress(
+        &mut self,
+        _group: &str,
+        names: &[String],
+        on_result: &mut dyn FnMut(&str, Option<u64>, bool),
+    ) -> Result<Vec<NodeDelay>, String> {
         if !self.running() {
-            return BTreeMap::new();
+            return Err(KERNEL_DOWN.to_string());
         }
         let Some(endpoint) = self.controller.clone() else {
-            return BTreeMap::new();
+            return Err(KERNEL_DOWN.to_string());
         };
-        match nodes::fetch_now(&endpoint) {
-            Ok(now) => {
-                self.cached_now = now.clone();
-                now
-            }
-            Err(_) => self.cached_now.clone(),
+        nodes::fetch_delays_with_progress(&endpoint, names, on_result)
+    }
+
+    fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
+        if !self.running() {
+            return Err(KERNEL_DOWN.to_string());
         }
+        let Some(endpoint) = self.controller.clone() else {
+            return Err(KERNEL_DOWN.to_string());
+        };
+        nodes::put_config(&endpoint, config_yaml)
+    }
+
+    fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
+        if !self.running() {
+            return nodes::RuntimeCatalog::default();
+        }
+        if let Some(endpoint) = self.controller.clone() {
+            if let Ok(catalog) = nodes::fetch_catalog(&endpoint) {
+                self.cached_catalog = catalog;
+            }
+        }
+        self.cached_catalog.clone()
     }
 
     fn connections(&mut self) -> Vec<ConnectionView> {
@@ -495,7 +914,44 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Vec::new();
         };
-        diagnostics::fetch_connections(&endpoint)
+        let reading = diagnostics::fetch_connections_with_totals(&endpoint);
+        self.totals = reading.totals;
+        self.connection_total = Some(reading.total);
+        self.connections_error = reading.error;
+        reading.rows
+    }
+
+    fn connection_total(&mut self) -> Option<usize> {
+        self.connection_total
+    }
+
+    fn connections_error(&mut self) -> Option<String> {
+        self.connections_error.clone()
+    }
+
+    fn kernel_memory(&mut self) -> Option<u64> {
+        if !self.running() {
+            return None;
+        }
+        self.memory_watch.as_ref().and_then(MetricWatch::latest)
+    }
+
+    fn kernel_uptime_secs(&mut self) -> Option<u64> {
+        if !self.running() {
+            return None;
+        }
+        self.started.map(|start| start.elapsed().as_secs())
+    }
+
+    fn connection_totals(&mut self) -> Option<TrafficTotals> {
+        self.totals
+    }
+
+    fn controller(&mut self) -> Option<ControllerEndpoint> {
+        if !self.running() {
+            return None;
+        }
+        self.controller.clone()
     }
 
     fn pull_logs(&mut self) -> Vec<LogView> {
@@ -529,18 +985,7 @@ impl KernelLaunch for ProcessRuntime {
         if let Some(sample) = watch.latest() {
             return Some(sample);
         }
-        // The controller emits the first sample after its one-second tick.
-        if watch.waited {
-            return None;
-        }
-        watch.waited = true;
-        let deadline = Instant::now() + Duration::from_millis(1200);
-        while Instant::now() < deadline {
-            if let Some(sample) = watch.latest() {
-                return Some(sample);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // Sampling runs in the background; never stall an IPC response waiting for a tick.
         watch.latest()
     }
 }
@@ -557,6 +1002,11 @@ struct DiskState {
     tun_wanted: bool,
     #[serde(default)]
     excluded_packages: Vec<String>,
+    /// Allowlist for the include app mode.
+    #[serde(default)]
+    included_packages: Vec<String>,
+    #[serde(default)]
+    app_mode: String,
     #[serde(default)]
     proxy_host: Option<String>,
     #[serde(default)]
@@ -565,6 +1015,8 @@ struct DiskState {
     profiles: Vec<DiskProfile>,
     #[serde(default)]
     chosen_mode: Option<String>,
+    #[serde(default)]
+    settings: KernelSettings,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -593,6 +1045,10 @@ struct DiskProfile {
     expire: Option<u64>,
     #[serde(default)]
     selected: BTreeMap<String, String>,
+    #[serde(default)]
+    interval_hours: u32,
+    #[serde(default)]
+    updated_ms: Option<u64>,
 }
 
 pub struct ProfileBook {
@@ -609,7 +1065,10 @@ pub struct ProfileBook {
     platform: ClientPlatform,
     tun_wanted: bool,
     excluded: Vec<String>,
+    included: Vec<String>,
+    app_mode: String,
     installed: Vec<crate::takeover::InstalledApp>,
+    installed_checked_at: Option<Instant>,
     connected: bool,
     our_endpoint: Option<ProxyEndpoint>,
     pending_release: Option<PlatformRelease>,
@@ -617,15 +1076,28 @@ pub struct ProfileBook {
     node_sort: BTreeMap<String, String>,
     delays: BTreeMap<String, BTreeMap<String, BTreeMap<String, DelayMark>>>,
     auto_now: BTreeMap<String, String>,
+    runtime_catalog: nodes::RuntimeCatalog,
     nodes_error: Option<String>,
     kernel_running: bool,
+    kernel_memory: Option<u64>,
+    kernel_uptime_secs: Option<u64>,
     connections: Vec<ConnectionView>,
+    connection_total: usize,
+    connections_error: Option<String>,
     connection_query: String,
     logs: Vec<LogView>,
     log_filter: String,
+    /// Runtime-only disabled rule keys; never persisted, so a restart re-enables rules.
+    disabled_rules: BTreeSet<String>,
+    /// Last unfiltered runtime config, kept so later toggles filter the full rule
+    /// list (stable occurrence keys) while preserving TUN fd and settings.
+    runtime_base: Option<String>,
     chosen_mode: Option<String>,
     upload: Option<u64>,
     download: Option<u64>,
+    totals: Option<TrafficTotals>,
+    settings: KernelSettings,
+    notice: Option<String>,
 }
 
 struct DelayMark {
@@ -651,7 +1123,10 @@ impl ProfileBook {
             platform: ClientPlatform::current(),
             tun_wanted: false,
             excluded: Vec::new(),
+            included: Vec::new(),
+            app_mode: takeover::APP_MODE_EXCLUDE.to_string(),
             installed: Vec::new(),
+            installed_checked_at: None,
             connected: false,
             our_endpoint: None,
             pending_release: None,
@@ -659,15 +1134,25 @@ impl ProfileBook {
             node_sort: BTreeMap::new(),
             delays: BTreeMap::new(),
             auto_now: BTreeMap::new(),
+            runtime_catalog: nodes::RuntimeCatalog::default(),
             nodes_error: None,
             kernel_running: false,
+            kernel_memory: None,
+            kernel_uptime_secs: None,
             connections: Vec::new(),
+            connection_total: 0,
+            connections_error: None,
             connection_query: String::new(),
             logs: Vec::new(),
             log_filter: "all".to_string(),
+            disabled_rules: BTreeSet::new(),
+            runtime_base: None,
             chosen_mode: None,
             upload: None,
             download: None,
+            totals: None,
+            settings: KernelSettings::default(),
+            notice: None,
         };
         book.load();
         book
@@ -695,9 +1180,12 @@ impl ProfileBook {
                 total: profile.usage.as_ref().and_then(|usage| usage.total),
                 expire: profile.usage.as_ref().and_then(|usage| usage.expire),
                 last_success_ms: profile.last_success_ms,
+                interval_hours: profile.interval_hours,
+                updated_ms: profile.updated_ms,
+                proxy_count: profile.proxy_count,
             })
             .collect();
-        let (node_catalog, node_groups, nodes_notice, nodes_profile_id) = self.node_views();
+        let (node_catalog, nodes_notice, nodes_profile_id) = self.node_views();
         ProfileSnapshot {
             profiles,
             active_id: self.active_id.clone(),
@@ -713,24 +1201,38 @@ impl ProfileBook {
             platform: self.platform.as_str().to_string(),
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
+            included: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             installed: self.installed.clone(),
-            node_groups,
             node_catalog,
             node_query: self.node_query.clone(),
             nodes_notice,
             nodes_error: self.nodes_error.clone(),
             nodes_profile_id,
             kernel_running: self.kernel_running,
+            kernel_memory: self.kernel_memory,
+            kernel_uptime_secs: self.kernel_uptime_secs,
             connections: if self.connected {
                 diagnostics::filter_connections(&self.connections, &self.connection_query)
             } else {
                 Vec::new()
+            },
+            connection_total: if self.connected { self.connection_total } else { 0 },
+            connections_error: if self.connected {
+                self.connections_error.clone()
+            } else {
+                None
             },
             connection_query: self.connection_query.clone(),
             logs: diagnostics::filter_logs(&self.logs, &self.log_filter),
             log_filter: self.log_filter.clone(),
             upload: self.upload,
             download: self.download,
+            upload_total: self.totals.map(|item| item.upload),
+            download_total: self.totals.map(|item| item.download),
+            settings: self.settings.clone(),
+            config_values: self.config_values(),
+            notice: self.notice.clone(),
         }
     }
 
@@ -742,8 +1244,15 @@ impl ProfileBook {
     pub fn refresh_installed(&mut self, source: &mut dyn takeover::InstalledApps) {
         if self.platform != ClientPlatform::Android {
             self.installed.clear();
+            self.installed_checked_at = None;
             return;
         }
+        // PackageManager crosses JNI and enumerates every installed app. It must
+        // not run on each one-second traffic poll, including after a failed read.
+        if self.installed_checked_at.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+            return;
+        }
+        self.installed_checked_at = Some(Instant::now());
         if let Ok(apps) = source.list() {
             self.installed = takeover::normalize_installed(apps);
         }
@@ -784,14 +1293,24 @@ impl ProfileBook {
     pub fn add_subscription(&mut self, url: &str) -> ProfileSnapshot {
         match validate_subscription_url(url.trim()) {
             Ok(url) => {
-                self.push_profile(
-                    ProfileKind::Subscription,
-                    subscription_name(&url),
-                    url,
-                    String::new(),
-                );
-                self.input_error = None;
-                self.persist();
+                // Trimmed comparison against existing sources: deep links and other
+                // entry points cannot silently add a duplicate card (R27).
+                if self
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.kind == ProfileKind::Subscription && profile.source.trim() == url)
+                {
+                    self.input_error = Some(DUPLICATE_ERROR.to_string());
+                } else {
+                    self.push_profile(
+                        ProfileKind::Subscription,
+                        subscription_name(&url),
+                        url,
+                        String::new(),
+                    );
+                    self.input_error = None;
+                    self.persist();
+                }
             }
             Err(message) => self.input_error = Some(message),
         }
@@ -895,7 +1414,9 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
-        let _ = self.reload(kernel, false, None);
+        if self.takeover.tun || self.takeover.vpn {
+            let _ = self.reload(kernel, false, None);
+        }
         let mut model = self.link_model();
         takeover::disconnect(&mut model, proxy, tun, vpn);
         self.apply_model(model);
@@ -974,7 +1495,6 @@ impl ProfileBook {
         if self.platform != ClientPlatform::Desktop {
             return self.snapshot();
         }
-        let previous = self.takeover.system_proxy;
         if !enabled {
             let _ = self.reload(kernel, false, None);
             let mut model = self.link_model();
@@ -982,15 +1502,9 @@ impl ProfileBook {
             self.apply_model(model);
             return self.publish(kernel);
         }
-        if !matches!(tun.authorize(), Ok(true)) {
-            let _ = self.reload(kernel, false, None);
-            let _ = tun.set_enabled(false);
-            let mut model = self.link_model();
-            model.tun = false;
-            model.system_proxy = previous;
-            model.connected = false;
-            model.failure = Some(takeover::TUN_DENIED.to_string());
-            self.apply_model(model);
+        let grant = tun.authorize();
+        if !matches!(grant, Ok(true)) {
+            self.home_failure = Some(grant.err().unwrap_or_else(|| takeover::TUN_DENIED.to_string()));
             self.remember_current_failure();
             return self.publish(kernel);
         }
@@ -1093,7 +1607,7 @@ impl ProfileBook {
             self.remember_current_failure();
             return self.publish(kernel);
         }
-        let fd = match vpn.establish(&self.excluded) {
+        let fd = match vpn.establish(&self.link_model().app_filter()) {
             Ok(fd) => fd,
             Err(_) => {
                 let _ = vpn.close();
@@ -1126,6 +1640,24 @@ impl ProfileBook {
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
         self.change_exclusion(package_name, false, kernel, vpn)
+    }
+
+    /// Replace one mode's app list and make it current (Android access control).
+    pub fn set_app_rules(
+        &mut self,
+        mode: &str,
+        packages: &[String],
+        kernel: &mut dyn KernelLaunch,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let mut model = self.link_model();
+        let fd = takeover::set_app_rules(&mut model, mode, packages, vpn);
+        if let Some(fd) = fd {
+            return self.finish_android_fd(kernel, vpn, model, fd);
+        }
+        self.apply_model(model);
+        self.persist();
+        self.snapshot()
     }
 
     fn change_exclusion(
@@ -1221,8 +1753,19 @@ impl ProfileBook {
             }
         };
         let selected = self.profiles[index].selected.clone();
-        let yaml =
-            nodes::ensure_controller(&nodes::prioritize_selections(&prepared.yaml, &selected));
+        let desktop = self.platform == ClientPlatform::Desktop;
+        let (settled, settled_port) = match apply_settings(&prepared.yaml, &self.settings, desktop)
+            .and_then(|(yaml, port)| ensure_tun_dns(&yaml, &self.settings).map(|yaml| (yaml, port)))
+        {
+            Ok(result) => result,
+            Err(message) => {
+                self.fail_activation(index, message);
+                return self.publish(kernel);
+            }
+        };
+        let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&settled, &selected));
+        self.runtime_catalog = nodes::RuntimeCatalog::default();
+        self.auto_now.clear();
         if let Err(message) = kernel.start_or_reload(&yaml) {
             let message = if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -1232,24 +1775,32 @@ impl ProfileBook {
             self.fail_activation(index, message);
             return self.publish(kernel);
         }
+        self.runtime_base = Some(yaml);
+        self.disabled_rules.clear();
         let now = now_ms();
         {
             let profile = &mut self.profiles[index];
             if let Some(fetched) = fetched {
+                profile.node_metadata.take();
                 profile.content = fetched.content;
                 profile.usage = parse_userinfo(fetched.userinfo.as_deref());
+                profile.updated_ms = Some(now);
+                profile.proxy_count = count_proxies(&profile.content);
             }
+            profile.node_metadata.take();
             profile.applied_override = profile.override_text.clone();
             profile.override_error = None;
             profile.failure = None;
             profile.last_success_ms = Some(now);
             self.active_id = Some(profile.id.clone());
         }
-        self.mixed_port = prepared.mixed_port;
+        self.mixed_port = settled_port.or(prepared.mixed_port);
         self.mode = prepared.mode.clone();
         self.chosen_mode = prepared.mode;
         self.home_failure = None;
         self.input_error = None;
+        self.runtime_catalog = kernel.node_catalog();
+        self.auto_now = self.runtime_catalog.now.clone();
         self.apply_live_selections(kernel);
         self.persist();
         self.publish(kernel)
@@ -1279,11 +1830,17 @@ impl ProfileBook {
         self.snapshot()
     }
 
+    pub fn report_failure(&mut self, message: String) -> ProfileSnapshot {
+        self.home_failure = Some(message);
+        self.remember_current_failure();
+        self.snapshot()
+    }
+
     fn remember_current_failure(&mut self) {
         let Some(message) = self.home_failure.clone() else {
             return;
         };
-        self.connections.clear();
+        if !self.connected { self.connections.clear(); }
         self.append_logs(vec![diagnostics::failure_log(&message)]);
     }
 
@@ -1318,7 +1875,15 @@ impl ProfileBook {
         tun_enable: bool,
         fd: Option<i32>,
     ) -> Result<u16, StartError> {
-        let (yaml, port) = self.kernel_yaml(tun_enable, fd)?;
+        let (base, port) = self.kernel_yaml(tun_enable, fd)?;
+        let yaml = if self.disabled_rules.is_empty() {
+            base.clone()
+        } else {
+            diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
+                .map_err(StartError::Failed)?
+        };
+        self.runtime_catalog = nodes::RuntimeCatalog::default();
+        self.auto_now.clear();
         kernel.start_or_reload(&yaml).map_err(|message| {
             StartError::Failed(if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -1326,8 +1891,29 @@ impl ProfileBook {
                 message
             })
         })?;
+        self.runtime_base = Some(base);
+        self.runtime_catalog = kernel.node_catalog();
+        self.auto_now = self.runtime_catalog.now.clone();
         self.apply_live_selections(kernel);
         Ok(port)
+    }
+
+    /// The YAML the kernel runs (or would run) for the active profile: content,
+    /// applied override, kernel settings, TUN, mode and controller, in launch order.
+    /// While a kernel config is loaded this is exactly that YAML (with rules
+    /// disabled at runtime removed); otherwise it previews the next launch.
+    pub fn effective_config(&self) -> Result<String, String> {
+        if let Some(base) = &self.runtime_base {
+            if self.disabled_rules.is_empty() {
+                return Ok(base.clone());
+            }
+            return diagnostics::filter_disabled_rules(base, &self.disabled_rules);
+        }
+        self.kernel_yaml(self.takeover.tun, None)
+            .map(|(yaml, _)| yaml)
+            .map_err(|error| match error {
+                StartError::Idle(message) | StartError::Failed(message) => message,
+            })
     }
 
     fn kernel_yaml(&self, tun_enable: bool, fd: Option<i32>) -> Result<(String, u16), StartError> {
@@ -1341,6 +1927,14 @@ impl ProfileBook {
             Ok(prepared) => prepared,
             Err(_) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
         };
+        let (settled, settled_port) =
+            apply_settings(&prepared.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
+                .map_err(StartError::Failed)?;
+        let prepared = Prepared {
+            mixed_port: settled_port.or(prepared.mixed_port),
+            mode: prepared.mode,
+            yaml: settled,
+        };
         let Some(port) = prepared
             .mixed_port
             .and_then(|value| u16::try_from(value).ok())
@@ -1350,6 +1944,7 @@ impl ProfileBook {
         };
         let selected = profile.selected.clone();
         let yaml = force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?;
+        let yaml = ensure_tun_dns(&yaml, &self.settings).map_err(StartError::Failed)?;
         let yaml = match self.mode.as_deref().and_then(normalize_outbound) {
             Some(mode) => force_mode(&yaml, mode).map_err(StartError::Failed)?,
             None => yaml,
@@ -1363,6 +1958,8 @@ impl ProfileBook {
             platform: self.platform,
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
+            included: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             system_proxy: self.takeover.system_proxy,
             tun: self.takeover.tun,
             vpn: self.takeover.vpn,
@@ -1376,6 +1973,8 @@ impl ProfileBook {
         self.platform = model.platform;
         self.tun_wanted = model.tun_wanted;
         self.excluded = model.excluded;
+        self.included = model.included;
+        self.app_mode = model.app_mode;
         self.takeover.system_proxy = model.system_proxy;
         self.takeover.tun = model.tun;
         self.takeover.vpn = model.vpn;
@@ -1402,7 +2001,17 @@ impl ProfileBook {
             last_success_ms: None,
             usage: None,
             selected: BTreeMap::new(),
+            interval_hours: 0,
+            updated_ms: None,
+            proxy_count: 0,
+            node_metadata: OnceLock::new(),
         });
+        if let Some(profile) = self.profiles.last_mut() {
+            profile.proxy_count = count_proxies(&profile.content);
+            if profile.kind == ProfileKind::Local {
+                profile.updated_ms = Some(now_ms());
+            }
+        }
     }
 
     fn load(&mut self) {
@@ -1432,10 +2041,19 @@ impl ProfileBook {
                     failure: profile.failure,
                     last_success_ms: profile.last_success_ms,
                     usage,
+                    proxy_count: 0,
+                    node_metadata: OnceLock::new(),
                     selected: profile.selected,
+                    interval_hours: profile.interval_hours,
+                    updated_ms: profile.updated_ms,
                 }
             })
             .collect();
+        for profile in &mut self.profiles {
+            profile.proxy_count = count_proxies(&profile.content);
+        }
+        self.settings = disk.settings;
+        nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
         let known = self
             .profiles
             .iter()
@@ -1448,6 +2066,8 @@ impl ProfileBook {
             .map(|package| package.trim().to_string())
             .filter(|package| !package.is_empty())
             .collect();
+        self.included = takeover::clean_packages(&disk.included_packages);
+        self.app_mode = takeover::normalize_app_mode(&disk.app_mode).to_string();
         self.our_endpoint = match (disk.proxy_host, disk.proxy_port) {
             (Some(host), Some(port)) if !host.is_empty() && port > 0 => {
                 Some(ProxyEndpoint { host, port })
@@ -1502,12 +2122,15 @@ impl ProfileBook {
             home_failure: self.home_failure.clone(),
             tun_wanted: self.tun_wanted,
             excluded_packages: self.excluded.clone(),
+            included_packages: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             proxy_host: self
                 .our_endpoint
                 .as_ref()
                 .map(|endpoint| endpoint.host.clone()),
             proxy_port: self.our_endpoint.as_ref().map(|endpoint| endpoint.port),
             chosen_mode: self.chosen_mode.clone(),
+            settings: self.settings.clone(),
             profiles: self
                 .profiles
                 .iter()
@@ -1526,6 +2149,8 @@ impl ProfileBook {
                     total: profile.usage.as_ref().and_then(|usage| usage.total),
                     expire: profile.usage.as_ref().and_then(|usage| usage.expire),
                     selected: profile.selected.clone(),
+                    interval_hours: profile.interval_hours,
+                    updated_ms: profile.updated_ms,
                 })
                 .collect(),
         };
@@ -1543,15 +2168,33 @@ impl ProfileBook {
         self.kernel_running = running;
         self.append_logs(kernel.pull_logs());
         if running {
-            self.auto_now = kernel.auto_now();
+            self.runtime_catalog = kernel.node_catalog();
+            self.auto_now = self.runtime_catalog.now.clone();
+            self.kernel_memory = kernel.kernel_memory();
+            self.kernel_uptime_secs = kernel.kernel_uptime_secs();
             if self.connected {
                 self.connections = diagnostics::accept_connections(kernel.connections());
+                if let Some(totals) = kernel.connection_totals() {
+                    self.totals = Some(totals);
+                }
+                self.connection_total = kernel
+                    .connection_total()
+                    .unwrap_or(self.connections.len());
+                self.connections_error = kernel.connections_error();
             } else {
                 self.connections.clear();
+                self.connection_total = 0;
+                self.connections_error = None;
             }
         } else {
             self.auto_now.clear();
+            self.runtime_catalog = nodes::RuntimeCatalog::default();
             self.connections.clear();
+            self.kernel_memory = None;
+            self.kernel_uptime_secs = None;
+            self.connection_total = 0;
+            self.connections_error = None;
+            self.runtime_base = None;
             // A stopped kernel is not connected. The system-proxy switch may stay on.
             self.connected = false;
         }
@@ -1564,6 +2207,7 @@ impl ProfileBook {
         } else {
             self.upload = None;
             self.download = None;
+            self.totals = None;
         }
     }
 
@@ -1652,7 +2296,7 @@ impl ProfileBook {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
-        let parsed = nodes::parse_proxy_groups(&document);
+        let parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
         let Some(found) = parsed.iter().find(|item| item.name == group_name) else {
             self.nodes_error = Some("没有这个代理组".to_string());
             return self.snapshot();
@@ -1678,6 +2322,9 @@ impl ProfileBook {
         self.profiles[index]
             .selected
             .insert(group_name.to_string(), node_name.to_string());
+        if self.kernel_running {
+            self.auto_now.insert(group_name.to_string(), node_name.to_string());
+        }
         self.nodes_error = None;
         self.persist();
         self.snapshot()
@@ -1697,7 +2344,7 @@ impl ProfileBook {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
-        let parsed = nodes::parse_proxy_groups(&document);
+        let parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
         let Some(found) = parsed.iter().find(|item| item.name == group.trim()) else {
             self.nodes_error = Some("没有这个代理组".to_string());
             return self.snapshot();
@@ -1767,99 +2414,75 @@ impl ProfileBook {
             .rposition(|profile| !profile.content.trim().is_empty())
     }
 
-    fn node_views(
-        &self,
-    ) -> (
-        Vec<NodeGroupView>,
-        Vec<NodeGroupView>,
-        Option<String>,
-        Option<String>,
-    ) {
+    fn node_views(&self) -> (Vec<NodeGroupView>, Option<String>, Option<String>) {
         let Some(index) = self.nodes_profile_index() else {
-            return (Vec::new(), Vec::new(), Some(NEED_PROFILE.to_string()), None);
+            return (Vec::new(), Some(NEED_PROFILE.to_string()), None);
         };
         let profile = &self.profiles[index];
         let profile_id = profile.id.clone();
         if profile.content.trim().is_empty() {
-            return (
-                Vec::new(),
-                Vec::new(),
-                Some(NEED_PROFILE.to_string()),
-                Some(profile_id),
-            );
+            return (Vec::new(), Some(NEED_PROFILE.to_string()), Some(profile_id));
         }
-        let Some(document) = document_value(profile) else {
-            return (
-                Vec::new(),
-                Vec::new(),
-                Some(NO_NODES.to_string()),
-                Some(profile_id),
-            );
+        let Some(metadata) = profile.node_metadata() else {
+            return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
         };
-        let parsed = nodes::parse_proxy_groups(&document);
-        if parsed.is_empty() {
-            return (
-                Vec::new(),
-                Vec::new(),
-                Some(NO_NODES.to_string()),
-                Some(profile_id),
-            );
+        if metadata.groups.is_empty() {
+            return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
         }
-        let catalog: Vec<NodeGroupView> = parsed
-            .iter()
-            .map(|group| self.present_group(profile, group))
-            .collect();
-        let mut visible = catalog.clone();
-        for group in &mut visible {
-            group.nodes = nodes::sorted_nodes(std::mem::take(&mut group.nodes), &group.sort);
-        }
-        let (visible, none) = nodes::filter_visible(visible, &self.node_query);
-        if none {
-            return (
-                catalog,
-                Vec::new(),
-                Some(NO_MATCH.to_string()),
-                Some(profile_id),
-            );
-        }
-        (catalog, visible, None, Some(profile_id))
+        // Borrow provider members and protocol maps. The UI owns sorting and
+        // filtering, so a second full catalog would only create unused copies.
+        let catalog: Vec<NodeGroupView> = metadata.groups.iter().map(|group| {
+            let members = self.runtime_catalog.members.get(&group.name)
+                .map(Vec::as_slice).unwrap_or(&group.proxies);
+            self.present_group(profile, group, members, &metadata.types)
+        }).collect();
+        let query = self.node_query.trim().to_lowercase();
+        let unmatched = !query.is_empty() && !catalog.iter().any(|group| {
+            group.nodes.iter().any(|node| node.name.to_lowercase().contains(&query))
+        });
+        (catalog, unmatched.then(|| NO_MATCH.to_string()), Some(profile_id))
     }
 
-    fn present_group(&self, profile: &Profile, group: &ParsedGroup) -> NodeGroupView {
+    fn present_group(
+        &self,
+        profile: &Profile,
+        group: &ParsedGroup,
+        members: &[String],
+        types: &BTreeMap<String, nodes::ProxyInfo>,
+    ) -> NodeGroupView {
         let sort = self.sort_of(&group.name);
         if !group.manual {
             let now = self.auto_now.get(&group.name).cloned().unwrap_or_default();
-            let nodes = if now.is_empty() {
-                Vec::new()
-            } else {
-                vec![self.node_item(profile, &group.name, &now, false)]
-            };
+            let extra = (!now.is_empty() && !members.contains(&now)).then_some(&now);
+            let nodes = members
+                .iter().chain(extra)
+                .map(|name| self.node_item(profile, &group.name, name, !now.is_empty() && *name == now, types))
+                .collect();
             return NodeGroupView {
                 name: group.name.clone(),
                 kind: "auto".to_string(),
                 now,
                 sort,
                 nodes,
+                group_type: group.group_type.clone(),
+                icon: group.icon.clone(),
             };
         }
-        let chosen = profile
-            .selected
-            .get(&group.name)
-            .filter(|name| group.proxies.iter().any(|item| item == *name))
+        let chosen = self.auto_now.get(&group.name)
+            .or_else(|| profile.selected.get(&group.name))
+            .filter(|name| members.iter().any(|item| item == *name))
             .cloned();
         let now = chosen
             .clone()
-            .or_else(|| group.proxies.first().cloned())
+            .or_else(|| members.first().cloned())
             .unwrap_or_default();
-        let nodes = group
-            .proxies
-            .iter()
+        let nodes = members.iter()
             .map(|name| {
                 let selected = match &chosen {
                     Some(choice) => choice == name,
-                    None => group.proxies.first() == Some(name),
+                    None => members.first() == Some(name),
                 };
-                self.node_item(profile, &group.name, name, selected)
+                self.node_item(profile, &group.name, name, selected, types)
             })
             .collect();
         NodeGroupView {
@@ -1868,6 +2491,8 @@ impl ProfileBook {
             now,
             sort,
             nodes,
+            group_type: group.group_type.clone(),
+            icon: group.icon.clone(),
         }
     }
 
@@ -1877,17 +2502,27 @@ impl ProfileBook {
         group: &str,
         name: &str,
         selected: bool,
+        types: &BTreeMap<String, nodes::ProxyInfo>,
     ) -> nodes::NodeItemView {
         let mark = self
             .delays
             .get(&profile.id)
             .and_then(|groups| groups.get(group))
             .and_then(|nodes| nodes.get(name));
+        let mut tags = types.get(name).map(|info| info.tags.clone()).unwrap_or_default();
+        if let Some(runtime_tags) = self.runtime_catalog.tags.get(name) {
+            for tag in runtime_tags {
+                if !tags.contains(tag) { tags.push(tag.clone()); }
+            }
+        }
         nodes::NodeItemView {
             name: name.to_string(),
             delay_ms: mark.and_then(|item| item.delay_ms),
             failed: mark.is_some_and(|item| item.failed),
             selected,
+            node_type: self.runtime_catalog.types.get(name).cloned()
+                .or_else(|| types.get(name).map(|info| info.kind.clone())).unwrap_or_default(),
+            tags,
         }
     }
 
@@ -1914,7 +2549,7 @@ impl ProfileBook {
         let Some(document) = document_value(profile) else {
             return;
         };
-        for group in nodes::parse_proxy_groups(&document) {
+        for group in nodes::resolved_groups(&document, &self.runtime_catalog) {
             if !group.manual {
                 continue;
             }
@@ -1934,6 +2569,675 @@ impl ProfileBook {
             tun,
             vpn,
         };
+    }
+}
+
+impl KernelSettings {
+    pub fn test_timeout_ms_or_default(&self) -> u64 {
+        if self.test_timeout_ms == 0 {
+            5000
+        } else {
+            self.test_timeout_ms
+        }
+    }
+
+    fn normalized(mut self) -> Self {
+        self.mixed_port = self.mixed_port.filter(|port| *port > 0);
+        self.log_level = self
+            .log_level
+            .map(|level| level.trim().to_ascii_lowercase())
+            .filter(|level| matches!(level.as_str(), "debug" | "info" | "warning" | "error" | "silent"));
+        self.find_process_mode = self
+            .find_process_mode
+            .map(|mode| mode.trim().to_ascii_lowercase())
+            .filter(|mode| matches!(mode.as_str(), "always" | "strict" | "off"));
+        self.test_url = self.test_url.trim().chars().take(500).collect();
+        if !self.test_url.is_empty()
+            && !(self.test_url.starts_with("http://") || self.test_url.starts_with("https://"))
+        {
+            self.test_url.clear();
+        }
+        if self.test_timeout_ms != 0 {
+            self.test_timeout_ms = self.test_timeout_ms.clamp(1000, 30000);
+        }
+        self.dns = self.dns.normalized();
+        self.tun = self.tun.normalized();
+        self
+    }
+
+    /// Everything except the delay probe, which never needs a kernel restart.
+    fn kernel_part(&self) -> Self {
+        let mut copy = self.clone();
+        copy.test_url.clear();
+        copy.test_timeout_ms = 0;
+        copy
+    }
+}
+
+/// Default port written when neither the profile nor settings name one.
+const FALLBACK_MIXED_PORT: i64 = 7890;
+
+fn apply_settings(
+    yaml: &str,
+    settings: &KernelSettings,
+    desktop: bool,
+) -> Result<(String, Option<i64>), String> {
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let Some(map) = value.as_mapping_mut() else {
+        return Err(CONTENT_ERROR.to_string());
+    };
+    let key = |name: &str| Value::String(name.to_string());
+    if let Some(port) = settings.mixed_port {
+        map.insert(key("mixed-port"), Value::Number(i64::from(port).into()));
+    } else if !map.contains_key(key("mixed-port")) && !map.contains_key(key("port")) {
+        map.insert(key("mixed-port"), Value::Number(FALLBACK_MIXED_PORT.into()));
+    } else if !map.contains_key(key("mixed-port")) {
+        // Only an HTTP `port`: reuse it as the mixed listener so system proxy has a target.
+        if let Some(port) = map.get(key("port")).and_then(Value::as_i64) {
+            map.insert(key("mixed-port"), Value::Number(port.into()));
+        }
+    }
+    if let Some(flag) = settings.allow_lan {
+        map.insert(key("allow-lan"), Value::Bool(flag));
+    }
+    if let Some(flag) = settings.ipv6 {
+        map.insert(key("ipv6"), Value::Bool(flag));
+    }
+    if let Some(level) = &settings.log_level {
+        map.insert(key("log-level"), Value::String(level.clone()));
+    }
+    if let Some(flag) = settings.unified_delay {
+        map.insert(key("unified-delay"), Value::Bool(flag));
+    }
+    if let Some(flag) = settings.tcp_concurrent {
+        map.insert(key("tcp-concurrent"), Value::Bool(flag));
+    }
+    if let Some(mode) = &settings.find_process_mode {
+        map.insert(key("find-process-mode"), Value::String(mode.clone()));
+    }
+    if settings.dns_override {
+        map.insert(key("dns"), settings.dns.to_value());
+    }
+    if let Some(flag) = settings.geo_auto_update {
+        map.insert(key("geo-auto-update"), Value::Bool(flag));
+    }
+    if let Some(hours) = settings.geo_update_interval.filter(|hours| *hours > 0) {
+        map.insert(key("geo-update-interval"), Value::Number(i64::from(hours).into()));
+    }
+    if let Some(urls) = geo_source_urls(&settings.geo_source) {
+        let mut geox = serde_yaml::Mapping::new();
+        for (name, url) in urls {
+            geox.insert(key(name), Value::String(url));
+        }
+        map.insert(key("geox-url"), Value::Mapping(geox));
+    }
+    if let Some(flag) = settings.sniffer {
+        if flag {
+            map.insert(key("sniffer"), default_sniffer());
+        } else {
+            let mut off = serde_yaml::Mapping::new();
+            off.insert(key("enable"), Value::Bool(false));
+            map.insert(key("sniffer"), Value::Mapping(off));
+        }
+    }
+    if desktop {
+        // Android hands the kernel a VPN fd; routing options there belong to the system.
+        let mut tun = map
+            .get(key("tun"))
+            .and_then(Value::as_mapping)
+            .cloned()
+            .unwrap_or_default();
+        let tun_settings = &settings.tun;
+        tun.insert(key("stack"), Value::String(tun_settings.stack.clone()));
+        tun.insert(key("auto-route"), Value::Bool(tun_settings.auto_route));
+        tun.insert(key("auto-detect-interface"), Value::Bool(tun_settings.auto_detect_interface));
+        tun.insert(key("strict-route"), Value::Bool(tun_settings.strict_route));
+        tun.insert(
+            key("dns-hijack"),
+            Value::Sequence(tun_settings.dns_hijack.iter().map(|item| Value::String(item.clone())).collect()),
+        );
+        if tun_settings.mtu > 0 {
+            tun.insert(key("mtu"), Value::Number(u64::from(tun_settings.mtu).into()));
+        }
+        if !tun_settings.device.is_empty() {
+            tun.insert(key("device"), Value::String(tun_settings.device.clone()));
+        }
+        map.insert(key("tun"), Value::Mapping(tun));
+    }
+    let port = map.get(key("mixed-port")).and_then(Value::as_i64);
+    let text = serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())?;
+    Ok((text, port))
+}
+
+fn default_sniffer() -> Value {
+    serde_yaml::from_str(
+        "enable: true\nforce-dns-mapping: true\nparse-pure-ip: true\nsniff:\n  HTTP:\n    ports: [80, 8080-8880]\n    override-destination: true\n  TLS:\n    ports: [443, 8443]\n  QUIC:\n    ports: [443, 8443]\nskip-domain:\n  - Mijia Cloud\n  - +.push.apple.com\n",
+    )
+    .unwrap_or(Value::Null)
+}
+
+/// TUN hijacks DNS, so the kernel must answer it. Without a `dns` block that is enabled,
+/// a profile written for system-proxy use would leave every lookup unanswered under TUN.
+fn ensure_tun_dns(yaml: &str, settings: &KernelSettings) -> Result<String, String> {
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let Some(map) = value.as_mapping_mut() else {
+        return Err(CONTENT_ERROR.to_string());
+    };
+    let key = |name: &str| Value::String(name.to_string());
+    let tun_on = map
+        .get(key("tun"))
+        .and_then(|tun| tun.get("enable"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !tun_on {
+        return Ok(yaml.to_string());
+    }
+    let dns_on = map
+        .get(key("dns"))
+        .and_then(|dns| dns.get("enable"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if dns_on {
+        return Ok(yaml.to_string());
+    }
+    map.insert(key("dns"), settings.dns.clone().normalized().to_value());
+    serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
+}
+
+fn count_proxies(content: &str) -> usize {
+    if content.trim().is_empty() {
+        return 0;
+    }
+    let Ok(value) = serde_yaml::from_str::<Value>(content) else {
+        return 0;
+    };
+    mapping_get(&value, "proxies")
+        .and_then(Value::as_sequence)
+        .map(|list| list.len())
+        .unwrap_or(0)
+}
+
+const REFRESH_SLACK_MS: u64 = 60_000;
+
+impl ProfileBook {
+    fn config_values(&self) -> ConfigValues {
+        let Some(profile) = self
+            .active_id
+            .as_deref()
+            .and_then(|id| self.profiles.iter().find(|profile| profile.id == id))
+        else {
+            return ConfigValues::default();
+        };
+        profile.node_metadata().map(|metadata| metadata.config.clone()).unwrap_or_default()
+    }
+
+    fn index_of(&self, id: &str) -> Option<usize> {
+        self.profiles.iter().position(|profile| profile.id == id)
+    }
+
+    pub fn clear_notice(&mut self) -> ProfileSnapshot {
+        self.notice = None;
+        self.snapshot()
+    }
+
+    /// Removes a profile. The active one can go only while nothing is connected.
+    pub fn delete_profile(&mut self, id: &str) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let active = self.active_id.as_deref() == Some(id);
+        if active && (self.connected || self.kernel_running) {
+            self.notice = Some("请先断开连接再删除当前配置".to_string());
+            return self.snapshot();
+        }
+        self.profiles.remove(index);
+        self.delays.remove(id);
+        if active {
+            self.active_id = None;
+            self.disabled_rules.clear();
+            self.runtime_base = None;
+            self.recompute_effective();
+        }
+        self.notice = None;
+        self.persist();
+        self.snapshot()
+    }
+
+    pub fn rename_profile(&mut self, id: &str, name: &str) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let name = clean_name(name, &self.profiles[index].name.clone());
+        self.profiles[index].name = name;
+        self.persist();
+        self.snapshot()
+    }
+
+    pub fn set_profile_source(&mut self, id: &str, url: &str) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if self.profiles[index].kind != ProfileKind::Subscription {
+            return self.snapshot();
+        }
+        match validate_subscription_url(url.trim()) {
+            Ok(url) => {
+                self.profiles[index].source = url;
+                self.input_error = None;
+                self.persist();
+            }
+            Err(message) => self.input_error = Some(message),
+        }
+        self.snapshot()
+    }
+
+    pub fn set_profile_interval(&mut self, id: &str, hours: u32) -> ProfileSnapshot {
+        if let Some(index) = self.index_of(id) {
+            self.profiles[index].interval_hours = hours.min(24 * 30);
+            self.persist();
+        }
+        self.snapshot()
+    }
+
+    pub fn profile_content(&self, id: &str) -> Option<String> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .map(|profile| profile.content.clone())
+    }
+
+    /// Replaces a profile's saved YAML after checking it is a usable config.
+    pub fn save_profile_content(
+        &mut self,
+        id: &str,
+        content: &str,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if parse_config(content).is_err() {
+            self.profiles[index].failure = Some(CONTENT_ERROR.to_string());
+            self.input_error = Some(CONTENT_ERROR.to_string());
+            return self.snapshot();
+        }
+        let profile = &mut self.profiles[index];
+        profile.node_metadata.take();
+        profile.content = content.to_string();
+        profile.proxy_count = count_proxies(content);
+        profile.updated_ms = Some(now_ms());
+        profile.failure = None;
+        self.input_error = None;
+        let active = self.active_id.as_deref() == Some(id);
+        self.persist();
+        if active {
+            self.disabled_rules.clear();
+            self.recompute_effective();
+            if kernel.running() && self.platform == ClientPlatform::Desktop {
+                let tun = self.takeover.tun;
+                if let Err(StartError::Failed(message)) | Err(StartError::Idle(message)) =
+                    self.reload(kernel, tun, None)
+                {
+                    self.notice = Some(message);
+                }
+            }
+        }
+        self.publish(kernel)
+    }
+
+    /// Fetches a subscription again without switching the active profile.
+    pub fn refresh_profile(
+        &mut self,
+        id: &str,
+        source: &dyn SubscriptionSource,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if self.profiles[index].kind != ProfileKind::Subscription {
+            return self.snapshot();
+        }
+        let fetched = match source.fetch(&self.profiles[index].source) {
+            Ok(fetched) => fetched,
+            Err(_) => {
+                self.profiles[index].failure = Some(FETCH_ERROR.to_string());
+                // A failed attempt still counts as a try so the timer does not spin.
+                self.profiles[index].updated_ms = Some(now_ms());
+                self.persist();
+                return self.snapshot();
+            }
+        };
+        let content = normalize_subscription_content(&fetched.content);
+        if parse_config(&content).is_err() {
+            self.profiles[index].failure = Some(CONTENT_ERROR.to_string());
+            self.profiles[index].updated_ms = Some(now_ms());
+            self.persist();
+            return self.snapshot();
+        }
+        let now = now_ms();
+        {
+            let profile = &mut self.profiles[index];
+            profile.node_metadata.take();
+            profile.content = content;
+            profile.usage = parse_userinfo(fetched.userinfo.as_deref());
+            profile.proxy_count = count_proxies(&profile.content);
+            profile.updated_ms = Some(now);
+            profile.last_success_ms = Some(now);
+            profile.failure = None;
+        }
+        self.persist();
+        if self.active_id.as_deref() == Some(id) {
+            self.disabled_rules.clear();
+            self.recompute_effective();
+            if kernel.running() && self.platform == ClientPlatform::Desktop {
+                let tun = self.takeover.tun;
+                if let Err(StartError::Failed(message)) | Err(StartError::Idle(message)) =
+                    self.reload(kernel, tun, None)
+                {
+                    self.notice = Some(message);
+                }
+            }
+        }
+        self.publish(kernel)
+    }
+
+    /// Subscriptions whose update interval has passed.
+    pub fn due_profiles(&self, now: u64) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.kind == ProfileKind::Subscription && profile.interval_hours > 0)
+            .filter(|profile| {
+                let every = u64::from(profile.interval_hours) * 3_600_000;
+                match profile.updated_ms.or(profile.last_success_ms) {
+                    Some(last) => now.saturating_add(REFRESH_SLACK_MS) >= last.saturating_add(every),
+                    None => true,
+                }
+            })
+            .map(|profile| profile.id.clone())
+            .collect()
+    }
+
+    pub fn subscription_ids(&self) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.kind == ProfileKind::Subscription)
+            .map(|profile| profile.id.clone())
+            .collect()
+    }
+
+    pub fn save_settings(
+        &mut self,
+        settings: KernelSettings,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let settings = settings.normalized();
+        let restart = settings.kernel_part() != self.settings.kernel_part();
+        self.settings = settings;
+        nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
+        self.recompute_effective();
+        self.persist();
+        if !restart || self.platform != ClientPlatform::Desktop || !kernel.running() {
+            return self.publish(kernel);
+        }
+        if self.takeover.system_proxy {
+            return self.set_system_proxy(true, kernel, proxy, tun, vpn);
+        }
+        let tun_on = self.takeover.tun;
+        if let Err(StartError::Failed(message)) | Err(StartError::Idle(message)) =
+            self.reload(kernel, tun_on, None)
+        {
+            self.home_failure = Some(message);
+            self.remember_current_failure();
+        }
+        self.publish(kernel)
+    }
+
+    fn record_delays(&mut self, profile_id: &str, groups: &[(String, Vec<String>)], results: Vec<NodeDelay>) {
+        let marks: BTreeMap<String, Option<u64>> = results
+            .into_iter()
+            .map(|item| (item.name, item.delay_ms))
+            .collect();
+        let profile_slot = self.delays.entry(profile_id.to_string()).or_default();
+        for (group, members) in groups {
+            let slot = profile_slot.entry(group.clone()).or_default();
+            for name in members {
+                let Some(delay) = marks.get(name) else {
+                    continue;
+                };
+                slot.insert(
+                    name.clone(),
+                    DelayMark {
+                        delay_ms: *delay,
+                        failed: delay.is_none(),
+                    },
+                );
+            }
+        }
+    }
+
+    fn tested_groups(&self, index: usize) -> Option<Vec<(String, Vec<String>)>> {
+        let document = document_value(&self.profiles[index])?;
+        Some(
+            nodes::resolved_groups(&document, &self.runtime_catalog)
+                .into_iter()
+                .map(|group| {
+                    let mut members = group.proxies;
+                    if let Some(now) = self.auto_now.get(&group.name) {
+                        if !members.iter().any(|item| item == now) {
+                            members.push(now.clone());
+                        }
+                    }
+                    (group.name, members)
+                })
+                .collect(),
+        )
+    }
+
+    /// Tests every distinct node once and writes the result into every group that lists it.
+    /// Each finished node is reported with its `tested`/`total` counters for the
+    /// `node-test` progress event.
+    pub fn test_all_with_progress(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        on_progress: &mut dyn FnMut(&str, Option<u64>, bool, usize, usize),
+    ) -> ProfileSnapshot {
+        self.sync_runtime(kernel);
+        if !self.kernel_running {
+            self.nodes_error = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        }
+        let Some(index) = self.nodes_profile_index() else {
+            self.nodes_error = Some(NEED_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let Some(groups) = self.tested_groups(index) else {
+            self.nodes_error = Some(NO_NODES.to_string());
+            return self.snapshot();
+        };
+        let mut unique: Vec<String> = Vec::new();
+        for (_, members) in &groups {
+            for name in members {
+                if !unique.iter().any(|item| item == name) {
+                    unique.push(name.clone());
+                }
+            }
+        }
+        let total = unique.len();
+        let profile_id = self.profiles[index].id.clone();
+        let mut tested = 0usize;
+        match kernel.probe_delays_with_progress("", &unique, &mut |name, delay, failed| {
+            tested += 1;
+            on_progress(name, delay, failed, tested, total);
+        }) {
+            Ok(results) => {
+                self.record_delays(&profile_id, &groups, results);
+                self.nodes_error = None;
+            }
+            Err(message) => {
+                self.nodes_error = Some(if message.is_empty() { KERNEL_DOWN.to_string() } else { message });
+            }
+        }
+        self.snapshot()
+    }
+
+    pub fn test_node(&mut self, node: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        self.sync_runtime(kernel);
+        if !self.kernel_running {
+            self.nodes_error = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        }
+        let Some(index) = self.nodes_profile_index() else {
+            self.nodes_error = Some(NEED_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let Some(groups) = self.tested_groups(index) else {
+            self.nodes_error = Some(NO_NODES.to_string());
+            return self.snapshot();
+        };
+        let node = node.trim().to_string();
+        let profile_id = self.profiles[index].id.clone();
+        match kernel.probe_delays("", std::slice::from_ref(&node)) {
+            Ok(results) => {
+                self.record_delays(&profile_id, &groups, results);
+                self.nodes_error = None;
+            }
+            Err(message) => {
+                self.nodes_error = Some(if message.is_empty() { KERNEL_DOWN.to_string() } else { message });
+            }
+        }
+        self.snapshot()
+    }
+
+    pub fn close_connections(&mut self, id: Option<&str>, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        if let Some(endpoint) = kernel.controller() {
+            if let Err(message) = diagnostics::close_connections(&endpoint, id) {
+                self.notice = Some(message);
+            }
+        }
+        self.publish(kernel)
+    }
+
+    /// Full rule list from the active profile, keys computed over the original order.
+    fn active_config_rules(&self) -> Vec<diagnostics::ConfigRule> {
+        let Some(profile) = self
+            .active_id
+            .as_deref()
+            .and_then(|id| self.profiles.iter().find(|profile| profile.id == id))
+        else {
+            return Vec::new();
+        };
+        let Some(value) = document_value(profile) else {
+            return Vec::new();
+        };
+        diagnostics::config_rules(&value)
+    }
+
+    pub fn rules(&mut self, kernel: &mut dyn KernelLaunch) -> RulesSnapshot {
+        let disabled = self.disabled_rules.iter().cloned().collect();
+        let config = self.active_config_rules();
+        match kernel.controller() {
+            Some(endpoint) => match diagnostics::fetch_rules(&endpoint) {
+                Ok(kernel_rules) => RulesSnapshot {
+                    rules: diagnostics::rule_rows(&config, &kernel_rules, &self.disabled_rules),
+                    error: None,
+                    disabled,
+                },
+                Err(message) => RulesSnapshot {
+                    rules: diagnostics::rule_rows(&config, &[], &self.disabled_rules),
+                    error: Some(message),
+                    disabled,
+                },
+            },
+            None => RulesSnapshot {
+                rules: Vec::new(),
+                error: Some(KERNEL_DOWN.to_string()),
+                disabled,
+            },
+        }
+    }
+
+    /// Temporarily disables or re-enables one rule. The filtered runtime config is
+    /// hot-reloaded; unknown keys and failed reloads leave the previous key set.
+    pub fn set_rule_disabled(
+        &mut self,
+        command: RuleToggle,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<RulesSnapshot, String> {
+        self.sync_runtime(kernel);
+        if !self.kernel_running {
+            return Err(KERNEL_DOWN.to_string());
+        }
+        let key = command.key.trim().to_string();
+        if !self.active_config_rules().iter().any(|rule| rule.key == key) {
+            return Err("没有这条规则".to_string());
+        }
+        let previous = self.disabled_rules.clone();
+        let changed = if command.disabled {
+            self.disabled_rules.insert(key)
+        } else {
+            self.disabled_rules.remove(&key)
+        };
+        if !changed {
+            return Ok(self.rules(kernel));
+        }
+        let tun = self.takeover.tun;
+        let outcome = match self.runtime_base.clone() {
+            Some(base) => diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
+                .and_then(|yaml| kernel.reload_config(&yaml)),
+            None => match self.kernel_yaml(tun, None) {
+                Ok((base, _)) => diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
+                    .and_then(|yaml| kernel.reload_config(&yaml)),
+                Err(StartError::Idle(message)) | Err(StartError::Failed(message)) => Err(message),
+            },
+        };
+        if let Err(message) = outcome {
+            self.disabled_rules = previous;
+            return Err(message);
+        }
+        Ok(self.rules(kernel))
+    }
+
+    pub fn providers(&mut self, kernel: &mut dyn KernelLaunch) -> ProvidersSnapshot {
+        let Some(endpoint) = kernel.controller() else {
+            return ProvidersSnapshot { providers: Vec::new(), error: Some(KERNEL_DOWN.to_string()) };
+        };
+        match diagnostics::fetch_providers(&endpoint) {
+            Ok(providers) => ProvidersSnapshot { providers, error: None },
+            Err(message) => ProvidersSnapshot { providers: Vec::new(), error: Some(message) },
+        }
+    }
+
+    /// The controller endpoint for slow calls made without holding the session lock.
+    pub fn controller_of(kernel: &mut dyn KernelLaunch) -> Option<ControllerEndpoint> {
+        kernel.controller()
+    }
+
+    /// Drops the kernel's fake-ip mapping or DNS cache.
+    pub fn flush_cache(&mut self, which: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        let Some(endpoint) = kernel.controller() else {
+            self.notice = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        };
+        let result = match which {
+            "fakeip" => diagnostics::flush_cache(&endpoint, "fakeip"),
+            _ => diagnostics::flush_cache(&endpoint, "dns"),
+        };
+        self.notice = result.err();
+        self.publish(kernel)
+    }
+
+    pub fn clear_logs(&mut self) -> ProfileSnapshot {
+        self.logs.clear();
+        self.snapshot()
     }
 }
 
@@ -2360,6 +3664,235 @@ mod tests {
         format!("mixed-port: {port}\nmode: rule\nproxies: []\n")
     }
 
+    #[test]
+    fn cached_metadata_tracks_saved_content_and_only_applied_overrides() {
+        let dir = temp_dir("metadata");
+        let mut book = ProfileBook::open(&dir.0);
+        let yaml = |port, node: &str| format!(
+            "mixed-port: {port}\nproxies: [{{name: {node}, type: ss}}]\nproxy-groups: [{{name: manual, type: select, proxies: [{node}]}}]\n"
+        );
+        book.add_local("a.yaml", &yaml(7890, "first"));
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let before = book.snapshot();
+        assert_eq!(before.config_values.mixed_port, Some(7890));
+        assert_eq!(before.node_catalog[0].nodes[0].name, "first");
+        assert!(book.profiles[0].node_metadata.get().is_some());
+
+        let edited = book.save_profile_content("p1", &yaml(7999, "second"), &mut kernel);
+        assert_eq!(edited.config_values.mixed_port, Some(7999));
+        assert_eq!(edited.node_catalog[0].nodes[0].name, "second");
+        let draft = book.save_override("p1", "mixed-port: 8001\n");
+        assert_eq!(draft.config_values.mixed_port, Some(7999), "draft is not applied yet");
+        let applied = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(applied.config_values.mixed_port, Some(8001));
+        book.save_override("p1", "[\n");
+        let rejected = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(rejected.config_values.mixed_port, Some(8001));
+
+        let payload = serde_json::to_value(book.snapshot()).unwrap();
+        assert!(payload.get("node_groups").is_none(), "IPC sends one catalog, not two copies");
+        assert_eq!(payload["node_catalog"][0]["nodes"][0]["name"], "second");
+    }
+
+    #[test]
+    fn android_package_list_is_cached_between_traffic_polls_and_retries_after_expiry() {
+        struct Apps { reads: usize, fail: bool }
+        impl takeover::InstalledApps for Apps {
+            fn list(&mut self) -> Result<Vec<takeover::InstalledApp>, String> {
+                self.reads += 1;
+                if self.fail { return Err("unavailable".to_string()); }
+                Ok(vec![takeover::InstalledApp { name: "Browser".to_string(), package_name: "app.browser".to_string(), system: false }])
+            }
+        }
+        let dir = temp_dir("package-cache");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        let mut apps = Apps { reads: 0, fail: false };
+        for _ in 0..60 { book.refresh_installed(&mut apps); }
+        assert_eq!(apps.reads, 1);
+        assert_eq!(book.snapshot().installed.len(), 1);
+        book.installed_checked_at = Some(Instant::now() - Duration::from_secs(61));
+        apps.fail = true;
+        for _ in 0..60 { book.refresh_installed(&mut apps); }
+        assert_eq!(apps.reads, 2);
+        assert_eq!(book.snapshot().installed.len(), 1, "a failed refresh preserves the last list");
+        book.installed_checked_at = Some(Instant::now() - Duration::from_secs(61));
+        apps.fail = false;
+        book.refresh_installed(&mut apps);
+        assert_eq!(apps.reads, 3);
+    }
+
+    #[test]
+    #[ignore = "manual snapshot benchmark; no timing assertion on shared runners"]
+    fn benchmark_cached_snapshot() {
+        let dir = temp_dir("snapshot-bench");
+        let mut book = ProfileBook::open(&dir.0);
+        let names: Vec<String> = (0..500).map(|i| format!("node-{i}")).collect();
+        let mut yaml = String::from("mixed-port: 7890\nproxies:\n");
+        for name in &names { yaml.push_str(&format!("  - {{name: {name}, type: ss}}\n")); }
+        yaml.push_str("proxy-groups:\n");
+        for i in 0..16 {
+            yaml.push_str(&format!("  - {{name: group-{i}, type: select, proxies: [{}]}}\n", names.join(", ")));
+        }
+        book.add_local("benchmark.yaml", &yaml);
+        let start = Instant::now();
+        let mut bytes = 0;
+        for _ in 0..100 {
+            bytes = serde_json::to_vec(&book.snapshot()).unwrap().len();
+        }
+        eprintln!("8000-node snapshot+JSON: {:.2} ms/op, {bytes} bytes", start.elapsed().as_secs_f64() * 10.0);
+        let start = Instant::now();
+        for _ in 0..100 {
+            book.profiles[0].node_metadata.take();
+            std::hint::black_box(serde_json::to_vec(&book.snapshot()).unwrap());
+        }
+        eprintln!("8000-node snapshot+JSON with YAML reparse: {:.2} ms/op", start.elapsed().as_secs_f64() * 10.0);
+    }
+
+    #[test]
+    fn delete_rename_and_edit_manage_saved_profiles() {
+        let dir = temp_dir("manage");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", &config(7890));
+        book.add_local("b.yaml", &config(7891));
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+
+        let renamed = book.rename_profile("p2", "  办公  ");
+        assert_eq!(renamed.profiles[1].name, "办公");
+
+        let bad = book.save_profile_content("p2", "- not a map", &mut kernel);
+        assert!(bad.input_error.is_some());
+        assert_eq!(book.profile_content("p2").unwrap(), config(7891));
+        book.save_profile_content("p2", "mixed-port: 7000\nproxies:\n  - {name: a, type: ss}\n", &mut kernel);
+        let listed = book.snapshot();
+        assert_eq!(listed.profiles[1].proxy_count, 1);
+
+        let removed = book.delete_profile("p2");
+        assert_eq!(removed.profiles.len(), 1);
+        let reopened = ProfileBook::open(&dir.0).snapshot();
+        assert_eq!(reopened.profiles.len(), 1);
+        assert_eq!(reopened.profiles[0].id, "p1");
+    }
+
+    #[test]
+    fn kernel_settings_overwrite_the_profile_and_a_missing_port_gets_a_default() {
+        let dir = temp_dir("settings");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", "mode: rule\nproxies: []\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        let enabled = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(enabled.mixed_port, Some(7890));
+
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let settings = KernelSettings {
+            mixed_port: Some(7999),
+            allow_lan: Some(true),
+            log_level: Some("WARNING".to_string()),
+            test_url: "ftp://nope".to_string(),
+            ..Default::default()
+        };
+        let saved = book.save_settings(settings, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(saved.settings.log_level.as_deref(), Some("warning"));
+        assert!(saved.settings.test_url.is_empty());
+        let again = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(again.mixed_port, Some(7999));
+        let running: Value = serde_yaml::from_str(kernel.running.as_deref().unwrap()).unwrap();
+        assert_eq!(read_i64(&running, "mixed-port"), Some(7999));
+        assert_eq!(mapping_get(&running, "allow-lan").and_then(Value::as_bool), Some(true));
+        assert_eq!(ProfileBook::open(&dir.0).snapshot().settings.mixed_port, Some(7999));
+    }
+
+    #[test]
+    fn geo_settings_override_auto_update_interval_and_source() {
+        let base = "mixed-port: 7890\ngeox-url:\n  geoip: https://mine/geoip.dat\n";
+        let (kept, _) = apply_settings(base, &KernelSettings::default(), true).unwrap();
+        let kept: Value = serde_yaml::from_str(&kept).unwrap();
+        assert_eq!(read_string(mapping_get(&kept, "geox-url").unwrap(), "geoip").as_deref(), Some("https://mine/geoip.dat"));
+        assert!(mapping_get(&kept, "geo-auto-update").is_none());
+
+        let settings = KernelSettings {
+            geo_auto_update: Some(true),
+            geo_update_interval: Some(72),
+            geo_source: "jsdelivr".to_string(),
+            ..Default::default()
+        };
+        let (yaml, _) = apply_settings(base, &settings, true).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(mapping_get(&value, "geo-auto-update").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_i64(&value, "geo-update-interval"), Some(72));
+        let geox = mapping_get(&value, "geox-url").unwrap();
+        assert_eq!(
+            read_string(geox, "geosite").as_deref(),
+            Some("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat")
+        );
+        assert!(read_string(geox, "asn").unwrap().ends_with("GeoLite2-ASN.mmdb"));
+    }
+
+    #[test]
+    fn tun_gets_routing_and_dns_and_dns_override_replaces_the_profile_block() {
+        let dir = temp_dir("tun-dns");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nproxies: []\ndns:\n  enable: false\n  nameserver: [1.1.1.1]\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let (yaml, _) = book.kernel_yaml(true, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        let tun = mapping_get(&running, "tun").unwrap();
+        assert_eq!(mapping_get(tun, "enable").and_then(Value::as_bool), Some(true));
+        assert_eq!(mapping_get(tun, "auto-route").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_string(tun, "stack").as_deref(), Some("mixed"));
+        let dns = mapping_get(&running, "dns").unwrap();
+        assert_eq!(mapping_get(dns, "enable").and_then(Value::as_bool), Some(true), "TUN turns DNS on");
+
+        let (plain, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let plain: Value = serde_yaml::from_str(&plain).unwrap();
+        assert_eq!(
+            mapping_get(mapping_get(&plain, "dns").unwrap(), "enable").and_then(Value::as_bool),
+            Some(false),
+            "without TUN the profile's DNS stays as written"
+        );
+
+        let mut proxy = MemoryProxy::default();
+        let mut tun_grant = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let mut settings = KernelSettings { dns_override: true, sniffer: Some(true), ..Default::default() };
+        settings.dns.enhanced_mode = "redir-host".to_string();
+        settings.dns.nameserver = vec![" https://1.1.1.1/dns-query ".to_string(), String::new()];
+        settings.tun.stack = "GVISOR".to_string();
+        let saved = book.save_settings(settings, &mut kernel, &mut proxy, &mut tun_grant, &mut vpn);
+        assert_eq!(saved.settings.tun.stack, "gvisor");
+        assert_eq!(saved.settings.dns.nameserver, ["https://1.1.1.1/dns-query"]);
+        let (yaml, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        let dns = mapping_get(&running, "dns").unwrap();
+        assert_eq!(read_string(dns, "enhanced-mode").as_deref(), Some("redir-host"));
+        assert!(mapping_get(dns, "fake-ip-range").is_none());
+        assert_eq!(mapping_get(mapping_get(&running, "sniffer").unwrap(), "enable").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_string(mapping_get(&running, "tun").unwrap(), "stack").as_deref(), Some("gvisor"));
+    }
+
+    #[test]
+    fn subscriptions_with_an_interval_become_due_after_it_passes() {
+        let dir = temp_dir("due");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_subscription("https://example.com/sub");
+        book.add_local("a.yaml", &config(7890));
+        assert!(book.due_profiles(now_ms()).is_empty());
+        book.set_profile_interval("p1", 6);
+        assert_eq!(book.due_profiles(now_ms()), ["p1"]);
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        let failed = book.refresh_profile("p1", &RejectSource, &mut kernel);
+        assert_eq!(failed.profiles[0].failure.as_deref(), Some(FETCH_ERROR));
+        assert!(book.due_profiles(now_ms()).is_empty());
+        assert_eq!(book.due_profiles(now_ms() + 6 * 3_600_000), ["p1"]);
+        assert_eq!(book.subscription_ids(), ["p1"]);
+    }
+
     fn current_ids(snapshot: &ProfileSnapshot) -> Vec<&str> {
         snapshot
             .profiles
@@ -2545,6 +4078,40 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_subscription_urls_are_rejected_without_adding() {
+        let dir = temp_dir("duplicate");
+        let mut book = ProfileBook::open(&dir.0);
+        let first = book.add_subscription(" https://example.com/sub ");
+        assert_eq!(first.profiles.len(), 1);
+        assert_eq!(first.profiles[0].source, "https://example.com/sub");
+        assert_eq!(first.input_error, None);
+
+        let doubled = book.add_subscription("https://example.com/sub");
+        assert_eq!(doubled.profiles.len(), 1);
+        assert_eq!(doubled.input_error.as_deref(), Some(DUPLICATE_ERROR));
+
+        let spaced = book.add_subscription("  https://example.com/sub  ");
+        assert_eq!(spaced.profiles.len(), 1);
+        assert_eq!(spaced.input_error.as_deref(), Some(DUPLICATE_ERROR));
+
+        let other = book.add_subscription("https://example.com/other");
+        assert_eq!(other.profiles.len(), 2);
+        assert_eq!(other.input_error, None);
+
+        // A deep link reaches the same guard and keeps the pending link for a retry.
+        book.stage_install_link(
+            "billow://install-config?url=https%3A%2F%2Fexample.com%2Fsub",
+        );
+        let confirmed = book.confirm_pending();
+        assert_eq!(confirmed.profiles.len(), 2);
+        assert_eq!(confirmed.input_error.as_deref(), Some(DUPLICATE_ERROR));
+        assert_eq!(
+            confirmed.pending_url.as_deref(),
+            Some("https://example.com/sub")
+        );
+    }
+
+    #[test]
     fn unreachable_subscription_enable_closes_takeover_and_keeps_the_reason() {
         let dir = temp_dir("unreachable");
         let mut book = ProfileBook::open(&dir.0);
@@ -2667,6 +4234,14 @@ mod tests {
         assert!(applied.system_proxy && applied.vpn);
         let running: Value = serde_yaml::from_str(kernel.running.as_deref().unwrap()).unwrap();
         assert_eq!(read_i64(&running, "mixed-port"), Some(8000));
+        // The effective-config view shows exactly what the kernel was given.
+        let effective: Value = serde_yaml::from_str(&book.effective_config().unwrap()).unwrap();
+        assert_eq!(read_i64(&effective, "mixed-port"), Some(8000));
+        assert_eq!(
+            mapping_get(mapping_get(&effective, "dns").unwrap(), "enable").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(read_string(&effective, "external-controller").as_deref(), Some("127.0.0.1:17690"));
         let dns = mapping_get(&running, "dns").unwrap();
         assert_eq!(read_string(dns, "listen").as_deref(), Some("127.0.0.1:53"));
         assert_eq!(
@@ -2686,6 +4261,9 @@ mod tests {
 
         book.save_override("p1", "");
         assert_eq!(book.snapshot().mixed_port, Some(8000));
+        // A saved but not yet applied override is not what runs.
+        let effective: Value = serde_yaml::from_str(&book.effective_config().unwrap()).unwrap();
+        assert_eq!(read_i64(&effective, "mixed-port"), Some(8000));
         assert_eq!(kernel.calls, 4);
         let cleared = book.enable("p1", &RejectSource, &mut kernel);
         assert_eq!(cleared.mixed_port, Some(7890));
@@ -2833,6 +4411,7 @@ mod tests {
         scripts: HashMap<String, Vec<NodeDelay>>,
         auto: BTreeMap<String, String>,
         reject_select: bool,
+        catalog: nodes::RuntimeCatalog,
     }
 
     impl KernelLaunch for NodeKernel {
@@ -2874,6 +4453,12 @@ mod tests {
                 .collect())
         }
 
+        fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
+            let mut catalog = self.catalog.clone();
+            catalog.now.extend(self.auto_now());
+            catalog
+        }
+
         fn auto_now(&mut self) -> BTreeMap<String, String> {
             if self.report_running {
                 self.auto.clone()
@@ -2893,7 +4478,52 @@ mod tests {
             scripts: HashMap::new(),
             auto: BTreeMap::new(),
             reject_select: false,
+            catalog: nodes::RuntimeCatalog::default(),
         }
+    }
+
+    #[test]
+    fn provider_members_can_be_selected_tested_and_are_cleared_on_stop() {
+        let dir = temp_dir("provider-members");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("provider", "mixed-port: 7890\nproxy-groups:\n  - {name: Available, type: select, use: [remote]}\n");
+        let mut kernel = node_kernel();
+        kernel.catalog = nodes::runtime_catalog(&serde_json::json!({"proxies": {
+            "Available": {"all":["HK", "JP"], "now":"JP", "type":"Selector"},
+            "HK":{"type":"Shadowsocks"}, "JP":{"type":"VLESS"}
+        }})).unwrap();
+        let ready = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(ready.node_catalog[0].nodes.len(), 2);
+        assert_eq!(ready.node_catalog[0].now, "JP");
+        assert!(ready.node_catalog[0].nodes[1].selected);
+        assert_eq!(ready.node_catalog[0].nodes[1].node_type, "VLESS");
+        let selected = book.select_node("Available", "HK", &mut kernel);
+        assert!(selected.nodes_error.is_none());
+        assert_eq!(selected.node_catalog[0].now, "HK");
+        assert_eq!(kernel.applied.last(), Some(&("Available".to_string(), "HK".to_string())));
+        kernel.scripts.insert("Available".to_string(), vec![NodeDelay { name:"HK".to_string(), delay_ms:Some(20) }]);
+        let tested = book.test_group("Available", &mut kernel);
+        assert_eq!(tested.node_catalog[0].nodes[0].delay_ms, Some(20));
+        kernel.report_running = false;
+        book.sync_runtime(&mut kernel);
+        assert!(book.snapshot().node_catalog[0].nodes.is_empty());
+    }
+
+    #[test]
+    fn disconnect_without_tun_does_not_restart_the_kernel() {
+        let dir = temp_dir("warm-disconnect");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("local", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = node_kernel();
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        let starts = kernel.calls;
+        let next = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!next.connected && !next.system_proxy);
+        assert_eq!(kernel.calls, starts);
     }
 
     fn grouped_config() -> String {
@@ -2915,12 +4545,14 @@ proxies:
 proxy-groups:
   - name: manual
     type: select
+    icon: https://icons.example.com/manual.png
     proxies:
       - z-node
       - m-node
       - a-node
   - name: auto
     type: url-test
+    icon: file:///tmp/local.png
     proxies:
       - z-node
       - m-node
@@ -2958,7 +4590,7 @@ proxy-groups:
         let mut kernel = node_kernel();
         let missing = book.select_node("manual", "a-node", &mut kernel);
         assert_eq!(missing.nodes_error.as_deref(), Some(NEED_PROFILE));
-        assert!(missing.node_groups.is_empty());
+        assert!(missing.node_catalog.is_empty());
         assert!(kernel.applied.is_empty());
 
         book.add_local("nodes.yaml", &grouped_config());
@@ -2972,8 +4604,17 @@ proxy-groups:
             ["z-node", "m-node", "a-node"]
         );
         assert!(group(&listed.node_catalog, "manual").nodes[0].selected);
-        assert!(group(&listed.node_catalog, "auto").nodes.is_empty());
+        // Auto groups list their members for viewing; none is marked while the kernel is down.
+        assert!(group(&listed.node_catalog, "auto").nodes.iter().all(|node| !node.selected));
         assert_eq!(group(&listed.node_catalog, "auto").kind, "auto");
+        assert_eq!(
+            group(&listed.node_catalog, "manual").icon.as_deref(),
+            Some("https://icons.example.com/manual.png")
+        );
+        assert!(
+            group(&listed.node_catalog, "auto").icon.is_none(),
+            "a local file icon is not passed through"
+        );
         assert_eq!(kernel.delay_calls, 0);
         assert!(listed.node_catalog.iter().all(|item| {
             item.nodes
@@ -2985,7 +4626,7 @@ proxy-groups:
         assert!(chosen.nodes_error.is_none());
         assert!(kernel.applied.is_empty());
         assert_eq!(kernel.calls, 0);
-        let manual = group(&chosen.node_groups, "manual");
+        let manual = group(&chosen.node_catalog, "manual");
         assert!(
             manual
                 .nodes
@@ -3018,7 +4659,7 @@ proxy-groups:
         );
         assert!(
             reopened_view
-                .node_groups
+                .node_catalog
                 .iter()
                 .all(|item| { item.nodes.iter().all(|node| node.delay_ms.is_none()) })
         );
@@ -3051,7 +4692,7 @@ proxy-groups:
         kernel.applied.clear();
         let marked = book.select_node("manual", "m-node", &mut kernel);
         assert!(kernel.applied.is_empty());
-        assert_eq!(group(&marked.node_groups, "manual").now, "m-node");
+        assert_eq!(group(&marked.node_catalog, "manual").now, "m-node");
         kernel.reject_select = false;
         let mut proxy = MemoryProxy::default();
         let mut tun = MemoryTun::default();
@@ -3076,13 +4717,13 @@ proxy-groups:
         kernel.reject_select = true;
         let kept = book.select_node("manual", "z-node", &mut kernel);
         assert_eq!(kept.nodes_error.as_deref(), Some("节点没有切换"));
-        assert_eq!(group(&kept.node_groups, "manual").now, "m-node");
+        assert_eq!(group(&kept.node_catalog, "manual").now, "m-node");
         kernel.auto.insert("auto".to_string(), "z-node".to_string());
         book.sync_runtime(&mut kernel);
         let current = book.snapshot();
-        let auto = group(&current.node_groups, "auto");
-        assert_eq!(node_names(auto), ["z-node"]);
-        assert!(!auto.nodes[0].selected);
+        let auto = group(&current.node_catalog, "auto");
+        assert_eq!(auto.now, "z-node");
+        assert!(auto.nodes.iter().any(|node| node.name == "z-node" && node.selected));
     }
 
     #[test]
@@ -3126,7 +4767,7 @@ proxy-groups:
         let tested = book.test_group("manual", &mut kernel);
         assert!(tested.nodes_error.is_none());
         assert_eq!(kernel.delay_calls, 1);
-        let manual = group(&tested.node_groups, "manual");
+        let manual = group(&tested.node_catalog, "manual");
         assert_eq!(
             manual
                 .nodes
@@ -3162,7 +4803,7 @@ proxy-groups:
             }],
         );
         let partial = book.test_group("manual", &mut kernel);
-        let manual = group(&partial.node_groups, "manual");
+        let manual = group(&partial.node_catalog, "manual");
         assert!(
             manual
                 .nodes
@@ -3207,22 +4848,17 @@ proxy-groups:
         );
 
         let by_delay = book.set_node_sort("manual", "delay");
-        assert_eq!(
-            node_names(group(&by_delay.node_groups, "manual")),
-            ["a-node", "z-node", "m-node"]
-        );
+        assert_eq!(group(&by_delay.node_catalog, "manual").sort, "delay");
+        assert_eq!(node_names(group(&by_delay.node_catalog, "manual")), ["z-node", "m-node", "a-node"]);
         let by_name = book.set_node_sort("manual", "name");
-        assert_eq!(
-            node_names(group(&by_name.node_groups, "manual")),
-            ["a-node", "m-node", "z-node"]
-        );
+        assert_eq!(group(&by_name.node_catalog, "manual").sort, "name");
         let original = book.set_node_sort("manual", "default");
         assert_eq!(
-            node_names(group(&original.node_groups, "manual")),
+            node_names(group(&original.node_catalog, "manual")),
             ["z-node", "m-node", "a-node"]
         );
         assert!(
-            group(&original.node_groups, "manual")
+            group(&original.node_catalog, "manual")
                 .nodes
                 .iter()
                 .find(|node| node.name == "a-node")
@@ -3246,21 +4882,18 @@ proxy-groups:
         let missed = book.set_node_query("missing-node");
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(missed.nodes_notice.as_deref(), Some(NO_MATCH));
-        assert!(missed.node_groups.is_empty());
         assert_eq!(missed.node_catalog.len(), 2);
         assert_eq!(
             node_names(group(&missed.node_catalog, "manual")),
             ["z-node", "m-node", "a-node"]
         );
         let matched = book.set_node_query("a-n");
-        assert_eq!(
-            node_names(group(&matched.node_groups, "manual")),
-            ["a-node"]
-        );
+        assert!(matched.nodes_notice.is_none());
+        assert_eq!(matched.node_query, "a-n");
         assert!(group(&matched.node_catalog, "manual").nodes.len() == 3);
         let restored = book.set_node_query("  ");
         assert!(restored.nodes_notice.is_none());
-        assert_eq!(node_names(group(&restored.node_groups, "manual")).len(), 3);
+        assert_eq!(node_names(group(&restored.node_catalog, "manual")).len(), 3);
         assert_eq!(fs::read(&path).unwrap(), before);
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
@@ -3330,21 +4963,25 @@ proxy-groups:
                 ConnectionView {
                     host: "Example.COM".to_string(),
                     outbound: "香港节点".to_string(),
-                },
+    ..Default::default()
+},
                 ConnectionView {
                     host: "other.test".to_string(),
                     outbound: "直连".to_string(),
-                },
+    ..Default::default()
+},
             ],
             logs: vec![
                 LogView {
                     level: "info".to_string(),
                     message: "普通记录".to_string(),
-                },
+    ..Default::default()
+},
                 LogView {
                     level: "warning".to_string(),
                     message: "注意一下".to_string(),
-                },
+    ..Default::default()
+},
             ],
         };
         book.enable("p1", &RejectSource, &mut kernel);
@@ -3364,7 +5001,7 @@ proxy-groups:
         assert_eq!(filtered.connections[0].host, "Example.COM");
         assert_eq!(filtered.connections[0].outbound, "香港节点");
         let encoded = serde_json::to_value(&filtered.connections[0]).unwrap();
-        assert_eq!(encoded.as_object().unwrap().len(), 2);
+        assert_eq!(encoded["host"], "Example.COM");
         assert!(
             book.set_connection_query("直连", &mut kernel)
                 .connections
@@ -3385,7 +5022,8 @@ proxy-groups:
         kernel.connections.push(ConnectionView {
             host: "example.com".to_string(),
             outbound: "香港节点".to_string(),
-        });
+    ..Default::default()
+});
         let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!disconnected.connected);
         assert!(disconnected.connections.is_empty());
@@ -3395,6 +5033,106 @@ proxy-groups:
                 .iter()
                 .any(|line| line.message == "注意一下")
         );
+    }
+
+    struct StatusKernel {
+        running: bool,
+        memory: Option<u64>,
+        uptime: Option<u64>,
+        total: usize,
+        error: Option<String>,
+        connections: Vec<ConnectionView>,
+    }
+
+    impl KernelLaunch for StatusKernel {
+        fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+            self.running = true;
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.running
+        }
+
+        fn connections(&mut self) -> Vec<ConnectionView> {
+            self.connections.clone()
+        }
+
+        fn connection_total(&mut self) -> Option<usize> {
+            Some(self.total)
+        }
+
+        fn connections_error(&mut self) -> Option<String> {
+            self.error.clone()
+        }
+
+        fn kernel_memory(&mut self) -> Option<u64> {
+            self.memory
+        }
+
+        fn kernel_uptime_secs(&mut self) -> Option<u64> {
+            self.uptime
+        }
+    }
+
+    #[test]
+    fn snapshot_reports_kernel_memory_uptime_connection_count_and_read_errors() {
+        let dir = temp_dir("status");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", &config(7890));
+        let mut kernel = StatusKernel {
+            running: false,
+            memory: None,
+            uptime: None,
+            total: 0,
+            error: None,
+            connections: Vec::new(),
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let idle = book.snapshot();
+        assert!(idle.kernel_running);
+        assert!(idle.kernel_memory.is_none());
+        assert!(idle.kernel_uptime_secs.is_none());
+        assert_eq!(idle.connection_total, 0);
+        assert!(idle.connections_error.is_none());
+
+        kernel.memory = Some(128 * 1024 * 1024);
+        kernel.uptime = Some(90);
+        kernel.total = 620;
+        kernel.connections = vec![ConnectionView {
+            host: "example.com".to_string(),
+            outbound: "香港节点".to_string(),
+            ..Default::default()
+        }];
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let live = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(live.kernel_memory, Some(128 * 1024 * 1024));
+        assert_eq!(live.kernel_uptime_secs, Some(90));
+        assert_eq!(live.connection_total, 620, "the count keeps the rows the view drops");
+        assert_eq!(live.connections.len(), 1);
+        assert!(live.connections_error.is_none());
+
+        kernel.error = Some("连接没有读取".to_string());
+        kernel.total = 0;
+        kernel.connections.clear();
+        kernel.memory = None;
+        book.sync_runtime(&mut kernel);
+        let failed = book.snapshot();
+        assert!(failed.connections.is_empty());
+        assert_eq!(failed.connection_total, 0);
+        assert_eq!(failed.connections_error.as_deref(), Some("连接没有读取"));
+        assert!(failed.kernel_memory.is_none());
+        assert_eq!(failed.kernel_uptime_secs, Some(90));
+
+        kernel.running = false;
+        book.sync_runtime(&mut kernel);
+        let stopped = book.snapshot();
+        assert!(stopped.kernel_memory.is_none());
+        assert!(stopped.kernel_uptime_secs.is_none());
+        assert_eq!(stopped.connection_total, 0);
+        assert!(stopped.connections_error.is_none());
     }
 
     #[test]
@@ -3408,7 +5146,8 @@ proxy-groups:
             connections: vec![ConnectionView {
                 host: "stale.example".to_string(),
                 outbound: "旧出站".to_string(),
-            }],
+    ..Default::default()
+}],
             logs: Vec::new(),
         };
         let failed = book.enable("p1", &RejectSource, &mut kernel);
@@ -3427,7 +5166,8 @@ proxy-groups:
         kernel.logs.push(LogView {
             level: "info".to_string(),
             message: "普通记录".to_string(),
-        });
+    ..Default::default()
+});
         book.sync_runtime(&mut kernel);
         let info = book.set_log_filter("info", &mut kernel);
         assert!(info.logs.iter().all(|line| line.level == "info"));
@@ -3514,7 +5254,8 @@ proxy-groups:
         kernel.rows.push(ConnectionView {
             host: "example.com".to_string(),
             outbound: "香港节点".to_string(),
-        });
+    ..Default::default()
+});
         let opened = book.set_log_filter("all", &mut kernel);
         assert_eq!(opened.connections.len(), 1);
         assert_eq!(opened.connections[0].host, "example.com");
@@ -3531,11 +5272,13 @@ proxy-groups:
         kernel.rows.push(ConnectionView {
             host: "fresh.example".to_string(),
             outbound: "日本节点".to_string(),
-        });
+    ..Default::default()
+});
         kernel.pending_logs.push(LogView {
             level: "info".to_string(),
             message: "新的流量".to_string(),
-        });
+    ..Default::default()
+});
         let sampled = book.set_log_filter("info", &mut kernel);
         assert!(
             sampled
@@ -3575,7 +5318,8 @@ proxy-groups:
         kernel.rows.push(ConnectionView {
             host: "stale.example".to_string(),
             outbound: "香港节点".to_string(),
-        });
+    ..Default::default()
+});
         let live = book.set_log_filter("all", &mut kernel);
         assert_eq!(live.connections.len(), 1);
 
@@ -3918,14 +5662,26 @@ proxy-groups:
                 let _ = stream.flush();
             }
             listener.set_nonblocking(true).unwrap();
-            let mut first_stream = accept_for(&listener);
-            first_stream.set_nonblocking(false).unwrap();
-            let first_seen = read_headers(&mut first_stream);
+            let (mut first_stream, first_seen) = loop {
+                let mut stream = accept_for(&listener);
+                stream.set_nonblocking(false).unwrap();
+                let headers = read_headers(&mut stream);
+                if headers.contains("GET /configs") {
+                    write_json(&mut stream, r#"{"mixed-port":1,"tun":{"enable":false}}"#);
+                } else if headers.contains("GET /memory") {
+                    write_json(&mut stream, "{\"inuse\":12345}\n");
+                } else { break (stream, headers); }
+            };
             write_json(&mut first_stream, "{\"up\":4,\"down\":5}");
             drop(first_stream);
-            let mut second_stream = accept_for(&listener);
-            second_stream.set_nonblocking(false).unwrap();
-            let second_seen = read_headers(&mut second_stream);
+            let (mut second_stream, second_seen) = loop {
+                let mut stream = accept_for(&listener);
+                stream.set_nonblocking(false).unwrap();
+                let headers = read_headers(&mut stream);
+                if headers.contains("GET /memory") {
+                    write_json(&mut stream, "{\"inuse\":12345}\n");
+                } else { break (stream, headers); }
+            };
             let _ = gate_rx.recv_timeout(Duration::from_secs(3));
             write_json(&mut second_stream, "{\"up\":8,\"down\":9}");
             format!("{first_seen}\n{second_seen}")
@@ -3965,5 +5721,218 @@ proxy-groups:
             std::thread::sleep(Duration::from_millis(20));
         }
         last
+    }
+
+    #[test]
+    fn rule_toggle_filters_the_runtime_config_and_rolls_back_a_failed_reload() {
+        struct RuleKernel {
+            running: bool,
+            reloaded: Vec<String>,
+            fail: bool,
+        }
+
+        impl KernelLaunch for RuleKernel {
+            fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+                self.running = true;
+                Ok(())
+            }
+
+            fn running(&mut self) -> bool {
+                self.running
+            }
+
+            fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
+                if self.fail {
+                    return Err("规则没有切换".to_string());
+                }
+                self.reloaded.push(config_yaml.to_string());
+                Ok(())
+            }
+        }
+
+        let dir = temp_dir("rule-toggle");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local(
+            "rules.yaml",
+            "mixed-port: 7890\nmode: rule\nproxies: []\nrules:\n  - DOMAIN-SUFFIX,google.com,PROXY\n  - DOMAIN-SUFFIX,google.com,PROXY\n  - MATCH,DIRECT\n",
+        );
+        let mut kernel = RuleKernel {
+            running: false,
+            reloaded: Vec::new(),
+            fail: false,
+        };
+        book.enable("p1", &RejectSource, &mut kernel);
+
+        let disabled_key = diagnostics::rule_key("DomainSuffix", "google.com", "PROXY", 0);
+        let second_key = diagnostics::rule_key("DomainSuffix", "google.com", "PROXY", 1);
+        let other = diagnostics::rule_key("Match", "", "DIRECT", 0);
+
+        // An unknown identity is rejected without changing the set.
+        let unknown = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: "domainsuffix|missing.example|PROXY|0".to_string(),
+                    disabled: true,
+                },
+                &mut kernel,
+            )
+            .unwrap_err();
+        assert_eq!(unknown, "没有这条规则");
+        assert!(book.rules(&mut kernel).disabled.is_empty());
+        assert!(kernel.reloaded.is_empty());
+
+        let snapshot = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: disabled_key.clone(),
+                    disabled: true,
+                },
+                &mut kernel,
+            )
+            .unwrap();
+        assert_eq!(snapshot.disabled, vec![disabled_key.clone()]);
+        assert_eq!(kernel.reloaded.len(), 1);
+        assert_eq!(
+            kernel.reloaded[0].matches("google.com,PROXY").count(),
+            1,
+            "one of two identical rules is hidden"
+        );
+        assert!(kernel.reloaded[0].contains("MATCH,DIRECT"));
+
+        // The second identical rule keeps its own identity even though the kernel
+        // now only returns the remaining occurrence.
+        let both = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: second_key.clone(),
+                    disabled: true,
+                },
+                &mut kernel,
+            )
+            .unwrap();
+        assert_eq!(both.disabled, vec![disabled_key.clone(), second_key.clone()]);
+        assert_eq!(kernel.reloaded.len(), 2);
+        assert_eq!(
+            kernel.reloaded[1].matches("google.com,PROXY").count(),
+            0,
+            "the second occurrence is removed from the full config, not the filtered one"
+        );
+
+        let first_back = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: disabled_key.clone(),
+                    disabled: false,
+                },
+                &mut kernel,
+            )
+            .unwrap();
+        assert_eq!(first_back.disabled, vec![second_key.clone()]);
+        assert_eq!(
+            kernel.reloaded[2].matches("google.com,PROXY").count(),
+            1,
+            "re-enabling the first occurrence restores exactly one"
+        );
+
+        kernel.fail = true;
+        let error = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: other.clone(),
+                    disabled: true,
+                },
+                &mut kernel,
+            )
+            .unwrap_err();
+        assert_eq!(error, "规则没有切换");
+        let after_failure = book.rules(&mut kernel);
+        assert_eq!(after_failure.disabled, vec![second_key.clone()]);
+        assert!(!after_failure.disabled.contains(&other));
+        assert_eq!(kernel.reloaded.len(), 3, "a failed reload does not push a config");
+
+        kernel.fail = false;
+        let enabled = book
+            .set_rule_disabled(
+                RuleToggle {
+                    key: second_key.clone(),
+                    disabled: false,
+                },
+                &mut kernel,
+            )
+            .unwrap();
+        assert!(enabled.disabled.is_empty());
+        assert_eq!(
+            kernel.reloaded.last().unwrap().matches("google.com,PROXY").count(),
+            2,
+            "re-enabling restores every occurrence"
+        );
+
+        // Activating a config starts from a clean runtime rule set.
+        book.set_rule_disabled(
+            RuleToggle {
+                key: disabled_key.clone(),
+                disabled: true,
+            },
+            &mut kernel,
+        )
+        .unwrap();
+        book.enable("p1", &RejectSource, &mut kernel);
+        assert!(book.rules(&mut kernel).disabled.is_empty());
+
+        // The set lives only in memory, so reopening the app starts with no disabled rules.
+        book.set_rule_disabled(
+            RuleToggle {
+                key: disabled_key.clone(),
+                disabled: true,
+            },
+            &mut kernel,
+        )
+        .unwrap();
+        let mut reopened = ProfileBook::open(&dir.0);
+        let mut idle = RuleKernel {
+            running: true,
+            reloaded: Vec::new(),
+            fail: false,
+        };
+        assert!(reopened.rules(&mut idle).disabled.is_empty());
+    }
+
+    #[test]
+    fn test_all_reports_each_node_with_tested_and_total() {
+        let dir = temp_dir("test-all-progress");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("nodes.yaml", &grouped_config());
+        let mut kernel = node_kernel();
+        kernel.report_running = true;
+        kernel.scripts.insert(
+            String::new(),
+            vec![
+                NodeDelay {
+                    name: "z-node".to_string(),
+                    delay_ms: Some(20),
+                },
+                NodeDelay {
+                    name: "m-node".to_string(),
+                    delay_ms: None,
+                },
+                NodeDelay {
+                    name: "a-node".to_string(),
+                    delay_ms: Some(5),
+                },
+            ],
+        );
+        let mut events: Vec<(String, Option<u64>, bool, usize, usize)> = Vec::new();
+        let snapshot = book.test_all_with_progress(&mut kernel, &mut |node, delay, failed, tested, total| {
+            events.push((node.to_string(), delay, failed, tested, total));
+        });
+        assert!(snapshot.nodes_error.is_none());
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events.iter().map(|event| event.3).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(events.iter().all(|event| event.4 == 3));
+        assert!(events.iter().any(|event| event.0 == "m-node" && event.2 && event.1.is_none()));
+        assert!(events.iter().any(|event| event.0 == "a-node" && !event.2 && event.1 == Some(5)));
     }
 }

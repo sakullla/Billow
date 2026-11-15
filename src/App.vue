@@ -1,502 +1,610 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import {
-  ACTION_ADD,
-  ACTION_CANCEL,
-  ACTION_CLOSE,
-  ACTION_CONFIRM,
-  ADD_LOCAL,
-  ADD_SUBSCRIPTION,
-  INSTALL_PROMPT,
-  NAV_ITEMS,
-  PRODUCT_NAME,
-  SUBSCRIPTION_PLACEHOLDER,
-  type EntryId,
-  type KernelChannel,
-  type OutboundMode,
-  type ThemePreference,
-} from './copy'
-import { createKernelPort, createMemoryKernelPort, type KernelPort } from './kernel-port'
-import { resolveKernelChannel } from './kernel'
-import { layoutForWidth, resolveEntry } from './navigation'
-import { createShellPort, type ShellPort } from './port'
-import { createMemoryProfilePort, createProfilePort, type ProfilePort } from './profile-port'
-import { DIAGNOSTICS_SAMPLE_MS, emptyProfileSnapshot, normalizeMode, type ProfileSnapshot } from './profile'
-import { applyTheme, resolveTheme } from './theme'
-import type { LogFilter } from './copy'
-import { normalizeLogFilter } from './profile'
-import DiagnosticsView from './views/DiagnosticsView.vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
+import CommandPalette from './components/CommandPalette.vue'
+import Icon from './components/Icon.vue'
+import Modal from './components/Modal.vue'
+import TitleBar from './components/TitleBar.vue'
+import { createBackend, type Backend } from './lib/backend'
+import { formatSpeed } from './lib/format'
+import { createStore, PAGES, resolvePage, STORE, type PageId, type SettingsTab } from './lib/store'
+import { closeTopLayer as dismissTopLayer, layerDepth, onLayerChange } from './lib/ui/focus'
+import { useHotkeys } from './lib/ui/hotkeys'
+import { installInsets, syncSystemBars } from './lib/ui/insets'
+import { detectChrome, type WindowChrome } from './lib/ui/windowChrome'
+import { SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
+import AppsView from './views/AppsView.vue'
+import ConnectionsView from './views/ConnectionsView.vue'
 import HomeView from './views/HomeView.vue'
-import NodesView from './views/NodesView.vue'
+import LogsView from './views/LogsView.vue'
+import ProfilesView from './views/ProfilesView.vue'
+import ProxiesView from './views/ProxiesView.vue'
+import ResourcesView from './views/ResourcesView.vue'
+import RulesView from './views/RulesView.vue'
 import SettingsView from './views/SettingsView.vue'
 
-const props = defineProps<{
-  port?: ShellPort
-  kernelPort?: KernelPort
-  profilePort?: ProfilePort
-  initialWidth?: number
-}>()
+const props = defineProps<{ backend?: Backend; width?: number; chrome?: WindowChrome }>()
+/** Custom title bar on Windows (undecorated) and macOS (overlay traffic lights). */
+const chrome = props.chrome !== undefined ? props.chrome : detectChrome()
+const appIcon = `${import.meta.env.BASE_URL}icon.png`
 
-const entry = ref<EntryId>('home')
-const diagnostics = ref(false)
-const adding = ref(false)
-const focusGroup = ref<string | null>(null)
-const subscriptionUrl = ref('')
-const theme = ref<ThemePreference>('system')
-const kernelChannel = ref<KernelChannel>('stable')
-const kernelFailure = ref<string | null>(null)
-const profileState = ref<ProfileSnapshot>(emptyProfileSnapshot())
-const connecting = ref(false)
-const width = ref(typeof props.initialWidth === 'number' ? props.initialWidth : window.innerWidth)
-const layout = computed(() => layoutForWidth(width.value))
-const currentProfile = computed(
-  () => profileState.value.profiles.find((profile) => profile.current) ?? null,
-)
-const nodesSearchable = computed(
-  () => profileState.value.node_catalog.length > 0 || profileState.value.node_query.trim().length > 0,
-)
-const manualGroups = computed(() =>
-  profileState.value.node_catalog.filter((group) => group.kind === 'manual'),
-)
-const outboundMode = computed(() => normalizeMode(profileState.value.mode))
+const store = createStore(props.backend ?? createBackend())
+provide(STORE, store)
 
-let port: ShellPort | null = props.port ?? null
-const kernel: KernelPort = props.kernelPort ?? (props.port ? createMemoryKernelPort() : createKernelPort())
-const profile: ProfilePort =
-  props.profilePort ?? (props.port ? createMemoryProfilePort() : createProfilePort())
-let kernelEpoch = 0
-let profileQueue: Promise<void> = Promise.resolve()
-let profilePending = 0
-let diagnosticsTimer: ReturnType<typeof setInterval> | null = null
-let unsubscribeProfile = () => {}
-let persist = false
-let resolveReady = () => {}
-const ready = new Promise<void>((resolve) => {
-  resolveReady = resolve
+const width = ref(props.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1024))
+const compact = computed(() => width.value < 760)
+const snap = computed(() => store.snapshot.value)
+const sideStatusWord = computed(() => {
+  if (store.connecting.value) return snap.value.connected ? '断开中…' : '连接中…'
+  return snap.value.connected ? '已连接' : '未连接'
 })
 
-function readWidth() {
-  if (typeof props.initialWidth === 'number') {
-    width.value = props.initialWidth
+const views = {
+  home: HomeView,
+  proxies: ProxiesView,
+  profiles: ProfilesView,
+  connections: ConnectionsView,
+  rules: RulesView,
+  resources: ResourcesView,
+  logs: LogsView,
+  settings: SettingsView,
+  apps: AppsView,
+} as const
+const view = computed(() => views[store.page.value])
+const mobilePages = PAGES.filter((page) => page.mobile)
+const navGroups = [
+  { id: 'core', label: '核心', pages: PAGES.filter((page) => page.group === 'core') },
+  { id: 'tools', label: '工具', pages: PAGES.filter((page) => page.group === 'tools') },
+]
+const settingsPage = PAGES.find((page) => page.id === 'settings')!
+const TOOL_PAGES: readonly PageId[] = ['connections', 'rules', 'resources', 'logs', 'apps']
+
+/** Connections/rules/resources/logs live behind Settings on mobile, so Settings is the current tab there. */
+function isTabCurrent(id: PageId): boolean {
+  return store.page.value === id || (id === 'settings' && TOOL_PAGES.includes(store.page.value))
+}
+
+/** Phones reach tool pages from Settings, so they get a visible way back besides the system gesture. */
+const showBack = computed(() => compact.value && TOOL_PAGES.includes(store.page.value))
+/** The page a back press returns to; mirrors the top of the non-reactive page stack. */
+const backTo = ref<PageId | null>(null)
+const backLabel = computed(() => PAGES.find((page) => page.id === backTo.value)?.label ?? '设置')
+
+function goBack() {
+  const previous = backTo.value
+  if (historyReady && previous != null && guardActive) {
+    window.history.back()
     return
   }
-  width.value = window.innerWidth
+  store.go(previous ?? 'settings')
 }
 
-watch(
-  () => props.initialWidth,
-  () => readWidth(),
-)
+// ── System bars follow the effective theme (Android edge-to-edge) ──
+const prefersDark = ref(typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true)
+const darkTheme = computed(() => store.theme.value === 'dark' || (store.theme.value === 'system' && prefersDark.value))
+watch(darkTheme, (dark) => syncSystemBars(dark), { immediate: true })
+let darkQuery: MediaQueryList | null = null
+function onSchemeChange(event: MediaQueryListEvent) {
+  prefersDark.value = event.matches
+}
 
-watch(
-  theme,
-  (value) => {
-    applyTheme(value)
-    if (!persist || !port) return
-    void port.saveTheme(value).catch((error: unknown) => {
-      console.error(error)
-    })
-  },
-  { flush: 'sync' },
-)
+// Add-profile dialog
+const addTab = ref<'url' | 'file'>('url')
+const url = ref('')
+const dragging = ref(false)
+const paletteOpen = ref(false)
+const helpOpen = ref(false)
 
-async function refreshKernel() {
-  const epoch = ++kernelEpoch
+async function submitUrl() {
+  const value = url.value.trim()
+  if (!value) return
+  const before = snap.value.profiles.length
+  await store.addSubscription(value)
+  if (snap.value.profiles.length > before) {
+    url.value = ''
+    store.adding.value = false
+    store.toast('已添加订阅，点击即可启用', 'success')
+    const added = snap.value.profiles[snap.value.profiles.length - 1]
+    if (!snap.value.active_id && added) void store.enable(added.id)
+  }
+}
+
+async function pasteUrl() {
   try {
-    const snapshot = await kernel.load()
-    if (epoch !== kernelEpoch) return
-    kernelChannel.value = resolveKernelChannel(snapshot.channel)
-    kernelFailure.value = snapshot.failure
-  } catch (error) {
-    console.error(error)
-    if (epoch !== kernelEpoch) return
-    kernelFailure.value = '内核状态没有读取'
+    const text = await navigator.clipboard.readText()
+    if (text) url.value = text.trim()
+  } catch {
+    store.toast('无法读取剪贴板，请手动粘贴', 'error')
   }
 }
 
-async function changeKernel(next: KernelChannel) {
-  const epoch = ++kernelEpoch
-  try {
-    const snapshot = await kernel.setChannel(next)
-    if (epoch !== kernelEpoch) return
-    kernelChannel.value = resolveKernelChannel(snapshot.channel)
-    kernelFailure.value = snapshot.failure
-  } catch (error) {
-    console.error(error)
-    if (epoch !== kernelEpoch) return
-    kernelFailure.value = '内核下载失败'
-  }
-}
-
-function applyProfile(snapshot: ProfileSnapshot) {
-  profileState.value = snapshot
-}
-
-function enqueueProfile(action: () => Promise<ProfileSnapshot>): Promise<void> {
-  profilePending += 1
-  const run = profileQueue.then(async () => {
-    try {
-      applyProfile(await action())
-    } catch (error) {
-      console.error(error)
-    } finally {
-      profilePending -= 1
-    }
-  })
-  profileQueue = run.then(
-    () => undefined,
-    () => undefined,
-  )
-  return run
-}
-
-function refreshProfiles() {
-  return enqueueProfile(() => profile.load())
-}
-
-function runProfile(action: () => Promise<ProfileSnapshot>) {
-  return enqueueProfile(action)
-}
-
-function stopDiagnosticsSample() {
-  if (diagnosticsTimer != null) {
-    clearInterval(diagnosticsTimer)
-    diagnosticsTimer = null
-  }
-}
-
-function profileSampleWanted() {
-  return diagnostics.value || (entry.value === 'home' && profileState.value.connected)
-}
-
-function ensureProfileSample() {
-  if (!profileSampleWanted()) {
-    stopDiagnosticsSample()
-    return
-  }
-  if (diagnosticsTimer != null) return
-  // profile_state is the existing sampler. Connections, logs, and home rates have no push channel.
-  diagnosticsTimer = setInterval(() => {
-    if (!profileSampleWanted() || profilePending > 0) return
-    void refreshProfiles()
-  }, DIAGNOSTICS_SAMPLE_MS)
-}
-
-function enableProfile(id: string) {
-  void runProfile(() => profile.enable(id))
-}
-
-function updateProfile(id: string) {
-  void runProfile(() => profile.update(id))
-}
-
-function saveOverride(id: string, text: string) {
-  void runProfile(() => profile.saveOverride(id, text))
-}
-
-function addSubscription(url: string) {
-  void runProfile(() => profile.addSubscription(url))
-}
-
-function addLocal(name: string, content: string) {
-  void runProfile(() => profile.addLocal(name, content))
-}
-
-function submitSubscription() {
-  const url = subscriptionUrl.value
-  subscriptionUrl.value = ''
-  addSubscription(url)
-}
-
-async function onLocalFile(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
+async function addFile(file: File | undefined) {
   if (!file) return
-  addLocal(file.name, await file.text())
+  const before = snap.value.profiles.length
+  await store.addLocal(file.name.replace(/\.(ya?ml|txt)$/i, ''), await file.text())
+  if (snap.value.profiles.length > before) {
+    store.adding.value = false
+    store.toast(`已导入 ${file.name}`, 'success')
+    const added = snap.value.profiles[snap.value.profiles.length - 1]
+    if (!snap.value.active_id && added) void store.enable(added.id)
+  }
 }
 
-function setMode(mode: OutboundMode) {
-  void runProfile(() => profile.setMode(mode))
+function onFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  void addFile(input.files?.[0])
+  input.value = ''
 }
 
-function openGroup(name: string) {
-  focusGroup.value = name
-  const hidden =
-    profileState.value.node_query.trim().length > 0 &&
-    !profileState.value.node_groups.some((group) => group.name === name)
-  const clearing = hidden ? runProfile(() => profile.setNodeQuery('')) : Promise.resolve()
-  return clearing.then(() => choose('nodes'))
+function onDrop(event: DragEvent) {
+  dragging.value = false
+  void addFile(event.dataTransfer?.files?.[0])
 }
 
-function confirmInstall() {
-  void runProfile(() => profile.confirmInstall())
+// ── Command palette ──
+const isAndroid = computed(() => store.isAndroid.value)
+
+function onPaletteNavigate(page: string) {
+  paletteOpen.value = false
+  store.go(resolvePage(page))
 }
 
-function cancelInstall() {
-  void runProfile(() => profile.cancelInstall())
+/** Tray menu targets: a page id, or the add-profile dialog. */
+function onTrayNavigate(target: string) {
+  if (target === 'add-profile') {
+    store.adding.value = true
+    return
+  }
+  store.go(resolvePage(target))
 }
 
-function connectSession() {
-  if (connecting.value) return
-  connecting.value = true
-  void runProfile(() => profile.connect()).finally(() => {
-    connecting.value = false
-  })
+function onPaletteSettings(tab: string) {
+  paletteOpen.value = false
+  store.openSettings(tab as SettingsTab)
 }
 
-function disconnectSession() {
-  if (connecting.value) return
-  connecting.value = true
-  void runProfile(() => profile.disconnect()).finally(() => {
-    connecting.value = false
-  })
+function onPaletteAction(id: string) {
+  paletteOpen.value = false
+  switch (id) {
+    case 'connect':
+      void store.connect()
+      break
+    case 'disconnect':
+      void store.disconnect()
+      break
+    case 'test-all':
+      void store.testAll()
+      break
+    case 'refresh-profiles':
+      void store.refreshAll()
+      break
+    case 'add-profile':
+      store.adding.value = true
+      break
+    case 'toggle-theme':
+      store.cycleTheme()
+      break
+    case 'open-logs':
+      store.go('logs')
+      break
+  }
 }
 
-function setSystemProxy(enabled: boolean) {
-  void runProfile(() => profile.setSystemProxy(enabled))
+// ── Shortcuts ──
+/** Every dialog, palette and menu registers in the shared layer stack. */
+function layerOpen(): boolean {
+  return layerDepth() > 0
 }
 
-function setTun(enabled: boolean) {
-  void runProfile(() => profile.setTun(enabled))
+function currentSearch(): HTMLInputElement | null {
+  return document.querySelector<HTMLInputElement>('.main [data-page-search]')
 }
 
-function excludePackage(packageName: string) {
-  void runProfile(() => profile.excludePackage(packageName))
+function focusSearch() {
+  const input = currentSearch()
+  if (!input) return
+  input.focus({ preventScroll: true })
+  input.select?.()
 }
 
-function includePackage(packageName: string) {
-  void runProfile(() => profile.includePackage(packageName))
+/** Escape clears the focused search field; overlays and menus own their own Escape. */
+function clearSearch() {
+  const element = document.activeElement
+  if (!(element instanceof HTMLInputElement)) return
+  if (element.type !== 'search' && !element.hasAttribute('data-page-search')) return
+  if (!element.value) return
+  element.value = ''
+  element.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-function selectNode(group: string, node: string) {
-  void runProfile(() => profile.selectNode(group, node))
-}
+useHotkeys(
+  shortcutBindings(
+    {
+      palette: () => {
+        paletteOpen.value = true
+      },
+      search: focusSearch,
+      escape: clearSearch,
+      help: () => {
+        helpOpen.value = true
+      },
+    },
+    { allowInInput: ['escape'] },
+  ).map((binding) => ({ ...binding, when: () => !layerOpen() })),
+)
 
-function testGroup(group: string) {
-  void runProfile(() => profile.testGroup(group))
-}
+// ── Scroll memory (R25) ──
+const mainEl = ref<HTMLElement | null>(null)
+const scrollPositions = new Map<PageId, number>()
 
-function setNodeQuery(query: string) {
-  void runProfile(() => profile.setNodeQuery(query))
+async function restorePageScroll(page: PageId) {
+  await nextTick()
+  if (store.page.value !== page) return
+  const main = mainEl.value
+  if (!main) return
+  // A group target owns the landing position on the proxy page (D2). If the
+  // requested group does not exist, fall back to the top instead of the old offset.
+  if (page === 'proxies' && store.focusGroup.value) {
+    const target = document.querySelector(`[data-group-card="${CSS.escape(store.focusGroup.value)}"]`)
+    if (target) return
+    main.scrollTop = 0
+    return
+  }
+  main.scrollTop = scrollPositions.get(page) ?? 0
 }
-
-function setNodeSort(group: string, sort: string) {
-  void runProfile(() => profile.setNodeSort(group, sort))
-}
-
-function openDiagnostics() {
-  diagnostics.value = true
-}
-
-watch(diagnostics, (open) => {
-  stopDiagnosticsSample()
-  if (open) void refreshProfiles()
-  ensureProfileSample()
-})
 
 watch(
-  () => [entry.value, profileState.value.connected] as const,
-  () => {
-    ensureProfileSample()
+  () => store.page.value,
+  (next, prev) => {
+    if (mainEl.value && prev) scrollPositions.set(prev, mainEl.value.scrollTop)
+    if (prev) recordPageHistory(prev, next)
+    backTo.value = pageStack[pageStack.length - 1] ?? null
+    void restorePageScroll(next)
   },
 )
 
-function setConnectionQuery(query: string) {
-  void runProfile(() => profile.setConnectionQuery(query))
+let lastWidth = width.value
+
+function onResize() {
+  const nextWidth = props.width ?? window.innerWidth
+  if (props.width == null) width.value = nextWidth
+  // Only width changes invalidate saved offsets. Android soft-keyboard resizes
+  // change height alone and must keep the current scroll position (R25).
+  if (nextWidth === lastWidth) return
+  lastWidth = nextWidth
+  scrollPositions.clear()
+  if (mainEl.value) mainEl.value.scrollTop = 0
 }
 
-function setLogFilter(level: LogFilter) {
-  void runProfile(() => profile.setLogFilter(normalizeLogFilter(level)))
+// ── Android back bridge (R30) ──
+// Tauri Android forwards hardware back to the WebView history. The app keeps one
+// sentinel entry above the current URL while it has something back should do (an
+// open layer or an earlier page). Each pop consumes the sentinel and the popstate
+// handler decides from the shared layer stack and an explicit page stack:
+//   - layer open: dismiss the topmost layer and re-arm the sentinel, no navigation;
+//   - otherwise: move to the previous app page, re-arming the sentinel while more
+//     pages remain;
+//   - neither: leave the sentinel consumed so the platform handles the next back.
+// `popstate.state` is deliberately ignored: it describes the entry we landed on,
+// not the guard we popped.
+interface BillowHistoryState {
+  billow: 'base' | 'guard'
 }
 
-async function choose(next: EntryId) {
-  diagnostics.value = false
-  entry.value = next
-  if (persist && port) {
-    void port.saveEntry(next).catch((error: unknown) => {
-      console.error(error)
-    })
+let historyReady = false
+let ignorePageHistory = false
+let guardActive = false
+let releaseLayerWatch: (() => void) | null = null
+let releaseInsets: (() => void) | null = null
+let releaseTray: (() => void) | null = null
+let unmounted = false
+const pageStack: PageId[] = []
+
+function pushHistory(state: BillowHistoryState) {
+  try {
+    window.history?.pushState(state, '')
+  } catch {
+    /* webview without history support */
   }
-  if (next === 'settings') await refreshKernel()
-  if (next === 'nodes') await refreshProfiles()
+}
+
+function replaceHistory(state: BillowHistoryState) {
+  try {
+    window.history?.replaceState(state, '')
+  } catch {
+    /* webview without history support */
+  }
+}
+
+/** Keep exactly one sentinel above the current URL while the app can go back. */
+function ensureGuard() {
+  if (!historyReady || guardActive) return
+  guardActive = true
+  pushHistory({ billow: 'guard' })
+}
+
+function recordPageHistory(prev: PageId, next: PageId) {
+  if (!historyReady || ignorePageHistory) {
+    ignorePageHistory = false
+    return
+  }
+  if (prev !== next) pageStack.push(prev)
+  ensureGuard()
+}
+
+/**
+ * Phone settings drill into kernel/TUN/DNS sub-pages. Entering one records a
+ * `settings` step so system back returns to the settings list first.
+ */
+watch(
+  () => store.settingsTab.value,
+  (next, prev) => {
+    if (!compact.value || store.page.value !== 'settings' || !historyReady) return
+    if (prev === 'general' && next !== 'general') {
+      pageStack.push('settings')
+      ensureGuard()
+    }
+  },
+)
+
+/** Phone settings sub-page back: consume the recorded step when it is on top, else just switch. */
+provide('settingsBack', () => {
+  if (historyReady && guardActive && pageStack[pageStack.length - 1] === 'settings') {
+    window.history.back()
+    return
+  }
+  store.settingsTab.value = 'general'
+})
+
+/** Layer depth is the single source of truth; never infer it from popstate state. */
+function handleLayerDepth(depth: number) {
+  if (depth > 0) ensureGuard()
+}
+
+function onPopState() {
+  if (!historyReady) return
+  // The sentinel (or, when exhausted, the base entry) was popped.
+  guardActive = false
+  if (layerDepth() > 0) {
+    // Re-arm before closing when more app history exists (or another layer sits
+    // underneath), so a second back is routed by the app rather than a page entry.
+    if (pageStack.length > 0 || layerDepth() > 1) ensureGuard()
+    dismissTopLayer()
+    return
+  }
+  const previous = pageStack.pop()
+  if (previous === 'settings' && store.page.value === 'settings' && store.settingsTab.value !== 'general') {
+    store.settingsTab.value = 'general'
+    if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
+    return
+  }
+  if (previous != null) {
+    ignorePageHistory = true
+    store.go(previous)
+    if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
+    return
+  }
+  // Nothing app-owned is left; let the system handle the next back.
+}
+
+function initHistory() {
+  if (typeof window === 'undefined' || !window.history) return
+  replaceHistory({ billow: 'base' })
+  historyReady = true
+  // Do not arm a sentinel at the root: with no pages or layers, back belongs to
+  // the platform. Navigation and layer opens arm it through ensureGuard().
+  if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
 }
 
 onMounted(async () => {
-  readWidth()
-  window.addEventListener('resize', readWidth)
-  const kernelLoad = refreshKernel()
-  try {
-    port = props.port ?? createShellPort()
-    const snapshot = await port.load()
-    const nextEntry = resolveEntry(snapshot.entry)
-    const nextTheme = resolveTheme(snapshot.theme)
-    persist = true
-    entry.value = nextEntry
-    theme.value = nextTheme
-    applyTheme(nextTheme)
-    if (snapshot.entry !== nextEntry) await port.saveEntry(nextEntry)
-    if (snapshot.theme !== nextTheme) await port.saveTheme(nextTheme)
-  } catch (error) {
-    console.error(error)
-    persist = true
-    entry.value = 'home'
-    theme.value = 'system'
-    applyTheme('system')
-  } finally {
-    await refreshProfiles()
-    resolveReady()
-  }
-  unsubscribeProfile =
-    profile.subscribe?.((snapshot) => {
-      void enqueueProfile(async () => snapshot)
-    }) ?? (() => {})
-  await kernelLoad
+  releaseInsets = installInsets()
+  void store.backend.onTrayNavigate?.(onTrayNavigate).then((stop) => {
+    if (unmounted) stop()
+    else releaseTray = stop
+  })
+  darkQuery = window.matchMedia?.('(prefers-color-scheme: dark)') ?? null
+  darkQuery?.addEventListener?.('change', onSchemeChange)
+  window.addEventListener('resize', onResize)
+  window.addEventListener('popstate', onPopState)
+  releaseLayerWatch = onLayerChange(handleLayerDepth)
+  await store.start()
+  initHistory()
 })
-
 onBeforeUnmount(() => {
-  stopDiagnosticsSample()
-  unsubscribeProfile()
-  window.removeEventListener('resize', readWidth)
-  resolveReady()
+  window.removeEventListener('resize', onResize)
+  window.removeEventListener('popstate', onPopState)
+  releaseLayerWatch?.()
+  releaseLayerWatch = null
+  releaseInsets?.()
+  releaseInsets = null
+  unmounted = true
+  releaseTray?.()
+  releaseTray = null
+  darkQuery?.removeEventListener?.('change', onSchemeChange)
+  store.stop()
 })
 
-defineExpose({ ready })
+defineExpose({ store })
 </script>
 
 <template>
-  <div class="app" :data-layout="layout">
-    <nav v-if="layout === 'sidebar'" class="sidebar" aria-label="主导航">
-      <p class="brand">{{ PRODUCT_NAME }}</p>
-      <button
-        v-for="item in NAV_ITEMS"
-        :key="item.id"
-        type="button"
-        class="nav-button"
-        :data-entry="item.id"
-        :aria-current="entry === item.id ? 'page' : undefined"
-        @click="choose(item.id)"
-      >
-        {{ item.label }}
-      </button>
-    </nav>
-    <main class="main">
-      <div
-        v-if="profileState.pending_url"
-        class="card dialog"
-        data-testid="install-confirm"
-        role="dialog"
-        aria-modal="true"
-      >
-        <p>{{ INSTALL_PROMPT }}</p>
-        <p data-testid="install-url">{{ profileState.pending_url }}</p>
-        <div class="row-actions">
-          <button type="button" class="btn" data-testid="install-confirm-yes" @click="confirmInstall">
-            {{ ACTION_CONFIRM }}
+  <div class="shell" :class="[{ compact }, chrome ? `chrome chrome-${chrome}` : null]">
+    <aside v-if="!compact" class="sidebar">
+      <!-- macOS: the traffic lights sit here; the strip still moves the window. -->
+      <div v-if="chrome === 'macos'" class="sidebar-drag" data-tauri-drag-region />
+      <div class="brand" :data-tauri-drag-region="chrome ? '' : undefined">
+        <span class="brand-mark"><img :src="appIcon" alt="" /></span>
+        <span class="brand-name">Billow</span>
+      </div>
+      <nav class="nav" aria-label="主导航">
+        <div v-for="group in navGroups" :key="group.id" class="nav-group" role="group" :aria-label="group.label">
+          <p class="nav-group-label">{{ group.label }}</p>
+          <button
+            v-for="item in group.pages"
+            :key="item.id"
+            type="button"
+            class="nav-item"
+            :class="{ active: store.page.value === item.id }"
+            :aria-current="store.page.value === item.id ? 'page' : undefined"
+            :data-page="item.id"
+            @click="store.go(item.id)"
+          >
+            <Icon :name="item.icon" />
+            <span>{{ item.label }}</span>
+            <span v-if="item.id === 'connections' && snap.connected" class="nav-count">{{ snap.connections.length }}</span>
           </button>
-          <button type="button" class="btn" data-testid="install-cancel" @click="cancelInstall">
-            {{ ACTION_CANCEL }}
+        </div>
+      </nav>
+      <div class="side-foot">
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: store.page.value === settingsPage.id }"
+          :aria-current="store.page.value === settingsPage.id ? 'page' : undefined"
+          :data-page="settingsPage.id"
+          @click="store.go(settingsPage.id)"
+        >
+          <Icon :name="settingsPage.icon" />
+          <span>{{ settingsPage.label }}</span>
+          <span v-if="store.appUpdate.offer.value" class="tag">更新</span>
+        </button>
+        <div class="side-status" :class="{ on: snap.connected && !store.connecting.value, pending: store.connecting.value }" data-testid="side-status">
+          <div class="side-status-body">
+            <div class="side-status-head">
+              <span class="dot" />
+              <span>{{ sideStatusWord }}</span>
+            </div>
+            <div v-if="snap.connected" class="side-rates mono">
+              <span><Icon name="up" :size="12" />{{ formatSpeed(snap.upload ?? 0) }}</span>
+              <span><Icon name="down" :size="12" />{{ formatSpeed(snap.download ?? 0) }}</span>
+            </div>
+            <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? '还没有配置' }}</div>
+          </div>
+          <button
+            v-if="store.hasProfiles.value"
+            type="button"
+            class="side-power"
+            :disabled="store.connecting.value"
+            :aria-label="snap.connected ? '断开' : '连接'"
+            :title="snap.connected ? '断开' : '连接'"
+            data-testid="side-power"
+            @click="store.toggleConnection()"
+          >
+            <span v-if="store.connecting.value" class="spinner sm" />
+            <Icon v-else name="power" :size="16" :stroke="2.2" />
           </button>
         </div>
       </div>
-      <div v-if="adding" class="card dialog" data-testid="add-layer" role="dialog" aria-modal="true">
-        <form data-testid="add-subscription" @submit.prevent="submitSubscription">
-          <label>
-            <span>{{ ADD_SUBSCRIPTION }}</span>
-            <input v-model="subscriptionUrl" type="url" name="subscription-url" :placeholder="SUBSCRIPTION_PLACEHOLDER" />
-          </label>
-          <button type="submit" class="btn">{{ ACTION_ADD }}</button>
-        </form>
-        <label data-testid="add-local" class="file-field">
-          <span>{{ ADD_LOCAL }}</span>
-          <input type="file" @change="onLocalFile" />
-        </label>
-        <p v-if="profileState.input_error" class="notice" data-testid="profile-input-error" role="alert">
-          {{ profileState.input_error }}
-        </p>
-        <button type="button" class="btn" data-testid="add-layer-close" @click="adding = false">{{ ACTION_CLOSE }}</button>
+    </aside>
+
+    <TitleBar v-if="chrome" :chrome="chrome" :brand="compact" />
+
+    <main ref="mainEl" class="main" :data-page="store.page.value">
+      <div v-if="showBack" class="back-bar">
+        <button type="button" class="back-btn" data-testid="page-back" @click="goBack">
+          <Icon name="chevron-left" :size="18" />
+          <span>{{ backLabel }}</span>
+        </button>
       </div>
-      <DiagnosticsView
-        v-if="diagnostics"
-        :connected="profileState.connected"
-        :connections="profileState.connections"
-        :connection-query="profileState.connection_query"
-        :logs="profileState.logs"
-        :log-filter="profileState.log_filter"
-        @close="diagnostics = false"
-        @query="setConnectionQuery"
-        @log-filter="setLogFilter"
-      />
-      <HomeView
-        v-else-if="entry === 'home'"
-        :failure="profileState.failure"
-        :profile-name="currentProfile?.name ?? null"
-        :has-profiles="profileState.profiles.length > 0"
-        :used="currentProfile?.used ?? null"
-        :total="currentProfile?.total ?? null"
-        :expire="currentProfile?.expire ?? null"
-        :mode="outboundMode"
-        :upload="profileState.upload"
-        :download="profileState.download"
-        :groups="manualGroups"
-        :arrangement="layout === 'sidebar' ? 'columns' : 'stack'"
-        :platform="profileState.platform"
-        :connected="profileState.connected"
-        :connecting="connecting"
-        :system-proxy="profileState.system_proxy"
-        :tun="profileState.tun"
-        :vpn="profileState.vpn"
-        :excluded="profileState.excluded"
-        :installed="profileState.installed"
-        @connect="connectSession"
-        @disconnect="disconnectSession"
-        @add="adding = true"
-        @mode="setMode"
-        @open-group="openGroup"
-        @system-proxy="setSystemProxy"
-        @tun="setTun"
-        @exclude="excludePackage"
-        @include="includePackage"
-        @diagnostics="openDiagnostics"
-      />
-      <NodesView
-        v-else-if="entry === 'nodes'"
-        :groups="profileState.node_groups"
-        :query="profileState.node_query"
-        :notice="profileState.nodes_notice"
-        :error="profileState.nodes_error"
-        :searchable="nodesSearchable"
-        :focus-group="focusGroup"
-        @query="setNodeQuery"
-        @sort="setNodeSort"
-        @select="selectNode"
-        @test="testGroup"
-      />
-      <SettingsView
-        v-else
-        v-model="theme"
-        :channel="kernelChannel"
-        :failure="kernelFailure"
-        :profiles="profileState"
-        @update:channel="changeKernel"
-        @enable="enableProfile"
-        @update="updateProfile"
-        @save-override="saveOverride"
-        @add="adding = true"
-      />
+      <component :is="view" v-if="store.loaded.value" :compact="compact" />
+      <div v-else class="loading"><span class="spinner" /></div>
     </main>
-    <nav v-if="layout === 'bottom'" class="bottom-nav" aria-label="主导航">
+
+    <nav v-if="compact" class="tabbar" aria-label="主导航">
       <button
-        v-for="item in NAV_ITEMS"
+        v-for="item in mobilePages"
         :key="item.id"
         type="button"
-        class="nav-button"
-        :data-entry="item.id"
-        :aria-current="entry === item.id ? 'page' : undefined"
-        @click="choose(item.id)"
+        class="tab"
+        :class="{ active: isTabCurrent(item.id) }"
+        :aria-current="isTabCurrent(item.id) ? 'page' : undefined"
+        :data-page="item.id"
+        @click="store.go(item.id)"
       >
-        {{ item.label }}
+        <Icon :name="item.icon" :size="22" />
+        <span class="tab-label">{{ item.label }}<span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="update-dot" aria-label="有可用更新">•</span></span>
       </button>
     </nav>
+
+    <CommandPalette
+      v-if="paletteOpen"
+      :platform="isAndroid ? 'android' : 'desktop'"
+      :connected="snap.connected"
+      :has-profiles="snap.profiles.length > 0"
+      @navigate="onPaletteNavigate"
+      @open-settings="onPaletteSettings"
+      @action="onPaletteAction"
+      @close="paletteOpen = false"
+    />
+
+    <Modal v-if="helpOpen" title="快捷键" subtitle="在应用内生效，输入框会保留自己的按键" @close="helpOpen = false">
+      <dl class="shortcut-list">
+        <div v-for="shortcut in SHORTCUTS" :key="shortcut.id" class="shortcut-row">
+          <dt><kbd class="palette-kbd">{{ shortcutKeyLabel(shortcut.combo) }}</kbd></dt>
+          <dd>
+            <strong>{{ shortcut.label }}</strong>
+            <p class="muted small">{{ shortcut.description }}</p>
+          </dd>
+        </div>
+      </dl>
+    </Modal>
+
+    <Modal v-if="store.adding.value" title="添加配置" subtitle="订阅链接或 Clash / Mihomo YAML 文件" @close="store.adding.value = false">
+      <div class="tabs-inline" role="tablist">
+        <button type="button" role="tab" :class="{ active: addTab === 'url' }" :aria-selected="addTab === 'url'" @click="addTab = 'url'">
+          <Icon name="link" :size="16" /> 订阅链接
+        </button>
+        <button type="button" role="tab" :class="{ active: addTab === 'file' }" :aria-selected="addTab === 'file'" @click="addTab = 'file'">
+          <Icon name="file" :size="16" /> 本地文件
+        </button>
+      </div>
+      <form v-if="addTab === 'url'" class="stack" data-testid="add-url" @submit.prevent="submitUrl">
+        <label class="field">
+          <span>订阅地址</span>
+          <div class="input-group">
+            <!-- Phones open the sheet without the keyboard; paste or tap the field to type. -->
+            <input v-model="url" type="url" inputmode="url" enterkeyhint="go" placeholder="https://…" autocomplete="off" spellcheck="false" :autofocus="!compact" />
+            <button type="button" class="btn ghost" title="从剪贴板粘贴" data-testid="paste-url" @click="pasteUrl"><Icon name="clipboard" :size="16" />粘贴</button>
+          </div>
+        </label>
+        <p v-if="snap.input_error" class="field-error" role="alert">{{ snap.input_error }}</p>
+        <p class="muted small">添加后会下载订阅内容，并读取流量与到期信息。</p>
+        <button type="submit" class="btn primary block" :disabled="!url.trim() || store.busy.add">
+          <span v-if="store.busy.add" class="spinner sm" />
+          添加订阅
+        </button>
+      </form>
+      <div v-else class="stack">
+        <label
+          class="dropzone"
+          :class="{ over: dragging }"
+          @dragover.prevent="dragging = true"
+          @dragleave="dragging = false"
+          @drop.prevent="onDrop"
+        >
+          <Icon name="download" :size="28" />
+          <strong>拖入 YAML 配置文件</strong>
+          <span class="muted small">或点击选择文件</span>
+          <input type="file" accept=".yaml,.yml,.txt,text/yaml" hidden @change="onFile" />
+        </label>
+        <p v-if="snap.input_error" class="field-error" role="alert">{{ snap.input_error }}</p>
+      </div>
+    </Modal>
+
+    <Modal v-if="snap.pending_url" title="导入订阅" subtitle="来自外部链接的订阅，确认后才会添加" @close="store.cancelInstall()">
+      <p class="url-box mono">{{ snap.pending_url }}</p>
+      <template #footer>
+        <button type="button" class="btn ghost" @click="store.cancelInstall()">取消</button>
+        <button type="button" class="btn primary" @click="store.confirmInstall()">添加</button>
+      </template>
+    </Modal>
+
+    <div class="toasts" aria-live="polite">
+      <TransitionGroup name="toast">
+        <div v-for="item in store.toasts.value" :key="item.id" class="toast" :class="item.tone">
+          <Icon :name="item.tone === 'error' ? 'alert' : item.tone === 'success' ? 'check' : 'info'" :size="16" />
+          <span>{{ item.text }}</span>
+        </div>
+      </TransitionGroup>
+    </div>
   </div>
 </template>

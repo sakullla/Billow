@@ -1,0 +1,144 @@
+[[permission]]
+identifier = "allow-set-outbound-mode"
+description = "Enables the set_outbound_mode command without any pre-configured scope."
+commands.allow = ["set_outbound_mode"]
+
+[[permission]]
+identifier = "allow-delete-profile"
+description = "Enables the delete_profile command without any pre-configured scope."
+commands.allow = ["delete_profile"]
+
+[[permission]]
+identifier = "allow-rename-profile"
+description = "Enables the rename_profile command without any pre-configured scope."
+commands.allow = ["rename_profile"]
+
+[[permission]]
+identifier = "allow-set-profile-source"
+description = "Enables the set_profile_source command without any pre-configured scope."
+commands.allow = ["set_profile_source"]
+
+[[permission]]
+identifier = "allow-set-profile-interval"
+description = "Enables the set_profile_interval command without any pre-configured scope."
+commands.allow = ["set_profile_interval"]
+
+[[permission]]
+identifier = "allow-profile-content"
+description = "Enables the profile_content command without any pre-configured scope."
+commands.allow = ["profile_content"]
+
+[[permission]]
+identifier = "allow-save-profile-content"
+description = "Enables the save_profile_content command without any pre-configured scope."
+commands.allow = ["save_profile_content"]
+
+[[permission]]
+identifier = "allow-refresh-profile"
+description = "Enables the refresh_profile command without any pre-configured scope."
+commands.allow = ["refresh_profile"]
+
+[[permission]]
+identifier = "allow-refresh-all-profiles"
+description = "Enables the refresh_all_profiles command without any pre-configured scope."
+commands.allow = ["refresh_all_profiles"]
+
+[[permission]]
+identifier = "allow-save-kernel-settings"
+description = "Enables the save_kernel_settings command without any pre-configured scope."
+commands.allow = ["save_kernel_settings"]
+
+[[permission]]
+identifier = "allow-test-all-nodes"
+description = "Enables the test_all_nodes command without any pre-configured scope."
+commands.allow = ["test_all_nodes"]
+
+[[permission]]
+identifier = "allow-test-node"
+description = "Enables the test_node command without any pre-configured scope."
+commands.allow = ["test_node"]
+
+[[permission]]
+identifier = "allow-close-connection"
+description = "Enables the close_connection command without any pre-configured scope."
+commands.allow = ["close_connection"]
+
+[[permission]]
+identifier = "allow-kernel-rules"
+description = "Enables the kernel_rules command without any pre-configured scope."
+commands.allow = ["kernel_rules"]
+
+[[permission]]
+identifier = "allow-clear-logs"
+description = "Enables the clear_logs command without any pre-configured scope."
+commands.allow = ["clear_logs"]
+
+[[permission]]
+identifier = "allow-clear-notice"
+description = "Enables the clear_notice command without any pre-configured scope."
+commands.allow = ["clear_notice"]
+
+[[permission]]
+identifier = "allow-refresh-kernel"
+description = "Enables the refresh_kernel command without any pre-configured scope."
+commands.allow = ["refresh_kernel"]
+
+[[permission]]
+identifier = "allow-app-info"
+description = "Enables the app_info command without any pre-configured scope."
+commands.allow = ["app_info"]
+
+[[permission]]
+identifier = "allow-set-autostart"
+description = "Enables the set_autostart command without any pre-configured scope."
+commands.allow = ["set_autostart"]
+
+[[permission]]
+identifier = "allow-set-app-behavior"
+description = "Enables the set_app_behavior command without any pre-configured scope."
+commands.allow = ["set_app_behavior"]
+
+[[permission]]
+identifier = "allow-sync-tray"
+description = "Enables the sync_tray command without any pre-configured scope."
+commands.allow = ["sync_tray"]
+
+[[permission]]
+identifier = "allow-flush-cache"
+description = "Enables the flush_cache command without any pre-configured scope."
+commands.allow = ["flush_cache"]
+
+[[permission]]
+identifier = "allow-kernel-providers"
+description = "Enables the kernel_providers command without any pre-configured scope."
+commands.allow = ["kernel_providers"]
+
+[[permission]]
+identifier = "allow-provider-action"
+description = "Enables the provider_action command without any pre-configured scope."
+commands.allow = ["provider_action"]
+
+[[permission]]
+identifier = "allow-upgrade-geo"
+description = "Enables the upgrade_geo command without any pre-configured scope."
+commands.allow = ["upgrade_geo"]
+
+[[permission]]
+identifier = "allow-effective-config"
+description = "Enables the effective_config command without any pre-configured scope."
+commands.allow = ["effective_config"]
+
+[[permission]]
+identifier = "allow-provider-detail"
+description = "Enables the provider_detail command without any pre-configured scope."
+commands.allow = ["provider_detail"]
+
+[[permission]]
+identifier = "allow-geo-files"
+description = "Enables the geo_files command without any pre-configured scope."
+commands.allow = ["geo_files"]
+
+[[permission]]
+identifier = "allow-set-app-rules"
+description = "Enables the set_app_rules command without any pre-configured scope."
+commands.allow = ["set_app_rules"]

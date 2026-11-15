@@ -1,0 +1,93 @@
+{
+  "attempt_id": "profiles-view-A1",
+  "checkpoint_ref": "1b1f8763407439904a7e451203324a989d0dfdfe",
+  "continuation": {
+    "artifact_ref": "task-runs/profiles-view-run.md",
+    "attempt_id": "profiles-view-A1",
+    "checkpoint_ref": "1b1f8763407439904a7e451203324a989d0dfdfe",
+    "next_action": "task.record",
+    "owner": "execute-task-workflow",
+    "review_base_ref": "1aa68b1b33d0014338a67f872761ed3a6c766cc9",
+    "task_id": "profiles-view",
+    "workflow_status": "active"
+  },
+  "created_at": "2026-11-15T07:18:44.049015Z",
+  "format": "sakullla_evidence_trace",
+  "observations": {
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [
+        "390px 卡片截断与编辑器行号滚动同步只在 happy-dom 做 DOM 断言，未做真实浏览器像素与滚动复验"
+      ],
+      "status": "completed_with_concerns",
+      "summary": "导入去重、顺序全量更新、编辑器守卫与菜单键盘完成",
+      "verification_refs": [
+        "tests:npm test 100 passed",
+        "tests:cargo test 90 passed",
+        "tests:npm run build"
+      ]
+    }
+  },
+  "provenance": {
+    "artifact_refs": [
+      "task-runs/profiles-view-run.md",
+      "1aa68b1b33d0014338a67f872761ed3a6c766cc9"
+    ],
+    "checkpoint_ref": "1b1f8763407439904a7e451203324a989d0dfdfe",
+    "path_digests": {},
+    "path_format": "repository_relative",
+    "paths": [],
+    "repository_root": "C:\\Users\\12976\\project\\Billow"
+  },
+  "refs": {
+    "review_base": "1aa68b1b33d0014338a67f872761ed3a6c766cc9",
+    "task_run": "task-runs/profiles-view-run.md"
+  },
+  "repository_root": "C:\\Users\\12976\\project\\Billow",
+  "source": {
+    "attempt_id": "profiles-view-A1",
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [
+        "390px 卡片截断与编辑器行号滚动同步只在 happy-dom 做 DOM 断言，未做真实浏览器像素与滚动复验"
+      ],
+      "status": "completed_with_concerns",
+      "summary": "导入去重、顺序全量更新、编辑器守卫与菜单键盘完成",
+      "verification_refs": [
+        "tests:npm test 100 passed",
+        "tests:cargo test 90 passed",
+        "tests:npm run build"
+      ]
+    },
+    "provenance": {
+      "artifact_refs": [
+        "task-runs/profiles-view-run.md",
+        "1aa68b1b33d0014338a67f872761ed3a6c766cc9"
+      ],
+      "checkpoint_ref": "1b1f8763407439904a7e451203324a989d0dfdfe",
+      "path_digests": {},
+      "path_format": "repository_relative",
+      "paths": [],
+      "repository_root": "C:\\Users\\12976\\project\\Billow"
+    },
+    "refs": {
+      "review_base": "1aa68b1b33d0014338a67f872761ed3a6c766cc9",
+      "task_run": "task-runs/profiles-view-run.md"
+    },
+    "task_id": "profiles-view",
+    "workflow_id": "2026-11-15-experience-upgrade"
+  },
+  "source_digest": "sha256:d056195dc3ea5f50a0b625b111225bb4bd4c857add873427cf83284fccbc1ee6",
+  "state_ref": "C:\\Users\\12976\\project\\Billow\\docs\\sakullla-workflow\\2026-11-15-experience-upgrade\\00-state.yaml",
+  "task_id": "profiles-view",
+  "version": 1,
+  "workflow_id": "2026-11-15-experience-upgrade"
+}

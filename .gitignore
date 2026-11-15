@@ -3,4 +3,11 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/schemas
+*.key
+*.key.pub
+*.p12
+*.jks
+**/keystore.properties
+__pycache__/
+src-tauri/icons/ios/
 /docs/sakullla-workflow

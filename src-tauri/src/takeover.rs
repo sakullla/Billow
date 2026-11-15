@@ -60,14 +60,52 @@ pub trait TunGrant: Send {
 /// Android VPN. `authorize` asks the system. `establish` starts the service and returns the TUN fd.
 pub trait VpnGrant: Send {
     fn authorize(&mut self) -> Result<bool, String>;
-    fn establish(&mut self, excluded: &[String]) -> Result<i32, String>;
+    fn establish(&mut self, filter: &AppFilter) -> Result<i32, String>;
     fn close(&mut self) -> Result<(), String>;
+}
+
+/// Which apps the Android VPN carries. `only` lists the apps that use the VPN
+/// (allowlist); otherwise `packages` bypass it. An allowlist with nothing in it
+/// would route every app on Android, so it degrades to "bypass nothing".
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AppFilter {
+    pub only: bool,
+    pub packages: Vec<String>,
+}
+
+impl AppFilter {
+    pub fn bypassed(&self) -> &[String] {
+        if self.only { &[] } else { &self.packages }
+    }
+}
+
+pub const APP_MODE_EXCLUDE: &str = "exclude";
+pub const APP_MODE_INCLUDE: &str = "include";
+
+pub fn normalize_app_mode(mode: &str) -> &'static str {
+    if mode == APP_MODE_INCLUDE { APP_MODE_INCLUDE } else { APP_MODE_EXCLUDE }
+}
+
+/// Trimmed, de-duplicated package names in first-seen order.
+pub fn clean_packages(packages: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for package in packages {
+        if let Some(clean) = clean_package(package) {
+            if !out.contains(&clean) {
+                out.push(clean);
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InstalledApp {
     pub name: String,
     pub package_name: String,
+    /// Preinstalled system app; the list hides these by default.
+    #[serde(default)]
+    pub system: bool,
 }
 
 /// Search keeps installed apps whose names match. The query itself is not an app.
@@ -94,7 +132,7 @@ pub fn normalize_installed(apps: Vec<InstalledApp>) -> Vec<InstalledApp> {
             app.name
         };
         seen.push(package_name.clone());
-        out.push(InstalledApp { name, package_name });
+        out.push(InstalledApp { name, package_name, system: app.system });
     }
     out.sort_by(|left, right| {
         left.name
@@ -132,6 +170,9 @@ pub struct LinkModel {
     pub platform: ClientPlatform,
     pub tun_wanted: bool,
     pub excluded: Vec<String>,
+    /// Allowlist used when `app_mode` is include.
+    pub included: Vec<String>,
+    pub app_mode: String,
     pub system_proxy: bool,
     pub tun: bool,
     pub vpn: bool,
@@ -294,6 +335,41 @@ pub fn set_tun(model: &mut LinkModel, enabled: bool, tun: &mut dyn TunGrant) {
     model.connected = model.system_proxy;
 }
 
+impl LinkModel {
+    pub fn app_filter(&self) -> AppFilter {
+        if self.app_mode == APP_MODE_INCLUDE && !self.included.is_empty() {
+            AppFilter { only: true, packages: self.included.clone() }
+        } else {
+            AppFilter { only: false, packages: self.excluded.clone() }
+        }
+    }
+}
+
+/// Replace the app list of one mode and make that mode current; re-establishes a live VPN.
+pub fn set_app_rules(
+    model: &mut LinkModel,
+    mode: &str,
+    packages: &[String],
+    vpn: &mut dyn VpnGrant,
+) -> Option<i32> {
+    if model.platform != ClientPlatform::Android {
+        return None;
+    }
+    let mode = normalize_app_mode(mode);
+    let before = model.app_filter();
+    let clean = clean_packages(packages);
+    model.app_mode = mode.to_string();
+    if mode == APP_MODE_INCLUDE {
+        model.included = clean;
+    } else {
+        model.excluded = clean;
+    }
+    if model.app_filter() == before {
+        return None;
+    }
+    refresh_vpn(model, vpn)
+}
+
 pub fn exclude_package(
     model: &mut LinkModel,
     package_name: &str,
@@ -332,7 +408,7 @@ fn refresh_vpn(model: &mut LinkModel, vpn: &mut dyn VpnGrant) -> Option<i32> {
     if !model.vpn {
         return None;
     }
-    match vpn.establish(&model.excluded) {
+    match vpn.establish(&model.app_filter()) {
         Ok(fd) => Some(fd),
         Err(_) => {
             let _ = vpn.close();
@@ -433,6 +509,7 @@ pub struct MemoryVpn {
     pub grant: bool,
     pub open: bool,
     pub last_excluded: Vec<String>,
+    pub last_filter: AppFilter,
     pub establish_calls: u32,
 }
 
@@ -441,9 +518,10 @@ impl VpnGrant for MemoryVpn {
         Ok(self.grant)
     }
 
-    fn establish(&mut self, excluded: &[String]) -> Result<i32, String> {
+    fn establish(&mut self, filter: &AppFilter) -> Result<i32, String> {
         self.establish_calls += 1;
-        self.last_excluded = excluded.to_vec();
+        self.last_excluded = filter.bypassed().to_vec();
+        self.last_filter = filter.clone();
         self.open = true;
         Ok(1)
     }
@@ -697,7 +775,11 @@ fn wintun_create_or_open() -> bool {
     }
 
     unsafe {
-        let dll = utf16z("wintun.dll");
+        // Never search the working directory for a privileged DLL.
+        let Ok(exe) = std::env::current_exe() else { return false; };
+        let Some(directory) = exe.parent() else { return false; };
+        use std::os::windows::ffi::OsStrExt;
+        let dll: Vec<u16> = directory.join("wintun.dll").as_os_str().encode_wide().chain(Some(0)).collect();
         let module = LoadLibraryW(dll.as_ptr());
         if module.is_null() {
             return false;
@@ -749,7 +831,7 @@ pub struct HostVpn {
 
 pub trait VpnBridge: Send {
     fn prepare(&mut self) -> Result<bool, String>;
-    fn start(&mut self, excluded: &[String]) -> Result<i32, String>;
+    fn start(&mut self, filter: &AppFilter) -> Result<i32, String>;
     fn stop(&mut self) -> Result<(), String>;
 }
 
@@ -782,10 +864,10 @@ impl VpnGrant for HostVpn {
         self.bridge.prepare()
     }
 
-    fn establish(&mut self, excluded: &[String]) -> Result<i32, String> {
+    fn establish(&mut self, filter: &AppFilter) -> Result<i32, String> {
         self.calls.push("start".to_string());
-        self.last_excluded = excluded.to_vec();
-        let fd = self.bridge.start(excluded)?;
+        self.last_excluded = filter.bypassed().to_vec();
+        let fd = self.bridge.start(filter)?;
         if fd < 0 {
             return Err("VPN 没有建立".to_string());
         }
@@ -825,9 +907,9 @@ impl VpnBridge for RecordingVpn {
         Ok(self.grant)
     }
 
-    fn start(&mut self, excluded: &[String]) -> Result<i32, String> {
+    fn start(&mut self, filter: &AppFilter) -> Result<i32, String> {
         self.calls.push("start".to_string());
-        self.excluded = excluded.to_vec();
+        self.excluded = filter.bypassed().to_vec();
         if self.fail_start {
             return Err("VPN 没有建立".to_string());
         }
@@ -854,14 +936,14 @@ impl VpnBridge for OsVpnBridge {
         }
     }
 
-    fn start(&mut self, excluded: &[String]) -> Result<i32, String> {
+    fn start(&mut self, filter: &AppFilter) -> Result<i32, String> {
         #[cfg(target_os = "android")]
         {
-            return android_start(excluded);
+            return android_start(filter);
         }
         #[cfg(not(target_os = "android"))]
         {
-            let _ = excluded;
+            let _ = filter;
             Err("VPN 没有建立".to_string())
         }
     }
@@ -958,7 +1040,7 @@ fn wait_for_written_vpn_fd(timeout: std::time::Duration) -> Result<i32, String> 
 }
 
 #[cfg(target_os = "android")]
-fn android_start(excluded: &[String]) -> Result<i32, String> {
+fn android_start(filter: &AppFilter) -> Result<i32, String> {
     clear_written_vpn_fd();
     let ctx = ndk_context::android_context();
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
@@ -969,7 +1051,7 @@ fn android_start(excluded: &[String]) -> Result<i32, String> {
     let list = env
         .new_object("java/util/ArrayList", "()V", &[])
         .map_err(|_| "VPN 没有建立".to_string())?;
-    for package_name in excluded {
+    for package_name in &filter.packages {
         let value = env
             .new_string(package_name)
             .map_err(|_| "VPN 没有建立".to_string())?;
@@ -985,10 +1067,11 @@ fn android_start(excluded: &[String]) -> Result<i32, String> {
     env.call_static_method(
         "app/billow/client/BillowVpnBridge",
         "start",
-        "(Landroid/content/Context;Ljava/util/List;)V",
+        "(Landroid/content/Context;Ljava/util/List;Z)V",
         &[
             jni::objects::JValue::Object(&context),
             jni::objects::JValue::Object(&list),
+            jni::objects::JValue::Bool(u8::from(filter.only)),
         ],
     )
     .map_err(|_| "VPN 没有建立".to_string())?;
@@ -1046,7 +1129,7 @@ pub fn report_vpn_fd(fd: i32) {
 
 /// Kotlin `BillowVpnBridge.nativeConsent` reports the system dialog here.
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeConsent(
     _env: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,
@@ -1132,7 +1215,11 @@ fn android_installed_apps() -> Result<Vec<InstalledApp>, String> {
                 if name.trim().is_empty() {
                     name = package_name.clone();
                 }
-                Ok(Some(InstalledApp { name, package_name }))
+                // FLAG_SYSTEM without FLAG_UPDATED_SYSTEM_APP: preinstalled and never updated
+                // from the store. Updated system apps (Chrome, Gmail) are user-facing.
+                let flags = env.get_field(&info, "flags", "I")?.i()?;
+                let system = flags & 1 != 0 && flags & 0x80 == 0;
+                Ok(Some(InstalledApp { name, package_name, system }))
             },
         );
         match read {
@@ -1157,7 +1244,7 @@ fn java_string(
 
 /// Kotlin reports the TUN fd after `VpnService.Builder.establish`.
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeTunFd(
     _env: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,
@@ -1346,6 +1433,7 @@ mod host_proxy {
     #[cfg(target_os = "windows")]
     mod windows {
         use std::process::Command;
+        use std::os::windows::process::CommandExt;
 
         use super::super::ProxyEndpoint;
 
@@ -1399,6 +1487,7 @@ mod host_proxy {
 
         fn reg(args: &[&str]) -> Result<(), String> {
             let status = Command::new("reg")
+                .creation_flags(0x08000000)
                 .args(args)
                 .status()
                 .map_err(|_| "系统代理没有打开".to_string())?;
@@ -1411,6 +1500,7 @@ mod host_proxy {
 
         fn reg_query(name: &str) -> Option<String> {
             let output = Command::new("reg")
+                .creation_flags(0x08000000)
                 .args(["query", KEY, "/v", name])
                 .output()
                 .ok()?;
@@ -1726,7 +1816,7 @@ mod tests {
         let again = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(again.system_proxy);
         assert!(!again.tun);
-        assert!(!again.connected);
+        assert!(again.connected, "denying TUN keeps the working system proxy connected");
         assert_eq!(again.failure.as_deref(), Some(TUN_DENIED));
         assert_eq!(proxy.sets, sets);
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
@@ -1762,6 +1852,43 @@ mod tests {
         book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(proxy.http.is_none());
         assert_eq!(proxy.https.as_ref().map(|item| item.port), Some(1));
+    }
+
+    #[test]
+    fn app_rules_switch_between_bypass_and_allowlist_and_persist() {
+        let dir = temp_dir("app-rules");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Android);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        let calls = vpn.establish_calls;
+
+        // Allowlist: only the listed apps use the VPN; duplicates and blanks are dropped.
+        let only = vec![" com.a ".to_string(), "com.b".to_string(), "com.a".to_string(), "".to_string()];
+        let snap = book.set_app_rules("include", &only, &mut kernel, &mut vpn);
+        assert_eq!(snap.app_mode, "include");
+        assert_eq!(snap.included, ["com.a", "com.b"]);
+        assert_eq!(vpn.last_filter, AppFilter { only: true, packages: vec!["com.a".into(), "com.b".into()] });
+        assert_eq!(vpn.establish_calls, calls + 1);
+
+        // Saving the same list again does not rebuild the tunnel.
+        book.set_app_rules("include", &["com.a".to_string(), "com.b".to_string()], &mut kernel, &mut vpn);
+        assert_eq!(vpn.establish_calls, calls + 1);
+
+        // An empty allowlist would route every app on Android; it means "bypass nothing".
+        book.set_app_rules("include", &[], &mut kernel, &mut vpn);
+        assert_eq!(vpn.last_filter, AppFilter { only: false, packages: Vec::new() });
+
+        // Switching back keeps each mode's own list.
+        book.set_app_rules("include", &["com.a".to_string()], &mut kernel, &mut vpn);
+        let snap = book.set_app_rules("exclude", &["com.bank".to_string()], &mut kernel, &mut vpn);
+        assert_eq!((snap.app_mode.as_str(), snap.included.clone(), snap.excluded.clone()), ("exclude", vec!["com.a".to_string()], vec!["com.bank".to_string()]));
+        assert_eq!(vpn.last_filter, AppFilter { only: false, packages: vec!["com.bank".into()] });
+
+        let reopened = ProfileBook::open(&dir.0);
+        let snap = reopened.snapshot();
+        assert_eq!((snap.app_mode.as_str(), snap.included, snap.excluded), ("exclude", vec!["com.a".to_string()], vec!["com.bank".to_string()]));
     }
 
     #[test]
@@ -1841,9 +1968,9 @@ mod tests {
             Ok(true)
         }
 
-        fn establish(&mut self, excluded: &[String]) -> Result<i32, String> {
+        fn establish(&mut self, filter: &AppFilter) -> Result<i32, String> {
             self.establish_calls += 1;
-            self.last_excluded = excluded.to_vec();
+            self.last_excluded = filter.bypassed().to_vec();
             let fd = self.fds[self.cursor];
             self.cursor += 1;
             self.open = true;
@@ -2240,7 +2367,7 @@ mod tests {
         let mut vpn = MemoryVpn::default();
         book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         let denied = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
-        assert!(!denied.connected && !denied.tun);
+        assert!(denied.connected && !denied.tun);
         assert!(denied.system_proxy);
         assert_eq!(denied.failure.as_deref(), Some(TUN_DENIED));
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
@@ -2283,10 +2410,10 @@ mod tests {
         let mut denied = HostTun::with_evidence(native_denial);
         let previous = proxy.sets;
         let rejected = book.set_tun(true, &mut kernel, &mut proxy, &mut denied, &mut vpn);
-        assert!(!rejected.connected && !rejected.tun);
+        assert!(rejected.connected && rejected.tun, "denied redundant enable preserves the existing TUN");
         assert!(rejected.system_proxy);
         assert_eq!(proxy.sets, previous);
-        assert_eq!(tun_enable(&kernel.last), Some(false));
+        assert_eq!(tun_enable(&kernel.last), Some(true));
     }
 
     #[test]
@@ -2314,10 +2441,12 @@ mod tests {
             InstalledApp {
                 name: "电子 邮箱".to_string(),
                 package_name: "com.example.mail".to_string(),
+                system: false,
             },
             InstalledApp {
                 name: "浏览器".to_string(),
                 package_name: "com.example.browser".to_string(),
+                system: false,
             },
         ];
         let matched = filter_installed(&apps, "浏览器");
@@ -2465,10 +2594,12 @@ mod tests {
             InstalledApp {
                 name: "电子 邮箱".to_string(),
                 package_name: "com.example.mail".to_string(),
+                system: false,
             },
             InstalledApp {
                 name: "浏览器".to_string(),
                 package_name: "com.example.browser".to_string(),
+                system: false,
             },
         ];
         let normalized = normalize_installed(apps.clone());
@@ -2519,6 +2650,8 @@ mod tests {
             platform: ClientPlatform::Desktop,
             tun_wanted: true,
             excluded: Vec::new(),
+            included: Vec::new(),
+            app_mode: APP_MODE_EXCLUDE.to_string(),
             system_proxy: true,
             tun: true,
             vpn: false,

@@ -1,0 +1,91 @@
+{
+  "attempt_id": "diagnostics-view-A3",
+  "checkpoint_ref": "3768a79351500adedb08de5379dea220e9261db8",
+  "continuation": {
+    "artifact_ref": "task-runs/diagnostics-view-run.md",
+    "attempt_id": "diagnostics-view-A3",
+    "checkpoint_ref": "3768a79351500adedb08de5379dea220e9261db8",
+    "next_action": "task.record",
+    "owner": "execute-task-workflow",
+    "review_base_ref": "1b1f8763407439904a7e451203324a989d0dfdfe",
+    "task_id": "diagnostics-view",
+    "workflow_status": "active"
+  },
+  "created_at": "2026-11-15T08:37:31.152498Z",
+  "format": "sakullla_evidence_trace",
+  "observations": {
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [],
+      "status": "completed",
+      "summary": "修复 1000 条日志上限的跟随尾部与滚动保持",
+      "verification_refs": [
+        "tests:npm test 121 passed",
+        "tests:npm run build",
+        "browser:cap follow gap 0 for 5 appends",
+        "browser:cap follow off scrollTop unchanged"
+      ]
+    }
+  },
+  "provenance": {
+    "artifact_refs": [
+      "task-runs/diagnostics-view-run.md",
+      "1b1f8763407439904a7e451203324a989d0dfdfe"
+    ],
+    "checkpoint_ref": "3768a79351500adedb08de5379dea220e9261db8",
+    "path_digests": {},
+    "path_format": "repository_relative",
+    "paths": [],
+    "repository_root": "C:\\Users\\12976\\project\\Billow"
+  },
+  "refs": {
+    "review_base": "1b1f8763407439904a7e451203324a989d0dfdfe",
+    "task_run": "task-runs/diagnostics-view-run.md"
+  },
+  "repository_root": "C:\\Users\\12976\\project\\Billow",
+  "source": {
+    "attempt_id": "diagnostics-view-A3",
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [],
+      "status": "completed",
+      "summary": "修复 1000 条日志上限的跟随尾部与滚动保持",
+      "verification_refs": [
+        "tests:npm test 121 passed",
+        "tests:npm run build",
+        "browser:cap follow gap 0 for 5 appends",
+        "browser:cap follow off scrollTop unchanged"
+      ]
+    },
+    "provenance": {
+      "artifact_refs": [
+        "task-runs/diagnostics-view-run.md",
+        "1b1f8763407439904a7e451203324a989d0dfdfe"
+      ],
+      "checkpoint_ref": "3768a79351500adedb08de5379dea220e9261db8",
+      "path_digests": {},
+      "path_format": "repository_relative",
+      "paths": [],
+      "repository_root": "C:\\Users\\12976\\project\\Billow"
+    },
+    "refs": {
+      "review_base": "1b1f8763407439904a7e451203324a989d0dfdfe",
+      "task_run": "task-runs/diagnostics-view-run.md"
+    },
+    "task_id": "diagnostics-view",
+    "workflow_id": "2026-11-15-experience-upgrade"
+  },
+  "source_digest": "sha256:720b546017dbf9cba878a31407e763329cf3be94b1f393c90fdc9bfd14900fb4",
+  "state_ref": "C:\\Users\\12976\\project\\Billow\\docs\\sakullla-workflow\\2026-11-15-experience-upgrade\\00-state.yaml",
+  "task_id": "diagnostics-view",
+  "version": 1,
+  "workflow_id": "2026-11-15-experience-upgrade"
+}

@@ -1,0 +1,135 @@
+{
+  "attempt_id": "shell-navigation-A2",
+  "checkpoint_ref": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+  "continuation": {
+    "artifact_ref": "task-runs/shell-navigation-run.md",
+    "attempt_id": "shell-navigation-A2",
+    "checkpoint_ref": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+    "next_action": "task.record",
+    "owner": "execute-task-workflow",
+    "review_base_ref": "54552a878a2d641ef03e8c02d2f976771e5320b7",
+    "task_id": "shell-navigation",
+    "workflow_status": "active"
+  },
+  "created_at": "2026-11-15T04:38:51.857406Z",
+  "format": "sakullla_evidence_trace",
+  "observations": {
+    "delta": {
+      "entries": [
+        {
+          "path": "src/components/Menu.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/lib/ui/focus.ts",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/views/ProfilesView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        }
+      ],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [],
+      "status": "completed",
+      "summary": "返回桥改用共享层栈与页面栈，内联菜单纳入层栈",
+      "verification_refs": [
+        "tests:npm test 69 passed",
+        "tests:npm run build"
+      ]
+    }
+  },
+  "provenance": {
+    "artifact_refs": [
+      "task-runs/shell-navigation-run.md",
+      "54552a878a2d641ef03e8c02d2f976771e5320b7"
+    ],
+    "checkpoint_ref": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+    "path_digests": {
+      "src/components/Menu.vue": "sha256:aca4eb42f96aa1a31f693657508f863d5d23bfac1878347bfa3b9ce9b541b558",
+      "src/lib/ui/focus.ts": "sha256:bef82f80b8da29e7592b52c8f3a0015a0a6fb536b41ea845a08449c8cd521691",
+      "src/views/ProfilesView.vue": "sha256:bbdc291bfd2bd8e48d710f2d6491a358c7b4176a6497ed2a38ff330b20b65354"
+    },
+    "path_format": "repository_relative",
+    "paths": [
+      "src/components/Menu.vue",
+      "src/lib/ui/focus.ts",
+      "src/views/ProfilesView.vue"
+    ],
+    "repository_root": "C:\\Users\\12976\\project\\Billow"
+  },
+  "refs": {
+    "review_base": "54552a878a2d641ef03e8c02d2f976771e5320b7",
+    "task_run": "task-runs/shell-navigation-run.md"
+  },
+  "repository_root": "C:\\Users\\12976\\project\\Billow",
+  "source": {
+    "attempt_id": "shell-navigation-A2",
+    "delta": {
+      "entries": [
+        {
+          "path": "src/components/Menu.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/lib/ui/focus.ts",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        },
+        {
+          "path": "src/views/ProfilesView.vue",
+          "reason_code": "repo_local_reconciled",
+          "route": "auto_approved"
+        }
+      ],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [],
+      "status": "completed",
+      "summary": "返回桥改用共享层栈与页面栈，内联菜单纳入层栈",
+      "verification_refs": [
+        "tests:npm test 69 passed",
+        "tests:npm run build"
+      ]
+    },
+    "provenance": {
+      "artifact_refs": [
+        "task-runs/shell-navigation-run.md",
+        "54552a878a2d641ef03e8c02d2f976771e5320b7"
+      ],
+      "checkpoint_ref": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+      "path_digests": {
+        "src/components/Menu.vue": "sha256:aca4eb42f96aa1a31f693657508f863d5d23bfac1878347bfa3b9ce9b541b558",
+        "src/lib/ui/focus.ts": "sha256:bef82f80b8da29e7592b52c8f3a0015a0a6fb536b41ea845a08449c8cd521691",
+        "src/views/ProfilesView.vue": "sha256:bbdc291bfd2bd8e48d710f2d6491a358c7b4176a6497ed2a38ff330b20b65354"
+      },
+      "path_format": "repository_relative",
+      "paths": [
+        "src/components/Menu.vue",
+        "src/lib/ui/focus.ts",
+        "src/views/ProfilesView.vue"
+      ],
+      "repository_root": "C:\\Users\\12976\\project\\Billow"
+    },
+    "refs": {
+      "review_base": "54552a878a2d641ef03e8c02d2f976771e5320b7",
+      "task_run": "task-runs/shell-navigation-run.md"
+    },
+    "task_id": "shell-navigation",
+    "workflow_id": "2026-11-15-experience-upgrade"
+  },
+  "source_digest": "sha256:9fdda7edfed7b5a3b802ae70421a192e57934ee908d4ae5ee983e64bc8afc473",
+  "state_ref": "C:\\Users\\12976\\project\\Billow\\docs\\sakullla-workflow\\2026-11-15-experience-upgrade\\00-state.yaml",
+  "task_id": "shell-navigation",
+  "version": 1,
+  "workflow_id": "2026-11-15-experience-upgrade"
+}

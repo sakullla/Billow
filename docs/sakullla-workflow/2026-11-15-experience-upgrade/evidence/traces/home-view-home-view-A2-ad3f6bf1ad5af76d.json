@@ -1,0 +1,101 @@
+{
+  "attempt_id": "home-view-A2",
+  "checkpoint_ref": "35f130afd565b6d9c078f2736e646dec1fe44f8e",
+  "continuation": {
+    "artifact_ref": "task-runs/home-view-run.md",
+    "attempt_id": "home-view-A2",
+    "checkpoint_ref": "35f130afd565b6d9c078f2736e646dec1fe44f8e",
+    "next_action": "task.record",
+    "owner": "execute-task-workflow",
+    "review_base_ref": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+    "task_id": "home-view",
+    "workflow_status": "active"
+  },
+  "created_at": "2026-11-15T05:37:25.135010Z",
+  "format": "sakullla_evidence_trace",
+  "observations": {
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [
+        "DOM 顺序保持手机序列（接管在模式前），桌面 ≥960px 用 CSS order 把模式排到接管前，因此桌面 Tab 顺序与视觉顺序不同",
+        "960–1119px 侧列较窄，流量统计降为两列；≥1120px 恢复三列，以避免数值省略",
+        "尺寸为 Chrome + demo 后端实测；未在 Tauri/Android 实机复核安全区与触控目标"
+      ],
+      "status": "completed_with_concerns",
+      "summary": "主次列独立堆叠，断开可重试，查看全部文案完成",
+      "verification_refs": [
+        "tests:npm test 79 passed",
+        "tests:npm run build",
+        "measure:1440x900 gap 12px, overflowX 0",
+        "measure:1024x768 gap 12px, overflowX 0",
+        "measure:390x844 first-screen, overflowX 0"
+      ]
+    }
+  },
+  "provenance": {
+    "artifact_refs": [
+      "task-runs/home-view-run.md",
+      "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0"
+    ],
+    "checkpoint_ref": "35f130afd565b6d9c078f2736e646dec1fe44f8e",
+    "path_digests": {},
+    "path_format": "repository_relative",
+    "paths": [],
+    "repository_root": "C:\\Users\\12976\\project\\Billow"
+  },
+  "refs": {
+    "review_base": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+    "task_run": "task-runs/home-view-run.md"
+  },
+  "repository_root": "C:\\Users\\12976\\project\\Billow",
+  "source": {
+    "attempt_id": "home-view-A2",
+    "delta": {
+      "entries": [],
+      "has_replan": false,
+      "needs_owner_decision": false
+    },
+    "execution": {
+      "concerns": [
+        "DOM 顺序保持手机序列（接管在模式前），桌面 ≥960px 用 CSS order 把模式排到接管前，因此桌面 Tab 顺序与视觉顺序不同",
+        "960–1119px 侧列较窄，流量统计降为两列；≥1120px 恢复三列，以避免数值省略",
+        "尺寸为 Chrome + demo 后端实测；未在 Tauri/Android 实机复核安全区与触控目标"
+      ],
+      "status": "completed_with_concerns",
+      "summary": "主次列独立堆叠，断开可重试，查看全部文案完成",
+      "verification_refs": [
+        "tests:npm test 79 passed",
+        "tests:npm run build",
+        "measure:1440x900 gap 12px, overflowX 0",
+        "measure:1024x768 gap 12px, overflowX 0",
+        "measure:390x844 first-screen, overflowX 0"
+      ]
+    },
+    "provenance": {
+      "artifact_refs": [
+        "task-runs/home-view-run.md",
+        "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0"
+      ],
+      "checkpoint_ref": "35f130afd565b6d9c078f2736e646dec1fe44f8e",
+      "path_digests": {},
+      "path_format": "repository_relative",
+      "paths": [],
+      "repository_root": "C:\\Users\\12976\\project\\Billow"
+    },
+    "refs": {
+      "review_base": "cbc8d0c7c373b34092a4e828289b0b59bcc1a1d0",
+      "task_run": "task-runs/home-view-run.md"
+    },
+    "task_id": "home-view",
+    "workflow_id": "2026-11-15-experience-upgrade"
+  },
+  "source_digest": "sha256:ad3f6bf1ad5af76db83e3077e4e920184f15bd91efc820bd7ac93d2e5f1c10ca",
+  "state_ref": "C:\\Users\\12976\\project\\Billow\\docs\\sakullla-workflow\\2026-11-15-experience-upgrade\\00-state.yaml",
+  "task_id": "home-view",
+  "version": 1,
+  "workflow_id": "2026-11-15-experience-upgrade"
+}

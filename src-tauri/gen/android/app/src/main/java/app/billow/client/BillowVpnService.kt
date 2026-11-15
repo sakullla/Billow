@@ -8,13 +8,15 @@ import android.os.ParcelFileDescriptor
 import java.io.FileDescriptor
 
 /**
- * System VpnService. Rust calls prepare, then start with the excluded packages.
+ * System VpnService. Rust calls prepare, then start with an app filter: either
+ * the packages that bypass the VPN, or (allowlist) the only packages that use it.
  * This class only opens the TUN and returns the fd.
  */
 class BillowVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val excluded = intent?.getStringArrayListExtra(EXTRA_EXCLUDED) ?: arrayListOf()
-        val fd = establishTun(excluded)
+        val packages = intent?.getStringArrayListExtra(EXTRA_EXCLUDED) ?: arrayListOf()
+        val only = intent?.getBooleanExtra(EXTRA_ONLY, false) ?: false
+        val fd = establishTun(packages, only)
         if (fd == null) {
             BillowVpnBridge.reportFd(-1)
             stopSelf()
@@ -29,17 +31,19 @@ class BillowVpnService : VpnService() {
         stopSelf()
     }
 
-    fun establishTun(excludedPackages: List<String>): Int? {
+    fun establishTun(packages: List<String>, only: Boolean): Int? {
         val builder = Builder()
             .setSession("Billow")
             .setMtu(1500)
             .addAddress("172.19.0.1", 30)
             .addRoute("0.0.0.0", 0)
-        for (packageName in excludedPackages) {
+        // Allowed and disallowed lists cannot be mixed on one Builder.
+        for (packageName in packages) {
             try {
-                builder.addDisallowedApplication(packageName)
+                if (only) builder.addAllowedApplication(packageName)
+                else builder.addDisallowedApplication(packageName)
             } catch (_: android.content.pm.PackageManager.NameNotFoundException) {
-                // Rust still owns the exclusion list when the package is not installed.
+                // Rust still owns the list when a package is not installed (yet).
             }
         }
         val opened = builder.establish() ?: return null
@@ -61,6 +65,7 @@ class BillowVpnService : VpnService() {
 
     companion object {
         const val EXTRA_EXCLUDED = "excluded_packages"
+        const val EXTRA_ONLY = "only_listed_packages"
     }
 }
 
@@ -85,9 +90,10 @@ class BillowVpnBridge {
         }
 
         @JvmStatic
-        fun start(context: Context, excluded: List<String>) {
+        fun start(context: Context, packages: List<String>, only: Boolean) {
             val intent = Intent(context, BillowVpnService::class.java)
-            intent.putStringArrayListExtra(BillowVpnService.EXTRA_EXCLUDED, ArrayList(excluded))
+            intent.putStringArrayListExtra(BillowVpnService.EXTRA_EXCLUDED, ArrayList(packages))
+            intent.putExtra(BillowVpnService.EXTRA_ONLY, only)
             context.startService(intent)
         }
 
