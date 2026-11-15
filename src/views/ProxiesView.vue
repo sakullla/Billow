@@ -129,10 +129,10 @@ const groups = computed(() => {
     : catalog.value.filter((group) => group.name !== 'GLOBAL')
   return source
     .filter((group) => !(hideAuto.value && group.kind === 'auto'))
-    .map((group) => ({
-      ...group,
-      nodes: sorted(needle.value ? group.nodes.filter((node) => node.name.toLowerCase().includes(needle.value)) : group.nodes),
-    }))
+    .map((group) => {
+      const nodes = sorted(needle.value ? group.nodes.filter((node) => node.name.toLowerCase().includes(needle.value)) : group.nodes)
+      return nodes === group.nodes ? group : { ...group, nodes }
+    })
     .filter((group) => !needle.value || group.nodes.length > 0 || group.name.toLowerCase().includes(needle.value))
 })
 

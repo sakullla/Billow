@@ -224,49 +224,6 @@ pub fn usable_icon(raw: &str) -> Option<String> {
     Some(text.chars().take(2048).collect())
 }
 
-pub fn sorted_nodes(nodes: Vec<NodeItemView>, sort: &str) -> Vec<NodeItemView> {
-    let mut indexed: Vec<(usize, NodeItemView)> = nodes.into_iter().enumerate().collect();
-    match sort {
-        "name" => indexed.sort_by(|left, right| {
-            left.1
-                .name
-                .to_lowercase()
-                .cmp(&right.1.name.to_lowercase())
-                .then(left.0.cmp(&right.0))
-        }),
-        "delay" => indexed
-            .sort_by(|left, right| delay_key(&left.1, left.0).cmp(&delay_key(&right.1, right.0))),
-        _ => {}
-    }
-    indexed.into_iter().map(|(_, node)| node).collect()
-}
-
-fn delay_key(node: &NodeItemView, index: usize) -> (u8, u64, usize) {
-    if node.delay_ms.is_some() && !node.failed {
-        (0, node.delay_ms.unwrap_or(0), index)
-    } else if node.failed {
-        (2, 0, index)
-    } else {
-        (1, 0, index)
-    }
-}
-
-/// Name filtering hides rows only. An empty result means nothing matched.
-pub fn filter_visible(mut groups: Vec<NodeGroupView>, query: &str) -> (Vec<NodeGroupView>, bool) {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return (groups, false);
-    }
-    for group in &mut groups {
-        group
-            .nodes
-            .retain(|node| node.name.to_lowercase().contains(&query));
-    }
-    groups.retain(|group| !group.nodes.is_empty());
-    let none = groups.is_empty();
-    (groups, none)
-}
-
 pub fn normalize_sort(sort: &str) -> &'static str {
     match sort {
         "delay" => "delay",
@@ -821,38 +778,6 @@ proxy-groups:
     }
 
     #[test]
-    fn sort_and_filter_only_change_the_view() {
-        let nodes = vec![
-            item("z-node", Some(20), false),
-            item("m-node", None, true),
-            item("a-node", Some(5), false),
-        ];
-        let by_delay = sorted_nodes(nodes.clone(), "delay");
-        assert_eq!(names(&by_delay), ["a-node", "z-node", "m-node"]);
-        assert!(by_delay[2].failed);
-        let by_name = sorted_nodes(nodes.clone(), "name");
-        assert_eq!(names(&by_name), ["a-node", "m-node", "z-node"]);
-        let original = sorted_nodes(nodes, "default");
-        assert_eq!(names(&original), ["z-node", "m-node", "a-node"]);
-
-        let groups = vec![NodeGroupView {
-            group_type: String::new(),
-            name: "manual".to_string(),
-            kind: "manual".to_string(),
-            now: "z-node".to_string(),
-            sort: "default".to_string(),
-            nodes: original,
-            icon: None,
-        }];
-        let (matched, none) = filter_visible(groups.clone(), "a-n");
-        assert!(!none);
-        assert_eq!(names(&matched[0].nodes), ["a-node"]);
-        let (empty, none) = filter_visible(groups.clone(), "missing");
-        assert!(none && empty.is_empty());
-        assert_eq!(groups[0].nodes.len(), 3);
-    }
-
-    #[test]
     fn saved_choice_moves_only_manual_group_to_front() {
         let yaml = serde_yaml::to_string(&sample()).unwrap();
         let mut selected = BTreeMap::new();
@@ -929,20 +854,6 @@ proxy-groups:
         assert!(put_selection(&remote, "manual", "one").is_err());
         assert!(fetch_delays(&remote, &["one".to_string()]).is_err());
         assert!(fetch_now(&remote).is_err());
-    }
-
-    fn item(name: &str, delay_ms: Option<u64>, failed: bool) -> NodeItemView {
-        NodeItemView {
-            node_type: String::new(),
-            name: name.to_string(),
-            delay_ms,
-            failed,
-            selected: false,
-        }
-    }
-
-    fn names(nodes: &[NodeItemView]) -> Vec<&str> {
-        nodes.iter().map(|node| node.name.as_str()).collect()
     }
 
     fn http_response(status: &str, body: &str) -> String {

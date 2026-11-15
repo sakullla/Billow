@@ -876,23 +876,16 @@ pub fn fetch_connections_with_totals(endpoint: &ControllerEndpoint) -> Connectio
     read_connections(&body)
 }
 
-/// Kernel memory from `/memory`, in bytes. Missing or zero means the kernel did not report it.
-pub fn fetch_memory(endpoint: &ControllerEndpoint) -> Option<u64> {
-    if !loopback(&endpoint.host) || endpoint.port == 0 {
-        return None;
-    }
-    let url = format!("http://{}:{}/memory", endpoint.host, endpoint.port);
-    // Snapshot polling stays responsive even if the controller stalls.
-    let agent = controller_agent(Duration::from_millis(800));
-    let response = authorize(agent.get(&url), endpoint).call().ok()?;
-    let mut body = String::new();
-    response
-        .into_reader()
-        .take(16_384)
-        .read_to_string(&mut body)
-        .ok()?;
-    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
-    memory_inuse(&value)
+/// `/memory` is an NDJSON stream, with an initial zero sample. Keep the
+/// subscription off the session lock; snapshots only read its latest value.
+pub fn watch_memory(
+    endpoint: ControllerEndpoint,
+    latest: Arc<Mutex<Option<u64>>>,
+    stop: Arc<AtomicBool>,
+) {
+    watch_metric(endpoint, "/memory", latest, stop, |text| {
+        memory_inuse(&serde_json::from_str(text).ok()?)
+    });
 }
 
 fn memory_inuse(value: &serde_json::Value) -> Option<u64> {
@@ -916,6 +909,16 @@ pub fn watch_traffic(
     latest: Arc<Mutex<Option<(u64, u64)>>>,
     stop: Arc<AtomicBool>,
 ) {
+    watch_metric(endpoint, "/traffic", latest, stop, traffic_from_text);
+}
+
+fn watch_metric<T>(
+    endpoint: ControllerEndpoint,
+    path: &str,
+    latest: Arc<Mutex<Option<T>>>,
+    stop: Arc<AtomicBool>,
+    parse: fn(&str) -> Option<T>,
+) {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return;
     }
@@ -927,7 +930,7 @@ pub fn watch_traffic(
         .try_proxy_from_env(false)
         .build();
     while !stop.load(Ordering::Relaxed) {
-        let url = format!("http://{}:{}/traffic", endpoint.host, endpoint.port);
+        let url = format!("http://{}:{}{path}", endpoint.host, endpoint.port);
         let request = agent.get(&url).set("User-Agent", "Billow");
         let request = if endpoint.secret.is_empty() {
             request
@@ -941,7 +944,7 @@ pub fn watch_traffic(
             std::thread::sleep(Duration::from_millis(200));
             continue;
         };
-        let mut reader = response.into_reader().take(1_000_000);
+        let mut reader = response.into_reader();
         let mut buf = Vec::new();
         let mut tmp = [0u8; 512];
         loop {
@@ -952,18 +955,25 @@ pub fn watch_traffic(
                 Ok(0) => break,
                 Ok(count) => {
                     buf.extend_from_slice(&tmp[..count]);
-                    store_traffic_buf(&mut buf, &latest);
+                    store_metric_buf(&mut buf, &latest, parse);
+                    // A malformed stream without delimiters cannot grow the buffer indefinitely.
+                    if buf.len() > 16_384 { break; }
                 }
                 Err(_) => {
-                    store_traffic_buf(&mut buf, &latest);
+                    store_metric_buf(&mut buf, &latest, parse);
                     break;
                 }
             }
         }
+        if !stop.load(Ordering::Relaxed) {
+            // Avoid spinning if an older controller returns a finite response,
+            // immediately closes the stream, or repeatedly sends malformed data.
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
 }
 
-fn store_traffic_buf(buf: &mut Vec<u8>, latest: &Mutex<Option<(u64, u64)>>) {
+fn store_metric_buf<T>(buf: &mut Vec<u8>, latest: &Mutex<Option<T>>, parse: fn(&str) -> Option<T>) {
     loop {
         let Some(end) = buf.iter().position(|byte| *byte == b'\n') else {
             break;
@@ -971,12 +981,12 @@ fn store_traffic_buf(buf: &mut Vec<u8>, latest: &Mutex<Option<(u64, u64)>>) {
         let line: Vec<u8> = buf.drain(..=end).collect();
         if let Some(sample) = std::str::from_utf8(&line)
             .ok()
-            .and_then(traffic_from_text)
+            .and_then(parse)
         {
             *latest.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sample);
         }
     }
-    if let Some(sample) = std::str::from_utf8(buf).ok().and_then(traffic_from_text) {
+    if let Some(sample) = std::str::from_utf8(buf).ok().and_then(parse) {
         buf.clear();
         *latest.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sample);
     }
@@ -1272,6 +1282,56 @@ mod tests {
         assert_eq!(memory_inuse(&value(r#"{"used":4096}"#)), Some(4096));
         assert_eq!(memory_inuse(&value(r#"{"inuse":0}"#)), None);
         assert_eq!(memory_inuse(&value("{}")), None);
+    }
+
+    #[test]
+    fn metric_samples_accept_fragmented_lines_and_skip_the_initial_memory_zero() {
+        let latest = Mutex::new(None);
+        let parse = |text: &str| memory_inuse(&serde_json::from_str(text).ok()?);
+        let mut buf = b"{\"inuse\":0}\n{\"inuse\":".to_vec();
+        store_metric_buf(&mut buf, &latest, parse);
+        assert_eq!(*latest.lock().unwrap(), None);
+        buf.extend_from_slice(b"4096}\n{\"inuse\":8192}\n");
+        store_metric_buf(&mut buf, &latest, parse);
+        assert_eq!(*latest.lock().unwrap(), Some(8192));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn memory_is_available_while_the_controller_stream_is_still_open() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (release, hold) = mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut request = [0; 2048];
+            let count = stream.read(&mut request).unwrap();
+            assert!(std::str::from_utf8(&request[..count]).unwrap().starts_with("GET /memory "));
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"inuse\":0}\n{\"inuse\":12345}\n").unwrap();
+            let _ = hold.recv_timeout(Duration::from_secs(3));
+        });
+        let endpoint = ControllerEndpoint { host: "127.0.0.1".to_string(), port, secret: String::new() };
+        let latest = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let values = Arc::clone(&latest);
+        let flag = Arc::clone(&stop);
+        let reader = std::thread::spawn(move || watch_memory(endpoint, values, flag));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while latest.lock().unwrap().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let sample_before_eof = *latest.lock().unwrap();
+        stop.store(true, Ordering::Relaxed);
+        let _ = release.send(());
+        server.join().unwrap();
+        reader.join().unwrap();
+        assert_eq!(sample_before_eof, Some(12345));
     }
 
     #[test]

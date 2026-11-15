@@ -385,9 +385,6 @@ pub struct ProfileSnapshot {
     pub tun_wanted: bool,
     pub excluded: Vec<String>,
     pub installed: Vec<crate::takeover::InstalledApp>,
-    // Legacy sorted view is kept for internal callers; the UI sorts node_catalog itself.
-    #[serde(skip_serializing)]
-    pub node_groups: Vec<NodeGroupView>,
     pub node_catalog: Vec<NodeGroupView>,
     pub node_query: String,
     pub nodes_notice: Option<String>,
@@ -574,32 +571,36 @@ pub struct ProcessRuntime {
     cached_catalog: nodes::RuntimeCatalog,
     launched_kernel: Option<PathBuf>,
     log_buffer: Option<CapturedLogs>,
-    traffic_watch: Option<TrafficWatch>,
+    traffic_watch: Option<MetricWatch<(u64, u64)>>,
+    memory_watch: Option<MetricWatch<u64>>,
     totals: Option<TrafficTotals>,
     connection_total: Option<usize>,
     connections_error: Option<String>,
     started: Option<Instant>,
 }
 
-struct TrafficWatch {
-    latest: Arc<Mutex<Option<(u64, u64)>>>,
+struct MetricWatch<T> {
+    latest: Arc<Mutex<Option<T>>>,
     stop: Arc<AtomicBool>,
 }
 
-impl TrafficWatch {
-    fn spawn(endpoint: ControllerEndpoint) -> Self {
+impl<T: Copy + Send + 'static> MetricWatch<T> {
+    fn spawn(
+        endpoint: ControllerEndpoint,
+        watch: impl FnOnce(ControllerEndpoint, Arc<Mutex<Option<T>>>, Arc<AtomicBool>) + Send + 'static,
+    ) -> Self {
         let latest = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::clone(&latest);
         let flag = Arc::clone(&stop);
-        std::thread::spawn(move || diagnostics::watch_traffic(endpoint, shared, flag));
+        std::thread::spawn(move || watch(endpoint, shared, flag));
         Self {
             latest,
             stop,
         }
     }
 
-    fn latest(&self) -> Option<(u64, u64)> {
+    fn latest(&self) -> Option<T> {
         *self
             .latest
             .lock()
@@ -623,6 +624,7 @@ impl ProcessRuntime {
             launched_kernel: None,
             log_buffer: None,
             traffic_watch: None,
+            memory_watch: None,
             totals: None,
             connection_total: None,
             connections_error: None,
@@ -638,7 +640,7 @@ impl ProcessRuntime {
     pub fn shutdown(&mut self) { self.stop(); }
 
     fn stop(&mut self) {
-        self.halt_traffic();
+        self.halt_metrics();
         if let Some(mut child) = self.child.take() {
             #[cfg(unix)]
             {
@@ -666,8 +668,11 @@ impl ProcessRuntime {
         self.started = None;
     }
 
-    fn halt_traffic(&mut self) {
+    fn halt_metrics(&mut self) {
         if let Some(watch) = self.traffic_watch.take() {
+            watch.halt();
+        }
+        if let Some(watch) = self.memory_watch.take() {
             watch.halt();
         }
     }
@@ -797,7 +802,8 @@ impl KernelLaunch for ProcessRuntime {
             std::thread::sleep(Duration::from_millis(20));
         }
         if let Some(endpoint) = self.controller.clone() {
-            self.traffic_watch = Some(TrafficWatch::spawn(endpoint));
+            self.traffic_watch = Some(MetricWatch::spawn(endpoint.clone(), diagnostics::watch_traffic));
+            self.memory_watch = Some(MetricWatch::spawn(endpoint, diagnostics::watch_memory));
         }
         Ok(())
     }
@@ -811,7 +817,7 @@ impl KernelLaunch for ProcessRuntime {
             self.child = None;
             self.controller = None;
             self.cached_catalog = nodes::RuntimeCatalog::default();
-            self.halt_traffic();
+            self.halt_metrics();
         }
         alive
     }
@@ -899,8 +905,7 @@ impl KernelLaunch for ProcessRuntime {
         if !self.running() {
             return None;
         }
-        let endpoint = self.controller.clone()?;
-        diagnostics::fetch_memory(&endpoint)
+        self.memory_watch.as_ref().and_then(MetricWatch::latest)
     }
 
     fn kernel_uptime_secs(&mut self) -> Option<u64> {
@@ -1143,7 +1148,7 @@ impl ProfileBook {
                 proxy_count: profile.proxy_count,
             })
             .collect();
-        let (node_catalog, node_groups, nodes_notice, nodes_profile_id) = self.node_views();
+        let (node_catalog, nodes_notice, nodes_profile_id) = self.node_views();
         ProfileSnapshot {
             profiles,
             active_id: self.active_id.clone(),
@@ -1160,7 +1165,6 @@ impl ProfileBook {
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
             installed: self.installed.clone(),
-            node_groups,
             node_catalog,
             node_query: self.node_query.clone(),
             nodes_notice,
@@ -2327,81 +2331,48 @@ impl ProfileBook {
             .rposition(|profile| !profile.content.trim().is_empty())
     }
 
-    fn node_views(
-        &self,
-    ) -> (
-        Vec<NodeGroupView>,
-        Vec<NodeGroupView>,
-        Option<String>,
-        Option<String>,
-    ) {
+    fn node_views(&self) -> (Vec<NodeGroupView>, Option<String>, Option<String>) {
         let Some(index) = self.nodes_profile_index() else {
-            return (Vec::new(), Vec::new(), Some(NEED_PROFILE.to_string()), None);
+            return (Vec::new(), Some(NEED_PROFILE.to_string()), None);
         };
         let profile = &self.profiles[index];
         let profile_id = profile.id.clone();
         if profile.content.trim().is_empty() {
-            return (
-                Vec::new(),
-                Vec::new(),
-                Some(NEED_PROFILE.to_string()),
-                Some(profile_id),
-            );
+            return (Vec::new(), Some(NEED_PROFILE.to_string()), Some(profile_id));
         }
         let Some(metadata) = profile.node_metadata() else {
-            return (
-                Vec::new(),
-                Vec::new(),
-                Some(NO_NODES.to_string()),
-                Some(profile_id),
-            );
+            return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
         };
-        let parsed = nodes::merge_runtime_groups(metadata.groups.clone(), &self.runtime_catalog);
-        if parsed.is_empty() {
-            return (
-                Vec::new(),
-                Vec::new(),
-                Some(NO_NODES.to_string()),
-                Some(profile_id),
-            );
+        if metadata.groups.is_empty() {
+            return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
         }
-        let mut types = metadata.types.clone();
-        types.extend(self.runtime_catalog.types.clone());
-        let catalog: Vec<NodeGroupView> = parsed
-            .iter()
-            .map(|group| self.present_group(profile, group, &types))
-            .collect();
-        let mut visible = catalog.clone();
-        for group in &mut visible {
-            group.nodes = nodes::sorted_nodes(std::mem::take(&mut group.nodes), &group.sort);
-        }
-        let (visible, none) = nodes::filter_visible(visible, &self.node_query);
-        if none {
-            return (
-                catalog,
-                Vec::new(),
-                Some(NO_MATCH.to_string()),
-                Some(profile_id),
-            );
-        }
-        (catalog, visible, None, Some(profile_id))
+        // Borrow provider members and protocol maps. The UI owns sorting and
+        // filtering, so a second full catalog would only create unused copies.
+        let catalog: Vec<NodeGroupView> = metadata.groups.iter().map(|group| {
+            let members = self.runtime_catalog.members.get(&group.name)
+                .map(Vec::as_slice).unwrap_or(&group.proxies);
+            self.present_group(profile, group, members, &metadata.types)
+        }).collect();
+        let query = self.node_query.trim().to_lowercase();
+        let unmatched = !query.is_empty() && !catalog.iter().any(|group| {
+            group.nodes.iter().any(|node| node.name.to_lowercase().contains(&query))
+        });
+        (catalog, unmatched.then(|| NO_MATCH.to_string()), Some(profile_id))
     }
 
     fn present_group(
         &self,
         profile: &Profile,
         group: &ParsedGroup,
+        members: &[String],
         types: &BTreeMap<String, String>,
     ) -> NodeGroupView {
         let sort = self.sort_of(&group.name);
         if !group.manual {
             let now = self.auto_now.get(&group.name).cloned().unwrap_or_default();
-            let mut members = group.proxies.clone();
-            if !now.is_empty() && !members.iter().any(|item| item == &now) {
-                members.push(now.clone());
-            }
+            let extra = (!now.is_empty() && !members.contains(&now)).then_some(&now);
             let nodes = members
-                .iter()
+                .iter().chain(extra)
                 .map(|name| self.node_item(profile, &group.name, name, !now.is_empty() && *name == now, types))
                 .collect();
             return NodeGroupView {
@@ -2416,19 +2387,17 @@ impl ProfileBook {
         }
         let chosen = self.auto_now.get(&group.name)
             .or_else(|| profile.selected.get(&group.name))
-            .filter(|name| group.proxies.iter().any(|item| item == *name))
+            .filter(|name| members.iter().any(|item| item == *name))
             .cloned();
         let now = chosen
             .clone()
-            .or_else(|| group.proxies.first().cloned())
+            .or_else(|| members.first().cloned())
             .unwrap_or_default();
-        let nodes = group
-            .proxies
-            .iter()
+        let nodes = members.iter()
             .map(|name| {
                 let selected = match &chosen {
                     Some(choice) => choice == name,
-                    None => group.proxies.first() == Some(name),
+                    None => members.first() == Some(name),
                 };
                 self.node_item(profile, &group.name, name, selected, types)
             })
@@ -2462,7 +2431,7 @@ impl ProfileBook {
             delay_ms: mark.and_then(|item| item.delay_ms),
             failed: mark.is_some_and(|item| item.failed),
             selected,
-            node_type: types.get(name).cloned().unwrap_or_default(),
+            node_type: self.runtime_catalog.types.get(name).or_else(|| types.get(name)).cloned().unwrap_or_default(),
         }
     }
 
@@ -4480,7 +4449,7 @@ proxy-groups:
         let mut kernel = node_kernel();
         let missing = book.select_node("manual", "a-node", &mut kernel);
         assert_eq!(missing.nodes_error.as_deref(), Some(NEED_PROFILE));
-        assert!(missing.node_groups.is_empty());
+        assert!(missing.node_catalog.is_empty());
         assert!(kernel.applied.is_empty());
 
         book.add_local("nodes.yaml", &grouped_config());
@@ -4516,7 +4485,7 @@ proxy-groups:
         assert!(chosen.nodes_error.is_none());
         assert!(kernel.applied.is_empty());
         assert_eq!(kernel.calls, 0);
-        let manual = group(&chosen.node_groups, "manual");
+        let manual = group(&chosen.node_catalog, "manual");
         assert!(
             manual
                 .nodes
@@ -4549,7 +4518,7 @@ proxy-groups:
         );
         assert!(
             reopened_view
-                .node_groups
+                .node_catalog
                 .iter()
                 .all(|item| { item.nodes.iter().all(|node| node.delay_ms.is_none()) })
         );
@@ -4582,7 +4551,7 @@ proxy-groups:
         kernel.applied.clear();
         let marked = book.select_node("manual", "m-node", &mut kernel);
         assert!(kernel.applied.is_empty());
-        assert_eq!(group(&marked.node_groups, "manual").now, "m-node");
+        assert_eq!(group(&marked.node_catalog, "manual").now, "m-node");
         kernel.reject_select = false;
         let mut proxy = MemoryProxy::default();
         let mut tun = MemoryTun::default();
@@ -4607,11 +4576,11 @@ proxy-groups:
         kernel.reject_select = true;
         let kept = book.select_node("manual", "z-node", &mut kernel);
         assert_eq!(kept.nodes_error.as_deref(), Some("节点没有切换"));
-        assert_eq!(group(&kept.node_groups, "manual").now, "m-node");
+        assert_eq!(group(&kept.node_catalog, "manual").now, "m-node");
         kernel.auto.insert("auto".to_string(), "z-node".to_string());
         book.sync_runtime(&mut kernel);
         let current = book.snapshot();
-        let auto = group(&current.node_groups, "auto");
+        let auto = group(&current.node_catalog, "auto");
         assert_eq!(auto.now, "z-node");
         assert!(auto.nodes.iter().any(|node| node.name == "z-node" && node.selected));
     }
@@ -4657,7 +4626,7 @@ proxy-groups:
         let tested = book.test_group("manual", &mut kernel);
         assert!(tested.nodes_error.is_none());
         assert_eq!(kernel.delay_calls, 1);
-        let manual = group(&tested.node_groups, "manual");
+        let manual = group(&tested.node_catalog, "manual");
         assert_eq!(
             manual
                 .nodes
@@ -4693,7 +4662,7 @@ proxy-groups:
             }],
         );
         let partial = book.test_group("manual", &mut kernel);
-        let manual = group(&partial.node_groups, "manual");
+        let manual = group(&partial.node_catalog, "manual");
         assert!(
             manual
                 .nodes
@@ -4738,22 +4707,17 @@ proxy-groups:
         );
 
         let by_delay = book.set_node_sort("manual", "delay");
-        assert_eq!(
-            node_names(group(&by_delay.node_groups, "manual")),
-            ["a-node", "z-node", "m-node"]
-        );
+        assert_eq!(group(&by_delay.node_catalog, "manual").sort, "delay");
+        assert_eq!(node_names(group(&by_delay.node_catalog, "manual")), ["z-node", "m-node", "a-node"]);
         let by_name = book.set_node_sort("manual", "name");
-        assert_eq!(
-            node_names(group(&by_name.node_groups, "manual")),
-            ["a-node", "m-node", "z-node"]
-        );
+        assert_eq!(group(&by_name.node_catalog, "manual").sort, "name");
         let original = book.set_node_sort("manual", "default");
         assert_eq!(
-            node_names(group(&original.node_groups, "manual")),
+            node_names(group(&original.node_catalog, "manual")),
             ["z-node", "m-node", "a-node"]
         );
         assert!(
-            group(&original.node_groups, "manual")
+            group(&original.node_catalog, "manual")
                 .nodes
                 .iter()
                 .find(|node| node.name == "a-node")
@@ -4777,21 +4741,18 @@ proxy-groups:
         let missed = book.set_node_query("missing-node");
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(missed.nodes_notice.as_deref(), Some(NO_MATCH));
-        assert!(missed.node_groups.is_empty());
         assert_eq!(missed.node_catalog.len(), 2);
         assert_eq!(
             node_names(group(&missed.node_catalog, "manual")),
             ["z-node", "m-node", "a-node"]
         );
         let matched = book.set_node_query("a-n");
-        assert_eq!(
-            node_names(group(&matched.node_groups, "manual")),
-            ["a-node"]
-        );
+        assert!(matched.nodes_notice.is_none());
+        assert_eq!(matched.node_query, "a-n");
         assert!(group(&matched.node_catalog, "manual").nodes.len() == 3);
         let restored = book.set_node_query("  ");
         assert!(restored.nodes_notice.is_none());
-        assert_eq!(node_names(group(&restored.node_groups, "manual")).len(), 3);
+        assert_eq!(node_names(group(&restored.node_catalog, "manual")).len(), 3);
         assert_eq!(fs::read(&path).unwrap(), before);
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
@@ -5566,13 +5527,20 @@ proxy-groups:
                 let headers = read_headers(&mut stream);
                 if headers.contains("GET /configs") {
                     write_json(&mut stream, r#"{"mixed-port":1,"tun":{"enable":false}}"#);
+                } else if headers.contains("GET /memory") {
+                    write_json(&mut stream, "{\"inuse\":12345}\n");
                 } else { break (stream, headers); }
             };
             write_json(&mut first_stream, "{\"up\":4,\"down\":5}");
             drop(first_stream);
-            let mut second_stream = accept_for(&listener);
-            second_stream.set_nonblocking(false).unwrap();
-            let second_seen = read_headers(&mut second_stream);
+            let (mut second_stream, second_seen) = loop {
+                let mut stream = accept_for(&listener);
+                stream.set_nonblocking(false).unwrap();
+                let headers = read_headers(&mut stream);
+                if headers.contains("GET /memory") {
+                    write_json(&mut stream, "{\"inuse\":12345}\n");
+                } else { break (stream, headers); }
+            };
             let _ = gate_rx.recv_timeout(Duration::from_secs(3));
             write_json(&mut second_stream, "{\"up\":8,\"down\":9}");
             format!("{first_seen}\n{second_seen}")
