@@ -28,6 +28,7 @@
     "allow-set-tun-enabled",
     "allow-exclude-package",
     "allow-include-package",
+    "allow-set-app-rules",
     "allow-select-profile-node",
     "allow-test-profile-group",
     "allow-set-node-query",
@@ -40,6 +41,7 @@
     "allow-set-profile-source",
     "allow-set-profile-interval",
     "allow-profile-content",
+    "allow-effective-config",
     "allow-save-profile-content",
     "allow-refresh-profile",
     "allow-refresh-all-profiles",
@@ -59,6 +61,8 @@
     "allow-flush-cache",
     "allow-kernel-providers",
     "allow-provider-action",
-    "allow-upgrade-geo"
+    "allow-upgrade-geo",
+    "allow-provider-detail",
+    "allow-geo-files"
   ]
 }

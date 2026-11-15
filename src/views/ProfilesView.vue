@@ -3,6 +3,7 @@ import { computed, nextTick, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
+import YamlEditor from '../components/YamlEditor.vue'
 import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent } from '../lib/format'
 import { useStore } from '../lib/store'
 import type { ProfileItem } from '../lib/types'
@@ -72,6 +73,8 @@ function menuItems(profile: ProfileItem): MenuItem[] {
     { id: 'content', label: '编辑配置文件', icon: 'code' },
     { id: 'override', label: '覆写', icon: 'layers', mark: profile.override_text.trim().length > 0 },
   )
+  // Quiet entry: only the profile that runs has a final config worth reading.
+  if (profile.current) items.push({ id: 'effective', label: '查看生效配置', icon: 'file' })
   if (profile.kind === 'subscription') items.push({ id: 'copy', label: '复制链接', icon: 'copy' })
   items.push({ id: 'remove', label: '删除', icon: 'trash', danger: true })
   return items
@@ -83,6 +86,7 @@ function selectMenuItem(profile: ProfileItem, item: MenuItem) {
   else if (item.id === 'edit') openEdit(profile)
   else if (item.id === 'content') void openYaml(profile, 'content')
   else if (item.id === 'override') void openYaml(profile, 'override')
+  else if (item.id === 'effective') void openEffective()
   else if (item.id === 'copy') void copyLink(profile)
   else if (item.id === 'remove') removing.value = profile
 }
@@ -127,46 +131,45 @@ interface YamlDraft {
 const yaml = ref<YamlDraft | null>(null)
 const yamlError = ref<string | null>(null)
 const discardOpen = ref(false)
-const textareaEl = ref<HTMLTextAreaElement | null>(null)
-const gutterEl = ref<HTMLElement | null>(null)
-let savedRange: { start: number; end: number } | null = null
+const editorRef = ref<InstanceType<typeof YamlEditor> | null>(null)
 
 async function openYaml(profile: ProfileItem, mode: 'content' | 'override') {
   menuFor.value = null
   yamlError.value = null
   discardOpen.value = false
-  savedRange = null
   const text = mode === 'content' ? await store.backend.content(profile.id) : profile.override_text
   yaml.value = { profile, mode, text, dirty: false }
 }
 
 const yamlLines = computed(() => (yaml.value ? yaml.value.text.split('\n').length : 0))
 
-/** Line numbers follow the textarea scroll; both share font-size and line-height in styles.css. */
-function syncGutter() {
-  const area = textareaEl.value
-  const gutter = gutterEl.value
-  if (!area || !gutter) return
-  gutter.style.transform = `translateY(-${area.scrollTop}px)`
+function onYamlInput(text: string) {
+  if (!yaml.value) return
+  yaml.value.text = text
+  yaml.value.dirty = true
 }
 
-/** Ask before dropping unsaved YAML, keeping the caret so 继续编辑 resumes in place (R27). */
-function askDiscard() {
-  const area = textareaEl.value
-  if (area) savedRange = { start: area.selectionStart ?? 0, end: area.selectionEnd ?? 0 }
-  discardOpen.value = true
-}
+/** Names the override can point at: the groups and nodes of the profile it applies to. */
+const knownNames = computed(() => {
+  if (!yaml.value?.profile.current) return {}
+  const catalog = snap.value.node_catalog
+  return {
+    groups: catalog.map((group) => group.name),
+    proxies: [...new Set(catalog.flatMap((group) => group.nodes.map((node) => node.name)))],
+  }
+})
 
+/** Ask before dropping unsaved YAML; the editor keeps its own caret and history (R27). */
 function beforeYamlClose() {
   if (!yaml.value?.dirty) return true
-  askDiscard()
+  discardOpen.value = true
   return false
 }
 
 function requestYamlClose() {
   if (!yaml.value) return
   if (yaml.value.dirty) {
-    askDiscard()
+    discardOpen.value = true
     return
   }
   yaml.value = null
@@ -175,16 +178,37 @@ function requestYamlClose() {
 async function keepEditing() {
   discardOpen.value = false
   await nextTick()
-  const area = textareaEl.value
-  if (!area) return
-  area.focus({ preventScroll: true })
-  if (savedRange) area.setSelectionRange(savedRange.start, savedRange.end)
+  editorRef.value?.focus()
 }
 
 async function discardChanges() {
   discardOpen.value = false
   await nextTick()
   yaml.value = null
+}
+
+// Effective config: read-only view of what the kernel runs.
+const effective = ref<{ text: string; error: string | null; loading: boolean } | null>(null)
+
+async function openEffective() {
+  menuFor.value = null
+  effective.value = { text: '', error: null, loading: true }
+  try {
+    const text = await store.backend.effectiveConfig()
+    if (effective.value) effective.value = { text, error: null, loading: false }
+  } catch (error) {
+    if (effective.value) effective.value = { text: '', error: String((error as Error)?.message ?? error), loading: false }
+  }
+}
+
+async function copyEffective() {
+  if (!effective.value?.text) return
+  try {
+    await navigator.clipboard.writeText(effective.value.text)
+    store.toast('已复制生效配置', 'success')
+  } catch {
+    store.toast('无法写入剪贴板', 'error')
+  }
 }
 
 async function saveYaml() {
@@ -210,17 +234,6 @@ async function saveYaml() {
   }
   yaml.value = null
   store.toast(profile.current ? '覆写已保存，重新启用该配置后生效' : '覆写已保存', 'success')
-}
-
-function onTab(event: KeyboardEvent) {
-  const el = event.target as HTMLTextAreaElement
-  const start = el.selectionStart
-  const end = el.selectionEnd
-  el.setRangeText('  ', start, end, 'end')
-  if (yaml.value) {
-    yaml.value.text = el.value
-    yaml.value.dirty = true
-  }
 }
 
 // Delete
@@ -439,26 +452,49 @@ const updateAllLabel = computed(() => {
       :before-close="beforeYamlClose"
       @close="yaml = null"
     >
-      <div class="editor">
-        <div ref="gutterEl" class="editor-gutter mono" aria-hidden="true"><span v-for="n in yamlLines" :key="n">{{ n }}</span></div>
-        <textarea
-          ref="textareaEl"
-          v-model="yaml.text"
-          class="editor-text mono"
-          spellcheck="false"
-          autocapitalize="off"
-          :placeholder="yaml.mode === 'override' ? 'mixed-port: 7890\ndns:\n  enable: true' : ''"
-          :aria-invalid="yamlError ? 'true' : undefined"
-          @input="yaml && (yaml.dirty = true)"
-          @keydown.tab.prevent="onTab"
-          @scroll="syncGutter"
-        />
-      </div>
+      <YamlEditor
+        ref="editorRef"
+        class="editor"
+        :model-value="yaml.text"
+        :names="knownNames"
+        :label="yaml.mode === 'content' ? '配置文件' : '覆写'"
+        :placeholder="yaml.mode === 'override' ? '# 只写需要改的部分，例如：\nmixed-port: 7890\ndns:\n  enable: true' : ''"
+        :aria-invalid="yamlError ? 'true' : undefined"
+        @update:model-value="onYamlInput"
+        @save="saveYaml"
+      />
       <p v-if="yamlError" class="field-error editor-error" role="alert">{{ yamlError }}</p>
       <template #footer>
-        <span class="muted small grow">{{ yamlLines }} 行{{ yaml.dirty ? ' · 未保存' : '' }}</span>
+        <span class="muted small grow editor-meta">
+          {{ yamlLines }} 行{{ yaml.dirty ? ' · 未保存' : '' }}
+          <span class="editor-hint">· Ctrl+Space 补全 · Ctrl+F 查找</span>
+          <button
+            v-if="yaml.profile.current"
+            type="button"
+            class="link-btn"
+            data-testid="open-effective"
+            @click="openEffective"
+          >查看生效配置</button>
+        </span>
         <button type="button" class="btn ghost" data-testid="cancel-editor" @click="requestYamlClose">取消</button>
         <button type="button" class="btn primary" :disabled="store.busy.content || store.busy.override" @click="saveYaml">保存</button>
+      </template>
+    </Modal>
+
+    <Modal
+      v-if="effective"
+      wide
+      title="生效配置"
+      :subtitle="snap.kernel_running ? '内核正在运行的配置：订阅内容、覆写与应用设置合并后的结果，只读' : '下次连接时将使用的配置：订阅内容、覆写与应用设置合并后的结果，只读'"
+      @close="effective = null"
+    >
+      <p v-if="effective.error" class="field-error" role="alert">{{ effective.error }}</p>
+      <div v-else-if="effective.loading" class="editor yaml-editor-loading muted small"><span class="spinner xs" /> 正在生成…</div>
+      <YamlEditor v-else class="editor" :model-value="effective.text" readonly label="生效配置" data-testid="effective-config" />
+      <template #footer>
+        <span class="muted small grow">{{ effective.text ? `${effective.text.split('\n').length} 行` : '' }}</span>
+        <button type="button" class="btn ghost" :disabled="!effective.text" @click="copyEffective"><Icon name="copy" :size="15" />复制</button>
+        <button type="button" class="btn primary" @click="effective = null">关闭</button>
       </template>
     </Modal>
 

@@ -57,7 +57,7 @@ describe('store lifecycle', () => {
   it('keeps the proxy catalog stable on traffic-only polls, but applies changed members and selection', async () => {
     const { store, state } = setup()
     const catalog: Snapshot['node_catalog'] = [{ name: 'Available', kind: 'manual', now: 'a', sort: 'default',
-      group_type: 'select', icon: null, nodes: [{ name: 'a', node_type: 'ss', delay_ms: null, failed: false, selected: true }] }]
+      group_type: 'select', icon: null, nodes: [{ name: 'a', node_type: 'ss', tags: [], delay_ms: null, failed: false, selected: true }] }]
     state.mockResolvedValue({ ...emptySnapshot(), node_catalog: catalog })
     await store.start()
     state.mockResolvedValue({ ...emptySnapshot(), upload: 10, node_catalog: structuredClone(catalog) })
@@ -66,11 +66,29 @@ describe('store lifecycle', () => {
     const changed = structuredClone(catalog)
     changed[0]!.now = 'b'
     changed[0]!.nodes[0]!.selected = false
-    changed[0]!.nodes.push({ name: 'b', node_type: 'vmess', delay_ms: 18, failed: false, selected: true })
+    changed[0]!.nodes.push({ name: 'b', node_type: 'vmess', tags: [], delay_ms: 18, failed: false, selected: true })
     state.mockResolvedValue({ ...emptySnapshot(), node_catalog: changed })
     await vi.advanceTimersByTimeAsync(3000)
     expect(store.snapshot.value.node_catalog).toBe(changed)
     expect(store.snapshot.value.node_catalog[0]!.now).toBe('b')
+  })
+
+  it('retains app list identity but publishes changed node capabilities', async () => {
+    const { store, state } = setup()
+    const initial = emptySnapshot()
+    initial.installed = [{ name: 'Browser', package_name: 'com.example.browser', system: false }]
+    initial.excluded = ['com.example.browser']
+    initial.node_catalog = [{ name: 'Available', kind: 'manual', now: 'a', sort: 'default',
+      group_type: 'select', icon: null, nodes: [{ name: 'a', node_type: 'ss', tags: [], delay_ms: null, failed: false, selected: true }] }]
+    state.mockResolvedValue(initial)
+    await store.start()
+    const changed = structuredClone(initial)
+    changed.node_catalog[0]!.nodes[0]!.tags = ['UDP']
+    state.mockResolvedValue(changed)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.snapshot.value.installed).toBe(initial.installed)
+    expect(store.snapshot.value.excluded).toBe(initial.excluded)
+    expect(store.snapshot.value.node_catalog[0]!.nodes[0]!.tags).toEqual(['UDP'])
   })
 
   it('suspends polling while hidden and refreshes immediately on return', async () => {

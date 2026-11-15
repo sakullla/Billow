@@ -100,6 +100,14 @@
   --shadow-md: 0 10px 28px rgba(16, 28, 48, 0.09), 0 2px 6px rgba(16, 28, 48, 0.05);
   --shadow-lg: 0 24px 64px rgba(16, 28, 48, 0.2);
   --sidebar: 220px;
+
+  /* Safe areas: env() on iOS/desktop webviews; Android's edge-to-edge shell
+     reports bars, cutouts and the keyboard through --native-* (lib/ui/insets). */
+  --safe-top: max(env(safe-area-inset-top, 0px), var(--native-top, 0px));
+  --safe-right: max(env(safe-area-inset-right, 0px), var(--native-right, 0px));
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--native-bottom, 0px));
+  --safe-left: max(env(safe-area-inset-left, 0px), var(--native-left, 0px));
+  --tabbar-h: 58px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Noto Sans SC', system-ui, sans-serif;
   --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 }
@@ -559,7 +567,7 @@ hr {
   backdrop-filter: saturate(1.4) blur(14px);
   -webkit-backdrop-filter: saturate(1.4) blur(14px);
   border-top: 1px solid var(--border);
-  padding: 6px var(--space-1) calc(6px + env(safe-area-inset-bottom));
+  padding: 6px var(--space-1) calc(6px + var(--safe-bottom));
 }
 .tab {
   display: flex;
@@ -1379,46 +1387,8 @@ button.delay:hover:not(:disabled) {
   color: var(--text-2);
   flex: none;
 }
-.shortcut-card {
-  padding-top: 6px;
-  padding-bottom: 6px;
-}
-.shortcut-card .setting-row:first-child {
-  padding-top: 10px;
-}
 
 /* ───────────── Home ───────────── */
-/* Phones get one natural flow; ≥960px splits into independent main and side
-   columns so each column flows on its own without grid rows pairing cards of
-   different heights (R24). */
-.home-grid {
-  display: flex;
-  flex-direction: column;
-  gap: var(--row-gap);
-}
-.home-main,
-.home-side {
-  display: flex;
-  flex-direction: column;
-  gap: var(--row-gap);
-  min-width: 0;
-}
-@media (min-width: 960px) {
-  .home-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
-    align-items: start;
-  }
-  /* Desktop order: hero, mode, takeover. Phones keep takeover before mode,
-     which is the documented first-screen order (D3). */
-  .home-main .mode-panel {
-    order: 3;
-  }
-  .home-main .takeover-card {
-    order: 4;
-  }
-}
-
 .welcome {
   display: flex;
   flex-direction: column;
@@ -1451,13 +1421,6 @@ button.delay:hover:not(:disabled) {
 .hero.on {
   background-image: var(--hero-wash);
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-}
-.hero-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
 }
 .hero-state {
   display: flex;
@@ -1525,9 +1488,13 @@ button.delay:hover:not(:disabled) {
   box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 28%, transparent);
   transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), color var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease), transform var(--dur-fast) var(--ease);
 }
-.connect-control:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+/* Pointer hover only: on touch the state sticks after the tap and would paint
+   the connected (outline) control blue with dark text. */
+@media (hover: hover) {
+  .connect-control:not(.on):hover:not(:disabled) {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
 }
 .connect-control:active:not(:disabled) {
   transform: scale(0.98);
@@ -1677,46 +1644,6 @@ button.delay:hover:not(:disabled) {
   color: var(--text-2);
 }
 
-.mode-cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--space-2);
-}
-.mode-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: var(--space-3);
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  text-align: left;
-  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-  color: var(--text-2);
-}
-.mode-card strong {
-  color: var(--text);
-  font-size: var(--text-base);
-  margin-top: 2px;
-}
-.mode-card span {
-  font-size: var(--text-xs);
-  color: var(--muted);
-  line-height: 1.35;
-}
-.mode-card:hover:not(:disabled) {
-  border-color: var(--border-strong);
-}
-.mode-card.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-.mode-card.active strong {
-  color: var(--accent-ink);
-}
 /* Phones keep one row of segments and a single sentence under it (R24). */
 .mode-segmented {
   display: flex;
@@ -1726,12 +1653,12 @@ button.delay:hover:not(:disabled) {
   font-size: var(--text-sm);
   color: var(--text-2);
 }
-.compact .mode-segmented .segmented {
+.mode-segmented .segmented {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   width: 100%;
 }
-.compact .mode-segmented .segment {
+.mode-segmented .segment {
   justify-content: center;
   height: 38px;
 }
@@ -1760,22 +1687,6 @@ button.delay:hover:not(:disabled) {
 .chart {
   position: relative;
   margin: 0 -4px;
-}
-.traffic-chart {
-  position: relative;
-}
-/* Disconnected: the empty grid stays as a placeholder with one plain sentence
-   instead of a flat line and a 0 B/s scale. */
-.traffic-chart.idle .chart-line,
-.traffic-chart.idle .chart-area,
-.traffic-chart.idle .chart-peak {
-  visibility: hidden;
-}
-.chart-idle {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
 }
 .chart svg {
   display: block;
@@ -1814,56 +1725,6 @@ button.delay:hover:not(:disabled) {
   color: var(--muted);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-}
-.stats {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 10px;
-  margin-top: var(--space-3);
-}
-.compact .stats {
-  grid-template-columns: repeat(2, 1fr);
-}
-/* The home side column is narrower than a full-width traffic card (R24). */
-.home-traffic .stats {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-.compact .home-traffic .stats {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-.stat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px var(--space-3);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  text-align: left;
-  min-width: 0;
-}
-.stat.link {
-  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
-}
-.stat.link:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--surface);
-}
-.stat.link:disabled {
-  cursor: default;
-}
-.stat-label {
-  font-size: var(--text-xs);
-  color: var(--muted);
-}
-.stat-value {
-  font-size: var(--text-base);
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .group-row {
@@ -1947,7 +1808,9 @@ button.delay:hover:not(:disabled) {
 /* ───────────── Proxies ───────────── */
 .group {
   padding: 0;
+  /* clip, not hidden: open group heads stay sticky against the page scroller. */
   overflow: hidden;
+  overflow: clip;
   scroll-margin-top: var(--space-4);
 }
 .group.located {
@@ -2365,20 +2228,53 @@ button.delay:hover:not(:disabled) {
 }
 .editor:focus-within {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.editor-gutter {
+.editor.readonly:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: none;
+}
+.yaml-editor-host {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.yaml-editor:not(.ready) .yaml-editor-host {
+  display: none;
+}
+.yaml-editor-loading {
   display: flex;
-  flex-direction: column;
-  padding: 10px var(--space-2);
-  text-align: right;
-  color: var(--muted);
-  font-size: var(--text-md);
-  line-height: var(--leading-relaxed);
-  user-select: none;
-  border-right: 1px solid var(--border);
-  min-width: 42px;
-  overflow: hidden;
-  will-change: transform;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  flex: 1;
+}
+.editor-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px var(--space-2);
+}
+.editor-hint {
+  color: var(--text-3);
+}
+.compact .editor-hint {
+  display: none;
+}
+/* A quiet text link for secondary entries (e.g. the effective config). */
+.link-btn {
+  padding: 0;
+  color: var(--accent-ink);
+  font-size: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-ink) 35%, transparent);
+  text-underline-offset: 3px;
+}
+.link-btn:hover {
+  text-decoration-color: currentColor;
+}
+.compact .editor {
+  height: min(62dvh, 520px);
 }
 .editor-error {
   margin-top: var(--space-2);
@@ -2887,9 +2783,10 @@ button.delay:hover:not(:disabled) {
   .modal,
   .modal.wide {
     width: 100%;
-    max-height: 92vh;
+    max-height: calc(100dvh - var(--safe-top) - var(--space-4));
     border-radius: var(--radius-panel) var(--radius-panel) 0 0;
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: var(--safe-bottom);
+    animation: sheet var(--dur-slow) var(--ease);
   }
 }
 
@@ -3015,7 +2912,7 @@ button.delay:hover:not(:disabled) {
     width: 100%;
     max-height: 92dvh;
     border-radius: var(--radius-panel) var(--radius-panel) 0 0;
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: var(--safe-bottom);
   }
   .palette-option {
     min-height: 44px;
@@ -3118,7 +3015,7 @@ button.delay:hover:not(:disabled) {
   left: var(--space-3);
   right: var(--space-3);
   top: auto;
-  bottom: calc(76px + env(safe-area-inset-bottom));
+  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + var(--space-3));
 }
 .toast {
   display: flex;
@@ -3157,6 +3054,12 @@ button.delay:hover:not(:disabled) {
 @keyframes fade {
   from {
     opacity: 0;
+  }
+}
+@keyframes sheet {
+  from {
+    transform: translateY(24px);
+    opacity: 0.6;
   }
 }
 @keyframes pop {
@@ -3355,4 +3258,1112 @@ textarea.input {
 .compact .setting-row > .segmented .segment {
   flex: 1;
   justify-content: center;
+}
+
+/* ───────────── Toolbar options (proxies) ───────────── */
+.toolbar-options {
+  display: contents;
+}
+.options-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border-strong);
+}
+/* A non-default sort or view stays visible while its controls are folded away. */
+.options-btn.marked::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+/* ───────────── Mobile shell ───────────── */
+/* The shell owns the status-bar and side insets so every page, sticky bar
+   and empty state starts below the system UI without per-page offsets. */
+.shell.compact {
+  padding: var(--safe-top) var(--safe-right) 0 var(--safe-left);
+  background: var(--bg);
+}
+.compact .main {
+  /* The page's own scroll stays inside the app; no rubber band into the bars. */
+  overscroll-behavior-y: contain;
+}
+.compact .page {
+  padding-top: var(--space-3);
+}
+.compact .page-head h1 {
+  font-size: 24px;
+  line-height: var(--leading-tight);
+}
+.compact .tabbar {
+  min-height: calc(var(--tabbar-h) + var(--safe-bottom));
+  padding: 4px var(--space-2) calc(4px + var(--safe-bottom));
+  margin: 0 calc(var(--safe-right) * -1) 0 calc(var(--safe-left) * -1);
+  padding-left: calc(var(--space-2) + var(--safe-left));
+  padding-right: calc(var(--space-2) + var(--safe-right));
+}
+.compact .tab {
+  gap: 3px;
+  padding: 6px 0 4px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  -webkit-tap-highlight-color: transparent;
+}
+.compact .tab .icon {
+  width: 22px;
+  height: 22px;
+  padding: 4px 20px;
+  transition: background var(--dur-base) var(--ease), color var(--dur-base) var(--ease);
+}
+.compact .tab:active .icon {
+  background: var(--hover);
+}
+.compact .tab.active .icon {
+  background: var(--accent-soft);
+}
+/* While typing, the keyboard owns the bottom edge; the tab bar would only
+   squeeze the page between two bars. */
+html[data-keyboard] .compact .tabbar {
+  display: none;
+}
+
+/* Tool pages reached from Settings get a visible way back. */
+.back-bar {
+  display: flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-3) 0;
+  max-width: 1120px;
+  margin: 0 auto;
+}
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 36px;
+  padding: 0 var(--space-3) 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  color: var(--accent-ink);
+  font-weight: 600;
+  font-size: var(--text-md);
+}
+.back-btn:active {
+  background: var(--accent-soft);
+}
+.compact .back-bar + .page {
+  padding-top: var(--space-1);
+}
+/* List pages size to the scroller; the back row takes its share. */
+.compact .back-bar + .page.rules,
+.compact .back-bar + .page.logs,
+.compact .back-bar + .page.connections {
+  height: calc(100% - 44px);
+}
+
+/* Bottom sheets: the grabber says "drag/dismiss", the overlay respects the status bar. */
+@media (max-width: 560px) {
+  .overlay {
+    padding-top: var(--safe-top);
+  }
+  .modal::before {
+    content: '';
+    display: block;
+    width: 36px;
+    height: 4px;
+    margin: var(--space-2) auto 0;
+    border-radius: var(--radius-pill);
+    background: var(--border);
+    flex: none;
+  }
+  .modal-head {
+    padding-top: var(--space-2);
+  }
+  .modal-foot {
+    padding-bottom: var(--space-3);
+  }
+  .modal-foot .btn {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+  }
+}
+
+/* ───────────── Mobile home ───────────── */
+/* One column; the hero stays first, then the controls people reach for most
+   (mode, node), then traffic and subscription details. Android's per-app
+   card is a set-and-forget choice and sinks to the end. */
+.compact .hero {
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  border-radius: var(--radius-panel);
+}
+.compact .hero .status-word {
+  font-size: 30px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+.compact .hero-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  margin-top: 2px;
+}
+.compact .hero-profile {
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact .connect-control {
+  min-height: 56px;
+  font-size: var(--text-lg);
+}
+.compact .connect-glyph {
+  width: 44px;
+  height: 44px;
+}
+.compact .rate {
+  padding: 10px var(--space-3);
+}
+.compact .rate-value {
+  font-size: 22px;
+}
+/* Runtime facts are context, not headline numbers: one quiet row of four. */
+.compact .runtime {
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+}
+.compact .runtime-item {
+  min-width: 0;
+}
+.compact .runtime-item dd {
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact .welcome {
+  padding: 48px var(--space-5) 40px;
+  border-radius: var(--radius-panel);
+}
+.compact .welcome .connect-control {
+  width: 100%;
+}
+.compact .group-row {
+  min-height: 48px;
+}
+
+/* ───────────── Mobile proxies ───────────── */
+.compact .page.proxies .head-actions {
+  width: auto;
+  margin-left: auto;
+}
+.compact .page.proxies .page-head {
+  flex-wrap: nowrap;
+}
+.compact .page.proxies .page-head > div:first-child {
+  min-width: 0;
+}
+.compact .page.proxies .head-actions .btn {
+  min-height: 36px;
+}
+.compact .proxies-toolbar {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: saturate(1.3) blur(12px);
+  -webkit-backdrop-filter: saturate(1.3) blur(12px);
+}
+.compact .proxies-toolbar .search {
+  flex: 1 1 0;
+  height: 40px;
+  min-width: 0;
+}
+.compact .toolbar-options {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-basis: 100%;
+}
+.compact .toolbar-options [data-testid='toggle-all'] {
+  margin-left: auto;
+}
+.compact .toolbar-count {
+  flex-basis: 100%;
+  order: 3;
+}
+
+/* Open group heads stick under the toolbar so a long list always says which
+   group a row belongs to and keeps the group test action in reach. */
+.compact .group.open .group-head {
+  position: sticky;
+  top: var(--toolbar-h, 0px);
+  z-index: 3;
+  background: var(--surface);
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+}
+.compact .group-head {
+  padding: 6px var(--space-2) 6px 6px;
+}
+.compact .group-toggle {
+  min-height: 52px;
+}
+.compact .group-name .tag {
+  display: none;
+}
+.compact .group-tested {
+  display: none;
+}
+
+/* Phone node list: one row per node, full-width tap target, name never
+   squeezed by a second column; the selected row carries an accent bar. */
+.compact .nodes:not(.dense) {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: var(--space-1) 0;
+  background: var(--surface);
+}
+.compact .nodes:not(.dense) .node {
+  min-height: 50px;
+  padding: 8px var(--space-3) 8px var(--space-4);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.compact .nodes:not(.dense) .node + .node::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--space-4);
+  right: var(--space-3);
+  height: 1px;
+  background: var(--border);
+}
+.compact .nodes:not(.dense) .node.selected {
+  background: var(--accent-soft);
+}
+.compact .nodes:not(.dense) .node.selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+.compact .nodes:not(.dense) .node.selected + .node::after,
+.compact .nodes:not(.dense) .node.selected::after {
+  display: none;
+}
+.compact .nodes:not(.dense) .node:active:not(.locked) {
+  background: var(--hover);
+}
+.compact .nodes:not(.dense) .node-select {
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.compact .nodes:not(.dense) .node-name {
+  font-size: var(--text-base);
+  min-width: 0;
+}
+.compact .nodes:not(.dense) .node-type {
+  flex: none;
+}
+/* The accent bar, tint and accent name already mark the choice in a list. */
+.compact .nodes:not(.dense) .node-check {
+  display: none;
+}
+/* In a list the number is the signal; the tinted pill only adds weight. */
+.compact .nodes:not(.dense) .delay:not(.untested) {
+  background: transparent;
+}
+.compact .nodes:not(.dense) .delay {
+  height: 36px;
+  justify-content: flex-end;
+  font-size: var(--text-sm);
+}
+.compact .nodes .node {
+  -webkit-tap-highlight-color: transparent;
+}
+.compact .node .delay {
+  min-width: 60px;
+  justify-content: center;
+}
+/* Dense on phones: two compact columns, name and delay only. */
+.compact .nodes.dense {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: var(--space-2);
+}
+.compact .nodes.dense .node {
+  padding: 8px 6px 8px 10px;
+}
+.compact .nodes.dense .node-name {
+  font-size: var(--text-md);
+}
+.compact .nodes.dense .delay {
+  min-width: 0;
+  padding: 0 6px;
+}
+.compact .nodes.dense .node-check {
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+}
+
+/* ───────────── Settings tools ───────────── */
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.tool-tile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-3);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  -webkit-tap-highlight-color: transparent;
+}
+.tool-tile:active {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+.tool-tile .tool-icon {
+  grid-row: span 2;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.tool-tile strong {
+  font-size: var(--text-base);
+}
+.tool-tile .small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ───────────── Touch feedback ───────────── */
+@media (hover: none) {
+  .btn:active:not(:disabled),
+  .icon-btn:active:not(:disabled),
+  .setting-row.link:active,
+  .group-row:active,
+  .group-toggle:active {
+    background: var(--hover);
+  }
+  .btn.primary:active:not(:disabled) {
+    background: var(--accent-hover);
+  }
+}
+
+/* ───────────── Desktop window chrome ───────────── */
+/* Windows draws its own caption buttons (undecorated window); macOS keeps the
+   native traffic lights over an overlay title bar. Either way the title strip
+   belongs to the content column and shares its background, so the window reads
+   as one surface instead of a system bar stacked on the app. */
+.shell.chrome {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.shell.chrome:not(.compact) .sidebar {
+  grid-row: 1 / -1;
+}
+.shell.chrome:not(.compact) .titlebar,
+.shell.chrome:not(.compact) .main {
+  grid-column: 2;
+}
+.shell.chrome.compact {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.titlebar {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  height: 36px;
+  background: var(--bg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.chrome-macos .titlebar {
+  height: 32px;
+}
+/* Narrow windows have no sidebar: the strip carries the name, and on macOS
+   leaves room for the traffic lights. */
+.titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: auto;
+  padding-left: var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+.titlebar-brand img,
+.titlebar-brand span {
+  pointer-events: none;
+}
+.titlebar-brand img {
+  width: 16px;
+  height: 16px;
+}
+.chrome-macos .titlebar-brand {
+  padding-left: 80px;
+}
+.caption-buttons {
+  display: flex;
+  align-items: stretch;
+}
+.caption-btn {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  color: var(--text-2);
+  border-radius: 0;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.caption-btn svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.caption-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.caption-btn:active {
+  background: var(--sunken);
+}
+/* Windows' own close red, the one place the platform colour beats the palette. */
+.caption-btn.close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+.caption-btn.close:active {
+  background: #b22a1b;
+  color: #ffffff;
+}
+.caption-btn:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
+}
+/* The page head now sits right under the title strip. */
+.shell.chrome:not(.compact) .page {
+  padding-top: var(--space-2);
+}
+.shell.chrome .brand,
+.sidebar-drag {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.shell.chrome .brand > * {
+  pointer-events: none;
+}
+/* Traffic lights live in the sidebar's top-left corner. */
+.sidebar-drag {
+  flex: none;
+  height: 28px;
+  margin: calc(var(--space-4) * -1) calc(var(--space-3) * -1) 0;
+}
+.chrome-macos .sidebar {
+  background: color-mix(in srgb, var(--chrome) 100%, transparent);
+}
+
+/* ───────────── Home layout ───────────── */
+/* Hero on top (state, action, live numbers, chart, runtime), then two columns:
+   controls + subscription on the left, proxy groups on the right. Phones and
+   narrow windows stack: hero, controls, groups, subscription. */
+.home-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+}
+.home-columns,
+.home-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  min-width: 0;
+}
+@media (min-width: 1000px) {
+  .shell:not(.compact) .home-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+.compact .home-columns {
+  display: flex;
+}
+.compact .home-col {
+  display: contents;
+}
+.compact .home-columns [data-testid='control-card'] {
+  order: 1;
+}
+.compact .home-columns [data-testid='groups-card'] {
+  order: 2;
+}
+.compact .home-columns [data-testid='profile-card'] {
+  order: 3;
+}
+
+/* Hero: state | live rates | action on one line; the chart runs edge to edge under it. */
+.hero-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: 'state rates action';
+  align-items: center;
+  gap: var(--space-6);
+}
+.hero-state {
+  grid-area: state;
+}
+.hero-main .hero-rates {
+  grid-area: rates;
+  display: flex;
+  gap: 0;
+}
+.hero-action {
+  grid-area: action;
+}
+.hero-main .rate {
+  min-width: 128px;
+  padding: 2px var(--space-5);
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+}
+.rate-total {
+  font-family: var(--font);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.hero-chart {
+  position: relative;
+}
+.hero-legend {
+  position: absolute;
+  top: 0;
+  left: 0;
+  font-size: var(--text-xs);
+}
+.hero .runtime {
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  padding-top: var(--space-3);
+}
+.runtime-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font: inherit;
+  color: var(--accent-ink);
+  border-radius: var(--radius-xs);
+}
+.runtime-link:hover {
+  text-decoration: underline;
+}
+/* Narrow windows: rates move under the state, the action spans the row. */
+@media (max-width: 1100px) {
+  .shell:not(.compact) .hero-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'state action' 'rates rates';
+    row-gap: var(--space-4);
+  }
+  .shell:not(.compact) .hero-main .rate:first-child {
+    border-left: 0;
+    padding-left: 0;
+  }
+}
+.compact .hero-main {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: 'state' 'action' 'rates';
+  gap: var(--space-4);
+}
+.compact .hero-main .hero-rates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.compact .hero-main .rate {
+  min-width: 0;
+  padding: 0 var(--space-3);
+}
+.compact .hero-main .rate:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+.compact .hero .runtime {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* Controls: mode and takeover share one card, split by a hairline. */
+.control-card {
+  padding: 0;
+}
+.control-block {
+  padding: var(--card-pad);
+}
+.control-block + .control-block {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+.control-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.control-head h2 {
+  font-size: var(--text-base);
+  font-weight: 650;
+}
+.control-head .mode-hint {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-3);
+  text-align: right;
+}
+.control-block.takeover .setting-row + .setting-row {
+  border-top: 1px solid var(--border);
+}
+.home-groups .group-row-now {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ───────────── Node capability tags ───────────── */
+/* Protocol first, then capability words separated by quiet dots: the row
+   still reads as "name + protocol", tags are there when you look for them.
+   The name never yields space to tags; the tail clips and the tooltip has all. */
+.node-meta {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.node-tag::before {
+  content: '·';
+  margin: 0 4px;
+  color: var(--border-strong);
+  font-weight: 400;
+}
+/* UDP decides games, calls and QUIC; it gets the secondary text colour. */
+.node-tag.udp {
+  color: var(--text-2);
+  font-weight: 550;
+}
+.node.selected .node-meta {
+  color: color-mix(in srgb, var(--accent-ink) 70%, var(--muted));
+}
+.compact .nodes:not(.dense) .node-name {
+  flex: 0 1 auto;
+}
+.compact .nodes:not(.dense) .node-meta {
+  flex: 0 10 auto;
+}
+
+/* ───────────── Resources: GEO and provider details ───────────── */
+.geo-files {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+}
+.geo-files li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.geo-files li.missing strong {
+  color: var(--text-3);
+}
+.geo-card .setting-row + .setting-row,
+.geo-files + .setting-row {
+  border-top: 1px solid var(--border);
+}
+.compact .geo-card .setting-row:has(> .segmented) {
+  flex-wrap: wrap;
+}
+.compact .geo-card .setting-row > .segmented {
+  width: 100%;
+}
+
+/* The whole row opens the detail; action buttons sit above the hit area. */
+.provider {
+  position: relative;
+}
+.provider-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: var(--radius-control);
+}
+.provider-open:hover {
+  background: var(--hover);
+}
+.provider-open:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
+}
+.provider-main > :not(.provider-open),
+.provider-actions {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+.provider-actions,
+.provider-main button:not(.provider-open) {
+  pointer-events: auto;
+}
+
+.provider-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 240px;
+}
+.detail-source {
+  margin: 0;
+}
+.detail-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 200px;
+}
+.banner.info {
+  background: var(--accent-soft);
+  color: var(--text-2);
+}
+.detail-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(52vh, 480px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.detail-list > li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: 6px var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.detail-list > li:first-child {
+  border-top: 0;
+}
+.detail-proxy .grow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.detail-rules > li {
+  min-height: 34px;
+  font-size: var(--text-sm);
+}
+.detail-rules .rule-type {
+  flex: none;
+  color: var(--data-up);
+  font-weight: 600;
+}
+.detail-list .empty-line {
+  justify-content: center;
+}
+
+/* ───────────── Settings (phone) ───────────── */
+/* A grouped list like the system settings app: a quiet label above each group,
+   rows with a tinted icon, the current value on the right, and a chevron for
+   rows that drill in. Sub-pages swap the tab bar for a back control. */
+.settings-group-label {
+  margin: var(--space-2) var(--space-1) calc(var(--row-gap) * -1 + var(--space-2));
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-3);
+}
+.settings-list {
+  padding: 0;
+  overflow: hidden;
+}
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 56px;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--dur-fast) var(--ease);
+}
+.nav-row {
+  position: relative;
+}
+/* Inset divider: starts after the icon, the way grouped system lists draw it. */
+.nav-row + .nav-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 60px;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+}
+button.nav-row:active {
+  background: var(--hover);
+}
+.nav-row-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: #fff;
+}
+.nav-row-icon .icon {
+  width: 18px;
+  height: 18px;
+}
+.nav-row-icon.green { background: #22a35a; }
+.nav-row-icon.blue { background: var(--accent); }
+.nav-row-icon.violet { background: #7c5cd6; }
+.nav-row-icon.amber { background: #d98a0b; }
+.nav-row-icon.slate { background: #5b6b80; }
+.nav-row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-base);
+  font-weight: 550;
+  color: var(--text);
+}
+.nav-row-value {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-md);
+  color: var(--text-3);
+}
+.nav-row.static .segmented {
+  flex: none;
+}
+.settings-subhead {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.settings-subhead .back-btn {
+  margin-left: calc(var(--space-2) * -1);
+}
+.settings-subhead h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+/* Sub-page cards read as one form, not a stack of boxes. */
+.settings-phone .card-note {
+  margin-bottom: var(--space-2);
+}
+.settings-phone .setting-row strong {
+  font-size: var(--text-base);
+}
+.settings-phone .save-bar {
+  position: sticky;
+  bottom: calc(var(--space-2));
+  z-index: 3;
+  margin: var(--space-3) calc(var(--card-pad) * -1) calc(var(--card-pad) * -1);
+  padding: var(--space-3) var(--card-pad);
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
+}
+
+/* ───────────── App access control ───────────── */
+.apps-saving {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.apps-mode {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.apps-mode .segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+}
+.apps-mode .segment {
+  justify-content: center;
+  height: 38px;
+}
+.apps-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  flex-wrap: nowrap;
+  margin: 0 calc(var(--page-pad-x) * -1);
+  padding: var(--space-2) var(--page-pad-x);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.apps-toolbar .search {
+  min-width: 0;
+  height: 40px;
+}
+.chip-btn {
+  flex: none;
+  height: 34px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 550;
+}
+.chip-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.app-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+.app-list li + li .app-row {
+  box-shadow: inset 0 1px 0 var(--border);
+}
+.app-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 60px;
+  padding: var(--space-2) var(--space-4);
+  text-align: left;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
+  -webkit-tap-highlight-color: transparent;
+}
+.app-row:active {
+  background: var(--hover);
+}
+.app-icon {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+.app-icon.letter {
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: var(--text-lg);
+  color: hsl(var(--hue) 55% 38%);
+  background: hsl(var(--hue) 70% 92%);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .app-icon.letter {
+    color: hsl(var(--hue) 70% 78%);
+    background: hsl(var(--hue) 35% 22%);
+  }
+}
+:root[data-theme='dark'] .app-icon.letter {
+  color: hsl(var(--hue) 70% 78%);
+  background: hsl(var(--hue) 35% 22%);
+}
+.app-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+.app-text strong {
+  font-size: var(--text-base);
+  font-weight: 550;
+}
+.app-text .tag {
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+.check-box {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 1.5px solid var(--border-strong);
+  color: var(--on-accent);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.app-row[aria-checked='true'] .check-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* The sub-page title already names the section; keep only the card action. */
+.settings-phone [data-testid='dns-settings'] > .card-head h2,
+.settings-phone [data-testid='tun-settings'] > .card-head h2 {
+  display: none;
+}
+.settings-phone [data-testid='dns-settings'] > .card-head,
+.settings-phone [data-testid='tun-settings'] > .card-head {
+  justify-content: flex-end;
+  margin-bottom: 0;
 }

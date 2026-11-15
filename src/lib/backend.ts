@@ -8,6 +8,9 @@ import {
   type KernelStatus,
   type Mode,
   type ProvidersResult,
+  type AppMode,
+  type ProviderDetail,
+  type GeoFile,
   type RulesResult,
   type ShellState,
   type Snapshot,
@@ -58,6 +61,8 @@ export interface Backend {
   setInterval(id: string, hours: number): Promise<Snapshot>
   content(id: string): Promise<string>
   saveContent(id: string, content: string): Promise<Snapshot>
+  /** The YAML the kernel runs for the active profile (or would run on the next connect). */
+  effectiveConfig(): Promise<string>
   saveOverride(id: string, text: string): Promise<Snapshot>
 
   connect(): Promise<Snapshot>
@@ -67,6 +72,8 @@ export interface Backend {
   setMode(mode: Mode): Promise<Snapshot>
   exclude(pkg: string): Promise<Snapshot>
   include(pkg: string): Promise<Snapshot>
+  /** Replace one access-control mode's app list and make that mode current. */
+  setAppRules(mode: AppMode, packages: string[]): Promise<Snapshot>
 
   selectNode(group: string, node: string): Promise<Snapshot>
   testGroup(group: string): Promise<Snapshot>
@@ -81,6 +88,10 @@ export interface Backend {
   providers(): Promise<ProvidersResult>
   providerAction(kind: 'proxy' | 'rule', name: string, action: 'update' | 'healthcheck'): Promise<void>
   upgradeGeo(): Promise<void>
+  /** Nodes of a proxy provider or rules of a rule provider. */
+  providerDetail(kind: 'proxy' | 'rule', name: string): Promise<ProviderDetail>
+  /** GEO database files the kernel loads, with size and modification time. */
+  geoFiles(): Promise<GeoFile[]>
   flushCache(which: 'fakeip' | 'dns'): Promise<Snapshot>
   clearLogs(): Promise<Snapshot>
   exportLogs(content: string): Promise<string>
@@ -89,6 +100,8 @@ export interface Backend {
   syncTray(): Promise<void>
 
   onChange(handler: (snapshot: Snapshot) => void): Promise<() => void>
+  /** Desktop tray asks the window to open a page or the add-profile dialog. */
+  onTrayNavigate?(handler: (target: string) => void): Promise<() => void>
 }
 
 export function normalizeNodeTest(raw: unknown): NodeTestEvent {
@@ -165,6 +178,7 @@ function createTauriBackend(): Backend {
     setInterval: (id, hours) => snap('set_profile_interval', { id, hours }),
     content: async (id) => (await call<string | null>('profile_content', { id })) ?? '',
     saveContent: (id, content) => snap('save_profile_content', { id, content }),
+    effectiveConfig: () => call<string>('effective_config'),
     saveOverride: (id, text) => snap('save_profile_override', { id, text }),
 
     connect: () => snap('connect_session'),
@@ -174,6 +188,7 @@ function createTauriBackend(): Backend {
     setMode: (mode) => snap('set_outbound_mode', { mode }),
     exclude: (packageName) => snap('exclude_package', { packageName }),
     include: (packageName) => snap('include_package', { packageName }),
+    setAppRules: (mode, packages) => snap('set_app_rules', { mode, packages }),
 
     selectNode: (group, node) => snap('select_profile_node', { group, node }),
     testGroup: (group) => snap('test_profile_group', { group }),
@@ -194,6 +209,8 @@ function createTauriBackend(): Backend {
     },
     providerAction: (kind, name, action) => call<void>('provider_action', { kind, name, action }),
     upgradeGeo: () => call<void>('upgrade_geo'),
+    providerDetail: (kind, name) => call<ProviderDetail>('provider_detail', { kind, name }),
+    geoFiles: () => call<GeoFile[]>('geo_files'),
     flushCache: (which) => snap('flush_cache', { which }),
     clearLogs: () => snap('clear_logs'),
     exportLogs: (content) => call<string>('export_logs', { content }),
@@ -207,9 +224,26 @@ function createTauriBackend(): Backend {
       const { listen } = await import('@tauri-apps/api/event')
       return listen<unknown>('profile-changed', (event) => handler(normalizeSnapshot(event.payload)))
     },
+
+    async onTrayNavigate(handler) {
+      const { listen } = await import('@tauri-apps/api/event')
+      return listen<unknown>('tray-navigate', (event) => {
+        if (typeof event.payload === 'string') handler(event.payload)
+      })
+    },
+  }
+}
+
+/** Browser previews can pick the demo shape: `?demo=android` and/or `?demo=empty`. */
+function demoOptionsFromUrl() {
+  if (typeof window === 'undefined') return {}
+  const flags = new URLSearchParams(window.location.search).getAll('demo').join(',').split(',')
+  return {
+    platform: flags.includes('android') ? ('android' as const) : ('desktop' as const),
+    profiles: !flags.includes('empty'),
   }
 }
 
 export function createBackend(): Backend {
-  return inTauri() ? createTauriBackend() : createDemoBackend()
+  return inTauri() ? createTauriBackend() : createDemoBackend(demoOptionsFromUrl())
 }

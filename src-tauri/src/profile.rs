@@ -80,7 +80,7 @@ struct Profile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NodeMetadata {
     groups: Vec<ParsedGroup>,
-    types: BTreeMap<String, String>,
+    types: BTreeMap<String, nodes::ProxyInfo>,
     config: ConfigValues,
 }
 
@@ -91,7 +91,7 @@ impl Profile {
             let flag = |name: &str| mapping_get(&value, name).and_then(Value::as_bool);
             Some(NodeMetadata {
                 groups: nodes::parse_proxy_groups(&value),
-                types: nodes::proxy_types(&value),
+                types: nodes::proxy_infos(&value),
                 config: ConfigValues {
                     mixed_port: read_i64(&value, "mixed-port").or_else(|| read_i64(&value, "port")),
                     allow_lan: flag("allow-lan"), ipv6: flag("ipv6"),
@@ -134,6 +134,30 @@ pub struct KernelSettings {
     pub dns: DnsSettings,
     #[serde(default)]
     pub tun: TunSettings,
+    /// GEO databases: `None` follows the profile.
+    #[serde(default)]
+    pub geo_auto_update: Option<bool>,
+    #[serde(default)]
+    pub geo_update_interval: Option<u32>,
+    /// Download source for GEO databases: `""` follows the profile's `geox-url`.
+    #[serde(default)]
+    pub geo_source: String,
+}
+
+/// `geox-url` for a named GEO source; `None` leaves the profile's own value.
+pub fn geo_source_urls(source: &str) -> Option<[(&'static str, String); 4]> {
+    let base = match source {
+        "github" => "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest",
+        "jsdelivr" => "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release",
+        "testingcf" => "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release",
+        _ => return None,
+    };
+    Some([
+        ("geoip", format!("{base}/geoip.dat")),
+        ("geosite", format!("{base}/geosite.dat")),
+        ("mmdb", format!("{base}/geoip.metadb")),
+        ("asn", format!("{base}/GeoLite2-ASN.mmdb")),
+    ])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,7 +373,7 @@ impl Default for Takeover {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ProfileView {
     pub id: String,
     pub name: String,
@@ -368,7 +392,7 @@ pub struct ProfileView {
     pub proxy_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ProfileSnapshot {
     pub profiles: Vec<ProfileView>,
     pub active_id: Option<String>,
@@ -384,6 +408,10 @@ pub struct ProfileSnapshot {
     pub platform: String,
     pub tun_wanted: bool,
     pub excluded: Vec<String>,
+    /// Apps that use the VPN when `app_mode` is `include`.
+    pub included: Vec<String>,
+    /// `exclude` (listed apps bypass the VPN) or `include` (only listed apps use it).
+    pub app_mode: String,
     pub installed: Vec<crate::takeover::InstalledApp>,
     pub node_catalog: Vec<NodeGroupView>,
     pub node_query: String,
@@ -974,6 +1002,11 @@ struct DiskState {
     tun_wanted: bool,
     #[serde(default)]
     excluded_packages: Vec<String>,
+    /// Allowlist for the include app mode.
+    #[serde(default)]
+    included_packages: Vec<String>,
+    #[serde(default)]
+    app_mode: String,
     #[serde(default)]
     proxy_host: Option<String>,
     #[serde(default)]
@@ -1032,6 +1065,8 @@ pub struct ProfileBook {
     platform: ClientPlatform,
     tun_wanted: bool,
     excluded: Vec<String>,
+    included: Vec<String>,
+    app_mode: String,
     installed: Vec<crate::takeover::InstalledApp>,
     installed_checked_at: Option<Instant>,
     connected: bool,
@@ -1088,6 +1123,8 @@ impl ProfileBook {
             platform: ClientPlatform::current(),
             tun_wanted: false,
             excluded: Vec::new(),
+            included: Vec::new(),
+            app_mode: takeover::APP_MODE_EXCLUDE.to_string(),
             installed: Vec::new(),
             installed_checked_at: None,
             connected: false,
@@ -1164,6 +1201,8 @@ impl ProfileBook {
             platform: self.platform.as_str().to_string(),
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
+            included: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             installed: self.installed.clone(),
             node_catalog,
             node_query: self.node_query.clone(),
@@ -1568,7 +1607,7 @@ impl ProfileBook {
             self.remember_current_failure();
             return self.publish(kernel);
         }
-        let fd = match vpn.establish(&self.excluded) {
+        let fd = match vpn.establish(&self.link_model().app_filter()) {
             Ok(fd) => fd,
             Err(_) => {
                 let _ = vpn.close();
@@ -1601,6 +1640,24 @@ impl ProfileBook {
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
         self.change_exclusion(package_name, false, kernel, vpn)
+    }
+
+    /// Replace one mode's app list and make it current (Android access control).
+    pub fn set_app_rules(
+        &mut self,
+        mode: &str,
+        packages: &[String],
+        kernel: &mut dyn KernelLaunch,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let mut model = self.link_model();
+        let fd = takeover::set_app_rules(&mut model, mode, packages, vpn);
+        if let Some(fd) = fd {
+            return self.finish_android_fd(kernel, vpn, model, fd);
+        }
+        self.apply_model(model);
+        self.persist();
+        self.snapshot()
     }
 
     fn change_exclusion(
@@ -1841,6 +1898,24 @@ impl ProfileBook {
         Ok(port)
     }
 
+    /// The YAML the kernel runs (or would run) for the active profile: content,
+    /// applied override, kernel settings, TUN, mode and controller, in launch order.
+    /// While a kernel config is loaded this is exactly that YAML (with rules
+    /// disabled at runtime removed); otherwise it previews the next launch.
+    pub fn effective_config(&self) -> Result<String, String> {
+        if let Some(base) = &self.runtime_base {
+            if self.disabled_rules.is_empty() {
+                return Ok(base.clone());
+            }
+            return diagnostics::filter_disabled_rules(base, &self.disabled_rules);
+        }
+        self.kernel_yaml(self.takeover.tun, None)
+            .map(|(yaml, _)| yaml)
+            .map_err(|error| match error {
+                StartError::Idle(message) | StartError::Failed(message) => message,
+            })
+    }
+
     fn kernel_yaml(&self, tun_enable: bool, fd: Option<i32>) -> Result<(String, u16), StartError> {
         let Some(active) = self.active_id.clone() else {
             return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
@@ -1883,6 +1958,8 @@ impl ProfileBook {
             platform: self.platform,
             tun_wanted: self.tun_wanted,
             excluded: self.excluded.clone(),
+            included: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             system_proxy: self.takeover.system_proxy,
             tun: self.takeover.tun,
             vpn: self.takeover.vpn,
@@ -1896,6 +1973,8 @@ impl ProfileBook {
         self.platform = model.platform;
         self.tun_wanted = model.tun_wanted;
         self.excluded = model.excluded;
+        self.included = model.included;
+        self.app_mode = model.app_mode;
         self.takeover.system_proxy = model.system_proxy;
         self.takeover.tun = model.tun;
         self.takeover.vpn = model.vpn;
@@ -1987,6 +2066,8 @@ impl ProfileBook {
             .map(|package| package.trim().to_string())
             .filter(|package| !package.is_empty())
             .collect();
+        self.included = takeover::clean_packages(&disk.included_packages);
+        self.app_mode = takeover::normalize_app_mode(&disk.app_mode).to_string();
         self.our_endpoint = match (disk.proxy_host, disk.proxy_port) {
             (Some(host), Some(port)) if !host.is_empty() && port > 0 => {
                 Some(ProxyEndpoint { host, port })
@@ -2041,6 +2122,8 @@ impl ProfileBook {
             home_failure: self.home_failure.clone(),
             tun_wanted: self.tun_wanted,
             excluded_packages: self.excluded.clone(),
+            included_packages: self.included.clone(),
+            app_mode: self.app_mode.clone(),
             proxy_host: self
                 .our_endpoint
                 .as_ref()
@@ -2365,7 +2448,7 @@ impl ProfileBook {
         profile: &Profile,
         group: &ParsedGroup,
         members: &[String],
-        types: &BTreeMap<String, String>,
+        types: &BTreeMap<String, nodes::ProxyInfo>,
     ) -> NodeGroupView {
         let sort = self.sort_of(&group.name);
         if !group.manual {
@@ -2419,19 +2502,27 @@ impl ProfileBook {
         group: &str,
         name: &str,
         selected: bool,
-        types: &BTreeMap<String, String>,
+        types: &BTreeMap<String, nodes::ProxyInfo>,
     ) -> nodes::NodeItemView {
         let mark = self
             .delays
             .get(&profile.id)
             .and_then(|groups| groups.get(group))
             .and_then(|nodes| nodes.get(name));
+        let mut tags = types.get(name).map(|info| info.tags.clone()).unwrap_or_default();
+        if let Some(runtime_tags) = self.runtime_catalog.tags.get(name) {
+            for tag in runtime_tags {
+                if !tags.contains(tag) { tags.push(tag.clone()); }
+            }
+        }
         nodes::NodeItemView {
             name: name.to_string(),
             delay_ms: mark.and_then(|item| item.delay_ms),
             failed: mark.is_some_and(|item| item.failed),
             selected,
-            node_type: self.runtime_catalog.types.get(name).or_else(|| types.get(name)).cloned().unwrap_or_default(),
+            node_type: self.runtime_catalog.types.get(name).cloned()
+                .or_else(|| types.get(name).map(|info| info.kind.clone())).unwrap_or_default(),
+            tags,
         }
     }
 
@@ -2566,6 +2657,19 @@ fn apply_settings(
     }
     if settings.dns_override {
         map.insert(key("dns"), settings.dns.to_value());
+    }
+    if let Some(flag) = settings.geo_auto_update {
+        map.insert(key("geo-auto-update"), Value::Bool(flag));
+    }
+    if let Some(hours) = settings.geo_update_interval.filter(|hours| *hours > 0) {
+        map.insert(key("geo-update-interval"), Value::Number(i64::from(hours).into()));
+    }
+    if let Some(urls) = geo_source_urls(&settings.geo_source) {
+        let mut geox = serde_yaml::Mapping::new();
+        for (name, url) in urls {
+            geox.insert(key(name), Value::String(url));
+        }
+        map.insert(key("geox-url"), Value::Mapping(geox));
     }
     if let Some(flag) = settings.sniffer {
         if flag {
@@ -3598,7 +3702,7 @@ mod tests {
             fn list(&mut self) -> Result<Vec<takeover::InstalledApp>, String> {
                 self.reads += 1;
                 if self.fail { return Err("unavailable".to_string()); }
-                Ok(vec![takeover::InstalledApp { name: "Browser".to_string(), package_name: "app.browser".to_string() }])
+                Ok(vec![takeover::InstalledApp { name: "Browser".to_string(), package_name: "app.browser".to_string(), system: false }])
             }
         }
         let dir = temp_dir("package-cache");
@@ -3700,6 +3804,32 @@ mod tests {
         assert_eq!(read_i64(&running, "mixed-port"), Some(7999));
         assert_eq!(mapping_get(&running, "allow-lan").and_then(Value::as_bool), Some(true));
         assert_eq!(ProfileBook::open(&dir.0).snapshot().settings.mixed_port, Some(7999));
+    }
+
+    #[test]
+    fn geo_settings_override_auto_update_interval_and_source() {
+        let base = "mixed-port: 7890\ngeox-url:\n  geoip: https://mine/geoip.dat\n";
+        let (kept, _) = apply_settings(base, &KernelSettings::default(), true).unwrap();
+        let kept: Value = serde_yaml::from_str(&kept).unwrap();
+        assert_eq!(read_string(mapping_get(&kept, "geox-url").unwrap(), "geoip").as_deref(), Some("https://mine/geoip.dat"));
+        assert!(mapping_get(&kept, "geo-auto-update").is_none());
+
+        let settings = KernelSettings {
+            geo_auto_update: Some(true),
+            geo_update_interval: Some(72),
+            geo_source: "jsdelivr".to_string(),
+            ..Default::default()
+        };
+        let (yaml, _) = apply_settings(base, &settings, true).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(mapping_get(&value, "geo-auto-update").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_i64(&value, "geo-update-interval"), Some(72));
+        let geox = mapping_get(&value, "geox-url").unwrap();
+        assert_eq!(
+            read_string(geox, "geosite").as_deref(),
+            Some("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat")
+        );
+        assert!(read_string(geox, "asn").unwrap().ends_with("GeoLite2-ASN.mmdb"));
     }
 
     #[test]
@@ -4104,6 +4234,14 @@ mod tests {
         assert!(applied.system_proxy && applied.vpn);
         let running: Value = serde_yaml::from_str(kernel.running.as_deref().unwrap()).unwrap();
         assert_eq!(read_i64(&running, "mixed-port"), Some(8000));
+        // The effective-config view shows exactly what the kernel was given.
+        let effective: Value = serde_yaml::from_str(&book.effective_config().unwrap()).unwrap();
+        assert_eq!(read_i64(&effective, "mixed-port"), Some(8000));
+        assert_eq!(
+            mapping_get(mapping_get(&effective, "dns").unwrap(), "enable").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(read_string(&effective, "external-controller").as_deref(), Some("127.0.0.1:17690"));
         let dns = mapping_get(&running, "dns").unwrap();
         assert_eq!(read_string(dns, "listen").as_deref(), Some("127.0.0.1:53"));
         assert_eq!(
@@ -4123,6 +4261,9 @@ mod tests {
 
         book.save_override("p1", "");
         assert_eq!(book.snapshot().mixed_port, Some(8000));
+        // A saved but not yet applied override is not what runs.
+        let effective: Value = serde_yaml::from_str(&book.effective_config().unwrap()).unwrap();
+        assert_eq!(read_i64(&effective, "mixed-port"), Some(8000));
         assert_eq!(kernel.calls, 4);
         let cleared = book.enable("p1", &RejectSource, &mut kernel);
         assert_eq!(cleared.mixed_port, Some(7890));

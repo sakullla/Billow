@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
@@ -7,7 +7,7 @@ import { delayText, delayTone, formatRelative, protocolLabel } from '../lib/form
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
 
-defineProps<{ compact?: boolean }>()
+const props = defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const catalog = computed(() => snap.value.node_catalog)
@@ -46,6 +46,13 @@ function writePref(key: string, value: unknown) {
 
 const query = ref('')
 const toolbarEl = ref<HTMLElement | null>(null)
+/** Phones fold sort and view options behind one button so the sticky bar stays one row. */
+const optionsOpen = ref<boolean>(readPref('proxy-options-open', false))
+const showOptions = computed(() => !props.compact || optionsOpen.value)
+watch(optionsOpen, (value) => writePref('proxy-options-open', value))
+/** Open group headers stick under the toolbar; its height can change when options open. */
+const toolbarHeight = ref(0)
+let toolbarObserver: ResizeObserver | null = null
 const sort = ref<Sort>(readPref('proxy-sort', 'default'))
 const dense = ref<boolean>(readPref('proxy-dense', false))
 const hideAuto = ref<boolean>(readPref('proxy-hide-auto', false))
@@ -112,6 +119,18 @@ function toggle(name: string) {
   persistOpen()
 }
 
+/** Search matches the name, or exactly a protocol/tag ("udp", "reality", "vless"). */
+function matches(node: NodeItem): boolean {
+  if (node.name.toLowerCase().includes(needle.value)) return true
+  const labels = [node.node_type, protocolLabel(node.node_type), ...node.tags].map((label) => label.toLowerCase())
+  return labels.includes(needle.value)
+}
+
+/** Full protocol and tag list for the tooltip; rows may clip the tail. */
+function metaTitle(node: NodeItem): string {
+  return [protocolLabel(node.node_type), ...node.tags].filter(Boolean).join(' · ')
+}
+
 function sorted(nodes: NodeItem[]): NodeItem[] {
   if (sort.value === 'default') return nodes
   const list = nodes.map((node, index) => ({ node, index }))
@@ -130,7 +149,7 @@ const groups = computed(() => {
   return source
     .filter((group) => !(hideAuto.value && group.kind === 'auto'))
     .map((group) => {
-      const nodes = sorted(needle.value ? group.nodes.filter((node) => node.name.toLowerCase().includes(needle.value)) : group.nodes)
+      const nodes = sorted(needle.value ? group.nodes.filter(matches) : group.nodes)
       return nodes === group.nodes ? group : { ...group, nodes }
     })
     .filter((group) => !needle.value || group.nodes.length > 0 || group.name.toLowerCase().includes(needle.value))
@@ -282,10 +301,38 @@ onMounted(() => {
 })
 
 watch(() => store.focusGroup.value, (name) => void locate(name))
+
+function measureToolbar() {
+  toolbarHeight.value = Math.ceil(toolbarEl.value?.getBoundingClientRect().height ?? 0)
+}
+
+watch(toolbarEl, (element, previous) => {
+  if (previous) toolbarObserver?.unobserve(previous)
+  if (!element) {
+    toolbarHeight.value = 0
+    return
+  }
+  if (typeof ResizeObserver !== 'undefined') {
+    toolbarObserver ??= new ResizeObserver(measureToolbar)
+    toolbarObserver.observe(element)
+  }
+  measureToolbar()
+})
+
+onBeforeUnmount(() => {
+  toolbarObserver?.disconnect()
+  toolbarObserver = null
+})
+
+/** Phones list one node per row and offer a two-column grid as the dense view; desktop is the reverse. */
+const denseLabel = computed(() => (props.compact ? (dense.value ? '单列视图' : '双列视图') : dense.value ? '卡片视图' : '紧凑视图'))
+const denseIcon = computed(() => (props.compact ? (dense.value ? 'list' : 'grid') : dense.value ? 'grid' : 'list'))
+
+const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value || dense.value)
 </script>
 
 <template>
-  <div class="page proxies">
+  <div class="page proxies" :style="{ '--toolbar-h': `${toolbarHeight}px` }">
     <header class="page-head">
       <div>
         <h1>代理</h1>
@@ -296,7 +343,7 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
       </div>
       <div class="head-actions">
         <Segmented
-          v-if="snap.active_id"
+          v-if="snap.active_id && !compact"
           :model-value="snap.mode"
           :options="MODES"
           size="sm"
@@ -324,7 +371,7 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
         >
           <span v-if="store.busy.testAll" class="spinner sm" />
           <Icon v-else name="zap" :size="15" />
-          全部测速
+          {{ compact ? '测速' : '全部测速' }}
         </button>
       </div>
     </header>
@@ -332,42 +379,58 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
     <div v-if="snap.node_catalog.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索节点" data-testid="node-search" data-page-search />
+        <input v-model="query" type="search" placeholder="搜索节点、协议或 UDP 等标签" data-testid="node-search" data-page-search />
         <button v-if="query" type="button" class="icon-btn sm" aria-label="清空搜索" data-testid="clear-search" @click="query = ''">
           <Icon name="x" :size="14" />
         </button>
       </div>
+      <button
+        v-if="compact"
+        type="button"
+        class="icon-btn options-btn"
+        :class="{ active: optionsOpen, marked: optionsActive && !optionsOpen }"
+        :aria-expanded="optionsOpen"
+        aria-controls="proxy-options"
+        aria-label="排序与视图"
+        title="排序与视图"
+        data-testid="toggle-options"
+        @click="optionsOpen = !optionsOpen"
+      >
+        <Icon name="sliders" />
+      </button>
       <span v-if="needle && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite">
         匹配 {{ matchCount }} 个节点
       </span>
-      <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
-      <button
-        type="button"
-        class="icon-btn"
-        :class="{ active: hideAuto }"
-        :aria-pressed="hideAuto"
-        :aria-label="hideAuto ? '显示自动组' : '隐藏自动组'"
-        :title="hideAuto ? '显示自动组' : '隐藏自动组'"
-        data-testid="toggle-hide-auto"
-        @click="hideAuto = !hideAuto"
-      >
-        <Icon name="cpu" />
-      </button>
-      <button
-        type="button"
-        class="icon-btn"
-        :class="{ active: dense }"
-        :aria-pressed="dense"
-        :aria-label="dense ? '卡片视图' : '紧凑视图'"
-        :title="dense ? '卡片视图' : '紧凑视图'"
-        data-testid="toggle-dense"
-        @click="dense = !dense"
-      >
-        <Icon :name="dense ? 'grid' : 'list'" />
-      </button>
-      <button type="button" class="btn ghost sm" data-testid="toggle-all" @click="toggleAll">
-        {{ allExpanded ? '收起全部' : '展开全部' }}
-      </button>
+      <div v-if="showOptions" id="proxy-options" class="toolbar-options">
+        <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
+        <button
+          type="button"
+          class="icon-btn"
+          :class="{ active: hideAuto }"
+          :aria-pressed="hideAuto"
+          :aria-label="hideAuto ? '显示自动组' : '隐藏自动组'"
+          :title="hideAuto ? '显示自动组' : '隐藏自动组'"
+          data-testid="toggle-hide-auto"
+          @click="hideAuto = !hideAuto"
+        >
+          <Icon name="cpu" />
+        </button>
+        <button
+          type="button"
+          class="icon-btn"
+          :class="{ active: dense }"
+          :aria-pressed="dense"
+          :aria-label="denseLabel"
+          :title="denseLabel"
+          data-testid="toggle-dense"
+          @click="dense = !dense"
+        >
+          <Icon :name="denseIcon" />
+        </button>
+        <button type="button" class="btn ghost sm" data-testid="toggle-all" @click="toggleAll">
+          {{ allExpanded ? '收起全部' : '展开全部' }}
+        </button>
+      </div>
     </div>
 
     <div v-if="!snap.node_catalog.length" class="empty">
@@ -456,7 +519,10 @@ watch(() => store.focusGroup.value, (name) => void locate(name))
                 <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
               </template>
             </span>
-            <span v-if="!dense" class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
+            <span v-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
+              <span class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
+              <span v-for="tag in node.tags" :key="tag" class="node-tag" :class="{ udp: tag === 'UDP' }">{{ tag }}</span>
+            </span>
           </button>
           <button
             type="button"

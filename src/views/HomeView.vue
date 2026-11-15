@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
-import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
 import TrafficChart from '../components/TrafficChart.vue'
@@ -116,17 +115,6 @@ function onPrimary() {
   void store.toggleConnection()
 }
 
-// Android per-app exclusion
-const appsOpen = ref(false)
-const appQuery = ref('')
-const apps = computed(() => {
-  const needle = appQuery.value.trim().toLowerCase()
-  const list = [...snap.value.installed].sort(
-    (a, b) => Number(snap.value.excluded.includes(b.package_name)) - Number(snap.value.excluded.includes(a.package_name)),
-  )
-  if (!needle) return list
-  return list.filter((app) => app.name.toLowerCase().includes(needle) || app.package_name.toLowerCase().includes(needle))
-})
 </script>
 
 <template>
@@ -157,262 +145,190 @@ const apps = computed(() => {
       <p class="muted small" data-testid="import-hint">支持订阅链接与 Clash / Mihomo YAML 文件；导入后在这里一键连接。</p>
     </section>
 
-    <div v-else class="home-grid">
-      <div class="home-main">
-        <!-- One hero owns state, context and the primary action (R24). -->
-        <section class="card hero" :class="[status.tone, { bare: snap.connected && !takeoverOn }]" data-testid="home-status">
-          <div class="hero-top">
-            <div class="hero-state">
-              <p class="hero-eyebrow">
-                <span class="hero-dot" aria-hidden="true" />
-                <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
-              </p>
-              <h1 class="status-word" data-testid="status">{{ status.word }}</h1>
-              <p v-if="profile" class="hero-sub">
-                <span class="hero-profile">{{ profile.name }}</span>
-                <span v-if="activeMode" class="muted">· {{ activeMode.label }}模式</span>
-                <span v-if="snap.mixed_port" class="muted">· 端口 {{ snap.mixed_port }}</span>
-              </p>
-              <p v-else class="hero-sub muted">选择一份配置后连接</p>
-            </div>
-            <div class="hero-action" data-testid="home-action">
-              <button
-                type="button"
-                class="connect-control"
-                :class="status.tone"
-                :disabled="store.connecting.value"
-                :aria-busy="store.connecting.value || undefined"
-                data-testid="power"
-                @click="onPrimary"
-              >
-                <span class="connect-glyph">
-                  <span v-if="store.connecting.value" class="spinner sm" />
-                  <Icon v-else :name="connectIcon" :size="20" :stroke="2.2" />
-                </span>
-                <span class="connect-label">{{ connectLabel }}</span>
-              </button>
-            </div>
+    <div v-else class="home-layout">
+      <!-- One hero owns state, the primary action and everything live: rates, the
+           traffic chart and runtime facts, so no number is repeated elsewhere (R24). -->
+      <section class="card hero" :class="[status.tone, { bare: snap.connected && !takeoverOn }]" data-testid="home-status">
+        <div class="hero-main">
+          <div class="hero-state">
+            <p class="hero-eyebrow">
+              <span class="hero-dot" aria-hidden="true" />
+              <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
+            </p>
+            <h1 class="status-word" data-testid="status">{{ status.word }}</h1>
+            <p v-if="profile" class="hero-sub">
+              <span class="hero-profile">{{ profile.name }}</span>
+              <span v-if="activeMode" class="muted">· {{ activeMode.label }}模式</span>
+              <span v-if="snap.mixed_port" class="muted">· 端口 {{ snap.mixed_port }}</span>
+            </p>
+            <p v-else class="hero-sub muted">选择一份配置后连接</p>
           </div>
           <div v-if="snap.connected" class="hero-rates mono" data-testid="rates">
             <div class="rate up">
               <span class="rate-label"><Icon name="up" :size="13" />上传</span>
               <span class="rate-value">{{ formatSpeed(snap.upload ?? 0) }}</span>
+              <span v-if="snap.upload_total != null" class="rate-total">本次 {{ formatBytes(snap.upload_total) }}</span>
             </div>
             <div class="rate down">
               <span class="rate-label"><Icon name="down" :size="13" />下载</span>
               <span class="rate-value">{{ formatSpeed(snap.download ?? 0) }}</span>
+              <span v-if="snap.download_total != null" class="rate-total">本次 {{ formatBytes(snap.download_total) }}</span>
             </div>
           </div>
-          <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
-            <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">
-              <dt>{{ item.label }}</dt>
-              <dd class="mono">{{ item.value }}</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="card takeover-card" data-testid="takeover-card">
-          <header class="card-head">
-            <h2>网络接管</h2>
-          </header>
-          <template v-if="!store.isAndroid.value">
-            <div class="setting-row">
-              <span class="row-icon"><Icon name="monitor" /></span>
-              <div class="grow">
-                <strong>系统代理</strong>
-                <p class="muted small">浏览器和遵守系统设置的应用</p>
-              </div>
-              <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" label="系统代理" data-testid="toggle-proxy" @update:model-value="store.setSystemProxy" />
-            </div>
-            <div class="setting-row">
-              <span class="row-icon"><Icon name="shield" /></span>
-              <div class="grow">
-                <strong>TUN 模式</strong>
-                <p class="muted small">接管全部流量，包括不支持代理的应用；需要授权</p>
-              </div>
-              <button type="button" class="icon-btn" title="TUN 设置" data-testid="tun-settings-link" @click="store.openSettings('tun')"><Icon name="sliders" :size="16" /></button>
-              <Toggle :model-value="snap.tun" :busy="store.busy.tun" label="TUN 模式" data-testid="toggle-tun" @update:model-value="store.setTun" />
-            </div>
-          </template>
-          <template v-else>
-            <!-- VPN follows the session on Android, so the switch reports takeover state instead of
-                 becoming a second connect entry (R24). -->
-            <div class="setting-row">
-              <span class="row-icon"><Icon name="shield" /></span>
-              <div class="grow">
-                <strong>VPN</strong>
-                <p class="muted small">开启 VPN 需连接；断开也请使用上方按钮</p>
-              </div>
-              <Toggle :model-value="snap.vpn" disabled label="VPN（随连接开启）" data-testid="toggle-vpn" />
-            </div>
-            <button type="button" class="setting-row link" data-testid="open-apps" @click="appsOpen = true">
-              <span class="row-icon"><Icon name="apps" /></span>
-              <div class="grow">
-                <strong>分应用代理</strong>
-                <p class="muted small">{{ snap.excluded.length ? `已排除 ${snap.excluded.length} 个应用` : '所有应用都经过 VPN' }}</p>
-              </div>
-              <Icon name="chevron-right" class="muted" />
-            </button>
-          </template>
-        </section>
-
-        <section class="card mode-panel" data-testid="mode-card">
-          <header class="card-head">
-            <h2>出站模式</h2>
-            <span v-if="modeBusy" class="muted small" aria-live="polite">切换中</span>
-          </header>
-          <template v-if="compact">
-            <div class="mode-segmented" data-testid="mode-segmented">
-              <Segmented
-                :model-value="snap.mode"
-                :options="MODE_OPTIONS"
-                label="出站模式"
-                :disabled="modeBusy"
-                @update:model-value="store.setMode"
-              />
-            </div>
-            <p class="mode-hint" aria-live="polite" data-testid="mode-hint">{{ modeHint }}</p>
-          </template>
-          <div v-else class="mode-cards" role="radiogroup" aria-label="出站模式">
+          <div class="hero-action" data-testid="home-action">
             <button
-              v-for="mode in MODES"
-              :key="mode.id"
               type="button"
-              role="radio"
-              class="mode-card"
-              :class="{ active: snap.mode === mode.id }"
-              :aria-checked="snap.mode === mode.id"
-              :data-mode="mode.id"
-              :disabled="modeBusy"
-              @click="store.setMode(mode.id)"
+              class="connect-control"
+              :class="status.tone"
+              :disabled="store.connecting.value"
+              :aria-busy="store.connecting.value || undefined"
+              data-testid="power"
+              @click="onPrimary"
             >
-              <Icon :name="mode.icon" :size="20" />
-              <strong>{{ mode.label }}</strong>
-              <span>{{ mode.hint }}</span>
+              <span class="connect-glyph">
+                <span v-if="store.connecting.value" class="spinner sm" />
+                <Icon v-else :name="connectIcon" :size="20" :stroke="2.2" />
+              </span>
+              <span class="connect-label">{{ connectLabel }}</span>
             </button>
           </div>
-        </section>
-      </div>
-
-      <div class="home-side">
-        <section class="card traffic-card home-traffic" data-testid="traffic-card">
-          <header class="card-head">
-            <h2>实时流量</h2>
-            <div class="legend">
-              <span class="legend-item up">上传</span>
-              <span class="legend-item down">下载</span>
-            </div>
-          </header>
-          <div class="traffic-chart" :class="{ idle: !snap.connected }">
-            <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 110 : 120" />
-            <p v-if="!snap.connected" class="chart-idle muted small">连接后显示实时流量</p>
+        </div>
+        <div v-if="snap.connected" class="hero-chart" data-testid="traffic-card">
+          <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 72 : 88" />
+          <div class="legend hero-legend" aria-hidden="true">
+            <span class="legend-item up">上传</span>
+            <span class="legend-item down">下载</span>
           </div>
-          <div class="stats">
-            <div class="stat">
-              <span class="stat-label">本次上传</span>
-              <span class="stat-value mono">{{ formatBytes(snap.upload_total) }}</span>
-            </div>
-            <div class="stat">
-              <span class="stat-label">本次下载</span>
-              <span class="stat-value mono">{{ formatBytes(snap.download_total) }}</span>
-            </div>
-            <button type="button" class="stat link" :disabled="!snap.connected" @click="store.go('connections')">
-              <span class="stat-label">活动连接</span>
-              <span class="stat-value mono">{{ snap.connected ? snap.connection_total : '—' }}</span>
-            </button>
-          </div>
-        </section>
-
-        <section class="card home-groups" data-testid="groups-card">
-          <header class="card-head">
-            <h2>当前节点</h2>
-            <button type="button" class="btn ghost sm" @click="store.go('proxies')">查看全部<Icon name="chevron-right" :size="14" /></button>
-          </header>
-          <p v-if="!manualGroups.length" class="empty-line muted">{{ snap.nodes_notice ?? '这份配置没有可手动选择的代理组' }}</p>
-          <button
-            v-for="group in manualGroups"
-            :key="group.name"
-            type="button"
-            class="group-row"
-            :data-group="group.name"
-            @click="store.go('proxies', group.name)"
-          >
-            <GroupIcon :icon="group.icon" :type="group.group_type" :size="20" />
-            <span class="group-row-name">{{ group.name }}</span>
-            <span class="group-row-now">{{ group.now || '—' }}</span>
-            <span
-              v-if="nodeOf(group) && (nodeOf(group)!.delay_ms != null || nodeOf(group)!.failed)"
-              class="delay"
-              :class="delayTone(nodeOf(group)!.delay_ms, nodeOf(group)!.failed)"
-            >{{ delayText(nodeOf(group)!.delay_ms, nodeOf(group)!.failed) }}</span>
-            <Icon name="chevron-right" :size="16" class="muted" />
-          </button>
-        </section>
-
-        <section class="card home-subscription" data-testid="profile-card">
-          <header class="card-head">
-            <h2>订阅</h2>
-            <button type="button" class="btn ghost sm" @click="store.go('profiles')">管理<Icon name="chevron-right" :size="14" /></button>
-          </header>
-          <template v-if="profile">
-            <div class="sub-head">
-              <span class="sub-icon"><Icon :name="profile.kind === 'local' ? 'file' : 'link'" /></span>
-              <div class="grow">
-                <strong>{{ profile.name }}</strong>
-                <p class="muted small">
-                  {{ profile.kind === 'local' ? '本地配置' : `更新于 ${formatRelative(profile.updated_ms ?? profile.last_success_ms)}` }}
-                  <template v-if="profile.proxy_count"> · {{ profile.proxy_count }} 个节点</template>
-                </p>
-              </div>
-              <button
-                v-if="profile.kind === 'subscription'"
-                type="button"
-                class="btn ghost sm"
-                :disabled="updateBusy"
-                :aria-busy="updateBusy || undefined"
-                data-testid="update-subscription"
-                @click="store.update(profile.id)"
-              >
-                <span v-if="updateBusy" class="spinner xs" aria-hidden="true" />
-                {{ updateBusy ? '更新中' : '更新' }}
+        </div>
+        <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
+          <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">
+            <dt>{{ item.label }}</dt>
+            <dd class="mono">
+              <button v-if="item.key === 'connections'" type="button" class="runtime-link" @click="store.go('connections')">
+                {{ item.value }}<Icon name="chevron-right" :size="13" />
               </button>
-            </div>
-            <div v-if="usage != null" class="usage">
-              <div class="usage-bar"><span :style="{ width: `${usage}%` }" :class="{ warn: usage > 85 }" /></div>
-              <div class="usage-text small">
-                <span class="mono">{{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}</span>
-                <span v-if="profile.expire" :class="{ 'text-warn': expireDays != null && expireDays <= 7 }">
-                  {{ expireDays != null && expireDays < 0 ? '已过期' : `${formatDate(profile.expire)} 到期 · 剩 ${expireDays} 天` }}
-                </span>
+              <template v-else>{{ item.value }}</template>
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <div class="home-columns">
+        <div class="home-col">
+          <!-- Everything that changes where traffic goes lives in one card. -->
+          <section class="card control-card" data-testid="control-card">
+            <div class="control-block" data-testid="mode-card">
+              <header class="control-head">
+                <h2>出站模式</h2>
+                <p class="mode-hint" aria-live="polite" data-testid="mode-hint">{{ modeBusy ? '切换中…' : modeHint }}</p>
+              </header>
+              <div class="mode-segmented" data-testid="mode-segmented">
+                <Segmented
+                  :model-value="snap.mode"
+                  :options="MODE_OPTIONS"
+                  label="出站模式"
+                  :disabled="modeBusy"
+                  @update:model-value="store.setMode"
+                />
               </div>
             </div>
-            <p v-else class="muted small">订阅没有提供流量信息</p>
-            <p v-if="profile.failure" class="field-error">{{ profile.failure }}</p>
-          </template>
-          <p v-else class="empty-line muted">还没有启用配置，去配置页选择一份</p>
-        </section>
+            <!-- Android: the VPN follows the connection and the hero reports it; per-app
+                 access control lives in Settings (R24). -->
+            <div v-if="!store.isAndroid.value" class="control-block takeover" data-testid="takeover-card">
+              <div class="setting-row">
+                <span class="row-icon"><Icon name="monitor" /></span>
+                <div class="grow">
+                  <strong>系统代理</strong>
+                  <p class="muted small">浏览器和遵守系统设置的应用</p>
+                </div>
+                <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" label="系统代理" data-testid="toggle-proxy" @update:model-value="store.setSystemProxy" />
+              </div>
+              <div class="setting-row">
+                <span class="row-icon"><Icon name="shield" /></span>
+                <div class="grow">
+                  <strong>TUN 模式</strong>
+                  <p class="muted small">接管全部流量，包括不支持代理的应用</p>
+                </div>
+                <button type="button" class="icon-btn" title="TUN 设置" aria-label="TUN 设置" data-testid="tun-settings-link" @click="store.openSettings('tun')"><Icon name="sliders" :size="16" /></button>
+                <Toggle :model-value="snap.tun" :busy="store.busy.tun" label="TUN 模式" data-testid="toggle-tun" @update:model-value="store.setTun" />
+              </div>
+            </div>
+          </section>
+
+          <section class="card home-subscription" data-testid="profile-card">
+            <header class="card-head">
+              <h2>订阅</h2>
+              <button type="button" class="btn ghost sm" @click="store.go('profiles')">管理<Icon name="chevron-right" :size="14" /></button>
+            </header>
+            <template v-if="profile">
+              <div class="sub-head">
+                <span class="sub-icon"><Icon :name="profile.kind === 'local' ? 'file' : 'link'" /></span>
+                <div class="grow min0">
+                  <strong class="ellipsis">{{ profile.name }}</strong>
+                  <p class="muted small">
+                    {{ profile.kind === 'local' ? '本地配置' : `更新于 ${formatRelative(profile.updated_ms ?? profile.last_success_ms)}` }}
+                    <template v-if="profile.proxy_count"> · {{ profile.proxy_count }} 个节点</template>
+                  </p>
+                </div>
+                <button
+                  v-if="profile.kind === 'subscription'"
+                  type="button"
+                  class="btn ghost sm"
+                  :disabled="updateBusy"
+                  :aria-busy="updateBusy || undefined"
+                  data-testid="update-subscription"
+                  @click="store.update(profile.id)"
+                >
+                  <span v-if="updateBusy" class="spinner xs" aria-hidden="true" />
+                  <Icon v-else name="refresh" :size="14" />
+                  {{ updateBusy ? '更新中' : '更新' }}
+                </button>
+              </div>
+              <div v-if="usage != null" class="usage">
+                <div class="usage-bar"><span :style="{ width: `${usage}%` }" :class="{ warn: usage > 85 }" /></div>
+                <div class="usage-text small">
+                  <span class="mono">{{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}</span>
+                  <span v-if="profile.expire" :class="{ 'text-warn': expireDays != null && expireDays <= 7 }">
+                    {{ expireDays != null && expireDays < 0 ? '已过期' : `${formatDate(profile.expire)} 到期 · 剩 ${expireDays} 天` }}
+                  </span>
+                </div>
+              </div>
+              <p v-else class="muted small">订阅没有提供流量信息</p>
+              <p v-if="profile.failure" class="field-error">{{ profile.failure }}</p>
+            </template>
+            <p v-else class="empty-line muted">还没有启用配置，去配置页选择一份</p>
+          </section>
+        </div>
+
+        <div class="home-col">
+          <section class="card home-groups" data-testid="groups-card">
+            <header class="card-head">
+              <h2>代理组</h2>
+              <button type="button" class="btn ghost sm" @click="store.go('proxies')">查看全部<Icon name="chevron-right" :size="14" /></button>
+            </header>
+            <p v-if="!manualGroups.length" class="empty-line muted">{{ snap.nodes_notice ?? '这份配置没有可手动选择的代理组' }}</p>
+            <button
+              v-for="group in manualGroups"
+              :key="group.name"
+              type="button"
+              class="group-row"
+              :data-group="group.name"
+              @click="store.go('proxies', group.name)"
+            >
+              <GroupIcon :icon="group.icon" :type="group.group_type" :size="20" />
+              <span class="group-row-name">{{ group.name }}</span>
+              <span class="group-row-now">{{ group.now || '—' }}</span>
+              <span
+                v-if="nodeOf(group) && (nodeOf(group)!.delay_ms != null || nodeOf(group)!.failed)"
+                class="delay"
+                :class="delayTone(nodeOf(group)!.delay_ms, nodeOf(group)!.failed)"
+              >{{ delayText(nodeOf(group)!.delay_ms, nodeOf(group)!.failed) }}</span>
+              <Icon name="chevron-right" :size="16" class="muted" />
+            </button>
+          </section>
+        </div>
       </div>
     </div>
 
-    <Modal v-if="appsOpen" title="分应用代理" subtitle="打开开关的应用将不经过 VPN" @close="appsOpen = false">
-      <div class="search">
-        <Icon name="search" :size="16" />
-        <input v-model="appQuery" type="search" placeholder="搜索应用" />
-      </div>
-      <p v-if="!apps.length" class="empty-line muted">{{ appQuery ? '没有匹配的应用' : '没有读取到已安装的应用' }}</p>
-      <ul class="app-list">
-        <li v-for="app in apps" :key="app.package_name" class="setting-row">
-          <div class="grow">
-            <strong>{{ app.name }}</strong>
-            <p class="muted small mono">{{ app.package_name }}</p>
-          </div>
-          <Toggle
-            :model-value="snap.excluded.includes(app.package_name)"
-            :label="`排除 ${app.name}`"
-            @update:model-value="(on) => (on ? store.exclude(app.package_name) : store.include(app.package_name))"
-          />
-        </li>
-      </ul>
-    </Modal>
   </div>
 </template>

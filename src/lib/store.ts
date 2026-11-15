@@ -11,9 +11,10 @@ import {
   type NodeGroup,
   type Snapshot,
   type ThemePreference,
+  type AppMode,
 } from './types'
 
-export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings'
+export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings' | 'apps'
 export type SettingsTab = 'general' | 'kernel' | 'tun' | 'dns'
 /** Desktop sidebar grouping; settings is pinned below both groups (R25). */
 export type PageGroup = 'core' | 'tools' | null
@@ -22,11 +23,14 @@ export const PAGES: { id: PageId; label: string; icon: string; mobile: boolean; 
   { id: 'home', label: '首页', icon: 'home', mobile: true, group: 'core' },
   { id: 'proxies', label: '代理', icon: 'globe', mobile: true, group: 'core' },
   { id: 'profiles', label: '配置', icon: 'layers', mobile: true, group: 'core' },
-  { id: 'connections', label: '连接', icon: 'activity', mobile: true, group: 'core' },
+  // Phones keep four tabs; connections joins the tools reached from Settings.
+  { id: 'connections', label: '连接', icon: 'activity', mobile: false, group: 'core' },
   { id: 'rules', label: '规则', icon: 'route', mobile: false, group: 'tools' },
   { id: 'resources', label: '资源', icon: 'database', mobile: false, group: 'tools' },
   { id: 'logs', label: '日志', icon: 'terminal', mobile: false, group: 'tools' },
   { id: 'settings', label: '设置', icon: 'settings', mobile: true, group: null },
+  // Android only, opened from Settings; never in a nav bar.
+  { id: 'apps', label: '应用访问控制', icon: 'apps', mobile: false, group: null },
 ]
 
 export function resolvePage(value: string | null | undefined): PageId {
@@ -170,7 +174,8 @@ export function createStore(backend: Backend) {
       a.nodes.every((node, index) => {
         const other = b.nodes[index]!
         return node.name === other.name && node.node_type === other.node_type &&
-          node.selected === other.selected && node.delay_ms === other.delay_ms && node.failed === other.failed
+          node.selected === other.selected && node.delay_ms === other.delay_ms && node.failed === other.failed &&
+          node.tags.length === other.tags.length && node.tags.every((tag, i) => tag === other.tags[i])
       })
     if (previous.length === next.node_catalog.length &&
       previous.every((group, index) => sameGroup(group, next.node_catalog[index]!))) {
@@ -192,6 +197,17 @@ export function createStore(backend: Backend) {
       return line.time_ms === other.time_ms && line.level === other.level && line.message === other.message
     })) {
       next = { ...next, logs }
+    }
+    const installed = snapshot.value.installed
+    if (installed.length === next.installed.length && installed.every((app, index) => {
+      const other = next.installed[index]!
+      return app.package_name === other.package_name && app.name === other.name && app.system === other.system
+    })) next = { ...next, installed }
+    for (const key of ['excluded', 'included'] as const) {
+      const previous = snapshot.value[key]
+      if (previous.length === next[key].length && previous.every((pkg, i) => pkg === next[key][i])) {
+        next = { ...next, [key]: previous }
+      }
     }
     snapshot.value = next
   }
@@ -626,6 +642,7 @@ export function createStore(backend: Backend) {
     setTun,
     exclude: (pkg: string) => act(null, () => backend.exclude(pkg)),
     include: (pkg: string) => act(null, () => backend.include(pkg)),
+    setAppRules: (mode: AppMode, packages: string[]) => act('apps', () => backend.setAppRules(mode, packages)),
 
     addSubscription: (url: string) => act('add', () => backend.addSubscription(url)),
     addLocal: (name: string, content: string) => act('add', () => backend.addLocal(name, content)),

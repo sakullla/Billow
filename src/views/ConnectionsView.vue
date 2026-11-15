@@ -265,7 +265,8 @@ function resetFilters() {
           </template>
         </p>
       </div>
-      <div class="head-actions">
+      <!-- Nothing to pause or close while disconnected; the empty state owns the next step. -->
+      <div v-if="snap.connected" class="head-actions">
         <button
           type="button"
           class="btn ghost sm"

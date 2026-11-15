@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
+import Modal from '../components/Modal.vue'
+import Segmented from '../components/Segmented.vue'
+import Toggle from '../components/Toggle.vue'
 import Skeleton from '../components/Skeleton.vue'
-import { formatBytes, formatDate, formatRelative, usagePercent } from '../lib/format'
+import { delayText, delayTone, formatBytes, formatDate, formatRelative, protocolLabel, usagePercent } from '../lib/format'
 import { useStore } from '../lib/store'
-import type { ProviderRow } from '../lib/types'
+import type { GeoFile, GeoSource, KernelSettings, ProviderDetail, ProviderRow } from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
 const store = useStore()
@@ -21,7 +24,7 @@ interface RowProgress {
   at: number | null
 }
 
-const providers = ref<ProviderRow[]>([])
+const providers = shallowRef<ProviderRow[]>([])
 const error = ref<string | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
@@ -47,10 +50,16 @@ const updatedMs = (row: ProviderRow) => {
   return Number.isNaN(ms) || ms < 86_400_000 ? null : ms
 }
 
+let loadVersion = 0
+let detailVersion = 0
+let disposed = false
+
 async function load(quiet = false) {
+  const version = ++loadVersion
   if (!quiet) loading.value = true
   try {
     const result = await store.backend.providers()
+    if (disposed || version !== loadVersion) return
     if (result.error) {
       // A read failure must not leave last round's rows on screen (R29).
       error.value = result.error
@@ -60,11 +69,14 @@ async function load(quiet = false) {
       error.value = null
     }
   } catch (err) {
+    if (disposed || version !== loadVersion) return
     error.value = err instanceof Error ? err.message : String(err)
     providers.value = []
   } finally {
-    loading.value = false
-    loaded.value = true
+    if (!disposed && version === loadVersion) {
+      loading.value = false
+      loaded.value = true
+    }
   }
 }
 
@@ -133,6 +145,7 @@ async function upgradeGeo() {
   try {
     await store.backend.upgradeGeo()
     store.toast('GEO 数据库已更新', 'success')
+    await loadGeo()
   } catch (err) {
     store.toast(err instanceof Error ? err.message : String(err), 'error')
   } finally {
@@ -140,12 +153,83 @@ async function upgradeGeo() {
   }
 }
 
+// ── GEO databases: file state plus the three choices people actually make ──
+const geoFiles = shallowRef<GeoFile[]>([])
+const GEO_INTERVALS = [
+  { id: '24', label: '每天' },
+  { id: '72', label: '每 3 天' },
+  { id: '168', label: '每周' },
+] as const
+const GEO_SOURCES: { id: GeoSource; label: string }[] = [
+  { id: '', label: '跟随配置' },
+  { id: 'github', label: 'GitHub' },
+  { id: 'jsdelivr', label: 'jsDelivr 加速' },
+]
+const geoSettings = computed(() => snap.value.settings)
+const geoInterval = computed(() => String(geoSettings.value.geo_update_interval ?? 24))
+/** Files that exist, plus GeoIP/GeoSite even when missing: those are the ones rules depend on. */
+const shownGeoFiles = computed(() => geoFiles.value.filter((file) => file.exists || file.key === 'geoip' || file.key === 'geosite'))
+
+async function loadGeo() {
+  try {
+    geoFiles.value = await store.backend.geoFiles()
+  } catch {
+    geoFiles.value = []
+  }
+}
+
+function saveGeo(patch: Partial<KernelSettings>) {
+  void store.saveSettings({ ...snap.value.settings, ...patch })
+}
+
+// ── Provider detail sheet ──
+const detail = shallowRef<{ row: ProviderRow; data: ProviderDetail | null; error: string | null } | null>(null)
+const detailQuery = ref('')
+const detailNeedle = computed(() => detailQuery.value.trim().toLowerCase())
+const detailProxies = computed(() => {
+  const rows = detail.value?.data?.proxies ?? []
+  const needle = detailNeedle.value
+  if (!needle) return rows
+  return rows.filter((row) => row.name.toLowerCase().includes(needle) || [row.node_type, ...row.tags].some((tag) => tag.toLowerCase() === needle))
+})
+/** Rule lists can hold thousands of lines; the sheet renders a capped slice and says so. */
+const RULE_PAGE = 400
+const detailRules = computed(() => {
+  const rows = detail.value?.data?.rules ?? []
+  const needle = detailNeedle.value
+  return needle ? rows.filter((rule) => rule.toLowerCase().includes(needle)) : rows
+})
+
+async function openDetail(row: ProviderRow) {
+  const version = ++detailVersion
+  detailQuery.value = ''
+  detail.value = { row, data: null, error: null }
+  try {
+    const data = await store.backend.providerDetail(row.kind, row.name)
+    if (!disposed && version === detailVersion && detail.value?.row === row) detail.value = { row, data, error: null }
+  } catch (err) {
+    if (!disposed && version === detailVersion && detail.value?.row === row) detail.value = { row, data: null, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** First token of a classical rule ("DOMAIN-SUFFIX,x") is its type; plain domain/IP lists have none. */
+function ruleParts(rule: string): { type: string; rest: string } {
+  const comma = rule.indexOf(',')
+  const head = comma > 0 ? rule.slice(0, comma) : ''
+  return /^[A-Z][A-Z0-9-]+$/.test(head) ? { type: head, rest: rule.slice(comma + 1) } : { type: '', rest: rule }
+}
+
 const successText = (row: ProviderRow) => (stateOf(row)?.action === 'healthcheck' ? '检查通过' : '已更新')
 
 // A stopped kernel drops the rows instead of showing the previous session (R31).
 watch(
-  () => snap.value.kernel_running,
-  (running) => {
+  [() => snap.value.kernel_running, () => snap.value.active_id],
+  ([running]) => {
+    loadVersion++
+    detailVersion++
+    detail.value = null
+    providers.value = []
+    for (const key of Object.keys(progress)) delete progress[key]
     if (running) {
       void load()
       return
@@ -156,7 +240,16 @@ watch(
   },
 )
 
-onMounted(() => void load())
+onBeforeUnmount(() => {
+  disposed = true
+  loadVersion++
+  detailVersion++
+})
+
+onMounted(() => {
+  void load()
+  void loadGeo()
+})
 </script>
 
 <template>
@@ -182,26 +275,69 @@ onMounted(() => void load())
       </div>
     </header>
 
-    <section class="card">
-      <div class="setting-row">
-        <span class="row-icon"><Icon name="database" /></span>
-        <div class="grow">
-          <strong>GEO 数据库</strong>
-          <p class="muted small">重新下载 GeoIP、GeoSite、MMDB 与 ASN 数据，地址取自配置中的 geox-url</p>
-          <p v-if="!snap.kernel_running" class="muted small">连接后可更新</p>
+    <section class="card geo-card" data-testid="geo-card">
+      <header class="card-head">
+        <div>
+          <h2>GEO 数据库</h2>
+          <p class="muted small">GeoIP / GeoSite 规则依赖的数据文件</p>
         </div>
         <button
           type="button"
           class="btn sm"
           :disabled="!snap.kernel_running || geoBusy"
           :aria-busy="geoBusy || undefined"
+          :title="snap.kernel_running ? '立即重新下载' : '连接后可更新'"
           data-testid="upgrade-geo"
           @click="upgradeGeo"
         >
           <span v-if="geoBusy" class="spinner sm" aria-hidden="true" />
           <Icon v-else name="download" :size="15" />
-          {{ geoBusy ? '更新中' : '更新' }}
+          {{ geoBusy ? '更新中' : snap.kernel_running ? '立即更新' : '连接后可更新' }}
         </button>
+      </header>
+      <ul v-if="shownGeoFiles.length" class="geo-files" data-testid="geo-files">
+        <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }" :title="file.file">
+          <strong>{{ file.label }}</strong>
+          <span class="muted small">
+            {{ file.exists ? `${formatBytes(file.size)} · ${formatRelative(file.modified_ms)}` : '尚未下载' }}
+          </span>
+        </li>
+      </ul>
+      <div class="setting-row">
+        <div class="grow">
+          <strong>自动更新</strong>
+          <p class="muted small">内核运行时按周期在后台下载新数据</p>
+        </div>
+        <Toggle
+          :model-value="geoSettings.geo_auto_update === true"
+          label="GEO 自动更新"
+          data-testid="geo-auto-update"
+          @update:model-value="(on) => saveGeo({ geo_auto_update: on, geo_update_interval: on ? Number(geoInterval) : geoSettings.geo_update_interval })"
+        />
+      </div>
+      <div v-if="geoSettings.geo_auto_update" class="setting-row">
+        <div class="grow"><strong>更新频率</strong></div>
+        <Segmented
+          :model-value="geoInterval"
+          :options="GEO_INTERVALS"
+          size="sm"
+          label="更新频率"
+          @update:model-value="(id) => saveGeo({ geo_update_interval: Number(id) })"
+        />
+      </div>
+      <div class="setting-row">
+        <div class="grow">
+          <strong>下载源</strong>
+          <p class="muted small">{{ geoSettings.geo_source ? 'MetaCubeX meta-rules-dat，覆盖配置中的 geox-url' : '使用配置中的 geox-url；没有写时用内核默认地址' }}</p>
+        </div>
+        <Segmented
+          :model-value="geoSettings.geo_source"
+          :options="GEO_SOURCES"
+          size="sm"
+          label="下载源"
+          data-testid="geo-source"
+          @update:model-value="(id) => saveGeo({ geo_source: id })"
+        />
       </div>
     </section>
 
@@ -256,6 +392,13 @@ onMounted(() => void load())
         </header>
         <div v-for="row in section.rows" :key="row.name" class="provider" :data-provider="row.name" :data-inline="isInline(row) ? 'true' : undefined">
           <div class="provider-main">
+            <button
+              type="button"
+              class="provider-open"
+              :aria-label="`查看 ${row.name} 的${row.kind === 'proxy' ? '节点' : '规则'}`"
+              :data-testid="`open-provider-${row.name}`"
+              @click="openDetail(row)"
+            />
             <div class="provider-title">
               <strong class="ellipsis">{{ row.name }}</strong>
               <span class="tag">{{ row.vehicle || '—' }}</span>
@@ -314,5 +457,68 @@ onMounted(() => void load())
         </div>
       </section>
     </template>
+
+    <Modal
+      v-if="detail"
+      wide
+      :title="detail.row.name"
+      :subtitle="detail.row.kind === 'proxy'
+        ? `代理集 · ${detail.data ? detail.data.total : detail.row.count} 个节点`
+        : `规则集 · ${(detail.data?.total || detail.row.count).toLocaleString()} 条规则${detail.row.behavior ? ` · ${detail.row.behavior}` : ''}`"
+      @close="detail = null"
+    >
+      <div class="provider-detail" data-testid="provider-detail">
+        <p v-if="detail.data?.source && detail.data.source !== 'inline'" class="muted small mono ellipsis detail-source" :title="detail.data.source">{{ detail.data.source }}</p>
+        <div v-if="detail.data && (detail.data.proxies.length || detail.data.rules.length)" class="search">
+          <Icon name="search" :size="16" />
+          <input v-model="detailQuery" type="search" :placeholder="detail.row.kind === 'proxy' ? '搜索节点、协议或 UDP' : '搜索规则'" />
+        </div>
+        <p v-if="detail.error" class="field-error" role="alert">{{ detail.error }}</p>
+        <div v-else-if="!detail.data" class="detail-loading muted small"><span class="spinner xs" /> 正在读取…</div>
+        <template v-else>
+          <p v-if="detail.data.notice" class="banner info small" data-testid="provider-notice"><Icon name="info" :size="15" />{{ detail.data.notice }}</p>
+          <ul v-if="detail.row.kind === 'proxy'" class="detail-list">
+            <li v-for="proxy in detailProxies.slice(0, RULE_PAGE)" :key="proxy.name" class="detail-proxy">
+              <span class="grow min0">
+                <strong class="ellipsis">{{ proxy.name }}</strong>
+                <span class="node-meta">
+                  <span class="node-type">{{ protocolLabel(proxy.node_type) || proxy.node_type }}</span>
+                  <span v-for="tag in proxy.tags" :key="tag" class="node-tag" :class="{ udp: tag === 'UDP' }">{{ tag }}</span>
+                </span>
+              </span>
+              <span
+                v-if="proxy.delay_ms != null || proxy.alive === false"
+                class="delay"
+                :class="delayTone(proxy.delay_ms, proxy.alive === false)"
+              >{{ delayText(proxy.delay_ms, proxy.alive === false) }}</span>
+            </li>
+            <li v-if="detailProxies.length > RULE_PAGE" class="muted small empty-line">还有 {{ detailProxies.length - RULE_PAGE }} 个节点，输入关键词缩小范围</li>
+            <li v-if="!detailProxies.length" class="muted small empty-line">{{ detailQuery ? '没有匹配的节点' : '这个代理集还没有节点' }}</li>
+          </ul>
+          <ol v-else-if="detail.data.rules.length" class="detail-list detail-rules mono">
+            <li v-for="(rule, index) in detailRules.slice(0, RULE_PAGE)" :key="index">
+              <span v-if="ruleParts(rule).type" class="rule-type">{{ ruleParts(rule).type }}</span>
+              <span class="ellipsis">{{ ruleParts(rule).rest }}</span>
+            </li>
+            <li v-if="!detailRules.length" class="muted small empty-line">没有匹配的规则</li>
+            <li v-else-if="detailRules.length > RULE_PAGE" class="muted small empty-line">
+              还有 {{ (detailRules.length - RULE_PAGE).toLocaleString() }} 条，输入关键词缩小范围
+            </li>
+          </ol>
+        </template>
+      </div>
+      <template #footer>
+        <button
+          v-if="detail.row.kind === 'proxy'"
+          type="button"
+          class="btn ghost"
+          :disabled="!snap.kernel_running || fruitless(detail.row)"
+          @click="single(detail.row, 'healthcheck').then(() => detail && openDetail(detail.row))"
+        >
+          <Icon name="zap" :size="15" />健康检查
+        </button>
+        <button type="button" class="btn primary" @click="detail = null">关闭</button>
+      </template>
+    </Modal>
   </div>
 </template>

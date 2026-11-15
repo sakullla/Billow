@@ -1,10 +1,9 @@
 Model: gpt-image-2.6
 
 Use case: logo-brand
-Asset type: production app icon for Billow, a desktop and Android network client.
-Primary request: create one original flowing blue billow emblem, a compact rising ocean swell made of three broad gently curved ribbons, unified into one memorable rounded silhouette. Suggest effortless movement and a clear open passage through the center.
-Style: polished minimal 2D icon art, crisp contours, subtly tapered ends, generous negative space, just one restrained pale blue highlight. Flat readable shapes, no hairline detail.
-Composition: centered emblem occupying 66 percent of a square canvas, straight-on. Flat warm-white background #f7f9fc extending to every edge, no rounded outer frame or border; the operating system supplies the mask.
-Palette: Billow cobalt blue #1d6fdb, light azure #8bbcff, a small deep blue accent. No rainbow colors.
-Constraints: one symbol only; recognizable at 16 pixels; no text, letters, watermark, shield, lock, globe, generic infinity loop, character, mockup, photographic texture, drop shadow or 3D extrusion.
-Output: one square 1024x1024 PNG icon.
+Asset type: finished mobile launcher icon for Billow, a network client.
+Primary request: a single elegant white ocean swell symbol, a smooth rounded crest curling inward around one open navy teardrop of negative space. A compact sculptural silhouette with a short tapering tail and a small soft cyan accent on its lower edge. One unified recognizable mark, not parallel stripes.
+Style: premium minimal flat icon, beautifully balanced curves, precise clean edges, readable at 32 pixels. Subtle blue tonal depth only in the background, no material texture.
+Composition: square 1024x1024. Deep midnight-blue background #102c52 reaches all four edges. The whole white wave symbol fits within the central 54 percent of the canvas, generous clear navy space surrounding it on every side. The operating system will crop the square into a rounded square or circle; do NOT draw a rounded square or circular container into the image.
+Constraints: no text, no letters, no watermark, no border, no drop shadows, no ocean scenery, no multiple horizontal ribbons, no stripes that run off the edges, no shield, no lock, no globe, no shiny 3D bevel, no busy detail.
+Output: exactly one finished square icon, no layout or mockup.

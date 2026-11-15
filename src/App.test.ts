@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import App from './App.vue'
 import GroupIcon from './components/GroupIcon.vue'
@@ -13,6 +13,11 @@ async function settle(ms = 1000) {
 }
 
 const mounted: { unmount: () => void }[] = []
+
+// The YAML editor is a lazy chunk; load it once so fake timers do not race the import.
+beforeAll(async () => {
+  await import('./lib/yaml/editor')
+}, 20_000)
 
 async function mountApp(options: Parameters<typeof createDemoBackend>[0] = {}, width = 1200) {
   vi.useFakeTimers()
@@ -30,6 +35,20 @@ async function mountWith(backend: ReturnType<typeof createDemoBackend>, width = 
   mounted.push(wrapper)
   await settle(50)
   return wrapper
+}
+
+/** The CodeMirror view of the open YAML dialog, once its lazy chunk has mounted. */
+async function editorView() {
+  const { EditorView } = await import('@codemirror/view')
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await flushPromises()
+    const editors = document.body.querySelectorAll<HTMLElement>('.cm-editor')
+    const element = editors[editors.length - 1]
+    const view = element ? EditorView.findFromDOM(element) : null
+    if (view) return view
+    await vi.advanceTimersByTimeAsync(20)
+  }
+  throw new Error('editor did not mount')
 }
 
 async function openPage(
@@ -146,7 +165,13 @@ describe('App', () => {
 
     const narrow = await mountApp({}, 390)
     expect(narrow.wrapper.find('.sidebar').exists()).toBe(false)
-    expect(narrow.wrapper.findAll('.tabbar [data-page]')).toHaveLength(5)
+    // Phones keep four tabs; connections moves behind Settings with the other tools.
+    expect(narrow.wrapper.findAll('.tabbar [data-page]').map((item) => item.attributes('data-page'))).toEqual([
+      'home',
+      'proxies',
+      'profiles',
+      'settings',
+    ])
   })
 
   it('connects from the power button and shows live rates', async () => {
@@ -211,9 +236,9 @@ describe('App', () => {
 
   it('switches outbound mode', async () => {
     const { wrapper } = await mountApp()
-    await wrapper.find('[data-mode="global"]').trigger('click')
+    await wrapper.find('[data-testid="mode-segmented"] [data-value="global"]').trigger('click')
     await settle(300)
-    expect(wrapper.find('[data-mode="global"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="mode-segmented"] [data-value="global"]').attributes('aria-checked')).toBe('true')
   })
 
   it('selects a node in a manual group and filters by name', async () => {
@@ -345,31 +370,26 @@ describe('App', () => {
     await openProfiles(wrapper)
     await openProfileMenu(wrapper, 'p1')
     await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
-    await flushPromises()
-    const editor = () => document.body.querySelector<HTMLTextAreaElement>('.editor-text')
-    const area = editor()
-    expect(area).not.toBeNull()
-    area!.value = `${area!.value}\n# draft`
-    area!.dispatchEvent(new Event('input', { bubbles: true }))
+    const view = await editorView()
+    expect(view.state.doc.toString()).toContain('proxies')
+    view.dispatch({ changes: { from: view.state.doc.length, insert: '\n# draft' }, selection: { anchor: 2, head: 5 } })
     await nextTick()
-    area!.focus()
-    area!.setSelectionRange(2, 5)
     expect(document.body.textContent).toContain('未保存')
 
     bodyClick('[data-testid="cancel-editor"]')
     await flushPromises()
     expect(document.body.textContent).toContain('放弃未保存的修改')
-    expect(editor()).not.toBeNull()
+    expect(document.body.querySelector('.cm-editor')).not.toBeNull()
 
     bodyClick('[data-testid="keep-editing"]')
     await flushPromises()
     await nextTick()
     expect(document.body.textContent).not.toContain('放弃未保存的修改')
-    const kept = editor()!
-    expect(kept.value).toContain('# draft')
-    expect(kept.selectionStart).toBe(2)
-    expect(kept.selectionEnd).toBe(5)
-    expect(document.activeElement).toBe(kept)
+    const kept = await editorView()
+    expect(kept).toBe(view)
+    expect(kept.state.doc.toString()).toContain('# draft')
+    expect(kept.state.selection.main.from).toBe(2)
+    expect(kept.state.selection.main.to).toBe(5)
     expect(document.body.textContent).toContain('未保存')
 
     // Escape goes through the Modal close guard as well.
@@ -379,14 +399,14 @@ describe('App', () => {
     bodyClick('[data-testid="keep-editing"]')
     await flushPromises()
     await nextTick()
-    expect(editor()).not.toBeNull()
+    expect(document.body.querySelector('.cm-editor')).not.toBeNull()
 
     bodyClick('[data-testid="cancel-editor"]')
     await flushPromises()
     bodyClick('[data-testid="discard-edits"]')
     await flushPromises()
     await nextTick()
-    expect(editor()).toBeNull()
+    expect(document.body.querySelector('.cm-editor')).toBeNull()
     expect(document.activeElement).toBe(
       wrapper.find('[data-profile="p1"] [aria-label="更多操作"]').element,
     )
@@ -402,30 +422,53 @@ describe('App', () => {
     await openProfiles(wrapper)
     await openProfileMenu(wrapper, 'p1')
     await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
-    await flushPromises()
+    await editorView()
 
     bodyClick('.modal-foot .btn.primary')
     await settle(200)
     const error = document.body.querySelector('.editor-error')
     expect(error?.textContent).toContain('配置无法应用')
-    expect(document.body.querySelector('.editor-text')).not.toBeNull()
+    expect(document.body.querySelector('.cm-editor')).not.toBeNull()
     expect(document.body.querySelector('.editor-error')?.getAttribute('role')).toBe('alert')
   })
 
-  it('moves the editor gutter with the textarea scroll', async () => {
-    const { wrapper } = await mountApp()
+  it('saves from the editor with Ctrl+S and highlights YAML', async () => {
+    const { wrapper, backend } = await mountApp()
+    const save = vi.spyOn(backend, 'saveOverride')
     await openProfiles(wrapper)
     await openProfileMenu(wrapper, 'p1')
-    await wrapper.find('[data-profile="p1"] [data-menu-item="content"]').trigger('click')
-    await flushPromises()
-    const area = document.body.querySelector<HTMLTextAreaElement>('.editor-text')!
-    const gutter = document.body.querySelector<HTMLElement>('.editor-gutter')!
-    expect(gutter.querySelectorAll('span')).toHaveLength(area.value.split('\n').length)
-
-    area.scrollTop = 96
-    area.dispatchEvent(new Event('scroll'))
+    await wrapper.find('[data-profile="p1"] [data-menu-item="override"]').trigger('click')
+    const view = await editorView()
+    view.dispatch({ changes: { from: 0, insert: 'mixed-port: 7891\n' } })
     await nextTick()
-    expect(gutter.style.transform).toBe('translateY(-96px)')
+    expect(document.body.querySelector('.cm-content')?.textContent).toContain('mixed-port')
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }))
+    await settle(200)
+    expect(save).toHaveBeenCalledWith('p1', 'mixed-port: 7891\n')
+  })
+
+  it('opens the effective config read-only from the running profile only', async () => {
+    const { wrapper } = await mountApp()
+    await openProfiles(wrapper)
+    await openProfileMenu(wrapper, 'p2')
+    expect(wrapper.find('[data-profile="p2"] [data-menu-item="effective"]').exists()).toBe(false)
+    press(document, 'Escape')
+    await flushPromises()
+
+    await openProfileMenu(wrapper, 'p1')
+    await wrapper.find('[data-profile="p1"] [data-menu-item="effective"]').trigger('click')
+    const view = await editorView()
+    expect(document.body.textContent).toContain('生效配置')
+    expect(view.state.readOnly).toBe(true)
+    expect(view.state.doc.toString()).toContain('mixed-port')
+
+    // The override editor links to the same view, quietly.
+    bodyClick('.modal-foot .btn.primary')
+    await flushPromises()
+    await openProfileMenu(wrapper, 'p1')
+    await wrapper.find('[data-profile="p1"] [data-menu-item="override"]').trigger('click')
+    await editorView()
+    expect(document.body.querySelector('[data-testid="open-effective"]')?.textContent).toBe('查看生效配置')
   })
 
   it('switches to another profile from its menu, without a pointer', async () => {
@@ -451,7 +494,8 @@ describe('App', () => {
     const menu = wrapper.find('[role="menu"]')
     expect(menu.exists()).toBe(true)
     const items = () => menu.findAll('[role="menuitem"]')
-    expect(items().length).toBe(5)
+    // edit, content, override, effective config (current profile only), copy, remove
+    expect(items().length).toBe(6)
     expect(document.activeElement).toBe(items()[0].element)
 
     press(menu.element, 'ArrowDown')
@@ -513,14 +557,93 @@ describe('App', () => {
     expect(wrapper.text()).toContain('没有匹配的连接')
   })
 
-  it('offers per-app exclusion on Android instead of system proxy and TUN', async () => {
-    const { wrapper } = await mountApp({ platform: 'android' }, 390)
+  it('keeps Android access control in Settings with bypass and allowlist modes', async () => {
+    const { wrapper, backend } = await mountApp({ platform: 'android' }, 390)
+    const save = vi.spyOn(backend, 'setAppRules')
+    // Home carries neither desktop takeover switches nor the per-app entry.
     expect(wrapper.find('[data-testid="toggle-proxy"]').exists()).toBe(false)
+    expect(wrapper.find('.home [data-testid="open-apps"]').exists()).toBe(false)
+
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="open-apps"]').text()).toContain('绕过 1 个')
     await wrapper.find('[data-testid="open-apps"]').trigger('click')
     await flushPromises()
-    expect(document.body.textContent).toContain('微信')
-    expect(document.body.textContent).toContain('com.tencent.mm')
+    expect(wrapper.find('.main').attributes('data-page')).toBe('apps')
+    expect(wrapper.find('[data-testid="page-back"]').text()).toBe('设置')
+
+    // Selected apps lead; system apps stay hidden until asked for.
+    const rows = () => wrapper.findAll('.app-row').map((row) => row.attributes('data-app'))
+    expect(rows()[0]).toBe('com.tencent.mm')
+    expect(rows()).not.toContain('com.android.systemui')
+    await wrapper.find('[data-testid="apps-system"]').trigger('click')
+    expect(rows()).toContain('com.android.systemui')
+
+    // Taps batch into one save; the row under the finger does not move.
+    await wrapper.find('.app-row[data-app="org.telegram.messenger"]').trigger('click')
+    await wrapper.find('.app-row[data-app="tv.danmaku.bili"]').trigger('click')
+    const order = rows()
+    expect(save).not.toHaveBeenCalled()
+    await settle(800)
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenLastCalledWith('exclude', ['com.tencent.mm', 'org.telegram.messenger', 'tv.danmaku.bili'])
+    expect(rows()).toEqual(order)
+    expect(wrapper.find('[data-testid="apps-summary"]').text()).toContain('3 个应用绕过 VPN')
+
+    // The allowlist keeps its own (empty) list and says what an empty allowlist means.
+    await wrapper.find('[data-testid="apps-mode"] [data-value="include"]').trigger('click')
+    await settle(300)
+    expect(save).toHaveBeenLastCalledWith('include', [])
+    expect(wrapper.find('[data-testid="apps-summary"]').text()).toContain('所有应用都经过 VPN')
+    await wrapper.find('.app-row[data-app="com.android.chrome"]').trigger('click')
+    expect(wrapper.find('.app-row[data-app="com.android.chrome"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('.app-row[data-app="com.tencent.mm"]').attributes('aria-checked')).toBe('false')
+    await settle(800)
+    expect(save).toHaveBeenLastCalledWith('include', ['com.android.chrome'])
+    expect(storeOf(wrapper).snapshot.value.excluded).toEqual(['com.tencent.mm', 'org.telegram.messenger', 'tv.danmaku.bili'])
   })
+
+  it('preserves edits and mode changes while an earlier app save is in flight', async () => {
+    const { wrapper, backend } = await mountApp({ platform: 'android' }, 390)
+    const original = backend.setAppRules.bind(backend)
+    let finish!: () => void
+    const save = vi.spyOn(backend, 'setAppRules').mockImplementationOnce(async (mode, packages) => {
+      await new Promise<void>((resolve) => { finish = resolve })
+      return original(mode, packages)
+    })
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await wrapper.find('[data-testid="open-apps"]').trigger('click')
+    await wrapper.find('.app-row[data-app="org.telegram.messenger"]').trigger('click')
+    await settle(750)
+    await wrapper.find('.app-row[data-app="tv.danmaku.bili"]').trigger('click')
+    await wrapper.find('[data-testid="apps-mode"] [data-value="include"]').trigger('click')
+    await settle(20)
+    expect(save).toHaveBeenCalledTimes(1)
+    finish()
+    await settle(1000)
+    expect(save).toHaveBeenNthCalledWith(2, 'exclude', ['com.tencent.mm', 'org.telegram.messenger', 'tv.danmaku.bili'])
+    expect(save).toHaveBeenLastCalledWith('include', [])
+    expect(storeOf(wrapper).snapshot.value.app_mode).toBe('include')
+    expect(storeOf(wrapper).snapshot.value.excluded).toContain('tv.danmaku.bili')
+  })
+
+  it('drills into phone settings sections and comes back to the list', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="settings-tabs"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-dns"]').text()).toContain('跟随配置')
+    await wrapper.find('[data-testid="open-dns"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.settings-subhead h1').text()).toBe('DNS')
+    expect(wrapper.find('[data-testid="dns-settings"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="settings-back"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="open-tun"]').text()).toContain('关闭')
+  })
+
   it('opens TUN settings from home and saves a changed stack', async () => {
     const { wrapper } = await mountApp()
     await wrapper.find('[data-testid="tun-settings-link"]').trigger('click')
@@ -583,11 +706,27 @@ describe('App', () => {
     await settingsTab().trigger('click')
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
-    await wrapper.findAll('.shortcut-card .setting-row')[1].trigger('click')
+    const tools = wrapper.findAll('[data-testid="tool-grid"] [data-tool]').map((tile) => tile.attributes('data-tool'))
+    expect(tools).toEqual(['connections', 'logs', 'rules', 'resources'])
+    await wrapper.find('[data-tool="rules"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('rules')
     expect(settingsTab().attributes('aria-current')).toBe('page')
     expect(wrapper.find('.main .page').exists()).toBe(true)
+
+    // A visible back control returns to the page the tool was opened from.
+    const back = wrapper.find('[data-testid="page-back"]')
+    expect(back.text()).toBe('设置')
+    await back.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
+    expect(wrapper.find('[data-testid="page-back"]').exists()).toBe(false)
+  })
+
+  it('keeps the back control off desktop pages', async () => {
+    const { wrapper } = await mountApp()
+    await openPage(wrapper, 'rules')
+    expect(wrapper.find('[data-testid="page-back"]').exists()).toBe(false)
   })
 
   it('opens the command palette with Ctrl+K, filters and executes a page', async () => {
@@ -817,35 +956,33 @@ describe('App', () => {
     expect(welcome.wrapper.find('[data-testid="power"]').text()).toBe('添加配置')
   })
 
-  it('keeps the Android VPN switch as takeover state, not a second connect entry', async () => {
+  it('reports Android VPN state in the hero instead of a second, disabled switch', async () => {
     const { wrapper } = await mountApp({ platform: 'android' }, 390)
-    const vpn = wrapper.find('[data-testid="toggle-vpn"]')
-    expect(vpn.attributes('role')).toBe('switch')
-    expect(vpn.attributes('aria-checked')).toBe('false')
-    expect(vpn.attributes('disabled')).not.toBeUndefined()
-    expect(wrapper.find('[data-testid="takeover-card"]').text()).toContain('开启 VPN 需连接')
+    expect(wrapper.find('[data-testid="toggle-vpn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="takeover-card"]').exists()).toBe(false)
     expect(wrapper.findAll('[data-testid="power"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toBe('代理未运行')
+
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toBe('VPN 已接管设备流量')
   })
 
-  it('shows the mode row with one live sentence on phones and keeps desktop cards', async () => {
-    const { wrapper } = await mountApp({}, 390)
-    const segments = wrapper.findAll('[data-testid="mode-segmented"] .segment')
-    expect(segments.map((segment) => segment.text())).toEqual(['规则', '全局', '直连'])
-    expect(wrapper.find('[data-testid="mode-card"] .mode-cards').exists()).toBe(false)
-    const hint = wrapper.find('[data-testid="mode-hint"]')
-    expect(hint.attributes('aria-live')).toBe('polite')
-    expect(hint.text()).toBe('按配置中的规则分流')
+  it('shows the mode row with one live sentence on phones and desktop alike', async () => {
+    for (const width of [390, 1200]) {
+      const { wrapper } = await mountApp({}, width)
+      const segments = wrapper.findAll('[data-testid="mode-segmented"] .segment')
+      expect(segments.map((segment) => segment.text())).toEqual(['规则', '全局', '直连'])
+      const hint = wrapper.find('[data-testid="mode-hint"]')
+      expect(hint.attributes('aria-live')).toBe('polite')
+      expect(hint.text()).toBe('按配置中的规则分流')
 
-    await wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').trigger('click')
-    await settle(300)
-    expect(wrapper.find('[data-testid="mode-hint"]').text()).toBe('新连接都不经过代理')
-    expect(wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').attributes('aria-checked')).toBe('true')
-
-    wrapper.unmount()
-    const desktop = await mountApp({}, 1200)
-    expect(desktop.wrapper.findAll('[data-mode]')).toHaveLength(3)
-    expect(desktop.wrapper.find('[data-testid="mode-card"]').text()).toContain('全部流量走当前节点')
-    expect(desktop.wrapper.find('[data-testid="mode-hint"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').trigger('click')
+      await settle(300)
+      expect(wrapper.find('[data-testid="mode-hint"]').text()).toBe('新连接都不经过代理')
+      expect(wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').attributes('aria-checked')).toBe('true')
+      wrapper.unmount()
+    }
   })
 
   it('shows only the welcome, add-config and import hint without a profile', async () => {
@@ -895,7 +1032,7 @@ describe('App', () => {
       return original(mode)
     })
 
-    await wrapper.find('[data-mode="direct"]').trigger('click')
+    await wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').trigger('click')
     await settle(300)
     expect(wrapper.find('[data-testid="home-failure"]').text()).toContain('模式没有切换')
     expect(wrapper.find('[data-testid="home-failure"]').text()).toContain('重试')
@@ -905,7 +1042,7 @@ describe('App', () => {
     expect(backend.setMode).toHaveBeenCalledTimes(2)
     expect(backend.setMode).toHaveBeenLastCalledWith('direct')
     expect(wrapper.find('[data-testid="home-failure"]').exists()).toBe(false)
-    expect(wrapper.find('[data-mode="direct"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="mode-segmented"] [data-value="direct"]').attributes('aria-checked')).toBe('true')
   })
 
   it('hides runtime rows the kernel does not report and never shows a dash', async () => {
@@ -935,12 +1072,20 @@ describe('App', () => {
 
   it('orders the phone first screen before the mode switch', async () => {
     const { wrapper } = await mountApp({}, 390)
-    const main = wrapper.findAll('.home-main > *').map((element) => element.attributes('data-testid'))
-    const side = wrapper.findAll('.home-side > *').map((element) => element.attributes('data-testid'))
-    expect(main).toEqual(['home-status', 'takeover-card', 'mode-card'])
+    const layout = wrapper.findAll('.home-layout > *').map((element) => element.attributes('data-testid') ?? element.classes()[0])
+    expect(layout).toEqual(['home-status', 'home-columns'])
     // The connect control lives inside the hero, next to the state it changes.
     expect(wrapper.find('[data-testid="home-status"] [data-testid="home-action"] [data-testid="power"]').exists()).toBe(true)
-    expect(side).toEqual(['traffic-card', 'groups-card', 'profile-card'])
+    // Mode and takeover share one control card, mode first.
+    const control = wrapper.findAll('[data-testid="control-card"] > *').map((element) => element.attributes('data-testid'))
+    expect(control).toEqual(['mode-card', 'takeover-card'])
+
+    // Live traffic and runtime live inside the hero only, so no number is shown twice.
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    for (const id of ['rates', 'traffic-card', 'runtime']) {
+      expect(wrapper.find(`[data-testid="home-status"] [data-testid="${id}"]`).exists()).toBe(true)
+    }
     expect(wrapper.find('[data-testid="home-status"]').text()).toContain('星河云')
     expect(wrapper.find('[data-testid="groups-card"]').text()).toContain('查看全部')
   })
@@ -1264,6 +1409,90 @@ describe('App', () => {
     }
   })
 
+  it('shows protocol and capability tags quietly and finds nodes by tag', async () => {
+    const { wrapper } = await mountApp()
+    await openPage(wrapper, 'proxies')
+    const meta = wrapper.find('[data-group-card="节点选择"] [data-node="香港 01"] [data-testid="node-meta"]')
+    expect(meta.findAll('.node-tag').map((tag) => tag.text())).toEqual(['UDP', 'Reality', 'Vision'])
+    expect(meta.attributes('title')).toBe('VLESS · UDP · Reality · Vision')
+    expect(meta.find('.node-tag.udp').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="node-search"]').setValue('grpc')
+    await flushPromises()
+    const names = wrapper.findAll('[data-group-card="节点选择"] [data-node]').map((node) => node.attributes('data-node'))
+    expect(names.length).toBeGreaterThan(0)
+    for (const name of names) expect(['日本 02', '美国 02', '德国 02']).toContain(name)
+  })
+
+  it('opens provider details: nodes with tags, rules, and a notice for binary sets', async () => {
+    const { wrapper } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(400)
+
+    await wrapper.find('[data-testid="open-provider-机场订阅"]').trigger('click')
+    await settle(300)
+    const sheet = () => document.body.querySelector('[data-testid="provider-detail"]')
+    expect(sheet()?.querySelectorAll('.detail-proxy')).toHaveLength(19)
+    expect(sheet()?.querySelector('.detail-proxy .node-tag.udp')?.textContent).toBe('UDP')
+    const search = sheet()!.querySelector<HTMLInputElement>('input[type="search"]')!
+    search.value = 'grpc'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(sheet()?.querySelectorAll('.detail-proxy').length).toBeGreaterThan(0)
+    for (const row of sheet()!.querySelectorAll('.detail-proxy')) expect(row.textContent).toContain('gRPC')
+    bodyClick('.modal-foot .btn.primary')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="open-provider-private"]').trigger('click')
+    await settle(300)
+    expect(sheet()?.querySelectorAll('.detail-rules li')).toHaveLength(6)
+    expect(sheet()?.querySelector('.detail-rules .rule-type')?.textContent).toBe('DOMAIN-SUFFIX')
+    bodyClick('.modal-foot .btn.primary')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="open-provider-cn-domains"]').trigger('click')
+    await settle(300)
+    expect(document.body.querySelector('[data-testid="provider-notice"]')?.textContent).toContain('MRS')
+  })
+
+  it('discards provider results and an open detail after the kernel stops', async () => {
+    const { wrapper, backend } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(400)
+    let finish!: (value: Awaited<ReturnType<typeof backend.providers>>) => void
+    vi.spyOn(backend, 'providers').mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    await wrapper.find('[data-testid="refresh-providers"]').trigger('click')
+    const store = storeOf(wrapper)
+    store.stop()
+    store.snapshot.value = { ...store.snapshot.value, kernel_running: false }
+    await nextTick()
+    finish({ providers: [{ name: 'obsolete', kind: 'proxy' } as never], error: null })
+    await flushPromises()
+    expect(wrapper.find('[data-provider="obsolete"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('内核未运行')
+  })
+
+  it('shows GEO files and saves auto-update and source as kernel settings', async () => {
+    const { wrapper, backend } = await mountApp()
+    const save = vi.spyOn(backend, 'saveSettings')
+    await openPage(wrapper, 'resources')
+    await settle(300)
+    const files = wrapper.findAll('[data-testid="geo-files"] li').map((item) => item.find('strong').text())
+    expect(files).toEqual(['GeoIP', 'GeoSite', 'MMDB'])
+    expect(wrapper.find('[data-testid="upgrade-geo"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('[data-testid="geo-auto-update"]').trigger('click')
+    await settle(500)
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geo_auto_update: true, geo_update_interval: 24 }))
+    await wrapper.find('[data-testid="geo-source"] [data-value="jsdelivr"]').trigger('click')
+    await settle(200)
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geo_source: 'jsdelivr', geo_auto_update: true }))
+  })
+
   it('keeps every proxy toolbar control reachable on a 390px screen', async () => {
     const { wrapper } = await mountApp({}, 390)
     await wrapper.find('.tabbar [data-page="proxies"]').trigger('click')
@@ -1271,6 +1500,12 @@ describe('App', () => {
     const toolbar = wrapper.find('[data-testid="proxy-toolbar"]')
     expect(toolbar.exists()).toBe(true)
     expect(toolbar.find('[data-testid="node-search"]').exists()).toBe(true)
+    // Sort and view options fold behind one button so the sticky bar is a single row.
+    const options = toolbar.find('[data-testid="toggle-options"]')
+    expect(options.attributes('aria-expanded')).toBe('false')
+    expect(toolbar.find('[data-testid="toggle-dense"]').exists()).toBe(false)
+    await options.trigger('click')
+    expect(options.attributes('aria-expanded')).toBe('true')
     expect(toolbar.findAll('.segment')).toHaveLength(3)
     for (const id of ['toggle-hide-auto', 'toggle-dense', 'toggle-all']) {
       const button = toolbar.find(`[data-testid="${id}"]`)
@@ -1404,7 +1639,9 @@ describe('App', () => {
     const { wrapper } = await mountApp({}, 390)
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
-    await wrapper.find('.tabbar [data-page="connections"]').trigger('click')
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-tool="connections"]').trigger('click')
     await settle(1100)
 
     const card = wrapper.find('.conn')
@@ -1834,8 +2071,8 @@ describe('App', () => {
 
     const inline = wrapper.find('[data-provider="private"]')
     expect(inline.text()).toContain('无需更新')
-    expect(inline.findAll('button')).toHaveLength(1)
-    expect(inline.find('button').attributes('disabled')).not.toBeUndefined()
+    expect(inline.findAll('.provider-actions button')).toHaveLength(1)
+    expect(inline.find('.provider-actions button').attributes('disabled')).not.toBeUndefined()
 
     const action = vi.spyOn(backend, 'providerAction')
     action.mockImplementationOnce(async () => {
@@ -1887,7 +2124,7 @@ describe('App', () => {
     await settle(500)
 
     const row = wrapper.find('[data-provider="机场订阅"]')
-    await row.findAll('button').at(0)!.trigger('click')
+    await row.findAll('.provider-actions button').at(0)!.trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-provider="机场订阅"] [data-provider-state="pending"]').text()).toContain('检查中')
     expect(wrapper.find('[data-provider="自建节点"] [data-provider-state]').exists()).toBe(false)
@@ -2126,8 +2363,16 @@ describe('App', () => {
     await openPage(wrapper, 'connections')
     expect(wrapper.text()).toContain('未连接')
     expect(wrapper.findAll('[data-testid="connection-row"]')).toHaveLength(0)
+    // Nothing to pause or close while disconnected.
+    expect(wrapper.find('[data-testid="pause-connections"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="disconnect-all"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="empty-connect"]').trigger('click')
+    await settle(1500)
     expect(wrapper.find('[data-testid="pause-connections"]').attributes('aria-pressed')).toBe('false')
 
+    await openPage(wrapper, 'home')
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(600)
     await openPage(wrapper, 'rules')
     await settle(300)
     expect(wrapper.text()).toContain('内核未运行')

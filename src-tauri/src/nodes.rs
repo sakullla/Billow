@@ -49,6 +49,7 @@ pub struct RuntimeCatalog {
     pub members: BTreeMap<String, Vec<String>>,
     pub now: BTreeMap<String, String>,
     pub types: BTreeMap<String, String>,
+    pub tags: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +65,13 @@ struct ControllerProxy {
     kind: Option<String>,
     all: Option<Vec<String>>,
     now: Option<String>,
+    udp: Option<bool>,
+    xudp: Option<bool>,
+    smux: Option<bool>,
+    tfo: Option<bool>,
+    mptcp: Option<bool>,
+    #[serde(rename = "dialer-proxy")]
+    dialer_proxy: Option<String>,
 }
 
 fn catalog_from_reader(reader: impl Read) -> Result<RuntimeCatalog, String> {
@@ -71,6 +79,11 @@ fn catalog_from_reader(reader: impl Read) -> Result<RuntimeCatalog, String> {
         .map_err(|_| "节点列表没有读取".to_string())?;
     let mut catalog = RuntimeCatalog::default();
     for (name, item) in response.proxies {
+        let mut tags: Vec<String> = [(item.udp, "UDP"), (item.xudp, "XUDP"), (item.smux, "Mux"),
+            (item.tfo, "TFO"), (item.mptcp, "MPTCP")].into_iter()
+            .filter(|(on, _)| *on == Some(true)).map(|(_, tag)| tag.to_string()).collect();
+        if item.dialer_proxy.as_ref().is_some_and(|value| !value.is_empty()) { tags.push("链式".to_string()); }
+        if !tags.is_empty() { catalog.tags.insert(name.clone(), tags); }
         if let Some(kind) = item.kind {
             catalog.types.insert(name.clone(), kind);
         }
@@ -109,6 +122,9 @@ pub struct NodeItemView {
     pub failed: bool,
     pub selected: bool,
     pub node_type: String,
+    /// Capability tags in display order (UDP, Reality/TLS, transport, …); see `proxy_tags`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -165,6 +181,92 @@ pub fn proxy_types(value: &Value) -> BTreeMap<String, String> {
     }
     out.entry("DIRECT".to_string()).or_insert_with(|| "direct".to_string());
     out.entry("REJECT".to_string()).or_insert_with(|| "reject".to_string());
+    out
+}
+
+/// Protocol and capability tags of one proxy, read from the config.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProxyInfo {
+    pub kind: String,
+    pub tags: Vec<String>,
+}
+
+fn read_bool(value: &Value, key: &str) -> Option<bool> {
+    mapping_get(value, key).and_then(|item| match item {
+        Value::Bool(flag) => Some(*flag),
+        Value::String(text) => match text.to_ascii_lowercase().as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Tags users act on, most decisive first: UDP support (games, calls, QUIC),
+/// the security layer, the transport, then tuning flags. Protocols that always
+/// carry UDP or TLS (hysteria2, tuic, wireguard) do not repeat what the type says.
+pub fn proxy_tags(item: &Value) -> Vec<String> {
+    let kind = read_string(item, "type").unwrap_or_default().to_ascii_lowercase();
+    let mut tags = Vec::new();
+    let udp_native = matches!(kind.as_str(), "hysteria" | "hysteria2" | "tuic" | "wireguard");
+    if udp_native || read_bool(item, "udp") == Some(true) {
+        tags.push("UDP".to_string());
+    }
+    if read_bool(item, "xudp") == Some(true) || mapping_get(item, "packet-encoding").and_then(Value::as_str) == Some("xudp") {
+        tags.push("XUDP".to_string());
+    }
+    if mapping_get(item, "reality-opts").is_some_and(|value| value.is_mapping()) {
+        tags.push("Reality".to_string());
+    } else if read_bool(item, "tls") == Some(true) && !matches!(kind.as_str(), "trojan" | "hysteria" | "hysteria2" | "tuic" | "anytls") {
+        tags.push("TLS".to_string());
+    }
+    if let Some(network) = mapping_get(item, "network").and_then(Value::as_str) {
+        let label = match network.to_ascii_lowercase().as_str() {
+            "ws" => Some("WS"),
+            "grpc" => Some("gRPC"),
+            "h2" => Some("H2"),
+            "http" => Some("HTTP"),
+            "xhttp" => Some("XHTTP"),
+            _ => None,
+        };
+        if let Some(label) = label {
+            tags.push(label.to_string());
+        }
+    }
+    if mapping_get(item, "flow").and_then(Value::as_str).is_some_and(|flow| flow.contains("vision")) {
+        tags.push("Vision".to_string());
+    }
+    if mapping_get(item, "smux").and_then(|smux| read_bool(smux, "enabled")) == Some(true) {
+        tags.push("Mux".to_string());
+    }
+    if read_bool(item, "tfo") == Some(true) {
+        tags.push("TFO".to_string());
+    }
+    if read_bool(item, "mptcp") == Some(true) {
+        tags.push("MPTCP".to_string());
+    }
+    if mapping_get(item, "dialer-proxy").and_then(Value::as_str).is_some_and(|value| !value.is_empty()) {
+        tags.push("链式".to_string());
+    }
+    tags
+}
+
+/// Proxy name → protocol and tags; groups only carry their type.
+pub fn proxy_infos(value: &Value) -> BTreeMap<String, ProxyInfo> {
+    let mut out: BTreeMap<String, ProxyInfo> = proxy_types(value)
+        .into_iter()
+        .map(|(name, kind)| (name, ProxyInfo { kind, tags: Vec::new() }))
+        .collect();
+    if let Some(list) = mapping_get(value, "proxies").and_then(Value::as_sequence) {
+        for item in list {
+            if let Some(name) = read_string(item, "name") {
+                if let Some(info) = out.get_mut(&name) {
+                    info.tags = proxy_tags(item);
+                }
+            }
+        }
+    }
     out
 }
 
@@ -940,5 +1042,30 @@ proxy-groups:
         assert_eq!(value["delay"], serde_json::Value::Null);
         assert_eq!(value["failed"], true);
         assert_eq!(value["tested"], 3);
+    }
+
+    #[test]
+    fn proxy_tags_follow_config_capabilities_without_repeating_the_protocol() {
+        let config: Value = serde_yaml::from_str(
+            r#"
+proxies:
+  - { name: a, type: vless, udp: true, tls: true, network: grpc, flow: xtls-rprx-vision, reality-opts: { public-key: k } }
+  - { name: b, type: hysteria2, server: x, port: 1 }
+  - { name: c, type: trojan, tls: true, udp: "true", network: ws, smux: { enabled: true }, tfo: true, mptcp: true }
+  - { name: d, type: vmess, tls: true, dialer-proxy: a }
+  - { name: e, type: ss }
+proxy-groups:
+  - { name: G, type: select, proxies: [a] }
+"#,
+        )
+        .unwrap();
+        let infos = proxy_infos(&config);
+        assert_eq!(infos["a"].tags, ["UDP", "Reality", "gRPC", "Vision"]);
+        assert_eq!(infos["b"].tags, ["UDP"]);
+        assert_eq!(infos["c"].tags, ["UDP", "WS", "Mux", "TFO", "MPTCP"]);
+        assert_eq!(infos["d"].tags, ["TLS", "链式"]);
+        assert!(infos["e"].tags.is_empty());
+        assert_eq!(infos["G"].kind, "select");
+        assert!(infos["G"].tags.is_empty());
     }
 }

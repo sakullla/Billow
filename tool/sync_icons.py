@@ -1,4 +1,4 @@
-"""Derive the web and Android assets after `tauri icon assets/icon.png`."""
+"""Derive the web and Android assets after `tauri icon assets/icon-manifest.json`."""
 from pathlib import Path
 import shutil
 from PIL import Image

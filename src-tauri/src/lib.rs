@@ -7,6 +7,8 @@ mod nodes;
 mod profile;
 mod shell;
 mod takeover;
+mod tray;
+mod resources;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -565,6 +567,17 @@ fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
     })
 }
 
+/// Android app access control: `mode` is `exclude` or `include`, `packages` replaces that mode's list.
+#[tauri::command(async)]
+fn set_app_rules(app: AppHandle, mode: String, packages: Vec<String>) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession {
+            book, runtime, vpn, ..
+        } = session;
+        book.set_app_rules(&mode, &packages, runtime, vpn)
+    })
+}
+
 #[tauri::command(async)]
 fn select_profile_node(app: AppHandle, group: String, node: String) -> ProfileSnapshot {
     with_session(&app, |session| {
@@ -638,6 +651,11 @@ fn set_profile_interval(app: AppHandle, id: String, hours: u32) -> ProfileSnapsh
 #[tauri::command(async)]
 fn profile_content(app: AppHandle, id: String) -> Option<String> {
     with_profile(&app, |session| session.book.profile_content(&id))
+}
+
+#[tauri::command(async)]
+fn effective_config(app: AppHandle) -> Result<String, String> {
+    with_profile(&app, |session| session.book.effective_config())
 }
 
 #[tauri::command(async)]
@@ -765,6 +783,29 @@ async fn provider_action(app: AppHandle, kind: String, name: String, action: Str
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+/// Nodes of a proxy provider (live from the kernel) or rules of a rule provider (from its file).
+#[tauri::command]
+async fn provider_detail(app: AppHandle, kind: String, name: String) -> Result<resources::ProviderDetail, String> {
+    if kind == "rule" {
+        let config = with_profile(&app, |session| session.book.effective_config())?;
+        return tauri::async_runtime::spawn_blocking(move || {
+            resources::rule_detail(&config, &name, resources::kernel_home().as_deref())
+        })
+        .await
+        .map_err(|err| err.to_string());
+    }
+    let endpoint = controller(&app)?;
+    tauri::async_runtime::spawn_blocking(move || resources::proxy_detail(&endpoint, &name))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+/// GEO database files in the kernel home, readable without a running kernel.
+#[tauri::command(async)]
+fn geo_files() -> Vec<resources::GeoFile> {
+    resources::geo_files(resources::kernel_home().as_deref())
 }
 
 #[tauri::command]
@@ -926,6 +967,9 @@ fn spawn_auto_update(app: &AppHandle) {
 
 #[cfg(desktop)]
 fn show_main(app: &AppHandle) {
+    // A hidden app on macOS must be activated before its window can take focus.
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -933,73 +977,101 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// Show the window and ask the page to open a view ("settings", "profiles", "add-profile", …).
+#[cfg(desktop)]
+fn navigate_main(app: &AppHandle, target: &str) {
+    show_main(app);
+    let _ = app.emit("tray-navigate", target.to_string());
+}
+
 #[cfg(desktop)]
 fn tray_action(app: &AppHandle, id: &str) {
-    let snapshot = match id {
-        "show" => {
+    use tray::TrayCommand;
+    let Some(command) = tray::parse(id) else {
+        return;
+    };
+    match command {
+        TrayCommand::Show => {
             show_main(app);
             return;
         }
-        "quit" => {
+        TrayCommand::Navigate(target) => {
+            navigate_main(app, &target);
+            return;
+        }
+        TrayCommand::Quit => {
             release_proxy_on_exit(app);
             app.exit(0);
             return;
         }
-        "connect" => {
-            let connected = with_profile(app, |session| session.book.snapshot().connected);
-            if connected {
-                disconnect_session(app.clone())
-            } else {
-                connect_session(app.clone()).unwrap_or_else(|message| with_profile(app, |s| s.book.report_failure(message)))
+        _ => {}
+    }
+    // Connecting, switching profiles (which may download) and node selection talk
+    // to the kernel; keep them off the menu thread so the tray never freezes.
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let snapshot = match command {
+            TrayCommand::ToggleConnection => {
+                let connected = with_profile(&app, |session| session.book.snapshot().connected);
+                if connected {
+                    disconnect_session(app.clone())
+                } else {
+                    connect_session(app.clone()).unwrap_or_else(|message| with_profile(&app, |s| s.book.report_failure(message)))
+                }
             }
+            TrayCommand::SystemProxy => {
+                let on = with_profile(&app, |session| session.book.snapshot().system_proxy);
+                set_system_proxy(app.clone(), !on)
+            }
+            TrayCommand::Tun => {
+                let on = with_profile(&app, |session| session.book.snapshot().tun);
+                set_tun_enabled(app.clone(), !on).unwrap_or_else(|message| with_profile(&app, |s| s.book.report_failure(message)))
+            }
+            TrayCommand::Mode(mode) => set_outbound_mode(app.clone(), mode),
+            TrayCommand::Profile(id) => enable_profile(app.clone(), id),
+            TrayCommand::Node { group, node } => select_profile_node(app.clone(), group, node),
+            TrayCommand::Show | TrayCommand::Navigate(_) | TrayCommand::Quit => return,
+        };
+        refresh_tray(&app, &snapshot);
+        let _ = app.emit("profile-changed", snapshot);
+    });
+}
+
+#[cfg(desktop)]
+fn build_menu_items(
+    app: &AppHandle,
+    entries: &[tray::TrayEntry],
+) -> tauri::Result<Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>>> {
+    use tauri::menu::{CheckMenuItem, MenuItem, PredefinedMenuItem, Submenu};
+    use tray::TrayEntry;
+    let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        match entry {
+            TrayEntry::Label(text) => {
+                items.push(Box::new(MenuItem::with_id(app, format!("label-{index}"), text, false, None::<&str>)?));
+            }
+            TrayEntry::Action { id, text, enabled } => {
+                items.push(Box::new(MenuItem::with_id(app, id.as_str(), text, *enabled, None::<&str>)?));
+            }
+            TrayEntry::Check { id, text, checked, enabled } => {
+                items.push(Box::new(CheckMenuItem::with_id(app, id.as_str(), text, *enabled, *checked, None::<&str>)?));
+            }
+            TrayEntry::Submenu { text, enabled, items: children } => {
+                let built = build_menu_items(app, children)?;
+                let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = built.iter().map(|item| item.as_ref()).collect();
+                items.push(Box::new(Submenu::with_items(app, text, *enabled, &refs)?));
+            }
+            TrayEntry::Separator => items.push(Box::new(PredefinedMenuItem::separator(app)?)),
         }
-        "proxy" => {
-            let on = with_profile(app, |session| session.book.snapshot().system_proxy);
-            set_system_proxy(app.clone(), !on)
-        }
-        "tun" => {
-            let on = with_profile(app, |session| session.book.snapshot().tun);
-            set_tun_enabled(app.clone(), !on).unwrap_or_else(|message| with_profile(app, |s| s.book.report_failure(message)))
-        }
-        "rule" | "global" | "direct" => set_outbound_mode(app.clone(), id.to_string()),
-        _ => return,
-    };
-    refresh_tray(app, &snapshot);
-    let _ = app.emit("profile-changed", snapshot);
+    }
+    Ok(items)
 }
 
 #[cfg(desktop)]
 fn tray_menu(app: &AppHandle, snapshot: &ProfileSnapshot) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-    let status = MenuItem::with_id(
-        app,
-        "status",
-        if snapshot.connected { "Billow · 已连接" } else { "Billow · 未连接" },
-        false,
-        None::<&str>,
-    )?;
-    let show = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
-    let connect = MenuItem::with_id(
-        app,
-        "connect",
-        if snapshot.connected { "断开" } else { "连接" },
-        snapshot.active_id.is_some(),
-        None::<&str>,
-    )?;
-    let proxy = CheckMenuItem::with_id(app, "proxy", "系统代理", true, snapshot.system_proxy, None::<&str>)?;
-    let tun = CheckMenuItem::with_id(app, "tun", "TUN 模式", true, snapshot.tun, None::<&str>)?;
-    let mode = snapshot.mode.as_deref().unwrap_or("");
-    let rule = CheckMenuItem::with_id(app, "rule", "规则", true, mode == "rule", None::<&str>)?;
-    let global = CheckMenuItem::with_id(app, "global", "全局", true, mode == "global", None::<&str>)?;
-    let direct = CheckMenuItem::with_id(app, "direct", "直连", true, mode == "direct", None::<&str>)?;
-    let modes = Submenu::with_items(app, "出站模式", true, &[&rule, &global, &direct])?;
-    let quit = MenuItem::with_id(app, "quit", "退出 Billow", true, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let sep2 = PredefinedMenuItem::separator(app)?;
-    Menu::with_items(
-        app,
-        &[&status, &show, &sep, &connect, &proxy, &tun, &modes, &sep2, &quit],
-    )
+    let items = build_menu_items(app, &tray::model(snapshot))?;
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|item| item.as_ref()).collect();
+    tauri::menu::Menu::with_items(app, &refs)
 }
 
 #[cfg(desktop)]
@@ -1010,7 +1082,7 @@ fn refresh_tray(app: &AppHandle, snapshot: &ProfileSnapshot) {
     if let Ok(menu) = tray_menu(app, snapshot) {
         let _ = tray.set_menu(Some(menu));
     }
-    let _ = tray.set_tooltip(Some(if snapshot.connected { "Billow · 已连接" } else { "Billow" }));
+    let _ = tray.set_tooltip(Some(tray::tooltip(snapshot)));
 }
 
 #[cfg(not(desktop))]
@@ -1026,6 +1098,18 @@ fn has_tray(_app: &AppHandle) -> bool {
     false
 }
 
+/// macOS menu bar icons are monochrome templates the system tints for light,
+/// dark and highlighted bars; Windows and Linux keep the colour app icon.
+#[cfg(target_os = "macos")]
+fn tray_icon(_app: &tauri::App) -> Option<tauri::image::Image<'static>> {
+    tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png")).ok()
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn tray_icon(app: &tauri::App) -> Option<tauri::image::Image<'static>> {
+    app.default_window_icon().map(|icon| icon.clone().to_owned())
+}
+
 #[cfg(desktop)]
 fn prepare_tray(app: &tauri::App) {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -1035,15 +1119,16 @@ fn prepare_tray(app: &tauri::App) {
         return;
     };
     let mut builder = TrayIconBuilder::with_id("billow")
-        .tooltip("Billow")
+        .tooltip(tray::tooltip(&snapshot))
         .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| {
-            let handle = app.clone();
-            let id = event.id().as_ref().to_string();
-            std::thread::spawn(move || tray_action(&handle, &id));
-        })
+        // Left click opens the window on Windows/Linux; macOS menu bar items
+        // conventionally open their menu on any click.
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
+        .on_menu_event(|app, event| tray_action(app, event.id().as_ref()))
         .on_tray_icon_event(|tray, event| {
+            if cfg!(target_os = "macos") {
+                return;
+            }
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -1053,8 +1138,12 @@ fn prepare_tray(app: &tauri::App) {
                 show_main(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
+    if let Some(icon) = tray_icon(app) {
+        builder = builder.icon(icon);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.icon_as_template(true);
     }
     if let Err(err) = builder.build(app) {
         eprintln!("Billow tray was not created: {err}");
@@ -1142,6 +1231,7 @@ pub fn run() {
             set_tun_enabled,
             exclude_package,
             include_package,
+            set_app_rules,
             select_profile_node,
             test_profile_group,
             set_node_query,
@@ -1154,6 +1244,7 @@ pub fn run() {
             set_profile_source,
             set_profile_interval,
             profile_content,
+            effective_config,
             save_profile_content,
             refresh_profile,
             refresh_all_profiles,
@@ -1174,7 +1265,9 @@ pub fn run() {
             flush_cache,
             kernel_providers,
             provider_action,
-            upgrade_geo
+            upgrade_geo,
+            provider_detail,
+            geo_files
         ])
         .setup(move |app| {
             prepare_shell(app);
@@ -1212,9 +1305,19 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building Billow")
-        .run(|app, event| {
-            if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
-                on_window_event(app, &label, event);
+        .run(|app, event| match event {
+            tauri::RunEvent::WindowEvent { label, event, .. } => on_window_event(app, &label, event),
+            // Clicking the Dock icon (or relaunching from Finder/Launchpad) while the
+            // window sits hidden in the menu bar brings it back.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { has_visible_windows, .. } => {
+                if !has_visible_windows {
+                    show_main(app);
+                }
             }
+            // Dock "Quit", Cmd+Q and system logout skip the window close path;
+            // never leave the OS proxy pointing at a kernel that is gone.
+            tauri::RunEvent::Exit => release_proxy_on_exit(app),
+            _ => {}
         });
 }

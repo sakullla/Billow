@@ -22,6 +22,15 @@ import {
 
 const REGIONS = ['香港', '日本', '新加坡', '美国', '台湾', '韩国', '德国', '英国']
 const TYPES = ['vless', 'trojan', 'ss', 'hysteria2', 'vmess', 'tuic']
+/** Demo capability tags per protocol, matching what the backend derives from a config. */
+const DEMO_TAGS: Record<string, string[]> = {
+  vless: ['UDP', 'Reality', 'Vision'],
+  trojan: ['UDP', 'WS'],
+  ss: ['UDP'],
+  hysteria2: ['UDP'],
+  vmess: ['TLS', 'gRPC'],
+  tuic: ['UDP'],
+}
 const HOSTS = [
   'www.google.com',
   'api.github.com',
@@ -83,7 +92,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   let app: AppInfo = {
     version: '0.2.0',
     platform: 'demo',
-    autostart: false,
+    // Android has no autostart or tray; the real shell reports null there.
+    autostart: options.platform === 'android' ? null : false,
     close_to_tray: true,
     silent_start: false,
     data_dir: null,
@@ -161,12 +171,17 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
 
   if (state.platform === 'android') {
     state.installed = [
-      { name: 'Chrome', package_name: 'com.android.chrome' },
-      { name: 'Telegram', package_name: 'org.telegram.messenger' },
-      { name: '微信', package_name: 'com.tencent.mm' },
-      { name: '支付宝', package_name: 'com.eg.android.AlipayGphone' },
-      { name: 'YouTube', package_name: 'com.google.android.youtube' },
-      { name: '哔哩哔哩', package_name: 'tv.danmaku.bili' },
+      { name: 'Chrome', package_name: 'com.android.chrome', system: false },
+      { name: 'Telegram', package_name: 'org.telegram.messenger', system: false },
+      { name: '微信', package_name: 'com.tencent.mm', system: false },
+      { name: '支付宝', package_name: 'com.eg.android.AlipayGphone', system: false },
+      { name: 'YouTube', package_name: 'com.google.android.youtube', system: false },
+      { name: '哔哩哔哩', package_name: 'tv.danmaku.bili', system: false },
+      { name: 'GitHub', package_name: 'com.github.android', system: false },
+      { name: '招商银行', package_name: 'cmb.pb', system: false },
+      { name: 'Google Play 服务', package_name: 'com.google.android.gms', system: true },
+      { name: '设置', package_name: 'com.android.settings', system: true },
+      { name: '系统界面', package_name: 'com.android.systemui', system: true },
     ]
     state.excluded = ['com.tencent.mm']
   }
@@ -206,6 +221,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { name: 'private', kind: 'rule', vehicle: 'Inline', behavior: 'Classical', format: '', count: 6, updated_at: hoursAgo(20), used: null, total: null, expire: null },
   ]
 
+  let geoUpdatedAt = Date.now() - 3 * 86_400_000
+
   function log(level: LogLine['level'], message: string) {
     state.logs.push({ level, message, time_ms: Date.now() })
     if (state.logs.length > 1000) state.logs.splice(0, state.logs.length - 1000)
@@ -233,6 +250,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
             failed: delay === null,
             selected: name === now,
             node_type: types.get(name) ?? groupsDef().find((g) => g.name === name)?.type ?? (name === 'DIRECT' ? 'direct' : ''),
+            tags: DEMO_TAGS[types.get(name) ?? ''] ?? [],
           }
         }),
       }
@@ -527,6 +545,14 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       contents.set(id, content)
       return done()
     },
+    async effectiveConfig() {
+      const active = state.active_id ? profile(state.active_id) : null
+      if (!active) throw new Error('还没有启用配置')
+      const override = active.override_text.trim()
+      const base = contents.get(active.id) ?? ''
+      const head = `mixed-port: ${state.mixed_port ?? 7890}\nmode: ${state.mode ?? 'rule'}\nexternal-controller: 127.0.0.1:9090\n`
+      return `${head}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
+    },
     async saveOverride(id, text) {
       const item = profile(id)
       if (item) {
@@ -578,6 +604,13 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async exclude(pkg) {
       if (!state.excluded.includes(pkg)) state.excluded.push(pkg)
       return done()
+    },
+    async setAppRules(mode, packages) {
+      const clean = [...new Set(packages.map((item) => item.trim()).filter(Boolean))]
+      state.app_mode = mode
+      if (mode === 'include') state.included = clean
+      else state.excluded = clean
+      return done(200)
     },
     async include(pkg) {
       state.excluded = state.excluded.filter((item) => item !== pkg)
@@ -645,7 +678,38 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async upgradeGeo() {
       await wait(1500)
+      geoUpdatedAt = Date.now()
       log('info', 'GEO 数据库已更新')
+    },
+    async providerDetail(kind, name) {
+      await wait(200)
+      const row = providerRows.find((item) => item.kind === kind && item.name === name)
+      if (!row) throw new Error('没有这个资源')
+      if (kind === 'proxy') {
+        const proxies = names.slice(0, row.count).map((node, index) => ({
+          name: node,
+          node_type: types.get(node) ?? 'ss',
+          tags: DEMO_TAGS[types.get(node) ?? ''] ?? [],
+          delay_ms: state.kernel_running && index % 7 !== 3 ? 60 + index * 23 : null,
+          alive: state.kernel_running ? index % 7 !== 3 : null,
+        }))
+        return { kind, name, proxies, rules: [], total: proxies.length, notice: null, source: null }
+      }
+      if (row.format === 'MrsRule') {
+        return { kind, name, proxies: [], rules: [], total: 0, notice: 'MRS 是二进制格式，无法逐条预览', source: 'https://example.com/cn.mrs' }
+      }
+      const rules = row.vehicle === 'Inline'
+        ? ['DOMAIN-SUFFIX,local', 'DOMAIN-SUFFIX,lan', 'IP-CIDR,10.0.0.0/8', 'IP-CIDR,172.16.0.0/12', 'IP-CIDR,192.168.0.0/16', 'IP-CIDR,127.0.0.0/8']
+        : Array.from({ length: row.count }, (_, index) => `91.108.${4 + index}.0/22`)
+      return { kind, name, proxies: [], rules, total: rules.length, notice: null, source: row.vehicle === 'Inline' ? 'inline' : 'https://example.com/telegram.yaml' }
+    },
+    async geoFiles() {
+      return [
+        { key: 'geoip', label: 'GeoIP', file: 'geoip.dat', exists: true, size: 11_534_336, modified_ms: geoUpdatedAt },
+        { key: 'geosite', label: 'GeoSite', file: 'geosite.dat', exists: true, size: 5_976_883, modified_ms: geoUpdatedAt },
+        { key: 'mmdb', label: 'MMDB', file: 'geoip.metadb', exists: true, size: 9_123_456, modified_ms: geoUpdatedAt },
+        { key: 'asn', label: 'ASN', file: 'GeoLite2-ASN.mmdb', exists: false, size: null, modified_ms: null },
+      ]
     },
     async flushCache(which) {
       log('info', which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除')

@@ -615,7 +615,7 @@ pub struct ProviderView {
     pub expire: Option<u64>,
 }
 
-fn controller_get(endpoint: &ControllerEndpoint, path: &str) -> Result<serde_json::Value, String> {
+pub(crate) fn controller_get(endpoint: &ControllerEndpoint, path: &str) -> Result<serde_json::Value, String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err("内核没有运行".to_string());
     }
@@ -739,7 +739,7 @@ pub fn upgrade_geo(endpoint: &ControllerEndpoint) -> Result<(), String> {
     Err("GEO 数据库没有更新".to_string())
 }
 
-fn encode_path(value: &str) -> String {
+pub(crate) fn encode_path(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
         match byte {

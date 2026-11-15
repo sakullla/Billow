@@ -25,7 +25,12 @@ export interface ProfileItem {
 export interface InstalledApp {
   name: string
   package_name: string
+  /** Preinstalled system app; hidden from the access-control list by default. */
+  system: boolean
 }
+
+/** Android access control: listed apps bypass the VPN, or only listed apps use it. */
+export type AppMode = 'exclude' | 'include'
 
 export interface NodeItem {
   name: string
@@ -33,6 +38,8 @@ export interface NodeItem {
   failed: boolean
   selected: boolean
   node_type: string
+  /** Capability tags from the config: UDP, Reality/TLS, transport, Vision, Mux, TFO, MPTCP, 链式. */
+  tags: string[]
 }
 
 export interface NodeGroup {
@@ -139,6 +146,40 @@ export interface KernelSettings {
   dns_override: boolean
   dns: DnsSettings
   tun: TunSettings
+  /** GEO databases; null follows the profile. */
+  geo_auto_update: boolean | null
+  geo_update_interval: number | null
+  /** '' follows the profile's geox-url; otherwise a named mirror. */
+  geo_source: GeoSource
+}
+
+export type GeoSource = '' | 'github' | 'jsdelivr' | 'testingcf'
+
+export interface GeoFile {
+  key: string
+  label: string
+  file: string
+  exists: boolean
+  size: number | null
+  modified_ms: number | null
+}
+
+export interface ProviderProxy {
+  name: string
+  node_type: string
+  tags: string[]
+  delay_ms: number | null
+  alive: boolean | null
+}
+
+export interface ProviderDetail {
+  kind: 'proxy' | 'rule'
+  name: string
+  proxies: ProviderProxy[]
+  rules: string[]
+  total: number
+  notice: string | null
+  source: string | null
 }
 
 export interface ConfigValues {
@@ -166,6 +207,9 @@ export interface Snapshot {
   platform: Platform
   tun_wanted: boolean
   excluded: string[]
+  /** Allowlist used in `include` mode. */
+  included: string[]
+  app_mode: AppMode
   installed: InstalledApp[]
   node_catalog: NodeGroup[]
   nodes_notice: string | null
@@ -258,6 +302,9 @@ export function defaultTun(): TunSettings {
 
 export function emptyKernelSettings(): KernelSettings {
   return {
+    geo_auto_update: null,
+    geo_update_interval: null,
+    geo_source: '',
     sniffer: null,
     dns_override: false,
     dns: defaultDns(),
@@ -290,6 +337,8 @@ export function emptySnapshot(): Snapshot {
     platform: 'desktop',
     tun_wanted: false,
     excluded: [],
+    included: [],
+    app_mode: 'exclude',
     installed: [],
     node_catalog: [],
     nodes_notice: null,
@@ -348,6 +397,7 @@ function normalizeNode(raw: unknown): NodeItem {
     failed,
     selected: Boolean(node.selected),
     node_type: str(node.node_type),
+    tags: Array.isArray(node.tags) ? node.tags.filter((tag): tag is string => typeof tag === 'string' && tag.length > 0) : [],
   }
 }
 
@@ -428,7 +478,11 @@ function normalizeTun(raw: unknown): TunSettings {
 
 function normalizeSettings(raw: unknown): KernelSettings {
   const value = obj(raw)
+  const geoSource = str(value.geo_source)
   return {
+    geo_auto_update: optBool(value.geo_auto_update),
+    geo_update_interval: num(value.geo_update_interval),
+    geo_source: geoSource === 'github' || geoSource === 'jsdelivr' || geoSource === 'testingcf' ? geoSource : '',
     sniffer: optBool(value.sniffer),
     dns_override: Boolean(value.dns_override),
     dns: normalizeDns(value.dns),
@@ -483,8 +537,10 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
     platform: source.platform === 'android' ? 'android' : 'desktop',
     tun_wanted: Boolean(source.tun_wanted),
     excluded: list(source.excluded).filter((item): item is string => typeof item === 'string'),
+    included: list(source.included).filter((item): item is string => typeof item === 'string'),
+    app_mode: source.app_mode === 'include' ? 'include' : 'exclude',
     installed: list(source.installed)
-      .map((item) => ({ name: str(obj(item).name), package_name: str(obj(item).package_name) }))
+      .map((item) => ({ name: str(obj(item).name), package_name: str(obj(item).package_name), system: Boolean(obj(item).system) }))
       .filter((app) => app.package_name),
     node_catalog: list(source.node_catalog).map(normalizeGroup).filter((group) => group.name),
     nodes_notice: optStr(source.nodes_notice),
