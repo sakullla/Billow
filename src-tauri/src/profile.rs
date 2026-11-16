@@ -836,7 +836,7 @@ fn reap_stale_unix_kernel(work_dir: &std::path::Path, kernel_path: &std::path::P
         return;
     }
     let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
+        .args(["-KILL", "--", &format!("-{pid}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1027,8 +1027,10 @@ impl ProcessRuntime {
             #[cfg(unix)]
             {
                 let pid = child.id();
+                // procps 3.3.x can interpret a bare negative PID as options and
+                // signal process group 0 (the app/runner) instead of this child.
                 let _ = Command::new("kill")
-                    .args(["-TERM", &format!("-{pid}")])
+                    .args(["-TERM", "--", &format!("-{pid}")])
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -1047,7 +1049,7 @@ impl ProcessRuntime {
                 }
                 if matches!(child.try_wait(), Ok(None)) {
                     let _ = Command::new("kill")
-                        .args(["-KILL", &format!("-{pid}")])
+                        .args(["-KILL", "--", &format!("-{pid}")])
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
