@@ -6,7 +6,11 @@ import {
   formatBytes,
   formatRelative,
   formatSpeed,
+  formatSpeedCompact,
+  groupStrategy,
   hostOf,
+  isInfoNode,
+  resolveChain,
   protocolLabel,
   usagePercent,
 } from './format'
@@ -20,6 +24,19 @@ describe('format', () => {
     expect(formatBytes(200 * 1024 ** 3)).toBe('200 GB')
     expect(formatBytes(null)).toBe('—')
     expect(formatSpeed(2048)).toBe('2.00 KB/s')
+  })
+
+  it('keeps compact sidebar speeds within six characters', () => {
+    expect(formatSpeedCompact(0)).toBe('0B')
+    expect(formatSpeedCompact(1023)).toBe('1023B')
+    expect(formatSpeedCompact(803 * 1024)).toBe('803K')
+    expect(formatSpeedCompact(34.6 * 1024)).toBe('34.6K')
+    expect(formatSpeedCompact(1.28 * 1024 ** 2)).toBe('1.28M')
+    expect(formatSpeedCompact(1023.9 * 1024)).toBe('1024K')
+    expect(formatSpeedCompact(null)).toBe('—')
+    for (const value of [0, 999, 1023, 1024, 99_999, 1_048_575, 5e8, 9.99e11]) {
+      expect(formatSpeedCompact(value).length).toBeLessThanOrEqual(6)
+    }
   })
 
   it('classifies delays and always labels a failure in words', () => {
@@ -58,5 +75,41 @@ describe('format', () => {
     expect(protocolLabel('')).toBe('')
     expect(hostOf('https://sub.example.com/a?b=1')).toBe('sub.example.com')
     expect(hostOf('not a url')).toBe('not a url')
+  })
+
+  it('recognises subscription quota/expiry pseudo-nodes without catching real servers', () => {
+    for (const name of [
+      '【KLM】Traffic Reset：17 Days Left',
+      '【KLM】Expire Date：2027/05/04',
+      '【KLM】4.49 GB | 500 GB',
+      '剩余流量：120.5 GB',
+      '套餐到期：2026-12-31',
+      '距离下次重置剩余：12 天',
+    ]) {
+      expect(isInfoNode(name)).toBe(true)
+    }
+    for (const name of ['【KLM】🇭🇰 Hong Kong 01', '香港 01 流量倍率 0.5', '【LOCAL】🇭🇰 香港|hyperpods->nnc', 'US 10Gbps']) {
+      expect(isInfoNode(name)).toBe(false)
+    }
+  })
+
+  it('describes automatic strategies and follows nested group picks', () => {
+    expect(groupStrategy('fallback')?.ordered).toBe(true)
+    expect(groupStrategy('URLTest')?.label).toBe('自动')
+    expect(groupStrategy('LoadBalance')?.label).toBe('负载均衡')
+    expect(groupStrategy('smart')?.label).toBe('智能')
+    expect(groupStrategy('select')).toBeNull()
+    expect(protocolLabel('Shadowsocks')).toBe('SS')
+    expect(protocolLabel('smart')).toBe('智能')
+
+    const groups = [
+      { name: '节点选择', now: '自动选择' },
+      { name: '自动选择', now: '香港 01' },
+      { name: 'A', now: 'B' },
+      { name: 'B', now: 'A' },
+    ]
+    expect(resolveChain('节点选择', groups)).toEqual(['自动选择', '香港 01'])
+    expect(resolveChain('A', groups)).toEqual(['B', 'A'])
+    expect(resolveChain('missing', groups)).toEqual([])
   })
 })

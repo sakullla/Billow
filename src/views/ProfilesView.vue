@@ -134,6 +134,37 @@ function selectMenuItem(profile: ProfileItem, item: MenuItem) {
 // Edit info
 const editing = ref<ProfileItem | null>(null)
 const form = ref({ name: '', url: '', interval: 0 })
+/**
+ * age identities for encrypted subscriptions (age 私钥). The backend only returns
+ * public keys, so the field starts empty: typing replaces the key, 「清除」 removes it,
+ * leaving it untouched keeps the current one.
+ */
+const ageKey = ref('')
+const ageEditing = ref(false)
+const ageClear = ref(false)
+const ageInput = ref<HTMLTextAreaElement | null>(null)
+/** Opened from an age failure: the dialog lands on the key field instead of the close button. */
+const ageFocus = ref(false)
+const AGE_FAILURE = /age/i
+
+/** Obvious paste mistakes are named before the backend's strict check. */
+const ageHint = computed(() => {
+  const text = ageKey.value.trim()
+  if (!text) return null
+  if (/^age1[0-9a-z]+$/m.test(text) && !/AGE-SECRET-KEY-1/i.test(text)) {
+    return '这是公钥（age1…），请填写对应的私钥 AGE-SECRET-KEY-1…'
+  }
+  if (/-----BEGIN AGE ENCRYPTED FILE-----/.test(text)) return '这是加密后的内容，请填写解密用的私钥'
+  return null
+})
+
+function shortKey(key: string): string {
+  return key.length > 22 ? `${key.slice(0, 12)}…${key.slice(-8)}` : key
+}
+
+function ageFailure(profile: ProfileItem): boolean {
+  return profile.kind === 'subscription' && AGE_FAILURE.test(profile.failure ?? '')
+}
 const INTERVALS = [
   { hours: 0, label: '不自动更新' },
   { hours: 6, label: '每 6 小时' },
@@ -142,10 +173,20 @@ const INTERVALS = [
   { hours: 72, label: '每 3 天' },
   { hours: 168, label: '每周' },
 ]
-function openEdit(profile: ProfileItem) {
+function openEdit(profile: ProfileItem, focusAge = false) {
   menuFor.value = null
   editing.value = profile
   form.value = { name: profile.name, url: profile.source, interval: profile.interval_hours }
+  ageKey.value = ''
+  ageClear.value = false
+  ageEditing.value = focusAge || profile.age_recipients.length === 0
+  ageFocus.value = focusAge
+}
+
+function changeAgeKey() {
+  ageEditing.value = true
+  ageClear.value = false
+  void nextTick(() => ageInput.value?.focus())
 }
 async function saveEdit() {
   const profile = editing.value
@@ -156,7 +197,20 @@ async function saveEdit() {
     if (snap.value.input_error) return
   }
   if (form.value.interval !== profile.interval_hours) await store.setInterval(profile.id, form.value.interval)
+  let ageChanged = false
+  if (profile.kind === 'subscription' && (ageKey.value.trim() || ageClear.value)) {
+    if (ageHint.value) return
+    await store.setAgeKey(profile.id, ageClear.value ? '' : ageKey.value)
+    if (snap.value.input_error) return
+    ageChanged = true
+  }
   editing.value = null
+  // A new key is only useful once the subscription is fetched again with it.
+  if (ageChanged && !ageClear.value && (ageFailure(profile) || !profile.last_success_ms)) {
+    store.toast('已保存，正在用新私钥更新订阅', 'success')
+    void store.update(profile.id)
+    return
+  }
   store.toast('已保存', 'success')
 }
 
@@ -483,9 +537,19 @@ const updateAllLabel = computed(() => {
           <span v-if="profile.proxy_count"><Icon name="globe" :size="13" />{{ profile.proxy_count }} 节点</span>
           <span v-if="profile.interval_hours"><Icon name="refresh" :size="13" />{{ profile.interval_hours >= 24 && profile.interval_hours % 24 === 0 ? `${profile.interval_hours / 24} 天` : `${profile.interval_hours} 时` }}</span>
           <span v-if="profile.override_text.trim()" class="tag">覆写</span>
+          <span v-if="profile.age_recipients.length" class="tag" title="订阅内容使用 age 私钥解密"><Icon name="shield" :size="11" />age</span>
         </footer>
         <p v-if="profile.failure && store.profileUpdates[profile.id]?.state !== 'failure'" class="field-error small">
           <Icon name="alert" :size="13" /> {{ profile.failure }}
+          <button
+            v-if="ageFailure(profile)"
+            type="button"
+            class="btn ghost sm"
+            data-testid="age-fix"
+            @click.stop="openEdit(profile, true)"
+          >
+            {{ profile.age_recipients.length ? '更换私钥' : '填写私钥' }}
+          </button>
         </p>
         <p v-if="profile.override_error" class="field-error small"><Icon name="alert" :size="13" /> {{ profile.override_error }}</p>
         <div
@@ -502,13 +566,27 @@ const updateAllLabel = computed(() => {
           </template>
           <template v-else>
             <span class="field-error" role="alert"><Icon name="alert" :size="13" /> {{ store.profileUpdates[profile.id]?.reason }}</span>
-            <button type="button" class="btn ghost sm" data-testid="retry-update" @click.stop="store.update(profile.id)">重试</button>
+            <button
+              v-if="/age/i.test(store.profileUpdates[profile.id]?.reason ?? '')"
+              type="button"
+              class="btn ghost sm"
+              data-testid="age-fix-update"
+              @click.stop="openEdit(profile, true)"
+            >
+              {{ profile.age_recipients.length ? '更换私钥' : '填写私钥' }}
+            </button>
+            <button v-else type="button" class="btn ghost sm" data-testid="retry-update" @click.stop="store.update(profile.id)">重试</button>
           </template>
         </div>
       </article>
     </div>
 
-    <Modal v-if="editing" title="编辑配置信息" @close="editing = null">
+    <Modal
+      v-if="editing"
+      title="编辑配置信息"
+      :initial-focus="ageFocus ? () => ageInput : undefined"
+      @close="editing = null"
+    >
       <form class="stack" @submit.prevent="saveEdit">
         <label class="field">
           <span>名称</span>
@@ -530,6 +608,53 @@ const updateAllLabel = computed(() => {
               @update:model-value="(value) => (form.interval = Number(value))"
             />
           </label>
+          <div class="field age-field" data-testid="age-field">
+            <span class="age-field-label">
+              age 私钥
+              <span class="tag sm">可选</span>
+            </span>
+            <div v-if="editing.age_recipients.length && !ageEditing" class="age-status" :class="{ clearing: ageClear }" data-testid="age-status">
+              <Icon :name="ageClear ? 'trash' : 'shield'" :size="15" />
+              <span class="grow min0">
+                <template v-if="ageClear">保存后将清除私钥，加密订阅将无法更新</template>
+                <template v-else>
+                  已配置 {{ editing.age_recipients.length }} 个 ·
+                  <span class="mono" :title="editing.age_recipients.join('\n')">{{ editing.age_recipients.map(shortKey).join('、') }}</span>
+                </template>
+              </span>
+              <template v-if="ageClear">
+                <button type="button" class="btn ghost sm" data-testid="age-undo-clear" @click="ageClear = false">撤销</button>
+              </template>
+              <template v-else>
+                <button type="button" class="btn ghost sm" data-testid="age-change" @click="changeAgeKey">更换</button>
+                <button type="button" class="btn ghost sm danger-text" data-testid="age-clear" @click="ageClear = true">清除</button>
+              </template>
+            </div>
+            <template v-else>
+              <textarea
+                ref="ageInput"
+                v-model="ageKey"
+                class="age-input mono"
+                rows="2"
+                spellcheck="false"
+                autocomplete="off"
+                autocapitalize="off"
+                placeholder="AGE-SECRET-KEY-1…  订阅内容经 age 加密时填写，可多行"
+                aria-describedby="age-help"
+                data-testid="age-input"
+              />
+              <button
+                v-if="editing.age_recipients.length"
+                type="button"
+                class="btn ghost sm age-cancel"
+                @click="ageEditing = false; ageKey = ''"
+              >
+                保留原私钥
+              </button>
+            </template>
+            <p v-if="ageHint" class="field-error small" role="alert" data-testid="age-hint">{{ ageHint }}</p>
+            <p id="age-help" class="muted small">私钥只保存在本机，用于在更新时解密订阅；界面只显示对应的公钥。</p>
+          </div>
         </template>
         <p v-if="snap.input_error" class="field-error">{{ snap.input_error }}</p>
       </form>

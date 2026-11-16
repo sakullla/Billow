@@ -70,6 +70,7 @@ interface DemoOptions {
 }
 
 const DUPLICATE_ERROR = '该订阅已存在'
+const AGE_KEY_ERROR = 'age 私钥格式不正确：每行一个以 AGE-SECRET-KEY-1 开头的私钥，# 开头的行视为注释'
 
 const DEMO_GROUP_ICONS: Record<string, string> = {
   流媒体: 'https://icons.example.com/media.png',
@@ -136,6 +137,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       interval_hours: 0,
       updated_ms: null,
       proxy_count: names.length,
+      age_recipients: [],
       ...partial,
     }
     state.profiles.push(profile)
@@ -542,6 +544,22 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async setInterval(id, hours) {
       const item = profile(id)
       if (item) item.interval_hours = hours
+      return done()
+    },
+    async setAgeKey(id, key) {
+      const item = profile(id)
+      if (!item || item.kind !== 'subscription') return done()
+      const lines = key
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith('#'))
+      // The demo mirrors the backend contract: X25519 identities only, public keys shown.
+      if (lines.some((line) => !/^AGE-SECRET-KEY-1[0-9A-Z]{58}$/.test(line))) {
+        state.input_error = AGE_KEY_ERROR
+        return done()
+      }
+      state.input_error = null
+      item.age_recipients = lines.map((line) => `age1${line.slice(16, 74).toLowerCase()}`)
       return done()
     },
     async content(id) {

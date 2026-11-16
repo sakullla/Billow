@@ -24,6 +24,8 @@ const variant = computed(() => props.variant ?? 'no-data')
 const preset = computed(() => DEFAULTS[variant.value])
 const role = computed(() => preset.value.role)
 const isLoading = computed(() => variant.value === 'loading')
+/** Pages pass their own icon for empty/unavailable states; errors always keep the warning icon (R7). */
+const iconName = computed(() => (variant.value === 'error' ? preset.value.icon : (props.icon ?? preset.value.icon)))
 </script>
 
 <template>
@@ -35,7 +37,7 @@ const isLoading = computed(() => variant.value === 'loading')
     :aria-busy="isLoading ? 'true' : undefined"
   >
     <span v-if="isLoading" class="spinner" aria-hidden="true" />
-    <Icon v-else :name="icon ?? preset.icon" :size="28" />
+    <Icon v-else :name="iconName" :size="28" :data-icon="iconName" />
     <h3>{{ title ?? preset.title }}</h3>
     <p class="muted small">
       <slot name="description">{{ description ?? preset.description }}</slot>

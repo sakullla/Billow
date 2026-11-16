@@ -59,6 +59,8 @@ export interface Backend {
   rename(id: string, name: string): Promise<Snapshot>
   setSource(id: string, url: string): Promise<Snapshot>
   setInterval(id: string, hours: number): Promise<Snapshot>
+  /** Replace the age identities of a subscription; an empty text clears them. */
+  setAgeKey(id: string, key: string): Promise<Snapshot>
   content(id: string): Promise<string>
   saveContent(id: string, content: string): Promise<Snapshot>
   /** The YAML the kernel runs for the active profile (or would run on the next connect). */
@@ -178,6 +180,7 @@ function createTauriBackend(): Backend {
     rename: (id, name) => snap('rename_profile', { id, name }),
     setSource: (id, url) => snap('set_profile_source', { id, url }),
     setInterval: (id, hours) => snap('set_profile_interval', { id, hours }),
+    setAgeKey: (id, key) => snap('set_profile_age_key', { id, key }),
     content: async (id) => (await call<string | null>('profile_content', { id })) ?? '',
     saveContent: (id, content) => snap('save_profile_content', { id, content }),
     effectiveConfig: () => call<string>('effective_config'),

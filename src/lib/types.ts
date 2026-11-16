@@ -20,6 +20,8 @@ export interface ProfileItem {
   interval_hours: number
   updated_ms: number | null
   proxy_count: number
+  /** Public keys (`age1…`) of the age identities set for this subscription; never the secret. */
+  age_recipients: string[]
 }
 
 export interface InstalledApp {
@@ -696,6 +698,9 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
         interval_hours: num(profile.interval_hours) ?? 0,
         updated_ms: num(profile.updated_ms) || null,
         proxy_count: num(profile.proxy_count) ?? 0,
+        age_recipients: Array.isArray(profile.age_recipients)
+          ? profile.age_recipients.filter((item): item is string => typeof item === 'string' && item.length > 0)
+          : [],
       } satisfies ProfileItem
     }),
     active_id: optStr(source.active_id),

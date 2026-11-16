@@ -5,7 +5,7 @@ import Icon from './components/Icon.vue'
 import Modal from './components/Modal.vue'
 import TitleBar from './components/TitleBar.vue'
 import { createBackend, type Backend } from './lib/backend'
-import { formatSpeed } from './lib/format'
+import { formatSpeed, formatSpeedCompact } from './lib/format'
 import { createStore, PAGES, resolvePage, STORE, type PageId, type SettingsTab } from './lib/store'
 import { closeTopLayer as dismissTopLayer, layerDepth, onLayerChange } from './lib/ui/focus'
 import { useHotkeys } from './lib/ui/hotkeys'
@@ -569,8 +569,8 @@ defineExpose({ store })
               <span>{{ sideStatusWord }}</span>
             </div>
             <div v-if="snap.connected" class="side-rates mono">
-              <span class="down"><Icon name="down" :size="11" />{{ formatSpeed(snap.download ?? 0) }}</span>
-              <span class="up"><Icon name="up" :size="11" />{{ formatSpeed(snap.upload ?? 0) }}</span>
+              <span class="down" :title="`下载 ${formatSpeed(snap.download ?? 0)}`"><Icon name="down" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.download ?? 0) }}</em></span>
+              <span class="up" :title="`上传 ${formatSpeed(snap.upload ?? 0)}`"><Icon name="up" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.upload ?? 0) }}</em></span>
             </div>
             <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? '还没有配置' }}</div>
           </div>

@@ -11,6 +11,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
+use crate::age_key;
 use crate::diagnostics::{self, ConnectionView, LogView, TrafficTotals};
 use crate::nodes::{
     self, ControllerEndpoint, KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay,
@@ -71,6 +72,8 @@ struct Profile {
     usage: Option<Usage>,
     selected: BTreeMap<String, String>,
     interval_hours: u32,
+    /// age X25519 identities, one per line, for subscriptions published encrypted.
+    age_key: String,
     updated_ms: Option<u64>,
     proxy_count: usize,
     node_metadata: OnceLock<Option<NodeMetadata>>,
@@ -542,6 +545,8 @@ pub struct ProfileView {
     pub interval_hours: u32,
     pub updated_ms: Option<u64>,
     pub proxy_count: usize,
+    /// Public keys of the configured age identities; the secret is never sent to the UI.
+    pub age_recipients: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -733,9 +738,14 @@ impl SubscriptionSource for HttpSubscriptionClient {
         if body.len() as u64 > BODY_LIMIT {
             return Err(FETCH_ERROR.to_string());
         }
-        let text = String::from_utf8(body).map_err(|_| FETCH_ERROR.to_string())?;
+        // Binary age files are armored so the rest of the pipeline stays textual.
+        let text = if age_key::is_encrypted_bytes(&body) {
+            age_key::armor_binary(&body)
+        } else {
+            String::from_utf8(body).map_err(|_| FETCH_ERROR.to_string())?
+        };
         Ok(FetchedSubscription {
-            content: normalize_subscription_content(&text),
+            content: if age_key::is_encrypted_text(&text) { text } else { normalize_subscription_content(&text) },
             userinfo,
         })
     }
@@ -1553,6 +1563,8 @@ struct DiskProfile {
     #[serde(default)]
     interval_hours: u32,
     #[serde(default)]
+    age_key: String,
+    #[serde(default)]
     updated_ms: Option<u64>,
 }
 
@@ -1688,6 +1700,7 @@ impl ProfileBook {
                 interval_hours: profile.interval_hours,
                 updated_ms: profile.updated_ms,
                 proxy_count: profile.proxy_count,
+                age_recipients: age_key::recipients(&profile.age_key),
             })
             .collect();
         let (node_catalog, nodes_notice, nodes_profile_id) = self.node_views();
@@ -2245,10 +2258,16 @@ impl ProfileBook {
         };
         let fetched = if self.profiles[index].kind == ProfileKind::Subscription {
             match source.fetch(&self.profiles[index].source) {
-                Ok(fetched) => Some(FetchedSubscription {
-                    content: normalize_subscription_content(&fetched.content),
-                    userinfo: fetched.userinfo,
-                }),
+                Ok(fetched) => match age_key::decrypt_if_needed(&fetched.content, &self.profiles[index].age_key) {
+                    Ok(plain) => Some(FetchedSubscription {
+                        content: normalize_subscription_content(&plain),
+                        userinfo: fetched.userinfo,
+                    }),
+                    Err(message) => {
+                        self.fail_activation(index, message);
+                        return self.publish(kernel);
+                    }
+                },
                 Err(_) => {
                     self.fail_activation(index, FETCH_ERROR.to_string());
                     return self.publish(kernel);
@@ -2526,6 +2545,7 @@ impl ProfileBook {
             usage: None,
             selected: BTreeMap::new(),
             interval_hours: 0,
+            age_key: String::new(),
             updated_ms: None,
             proxy_count: 0,
             node_metadata: OnceLock::new(),
@@ -2569,6 +2589,7 @@ impl ProfileBook {
                     node_metadata: OnceLock::new(),
                     selected: profile.selected,
                     interval_hours: profile.interval_hours,
+                    age_key: profile.age_key,
                     updated_ms: profile.updated_ms,
                 }
             })
@@ -2681,6 +2702,7 @@ impl ProfileBook {
                     expire: profile.usage.as_ref().and_then(|usage| usage.expire),
                     selected: profile.selected.clone(),
                     interval_hours: profile.interval_hours,
+                    age_key: profile.age_key.clone(),
                     updated_ms: profile.updated_ms,
                 })
                 .collect(),
@@ -3488,6 +3510,26 @@ impl ProfileBook {
         self.snapshot()
     }
 
+    /// Store (or clear, with empty text) the age identities used to decrypt this subscription.
+    pub fn set_profile_age_key(&mut self, id: &str, keys: &str) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if self.profiles[index].kind != ProfileKind::Subscription {
+            return self.snapshot();
+        }
+        match age_key::normalize_keys(keys) {
+            Ok(normalized) => {
+                self.profiles[index].age_key = normalized;
+                self.input_error = None;
+                self.persist();
+            }
+            Err(message) => self.input_error = Some(message),
+        }
+        self.snapshot()
+    }
+
     pub fn set_profile_interval(&mut self, id: &str, hours: u32) -> ProfileSnapshot {
         if let Some(index) = self.index_of(id) {
             self.profiles[index].interval_hours = hours.min(24 * 30);
@@ -3567,7 +3609,16 @@ impl ProfileBook {
                 return self.snapshot();
             }
         };
-        let content = normalize_subscription_content(&fetched.content);
+        let plain = match age_key::decrypt_if_needed(&fetched.content, &self.profiles[index].age_key) {
+            Ok(plain) => plain,
+            Err(message) => {
+                self.profiles[index].failure = Some(message);
+                self.profiles[index].updated_ms = Some(now_ms());
+                self.persist();
+                return self.snapshot();
+            }
+        };
+        let content = normalize_subscription_content(&plain);
         if parse_config(&content).is_err() {
             self.profiles[index].failure = Some(CONTENT_ERROR.to_string());
             self.profiles[index].updated_ms = Some(now_ms());
@@ -4773,6 +4824,51 @@ proxy-groups:
         assert!(book.due_profiles(now_ms()).is_empty());
         assert_eq!(book.due_profiles(now_ms() + 6 * 3_600_000), ["p1"]);
         assert_eq!(book.subscription_ids(), ["p1"]);
+    }
+
+    #[test]
+    fn age_encrypted_subscriptions_need_a_matching_key_that_persists() {
+        use age::secrecy::ExposeSecret;
+        let dir = temp_dir("age");
+        let url = "https://example.com/encrypted";
+        let identity = age::x25519::Identity::generate();
+        let armored = age::encrypt_and_armor(&identity.to_public(), config(7891).as_bytes()).unwrap();
+        let source = MapSource {
+            items: HashMap::from([(
+                url.to_string(),
+                Ok(FetchedSubscription { content: armored, userinfo: None }),
+            )]),
+        };
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_subscription(url);
+
+        let missing = book.refresh_profile("p1", &source, &mut kernel);
+        assert_eq!(missing.profiles[0].failure.as_deref(), Some(age_key::KEY_MISSING_ERROR));
+
+        let bad = book.set_profile_age_key("p1", "AGE-SECRET-KEY-1NOPE");
+        assert_eq!(bad.input_error.as_deref(), Some(age_key::KEY_FORMAT_ERROR));
+        assert!(bad.profiles[0].age_recipients.is_empty());
+
+        let secret = identity.to_string().expose_secret().to_string();
+        let saved = book.set_profile_age_key("p1", &format!("# public key: {}\n{secret}\n", identity.to_public()));
+        assert!(saved.input_error.is_none());
+        assert_eq!(saved.profiles[0].age_recipients, [identity.to_public().to_string()]);
+
+        let ok = book.refresh_profile("p1", &source, &mut kernel);
+        assert!(ok.profiles[0].failure.is_none());
+        assert_eq!(book.profile_content("p1").as_deref(), Some(config(7891).trim()));
+
+        // The key survives a restart; the UI only ever sees the public key.
+        let reopened = ProfileBook::open(&dir.0).snapshot();
+        assert_eq!(reopened.profiles[0].age_recipients, [identity.to_public().to_string()]);
+        let json = serde_json::to_string(&reopened).unwrap();
+        assert!(!json.contains(&secret));
+
+        // Clearing the key brings the explanation back on the next update.
+        book.set_profile_age_key("p1", "");
+        let cleared = book.refresh_profile("p1", &source, &mut kernel);
+        assert_eq!(cleared.profiles[0].failure.as_deref(), Some(age_key::KEY_MISSING_ERROR));
     }
 
     fn current_ids(snapshot: &ProfileSnapshot) -> Vec<&str> {

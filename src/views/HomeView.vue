@@ -14,10 +14,12 @@ import {
   formatDate,
   formatRelative,
   formatSpeed,
+  groupTypeLabel,
+  resolveChain,
   usagePercent,
 } from '../lib/format'
 import { useStore } from '../lib/store'
-import type { Mode, ProfileItem } from '../lib/types'
+import type { Mode, NodeGroup, ProfileItem } from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
 const appIcon = `${import.meta.env.BASE_URL}icon.png`
@@ -30,6 +32,8 @@ const MODES: { id: Mode; label: string; hint: string; icon: string }[] = [
   { id: 'global', label: '全局', hint: '全部流量走当前节点', icon: 'globe' },
   { id: 'direct', label: '直连', hint: '新连接都不经过代理', icon: 'zap' },
 ]
+/** Seconds of samples before the chart replaces its "collecting" note with curves (R2). */
+const MIN_CHART_SAMPLES = 5
 const MODE_OPTIONS = MODES.map(({ id, label, icon }) => ({ id, label, icon }))
 
 const status = computed(() => {
@@ -185,6 +189,29 @@ function nodeOf(group: { now: string; nodes: { name: string; delay_ms: number | 
   return group.nodes.find((node) => node.name === group.now)
 }
 
+/**
+ * Home group cards always reserve a delay slot (R1). Only a real reading or a
+ * timeout is shown; disconnected, untested and DIRECT/REJECT targets read as "—".
+ */
+function groupDelay(group: NodeGroup): { text: string; tone: string } {
+  const none = { text: '—', tone: 'none' }
+  if (!snap.value.connected) return none
+  const node = nodeOf(group)
+  if (!node || ['direct', 'reject'].includes(node.name.toLowerCase())) return none
+  const result = store.testResults.value[node.name]
+  const delay = result ? result.delay : node.delay_ms
+  const failed = result ? result.failed : node.failed
+  if (!failed && delay == null) return none
+  return { text: delayText(delay, failed), tone: delayTone(delay, failed) }
+}
+
+/** "自动选择 → 香港 01" when a group points at another group, so the real server is visible (R14). */
+function nowText(group: NodeGroup): string {
+  const chain = resolveChain(group.name, snap.value.node_catalog)
+  if (!chain.length) return group.now || '—'
+  return chain.length === 1 ? chain[0]! : `${chain[0]} → ${chain[chain.length - 1]}`
+}
+
 function onPrimary() {
   if (!store.hasProfiles.value) {
     store.adding.value = true
@@ -297,7 +324,7 @@ function onPrimary() {
                 <Icon name="globe" :size="14" class="hero-node-icon" />
                 <span v-if="!compact" class="hero-node-group">{{ primaryGroup.name }}</span>
                 <span v-if="!compact" class="hero-node-sep" aria-hidden="true">·</span>
-                <span class="hero-node-name ellipsis">{{ primaryGroup.now || primaryGroup.name }}</span>
+                <span class="hero-node-name ellipsis" :title="nowText(primaryGroup)">{{ primaryGroup.now ? nowText(primaryGroup) : primaryGroup.name }}</span>
                 <span
                   v-if="primaryNode && (primaryNode.delay_ms != null || primaryNode.failed)"
                   class="hero-node-delay mono"
@@ -349,7 +376,12 @@ function onPrimary() {
         </div>
 
         <div v-if="snap.connected" class="hero-chart" data-testid="traffic-card">
-          <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 72 : 84" />
+          <TrafficChart
+            :up="store.traffic.value.up"
+            :down="store.traffic.value.down"
+            :height="compact ? 72 : 84"
+            :collecting="store.trafficSamples.value < MIN_CHART_SAMPLES"
+          />
         </div>
 
         <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
@@ -532,16 +564,21 @@ function onPrimary() {
               >
                 <div class="group-tile-top">
                   <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="compact ? 22 : 20" /></span>
-                  <span
-                    v-if="nodeOf(group) && (nodeOf(group)!.delay_ms != null || nodeOf(group)!.failed)"
-                    class="delay"
-                    :class="delayTone(nodeOf(group)!.delay_ms, nodeOf(group)!.failed)"
-                  >{{ delayText(nodeOf(group)!.delay_ms, nodeOf(group)!.failed) }}</span>
-                  <Icon v-else name="chevron-right" :size="14" class="muted group-tile-arrow" />
+                  <span class="group-tile-meta">
+                    <span class="tag sm" data-testid="home-group-type">{{ groupTypeLabel(group) }}</span>
+                    <span
+                      class="delay home-group-delay mono"
+                      :class="groupDelay(group).tone"
+                      data-testid="home-group-delay"
+                    >{{ groupDelay(group).text }}</span>
+                  </span>
                 </div>
                 <div class="group-row-text">
                   <span class="group-row-name">{{ group.name }}</span>
-                  <span class="group-row-now">{{ group.now || '—' }}</span>
+                  <span class="group-row-now">
+                    <span class="ellipsis" :title="nowText(group)" data-testid="home-group-now">{{ nowText(group) }}</span>
+                    <Icon name="chevron-right" :size="13" class="group-tile-arrow" />
+                  </span>
                 </div>
               </button>
             </div>

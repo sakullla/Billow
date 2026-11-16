@@ -321,6 +321,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
           v-if="!lines.length"
           compact
           :variant="source.length ? 'no-match' : 'no-data'"
+          :icon="source.length ? undefined : 'terminal'"
           :title="source.length ? '没有匹配的日志' : '暂无日志'"
           :description="source.length ? '换一个关键词或级别，或清空当前筛选。' : '连接后内核输出会出现在这里。'"
         >

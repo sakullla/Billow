@@ -94,6 +94,8 @@ export function createStore(backend: Backend) {
     up: Array(HISTORY).fill(0),
     down: Array(HISTORY).fill(0),
   })
+  /** Samples collected in the current connected session; the chart waits for a few before drawing (R2). */
+  const trafficSamples = ref(0)
   const adding = ref(false)
   /** Reason shown in the home failure banner; owned here so a retry can clear it (R24, R29). */
   const lastActionError = ref<string | null>(null)
@@ -210,12 +212,19 @@ export function createStore(backend: Backend) {
   }
 
   function pushTraffic(next: Snapshot) {
+    if (!next.connected) {
+      trafficSamples.value = 0
+    } else if (trafficSamples.value === 0) {
+      // A new session starts from a clean history instead of the previous curve (R2).
+      traffic.value = { up: Array(HISTORY).fill(0), down: Array(HISTORY).fill(0) }
+    }
     const up = next.connected ? next.upload ?? 0 : 0
     const down = next.connected ? next.download ?? 0 : 0
     traffic.value = {
       up: [...traffic.value.up.slice(1), up],
       down: [...traffic.value.down.slice(1), down],
     }
+    if (next.connected) trafficSamples.value = Math.min(HISTORY, trafficSamples.value + 1)
   }
 
   function apply(next: Snapshot) {
@@ -712,6 +721,7 @@ export function createStore(backend: Backend) {
     busy,
     toasts,
     traffic,
+    trafficSamples,
     adding,
     /** Home failure banner state (R24, R29). */
     lastActionError,
@@ -780,6 +790,7 @@ export function createStore(backend: Backend) {
     rename: (id: string, name: string) => act(null, () => backend.rename(id, name)),
     setSource: (id: string, url: string) => act(null, () => backend.setSource(id, url)),
     setInterval: (id: string, hours: number) => act(null, () => backend.setInterval(id, hours)),
+    setAgeKey: (id: string, key: string) => act(null, () => backend.setAgeKey(id, key)),
     saveContent: (id: string, content: string) => act('content', () => backend.saveContent(id, content), '配置已保存'),
     saveOverride: (id: string, text: string) => act('override', () => backend.saveOverride(id, text)),
 

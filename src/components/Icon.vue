@@ -1,13 +1,4 @@
-<script setup lang="ts">
-import { computed } from 'vue'
-
-// Sizes stay a plain number so callers can pick 12/14/16/18 (inline), 20/21 (navigation)
-// or 30/40 (empty states and the power action) without a second scale to maintain.
-const props = withDefaults(defineProps<{ name: string; size?: number; stroke?: number; label?: string }>(), {
-  size: 18,
-  stroke: 1.8,
-})
-
+<script lang="ts">
 // Outline icons on a 24×24 grid, drawn with currentColor.
 const PATHS: Record<string, string> = {
   home: 'M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
@@ -72,6 +63,10 @@ const PATHS: Record<string, string> = {
   sparkles: 'm12 3 1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3Z',
   'arrow-right': 'M5 12h14M13 6l6 6-6 6',
   upload: 'M12 15V3M7 8l5-5 5 5M4 21h16',
+  // Strategy glyphs: speed gauge (url-test), primary→backup branch (fallback), split (load-balance).
+  'url-test': 'M12 14l4-4M3.34 19a10 10 0 1 1 17.32 0',
+  fallback: 'M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM18 9a9 9 0 0 1-9 9',
+  'load-balance': 'M16 3h5v5M8 3H3v5M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3M15 9l6-6',
 }
 
 // Kernel proxy-group types reuse the built-in group icons, so a group without a
@@ -79,11 +74,22 @@ const PATHS: Record<string, string> = {
 const ALIASES: Record<string, string> = {
   selector: 'route',
   relay: 'layers',
-  'url-test': 'network',
-  fallback: 'network',
-  'load-balance': 'network',
-  loadbalance: 'network',
+  urltest: 'url-test',
+  loadbalance: 'load-balance',
+  smart: 'sparkles',
 }
+
+</script>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+
+// Sizes stay a plain number so callers can pick 12/14/16/18 (inline), 20/21 (navigation)
+// or 30/40 (empty states and the power action) without a second scale to maintain.
+const props = withDefaults(defineProps<{ name: string; size?: number; stroke?: number; label?: string }>(), {
+  size: 18,
+  stroke: 1.8,
+})
 
 const d = computed(() => PATHS[props.name] ?? PATHS[ALIASES[props.name] ?? ''] ?? PATHS.info)
 </script>

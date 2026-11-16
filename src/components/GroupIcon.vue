@@ -39,8 +39,10 @@ function glyph(type: string): string {
   const key = type.trim().toLowerCase()
   if (key === 'select' || key === 'selector') return 'route'
   if (key === 'relay') return 'layers'
-  if (key === 'url-test' || key === 'urltest') return 'network'
-  if (key === 'fallback' || key === 'load-balance' || key === 'loadbalance') return 'network'
+  if (key === 'url-test' || key === 'urltest') return 'url-test'
+  if (key === 'fallback') return 'fallback'
+  if (key === 'load-balance' || key === 'loadbalance') return 'load-balance'
+  if (key === 'smart') return 'sparkles'
   return 'globe'
 }
 

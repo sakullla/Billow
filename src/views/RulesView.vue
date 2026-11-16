@@ -304,7 +304,7 @@ onBeforeUnmount(() => { ++loadId })
       </button>
     </div>
 
-    <EmptyState v-if="!snap.kernel_running" variant="unavailable" title="内核未运行" description="连接后可以查看当前配置生效的分流规则。">
+    <EmptyState v-if="!snap.kernel_running" variant="unavailable" icon="route" title="内核未运行" description="连接后可以查看当前配置生效的分流规则。">
       <template #action>
         <button
           type="button"
@@ -325,7 +325,7 @@ onBeforeUnmount(() => { ++loadId })
         <button type="button" class="btn ghost sm" data-testid="retry-rules" @click="load()">重试</button>
       </template>
     </EmptyState>
-    <EmptyState v-else-if="loaded && !rules.length" variant="no-data" title="没有规则" description="当前配置没有可显示的分流规则。">
+    <EmptyState v-else-if="loaded && !rules.length" variant="no-data" icon="route" title="没有规则" description="当前配置没有可显示的分流规则。">
       <template #action>
         <button type="button" class="btn ghost sm" @click="load()">刷新</button>
       </template>
@@ -350,6 +350,7 @@ onBeforeUnmount(() => { ++loadId })
       >
         <span class="rule-index mono muted">{{ index + 1 }}</span>
         <span class="tag">{{ rule.kind }}</span>
+        <span v-if="rule.disabled" class="tag warn rule-off-tag" data-testid="rule-off-tag">已禁用</span>
         <span class="rule-payload mono ellipsis" :title="rule.payload">
           <template v-if="rule.payload">
             <template v-for="(part, partIdx) in highlight(rule.payload)" :key="partIdx">
@@ -371,12 +372,30 @@ onBeforeUnmount(() => { ++loadId })
           <span class="rule-hit mono" :title="`命中 ${hitText(rule)} 次`" data-rule-hit>{{ hitText(rule) }}</span>
           <span class="rule-last-hit small muted">{{ lastHitText(rule) }}</span>
         </template>
+        <!-- Desktop reveals the action on hover/focus; disabled rows keep 「启用」 visible (R4). Phones use a compact icon. -->
         <button
-          v-if="rule.key"
+          v-if="rule.key && compact"
           type="button"
-          class="btn ghost sm rule-toggle"
+          class="icon-btn sm rule-toggle"
+          :class="{ active: rule.disabled }"
           :disabled="toggling[rule.key]"
           :aria-busy="toggling[rule.key] || undefined"
+          :aria-label="rule.disabled ? `启用规则 ${labelOf(rule)}` : `临时禁用规则 ${labelOf(rule)}`"
+          :title="rule.disabled ? '启用' : '临时禁用'"
+          data-testid="rule-toggle"
+          @click="toggle(rule)"
+        >
+          <span v-if="toggling[rule.key]" class="spinner xs" aria-hidden="true" />
+          <Icon v-else :name="rule.disabled ? 'play' : 'pause'" :size="14" />
+        </button>
+        <button
+          v-else-if="rule.key"
+          type="button"
+          class="btn ghost sm rule-toggle"
+          :class="{ pinned: rule.disabled || toggling[rule.key] }"
+          :disabled="toggling[rule.key]"
+          :aria-busy="toggling[rule.key] || undefined"
+          :aria-label="rule.disabled ? `启用规则 ${labelOf(rule)}` : `临时禁用规则 ${labelOf(rule)}`"
           data-testid="rule-toggle"
           @click="toggle(rule)"
         >

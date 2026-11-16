@@ -1,3 +1,4 @@
+mod age_key;
 mod app_update;
 mod bundled_geo;
 mod diagnostics;
@@ -323,12 +324,15 @@ fn set_theme(app: AppHandle, theme: String) -> ShellState {
     snapshot
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_last_entry(app: AppHandle, entry: String) -> ShellState {
     let store = app.state::<Store>();
     let mut state = lock(&store.state);
-    state.last_entry = resolve_entry(&entry).to_string();
-    persist(&app, &state);
+    let entry = resolve_entry(&entry);
+    if state.last_entry != entry {
+        state.last_entry = entry.to_string();
+        persist(&app, &state);
+    }
     state.clone()
 }
 
@@ -666,6 +670,11 @@ fn set_profile_source(app: AppHandle, id: String, url: String) -> ProfileSnapsho
 #[tauri::command(async)]
 fn set_profile_interval(app: AppHandle, id: String, hours: u32) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.set_profile_interval(&id, hours))
+}
+
+#[tauri::command(async)]
+fn set_profile_age_key(app: AppHandle, id: String, key: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.set_profile_age_key(&id, &key))
 }
 
 #[tauri::command(async)]
@@ -1296,6 +1305,7 @@ pub fn run() {
             rename_profile,
             set_profile_source,
             set_profile_interval,
+            set_profile_age_key,
             profile_content,
             effective_config,
             save_profile_content,

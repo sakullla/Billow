@@ -2,7 +2,8 @@
 import { computed, ref, useId } from 'vue'
 import { formatSpeed } from '../lib/format'
 
-const props = defineProps<{ up: number[]; down: number[]; height?: number }>()
+/** `collecting` hides the curves until the session has enough samples to show a trend (R2). */
+const props = defineProps<{ up: number[]; down: number[]; height?: number; collecting?: boolean }>()
 
 const W = 600
 const H = computed(() => props.height ?? 140)
@@ -127,6 +128,7 @@ const inspected = computed(() => {
 })
 
 function onPointerMove(event: PointerEvent) {
+  if (props.collecting) return
   const el = chartEl.value
   const count = sampleCount.value
   if (!el || count < 2) return
@@ -141,9 +143,10 @@ function onPointerLeave() {
 }
 
 // The chart is the summary of the last minute, so the accessible name carries the numbers.
-const label = computed(
-  () =>
-    `最近一分钟流量，峰值 ${formatSpeed(peak.value)}，当前下载 ${formatSpeed(last(props.down))}，上传 ${formatSpeed(last(props.up))}`,
+const label = computed(() =>
+  props.collecting
+    ? '正在采集流量数据'
+    : `最近一分钟流量，峰值 ${formatSpeed(peak.value)}，当前下载 ${formatSpeed(last(props.down))}，上传 ${formatSpeed(last(props.up))}`,
 )
 </script>
 
@@ -153,14 +156,15 @@ const label = computed(
     <div class="chart-head" aria-hidden="true">
       <div v-if="inspected" class="chart-readout mono" data-testid="chart-tooltip">
         <span class="muted">{{ inspected.when }}</span>
-        <span class="up">↑ {{ formatSpeed(inspected.upVal) }}</span>
         <span class="down">↓ {{ formatSpeed(inspected.downVal) }}</span>
+        <span class="up">↑ {{ formatSpeed(inspected.upVal) }}</span>
       </div>
-      <div v-else class="legend">
-        <span class="legend-item up">上传</span>
+      <!-- Same order as the rate cards above: download first (R2). -->
+      <div v-else class="legend" data-testid="chart-legend">
         <span class="legend-item down">下载</span>
+        <span class="legend-item up">上传</span>
       </div>
-      <span class="chart-peak">{{ formatSpeed(peak) }}</span>
+      <span v-if="!collecting" class="chart-peak">{{ formatSpeed(peak) }}</span>
     </div>
     <div
       ref="chartEl"
@@ -181,10 +185,12 @@ const label = computed(
           </linearGradient>
         </defs>
         <line v-for="i in 3" :key="i" x1="0" :x2="W" :y1="(H / 4) * i" :y2="(H / 4) * i" class="chart-grid" />
-        <path :d="downArea" :fill="`url(#${uid}-down)`" class="chart-area down" />
-        <path :d="upArea" :fill="`url(#${uid}-up)`" class="chart-area up" />
-        <path :d="downLine" class="chart-line down" vector-effect="non-scaling-stroke" stroke-linecap="round" />
-        <path :d="upLine" class="chart-line up" vector-effect="non-scaling-stroke" stroke-linecap="round" />
+        <template v-if="!collecting">
+          <path :d="downArea" :fill="`url(#${uid}-down)`" class="chart-area down" />
+          <path :d="upArea" :fill="`url(#${uid}-up)`" class="chart-area up" />
+          <path :d="downLine" class="chart-line down" vector-effect="non-scaling-stroke" stroke-linecap="round" />
+          <path :d="upLine" class="chart-line up" vector-effect="non-scaling-stroke" stroke-linecap="round" />
+        </template>
         <line
           v-if="inspected"
           :x1="inspected.svgX"
@@ -195,7 +201,10 @@ const label = computed(
           vector-effect="non-scaling-stroke"
         />
       </svg>
-      <template v-if="inspected">
+      <p v-if="collecting" class="chart-collecting small" role="status" data-testid="chart-collecting">
+        <span class="chart-collecting-dot" aria-hidden="true" />正在采集流量…
+      </p>
+      <template v-if="inspected && !collecting">
         <span class="chart-dot down" :style="{ left: `${inspected.xPct}%`, top: `${inspected.downY}px` }" aria-hidden="true" />
         <span class="chart-dot up" :style="{ left: `${inspected.xPct}%`, top: `${inspected.upY}px` }" aria-hidden="true" />
       </template>

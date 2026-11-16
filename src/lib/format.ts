@@ -19,6 +19,24 @@ export function formatSpeed(value: number | null | undefined): string {
   return `${formatBytes(value)}/s`
 }
 
+/**
+ * Narrow-slot speed (sidebar capsule): at most five characters plus a unit letter,
+ * so the row never wraps or truncates; the full value lives in the tooltip.
+ */
+export function formatSpeedCompact(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return '—'
+  const units = ['B', 'K', 'M', 'G', 'T']
+  let size = value
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024
+    unit += 1
+  }
+  if (unit === 0) return `${Math.round(size)}B`
+  const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2
+  return `${size.toFixed(digits)}${units[unit]}`
+}
+
 export function formatDate(seconds: number): string {
   const date = new Date(seconds * 1000)
   if (Number.isNaN(date.getTime())) return '—'
@@ -83,6 +101,9 @@ export function delayText(delay: number | null, failed: boolean): string {
 const PROTOCOL_LABELS: Record<string, string> = {
   ss: 'SS',
   ssr: 'SSR',
+  // The controller API reports full type names ("Shadowsocks"); keep the same short tags as the config names.
+  shadowsocks: 'SS',
+  shadowsocksr: 'SSR',
   vmess: 'VMess',
   vless: 'VLESS',
   trojan: 'Trojan',
@@ -105,6 +126,7 @@ const PROTOCOL_LABELS: Record<string, string> = {
   fallback: '故障转移',
   'load-balance': '负载均衡',
   loadbalance: '负载均衡',
+  smart: '智能',
   relay: '链式',
 }
 
@@ -112,6 +134,68 @@ export function protocolLabel(type: string): string {
   const key = type.trim().toLowerCase()
   if (!key) return ''
   return PROTOCOL_LABELS[key] ?? type
+}
+
+export interface GroupStrategy {
+  /** Short tag, same wording as the group type label. */
+  label: string
+  icon: string
+  /** One sentence on how the kernel picks the node, shown inside the group (R14). */
+  hint: string
+  /** Member order matters: fallback walks the list top-down. */
+  ordered: boolean
+}
+
+const STRATEGIES: Record<string, GroupStrategy> = {
+  'url-test': { label: '自动', icon: 'url-test', hint: '内核定期测速，自动使用延迟最低的节点。', ordered: false },
+  fallback: { label: '故障转移', icon: 'fallback', hint: '按顺序使用第一个可用的节点；前面的节点恢复后自动切回。', ordered: true },
+  'load-balance': { label: '负载均衡', icon: 'load-balance', hint: '把连接分摊到多个节点，不固定使用某一个。', ordered: false },
+  smart: { label: '智能', icon: 'sparkles', hint: '根据历史连接质量为不同站点自动挑选节点。', ordered: false },
+}
+const STRATEGY_ALIASES: Record<string, string> = { urltest: 'url-test', loadbalance: 'load-balance' }
+
+/** How an automatic group chooses its node; null for hand-picked groups. */
+export function groupStrategy(type: string): GroupStrategy | null {
+  const key = type.trim().toLowerCase()
+  return STRATEGIES[STRATEGY_ALIASES[key] ?? key] ?? null
+}
+
+/**
+ * Follow `now` through nested groups (节点选择 → 自动选择 → 香港 01) so the UI can
+ * name the server that actually carries traffic. Stops on cycles and unknown names.
+ */
+export function resolveChain(
+  start: string,
+  groups: readonly { name: string; now: string }[],
+): string[] {
+  const byName = new Map(groups.map((group) => [group.name, group]))
+  const chain: string[] = []
+  let current = byName.get(start)?.now ?? ''
+  while (current && !chain.includes(current) && chain.length < 8) {
+    chain.push(current)
+    current = byName.get(current)?.now ?? ''
+  }
+  return chain
+}
+
+const INFO_NODE_PATTERNS = [
+  /剩余流量|已用流量|总流量|套餐到期|到期时间|过期时间|下次重置|距离.*重置|重置剩余|官网/,
+  /expire\s*(date|time|at)?\s*[:：]|traffic\s*reset|remaining\s*traffic|days?\s*left/i,
+  /\d+(\.\d+)?\s*[KMGT]i?B\s*[|/]\s*\d+(\.\d+)?\s*[KMGT]i?B/i,
+]
+
+/**
+ * Subscriptions often smuggle quota and expiry text in as fake nodes
+ * ("Traffic Reset: 17 Days Left", "4.49 GB | 500 GB"). They are not servers, so
+ * the proxy page lifts them into an info line instead of the node grid.
+ */
+export function isInfoNode(name: string): boolean {
+  return INFO_NODE_PATTERNS.some((pattern) => pattern.test(name))
+}
+
+/** Group type label shared by the home cards and the proxy page (R1). */
+export function groupTypeLabel(group: { group_type: string; kind: string }): string {
+  return protocolLabel(group.group_type) || (group.kind === 'manual' ? '手选' : '自动')
 }
 
 export function usagePercent(used: number | null, total: number | null): number | null {

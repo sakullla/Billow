@@ -358,7 +358,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       <Segmented :model-value="sortKey" :options="SORTS" size="sm" label="排序" @update:model-value="setSort" />
     </div>
 
-    <EmptyState v-if="!snap.connected" variant="unavailable" title="未连接" description="连接后这里会实时显示经过 Billow 的连接。">
+    <EmptyState v-if="!snap.connected" variant="unavailable" icon="activity" title="未连接" description="连接后这里会实时显示经过 Billow 的连接。">
       <template #action>
         <button
           type="button"
@@ -384,7 +384,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         <button type="button" class="btn ghost sm" data-testid="clear-connection-filter" @click="resetFilters">清空筛选</button>
       </template>
     </EmptyState>
-    <EmptyState v-else-if="!rows.length" variant="no-data" title="没有当前连接" description="应用发起连接后会出现在这里。">
+    <EmptyState v-else-if="!rows.length" variant="no-data" icon="activity" title="没有当前连接" description="应用发起连接后会出现在这里。">
       <template #action>
         <button type="button" class="btn ghost sm" @click="store.refresh()">刷新</button>
       </template>

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import GroupIcon from '../components/GroupIcon.vue'
+import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
-import { delayText, delayTone, formatRelative, protocolLabel } from '../lib/format'
+import { delayText, delayTone, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, protocolLabel, resolveChain } from '../lib/format'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
 
 const props = defineProps<{ compact?: boolean }>()
 const store = useStore()
+const grids = new Map<string, InstanceType<typeof ProxyNodeGrid>>()
 const snap = computed(() => store.snapshot.value)
 const catalog = computed(() => snap.value.node_catalog)
 const mode = computed(() => snap.value.mode)
@@ -55,7 +57,53 @@ const toolbarHeight = ref(0)
 let toolbarObserver: ResizeObserver | null = null
 const sort = ref<Sort>(readPref('proxy-sort', 'default'))
 const dense = ref<boolean>(readPref('proxy-dense', false))
-const hideAuto = ref<boolean>(readPref('proxy-hide-auto', false))
+/**
+ * Auto groups (url-test, fallback, load-balance) are picked by the kernel and cannot be
+ * switched by hand, so the page leaves them out by default; their current pick already
+ * shows as an entry inside the manual groups. A deep link can still reveal one, and a
+ * config with no manual group falls back to listing them (R13).
+ */
+const revealedAuto = ref<Set<string>>(new Set())
+const hasManualGroups = computed(() => catalog.value.some((group) => group.kind !== 'auto'))
+function autoHidden(group: NodeGroup): boolean {
+  return group.kind === 'auto' && hasManualGroups.value && !revealedAuto.value.has(group.name)
+}
+function revealAuto(group: NodeGroup) {
+  if (group.kind !== 'auto' || revealedAuto.value.has(group.name)) return
+  revealedAuto.value = new Set([...revealedAuto.value, group.name])
+}
+/** Rows of manual groups show where their auto entries point; the memo key must follow those picks. */
+const autoNowKey = computed(() =>
+  catalog.value.filter((group) => group.kind === 'auto').map((group) => `${group.name}=${group.now}`).join('\0'),
+)
+const catalogByName = computed(() => new Map(catalog.value.map((group) => [group.name, group])))
+
+/** A manual group's entry that is itself an automatic group (自动选择, 故障转移, 智能…). */
+function autoOf(node: NodeItem): NodeGroup | null {
+  const group = catalogByName.value.get(node.name)
+  return group && group.kind === 'auto' ? group : null
+}
+
+/** The server an auto entry currently resolves to, following nested groups (R14). */
+function viaOf(node: NodeItem): string {
+  const chain = resolveChain(node.name, catalog.value)
+  return chain[chain.length - 1] ?? ''
+}
+
+/** Fallback priority is the config order, independent of the current sort (R14). */
+function rankOf(group: NodeGroup, node: NodeItem): number {
+  return (catalogByName.value.get(group.name)?.nodes.findIndex((item) => item.name === node.name) ?? -1) + 1
+}
+
+/** Reveal a hidden automatic group and jump to it from the entry that uses it. */
+function openAuto(name: string) {
+  const group = catalogByName.value.get(name)
+  if (!group) return
+  revealAuto(group)
+  void locate(name, 'smooth')
+}
+
+const hiddenAutoCount = computed(() => catalog.value.filter((group) => autoHidden(group)).length)
 /** Read once at setup so the first paint already has the right groups expanded (R26). */
 const storedOpen = readOpen()
 const open = ref<Set<string>>(storedOpen ?? defaultOpen())
@@ -65,9 +113,15 @@ if (!storedOpen && open.value.size > 0) persistOpen()
 
 watch(sort, (value) => writePref('proxy-sort', value))
 watch(dense, (value) => writePref('proxy-dense', value))
-watch(hideAuto, (value) => writePref('proxy-hide-auto', value))
 
 const needle = computed(() => query.value.trim().toLowerCase())
+
+type ViewGroup = NodeGroup & { info?: NodeItem[] }
+
+/** Info text without the provider's leading 【tag】 prefix. */
+function infoText(name: string): string {
+  return name.replace(/^\s*[【\[][^】\]]*[】\]]\s*/, '').trim() || name
+}
 
 function manifest(): NodeGroup[] {
   return snap.value.node_catalog
@@ -154,10 +208,14 @@ const groups = computed(() => {
     ? catalog.value
     : catalog.value.filter((group) => group.name !== 'GLOBAL')
   return source
-    .filter((group) => !(hideAuto.value && group.kind === 'auto'))
-    .map((group) => {
-      const nodes = sorted(needle.value ? group.nodes.filter(matches) : group.nodes)
-      return nodes === group.nodes ? group : { ...group, nodes }
+    .filter((group) => !autoHidden(group))
+    .map((group): ViewGroup => {
+      let nodes = sorted(needle.value ? group.nodes.filter(matches) : group.nodes)
+      // Quota/expiry pseudo-nodes leave the grid unless selected or searched for (R11).
+      const info = needle.value ? [] : nodes.filter((node) => !node.selected && isInfoNode(node.name))
+      if (info.length) nodes = nodes.filter((node) => !info.includes(node))
+      if (nodes === group.nodes) return group
+      return info.length ? { ...group, nodes, info } : { ...group, nodes }
     })
     .filter((group) => !needle.value || group.nodes.length > 0 || group.name.toLowerCase().includes(needle.value))
 })
@@ -270,10 +328,6 @@ function highlight(name: string): HighlightPart[] {
   return parts.length ? parts : [{ text: name, hit: false }]
 }
 
-function groupTypeLabel(group: NodeGroup): string {
-  return protocolLabel(group.group_type) || (group.kind === 'manual' ? '手选' : '自动')
-}
-
 function pick(group: NodeGroup, node: NodeItem) {
   if (group.kind !== 'manual' || node.selected) return
   void store.selectNode(group.name, node.name)
@@ -331,13 +385,14 @@ async function locateActiveNode() {
       ? (catalog.value.find((item) => item.name === 'GLOBAL' && item.now) ?? currentManualGroup())
       : currentManualGroup()
   if (!preferred || !preferred.now) return
-  if (hideAuto.value && preferred.kind === 'auto') hideAuto.value = false
+  revealAuto(preferred)
   if (query.value) query.value = ''
   if (!open.value.has(preferred.name)) {
     open.value = new Set([...open.value, preferred.name])
     persistOpen()
   }
   await nextTick()
+  await grids.get(preferred.name)?.reveal(preferred.now)
   const groupCard = document.querySelector(`[data-group-card="${CSS.escape(preferred.name)}"]`)
   const nodeEl = groupCard?.querySelector(`[data-node="${CSS.escape(preferred.now)}"]`)
   const target = nodeEl instanceof HTMLElement ? nodeEl : groupCard instanceof HTMLElement ? groupCard : null
@@ -359,7 +414,7 @@ async function locate(name: string | null, behavior: ScrollBehavior = 'instant')
   if (!name) return
   const group = manifest().find((item) => item.name === name)
   if (!group) return
-  if (hideAuto.value && group.kind === 'auto') hideAuto.value = false
+  revealAuto(group)
   // A search could hide the group or its nodes; the deep link wins.
   if (query.value) query.value = ''
   if (!open.value.has(name)) {
@@ -431,10 +486,11 @@ onBeforeUnmount(() => {
 })
 
 /** Phones list one node per row and offer a two-column grid as the dense view; desktop is the reverse. */
-const denseLabel = computed(() => (props.compact ? (dense.value ? '单列视图' : '双列视图') : dense.value ? '卡片视图' : '紧凑视图'))
-const denseIcon = computed(() => (props.compact ? (dense.value ? 'list' : 'grid') : dense.value ? 'grid' : 'list'))
+/** A pressed toggle keeps one stable name; aria-pressed carries the on/off state (R3). */
+const denseLabel = computed(() => (props.compact ? '双列视图' : '紧凑视图'))
+const denseIcon = computed(() => (props.compact ? 'grid' : 'list'))
 
-const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value || dense.value)
+const optionsActive = computed(() => sort.value !== 'default' || dense.value)
 </script>
 
 <template>
@@ -442,8 +498,8 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
     <header class="page-head">
       <div>
         <h1>代理</h1>
-        <p class="muted small">
-          <template v-if="snap.node_catalog.length">{{ snap.node_catalog.length }} 个代理组 · {{ distinctNodeCount }} 个节点</template>
+        <p class="muted small" :title="hiddenAutoCount ? `另有 ${hiddenAutoCount} 个自动组由内核择优，未单独列出` : undefined">
+          <template v-if="snap.node_catalog.length">{{ snap.node_catalog.length - hiddenAutoCount }} 个代理组 · {{ distinctNodeCount }} 个节点</template>
           <template v-else>{{ snap.nodes_notice ?? '没有代理组' }}</template>
         </p>
       </div>
@@ -538,32 +594,22 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
       </span>
       <div v-if="showOptions" id="proxy-options" class="toolbar-options">
         <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
+        <!-- Every view control carries a short text label; phones lay them out as equal chips (R3, R12). Auto groups need no toggle (R13). -->
         <button
-          v-if="canLocateActive"
           type="button"
-          class="icon-btn"
+          class="btn ghost sm tool-btn"
+          :disabled="!canLocateActive"
           aria-label="定位当前选中节点"
-          title="定位当前选中节点"
+          :title="canLocateActive ? '定位当前选中节点' : '当前没有已选中的节点'"
           data-testid="locate-active-node"
           @click="locateActiveNode"
         >
-          <Icon name="locate" />
+          <Icon name="locate" :size="15" />
+          <span class="tool-btn-label">定位</span>
         </button>
         <button
           type="button"
-          class="icon-btn"
-          :class="{ active: hideAuto }"
-          :aria-pressed="hideAuto"
-          :aria-label="hideAuto ? '显示自动组' : '隐藏自动组'"
-          :title="hideAuto ? '显示自动组' : '隐藏自动组'"
-          data-testid="toggle-hide-auto"
-          @click="hideAuto = !hideAuto"
-        >
-          <Icon name="cpu" />
-        </button>
-        <button
-          type="button"
-          class="icon-btn"
+          class="btn ghost sm tool-btn"
           :class="{ active: dense }"
           :aria-pressed="dense"
           :aria-label="denseLabel"
@@ -571,10 +617,12 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
           data-testid="toggle-dense"
           @click="dense = !dense"
         >
-          <Icon :name="denseIcon" />
+          <Icon :name="denseIcon" :size="15" />
+          <span class="tool-btn-label">{{ compact ? '双列' : '紧凑' }}</span>
         </button>
-        <button type="button" class="btn ghost sm" data-testid="toggle-all" @click="toggleAll">
-          {{ allExpanded ? '收起全部' : '展开全部' }}
+        <button type="button" class="btn ghost sm tool-btn" data-testid="toggle-all" @click="toggleAll">
+          <Icon name="chevron-down" :size="15" :class="{ 'icon-flip': allExpanded }" />
+          <span class="tool-btn-label">{{ allExpanded ? '收起全部' : '展开全部' }}</span>
         </button>
       </div>
 
@@ -613,7 +661,7 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
     <section
       v-for="(group, index) in groups"
       :key="group.name"
-      v-memo="[group, isOpen(group.name), dense, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, groupTestedAt(group), busyKeys]"
+      v-memo="[group, autoNowKey, isOpen(group.name), dense, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, groupTestedAt(group), busyKeys]"
       class="card group"
       :class="{ open: isOpen(group.name), located: store.focusGroup.value === group.name }"
       :data-group-card="group.name"
@@ -659,18 +707,35 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
         </button>
       </header>
 
-      <div v-if="isOpen(group.name)" :id="`group-nodes-${index}`" class="nodes" :class="{ dense }">
+      <ProxyNodeGrid
+        v-if="isOpen(group.name)"
+        :id="`group-nodes-${index}`"
+        :ref="(el) => { if (el) grids.set(group.name, el as InstanceType<typeof ProxyNodeGrid>); else grids.delete(group.name) }"
+        :nodes="group.nodes"
+        :dense="dense"
+        :compact="compact"
+        v-slot="{ nodes: visibleNodes }"
+      >
+        <p v-if="groupStrategy(group.group_type)" class="group-strategy small" data-testid="group-strategy">
+          <Icon :name="groupStrategy(group.group_type)!.icon" :size="14" />
+          <span>{{ groupStrategy(group.group_type)!.hint }}</span>
+        </p>
+        <p v-if="group.info?.length" class="group-info small" data-testid="group-info">
+          <Icon name="info" :size="13" />
+          <span v-for="item in group.info" :key="item.name" class="group-info-item" :title="item.name">{{ infoText(item.name) }}</span>
+        </p>
         <p v-if="!group.nodes.length" class="muted small">
           {{ needle ? '没有匹配的节点' : snap.kernel_running ? '该组暂时没有可用节点，请检查资源页中的订阅源状态。' : '连接后加载订阅源节点。' }}
         </p>
         <div
-          v-for="node in group.nodes"
+          v-for="node in visibleNodes"
           :key="node.name"
           class="node"
           :class="{
             selected: node.selected,
             locked: group.kind !== 'manual',
             located: locatedNodeKey === `${group.name}::${node.name}`,
+            'failed-node': nodeState(node).failed,
           }"
           :data-node="node.name"
         >
@@ -687,14 +752,36 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
             @keydown.space.prevent="pick(group, node)"
           >
             <span class="node-name" :title="node.name">
+              <span
+                v-if="groupStrategy(group.group_type)?.ordered"
+                class="node-rank mono"
+                :title="`优先级 ${rankOf(group, node)}`"
+                data-testid="node-rank"
+              >{{ rankOf(group, node) }}</span>
               <template v-for="(part, partIndex) in highlight(node.name)" :key="partIndex">
                 <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
               </template>
             </span>
-            <span v-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
+            <!-- An auto group entry says how it picks and where it currently points (R14). -->
+            <span v-if="!dense && autoOf(node)" class="node-meta node-via" data-testid="node-via">
+              <span class="node-type strategy">{{ groupTypeLabel(autoOf(node)!) }}</span>
+              <span class="node-via-target" :title="viaOf(node) || undefined">{{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? '→ 等待测速' : '→ 连接后显示' }}</span>
+            </span>
+            <span v-else-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
               <span class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
               <span v-for="tag in node.tags" :key="tag" class="node-tag" :class="{ udp: tag === 'UDP' }">{{ tag }}</span>
             </span>
+          </button>
+          <button
+            v-if="autoOf(node)"
+            type="button"
+            class="icon-btn sm node-open-auto"
+            :aria-label="`查看${groupTypeLabel(autoOf(node)!)}组 ${node.name}`"
+            :title="`查看「${node.name}」的${groupTypeLabel(autoOf(node)!)}策略与成员`"
+            :data-testid="`open-auto-${node.name}`"
+            @click="openAuto(node.name)"
+          >
+            <Icon name="chevron-right" :size="14" />
           </button>
           <button
             type="button"
@@ -713,7 +800,7 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
           </button>
           <Icon v-if="node.selected" name="check" :size="14" class="node-check" :stroke="2.6" />
         </div>
-      </div>
+      </ProxyNodeGrid>
     </section>
   </div>
 </template>

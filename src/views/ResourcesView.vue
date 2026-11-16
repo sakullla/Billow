@@ -399,7 +399,7 @@ onMounted(() => {
 
     <Skeleton v-if="loading && !providers.length && snap.kernel_running" variant="card" :cards="2" />
 
-    <EmptyState v-if="!snap.kernel_running" variant="unavailable" title="内核未运行" description="连接后可以查看并更新配置中的 proxy-providers 与 rule-providers。">
+    <EmptyState v-if="!snap.kernel_running" variant="unavailable" icon="database" title="内核未运行" description="连接后可以查看并更新配置中的 proxy-providers 与 rule-providers。">
       <template #action>
         <button
           type="button"

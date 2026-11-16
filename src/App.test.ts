@@ -1210,13 +1210,11 @@ describe('App', () => {
     expect(card(fourth.wrapper, '节点选择')).toContain('open')
   })
 
-  it('locates the group requested from home and drops a filter that hides it', async () => {
+  it('locates a requested automatic group even though auto groups are not listed by default', async () => {
     const { wrapper } = await mountApp()
     const scroll = recordScrollTargets()
     try {
       await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
-      await flushPromises()
-      await wrapper.find('[data-testid="toggle-hide-auto"]').trigger('click')
       await flushPromises()
       expect(wrapper.find('[data-group-card="自动选择"]').exists()).toBe(false)
 
@@ -1227,7 +1225,7 @@ describe('App', () => {
       await flushPromises()
 
       expect(wrapper.find('[data-group-card="自动选择"]').classes()).toContain('open')
-      expect(wrapper.find('[data-testid="toggle-hide-auto"]').attributes('aria-pressed')).toBe('false')
+      expect(wrapper.find('[data-testid="toggle-hide-auto"]').exists()).toBe(false)
       expect(scroll.targets).toContain('自动选择')
     } finally {
       scroll.restore()
@@ -1334,7 +1332,9 @@ describe('App', () => {
     const { wrapper } = await mountApp()
     await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('.page-head p').text()).toBe('7 个代理组 · 23 个节点')
+    // Two automatic groups are not listed on their own; the summary counts what is shown (R13).
+    expect(wrapper.find('.page-head p').text()).toBe('5 个代理组 · 23 个节点')
+    expect(wrapper.find('.page-head p').attributes('title')).toContain('2 个自动组')
   })
 
   it('highlights search matches and reports how many nodes match', async () => {
@@ -1344,9 +1344,10 @@ describe('App', () => {
     await wrapper.find('[data-testid="node-search"]').setValue('新加坡')
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="match-count"]').text()).toBe('匹配 10 个节点')
+    // Automatic groups stay out of the list, so only manual groups contribute matches (R13).
+    expect(wrapper.find('[data-testid="match-count"]').text()).toBe('匹配 7 个节点')
     const marks = wrapper.findAll('[data-group-card] mark')
-    expect(marks).toHaveLength(10)
+    expect(marks).toHaveLength(7)
     expect(marks.every((mark) => mark.text() === '新加坡')).toBe(true)
 
     await wrapper.find('[data-testid="clear-search"]').trigger('click')
@@ -1369,8 +1370,13 @@ describe('App', () => {
     expect(select).toHaveBeenCalledWith('节点选择', '日本 02')
     expect(wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"]').classes()).toContain('selected')
 
-    await wrapper.find('[data-group-card="自动选择"] .group-toggle').trigger('click')
+    // Automatic groups open from the entry that uses them (R14).
+    await wrapper.find('[data-group-card="节点选择"] [data-testid="open-auto-自动选择"]').trigger('click')
     await flushPromises()
+    if (!wrapper.find('[data-group-card="自动选择"] [data-node="香港 01"]').exists()) {
+      await wrapper.find('[data-group-card="自动选择"] .group-toggle').trigger('click')
+      await flushPromises()
+    }
     const auto = wrapper.find('[data-group-card="自动选择"] [data-node="香港 01"] .node-select')
     expect(auto.attributes('aria-disabled')).toBe('true')
     expect(auto.attributes('tabindex')).toBe('-1')
@@ -1483,10 +1489,11 @@ describe('App', () => {
     for (const [type, shape] of [
       ['select', 'M6 19a2 2'],
       ['selector', 'M6 19a2 2'],
-      ['url-test', 'M9 3h6v5'],
-      ['urltest', 'M9 3h6v5'],
-      ['fallback', 'M9 3h6v5'],
-      ['load-balance', 'M9 3h6v5'],
+      ['url-test', 'M12 14l4-4'],
+      ['urltest', 'M12 14l4-4'],
+      ['fallback', 'M6 3v12'],
+      ['load-balance', 'M16 3h5v5'],
+      ['smart', 'm12 3 1.9 5.8'],
       ['relay', 'm12 3 9 5'],
       ['unknown', 'M12 21a9 9'],
     ] as const) {
@@ -1632,7 +1639,7 @@ describe('App', () => {
     await options.trigger('click')
     expect(options.attributes('aria-expanded')).toBe('true')
     expect(toolbar.findAll('.segment')).toHaveLength(3)
-    for (const id of ['toggle-hide-auto', 'toggle-dense', 'toggle-all']) {
+    for (const id of ['locate-active-node', 'toggle-dense', 'toggle-all']) {
       const button = toolbar.find(`[data-testid="${id}"]`)
       expect(button.exists()).toBe(true)
       expect(button.attributes('aria-label') ?? button.text()).toBeTruthy()
