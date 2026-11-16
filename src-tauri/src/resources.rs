@@ -255,16 +255,27 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>) -> Provid
 /// Checks both lowercase (`geoip.dat`) and Android/Linux PascalCase (`GeoIP.dat`,
 /// `Country.mmdb`, `ASN.mmdb`) filenames so case-sensitive filesystems report
 /// bundled or downloaded databases accurately.
+pub const GEO_SPECS: [(&str, &str, &str, &[&str]); 4] = [
+    ("geoip", "GeoIP", "GeoIP.dat", &["geoip.dat", "GeoIP.dat"]),
+    ("geosite", "GeoSite", "GeoSite.dat", &["geosite.dat", "GeoSite.dat"]),
+    (
+        "mmdb",
+        "MMDB",
+        "Country.mmdb",
+        &["geoip.metadb", "GeoIP.metadb", "Country.mmdb", "country.mmdb"],
+    ),
+    (
+        "asn",
+        "ASN",
+        "ASN.mmdb",
+        &["GeoLite2-ASN.mmdb", "ASN.mmdb", "asn.mmdb"],
+    ),
+];
+
 pub fn geo_files(home: Option<&Path>) -> Vec<GeoFile> {
-    let specs: [(&str, &str, &[&str]); 4] = [
-        ("geoip", "GeoIP", &["geoip.dat", "GeoIP.dat"]),
-        ("geosite", "GeoSite", &["geosite.dat", "GeoSite.dat"]),
-        ("mmdb", "MMDB", &["geoip.metadb", "GeoIP.metadb", "Country.mmdb", "country.mmdb"]),
-        ("asn", "ASN", &["GeoLite2-ASN.mmdb", "ASN.mmdb", "asn.mmdb"]),
-    ];
-    specs
+    GEO_SPECS
         .into_iter()
-        .map(|(key, label, candidates)| {
+        .map(|(key, label, canonical, candidates)| {
             let matched = home.and_then(|dir| {
                 candidates
                     .iter()
@@ -282,13 +293,146 @@ pub fn geo_files(home: Option<&Path>) -> Vec<GeoFile> {
             GeoFile {
                 key: key.to_string(),
                 label: label.to_string(),
-                file: matched.map(|(name, _, _)| name).unwrap_or(candidates[0]).to_string(),
+                file: matched.map(|(name, _, _)| name).unwrap_or(canonical).to_string(),
                 exists: matched.is_some(),
                 size: matched.map(|(_, size, _)| size),
                 modified_ms: matched.and_then(|(_, _, modified_ms)| modified_ms),
             }
         })
         .collect()
+}
+
+fn target_geo_path(home: &Path, canonical: &str, candidates: &[&str]) -> PathBuf {
+    for &name in candidates {
+        let path = home.join(name);
+        if fs::metadata(&path).is_ok_and(|meta| meta.is_file()) {
+            return path;
+        }
+    }
+    home.join(canonical)
+}
+
+fn fetch_geo_bytes(url: &str, local_proxy: Option<&str>) -> Result<Vec<u8>, String> {
+    const MAX_GEO_BYTES: usize = 128 * 1024 * 1024;
+    let try_with = |proxy_url: Option<&str>| -> Result<Vec<u8>, String> {
+        let mut builder = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(10))
+            .timeout_read(std::time::Duration::from_secs(45));
+        if let Some(raw_proxy) = proxy_url {
+            if let Ok(proxy) = ureq::Proxy::new(raw_proxy) {
+                builder = builder.proxy(proxy);
+            }
+        }
+        let response = builder
+            .build()
+            .get(url)
+            .set("User-Agent", "Billow")
+            .call()
+            .map_err(|error| format!("请求失败：{error}"))?;
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .take((MAX_GEO_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("读取失败：{error}"))?;
+        if bytes.len() > MAX_GEO_BYTES {
+            return Err("GEO 数据库体积超过 128 MiB 上限".to_string());
+        }
+        if bytes.len() < 16 {
+            return Err("下载到的文件为空或已损坏".to_string());
+        }
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).to_ascii_lowercase();
+        if head.trim_start().starts_with("<!doctype") || head.trim_start().starts_with("<html") {
+            return Err("下载源返回了网页而非数据库文件".to_string());
+        }
+        Ok(bytes)
+    };
+
+    if let Some(proxy) = local_proxy {
+        if let Ok(bytes) = try_with(Some(proxy)) {
+            return Ok(bytes);
+        }
+    }
+    try_with(None)
+}
+
+/// Downloads one (`target = Some("geoip")`) or all (`target = None`) GEO databases
+/// into `home` atomically. Uses `urls` (`key -> Vec<candidate_url>`) and tries the
+/// active local proxy first when provided.
+pub fn download_geo_files(
+    home: &Path,
+    urls: &[(String, Vec<String>)],
+    target: Option<&str>,
+    local_proxy: Option<&str>,
+) -> Result<Vec<GeoFile>, String> {
+    fs::create_dir_all(home).map_err(|error| format!("无法创建 GEO 目录：{error}"))?;
+    let selected: Vec<(&str, &str, &str, &[&str], &[String])> = GEO_SPECS
+        .into_iter()
+        .filter(|(key, _, _, _)| target.is_none_or(|wanted| wanted == *key))
+        .filter_map(|(key, label, canonical, candidates)| {
+            let candidates_urls = urls
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, list)| list.as_slice())?;
+            Some((key, label, canonical, candidates, candidates_urls))
+        })
+        .collect();
+    if selected.is_empty() {
+        return Err("未知的 GEO 数据库类型".to_string());
+    }
+
+    let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = selected
+            .into_iter()
+            .map(|(key, label, canonical, candidates, candidate_urls)| {
+                scope.spawn(move || {
+                    let mut last_err = String::from("没有可用的下载地址");
+                    let mut downloaded = None;
+                    for url in candidate_urls {
+                        let url = url.trim();
+                        if url.is_empty() {
+                            continue;
+                        }
+                        match fetch_geo_bytes(url, local_proxy) {
+                            Ok(bytes) => {
+                                downloaded = Some(bytes);
+                                break;
+                            }
+                            Err(err) => {
+                                last_err = format!("{label} ({url})：{err}");
+                            }
+                        }
+                    }
+                    let Some(bytes) = downloaded else {
+                        return Err(last_err);
+                    };
+                    let dest = target_geo_path(home, canonical, candidates);
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos();
+                    let temp = home.join(format!(".{key}.{}.{nanos}.part", std::process::id()));
+                    fs::write(&temp, &bytes)
+                        .map_err(|err| format!("写入 {label} 临时文件失败：{err}"))?;
+                    if let Err(err) = fs::rename(&temp, &dest) {
+                        let _ = fs::remove_file(&temp);
+                        return Err(format!("替换 {label} 数据库失败：{err}"));
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_else(|_| Err("GEO 下载线程异常终止".to_string())))
+            .collect()
+    });
+
+    let failures: Vec<String> = results.into_iter().filter_map(Result::err).collect();
+    if !failures.is_empty() {
+        return Err(failures.join("；"));
+    }
+    Ok(geo_files(Some(home)))
 }
 
 #[cfg(test)]
@@ -411,6 +555,63 @@ rule-providers:
                 ("asn", "ASN.mmdb", Some(12)),
             ]
         );
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn download_geo_files_updates_all_or_single_database_and_rejects_html() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let Ok((mut stream, _)) = listener.accept() else { break };
+                let mut buf = [0u8; 1024];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let body: Vec<u8> = if req.contains("GET /html") {
+                    b"<!DOCTYPE html><html><body>404</body></html>".to_vec()
+                } else if req.contains("GET /geoip") {
+                    vec![0x11; 64]
+                } else if req.contains("GET /geosite") {
+                    vec![0x22; 80]
+                } else if req.contains("GET /mmdb") {
+                    vec![0x33; 96]
+                } else {
+                    vec![0x44; 48]
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+
+        let home = temp_home("geo-dl");
+        // Existing lowercase filename is preserved when updated.
+        fs::write(home.join("country.mmdb"), [0u8; 20]).unwrap();
+        let urls = vec![
+            ("geoip".to_string(), vec![format!("http://127.0.0.1:{port}/html"), format!("http://127.0.0.1:{port}/geoip")]),
+            ("geosite".to_string(), vec![format!("http://127.0.0.1:{port}/geosite")]),
+            ("mmdb".to_string(), vec![format!("http://127.0.0.1:{port}/mmdb")]),
+            ("asn".to_string(), vec![format!("http://127.0.0.1:{port}/asn")]),
+        ];
+        let files = download_geo_files(&home, &urls, None, None).unwrap();
+        assert!(files.iter().all(|f| f.exists));
+        assert_eq!(files[0].file, "GeoIP.dat");
+        assert_eq!(files[0].size, Some(64));
+        assert_eq!(files[1].file, "GeoSite.dat");
+        assert_eq!(files[1].size, Some(80));
+        assert_eq!(files[2].file, "country.mmdb");
+        assert_eq!(files[2].size, Some(96));
+        assert_eq!(files[3].file, "ASN.mmdb");
+        assert_eq!(files[3].size, Some(48));
+
+        let _ = server.join();
         let _ = fs::remove_dir_all(home);
     }
 }

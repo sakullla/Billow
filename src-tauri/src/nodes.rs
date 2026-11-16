@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::io::{BufReader, Read};
 use std::time::Duration;
 
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
@@ -503,16 +502,38 @@ pub fn put_selection(endpoint: &ControllerEndpoint, group: &str, node: &str) -> 
     }
 }
 
-/// Hot-reloads the controller with a filtered runtime config. The payload is
-/// base64-encoded like the kernel's `PUT /configs` contract.
+/// Keep the running controller address and secret across hot reloads so the active
+/// API listener does not jump ports mid-session.
+pub fn rewrite_controller_endpoint(yaml: &str, endpoint: &ControllerEndpoint) -> String {
+    let Ok(mut value) = serde_yaml::from_str::<Value>(yaml) else {
+        return yaml.to_string();
+    };
+    let Some(map) = value.as_mapping_mut() else {
+        return yaml.to_string();
+    };
+    map.insert(
+        Value::String("external-controller".to_string()),
+        Value::String(format!("{}:{}", endpoint.host, endpoint.port)),
+    );
+    if !endpoint.secret.is_empty() {
+        map.insert(
+            Value::String("secret".to_string()),
+            Value::String(endpoint.secret.clone()),
+        );
+    }
+    serde_yaml::to_string(&value).unwrap_or_else(|_| yaml.to_string())
+}
+
+/// Hot-reloads the controller with a full runtime config (`PUT /configs?force=true`).
+/// Mihomo expects raw YAML text in `payload` (not base64) and `force=true` so
+/// listener, DNS, TUN, and GEO settings take effect without killing the process.
 pub fn put_config(endpoint: &ControllerEndpoint, config_yaml: &str) -> Result<(), String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err(KERNEL_DOWN.to_string());
     }
-    let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
-    let payload = base64::engine::general_purpose::STANDARD.encode(config_yaml);
-    let body = serde_json::json!({ "payload": payload }).to_string();
-    let agent = agent(Duration::from_secs(5));
+    let url = format!("http://{}:{}/configs?force=true", endpoint.host, endpoint.port);
+    let body = serde_json::json!({ "path": "", "payload": config_yaml }).to_string();
+    let agent = agent(Duration::from_secs(12));
     let request = agent
         .put(&url)
         .set("Content-Type", "application/json")
@@ -524,8 +545,38 @@ pub fn put_config(endpoint: &ControllerEndpoint, config_yaml: &str) -> Result<()
     };
     match request.send_string(&body) {
         Ok(_) => Ok(()),
-        Err(_) => Err("规则没有切换".to_string()),
+        Err(ureq::Error::Status(_, response)) => {
+            let detail = response
+                .into_string()
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .and_then(|json| json.get("message").and_then(serde_json::Value::as_str).map(str::to_string))
+                .filter(|msg| !msg.trim().is_empty());
+            Err(detail.unwrap_or_else(|| "配置没有热重载".to_string()))
+        }
+        Err(_) => Err("配置没有热重载".to_string()),
     }
+}
+
+/// Best-effort request for the running kernel to close its TUN adapter and routes
+/// cleanly before the process is stopped.
+pub fn patch_tun_disable(endpoint: &ControllerEndpoint) {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return;
+    }
+    let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
+    let body = r#"{"tun":{"enable":false}}"#;
+    let agent = agent(Duration::from_millis(500));
+    let request = agent
+        .patch(&url)
+        .set("Content-Type", "application/json")
+        .set("User-Agent", "Billow");
+    let request = if endpoint.secret.is_empty() {
+        request
+    } else {
+        request.set("Authorization", &format!("Bearer {}", endpoint.secret))
+    };
+    let _ = request.send_string(body);
 }
 
 pub fn fetch_delays(
@@ -1143,8 +1194,24 @@ proxy-groups:
         assert_eq!(infos["b"].tags, ["UDP"]);
         assert_eq!(infos["c"].tags, ["UDP", "WS", "Mux", "TFO", "MPTCP"]);
         assert_eq!(infos["d"].tags, ["TLS", "链式"]);
-        assert!(infos["e"].tags.is_empty());
+        assert_eq!(infos["e"].tags.is_empty(), true);
         assert_eq!(infos["G"].kind, "select");
         assert!(infos["G"].tags.is_empty());
+    }
+
+    #[test]
+    fn put_config_sends_raw_yaml_with_force_reload_and_preserves_controller() {
+        let (port, handle) = serve(vec![http_response("204 No Content", "")]);
+        let endpoint = ControllerEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+            secret: CONTROLLER_SECRET.to_string(),
+        };
+        let rewritten = rewrite_controller_endpoint("mixed-port: 7890\nmode: rule\n", &endpoint);
+        assert_eq!(controller_from_yaml(&rewritten).as_ref(), Some(&endpoint));
+        put_config(&endpoint, &rewritten).unwrap();
+        let seen = handle.join().unwrap();
+        assert!(seen[0].contains("PUT /configs?force=true HTTP/1.1"));
+        assert!(seen[0].contains("mixed-port: 7890"));
     }
 }

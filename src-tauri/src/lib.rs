@@ -406,7 +406,8 @@ fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot 
         tun,
         vpn,
     } = &mut *session;
-    runtime.set_kernel_path(kernel_path);
+    runtime.set_kernel_path(kernel_path.clone());
+    tun.set_kernel_path(kernel_path);
     if update {
         book.update(id, &client, runtime);
     } else {
@@ -426,7 +427,8 @@ fn with_session(
     };
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
-    session.runtime.set_kernel_path(kernel_path);
+    session.runtime.set_kernel_path(kernel_path.clone());
+    session.tun.set_kernel_path(kernel_path);
     change(&mut session)
 }
 
@@ -832,11 +834,37 @@ fn geo_files(app: AppHandle) -> Vec<resources::GeoFile> {
 }
 
 #[tauri::command]
-async fn upgrade_geo(app: AppHandle) -> Result<(), String> {
-    let endpoint = controller(&app)?;
-    tauri::async_runtime::spawn_blocking(move || diagnostics::upgrade_geo(&endpoint))
-        .await
-        .map_err(|err| err.to_string())?
+async fn upgrade_geo(app: AppHandle, key: Option<String>) -> Result<Vec<resources::GeoFile>, String> {
+    let home = kernel_home(&app).ok_or_else(|| "GEO 数据目录不可用".to_string())?;
+    let (urls, local_proxy, controller, effective_yaml) = with_profile(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.geo_download_context(runtime)
+    });
+    let target = key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    tauri::async_runtime::spawn_blocking(move || {
+        let files = resources::download_geo_files(
+            &home,
+            &urls,
+            target.as_deref(),
+            local_proxy.as_deref(),
+        )?;
+        if let (Some(endpoint), Some(yaml)) = (controller, effective_yaml) {
+            let rewritten = nodes::rewrite_controller_endpoint(&yaml, &endpoint);
+            let _ = nodes::put_config(&endpoint, &rewritten);
+        }
+        Ok(files)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command(async)]
+fn open_uwp_tool() -> Result<(), String> {
+    takeover::open_uwp_loopback_tool()
 }
 
 #[tauri::command(async)]
@@ -1290,6 +1318,7 @@ pub fn run() {
             kernel_providers,
             provider_action,
             upgrade_geo,
+            open_uwp_tool,
             provider_detail,
             geo_files
         ])

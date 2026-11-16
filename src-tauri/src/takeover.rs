@@ -2,14 +2,128 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Condvar, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const TUN_DENIED: &str = "系统授权被拒绝";
 pub const VPN_DENIED: &str = "VPN 授权被拒绝";
 pub const NO_PROFILE: &str = "没有生效配置";
-const PROXY_HOST: &str = "127.0.0.1";
+pub const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
+pub const DEFAULT_PAC_SCRIPT: &str = "function FindProxyForURL(url, host) {\n  if (isPlainHostName(host) || shExpMatch(host, '*.local') || host === 'localhost' || host === '127.0.0.1' || host === '::1') {\n    return 'DIRECT';\n  }\n  return 'PROXY %proxy-host%:%mixed-port%; SOCKS5 %proxy-host%:%mixed-port%; DIRECT';\n}\n";
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const EXCLUDE_FILE: &str = "vpn-excluded.txt";
+
+pub fn default_proxy_bypass() -> Vec<String> {
+    [
+        "localhost",
+        "127.*",
+        "192.168.*",
+        "10.*",
+        "172.16.*",
+        "172.17.*",
+        "172.18.*",
+        "172.19.*",
+        "172.20.*",
+        "172.21.*",
+        "172.22.*",
+        "172.23.*",
+        "172.24.*",
+        "172.25.*",
+        "172.26.*",
+        "172.27.*",
+        "172.28.*",
+        "172.29.*",
+        "172.30.*",
+        "172.31.*",
+        "*.local",
+        "<local>",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+pub fn normalize_proxy_host(raw: &str) -> String {
+    let trimmed: String = raw
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control() && !ch.is_whitespace())
+        .take(128)
+        .collect();
+    if trimmed.is_empty() {
+        DEFAULT_PROXY_HOST.to_string()
+    } else {
+        trimmed
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SystemProxySettings {
+    /// Custom proxy host; empty means `127.0.0.1`.
+    pub host: String,
+    /// `"manual"` or `"pac"`.
+    pub mode: String,
+    /// Custom PAC script template (`%proxy-host%` and `%mixed-port%` are expanded).
+    pub pac_script: String,
+    /// Domains/IP ranges that bypass system proxy in manual mode.
+    pub bypass: Vec<String>,
+}
+
+impl Default for SystemProxySettings {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            mode: "manual".to_string(),
+            pac_script: DEFAULT_PAC_SCRIPT.to_string(),
+            bypass: default_proxy_bypass(),
+        }
+    }
+}
+
+impl SystemProxySettings {
+    pub fn normalized(mut self) -> Self {
+        let host: String = self
+            .host
+            .trim()
+            .chars()
+            .filter(|ch| !ch.is_control() && !ch.is_whitespace())
+            .take(128)
+            .collect();
+        self.host = if host == DEFAULT_PROXY_HOST { String::new() } else { host };
+        self.mode = if self.mode.trim().eq_ignore_ascii_case("pac") {
+            "pac".to_string()
+        } else {
+            "manual".to_string()
+        };
+        let script = self.pac_script.trim();
+        if script.is_empty() {
+            self.pac_script = DEFAULT_PAC_SCRIPT.to_string();
+        } else {
+            self.pac_script = self.pac_script.chars().take(32_768).collect();
+        }
+        let mut bypass = Vec::new();
+        for item in self.bypass {
+            let clean: String = item
+                .trim()
+                .chars()
+                .filter(|ch| !ch.is_control() && !ch.is_whitespace() && *ch != ';')
+                .take(200)
+                .collect();
+            if !clean.is_empty() && !bypass.contains(&clean) {
+                bypass.push(clean);
+            }
+            if bypass.len() >= 256 {
+                break;
+            }
+        }
+        self.bypass = bypass;
+        self
+    }
+
+    pub fn effective_host(&self) -> String {
+        normalize_proxy_host(&self.host)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientPlatform {
@@ -46,6 +160,7 @@ pub struct ProxyEndpoint {
 /// HTTP and HTTPS system proxy. Tests inject [`MemoryProxy`]; the host
 /// implementation is not used by unit tests.
 pub trait SystemProxy: Send {
+    fn configure(&mut self, _settings: &SystemProxySettings) {}
     fn set_http_https(&mut self, endpoint: &ProxyEndpoint) -> Result<(), String>;
     /// Clear a protocol only when it still points at `endpoint`.
     fn clear_if_pointing_at(&mut self, endpoint: &ProxyEndpoint) -> Result<(), String>;
@@ -282,6 +397,22 @@ pub fn set_system_proxy(
     port: Option<u16>,
     proxy: &mut dyn SystemProxy,
 ) {
+    set_system_proxy_with_settings(
+        model,
+        enabled,
+        port,
+        &SystemProxySettings::default(),
+        proxy,
+    );
+}
+
+pub fn set_system_proxy_with_settings(
+    model: &mut LinkModel,
+    enabled: bool,
+    port: Option<u16>,
+    settings: &SystemProxySettings,
+    proxy: &mut dyn SystemProxy,
+) {
     if model.platform != ClientPlatform::Desktop {
         return;
     }
@@ -300,7 +431,8 @@ pub fn set_system_proxy(
         model.failure = Some("没有本地端口".to_string());
         return;
     };
-    if open_proxy(model, port, proxy) {
+    proxy.configure(settings);
+    if open_proxy(model, &settings.effective_host(), port, proxy) {
         model.system_proxy = true;
         model.connected = true;
     }
@@ -420,9 +552,9 @@ fn refresh_vpn(model: &mut LinkModel, vpn: &mut dyn VpnGrant) -> Option<i32> {
     }
 }
 
-fn open_proxy(model: &mut LinkModel, port: u16, proxy: &mut dyn SystemProxy) -> bool {
+fn open_proxy(model: &mut LinkModel, host: &str, port: u16, proxy: &mut dyn SystemProxy) -> bool {
     let endpoint = ProxyEndpoint {
-        host: PROXY_HOST.to_string(),
+        host: normalize_proxy_host(host),
         port,
     };
     if proxy.set_http_https(&endpoint).is_err() {
@@ -451,10 +583,15 @@ fn clean_package(package_name: &str) -> Option<String> {
 pub struct MemoryProxy {
     pub http: Option<ProxyEndpoint>,
     pub https: Option<ProxyEndpoint>,
+    pub settings: Option<SystemProxySettings>,
     pub sets: u32,
 }
 
 impl SystemProxy for MemoryProxy {
+    fn configure(&mut self, settings: &SystemProxySettings) {
+        self.settings = Some(settings.clone());
+    }
+
     fn set_http_https(&mut self, endpoint: &ProxyEndpoint) -> Result<(), String> {
         self.sets += 1;
         self.http = Some(endpoint.clone());
@@ -586,10 +723,12 @@ pub fn tun_allowed(host: TunHost, evidence: TunEvidence) -> bool {
     }
 }
 
-/// Desktop TUN grant. Authorization uses [`tun_allowed`] and the host's own probe.
+/// Desktop TUN grant. Authorization uses [`tun_allowed`] and the host's own probe,
+/// plus native privilege elevation for the managed Mihomo core binary on macOS.
 pub struct HostTun {
     evidence: fn() -> TunEvidence,
     enabled: bool,
+    kernel_path: Option<PathBuf>,
 }
 
 impl HostTun {
@@ -597,6 +736,7 @@ impl HostTun {
         Self {
             evidence: live_tun_evidence,
             enabled: false,
+            kernel_path: None,
         }
     }
 
@@ -605,7 +745,12 @@ impl HostTun {
         Self {
             evidence,
             enabled: false,
+            kernel_path: None,
         }
+    }
+
+    pub fn set_kernel_path(&mut self, path: Option<PathBuf>) {
+        self.kernel_path = path;
     }
 }
 
@@ -615,9 +760,82 @@ impl Default for HostTun {
     }
 }
 
+pub fn unix_mode_has_setuid_root(uid: u32, mode: u32) -> bool {
+    uid == 0 && (mode & 0o4000) != 0 && (mode & 0o0111) != 0
+}
+
+pub fn build_macos_tun_grant_applescript(kernel_path: &Path) -> Result<String, String> {
+    let raw = kernel_path
+        .to_str()
+        .filter(|text| !text.is_empty() && !text.contains('\0') && !text.contains('\n') && !text.contains('\r'))
+        .ok_or_else(|| "内核路径包含无效字符，无法请求系统授权".to_string())?;
+    let shell_quoted = format!("'{}'", raw.replace('\'', "'\\''"));
+    let shell_cmd = format!(
+        "xattr -d com.apple.quarantine {shell_quoted} >/dev/null 2>&1 || true; chown root:admin {shell_quoted} && chmod u+s,g+s,a+rx {shell_quoted}"
+    );
+    let apple_escaped = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!(
+        "do shell script \"{apple_escaped}\" with administrator privileges"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_kernel_has_setuid_root(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .is_some_and(|meta| unix_mode_has_setuid_root(meta.uid(), meta.mode()))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_authorize_kernel(path: &Path) -> Result<bool, String> {
+    if !path.is_file() {
+        return Err("还没有可用内核，请先等待内核准备完成".to_string());
+    }
+    if macos_kernel_has_setuid_root(path) {
+        return Ok(true);
+    }
+    let script = build_macos_tun_grant_applescript(path)?;
+    let output = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|error| format!("无法拉起 macOS 系统授权弹窗：{error}"))?;
+    if output.status.success() {
+        if macos_kernel_has_setuid_root(path) {
+            return Ok(true);
+        }
+        return Err("macOS TUN 授权未生效，请检查系统安全设置".to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr} {stdout}");
+    let lower = combined.to_ascii_lowercase();
+    if lower.contains("-128")
+        || lower.contains("user canceled")
+        || lower.contains("user cancelled")
+        || combined.contains("取消")
+    {
+        return Ok(false);
+    }
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        Ok(false)
+    } else {
+        Err(format!("macOS TUN 授权失败：{detail}"))
+    }
+}
+
 impl TunGrant for HostTun {
     fn authorize(&mut self) -> Result<bool, String> {
-        Ok(tun_allowed(TunHost::current(), (self.evidence)()))
+        if tun_allowed(TunHost::current(), (self.evidence)()) {
+            return Ok(true);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(path) = self.kernel_path.clone() {
+            return macos_authorize_kernel(&path);
+        }
+        Ok(false)
     }
 
     fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
@@ -1276,13 +1494,19 @@ pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeTunFd(
     report_vpn_fd(fd);
 }
 
-/// Real HTTP/HTTPS system proxy. Unit tests use [`MemoryProxy`] instead.
+/// Real HTTP/HTTPS/PAC system proxy. Unit tests use [`MemoryProxy`] instead.
 #[derive(Debug, Default)]
-pub struct HostSystemProxy;
+pub struct HostSystemProxy {
+    settings: SystemProxySettings,
+}
 
 impl SystemProxy for HostSystemProxy {
+    fn configure(&mut self, settings: &SystemProxySettings) {
+        self.settings = settings.clone().normalized();
+    }
+
     fn set_http_https(&mut self, endpoint: &ProxyEndpoint) -> Result<(), String> {
-        host_proxy::set(endpoint)
+        host_proxy::set(endpoint, &self.settings)
     }
 
     fn clear_if_pointing_at(&mut self, endpoint: &ProxyEndpoint) -> Result<(), String> {
@@ -1291,7 +1515,7 @@ impl SystemProxy for HostSystemProxy {
 }
 
 pub fn host_proxy() -> HostSystemProxy {
-    HostSystemProxy
+    HostSystemProxy::default()
 }
 
 pub fn host_tun() -> HostTun {
@@ -1300,6 +1524,112 @@ pub fn host_tun() -> HostTun {
 
 pub fn host_vpn() -> HostVpn {
     HostVpn::host()
+}
+
+pub fn render_pac_script(template: &str, host: &str, port: u16) -> String {
+    let base = if template.trim().is_empty() {
+        DEFAULT_PAC_SCRIPT
+    } else {
+        template
+    };
+    base.replace("%proxy-host%", host)
+        .replace("%mixed-port%", &port.to_string())
+}
+
+pub fn is_billow_pac_url(url: &str) -> bool {
+    let trimmed = url.trim().trim_matches('\'').trim_matches('"');
+    trimmed.starts_with("http://127.0.0.1:") && trimmed.ends_with("/billow.pac")
+}
+
+struct PacServerState {
+    port: u16,
+    script: std::sync::Arc<Mutex<String>>,
+}
+
+static PAC_SERVER: Mutex<Option<PacServerState>> = Mutex::new(None);
+
+pub fn ensure_pac_server(host: &str, port: u16, template: &str) -> Result<String, String> {
+    let rendered = render_pac_script(template, host, port);
+    let mut guard = PAC_SERVER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(state) = guard.as_ref() {
+        let mut slot = state
+            .script
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = rendered;
+        return Ok(format!("http://127.0.0.1:{}/billow.pac", state.port));
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|_| "无法启动本地 PAC 服务".to_string())?;
+    let listen_port = listener
+        .local_addr()
+        .map_err(|_| "无法启动本地 PAC 服务".to_string())?
+        .port();
+    let script = std::sync::Arc::new(Mutex::new(rendered));
+    let shared = std::sync::Arc::clone(&script);
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+            let mut req = [0u8; 2048];
+            let _ = stream.read(&mut req);
+            let body = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ns-proxy-autoconfig; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    *guard = Some(PacServerState {
+        port: listen_port,
+        script,
+    });
+    Ok(format!("http://127.0.0.1:{listen_port}/billow.pac"))
+}
+
+/// Launch the Windows UWP loopback exemption utility so Microsoft Store / UWP apps can
+/// connect to the local `127.0.0.1` system proxy.
+pub fn open_uwp_loopback_tool() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // Native Windows PowerShell GUI picker (`Out-GridView`) backed by `CheckNetIsolation`.
+        let ps_script = concat!(
+            "$ErrorActionPreference='SilentlyContinue'; ",
+            "$exempt = (CheckNetIsolation LoopbackExempt -s) -join \"`n\"; ",
+            "$apps = Get-AppxPackage | Sort-Object Name | ForEach-Object { ",
+            "[PSCustomObject]@{ ",
+            "Status = if ($exempt -match [regex]::Escape($_.PackageFamilyName)) { '已豁免' } else { '未豁免' }; ",
+            "Name = $_.Name; ",
+            "PackageFamilyName = $_.PackageFamilyName ",
+            "} }; ",
+            "$picked = $apps | Out-GridView -Title 'Billow UWP 回环豁免工具（按住 Ctrl 多选后点击确定添加本地代理豁免）' -PassThru; ",
+            "if ($picked) { ",
+            "$cmds = ($picked | ForEach-Object { \"CheckNetIsolation LoopbackExempt -a -n=`\"$($_.PackageFamilyName)`\"\" }) -join '; '; ",
+            "Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-Command',$cmds ",
+            "}"
+        );
+        std::process::Command::new("powershell")
+            .creation_flags(0x08000000)
+            .args(["-NoProfile", "-STA", "-Command", ps_script])
+            .spawn()
+            .map_err(|error| format!("无法打开 UWP 回环工具：{error}"))?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("UWP 回环工具仅适用于 Windows 系统".to_string())
+    }
 }
 
 /// `networksetup -getwebproxy` text. Enabled must be Yes.
@@ -1329,6 +1659,25 @@ pub fn parse_macos_proxy(text: &str) -> Option<ProxyEndpoint> {
     })
 }
 
+/// `networksetup -getautoproxyurl` text. Enabled must be Yes.
+pub fn parse_macos_autoproxy(text: &str) -> Option<String> {
+    let mut enabled = false;
+    let mut url = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("Enabled:") {
+            enabled = value.trim().eq_ignore_ascii_case("yes");
+        } else if let Some(value) = line.strip_prefix("URL:") {
+            let raw = value.trim();
+            if !raw.is_empty() && !raw.eq_ignore_ascii_case("(null)") {
+                url = Some(raw.to_string());
+            }
+        }
+    }
+    if enabled { url } else { None }
+}
+
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 fn parse_network_services(text: &str) -> Vec<String> {
     text.lines()
         .skip(1)
@@ -1339,20 +1688,20 @@ fn parse_network_services(text: &str) -> Vec<String> {
 }
 
 mod host_proxy {
-    use super::ProxyEndpoint;
+    use super::{ProxyEndpoint, SystemProxySettings};
 
-    pub fn set(endpoint: &ProxyEndpoint) -> Result<(), String> {
+    pub fn set(endpoint: &ProxyEndpoint, settings: &SystemProxySettings) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
-            return macos::set(endpoint);
+            return macos::set(endpoint, settings);
         }
         #[cfg(target_os = "windows")]
         {
-            return windows::set(endpoint);
+            return windows::set(endpoint, settings);
         }
         #[cfg(all(target_os = "linux", not(target_os = "android")))]
         {
-            return linux::set(endpoint);
+            return linux::set(endpoint, settings);
         }
         #[cfg(not(any(
             target_os = "macos",
@@ -1360,7 +1709,7 @@ mod host_proxy {
             all(target_os = "linux", not(target_os = "android"))
         )))]
         {
-            let _ = endpoint;
+            let _ = (endpoint, settings);
             Err("系统代理不可用".to_string())
         }
     }
@@ -1393,24 +1742,64 @@ mod host_proxy {
     mod macos {
         use std::process::Command;
 
-        use super::super::{ProxyEndpoint, parse_macos_proxy, parse_network_services};
+        use super::super::{
+            ProxyEndpoint, SystemProxySettings, ensure_pac_server, is_billow_pac_url,
+            parse_macos_autoproxy, parse_macos_proxy, parse_network_services,
+        };
 
-        pub fn set(endpoint: &ProxyEndpoint) -> Result<(), String> {
+        pub fn set(endpoint: &ProxyEndpoint, settings: &SystemProxySettings) -> Result<(), String> {
+            let services = services()?;
+            if settings.mode == "pac" {
+                let pac_url = ensure_pac_server(&endpoint.host, endpoint.port, &settings.pac_script)?;
+                for service in &services {
+                    let _ = run(&["-setwebproxystate", service, "off"]);
+                    let _ = run(&["-setsecurewebproxystate", service, "off"]);
+                    let _ = run(&["-setsocksfirewallproxystate", service, "off"]);
+                    run(&["-setautoproxyurl", service, &pac_url])?;
+                    run(&["-setautoproxystate", service, "on"])?;
+                }
+                return Ok(());
+            }
             let port = endpoint.port.to_string();
-            for service in services()? {
-                run(&["-setwebproxy", &service, &endpoint.host, &port, "off"])?;
-                run(&["-setsecurewebproxy", &service, &endpoint.host, &port, "off"])?;
+            let bypass: Vec<&str> = settings
+                .bypass
+                .iter()
+                .map(String::as_str)
+                .filter(|entry| *entry != "<local>")
+                .collect();
+            for service in &services {
+                let _ = run(&["-setautoproxystate", service, "off"]);
+                run(&["-setwebproxy", service, &endpoint.host, &port, "off"])?;
+                run(&["-setsecurewebproxy", service, &endpoint.host, &port, "off"])?;
+                let _ = run(&["-setsocksfirewallproxy", service, &endpoint.host, &port, "off"]);
+                if bypass.is_empty() {
+                    let _ = run(&["-setproxybypassdomains", service, "Empty"]);
+                } else {
+                    let mut args = vec!["-setproxybypassdomains", service.as_str()];
+                    args.extend_from_slice(&bypass);
+                    let _ = run(&args);
+                }
             }
             Ok(())
         }
 
         pub fn clear_if_matches(endpoint: &ProxyEndpoint) -> Result<(), String> {
             for service in services()? {
-                if read_service(&service, false)?.as_ref() == Some(endpoint) {
+                if read_service(&service, "-getwebproxy")?.as_ref() == Some(endpoint) {
                     run(&["-setwebproxystate", &service, "off"])?;
                 }
-                if read_service(&service, true)?.as_ref() == Some(endpoint) {
+                if read_service(&service, "-getsecurewebproxy")?.as_ref() == Some(endpoint) {
                     run(&["-setsecurewebproxystate", &service, "off"])?;
+                }
+                if let Ok(Some(socks)) = read_service(&service, "-getsocksfirewallproxy") {
+                    if &socks == endpoint {
+                        let _ = run(&["-setsocksfirewallproxystate", &service, "off"]);
+                    }
+                }
+                if let Ok(auto_text) = run_text(&["-getautoproxyurl", &service]) {
+                    if parse_macos_autoproxy(&auto_text).is_some_and(|url| is_billow_pac_url(&url)) {
+                        run(&["-setautoproxystate", &service, "off"])?;
+                    }
                 }
             }
             Ok(())
@@ -1426,12 +1815,7 @@ mod host_proxy {
             }
         }
 
-        fn read_service(service: &str, https: bool) -> Result<Option<ProxyEndpoint>, String> {
-            let flag = if https {
-                "-getsecurewebproxy"
-            } else {
-                "-getwebproxy"
-            };
+        fn read_service(service: &str, flag: &str) -> Result<Option<ProxyEndpoint>, String> {
             let text = run_text(&[flag, service])?;
             Ok(parse_macos_proxy(&text))
         }
@@ -1455,14 +1839,44 @@ mod host_proxy {
 
     #[cfg(target_os = "windows")]
     mod windows {
-        use std::process::Command;
         use std::os::windows::process::CommandExt;
+        use std::process::Command;
 
-        use super::super::ProxyEndpoint;
+        use super::super::{
+            ProxyEndpoint, SystemProxySettings, ensure_pac_server, is_billow_pac_url,
+        };
 
         const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
-        pub fn set(endpoint: &ProxyEndpoint) -> Result<(), String> {
+        pub fn set(endpoint: &ProxyEndpoint, settings: &SystemProxySettings) -> Result<(), String> {
+            if settings.mode == "pac" {
+                let pac_url = ensure_pac_server(&endpoint.host, endpoint.port, &settings.pac_script)?;
+                reg(&[
+                    "add",
+                    KEY,
+                    "/v",
+                    "ProxyEnable",
+                    "/t",
+                    "REG_DWORD",
+                    "/d",
+                    "0",
+                    "/f",
+                ])?;
+                reg(&[
+                    "add",
+                    KEY,
+                    "/v",
+                    "AutoConfigURL",
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &pac_url,
+                    "/f",
+                ])?;
+                notify_wininet();
+                return Ok(());
+            }
+            let _ = reg(&["delete", KEY, "/v", "AutoConfigURL", "/f"]);
             let server = format!("{}:{}", endpoint.host, endpoint.port);
             reg(&[
                 "add",
@@ -1473,6 +1887,18 @@ mod host_proxy {
                 "REG_SZ",
                 "/d",
                 &server,
+                "/f",
+            ])?;
+            let override_val = settings.bypass.join(";");
+            reg(&[
+                "add",
+                KEY,
+                "/v",
+                "ProxyOverride",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &override_val,
                 "/f",
             ])?;
             reg(&[
@@ -1486,12 +1912,14 @@ mod host_proxy {
                 "1",
                 "/f",
             ])?;
+            notify_wininet();
             Ok(())
         }
 
         pub fn clear_if_matches(endpoint: &ProxyEndpoint) -> Result<(), String> {
             let server = format!("{}:{}", endpoint.host, endpoint.port);
             let current = reg_query("ProxyServer");
+            let mut changed = false;
             if current.as_deref() == Some(server.as_str()) {
                 reg(&[
                     "add",
@@ -1504,8 +1932,45 @@ mod host_proxy {
                     "0",
                     "/f",
                 ])?;
+                changed = true;
+            }
+            if reg_query("AutoConfigURL").is_some_and(|url| is_billow_pac_url(&url)) {
+                let _ = reg(&["delete", KEY, "/v", "AutoConfigURL", "/f"]);
+                changed = true;
+            }
+            if changed {
+                notify_wininet();
             }
             Ok(())
+        }
+
+        fn notify_wininet() {
+            use core::ffi::c_void;
+            #[link(name = "wininet")]
+            unsafe extern "system" {
+                fn InternetSetOptionW(
+                    hInternet: *mut c_void,
+                    dwOption: u32,
+                    lpBuffer: *mut c_void,
+                    dwBufferLength: u32,
+                ) -> i32;
+            }
+            const INTERNET_OPTION_SETTINGS_CHANGED: u32 = 39;
+            const INTERNET_OPTION_REFRESH: u32 = 37;
+            unsafe {
+                let _ = InternetSetOptionW(
+                    std::ptr::null_mut(),
+                    INTERNET_OPTION_SETTINGS_CHANGED,
+                    std::ptr::null_mut(),
+                    0,
+                );
+                let _ = InternetSetOptionW(
+                    std::ptr::null_mut(),
+                    INTERNET_OPTION_REFRESH,
+                    std::ptr::null_mut(),
+                    0,
+                );
+            }
         }
 
         fn reg(args: &[&str]) -> Result<(), String> {
@@ -1542,29 +2007,32 @@ mod host_proxy {
     mod linux {
         use std::process::Command;
 
-        use super::super::ProxyEndpoint;
+        use super::super::{
+            ProxyEndpoint, SystemProxySettings, ensure_pac_server, is_billow_pac_url,
+        };
 
-        pub fn set(endpoint: &ProxyEndpoint) -> Result<(), String> {
+        pub fn set(endpoint: &ProxyEndpoint, settings: &SystemProxySettings) -> Result<(), String> {
+            if settings.mode == "pac" {
+                let pac_url = ensure_pac_server(&endpoint.host, endpoint.port, &settings.pac_script)?;
+                gsettings(&["set", "org.gnome.system.proxy", "autoconfig-url", &pac_url])?;
+                gsettings(&["set", "org.gnome.system.proxy", "mode", "auto"])?;
+                return Ok(());
+            }
+            let port = endpoint.port.to_string();
             gsettings(&["set", "org.gnome.system.proxy", "mode", "manual"])?;
-            gsettings(&["set", "org.gnome.system.proxy.http", "host", &endpoint.host])?;
-            gsettings(&[
-                "set",
-                "org.gnome.system.proxy.http",
-                "port",
-                &endpoint.port.to_string(),
-            ])?;
-            gsettings(&[
-                "set",
-                "org.gnome.system.proxy.https",
-                "host",
-                &endpoint.host,
-            ])?;
-            gsettings(&[
-                "set",
-                "org.gnome.system.proxy.https",
-                "port",
-                &endpoint.port.to_string(),
-            ])?;
+            for proto in ["http", "https", "socks"] {
+                let schema = format!("org.gnome.system.proxy.{proto}");
+                let _ = gsettings(&["set", &schema, "host", &endpoint.host]);
+                let _ = gsettings(&["set", &schema, "port", &port]);
+            }
+            let bypass_items: Vec<String> = settings
+                .bypass
+                .iter()
+                .filter(|item| item.as_str() != "<local>")
+                .map(|item| format!("'{}'", item.replace('\'', "")))
+                .collect();
+            let variant = format!("[{}]", bypass_items.join(", "));
+            let _ = gsettings(&["set", "org.gnome.system.proxy", "ignore-hosts", &variant]);
             Ok(())
         }
 
@@ -1585,6 +2053,13 @@ mod host_proxy {
             {
                 gsettings(&["set", "org.gnome.system.proxy.https", "host", ""])?;
             }
+            let socks_host = gsettings_get(&["get", "org.gnome.system.proxy.socks", "host"]);
+            let socks_port = gsettings_get(&["get", "org.gnome.system.proxy.socks", "port"]);
+            if socks_host.as_deref() == Some(host.as_str())
+                && socks_port.as_deref() == Some(port.as_str())
+            {
+                let _ = gsettings(&["set", "org.gnome.system.proxy.socks", "host", ""]);
+            }
             let mode = gsettings_get(&["get", "org.gnome.system.proxy", "mode"]);
             if mode.as_deref() == Some("'manual'")
                 && gsettings_get(&["get", "org.gnome.system.proxy.http", "host"]).as_deref()
@@ -1592,6 +2067,12 @@ mod host_proxy {
                 && gsettings_get(&["get", "org.gnome.system.proxy.https", "host"]).as_deref()
                     != Some(host.as_str())
             {
+                gsettings(&["set", "org.gnome.system.proxy", "mode", "none"])?;
+            } else if mode.as_deref() == Some("'auto'")
+                && gsettings_get(&["get", "org.gnome.system.proxy", "autoconfig-url"])
+                    .is_some_and(|url| is_billow_pac_url(&url))
+            {
+                let _ = gsettings(&["set", "org.gnome.system.proxy", "autoconfig-url", ""]);
                 gsettings(&["set", "org.gnome.system.proxy", "mode", "none"])?;
             }
             Ok(())
@@ -2321,7 +2802,16 @@ mod tests {
         let mut tun = HostTun::with_evidence(open_without_linux_node);
         assert!(tun.authorize().unwrap());
         let mut denied = HostTun::with_evidence(native_denial);
-        assert!(!denied.authorize().unwrap());
+        assert_eq!(
+            denied.authorize().unwrap(),
+            matches!(TunHost::current(), TunHost::Linux)
+        );
+        let mut all_closed = HostTun::with_evidence(|| TunEvidence {
+            linux_node: false,
+            utun: false,
+            windows: false,
+        });
+        assert!(!all_closed.authorize().unwrap());
         assert_eq!(
             HostTun::host().authorize().unwrap(),
             tun_allowed(TunHost::current(), live_tun_evidence())
@@ -2686,6 +3176,7 @@ mod tests {
             inner: MemoryProxy {
                 http: Some(endpoint()),
                 https: Some(endpoint()),
+                settings: Default::default(),
                 sets: 1,
             },
             fail_clear: true,
@@ -2835,8 +3326,53 @@ mod tests {
             "allow-set-tun-enabled",
             "allow-exclude-package",
             "allow-include-package",
+            "allow-open-uwp-tool",
         ] {
             assert!(permissions.contains(&permission), "{permission}");
         }
+    }
+
+    #[test]
+    fn pac_server_and_system_proxy_settings_render_and_normalize_cleanly() {
+        let settings = SystemProxySettings {
+            host: " 127.0.0.1 ".to_string(),
+            mode: "PAC".to_string(),
+            pac_script: String::new(),
+            bypass: vec![" localhost ".to_string(), "127.*".to_string(), "localhost".to_string(), "bad;item".to_string()],
+        }
+        .normalized();
+        assert_eq!(settings.host, "");
+        assert_eq!(settings.effective_host(), "127.0.0.1");
+        assert_eq!(settings.mode, "pac");
+        assert_eq!(settings.bypass, vec!["localhost", "127.*", "baditem"]);
+
+        let url = ensure_pac_server("127.0.0.1", 7891, &settings.pac_script).unwrap();
+        assert!(is_billow_pac_url(&url));
+        let body = ureq::get(&url).call().unwrap().into_string().unwrap();
+        assert!(body.contains("PROXY 127.0.0.1:7891; SOCKS5 127.0.0.1:7891; DIRECT"));
+
+        let url2 = ensure_pac_server("192.168.1.5", 7899, "return 'PROXY %proxy-host%:%mixed-port%';").unwrap();
+        assert_eq!(url, url2, "PAC server reuses the same loopback listener port");
+        let body2 = ureq::get(&url2).call().unwrap().into_string().unwrap();
+        assert_eq!(body2, "return 'PROXY 192.168.1.5:7899';");
+        assert_eq!(
+            parse_macos_autoproxy("URL: http://127.0.0.1:12345/billow.pac\nEnabled: Yes\n").as_deref(),
+            Some("http://127.0.0.1:12345/billow.pac")
+        );
+        assert!(parse_macos_autoproxy("URL: http://127.0.0.1:12345/billow.pac\nEnabled: No\n").is_none());
+    }
+
+    #[test]
+    fn macos_setuid_probe_and_applescript_escape_paths_safely() {
+        assert!(unix_mode_has_setuid_root(0, 0o104755));
+        assert!(!unix_mode_has_setuid_root(501, 0o104755));
+        assert!(!unix_mode_has_setuid_root(0, 0o100755));
+
+        let script = build_macos_tun_grant_applescript(Path::new("/Users/a'b/Library/Application Support/Billow/core")).unwrap();
+        assert!(script.contains("with administrator privileges"));
+        assert!(script.contains("chown root:admin"));
+        assert!(script.contains("chmod u+s,g+s,a+rx"));
+        assert!(script.contains("'\\\\''"));
+        assert!(build_macos_tun_grant_applescript(Path::new("bad\npath")).is_err());
     }
 }

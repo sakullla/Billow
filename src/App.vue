@@ -32,6 +32,23 @@ provide(STORE, store)
 
 const width = ref(props.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1024))
 const compact = computed(() => width.value < 760)
+const SIDEBAR_STORAGE_KEY = 'billow.sidebarCollapsed'
+function readSidebarCollapsed(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+const sidebarCollapsed = ref(readSidebarCollapsed())
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  try {
+    localStorage?.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed.value ? '1' : '0')
+  } catch {
+    /* ignore storage quota errors */
+  }
+}
 const snap = computed(() => store.snapshot.value)
 const sideStatusWord = computed(() => {
   if (store.connecting.value) return snap.value.connected ? '断开中…' : '连接中…'
@@ -94,6 +111,7 @@ const dragging = ref(false)
 const paletteOpen = ref(false)
 const helpOpen = ref(false)
 const paletteKey = shortcutKeyLabel(getShortcut('palette').combo)
+const sidebarKey = shortcutKeyLabel(getShortcut('sidebar').combo)
 provide('openShortcuts', () => {
   helpOpen.value = true
 })
@@ -193,6 +211,9 @@ function onPaletteAction(id: string) {
     case 'mode-direct':
       void store.setMode('direct')
       break
+    case 'toggle-sidebar':
+      if (!compact.value) toggleSidebar()
+      break
     case 'copy-proxy-env':
       void store.copyProxyEnv()
       break
@@ -242,6 +263,9 @@ useHotkeys(
     {
       palette: () => {
         paletteOpen.value = true
+      },
+      sidebar: () => {
+        if (!compact.value) toggleSidebar()
       },
       search: focusSearch,
       escape: clearSearch,
@@ -448,18 +472,31 @@ defineExpose({ store })
 </script>
 
 <template>
-  <div class="shell" :class="[{ compact }, chrome ? `chrome chrome-${chrome}` : null]">
-    <aside v-if="!compact" class="sidebar">
+  <div class="shell" :class="[{ compact, 'sidebar-collapsed': !compact && sidebarCollapsed }, chrome ? `chrome chrome-${chrome}` : null]">
+    <aside v-if="!compact" class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <!-- macOS: the traffic lights sit here; the strip still moves the window. -->
       <div v-if="chrome === 'macos'" class="sidebar-drag" data-tauri-drag-region />
       <div class="brand" :data-tauri-drag-region="chrome ? '' : undefined">
         <span class="brand-mark"><img :src="appIcon" alt="" /></span>
         <span class="brand-name">Billow</span>
+        <button
+          type="button"
+          class="icon-btn sm sidebar-toggle"
+          :aria-expanded="!sidebarCollapsed"
+          :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          :title="`${sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} (${sidebarKey})`"
+          data-testid="sidebar-toggle"
+          @mousedown.stop
+          @click="toggleSidebar"
+        >
+          <Icon :name="sidebarCollapsed ? 'panel-left-open' : 'panel-left-close'" :size="16" />
+        </button>
       </div>
       <button
         type="button"
         class="side-search"
-        title="搜索页面、设置与快捷动作"
+        :title="sidebarCollapsed ? `搜索与命令 (${paletteKey})` : '搜索页面、设置与快捷动作'"
+        aria-label="搜索与命令"
         data-testid="open-palette"
         @click="paletteOpen = true"
       >
@@ -477,11 +514,13 @@ defineExpose({ store })
             class="nav-item"
             :class="{ active: store.page.value === item.id }"
             :aria-current="store.page.value === item.id ? 'page' : undefined"
+            :aria-label="sidebarCollapsed ? item.label : undefined"
+            :title="sidebarCollapsed ? (item.id === 'connections' && snap.connected ? `${item.label}（${snap.connections.length}）` : item.label) : undefined"
             :data-page="item.id"
             @click="store.go(item.id)"
           >
             <Icon :name="item.icon" />
-            <span>{{ item.label }}</span>
+            <span class="nav-item-label">{{ item.label }}</span>
             <span v-if="item.id === 'connections' && snap.connected" class="nav-count">{{ snap.connections.length }}</span>
           </button>
         </div>
@@ -492,14 +531,21 @@ defineExpose({ store })
           class="nav-item"
           :class="{ active: store.page.value === settingsPage.id }"
           :aria-current="store.page.value === settingsPage.id ? 'page' : undefined"
+          :aria-label="sidebarCollapsed ? settingsPage.label : undefined"
+          :title="sidebarCollapsed ? (store.appUpdate.offer.value ? `${settingsPage.label}（有更新）` : settingsPage.label) : undefined"
           :data-page="settingsPage.id"
           @click="store.go(settingsPage.id)"
         >
           <Icon :name="settingsPage.icon" />
-          <span>{{ settingsPage.label }}</span>
-          <span v-if="store.appUpdate.offer.value" class="tag">更新</span>
+          <span class="nav-item-label">{{ settingsPage.label }}</span>
+          <span v-if="store.appUpdate.offer.value" class="tag nav-update-tag">更新</span>
         </button>
-        <div class="side-status" :class="{ on: snap.connected && !store.connecting.value, pending: store.connecting.value }" data-testid="side-status">
+        <div
+          class="side-status"
+          :class="{ on: snap.connected && !store.connecting.value, pending: store.connecting.value }"
+          :title="sidebarCollapsed ? `${sideStatusWord}${snap.connected ? ` · ↑${formatSpeed(snap.upload ?? 0)} ↓${formatSpeed(snap.download ?? 0)}` : ''}` : undefined"
+          data-testid="side-status"
+        >
           <div class="side-status-body">
             <div class="side-status-head">
               <span class="dot" />
@@ -517,13 +563,14 @@ defineExpose({ store })
             class="side-power"
             :disabled="store.connecting.value"
             :aria-label="snap.connected ? '断开' : '连接'"
-            :title="snap.connected ? '断开' : '连接'"
+            :title="sidebarCollapsed ? `${sideStatusWord}（点击${snap.connected ? '断开' : '连接'}）` : (snap.connected ? '断开' : '连接')"
             data-testid="side-power"
             @click="store.toggleConnection()"
           >
             <span v-if="store.connecting.value" class="spinner sm" />
             <Icon v-else name="power" :size="16" :stroke="2.2" />
           </button>
+          <span v-else-if="sidebarCollapsed" class="dot collapsed-status-dot" aria-hidden="true" />
         </div>
       </div>
     </aside>
@@ -572,6 +619,7 @@ defineExpose({ store })
       :has-profiles="snap.profiles.length > 0"
       :current-page="store.page.value"
       :mode="snap.mode"
+      :sidebar-collapsed="sidebarCollapsed"
       @navigate="onPaletteNavigate"
       @open-settings="onPaletteSettings"
       @action="onPaletteAction"

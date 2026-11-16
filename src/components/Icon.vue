@@ -67,6 +67,8 @@ const PATHS: Record<string, string> = {
   help: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM9.2 9a3 3 0 0 1 5.6 1c0 2-2.8 2.4-2.8 4M12 17h.01',
   keyboard: 'M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2ZM6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8',
   filter: 'M3 5h18l-7 8v6l-4-2v-4z',
+  'panel-left-close': 'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5ZM9 3v18M16 15l-3-3 3-3',
+  'panel-left-open': 'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5ZM9 3v18M14 9l3 3-3 3',
 }
 
 // Kernel proxy-group types reuse the built-in group icons, so a group without a

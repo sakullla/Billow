@@ -15,7 +15,7 @@ import {
 } from './types'
 
 export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings' | 'apps'
-export type SettingsTab = 'general' | 'kernel' | 'tun' | 'dns'
+export type SettingsTab = 'general' | 'proxy' | 'kernel' | 'tun' | 'dns'
 /** Desktop sidebar grouping; settings is pinned below both groups (R25). */
 export type PageGroup = 'core' | 'tools' | null
 
@@ -178,18 +178,19 @@ export function createStore(backend: Backend) {
     scheduleToast(id, tone === 'error' ? 5200 : 2800)
   }
 
-  function proxyEnvCommand(): { port: number; command: string } {
+  function proxyEnvCommand(): { host: string; port: number; command: string } {
+    const host = snapshot.value.settings.system_proxy.host.trim() || '127.0.0.1'
     const port = snapshot.value.mixed_port || snapshot.value.settings.mixed_port || 7890
     const isWin = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)
     const command = isWin
-      ? `$env:HTTP_PROXY="http://127.0.0.1:${port}"; $env:HTTPS_PROXY="http://127.0.0.1:${port}"; $env:ALL_PROXY="socks5://127.0.0.1:${port}"`
-      : `export https_proxy=http://127.0.0.1:${port} http_proxy=http://127.0.0.1:${port} all_proxy=socks5://127.0.0.1:${port}`
-    return { port, command }
+      ? `$env:HTTP_PROXY="http://${host}:${port}"; $env:HTTPS_PROXY="http://${host}:${port}"; $env:ALL_PROXY="socks5://${host}:${port}"`
+      : `export https_proxy=http://${host}:${port} http_proxy=http://${host}:${port} all_proxy=socks5://${host}:${port}`
+    return { host, port, command }
   }
 
   async function copyProxyEnv() {
-    const { port, command } = proxyEnvCommand()
-    return copyText(command, `已复制终端代理环境变量 (127.0.0.1:${port})`)
+    const { host, port, command } = proxyEnvCommand()
+    return copyText(command, `已复制终端代理环境变量 (${host}:${port})`)
   }
 
   /**
@@ -270,6 +271,12 @@ export function createStore(backend: Backend) {
       }
       if (JSON.stringify(prevSettings.dns) === JSON.stringify(nextSettings.dns)) {
         nextSettings = { ...nextSettings, dns: prevSettings.dns }
+      }
+      if (JSON.stringify(prevSettings.system_proxy) === JSON.stringify(nextSettings.system_proxy)) {
+        nextSettings = { ...nextSettings, system_proxy: prevSettings.system_proxy }
+      }
+      if (JSON.stringify(prevSettings.geo_urls) === JSON.stringify(nextSettings.geo_urls)) {
+        nextSettings = { ...nextSettings, geo_urls: prevSettings.geo_urls }
       }
       if (JSON.stringify(prevSettings) === JSON.stringify(nextSettings)) {
         nextSettings = prevSettings
@@ -815,6 +822,13 @@ export function createStore(backend: Backend) {
     flushCache: (which: 'fakeip' | 'dns') =>
       act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除'),
     saveSettings: (settings: KernelSettings) => act('settings', () => backend.saveSettings(settings), '内核设置已保存'),
+    async openUwpTool() {
+      const ok = await run('uwp', async () => {
+        await backend.openUwpTool()
+        return true
+      })
+      if (ok) toast('已打开 UWP 回环豁免工具', 'success')
+    },
 
     async setChannel(channel: KernelChannel) {
       busy.kernel = true

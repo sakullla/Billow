@@ -724,6 +724,7 @@ pub fn provider_action(
 /// Calls `/configs/geo` first and only falls back to `/upgrade/geo` when the
 /// kernel does not expose `/configs/geo` (404/405), avoiding duplicate 120s
 /// downloads when the upstream source fails.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn upgrade_geo(endpoint: &ControllerEndpoint) -> Result<(), String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err("内核没有运行".to_string());

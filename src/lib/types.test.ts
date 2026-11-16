@@ -162,4 +162,72 @@ describe('normalizeSnapshot', () => {
     expect(resolvePage('diagnostics')).toBe('home')
     expect(resolvePage(null)).toBe('home')
   })
+
+  it('normalizes system proxy, DNS policy/hosts, and GEO URL overrides safely', () => {
+    const snapshot = normalizeSnapshot({
+      settings: {
+        geodata_mode: false,
+        geodata_loader: 'memconservative',
+        geo_source: 'testingcf',
+        geo_urls: {
+          geoip: ' https://example.com/geoip.dat ',
+          asn: 'https://example.com/asn.mmdb',
+        },
+        system_proxy: {
+          host: ' 127.0.0.2 ',
+          mode: 'pac',
+          pac_script: 'function FindProxyForURL() { return "DIRECT"; }',
+          bypass: ['localhost', '10.*'],
+        },
+        dns: {
+          listen: '127.0.0.1:1053',
+          enhanced_mode: 'fake-ip',
+          fake_ip_filter_mode: 'whitelist',
+          prefer_h3: true,
+          cache_algorithm: 'arc',
+          use_hosts: true,
+          use_system_hosts: false,
+          direct_nameserver_follow_policy: true,
+          nameserver_policy: {
+            'geosite:cn': ['223.5.5.5', '119.29.29.29'],
+            ' +.corp.local ': '10.0.0.1',
+          },
+          hosts: {
+            'router.local': ['192.168.1.1'],
+          },
+        },
+      },
+    })
+    expect(snapshot.settings.geodata_mode).toBe(false)
+    expect(snapshot.settings.geodata_loader).toBe('memconservative')
+    expect(snapshot.settings.geo_source).toBe('testingcf')
+    expect(snapshot.settings.geo_urls).toEqual({
+      geoip: 'https://example.com/geoip.dat',
+      mmdb: '',
+      geosite: '',
+      asn: 'https://example.com/asn.mmdb',
+    })
+    expect(snapshot.settings.system_proxy).toEqual({
+      host: '127.0.0.2',
+      mode: 'pac',
+      pac_script: 'function FindProxyForURL() { return "DIRECT"; }',
+      bypass: ['localhost', '10.*'],
+    })
+    expect(snapshot.settings.dns).toMatchObject({
+      listen: '127.0.0.1:1053',
+      fake_ip_filter_mode: 'whitelist',
+      prefer_h3: true,
+      cache_algorithm: 'arc',
+      use_hosts: true,
+      use_system_hosts: false,
+      direct_nameserver_follow_policy: true,
+      nameserver_policy: {
+        'geosite:cn': ['223.5.5.5', '119.29.29.29'],
+        '+.corp.local': ['10.0.0.1'],
+      },
+      hosts: {
+        'router.local': ['192.168.1.1'],
+      },
+    })
+  })
 })

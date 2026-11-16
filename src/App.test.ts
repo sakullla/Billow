@@ -1568,14 +1568,26 @@ describe('App', () => {
     expect(wrapper.text()).toContain('内核未运行')
   })
 
-  it('shows GEO files and saves auto-update and source as kernel settings', async () => {
+  it('shows all four GEO files, allows offline/individual updates, and saves GEO settings', async () => {
     const { wrapper, backend } = await mountApp()
     const save = vi.spyOn(backend, 'saveSettings')
+    const upgrade = vi.spyOn(backend, 'upgradeGeo')
     await openPage(wrapper, 'resources')
     await settle(300)
-    const files = wrapper.findAll('[data-testid="geo-files"] li').map((item) => item.find('strong').text())
-    expect(files).toEqual(['GeoIP', 'GeoSite', 'MMDB'])
-    expect(wrapper.find('[data-testid="upgrade-geo"]').attributes('disabled')).toBeDefined()
+    const items = wrapper.findAll('[data-testid="geo-files"] li')
+    expect(items.map((item) => item.find('strong').text())).toEqual(['GeoIP', 'GeoSite', 'MMDB', 'ASN'])
+    expect(items[3].text()).toContain('尚未下载')
+    expect(wrapper.find('[data-testid="upgrade-geo"]').attributes('disabled')).toBeUndefined()
+
+    // Download ASN individually while disconnected: turns "尚未下载" into downloaded size/time
+    await wrapper.find('[data-testid="upgrade-geo-asn"]').trigger('click')
+    await settle(500)
+    expect(upgrade).toHaveBeenCalledWith('asn')
+    expect(wrapper.findAll('[data-testid="geo-files"] li')[3].text()).not.toContain('尚未下载')
+
+    await wrapper.find('[data-testid="geodata-mode"] [data-value="db"]').trigger('click')
+    await settle(200)
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geodata_mode: false }))
 
     await wrapper.find('[data-testid="geo-auto-update"]').trigger('click')
     await settle(500)
@@ -1583,6 +1595,17 @@ describe('App', () => {
     await wrapper.find('[data-testid="geo-source"] [data-value="jsdelivr"]').trigger('click')
     await settle(200)
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geo_source: 'jsdelivr', geo_auto_update: true }))
+
+    // Configure an individual database URL and save it
+    const asnUrlInput = wrapper.find('[data-testid="geo-url-asn"]')
+    await asnUrlInput.setValue('https://mirror.example.com/ASN.mmdb')
+    await asnUrlInput.trigger('blur')
+    await settle(300)
+    expect(save).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        geo_urls: expect.objectContaining({ asn: 'https://mirror.example.com/ASN.mmdb' }),
+      }),
+    )
   })
 
   it('keeps every proxy toolbar control reachable on a 390px screen', async () => {
@@ -2728,6 +2751,7 @@ describe('App', () => {
       if (calls === 1) {
         throw new Error('GEO 数据库下载超时或连接受阻，可切换下载源为「jsDelivr 加速」后重试')
       }
+      return backend.geoFiles()
     })
 
     await wrapper.find('[data-testid="upgrade-geo"]').trigger('click')
@@ -2796,5 +2820,132 @@ describe('App', () => {
     expect(connectSpy).toHaveBeenCalled()
     expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="test-all"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('opens system proxy settings from Home and saves host, PAC mode and bypass list', async () => {
+    const { wrapper, backend } = await mountApp()
+    const saveSpy = vi.spyOn(backend, 'saveSettings')
+
+    await wrapper.find('[data-testid="proxy-settings-link"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
+    expect(wrapper.find('[data-testid="proxy-settings"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="proxy-host-input"]').setValue('127.0.0.2')
+    await wrapper.find('[data-testid="proxy-mode"] [data-value="pac"]').trigger('click')
+    expect(wrapper.find('[data-testid="pac-script-input"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="bypass-add-input"]').setValue('*.corp.internal')
+    await wrapper.find('[data-testid="bypass-add-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="bypass-list"]').text()).toContain('*.corp.internal')
+
+    await wrapper.find('[data-testid="save-proxy"]').trigger('click')
+    await settle(500)
+    expect(saveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system_proxy: expect.objectContaining({
+          host: '127.0.0.2',
+          mode: 'pac',
+          bypass: expect.arrayContaining(['*.corp.internal', 'localhost']),
+        }),
+      }),
+    )
+    expect(wrapper.find('[data-testid="save-proxy"]').exists()).toBe(false)
+  })
+
+  it('saves complete DNS overrides including filter mode, nameserver-policy and custom hosts', async () => {
+    const { wrapper, backend } = await mountApp()
+    const saveSpy = vi.spyOn(backend, 'saveSettings')
+
+    await wrapper.find('.sidebar [data-page="settings"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="dns-filter-mode"] [data-value="whitelist"]').trigger('click')
+    await wrapper.find('[data-testid="dns-listen"]').setValue('127.0.0.1:1053')
+    await wrapper.find('[data-testid="dns-prefer-h3"]').trigger('click')
+    await wrapper.find('[data-testid="dns-cache-algorithm"] [data-value="arc"]').trigger('click')
+
+    // Add CN preset + custom policy
+    await wrapper.find('[data-testid="preset-cn-policy"]').trigger('click')
+    await wrapper.find('[data-testid="policy-pattern-input"]').setValue('+.corp.local')
+    await wrapper.find('[data-testid="policy-servers-input"]').setValue('10.0.0.53')
+    await wrapper.find('[data-testid="add-policy-btn"]').trigger('click')
+
+    // Add custom host mapping and toggle system hosts
+    await wrapper.find('[data-testid="dns-system-hosts"]').trigger('click')
+    await wrapper.find('[data-testid="host-domain-input"]').setValue('router.local')
+    await wrapper.find('[data-testid="host-target-input"]').setValue('192.168.1.1')
+    await wrapper.find('[data-testid="add-host-btn"]').trigger('click')
+
+    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    await settle(500)
+
+    expect(saveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dns: expect.objectContaining({
+          listen: '127.0.0.1:1053',
+          fake_ip_filter_mode: 'whitelist',
+          prefer_h3: true,
+          cache_algorithm: 'arc',
+          use_system_hosts: false,
+          nameserver_policy: {
+            'geosite:cn,private': ['https://doh.pub/dns-query', '223.5.5.5'],
+            '+.corp.local': ['10.0.0.53'],
+          },
+          hosts: {
+            'router.local': ['192.168.1.1'],
+          },
+        }),
+      }),
+    )
+  })
+
+  it('switches GEO download source while connected without dropping active session or provider cards', async () => {
+    const { wrapper } = await mountApp()
+    const store = storeOf(wrapper)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(store.snapshot.value.connected).toBe(true)
+
+    await openPage(wrapper, 'resources')
+    await settle(500)
+    expect(wrapper.find('[data-provider="机场订阅"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="geo-source"] [data-value="jsdelivr"]').trigger('click')
+    await settle(400)
+    expect(store.snapshot.value.connected).toBe(true)
+    expect(store.snapshot.value.kernel_running).toBe(true)
+    expect(wrapper.find('[data-provider="机场订阅"]').exists()).toBe(true)
+  })
+
+  it('collapses and expands the desktop sidebar and persists the state', async () => {
+    localStorage.clear()
+    const { wrapper } = await mountApp()
+    const toggle = wrapper.find('[data-testid="sidebar-toggle"]')
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('.shell').classes()).not.toContain('sidebar-collapsed')
+
+    await toggle.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.shell').classes()).toContain('sidebar-collapsed')
+    expect(wrapper.find('.sidebar').classes()).toContain('collapsed')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(localStorage.getItem('billow.sidebarCollapsed')).toBe('1')
+
+    // Navigation continues to work seamlessly while collapsed
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
+
+    // Keyboard shortcut (Ctrl+B) expands the sidebar again
+    press(document, 'b', { ctrlKey: true })
+    await flushPromises()
+    expect(wrapper.find('.shell').classes()).not.toContain('sidebar-collapsed')
+    expect(localStorage.getItem('billow.sidebarCollapsed')).toBe('0')
+    localStorage.clear()
   })
 })

@@ -90,18 +90,42 @@ export interface RuleRow {
   disabled: boolean
 }
 
+export type SystemProxyMode = 'manual' | 'pac'
+
+export interface SystemProxySettings {
+  host: string
+  mode: SystemProxyMode
+  pac_script: string
+  bypass: string[]
+}
+
+export interface GeoUrls {
+  geoip: string
+  mmdb: string
+  geosite: string
+  asn: string
+}
+
 export interface DnsSettings {
+  listen: string
   enhanced_mode: 'fake-ip' | 'redir-host' | 'normal'
   fake_ip_range: string
+  fake_ip_filter_mode: 'blacklist' | 'whitelist'
   fake_ip_filter: string[]
   ipv6: boolean
+  prefer_h3: boolean
+  cache_algorithm: 'lru' | 'arc'
   use_hosts: boolean
+  use_system_hosts: boolean
   respect_rules: boolean
+  direct_nameserver_follow_policy: boolean
   default_nameserver: string[]
   nameserver: string[]
   fallback: string[]
   proxy_server_nameserver: string[]
   direct_nameserver: string[]
+  nameserver_policy: Record<string, string[]>
+  hosts: Record<string, string[]>
 }
 
 export interface TunSettings {
@@ -143,14 +167,19 @@ export interface KernelSettings {
   test_url: string
   test_timeout_ms: number
   sniffer: boolean | null
+  system_proxy: SystemProxySettings
   dns_override: boolean
   dns: DnsSettings
   tun: TunSettings
-  /** GEO databases; null follows the profile. */
+  /** GEO databases; null follows the profile (false = db/MMDB, true = dat). */
+  geodata_mode: boolean | null
+  geodata_loader: 'standard' | 'memconservative' | null
   geo_auto_update: boolean | null
   geo_update_interval: number | null
   /** '' follows the profile's geox-url; otherwise a named mirror. */
   geo_source: GeoSource
+  /** Individual URL overrides per GEO database. */
+  geo_urls: GeoUrls
 }
 
 export type GeoSource = '' | 'github' | 'jsdelivr' | 'testingcf'
@@ -260,10 +289,92 @@ export interface RulesResult {
   error: string | null
 }
 
+export const DEFAULT_PAC_SCRIPT = `function FindProxyForURL(url, host) {
+  if (
+    isPlainHostName(host) ||
+    shExpMatch(host, "*.local") ||
+    shExpMatch(host, "*.lan") ||
+    isInNet(dnsResolve(host), "10.0.0.0", "255.0.0.0") ||
+    isInNet(dnsResolve(host), "172.16.0.0", "255.240.0.0") ||
+    isInNet(dnsResolve(host), "192.168.0.0", "255.255.0.0") ||
+    isInNet(dnsResolve(host), "127.0.0.0", "255.0.0.0")
+  ) {
+    return "DIRECT";
+  }
+  return "PROXY %proxy-host%:%mixed-port%; SOCKS5 %proxy-host%:%mixed-port%; DIRECT";
+}`
+
+export const DEFAULT_PROXY_BYPASS: string[] = [
+  'localhost',
+  '127.*',
+  '10.*',
+  '172.16.*',
+  '172.17.*',
+  '172.18.*',
+  '172.19.*',
+  '172.20.*',
+  '172.21.*',
+  '172.22.*',
+  '172.23.*',
+  '172.24.*',
+  '172.25.*',
+  '172.26.*',
+  '172.27.*',
+  '172.28.*',
+  '172.29.*',
+  '172.30.*',
+  '172.31.*',
+  '192.168.*',
+  '*.local',
+  '*.lan',
+  '<local>',
+]
+
+export const GEO_SOURCE_PRESETS: Record<Exclude<GeoSource, ''>, GeoUrls> = {
+  github: {
+    geoip: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
+    geosite: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+    mmdb: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb',
+    asn: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb',
+  },
+  jsdelivr: {
+    geoip: 'https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat',
+    geosite: 'https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat',
+    mmdb: 'https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb',
+    asn: 'https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb',
+  },
+  testingcf: {
+    geoip: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat',
+    geosite: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat',
+    mmdb: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb',
+    asn: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb',
+  },
+}
+
+export function defaultSystemProxy(): SystemProxySettings {
+  return {
+    host: '',
+    mode: 'manual',
+    pac_script: DEFAULT_PAC_SCRIPT,
+    bypass: [...DEFAULT_PROXY_BYPASS],
+  }
+}
+
+export function defaultGeoUrls(): GeoUrls {
+  return {
+    geoip: '',
+    mmdb: '',
+    geosite: '',
+    asn: '',
+  }
+}
+
 export function defaultDns(): DnsSettings {
   return {
+    listen: '',
     enhanced_mode: 'fake-ip',
     fake_ip_range: '198.18.0.1/16',
+    fake_ip_filter_mode: 'blacklist',
     fake_ip_filter: [
       '*.lan',
       '*.local',
@@ -278,13 +389,19 @@ export function defaultDns(): DnsSettings {
       '+.market.xiaomi.com',
     ],
     ipv6: false,
+    prefer_h3: false,
+    cache_algorithm: 'lru',
     use_hosts: true,
+    use_system_hosts: true,
     respect_rules: false,
+    direct_nameserver_follow_policy: false,
     default_nameserver: ['223.5.5.5', '119.29.29.29'],
     nameserver: ['https://doh.pub/dns-query', 'https://dns.alidns.com/dns-query'],
     fallback: [],
     proxy_server_nameserver: ['https://doh.pub/dns-query'],
     direct_nameserver: [],
+    nameserver_policy: {},
+    hosts: {},
   }
 }
 
@@ -302,10 +419,14 @@ export function defaultTun(): TunSettings {
 
 export function emptyKernelSettings(): KernelSettings {
   return {
+    geodata_mode: null,
+    geodata_loader: null,
     geo_auto_update: null,
     geo_update_interval: null,
     geo_source: '',
+    geo_urls: defaultGeoUrls(),
     sniffer: null,
+    system_proxy: defaultSystemProxy(),
     dns_override: false,
     dns: defaultDns(),
     tun: defaultTun(),
@@ -440,23 +561,71 @@ export function normalizeRuleRow(raw: unknown): RuleRow {
 const strings = (value: unknown): string[] =>
   list(value).filter((item): item is string => typeof item === 'string')
 
+function normalizeStringMap(raw: unknown): Record<string, string[]> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Record<string, string[]> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const key = k.trim()
+    if (!key) continue
+    const items = typeof v === 'string' ? [v.trim()].filter(Boolean) : strings(v).map((s) => s.trim()).filter(Boolean)
+    if (items.length) out[key] = items
+  }
+  return out
+}
+
+function normalizeSystemProxy(raw: unknown): SystemProxySettings {
+  const base = defaultSystemProxy()
+  if (!raw || typeof raw !== 'object') return base
+  const value = obj(raw)
+  const mode = str(value.mode)
+  const pacScript = str(value.pac_script).trim()
+  return {
+    host: str(value.host).trim(),
+    mode: mode === 'pac' ? 'pac' : 'manual',
+    pac_script: pacScript || base.pac_script,
+    bypass: Array.isArray(value.bypass) ? strings(value.bypass) : base.bypass,
+  }
+}
+
+function normalizeGeoUrls(raw: unknown): GeoUrls {
+  const base = defaultGeoUrls()
+  if (!raw || typeof raw !== 'object') return base
+  const value = obj(raw)
+  return {
+    geoip: str(value.geoip).trim(),
+    mmdb: str(value.mmdb).trim(),
+    geosite: str(value.geosite).trim(),
+    asn: str(value.asn).trim(),
+  }
+}
+
 function normalizeDns(raw: unknown): DnsSettings {
   const value = obj(raw)
   const base = defaultDns()
   if (!raw || typeof raw !== 'object') return base
   const mode = str(value.enhanced_mode)
+  const filterMode = str(value.fake_ip_filter_mode)
+  const cacheAlgo = str(value.cache_algorithm)
   return {
+    listen: str(value.listen),
     enhanced_mode: mode === 'redir-host' || mode === 'normal' ? mode : 'fake-ip',
     fake_ip_range: str(value.fake_ip_range, base.fake_ip_range),
+    fake_ip_filter_mode: filterMode === 'whitelist' ? 'whitelist' : 'blacklist',
     fake_ip_filter: strings(value.fake_ip_filter),
     ipv6: Boolean(value.ipv6),
+    prefer_h3: Boolean(value.prefer_h3),
+    cache_algorithm: cacheAlgo === 'arc' ? 'arc' : 'lru',
     use_hosts: value.use_hosts !== false,
+    use_system_hosts: value.use_system_hosts !== false,
     respect_rules: Boolean(value.respect_rules),
+    direct_nameserver_follow_policy: Boolean(value.direct_nameserver_follow_policy),
     default_nameserver: strings(value.default_nameserver),
     nameserver: strings(value.nameserver),
     fallback: strings(value.fallback),
     proxy_server_nameserver: strings(value.proxy_server_nameserver),
     direct_nameserver: strings(value.direct_nameserver),
+    nameserver_policy: normalizeStringMap(value.nameserver_policy),
+    hosts: normalizeStringMap(value.hosts),
   }
 }
 
@@ -479,11 +648,16 @@ function normalizeTun(raw: unknown): TunSettings {
 function normalizeSettings(raw: unknown): KernelSettings {
   const value = obj(raw)
   const geoSource = str(value.geo_source)
+  const geoLoader = str(value.geodata_loader)
   return {
+    geodata_mode: optBool(value.geodata_mode),
+    geodata_loader: geoLoader === 'standard' || geoLoader === 'memconservative' ? geoLoader : null,
     geo_auto_update: optBool(value.geo_auto_update),
     geo_update_interval: num(value.geo_update_interval),
     geo_source: geoSource === 'github' || geoSource === 'jsdelivr' || geoSource === 'testingcf' ? geoSource : '',
+    geo_urls: normalizeGeoUrls(value.geo_urls),
     sniffer: optBool(value.sniffer),
+    system_proxy: normalizeSystemProxy(value.system_proxy),
     dns_override: Boolean(value.dns_override),
     dns: normalizeDns(value.dns),
     tun: normalizeTun(value.tun),

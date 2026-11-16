@@ -127,6 +127,18 @@ const takeoverSummary = computed(() => {
 
 const takeoverOn = computed(() => (store.isAndroid.value ? snap.value.vpn : snap.value.system_proxy || snap.value.tun))
 
+const proxySubtitle = computed(() => {
+  const sp = snap.value.settings.system_proxy
+  const host = sp.host.trim()
+  if (sp.mode === 'pac') {
+    return host ? `PAC 自动配置 · ${host}` : 'PAC 自动配置脚本 · 按规则接管应用'
+  }
+  if (host && host !== '127.0.0.1') {
+    return `${host}:${snap.value.mixed_port ?? snap.value.settings.mixed_port ?? 7890} · 浏览器和系统应用`
+  }
+  return '浏览器和遵守系统设置的应用'
+})
+
 /** The hero's first line answers "is my traffic going through Billow?", not just "is the kernel up?". */
 const heroEyebrow = computed(() => {
   if (store.connecting.value) return '请稍候'
@@ -345,8 +357,9 @@ function onPrimary() {
                 <span class="row-icon"><Icon name="monitor" /></span>
                 <div class="grow">
                   <strong>系统代理</strong>
-                  <p class="muted small">浏览器和遵守系统设置的应用</p>
+                  <p class="muted small">{{ proxySubtitle }}</p>
                 </div>
+                <button type="button" class="icon-btn" title="系统代理设置" aria-label="系统代理设置" data-testid="proxy-settings-link" @click="store.openSettings('proxy')"><Icon name="sliders" :size="16" /></button>
                 <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" label="系统代理" data-testid="toggle-proxy" @update:model-value="store.setSystemProxy" />
               </div>
               <div class="setting-row">

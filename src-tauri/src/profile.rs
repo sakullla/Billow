@@ -104,6 +104,56 @@ impl Profile {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeoUrls {
+    pub geoip: String,
+    pub mmdb: String,
+    pub geosite: String,
+    pub asn: String,
+}
+
+fn clean_http_url(raw: &str) -> String {
+    let trimmed: String = raw
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control() && !ch.is_whitespace())
+        .take(1000)
+        .collect();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed
+    } else {
+        String::new()
+    }
+}
+
+impl GeoUrls {
+    pub fn normalized(mut self) -> Self {
+        self.geoip = clean_http_url(&self.geoip);
+        self.mmdb = clean_http_url(&self.mmdb);
+        self.geosite = clean_http_url(&self.geosite);
+        self.asn = clean_http_url(&self.asn);
+        self
+    }
+
+    pub fn get(&self, key: &str) -> &str {
+        match key {
+            "geoip" => &self.geoip,
+            "mmdb" => &self.mmdb,
+            "geosite" => &self.geosite,
+            "asn" => &self.asn,
+            _ => "",
+        }
+    }
+
+    pub fn has_any(&self) -> bool {
+        !self.geoip.is_empty()
+            || !self.mmdb.is_empty()
+            || !self.geosite.is_empty()
+            || !self.asn.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct KernelSettings {
     #[serde(default)]
@@ -127,6 +177,9 @@ pub struct KernelSettings {
     /// Domain sniffing; `None` follows the profile.
     #[serde(default)]
     pub sniffer: Option<bool>,
+    /// System proxy host, mode (`manual` / `pac`), PAC script and bypass list.
+    #[serde(default)]
+    pub system_proxy: takeover::SystemProxySettings,
     /// When on, the app's `dns` block replaces the profile's.
     #[serde(default)]
     pub dns_override: bool,
@@ -134,7 +187,11 @@ pub struct KernelSettings {
     pub dns: DnsSettings,
     #[serde(default)]
     pub tun: TunSettings,
-    /// GEO databases: `None` follows the profile.
+    /// GEO databases: `None` follows the profile (`false` = MMDB `db`, `true` = GeoIP `dat`).
+    #[serde(default)]
+    pub geodata_mode: Option<bool>,
+    #[serde(default)]
+    pub geodata_loader: Option<String>,
     #[serde(default)]
     pub geo_auto_update: Option<bool>,
     #[serde(default)]
@@ -142,6 +199,9 @@ pub struct KernelSettings {
     /// Download source for GEO databases: `""` follows the profile's `geox-url`.
     #[serde(default)]
     pub geo_source: String,
+    /// Per-database URL overrides (`geoip`, `mmdb`, `geosite`, `asn`).
+    #[serde(default)]
+    pub geo_urls: GeoUrls,
 }
 
 /// `geox-url` for a named GEO source; `None` leaves the profile's own value.
@@ -163,25 +223,35 @@ pub fn geo_source_urls(source: &str) -> Option<[(&'static str, String); 4]> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DnsSettings {
+    pub listen: String,
     pub enhanced_mode: String,
     pub fake_ip_range: String,
+    pub fake_ip_filter_mode: String,
     pub fake_ip_filter: Vec<String>,
     pub ipv6: bool,
+    pub prefer_h3: bool,
+    pub cache_algorithm: String,
     pub use_hosts: bool,
+    pub use_system_hosts: bool,
     pub respect_rules: bool,
+    pub direct_nameserver_follow_policy: bool,
     pub default_nameserver: Vec<String>,
     pub nameserver: Vec<String>,
     pub fallback: Vec<String>,
     pub proxy_server_nameserver: Vec<String>,
     pub direct_nameserver: Vec<String>,
+    pub nameserver_policy: BTreeMap<String, Vec<String>>,
+    pub hosts: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for DnsSettings {
     fn default() -> Self {
         let list = |items: &[&str]| items.iter().map(|item| item.to_string()).collect();
         Self {
+            listen: String::new(),
             enhanced_mode: "fake-ip".to_string(),
             fake_ip_range: "198.18.0.1/16".to_string(),
+            fake_ip_filter_mode: "blacklist".to_string(),
             fake_ip_filter: list(&[
                 "*.lan",
                 "*.local",
@@ -196,13 +266,19 @@ impl Default for DnsSettings {
                 "+.market.xiaomi.com",
             ]),
             ipv6: false,
+            prefer_h3: false,
+            cache_algorithm: "lru".to_string(),
             use_hosts: true,
+            use_system_hosts: true,
             respect_rules: false,
+            direct_nameserver_follow_policy: false,
             default_nameserver: list(&["223.5.5.5", "119.29.29.29"]),
             nameserver: list(&["https://doh.pub/dns-query", "https://dns.alidns.com/dns-query"]),
             fallback: Vec::new(),
             proxy_server_nameserver: list(&["https://doh.pub/dns-query"]),
             direct_nameserver: Vec::new(),
+            nameserver_policy: BTreeMap::new(),
+            hosts: BTreeMap::new(),
         }
     }
 }
@@ -250,6 +326,16 @@ fn clean_list(items: Vec<String>, limit: usize) -> Vec<String> {
 impl DnsSettings {
     fn normalized(mut self) -> Self {
         let fallback = Self::default();
+        self.listen = self
+            .listen
+            .trim()
+            .chars()
+            .filter(|ch| !ch.is_control() && !ch.is_whitespace())
+            .take(128)
+            .collect();
+        if !self.listen.is_empty() && !self.listen.contains(':') {
+            self.listen.clear();
+        }
         self.enhanced_mode = match self.enhanced_mode.trim().to_ascii_lowercase().as_str() {
             "redir-host" => "redir-host".to_string(),
             "normal" => "normal".to_string(),
@@ -259,7 +345,15 @@ impl DnsSettings {
         if self.fake_ip_range.is_empty() || !self.fake_ip_range.contains('/') {
             self.fake_ip_range = fallback.fake_ip_range;
         }
+        self.fake_ip_filter_mode = match self.fake_ip_filter_mode.trim().to_ascii_lowercase().as_str() {
+            "whitelist" => "whitelist".to_string(),
+            _ => "blacklist".to_string(),
+        };
         self.fake_ip_filter = clean_list(self.fake_ip_filter, 500);
+        self.cache_algorithm = match self.cache_algorithm.trim().to_ascii_lowercase().as_str() {
+            "arc" => "arc".to_string(),
+            _ => "lru".to_string(),
+        };
         self.default_nameserver = clean_list(self.default_nameserver, 20);
         self.nameserver = clean_list(self.nameserver, 20);
         self.fallback = clean_list(self.fallback, 20);
@@ -271,6 +365,38 @@ impl DnsSettings {
         if self.default_nameserver.is_empty() {
             self.default_nameserver = fallback.default_nameserver;
         }
+        if self.respect_rules && self.proxy_server_nameserver.is_empty() {
+            self.proxy_server_nameserver = fallback.proxy_server_nameserver;
+        }
+        let mut policy = BTreeMap::new();
+        for (pattern, servers) in self.nameserver_policy {
+            let pattern: String = pattern
+                .trim()
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(300)
+                .collect();
+            let servers = clean_list(servers, 20);
+            if !pattern.is_empty() && !servers.is_empty() && policy.len() < 300 {
+                policy.insert(pattern, servers);
+            }
+        }
+        self.nameserver_policy = policy;
+
+        let mut hosts = BTreeMap::new();
+        for (domain, targets) in self.hosts {
+            let domain: String = domain
+                .trim()
+                .chars()
+                .filter(|ch| !ch.is_control() && !ch.is_whitespace())
+                .take(255)
+                .collect();
+            let targets = clean_list(targets, 16);
+            if !domain.is_empty() && !targets.is_empty() && hosts.len() < 500 {
+                hosts.insert(domain, targets);
+            }
+        }
+        self.hosts = hosts;
         self
     }
 
@@ -280,12 +406,26 @@ impl DnsSettings {
             |items: &[String]| Value::Sequence(items.iter().map(|item| Value::String(item.clone())).collect());
         let mut map = serde_yaml::Mapping::new();
         map.insert(key("enable"), Value::Bool(true));
+        if !self.listen.is_empty() {
+            map.insert(key("listen"), Value::String(self.listen.clone()));
+        }
         map.insert(key("ipv6"), Value::Bool(self.ipv6));
+        map.insert(key("prefer-h3"), Value::Bool(self.prefer_h3));
+        map.insert(key("cache-algorithm"), Value::String(self.cache_algorithm.clone()));
         map.insert(key("use-hosts"), Value::Bool(self.use_hosts));
+        map.insert(key("use-system-hosts"), Value::Bool(self.use_system_hosts));
         map.insert(key("respect-rules"), Value::Bool(self.respect_rules));
+        map.insert(
+            key("direct-nameserver-follow-policy"),
+            Value::Bool(self.direct_nameserver_follow_policy),
+        );
         map.insert(key("enhanced-mode"), Value::String(self.enhanced_mode.clone()));
         if self.enhanced_mode == "fake-ip" {
             map.insert(key("fake-ip-range"), Value::String(self.fake_ip_range.clone()));
+            map.insert(
+                key("fake-ip-filter-mode"),
+                Value::String(self.fake_ip_filter_mode.clone()),
+            );
             map.insert(key("fake-ip-filter"), strings(&self.fake_ip_filter));
         }
         map.insert(key("default-nameserver"), strings(&self.default_nameserver));
@@ -298,6 +438,18 @@ impl DnsSettings {
         }
         if !self.direct_nameserver.is_empty() {
             map.insert(key("direct-nameserver"), strings(&self.direct_nameserver));
+        }
+        if !self.nameserver_policy.is_empty() {
+            let mut policy = serde_yaml::Mapping::new();
+            for (pattern, servers) in &self.nameserver_policy {
+                let value = if servers.len() == 1 {
+                    Value::String(servers[0].clone())
+                } else {
+                    strings(servers)
+                };
+                policy.insert(Value::String(pattern.clone()), value);
+            }
+            map.insert(key("nameserver-policy"), Value::Mapping(policy));
         }
         Value::Mapping(map)
     }
@@ -612,8 +764,16 @@ fn friendly_listen_error(message: &str) -> String {
             "端口 {address} 已被其他程序占用，内核无法启动。请关闭占用它的程序（例如另一个 Clash / mihomo 客户端），或在设置中更换混合端口后重试"
         );
     }
-    if message.contains("Start TUN") {
-        if lower.contains("access is denied") || lower.contains("operation not permitted") || lower.contains("permission denied") {
+    if message.contains("Start TUN") || lower.contains("configure tun") {
+        if lower.contains("access is denied")
+            || lower.contains("operation not permitted")
+            || lower.contains("permission denied")
+        {
+            #[cfg(target_os = "macos")]
+            return "TUN 启动失败：需要系统管理员权限授权内核，请重新开启 TUN 并在弹出的系统授权窗口中确认".to_string();
+            #[cfg(target_os = "linux")]
+            return "TUN 启动失败：需要管理员权限（root 或 CAP_NET_ADMIN）后才能创建虚拟网卡".to_string();
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             return "TUN 启动失败：需要管理员权限。请以管理员身份运行 Billow 后重试".to_string();
         }
         if lower.contains("already exists") || in_use {
@@ -744,6 +904,18 @@ fn ensure_free_controller_port(yaml: &str) -> String {
     yaml.to_string()
 }
 
+fn kernel_file_privileged(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        takeover::macos_kernel_has_setuid_root(path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Spawns the already installed kernel. Tests inject [`KernelLaunch`] instead.
 pub struct ProcessRuntime {
     kernel_path: Option<PathBuf>,
@@ -755,6 +927,8 @@ pub struct ProcessRuntime {
     cached_catalog: nodes::RuntimeCatalog,
     provider_catalog: Option<(Instant, nodes::RuntimeCatalog)>,
     launched_kernel: Option<PathBuf>,
+    launched_privileged: bool,
+    tun_active: bool,
     log_buffer: Option<CapturedLogs>,
     traffic_watch: Option<MetricWatch<(u64, u64)>>,
     memory_watch: Option<MetricWatch<u64>>,
@@ -809,6 +983,8 @@ impl ProcessRuntime {
             cached_catalog: nodes::RuntimeCatalog::default(),
             provider_catalog: None,
             launched_kernel: None,
+            launched_privileged: false,
+            tun_active: false,
             log_buffer: None,
             traffic_watch: None,
             memory_watch: None,
@@ -829,18 +1005,45 @@ impl ProcessRuntime {
 
     fn stop(&mut self) {
         self.halt_metrics();
+        if self.tun_active {
+            if let Some(endpoint) = self.controller.as_ref() {
+                nodes::patch_tun_disable(endpoint);
+            }
+        }
         if let Some(mut child) = self.child.take() {
             #[cfg(unix)]
             {
                 let pid = child.id();
                 let _ = Command::new("kill")
-                    .args(["-KILL", &format!("-{pid}")])
+                    .args(["-TERM", &format!("-{pid}")])
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
+                let _ = Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                for _ in 0..15 {
+                    if matches!(child.try_wait(), Ok(Some(_))) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                if matches!(child.try_wait(), Ok(None)) {
+                    let _ = Command::new("kill")
+                        .args(["-KILL", &format!("-{pid}")])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
             }
-            let _ = child.kill();
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+            }
             let _ = child.wait();
         }
         if let Some(path) = self.config_path.take() {
@@ -851,6 +1054,8 @@ impl ProcessRuntime {
         self.last_requested_yaml = None;
         self.controller = None;
         self.launched_kernel = None;
+        self.launched_privileged = false;
+        self.tun_active = false;
         self.cached_catalog = nodes::RuntimeCatalog::default();
         self.provider_catalog = None;
         self.log_buffer = None;
@@ -910,11 +1115,71 @@ impl KernelLaunch for ProcessRuntime {
         if !path.is_file() {
             return Err(MISSING_KERNEL.to_string());
         }
+        let priv_now = kernel_file_privileged(&path);
         if self.running()
             && self.launched_kernel.as_ref() == Some(&path)
-            && self.last_requested_yaml.as_deref() == Some(config_yaml)
+            && self.launched_privileged == priv_now
         {
-            return Ok(());
+            if self.last_requested_yaml.as_deref() == Some(config_yaml) {
+                return Ok(());
+            }
+            #[cfg(not(target_os = "android"))]
+            if let Some(endpoint) = self.controller.clone() {
+                let _ = fs::create_dir_all(&self.work_dir);
+                let effective_yaml = nodes::rewrite_controller_endpoint(config_yaml, &endpoint);
+                let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
+                let mixed = read_i64(&config, "mixed-port")
+                    .and_then(|p| u16::try_from(p).ok())
+                    .filter(|p| *p > 0);
+                let tun = config
+                    .get("tun")
+                    .and_then(|t| t.get("enable")
+                    .and_then(Value::as_bool))
+                    == Some(true);
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let next_path = self.work_dir.join(format!("runtime-{nanos}.yaml"));
+                let _ = fs::write(&next_path, &effective_yaml);
+                match nodes::put_config(&endpoint, &effective_yaml) {
+                    Ok(()) => {
+                        let deadline = Instant::now() + Duration::from_secs(5);
+                        let mut ready = false;
+                        while Instant::now() < deadline {
+                            if !self.running() {
+                                break;
+                            }
+                            if nodes::listeners_ready(&endpoint, mixed, tun) {
+                                ready = true;
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        if ready {
+                            remove_stale_runtime_configs(&self.work_dir, &next_path);
+                            self.config_path = Some(next_path);
+                            self.last_requested_yaml = Some(config_yaml.to_string());
+                            self.tun_active = tun;
+                            self.cached_catalog = nodes::RuntimeCatalog::default();
+                            self.provider_catalog = None;
+                            return Ok(());
+                        }
+                        let _ = fs::remove_file(&next_path);
+                    }
+                    Err(err) => {
+                        let _ = fs::remove_file(&next_path);
+                        let lower = err.to_ascii_lowercase();
+                        if self.running()
+                            && (err.contains("Start TUN")
+                                || lower.contains("configure tun")
+                                || err.contains("listen tcp "))
+                        {
+                            return Err(friendly_listen_error(&err));
+                        }
+                    }
+                }
+            }
         }
         fs::create_dir_all(&self.work_dir).map_err(|_| "配置没有写入".to_string())?;
         self.stop();
@@ -991,9 +1256,14 @@ impl KernelLaunch for ProcessRuntime {
             format!("{}\n{}", child.id(), path.display()),
         );
         let stdout = child.stdout.take();
+        let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
+        let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
+        let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
         self.started = Some(Instant::now());
         self.child = Some(child);
         self.launched_kernel = Some(path);
+        self.launched_privileged = priv_now;
+        self.tun_active = tun;
         self.config_path = Some(config_path);
         self.last_requested_yaml = Some(config_yaml.to_string());
         self.controller = controller;
@@ -1001,10 +1271,7 @@ impl KernelLaunch for ProcessRuntime {
         if let Some(stdout) = stdout {
             self.log_buffer = Some(spawn_log_buffer(stdout));
         }
-        let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
-        let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
-        let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
-        let wait = if self.controller.is_some() { Duration::from_secs(90) } else { Duration::from_millis(300) };
+        let wait = if self.controller.is_some() { Duration::from_secs(25) } else { Duration::from_millis(300) };
         let deadline = Instant::now() + wait;
         loop {
             let failure = self.log_buffer.as_ref().and_then(|logs| {
@@ -1098,7 +1365,8 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
-        nodes::put_config(&endpoint, config_yaml)
+        let effective_yaml = nodes::rewrite_controller_endpoint(config_yaml, &endpoint);
+        nodes::put_config(&endpoint, &effective_yaml)
     }
 
     fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
@@ -1651,7 +1919,13 @@ impl ProfileBook {
         }
         if !enabled {
             let mut model = self.link_model();
-            takeover::set_system_proxy(&mut model, false, None, proxy);
+            takeover::set_system_proxy_with_settings(
+                &mut model,
+                false,
+                None,
+                &self.settings.system_proxy,
+                proxy,
+            );
             self.apply_model(model);
             return self.publish(kernel);
         }
@@ -1677,7 +1951,13 @@ impl ProfileBook {
         match self.reload(kernel, tun_enable, None) {
             Ok(port) => {
                 let mut model = self.link_model();
-                takeover::set_system_proxy(&mut model, true, Some(port), proxy);
+                takeover::set_system_proxy_with_settings(
+                    &mut model,
+                    true,
+                    Some(port),
+                    &self.settings.system_proxy,
+                    proxy,
+                );
                 if tun_enable {
                     model.tun = true;
                 }
@@ -1777,7 +2057,13 @@ impl ProfileBook {
             Ok(port) => {
                 let _ = tun.set_enabled(tun_enable);
                 let mut model = self.link_model();
-                takeover::set_system_proxy(&mut model, true, Some(port), proxy);
+                takeover::set_system_proxy_with_settings(
+                    &mut model,
+                    true,
+                    Some(port),
+                    &self.settings.system_proxy,
+                    proxy,
+                );
                 model.tun = tun_enable;
                 let _ = vpn.close();
                 model.vpn = false;
@@ -2814,17 +3100,69 @@ impl KernelSettings {
         if self.test_timeout_ms != 0 {
             self.test_timeout_ms = self.test_timeout_ms.clamp(1000, 30000);
         }
+        self.system_proxy = self.system_proxy.normalized();
         self.dns = self.dns.normalized();
         self.tun = self.tun.normalized();
+        self.geodata_loader = self
+            .geodata_loader
+            .map(|loader| loader.trim().to_ascii_lowercase())
+            .filter(|loader| matches!(loader.as_str(), "standard" | "memconservative"));
+        self.geo_source = match self.geo_source.trim().to_ascii_lowercase().as_str() {
+            "github" => "github".to_string(),
+            "jsdelivr" => "jsdelivr".to_string(),
+            "testingcf" => "testingcf".to_string(),
+            _ => String::new(),
+        };
+        self.geo_urls = self.geo_urls.normalized();
         self
     }
 
-    /// Everything except the delay probe, which never needs a kernel restart.
+    /// Everything except the delay probe and OS system-proxy settings, which never need a kernel restart.
     fn kernel_part(&self) -> Self {
         let mut copy = self.clone();
         copy.test_url.clear();
         copy.test_timeout_ms = 0;
+        copy.system_proxy = Default::default();
         copy
+    }
+
+    pub fn resolve_geo_download_urls(&self, effective_yaml: Option<&str>) -> Vec<(String, Vec<String>)> {
+        let parsed: Option<Value> = effective_yaml.and_then(|raw| serde_yaml::from_str(raw).ok());
+        let yaml_geox = parsed.as_ref().and_then(|v| mapping_get(v, "geox-url"));
+        let source_preset = geo_source_urls(&self.geo_source);
+        let mut out = Vec::new();
+        for (key_name, _, _, _) in crate::resources::GEO_SPECS {
+            let custom = self.geo_urls.get(key_name);
+            if !custom.is_empty() {
+                out.push((key_name.to_string(), vec![custom.to_string()]));
+                continue;
+            }
+            let mut candidates: Vec<String> = Vec::new();
+            let mut push_unique = |url: String| {
+                let cleaned = clean_http_url(&url);
+                if !cleaned.is_empty() && !candidates.contains(&cleaned) {
+                    candidates.push(cleaned);
+                }
+            };
+            if let Some(preset) = &source_preset {
+                if let Some((_, url)) = preset.iter().find(|(k, _)| *k == key_name) {
+                    push_unique(url.clone());
+                }
+            } else if let Some(geox) = yaml_geox {
+                if let Some(url) = read_string(geox, key_name) {
+                    push_unique(url);
+                }
+            }
+            for mirror in ["jsdelivr", "testingcf", "github"] {
+                if let Some(preset) = geo_source_urls(mirror) {
+                    if let Some((_, url)) = preset.iter().find(|(k, _)| *k == key_name) {
+                        push_unique(url.clone());
+                    }
+                }
+            }
+            out.push((key_name.to_string(), candidates));
+        }
+        out
     }
 }
 
@@ -2907,6 +3245,28 @@ fn apply_settings(
     }
     if settings.dns_override {
         map.insert(key("dns"), settings.dns.to_value());
+        if settings.dns.use_hosts && !settings.dns.hosts.is_empty() {
+            let mut hosts = map
+                .get(key("hosts"))
+                .and_then(Value::as_mapping)
+                .cloned()
+                .unwrap_or_default();
+            for (domain, targets) in &settings.dns.hosts {
+                let entry = if targets.len() == 1 {
+                    Value::String(targets[0].clone())
+                } else {
+                    Value::Sequence(targets.iter().map(|t| Value::String(t.clone())).collect())
+                };
+                hosts.insert(Value::String(domain.clone()), entry);
+            }
+            map.insert(key("hosts"), Value::Mapping(hosts));
+        }
+    }
+    if let Some(flag) = settings.geodata_mode {
+        map.insert(key("geodata-mode"), Value::Bool(flag));
+    }
+    if let Some(loader) = &settings.geodata_loader {
+        map.insert(key("geodata-loader"), Value::String(loader.clone()));
     }
     if let Some(flag) = settings.geo_auto_update {
         map.insert(key("geo-auto-update"), Value::Bool(flag));
@@ -2914,10 +3274,23 @@ fn apply_settings(
     if let Some(hours) = settings.geo_update_interval.filter(|hours| *hours > 0) {
         map.insert(key("geo-update-interval"), Value::Number(i64::from(hours).into()));
     }
-    if let Some(urls) = geo_source_urls(&settings.geo_source) {
-        let mut geox = serde_yaml::Mapping::new();
-        for (name, url) in urls {
-            geox.insert(key(name), Value::String(url));
+    let source_urls = geo_source_urls(&settings.geo_source);
+    if source_urls.is_some() || settings.geo_urls.has_any() {
+        let mut geox = map
+            .get(key("geox-url"))
+            .and_then(Value::as_mapping)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(urls) = source_urls {
+            for (name, url) in urls {
+                geox.insert(key(name), Value::String(url));
+            }
+        }
+        for (name, _, _, _) in crate::resources::GEO_SPECS {
+            let custom = settings.geo_urls.get(name);
+            if !custom.is_empty() {
+                geox.insert(key(name), Value::String(custom.to_string()));
+            }
         }
         map.insert(key("geox-url"), Value::Mapping(geox));
     }
@@ -3221,6 +3594,30 @@ impl ProfileBook {
             .collect()
     }
 
+    pub fn geo_download_context(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+    ) -> (
+        Vec<(String, Vec<String>)>,
+        Option<String>,
+        Option<ControllerEndpoint>,
+        Option<String>,
+    ) {
+        let effective = self.effective_config().ok();
+        let urls = self.settings.resolve_geo_download_urls(effective.as_deref());
+        let running = kernel.running();
+        let controller = if running { kernel.controller() } else { None };
+        let local_proxy = if running && self.connected {
+            self.mixed_port
+                .and_then(|port| u16::try_from(port).ok())
+                .filter(|port| *port > 0)
+                .map(|port| format!("http://127.0.0.1:{port}"))
+        } else {
+            None
+        };
+        (urls, local_proxy, controller, effective)
+    }
+
     pub fn save_settings(
         &mut self,
         settings: KernelSettings,
@@ -3231,22 +3628,65 @@ impl ProfileBook {
     ) -> ProfileSnapshot {
         let settings = settings.normalized();
         let restart = settings.kernel_part() != self.settings.kernel_part();
+        let proxy_changed = settings.system_proxy != self.settings.system_proxy;
         self.settings = settings;
         nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
         self.recompute_effective();
         self.persist();
-        if !restart || self.platform != ClientPlatform::Desktop || !kernel.running() {
+        if self.platform != ClientPlatform::Desktop || !kernel.running() {
             return self.publish(kernel);
         }
-        if self.takeover.system_proxy {
-            return self.set_system_proxy(true, kernel, proxy, tun, vpn);
+        if !restart {
+            if proxy_changed && self.takeover.system_proxy {
+                let port = self
+                    .mixed_port
+                    .and_then(|p| u16::try_from(p).ok())
+                    .filter(|p| *p > 0);
+                if let Some(port) = port {
+                    let mut model = self.link_model();
+                    takeover::set_system_proxy_with_settings(
+                        &mut model,
+                        true,
+                        Some(port),
+                        &self.settings.system_proxy,
+                        proxy,
+                    );
+                    self.apply_model(model);
+                }
+            }
+            return self.publish(kernel);
         }
         let tun_on = self.takeover.tun;
-        if let Err(StartError::Failed(message)) | Err(StartError::Idle(message)) =
-            self.reload(kernel, tun_on, None)
-        {
-            self.home_failure = Some(message);
-            self.remember_current_failure();
+        match self.reload(kernel, tun_on, None) {
+            Ok(port) => {
+                if self.takeover.system_proxy {
+                    let mut model = self.link_model();
+                    takeover::set_system_proxy_with_settings(
+                        &mut model,
+                        true,
+                        Some(port),
+                        &self.settings.system_proxy,
+                        proxy,
+                    );
+                    self.apply_model(model);
+                }
+            }
+            Err(StartError::Idle(message)) => {
+                self.home_failure = Some(message);
+                self.connected = false;
+                self.remember_current_failure();
+            }
+            Err(StartError::Failed(message)) => {
+                if kernel.running() {
+                    self.home_failure = Some(message);
+                    self.remember_current_failure();
+                } else {
+                    let mut model = self.link_model();
+                    takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
+                    self.apply_model(model);
+                    self.remember_current_failure();
+                }
+            }
         }
         self.publish(kernel)
     }
@@ -6280,5 +6720,244 @@ proxy-groups:
         assert!(events.iter().all(|event| event.4 == 3));
         assert!(events.iter().any(|event| event.0 == "m-node" && event.2 && event.1.is_none()));
         assert!(events.iter().any(|event| event.0 == "a-node" && !event.2 && event.1 == Some(5)));
+    }
+
+    #[test]
+    fn dns_override_emits_mapping_policy_hosts_and_geo_overrides() {
+        let base = "mixed-port: 7890\ngeox-url:\n  geoip: https://profile.example/geoip.dat\nhosts:\n  existing.local: 10.0.0.1\n";
+        let mut settings = KernelSettings {
+            dns_override: true,
+            geodata_mode: Some(true),
+            geodata_loader: Some("MEMCONSERVATIVE".to_string()),
+            geo_source: "jsdelivr".to_string(),
+            ..Default::default()
+        };
+        settings.geo_urls.geosite = "https://custom.example/geosite.dat".to_string();
+        settings.dns.listen = " 127.0.0.1:1053 ".to_string();
+        settings.dns.enhanced_mode = "FAKE-IP".to_string();
+        settings.dns.fake_ip_filter_mode = "WHITELIST".to_string();
+        settings.dns.prefer_h3 = true;
+        settings.dns.cache_algorithm = "ARC".to_string();
+        settings.dns.use_hosts = true;
+        settings.dns.use_system_hosts = false;
+        settings.dns.respect_rules = true;
+        settings.dns.direct_nameserver_follow_policy = true;
+        settings.dns.nameserver_policy.insert(
+            "geosite:cn,private".to_string(),
+            vec!["https://223.5.5.5/dns-query".to_string(), "119.29.29.29".to_string()],
+        );
+        settings.dns.nameserver_policy.insert(
+            "+.corp.internal".to_string(),
+            vec!["10.0.0.53".to_string()],
+        );
+        settings.dns.hosts.insert(
+            "router.local".to_string(),
+            vec!["192.168.1.1".to_string()],
+        );
+        settings.dns.hosts.insert(
+            "dual.local".to_string(),
+            vec!["192.168.1.2".to_string(), "fe80::1".to_string()],
+        );
+        let normalized = settings.normalized();
+        let (yaml, _) = apply_settings(base, &normalized, true).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(mapping_get(&value, "geodata-mode").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_string(&value, "geodata-loader").as_deref(), Some("memconservative"));
+        let geox = mapping_get(&value, "geox-url").unwrap();
+        assert_eq!(
+            read_string(geox, "geosite").as_deref(),
+            Some("https://custom.example/geosite.dat")
+        );
+        assert_eq!(
+            read_string(geox, "mmdb").as_deref(),
+            Some("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb")
+        );
+
+        let dns = mapping_get(&value, "dns").unwrap();
+        assert_eq!(read_string(dns, "listen").as_deref(), Some("127.0.0.1:1053"));
+        assert_eq!(read_string(dns, "enhanced-mode").as_deref(), Some("fake-ip"));
+        assert_eq!(read_string(dns, "fake-ip-filter-mode").as_deref(), Some("whitelist"));
+        assert_eq!(mapping_get(dns, "prefer-h3").and_then(Value::as_bool), Some(true));
+        assert_eq!(read_string(dns, "cache-algorithm").as_deref(), Some("arc"));
+        assert_eq!(mapping_get(dns, "use-hosts").and_then(Value::as_bool), Some(true));
+        assert_eq!(mapping_get(dns, "use-system-hosts").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            mapping_get(dns, "direct-nameserver-follow-policy").and_then(Value::as_bool),
+            Some(true)
+        );
+        let policy = mapping_get(dns, "nameserver-policy").unwrap();
+        assert_eq!(read_string(policy, "+.corp.internal").as_deref(), Some("10.0.0.53"));
+        assert_eq!(
+            mapping_get(policy, "geosite:cn,private")
+                .and_then(Value::as_sequence)
+                .map(|s| s.len()),
+            Some(2)
+        );
+
+        let hosts = mapping_get(&value, "hosts").unwrap();
+        assert_eq!(read_string(hosts, "existing.local").as_deref(), Some("10.0.0.1"));
+        assert_eq!(read_string(hosts, "router.local").as_deref(), Some("192.168.1.1"));
+        assert_eq!(
+            mapping_get(hosts, "dual.local")
+                .and_then(Value::as_sequence)
+                .map(|s| s.len()),
+            Some(2)
+        );
+
+        let resolved = normalized.resolve_geo_download_urls(Some(&yaml));
+        let geosite_urls = resolved.iter().find(|(k, _)| k == "geosite").unwrap();
+        assert_eq!(geosite_urls.1, vec!["https://custom.example/geosite.dat".to_string()]);
+        let mmdb_urls = resolved.iter().find(|(k, _)| k == "mmdb").unwrap();
+        assert!(mmdb_urls.1[0].contains("cdn.jsdelivr.net"));
+        assert!(mmdb_urls.1.len() >= 2);
+    }
+
+    #[test]
+    fn saving_system_proxy_or_geo_settings_keeps_session_smooth_without_spurious_tun_prompts() {
+        struct LiveKernel {
+            running: Option<String>,
+            calls: u32,
+        }
+        impl KernelLaunch for LiveKernel {
+            fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
+                self.calls += 1;
+                self.running = Some(config_yaml.to_string());
+                Ok(())
+            }
+            fn running(&mut self) -> bool {
+                self.running.is_some()
+            }
+        }
+
+        let dir = temp_dir("proxy-settings-live");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nproxies: []\n");
+        let mut kernel = LiveKernel { running: None, calls: 0 };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun { grant: true, ..Default::default() };
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        let initial_calls = kernel.calls;
+
+        // Updating only system proxy host/bypass applies immediately without restarting kernel.
+        let mut next = book.snapshot().settings;
+        next.system_proxy.host = "127.0.0.2".to_string();
+        next.system_proxy.bypass = vec!["localhost".to_string(), "*.lan".to_string()];
+        let snap = book.save_settings(next, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(snap.connected);
+        assert_eq!(kernel.calls, initial_calls, "system_proxy-only edits must not reload kernel");
+        assert_eq!(
+            proxy.http,
+            Some(takeover::ProxyEndpoint {
+                host: "127.0.0.2".to_string(),
+                port: 7890,
+            })
+        );
+        assert_eq!(
+            proxy.settings.as_ref().unwrap().bypass,
+            vec!["localhost".to_string(), "*.lan".to_string()]
+        );
+
+        // Even if tun_wanted was remembered while TUN is currently off, saving GEO source
+        // reloads the config cleanly without prompting tun.authorize().
+        book.tun_wanted = true;
+        tun.grant = false;
+        let auth_before = tun.authorize_calls;
+        let mut geo_next = book.snapshot().settings;
+        geo_next.geo_source = "testingcf".to_string();
+        let snap2 = book.save_settings(geo_next, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(snap2.connected);
+        assert!(snap2.failure.is_none());
+        assert_eq!(tun.authorize_calls, auth_before);
+        assert_eq!(kernel.calls, initial_calls + 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_runtime_hot_reloads_in_place_without_killing_child_process() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("hot-reload-runtime");
+        let mixed_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mixed_port = mixed_listener.local_addr().unwrap().port();
+        let api_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let api_port = api_listener.local_addr().unwrap().port();
+        let stop_server = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop_server);
+        let put_payloads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let put_shared = Arc::clone(&put_payloads);
+
+        api_listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            while !stop_flag.load(Ordering::Relaxed) {
+                if let Ok((mut stream, _)) = api_listener.accept() {
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                    let mut buf = vec![0u8; 16384];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        continue;
+                    }
+                    let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let first_line = req.lines().next().unwrap_or("");
+                    if first_line.starts_with("PUT /configs?force=true") {
+                        let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                        put_shared.lock().unwrap().push(body);
+                        let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    } else if first_line.starts_with("GET /configs") {
+                        let body = format!("{{\"mixed-port\":{mixed_port},\"tun\":{{\"enable\":false}}}}");
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else {
+                        let body = "{}";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                } else {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            drop(mixed_listener);
+        });
+
+        let script = dir.0.join("stand-in.sh");
+        fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut runtime = ProcessRuntime::new(&dir.0);
+        runtime.set_kernel_path(Some(script));
+        let yaml1 = format!(
+            "mixed-port: {mixed_port}\nmode: rule\nexternal-controller: 127.0.0.1:{api_port}\nsecret: s1\n"
+        );
+        runtime.start_or_reload(&yaml1).unwrap();
+        let pid_before = runtime.child.as_ref().unwrap().id();
+
+        let yaml2 = format!(
+            "mixed-port: {mixed_port}\nmode: global\ngeodata-mode: true\nexternal-controller: 127.0.0.1:9090\nsecret: other\n"
+        );
+        runtime.start_or_reload(&yaml2).unwrap();
+        let pid_after = runtime.child.as_ref().unwrap().id();
+        assert_eq!(pid_before, pid_after, "hot reload must keep existing child PID alive");
+
+        let payloads = put_payloads.lock().unwrap().clone();
+        assert_eq!(payloads.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&payloads[0]).unwrap();
+        let sent_yaml = sent["payload"].as_str().unwrap();
+        assert!(sent_yaml.contains("mode: global"));
+        assert!(sent_yaml.contains(&format!("127.0.0.1:{api_port}")));
+
+        runtime.stop();
+        stop_server.store(true, Ordering::Relaxed);
+        let _ = server.join();
     }
 }

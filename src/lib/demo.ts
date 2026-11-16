@@ -221,7 +221,13 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { name: 'private', kind: 'rule', vehicle: 'Inline', behavior: 'Classical', format: '', count: 6, updated_at: hoursAgo(20), used: null, total: null, expire: null },
   ]
 
-  let geoUpdatedAt = Date.now() - 3 * 86_400_000
+  const initialGeoAt = Date.now() - 3 * 86_400_000
+  const geoStore: Record<string, { exists: boolean; size: number | null; modified_ms: number | null }> = {
+    geoip: { exists: true, size: 11_534_336, modified_ms: initialGeoAt },
+    geosite: { exists: true, size: 5_976_883, modified_ms: initialGeoAt },
+    mmdb: { exists: true, size: 9_123_456, modified_ms: initialGeoAt },
+    asn: { exists: false, size: null, modified_ms: null },
+  }
 
   function log(level: LogLine['level'], message: string) {
     state.logs.push({ level, message, time_ms: Date.now() })
@@ -676,10 +682,32 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       if (row && action === 'update') row.updated_at = new Date().toISOString()
       log('info', `${action === 'update' ? '更新' : '健康检查'} ${name} 完成`)
     },
-    async upgradeGeo() {
-      await wait(1500)
-      geoUpdatedAt = Date.now()
-      log('info', 'GEO 数据库已更新')
+    async upgradeGeo(key) {
+      await wait(400)
+      const now = Date.now()
+      const defaultSizes: Record<string, number> = {
+        geoip: 11_534_336,
+        geosite: 5_976_883,
+        mmdb: 9_123_456,
+        asn: 8_421_376,
+      }
+      const keys = key ? [key] : ['geoip', 'geosite', 'mmdb', 'asn']
+      for (const k of keys) {
+        if (geoStore[k]) {
+          geoStore[k] = { exists: true, size: defaultSizes[k] ?? 4_194_304, modified_ms: now }
+        }
+      }
+      log('info', key ? `GEO 数据库 (${key}) 已更新` : 'GEO 数据库已更新')
+      return [
+        { key: 'geoip', label: 'GeoIP', file: 'GeoIP.dat', ...geoStore.geoip },
+        { key: 'geosite', label: 'GeoSite', file: 'GeoSite.dat', ...geoStore.geosite },
+        { key: 'mmdb', label: 'MMDB', file: 'Country.mmdb', ...geoStore.mmdb },
+        { key: 'asn', label: 'ASN', file: 'ASN.mmdb', ...geoStore.asn },
+      ]
+    },
+    async openUwpTool() {
+      await wait(60)
+      log('info', '已打开 UWP 回环豁免工具')
     },
     async providerDetail(kind, name) {
       await wait(200)
@@ -705,10 +733,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async geoFiles() {
       return [
-        { key: 'geoip', label: 'GeoIP', file: 'geoip.dat', exists: true, size: 11_534_336, modified_ms: geoUpdatedAt },
-        { key: 'geosite', label: 'GeoSite', file: 'geosite.dat', exists: true, size: 5_976_883, modified_ms: geoUpdatedAt },
-        { key: 'mmdb', label: 'MMDB', file: 'geoip.metadb', exists: true, size: 9_123_456, modified_ms: geoUpdatedAt },
-        { key: 'asn', label: 'ASN', file: 'GeoLite2-ASN.mmdb', exists: false, size: null, modified_ms: null },
+        { key: 'geoip', label: 'GeoIP', file: 'GeoIP.dat', ...geoStore.geoip },
+        { key: 'geosite', label: 'GeoSite', file: 'GeoSite.dat', ...geoStore.geosite },
+        { key: 'mmdb', label: 'MMDB', file: 'Country.mmdb', ...geoStore.mmdb },
+        { key: 'asn', label: 'ASN', file: 'ASN.mmdb', ...geoStore.asn },
       ]
     },
     async flushCache(which) {

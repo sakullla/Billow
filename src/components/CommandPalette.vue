@@ -38,6 +38,7 @@ const props = withDefaults(
     hasProfiles?: boolean
     currentPage?: string
     mode?: string | null
+    sidebarCollapsed?: boolean
     /** Android hides the TUN category in settings, so the palette must skip it too. */
     platform?: 'desktop' | 'android'
   }>(),
@@ -46,12 +47,14 @@ const props = withDefaults(
       PAGES.map((page) => ({ id: page.id, label: page.label, icon: page.icon })),
     settings: () => [
       { id: 'general', label: '通用设置', description: '主题、行为与启动', icon: 'sliders' },
+      { id: 'proxy', label: '系统代理设置', description: '代理主机、PAC 模式与绕过列表', icon: 'monitor' },
       { id: 'kernel', label: '内核设置', description: '通道与版本', icon: 'cpu' },
       { id: 'tun', label: 'TUN 设置', description: '栈、DNS 劫持与 MTU', icon: 'shield' },
-      { id: 'dns', label: 'DNS 设置', description: '覆盖与 Fake-IP', icon: 'globe' },
+      { id: 'dns', label: 'DNS 设置', description: 'Fake-IP、解析策略与 Hosts', icon: 'globe' },
     ],
     connected: false,
     hasProfiles: true,
+    sidebarCollapsed: false,
     platform: 'desktop',
   },
 )
@@ -84,7 +87,9 @@ const query = ref('')
 const active = ref(0)
 const paletteKey = shortcutKeyLabel(getShortcut('palette').combo)
 const settings = computed(() =>
-  props.settings.filter((item) => !(props.platform === 'android' && item.id === 'tun')),
+  props.settings.filter(
+    (item) => !(props.platform === 'android' && (item.id === 'tun' || item.id === 'proxy')),
+  ),
 )
 
 const defaultActions = computed<PaletteAction[]>(() => [
@@ -138,6 +143,12 @@ const defaultActions = computed<PaletteAction[]>(() => [
   ...(props.platform === 'android'
     ? []
     : [
+        {
+          id: 'toggle-sidebar',
+          label: props.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏',
+          icon: props.sidebarCollapsed ? 'panel-left-open' : 'panel-left-close',
+          hint: shortcutKeyLabel(getShortcut('sidebar').combo),
+        },
         { id: 'copy-proxy-env', label: '复制终端环境变量', icon: 'terminal', hint: 'HTTP / SOCKS5' },
         { id: 'open-shortcuts', label: '查看快捷键说明', icon: 'keyboard', hint: '?' },
       ]),

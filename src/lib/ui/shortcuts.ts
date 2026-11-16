@@ -1,6 +1,6 @@
 import type { HotkeyBinding } from './hotkeys'
 
-export type ShortcutId = 'palette' | 'search' | 'escape' | 'help'
+export type ShortcutId = 'palette' | 'sidebar' | 'search' | 'escape' | 'help'
 
 export interface ShortcutSpec {
   id: ShortcutId
@@ -24,6 +24,14 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     combo: 'mod+k',
     scope: 'global',
     // The palette opens from a search field too; `/` and `?` stay guarded.
+    allowInInput: true,
+  },
+  {
+    id: 'sidebar',
+    label: '切换侧边栏',
+    description: '展开或收起桌面侧边栏',
+    combo: 'mod+b',
+    scope: 'global',
     allowInInput: true,
   },
   {

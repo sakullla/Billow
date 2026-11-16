@@ -8,7 +8,16 @@ import Toggle from '../components/Toggle.vue'
 import Skeleton from '../components/Skeleton.vue'
 import { delayText, delayTone, formatBytes, formatDate, formatRelative, protocolLabel, usagePercent } from '../lib/format'
 import { useStore } from '../lib/store'
-import type { GeoFile, GeoSource, KernelSettings, ProviderDetail, ProviderRow } from '../lib/types'
+import {
+  defaultGeoUrls,
+  GEO_SOURCE_PRESETS,
+  type GeoFile,
+  type GeoSource,
+  type GeoUrls,
+  type KernelSettings,
+  type ProviderDetail,
+  type ProviderRow,
+} from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
 const store = useStore()
@@ -141,29 +150,10 @@ async function retry(row: ProviderRow) {
   await single(row, state.action)
 }
 
-async function upgradeGeo() {
-  geoBusy.value = true
-  geoError.value = null
-  try {
-    await store.backend.upgradeGeo()
-    geoError.value = null
-    store.toast('GEO 数据库已更新', 'success')
-    await loadGeo()
-  } catch (err) {
-    geoError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    geoBusy.value = false
-  }
-}
+const geoBusyKey = ref<string | null>(null)
+const lastFailedGeoKey = ref<string | undefined>(undefined)
 
-async function switchJsdelivrAndUpgrade() {
-  if (geoBusy.value) return
-  geoError.value = null
-  await store.saveSettings({ ...snap.value.settings, geo_source: 'jsdelivr' })
-  await upgradeGeo()
-}
-
-// ── GEO databases: file state plus the three choices people actually make ──
+// ── GEO databases: file state, mode, source preset, and per-database URLs ──
 const geoFiles = shallowRef<GeoFile[]>([])
 const GEO_INTERVALS = [
   { id: '24', label: '每天' },
@@ -174,11 +164,82 @@ const GEO_SOURCES: { id: GeoSource; label: string }[] = [
   { id: '', label: '跟随配置' },
   { id: 'github', label: 'GitHub' },
   { id: 'jsdelivr', label: 'jsDelivr 加速' },
+  { id: 'testingcf', label: 'CF 加速' },
+]
+const GEODATA_MODES = [
+  { id: '', label: '跟随配置' },
+  { id: 'db', label: 'MMDB (db)' },
+  { id: 'dat', label: 'GeoIP (dat)' },
+] as const
+const GEO_URL_FIELDS: { key: keyof GeoUrls; label: string; file: string }[] = [
+  { key: 'geoip', label: 'GeoIP-DAT 数据库', file: 'GeoIP.dat' },
+  { key: 'mmdb', label: 'GeoIP-MMDB 数据库', file: 'Country.mmdb' },
+  { key: 'geosite', label: 'GeoSite 数据库', file: 'GeoSite.dat' },
+  { key: 'asn', label: 'IP-ASN 数据库', file: 'ASN.mmdb' },
 ]
 const geoSettings = computed(() => snap.value.settings)
 const geoInterval = computed(() => String(geoSettings.value.geo_update_interval ?? 24))
-/** Files that exist, plus GeoIP/GeoSite even when missing: those are the ones rules depend on. */
-const shownGeoFiles = computed(() => geoFiles.value.filter((file) => file.exists || file.key === 'geoip' || file.key === 'geosite'))
+const geodataModeId = computed(() => {
+  const mode = geoSettings.value.geodata_mode
+  return mode == null ? '' : mode ? 'dat' : 'db'
+})
+const shownGeoFiles = computed(() => geoFiles.value)
+
+const geoUrlsDraft = reactive<GeoUrls>(defaultGeoUrls())
+const geoUrlFocused = ref(false)
+let lastSyncedGeoUrls = ''
+watch(
+  () => snap.value.settings.geo_urls,
+  (urls) => {
+    const serialized = JSON.stringify(urls)
+    if (serialized === lastSyncedGeoUrls) return
+    lastSyncedGeoUrls = serialized
+    if (!geoUrlFocused.value) {
+      geoUrlsDraft.geoip = urls.geoip
+      geoUrlsDraft.mmdb = urls.mmdb
+      geoUrlsDraft.geosite = urls.geosite
+      geoUrlsDraft.asn = urls.asn
+    }
+  },
+  { immediate: true, deep: true },
+)
+
+const normalizedGeoUrlsDraft = computed<GeoUrls>(() => ({
+  geoip: geoUrlsDraft.geoip.trim(),
+  mmdb: geoUrlsDraft.mmdb.trim(),
+  geosite: geoUrlsDraft.geosite.trim(),
+  asn: geoUrlsDraft.asn.trim(),
+}))
+const geoUrlsDirty = computed(
+  () => JSON.stringify(normalizedGeoUrlsDraft.value) !== JSON.stringify(snap.value.settings.geo_urls),
+)
+const hasCustomGeoUrls = computed(() =>
+  Object.values(normalizedGeoUrlsDraft.value).some((url) => url.length > 0),
+)
+
+function geoUrlPlaceholder(key: keyof GeoUrls): string {
+  const src = geoSettings.value.geo_source || 'github'
+  const preset = GEO_SOURCE_PRESETS[src === 'jsdelivr' || src === 'testingcf' ? src : 'github']
+  return preset[key]
+}
+
+async function commitGeoUrls() {
+  if (!geoUrlsDirty.value) return
+  const nextUrls = { ...normalizedGeoUrlsDraft.value }
+  lastSyncedGeoUrls = JSON.stringify(nextUrls)
+  geoError.value = null
+  await store.saveSettings({ ...snap.value.settings, geo_urls: nextUrls })
+}
+
+function resetGeoUrls() {
+  const empty = defaultGeoUrls()
+  geoUrlsDraft.geoip = empty.geoip
+  geoUrlsDraft.mmdb = empty.mmdb
+  geoUrlsDraft.geosite = empty.geosite
+  geoUrlsDraft.asn = empty.asn
+  lastSyncedGeoUrls = JSON.stringify(empty)
+  void store.saveSettings({ ...snap.value.settings, geo_urls: empty })
+}
 
 async function loadGeo() {
   try {
@@ -189,8 +250,41 @@ async function loadGeo() {
 }
 
 function saveGeo(patch: Partial<KernelSettings>) {
-  if (patch.geo_source !== undefined) geoError.value = null
+  if (patch.geo_source !== undefined || patch.geo_urls !== undefined) geoError.value = null
   void store.saveSettings({ ...snap.value.settings, ...patch })
+}
+
+async function upgradeGeo(key?: string) {
+  if (geoBusy.value) return
+  geoBusy.value = true
+  geoBusyKey.value = key ?? 'all'
+  geoError.value = null
+  try {
+    if (geoUrlsDirty.value) await commitGeoUrls()
+    const updated = await store.backend.upgradeGeo(key)
+    geoError.value = null
+    lastFailedGeoKey.value = undefined
+    if (Array.isArray(updated)) {
+      geoFiles.value = updated
+    } else {
+      await loadGeo()
+    }
+    const label = key ? (shownGeoFiles.value.find((f) => f.key === key)?.label ?? key.toUpperCase()) : 'GEO'
+    store.toast(`${label} 数据库已更新`, 'success')
+  } catch (err) {
+    lastFailedGeoKey.value = key
+    geoError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    geoBusy.value = false
+    geoBusyKey.value = null
+  }
+}
+
+async function switchJsdelivrAndUpgrade() {
+  if (geoBusy.value) return
+  geoError.value = null
+  await store.saveSettings({ ...snap.value.settings, geo_source: 'jsdelivr' })
+  await upgradeGeo(lastFailedGeoKey.value)
 }
 
 // ── Provider detail sheet ──
@@ -232,10 +326,12 @@ function ruleParts(rule: string): { type: string; rest: string } {
 
 const successText = (row: ProviderRow) => (stateOf(row)?.action === 'healthcheck' ? '检查通过' : '已更新')
 
-// A stopped kernel drops the rows instead of showing the previous session (R31).
+// A stopped kernel drops the rows instead of showing the previous session (R31),
+// while hot-reloads that keep kernel_running=true preserve the existing provider list.
 watch(
   [() => snap.value.kernel_running, () => snap.value.active_id],
-  ([running]) => {
+  ([running, activeId], [prevRunning, prevActiveId]) => {
+    if (running && prevRunning && activeId === prevActiveId) return
     loadVersion++
     detailVersion++
     detail.value = null
@@ -290,25 +386,42 @@ onMounted(() => {
       <header class="card-head">
         <div>
           <h2>GEO 数据库</h2>
-          <p class="muted small">分流规则依赖的地域与域名数据</p>
+          <p class="muted small">分流规则依赖的地域、域名与自治系统数据库，支持独立配置与离线更新</p>
         </div>
         <button
           type="button"
           class="btn sm"
-          :disabled="!snap.kernel_running || geoBusy"
+          :disabled="geoBusy"
           :aria-busy="geoBusy || undefined"
-          :title="snap.kernel_running ? '立即重新下载' : '连接后可更新'"
+          title="立即下载并更新全部四个 GEO 数据库"
           data-testid="upgrade-geo"
-          @click="upgradeGeo"
+          @click="upgradeGeo()"
         >
-          <span v-if="geoBusy" class="spinner sm" aria-hidden="true" />
+          <span v-if="geoBusy && geoBusyKey === 'all'" class="spinner sm" aria-hidden="true" />
           <Icon v-else name="download" :size="15" />
-          {{ geoBusy ? '更新中' : snap.kernel_running ? '立即更新' : '连接后可更新' }}
+          {{ geoBusy && geoBusyKey === 'all' ? '更新中' : '立即更新' }}
         </button>
       </header>
       <ul v-if="shownGeoFiles.length" class="geo-files" data-testid="geo-files">
         <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }" :title="file.file">
-          <strong>{{ file.label }}</strong>
+          <div class="geo-file-top">
+            <div class="min0 grow">
+              <strong>{{ file.label }}</strong>
+              <span class="geo-file-name mono muted">{{ file.file }}</span>
+            </div>
+            <button
+              type="button"
+              class="icon-btn sm geo-file-dl"
+              :disabled="geoBusy"
+              :title="`单独下载更新 ${file.label} (${file.file})`"
+              :aria-label="`更新 ${file.label}`"
+              :data-testid="`upgrade-geo-${file.key}`"
+              @click="upgradeGeo(file.key)"
+            >
+              <span v-if="geoBusy && (geoBusyKey === file.key || geoBusyKey === 'all')" class="spinner xs" aria-hidden="true" />
+              <Icon v-else name="download" :size="14" />
+            </button>
+          </div>
           <span class="muted small">
             {{ file.exists ? `${formatBytes(file.size)} · ${formatRelative(file.modified_ms)}` : '尚未下载' }}
           </span>
@@ -322,7 +435,7 @@ onMounted(() => {
             v-if="geoSettings.geo_source !== 'jsdelivr'"
             type="button"
             class="btn primary sm"
-            :disabled="!snap.kernel_running || geoBusy"
+            :disabled="geoBusy"
             data-testid="geo-switch-jsdelivr"
             @click="switchJsdelivrAndUpgrade"
           >
@@ -331,9 +444,9 @@ onMounted(() => {
           <button
             type="button"
             class="btn ghost sm"
-            :disabled="!snap.kernel_running || geoBusy"
+            :disabled="geoBusy"
             data-testid="geo-retry"
-            @click="upgradeGeo"
+            @click="upgradeGeo(lastFailedGeoKey)"
           >
             重试
           </button>
@@ -341,8 +454,22 @@ onMounted(() => {
       </div>
       <div class="setting-row">
         <div class="grow">
-          <strong>自动更新</strong>
-          <p class="muted small">内核运行时按周期在后台下载新数据</p>
+          <strong>GeoIP 模式</strong>
+          <p class="muted small">{{ geodataModeId === 'dat' ? '使用 GeoIP.dat 数据库格式（geodata-mode: true）' : geodataModeId === 'db' ? '使用 Country.mmdb 数据库格式（geodata-mode: false）' : '沿用配置文件中的 geodata-mode 设置' }}</p>
+        </div>
+        <Segmented
+          :model-value="geodataModeId"
+          :options="GEODATA_MODES"
+          size="sm"
+          label="GeoIP 模式"
+          data-testid="geodata-mode"
+          @update:model-value="(id) => saveGeo({ geodata_mode: id === '' ? null : id === 'dat' })"
+        />
+      </div>
+      <div class="setting-row">
+        <div class="grow">
+          <strong>自动更新数据库</strong>
+          <p class="muted small">内核运行时按周期在后台自动同步最新数据</p>
         </div>
         <Toggle
           :model-value="geoSettings.geo_auto_update === true"
@@ -363,8 +490,8 @@ onMounted(() => {
       </div>
       <div class="setting-row">
         <div class="grow">
-          <strong>下载源</strong>
-          <p class="muted small">{{ geoSettings.geo_source ? '覆盖配置中的 geox-url 下载地址' : '沿用配置 geox-url 或内核默认源' }}</p>
+          <strong>下载源预设</strong>
+          <p class="muted small">{{ geoSettings.geo_source ? '未单独填写地址的数据库将统一使用该镜像源' : '沿用配置 geox-url 或默认 GitHub 源' }}</p>
         </div>
         <Segmented
           :model-value="geoSettings.geo_source"
@@ -374,6 +501,70 @@ onMounted(() => {
           data-testid="geo-source"
           @update:model-value="(id) => saveGeo({ geo_source: id })"
         />
+      </div>
+      <div class="geo-urls-section" data-testid="geo-urls-section">
+        <div class="geo-urls-head">
+          <div>
+            <strong>数据库下载地址</strong>
+            <p class="muted small">可为每个数据库单独指定自定义 URL，留空则跟随上方下载源预设</p>
+          </div>
+          <div class="head-actions">
+            <button
+              v-if="hasCustomGeoUrls && !geoUrlsDirty"
+              type="button"
+              class="btn ghost sm"
+              data-testid="reset-geo-urls"
+              @click="resetGeoUrls"
+            >
+              清空自定义
+            </button>
+            <button
+              v-if="geoUrlsDirty"
+              type="button"
+              class="btn primary sm"
+              data-testid="save-geo-urls"
+              @mousedown.prevent
+              @click="commitGeoUrls"
+            >
+              保存地址
+            </button>
+          </div>
+        </div>
+        <div class="geo-url-list">
+          <div v-for="item in GEO_URL_FIELDS" :key="item.key" class="geo-url-row">
+            <label class="geo-url-label" :for="`geo-url-${item.key}`">
+              <span>{{ item.label }}</span>
+              <span v-if="geoUrlsDraft[item.key].trim()" class="tag accent sm">已自定义</span>
+            </label>
+            <div class="geo-url-control">
+              <input
+                :id="`geo-url-${item.key}`"
+                v-model="geoUrlsDraft[item.key]"
+                type="url"
+                class="input sm mono grow"
+                :placeholder="geoUrlPlaceholder(item.key)"
+                :aria-label="item.label"
+                :data-testid="`geo-url-${item.key}`"
+                @focus="geoUrlFocused = true"
+                @blur="geoUrlFocused = false; commitGeoUrls()"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+              <button
+                type="button"
+                class="icon-btn sm"
+                :disabled="geoBusy"
+                :title="`下载 ${item.label}`"
+                :aria-label="`下载 ${item.label}`"
+                :data-testid="`download-geo-url-${item.key}`"
+                @mousedown.prevent
+                @click="upgradeGeo(item.key)"
+              >
+                <span v-if="geoBusy && (geoBusyKey === item.key || geoBusyKey === 'all')" class="spinner xs" aria-hidden="true" />
+                <Icon v-else name="download" :size="15" />
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 

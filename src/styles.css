@@ -123,6 +123,7 @@
   --shadow-md: 0 10px 28px rgba(16, 28, 48, 0.09), 0 2px 6px rgba(16, 28, 48, 0.05);
   --shadow-lg: 0 24px 64px rgba(16, 28, 48, 0.2);
   --sidebar: 220px;
+  --sidebar-collapsed: 72px;
 
   /* Safe areas: env() on iOS/desktop webviews; Android's edge-to-edge shell
      reports bars, cutouts and the keyboard through --native-* (lib/ui/insets). */
@@ -417,15 +418,21 @@ hr {
 /* ───────────── Shell ───────────── */
 .shell {
   display: grid;
-  grid-template-columns: var(--sidebar) 1fr;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
   height: 100vh;
   height: 100dvh;
+  transition: grid-template-columns 180ms var(--ease);
+}
+
+.shell.sidebar-collapsed {
+  grid-template-columns: var(--sidebar-collapsed) minmax(0, 1fr);
 }
 
 .shell.compact {
   position: relative;
   grid-template-columns: 1fr;
   grid-template-rows: minmax(0, 1fr);
+  transition: none;
 }
 
 .sidebar {
@@ -436,13 +443,103 @@ hr {
   background: var(--chrome);
   border-right: 1px solid var(--border);
   min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  transition: padding 180ms var(--ease);
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 2px var(--space-2) var(--space-3);
+  padding: 2px var(--space-1) var(--space-3) var(--space-2);
+}
+
+.sidebar-toggle {
+  margin-left: auto;
+  flex: none;
+  color: var(--text-3);
+}
+.sidebar-toggle:hover {
+  color: var(--text);
+}
+
+/* Collapsed desktop rail: centered 42px icon targets, tooltips carry labels,
+   and 72px width still accommodates macOS overlay traffic lights cleanly. */
+.sidebar.collapsed {
+  padding: var(--space-4) 10px var(--space-3);
+  align-items: center;
+}
+.sidebar.collapsed .sidebar-drag {
+  align-self: stretch;
+  margin: calc(var(--space-4) * -1) -10px 0;
+}
+.sidebar.collapsed .brand {
+  flex-direction: column;
+  justify-content: center;
+  padding: 2px 0 var(--space-2);
+  gap: 6px;
+  width: 100%;
+}
+.sidebar.collapsed .brand-name,
+.sidebar.collapsed .side-search-label,
+.sidebar.collapsed .side-search .palette-kbd,
+.sidebar.collapsed .nav-group-label,
+.sidebar.collapsed .nav-item-label,
+.sidebar.collapsed .nav-update-tag,
+.sidebar.collapsed .side-status-body {
+  display: none;
+}
+.sidebar.collapsed .sidebar-toggle {
+  margin-left: 0;
+}
+.sidebar.collapsed .side-search {
+  width: 42px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+}
+.sidebar.collapsed .nav,
+.sidebar.collapsed .nav-group,
+.sidebar.collapsed .side-foot {
+  width: 100%;
+  align-items: center;
+}
+.sidebar.collapsed .nav-group + .nav-group {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.sidebar.collapsed .nav-item {
+  position: relative;
+  width: 42px;
+  padding: 0;
+  justify-content: center;
+}
+.sidebar.collapsed .nav-count {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+  box-shadow: 0 0 0 1.5px var(--chrome);
+}
+.sidebar.collapsed .side-status {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+}
+.sidebar.collapsed .side-status.on {
+  box-shadow: 0 0 0 3px var(--good-soft);
+  border-color: color-mix(in srgb, var(--good) 45%, var(--border));
+}
+.sidebar.collapsed .side-status.pending {
+  box-shadow: 0 0 0 3px var(--fair-soft);
 }
 
 .brand-mark {
@@ -4351,6 +4448,7 @@ html[data-keyboard] .compact .page {
 .titlebar-brand img {
   width: 16px;
   height: 16px;
+  border-radius: 4px;
 }
 .chrome-macos .titlebar-brand {
   padding-left: 80px;
@@ -4404,6 +4502,9 @@ html[data-keyboard] .compact .page {
 }
 .shell.chrome .brand > * {
   pointer-events: none;
+}
+.shell.chrome .brand > .sidebar-toggle {
+  pointer-events: auto;
 }
 /* Traffic lights live in the sidebar's top-left corner. */
 .sidebar-drag {
@@ -5009,15 +5110,80 @@ html[data-keyboard] .compact .page {
 .geo-files li {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  justify-content: space-between;
+  gap: 4px;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);
   background: var(--surface-2);
   border: 1px solid var(--border);
   min-width: 0;
 }
+.geo-file-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.geo-file-top > .min0 {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.geo-file-name {
+  font-size: 11px;
+  line-height: 1.25;
+}
+.geo-file-dl {
+  flex: none;
+  margin: -2px -4px 0 0;
+}
 .geo-files li.missing strong {
   color: var(--text-3);
+}
+.geo-urls-section {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+  margin-top: var(--space-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.geo-urls-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.geo-url-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.geo-url-row {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.compact .geo-url-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+.geo-url-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  font-weight: 550;
+  color: var(--text-2);
+}
+.geo-url-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
 }
 .geo-alert {
   display: flex;
@@ -5400,12 +5566,105 @@ button.nav-row:active {
   border-color: var(--accent);
 }
 /* The sub-page title already names the section; keep only the card action. */
+.settings-phone [data-testid='proxy-settings'] > .card-head h2,
 .settings-phone [data-testid='dns-settings'] > .card-head h2,
 .settings-phone [data-testid='tun-settings'] > .card-head h2 {
   display: none;
 }
+.settings-phone [data-testid='proxy-settings'] > .card-head,
 .settings-phone [data-testid='dns-settings'] > .card-head,
 .settings-phone [data-testid='tun-settings'] > .card-head {
   justify-content: flex-end;
   margin-bottom: 0;
+}
+
+/* ───────────── System Proxy & DNS Key-Value Editors ───────────── */
+.card-head.wrap-head {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.proxy-host-field {
+  width: 210px;
+}
+.compact .proxy-host-field {
+  width: 100%;
+}
+.kv-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+}
+.bypass-add-row,
+.kv-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.kv-key {
+  flex: 0 0 220px;
+  min-width: 140px;
+}
+.compact .bypass-add-row,
+.compact .kv-add-row {
+  flex-wrap: wrap;
+}
+.compact .kv-key {
+  flex: 1 1 100%;
+}
+.bypass-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.bypass-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-2) 6px var(--space-3);
+  min-height: 36px;
+}
+.bypass-item + .bypass-item {
+  border-top: 1px solid var(--border);
+}
+.kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.kv-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.compact .kv-row {
+  flex-wrap: wrap;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.empty-hint {
+  margin: var(--space-2) 0 0;
+}
+.floating-save-bar {
+  position: sticky;
+  bottom: var(--space-3);
+  z-index: 3;
+  padding: var(--space-3) var(--card-pad);
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: saturate(1.5) blur(14px);
+  -webkit-backdrop-filter: saturate(1.5) blur(14px);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-md);
 }

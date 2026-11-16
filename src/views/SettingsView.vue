@@ -6,7 +6,20 @@ import SelectField from '../components/SelectField.vue'
 import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import { useStore } from '../lib/store'
-import { defaultDns, defaultTun, type DnsSettings, type KernelChannel, type KernelSettings, type ThemePreference, type TunSettings } from '../lib/types'
+import {
+  DEFAULT_PAC_SCRIPT,
+  DEFAULT_PROXY_BYPASS,
+  defaultDns,
+  defaultSystemProxy,
+  defaultTun,
+  type DnsSettings,
+  type KernelChannel,
+  type KernelSettings,
+  type SystemProxyMode,
+  type SystemProxySettings,
+  type ThemePreference,
+  type TunSettings,
+} from '../lib/types'
 import type { SettingsTab } from '../lib/store'
 
 const props = defineProps<{ compact?: boolean }>()
@@ -197,13 +210,145 @@ const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 /** Phone sub-pages go back through the app history when possible (App provides it). */
 const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab.value = 'general'))
 const openShortcuts = inject<(() => void) | null>('openShortcuts', null)
-const SUB_TITLES: Record<SettingsTab, string> = { general: '设置', kernel: '内核', tun: 'TUN 模式', dns: 'DNS' }
+const SUB_TITLES: Record<SettingsTab, string> = {
+  general: '设置',
+  proxy: '系统代理',
+  kernel: '内核',
+  tun: 'TUN 模式',
+  dns: 'DNS',
+}
+
+const isWindows = computed(
+  () => app.value?.platform === 'windows' || (typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)),
+)
 
 const appSummary = computed(() => {
   const s = snap.value
   if (s.app_mode === 'include' && s.included.length) return `仅 ${s.included.length} 个应用`
   return s.excluded.length ? `绕过 ${s.excluded.length} 个` : '全部应用'
 })
+
+// ── System Proxy draft
+const PROXY_MODES: { id: SystemProxyMode; label: string }[] = [
+  { id: 'manual', label: '手动' },
+  { id: 'pac', label: 'PAC' },
+]
+const proxyHost = ref('')
+const proxyMode = ref<SystemProxyMode>('manual')
+const pacScript = ref(DEFAULT_PAC_SCRIPT)
+const bypassItems = ref<string[]>([])
+const bypassBatchMode = ref(false)
+const bypassBatchText = ref('')
+const newBypassItem = ref('')
+let lastSyncedProxy = ''
+
+function parseBypassText(text: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of text.split(/[\r\n;,]+/)) {
+    const item = raw.trim()
+    if (item && !seen.has(item)) {
+      seen.add(item)
+      out.push(item)
+    }
+  }
+  return out
+}
+
+function applyProxyDraft(value: SystemProxySettings) {
+  proxyHost.value = value.host
+  proxyMode.value = value.mode
+  pacScript.value = value.pac_script || DEFAULT_PAC_SCRIPT
+  bypassItems.value = [...value.bypass]
+  bypassBatchText.value = value.bypass.join('\n')
+  newBypassItem.value = ''
+}
+
+function loadProxy(value: SystemProxySettings) {
+  applyProxyDraft(value)
+  lastSyncedProxy = JSON.stringify(value)
+}
+
+watch(
+  () => snap.value.settings.system_proxy,
+  (value) => {
+    const serialized = JSON.stringify(value)
+    if (serialized === lastSyncedProxy) return
+    loadProxy(value)
+  },
+  { immediate: true, deep: true },
+)
+
+const proxyDraft = computed<SystemProxySettings>(() => {
+  const baseBypass = bypassBatchMode.value ? parseBypassText(bypassBatchText.value) : [...bypassItems.value]
+  const pending = parseBypassText(newBypassItem.value)
+  const merged = [...baseBypass]
+  for (const item of pending) {
+    if (!merged.includes(item)) merged.push(item)
+  }
+  return {
+    host: proxyHost.value.trim(),
+    mode: proxyMode.value,
+    pac_script: pacScript.value.trim() || DEFAULT_PAC_SCRIPT,
+    bypass: merged,
+  }
+})
+const proxyDirty = computed(() => JSON.stringify(proxyDraft.value) !== JSON.stringify(snap.value.settings.system_proxy))
+
+function toggleBypassBatch() {
+  if (bypassBatchMode.value) {
+    bypassItems.value = parseBypassText(bypassBatchText.value)
+    bypassBatchMode.value = false
+  } else {
+    bypassBatchText.value = bypassItems.value.join('\n')
+    bypassBatchMode.value = true
+  }
+}
+
+function addBypassItem() {
+  const entries = parseBypassText(newBypassItem.value)
+  if (!entries.length) return
+  for (const item of entries) {
+    if (!bypassItems.value.includes(item)) bypassItems.value.push(item)
+  }
+  bypassBatchText.value = bypassItems.value.join('\n')
+  newBypassItem.value = ''
+}
+
+function removeBypassItem(index: number) {
+  bypassItems.value.splice(index, 1)
+  bypassBatchText.value = bypassItems.value.join('\n')
+}
+
+function addDefaultBypass() {
+  const current = bypassBatchMode.value ? parseBypassText(bypassBatchText.value) : [...bypassItems.value]
+  let added = 0
+  for (const item of DEFAULT_PROXY_BYPASS) {
+    if (!current.includes(item)) {
+      current.push(item)
+      added += 1
+    }
+  }
+  bypassItems.value = current
+  bypassBatchText.value = current.join('\n')
+  if (!added) store.toast('默认代理绕过规则已全部包含')
+}
+
+function undoProxy() {
+  loadProxy(snap.value.settings.system_proxy)
+}
+
+function resetProxy() {
+  applyProxyDraft(defaultSystemProxy())
+}
+
+function saveProxy() {
+  const draft = proxyDraft.value
+  bypassItems.value = [...draft.bypass]
+  bypassBatchText.value = draft.bypass.join('\n')
+  newBypassItem.value = ''
+  save({ system_proxy: draft })
+}
 
 // ── TUN draft
 const STACKS = [
@@ -259,6 +404,14 @@ const MODES_DNS = [
   { id: 'redir-host', label: 'Redir-Host' },
   { id: 'normal', label: 'Normal' },
 ] as const
+const FILTER_MODES_DNS = [
+  { id: 'blacklist', label: '黑名单' },
+  { id: 'whitelist', label: '白名单' },
+] as const
+const CACHE_ALGOS_DNS = [
+  { id: 'lru', label: 'LRU' },
+  { id: 'arc', label: 'ARC' },
+] as const
 type ListKey = 'nameserver' | 'default_nameserver' | 'fallback' | 'proxy_server_nameserver' | 'direct_nameserver' | 'fake_ip_filter'
 const LISTS: { key: ListKey; title: string; hint: string; fakeIpOnly?: boolean }[] = [
   { key: 'nameserver', title: '主 DNS 服务器', hint: '默认用于解析所有域名，支持 DoH / DoT / DoQ' },
@@ -266,19 +419,110 @@ const LISTS: { key: ListKey; title: string; hint: string; fakeIpOnly?: boolean }
   { key: 'proxy_server_nameserver', title: '节点域名解析', hint: '解析代理节点服务器地址' },
   { key: 'direct_nameserver', title: '直连域名解析', hint: '直连出站使用；留空则用主 DNS' },
   { key: 'fallback', title: '备用 DNS', hint: '可选，海外服务器；留空则不启用' },
-  { key: 'fake_ip_filter', title: 'Fake-IP 过滤', hint: '这些域名返回真实 IP，例如局域网、NTP、游戏联机', fakeIpOnly: true },
+  { key: 'fake_ip_filter', title: 'Fake-IP 过滤', hint: '黑名单下这些域名返回真实 IP；白名单下仅这些域名返回 Fake-IP', fakeIpOnly: true },
 ]
 const dns = ref<DnsSettings>(copy(snap.value.settings.dns))
 const dnsText = ref<Record<ListKey, string>>({} as Record<ListKey, string>)
+const policyRows = ref<{ pattern: string; servers: string }[]>([])
+const policyBatchMode = ref(false)
+const policyBatchText = ref('')
+const newPolicyPattern = ref('')
+const newPolicyServers = ref('')
+const hostRows = ref<{ domain: string; targets: string }[]>([])
+const hostBatchMode = ref(false)
+const hostBatchText = ref('')
+const newHostDomain = ref('')
+const newHostTargets = ref('')
 let lastSyncedDns = ''
+
+const splitTargets = (text: string) =>
+  text
+    .split(/[,;\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+
+function mapToRows(map: Record<string, string[]>): { key: string; val: string }[] {
+  return Object.entries(map).map(([key, vals]) => ({ key, val: vals.join(', ') }))
+}
+
+function formatMapText(rows: { key: string; val: string }[]): string {
+  return rows.map((row) => `${row.key} = ${row.val}`).join('\n')
+}
+
+function parsePolicyBatchText(text: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trim()
+    if (!line) continue
+    const eq = line.indexOf('=')
+    let pattern = ''
+    let rest = ''
+    if (eq > 0) {
+      pattern = line.slice(0, eq).trim()
+      rest = line.slice(eq + 1).trim()
+    } else {
+      const ws = line.search(/\s+/)
+      if (ws > 0) {
+        pattern = line.slice(0, ws).trim()
+        rest = line.slice(ws + 1).trim()
+      }
+    }
+    const servers = splitTargets(rest)
+    if (pattern && servers.length) out[pattern] = servers
+  }
+  return out
+}
+
+function parseHostsBatchText(text: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  const ipLiteral = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]+:[0-9a-fA-F:]*)$/
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trim()
+    if (!line) continue
+    const eq = line.indexOf('=')
+    if (eq > 0) {
+      const domain = line.slice(0, eq).trim()
+      const targets = splitTargets(line.slice(eq + 1))
+      if (domain && targets.length) out[domain] = targets
+      continue
+    }
+    const tokens = line.split(/\s+/).filter(Boolean)
+    if (tokens.length >= 2 && ipLiteral.test(tokens[0]!)) {
+      const ip = tokens[0]!
+      for (const host of tokens.slice(1)) {
+        const list = out[host] ?? []
+        if (!list.includes(ip)) list.push(ip)
+        out[host] = list
+      }
+    } else if (tokens.length >= 2) {
+      const domain = tokens[0]!
+      const targets = splitTargets(tokens.slice(1).join(','))
+      if (domain && targets.length) out[domain] = targets
+    }
+  }
+  return out
+}
+
 function applyDnsDraft(value: DnsSettings) {
   dns.value = copy(value)
   dnsText.value = Object.fromEntries(LISTS.map((item) => [item.key, value[item.key].join('\n')])) as Record<ListKey, string>
+  const pRows = mapToRows(value.nameserver_policy)
+  policyRows.value = pRows.map(({ key, val }) => ({ pattern: key, servers: val }))
+  policyBatchText.value = formatMapText(pRows)
+  newPolicyPattern.value = ''
+  newPolicyServers.value = ''
+  const hRows = mapToRows(value.hosts)
+  hostRows.value = hRows.map(({ key, val }) => ({ domain: key, targets: val }))
+  hostBatchText.value = formatMapText(hRows)
+  newHostDomain.value = ''
+  newHostTargets.value = ''
 }
+
 function loadDns(value: DnsSettings) {
   applyDnsDraft(value)
   lastSyncedDns = JSON.stringify(value)
 }
+
 watch(
   () => snap.value.settings.dns,
   (value) => {
@@ -288,26 +532,132 @@ watch(
   },
   { immediate: true, deep: true },
 )
+
+function buildPolicyMap(): Record<string, string[]> {
+  if (policyBatchMode.value) return parsePolicyBatchText(policyBatchText.value)
+  const out: Record<string, string[]> = {}
+  const all = [
+    ...policyRows.value,
+    ...(newPolicyPattern.value.trim() && newPolicyServers.value.trim()
+      ? [{ pattern: newPolicyPattern.value, servers: newPolicyServers.value }]
+      : []),
+  ]
+  for (const row of all) {
+    const key = row.pattern.trim()
+    const servers = splitTargets(row.servers)
+    if (key && servers.length) out[key] = servers
+  }
+  return out
+}
+
+function buildHostsMap(): Record<string, string[]> {
+  if (hostBatchMode.value) return parseHostsBatchText(hostBatchText.value)
+  const out: Record<string, string[]> = {}
+  const all = [
+    ...hostRows.value,
+    ...(newHostDomain.value.trim() && newHostTargets.value.trim()
+      ? [{ domain: newHostDomain.value, targets: newHostTargets.value }]
+      : []),
+  ]
+  for (const row of all) {
+    const key = row.domain.trim()
+    const targets = splitTargets(row.targets)
+    if (key && targets.length) out[key] = targets
+  }
+  return out
+}
+
+function addPolicyRow() {
+  const pattern = newPolicyPattern.value.trim()
+  const servers = splitTargets(newPolicyServers.value)
+  if (!pattern || !servers.length) return
+  const existing = policyRows.value.find((row) => row.pattern.trim() === pattern)
+  if (existing) existing.servers = servers.join(', ')
+  else policyRows.value.push({ pattern, servers: servers.join(', ') })
+  newPolicyPattern.value = ''
+  newPolicyServers.value = ''
+}
+
+function addCnPolicyPreset() {
+  const presetKey = 'geosite:cn,private'
+  const presetVal = 'https://doh.pub/dns-query, 223.5.5.5'
+  if (policyBatchMode.value) {
+    const map = parsePolicyBatchText(policyBatchText.value)
+    map[presetKey] = splitTargets(presetVal)
+    policyBatchText.value = formatMapText(mapToRows(map))
+    return
+  }
+  const existing = policyRows.value.find((row) => row.pattern.trim() === presetKey)
+  if (existing) existing.servers = presetVal
+  else policyRows.value.push({ pattern: presetKey, servers: presetVal })
+}
+
+function togglePolicyBatch() {
+  if (policyBatchMode.value) {
+    const map = parsePolicyBatchText(policyBatchText.value)
+    policyRows.value = mapToRows(map).map(({ key, val }) => ({ pattern: key, servers: val }))
+    policyBatchMode.value = false
+  } else {
+    addPolicyRow()
+    policyBatchText.value = formatMapText(policyRows.value.map((r) => ({ key: r.pattern, val: r.servers })))
+    policyBatchMode.value = true
+  }
+}
+
+function addHostRow() {
+  const domain = newHostDomain.value.trim()
+  const targets = splitTargets(newHostTargets.value)
+  if (!domain || !targets.length) return
+  const existing = hostRows.value.find((row) => row.domain.trim() === domain)
+  if (existing) existing.targets = targets.join(', ')
+  else hostRows.value.push({ domain, targets: targets.join(', ') })
+  newHostDomain.value = ''
+  newHostTargets.value = ''
+}
+
+function toggleHostBatch() {
+  if (hostBatchMode.value) {
+    const map = parseHostsBatchText(hostBatchText.value)
+    hostRows.value = mapToRows(map).map(({ key, val }) => ({ domain: key, targets: val }))
+    hostBatchMode.value = false
+  } else {
+    addHostRow()
+    hostBatchText.value = formatMapText(hostRows.value.map((r) => ({ key: r.domain, val: r.targets })))
+    hostBatchMode.value = true
+  }
+}
+
 const dnsDraft = computed<DnsSettings>(() => ({
   ...dns.value,
+  listen: dns.value.listen.trim(),
   ...Object.fromEntries(LISTS.map((item) => [item.key, lines(dnsText.value[item.key] ?? '')])),
+  nameserver_policy: buildPolicyMap(),
+  hosts: buildHostsMap(),
 }))
 const dnsDirty = computed(() => JSON.stringify(dnsDraft.value) !== JSON.stringify(snap.value.settings.dns))
 function saveDns() {
-  save({ dns: dnsDraft.value })
+  const draft = dnsDraft.value
+  policyRows.value = mapToRows(draft.nameserver_policy).map(({ key, val }) => ({ pattern: key, servers: val }))
+  policyBatchText.value = formatMapText(mapToRows(draft.nameserver_policy))
+  newPolicyPattern.value = ''
+  newPolicyServers.value = ''
+  hostRows.value = mapToRows(draft.hosts).map(({ key, val }) => ({ domain: key, targets: val }))
+  hostBatchText.value = formatMapText(mapToRows(draft.hosts))
+  newHostDomain.value = ''
+  newHostTargets.value = ''
+  save({ dns: draft })
 }
 function resetDns() {
   applyDnsDraft(defaultDns())
 }
 
-const TABS = computed(() =>
-  [
-    { id: 'general' as SettingsTab, label: '通用' },
-    { id: 'kernel' as SettingsTab, label: '内核' },
-    ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: tunDirty.value ? 'TUN •' : 'TUN' }]),
-    { id: 'dns' as SettingsTab, label: dnsDirty.value ? 'DNS •' : 'DNS' },
-  ],
-)
+const TABS = computed(() => [
+  { id: 'general' as SettingsTab, label: '通用' },
+  ...(store.isAndroid.value ? [] : [{ id: 'proxy' as SettingsTab, label: proxyDirty.value ? '系统代理 •' : '系统代理' }]),
+  { id: 'kernel' as SettingsTab, label: '内核' },
+  ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: tunDirty.value ? 'TUN •' : 'TUN' }]),
+  { id: 'dns' as SettingsTab, label: dnsDirty.value ? 'DNS •' : 'DNS' },
+])
 </script>
 
 <template>
@@ -376,12 +726,20 @@ const TABS = computed(() =>
             <span class="nav-row-value">{{ appSummary }}</span>
             <Icon name="chevron-right" :size="16" class="muted" />
           </button>
-          <button v-else type="button" class="nav-row" data-testid="open-tun" @click="store.settingsTab.value = 'tun'">
-            <span class="nav-row-icon blue"><Icon name="shield" /></span>
-            <span class="nav-row-title">TUN 模式</span>
-            <span class="nav-row-value">{{ snap.tun ? '已开启' : '关闭' }}</span>
-            <Icon name="chevron-right" :size="16" class="muted" />
-          </button>
+          <template v-else>
+            <button type="button" class="nav-row" data-testid="open-proxy" @click="store.settingsTab.value = 'proxy'">
+              <span class="nav-row-icon green"><Icon name="monitor" /></span>
+              <span class="nav-row-title">系统代理</span>
+              <span class="nav-row-value">{{ snap.system_proxy ? (snap.settings.system_proxy.mode === 'pac' ? 'PAC' : '已开启') : '关闭' }}</span>
+              <Icon name="chevron-right" :size="16" class="muted" />
+            </button>
+            <button type="button" class="nav-row" data-testid="open-tun" @click="store.settingsTab.value = 'tun'">
+              <span class="nav-row-icon blue"><Icon name="shield" /></span>
+              <span class="nav-row-title">TUN 模式</span>
+              <span class="nav-row-value">{{ snap.tun ? '已开启' : '关闭' }}</span>
+              <Icon name="chevron-right" :size="16" class="muted" />
+            </button>
+          </template>
           <button type="button" class="nav-row" data-testid="open-dns" @click="store.settingsTab.value = 'dns'">
             <span class="nav-row-icon violet"><Icon name="globe" /></span>
             <span class="nav-row-title">DNS</span>
@@ -477,6 +835,141 @@ const TABS = computed(() =>
           <span class="muted small mono">v{{ app?.version ?? '—' }}</span>
         </div>
       </section>
+    </template>
+
+    <!-- ───────── 系统代理 ───────── -->
+    <template v-else-if="store.settingsTab.value === 'proxy'">
+      <section class="card" data-testid="proxy-settings">
+        <header class="card-head">
+          <h2>系统代理</h2>
+          <button type="button" class="btn ghost sm" @click="resetProxy">恢复默认</button>
+        </header>
+        <p class="muted small card-note">配置系统级 HTTP / SOCKS 接管方式、代理主机与 PAC 脚本。修改后立即应用，不会中断当前内核连接。</p>
+        <div class="setting-row">
+          <span class="row-icon"><Icon name="monitor" /></span>
+          <div class="grow">
+            <strong>启用系统代理</strong>
+            <p class="muted small">{{ snap.system_proxy ? (snap.mixed_port ? `${snap.settings.system_proxy.host || '127.0.0.1'}:${snap.mixed_port}` : '已开启，连接后生效') : '未开启' }}</p>
+          </div>
+          <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" label="启用系统代理" @update:model-value="store.setSystemProxy" />
+        </div>
+        <div class="setting-row wrap">
+          <div class="grow">
+            <strong>代理主机</strong>
+            <p class="muted small">若无特殊需求请勿修改，留空默认使用 127.0.0.1</p>
+          </div>
+          <input
+            v-model="proxyHost"
+            class="input sm mono proxy-host-field"
+            placeholder="127.0.0.1"
+            aria-label="代理主机"
+            data-testid="proxy-host-input"
+          />
+        </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>代理模式</strong>
+            <p class="muted small">{{ proxyMode === 'pac' ? 'PAC 自动配置脚本：通过本地 HTTP 服务按域名动态决定是否走代理' : '手动代理：直接将 HTTP / HTTPS / SOCKS 指向本地混合端口' }}</p>
+          </div>
+          <Segmented v-model="proxyMode" :options="PROXY_MODES" size="sm" label="代理模式" data-testid="proxy-mode" />
+        </div>
+        <div v-if="proxyMode === 'pac'" class="setting-row stacked">
+          <div class="kv-section-head">
+            <div>
+              <strong>PAC 脚本</strong>
+              <p class="muted small">支持 <code>%proxy-host%</code> 与 <code>%mixed-port%</code> 占位符</p>
+            </div>
+            <button type="button" class="btn ghost sm" @click="pacScript = DEFAULT_PAC_SCRIPT">恢复默认脚本</button>
+          </div>
+          <textarea
+            v-model="pacScript"
+            class="input list-input mono"
+            rows="9"
+            spellcheck="false"
+            aria-label="PAC 脚本"
+            data-testid="pac-script-input"
+          />
+        </div>
+        <div v-if="isWindows" class="setting-row">
+          <div class="grow">
+            <strong>UWP 工具</strong>
+            <p class="muted small">解除 Windows 商店（UWP）应用的本地回环代理限制</p>
+          </div>
+          <button
+            type="button"
+            class="btn sm"
+            :disabled="store.busy.uwp"
+            data-testid="open-uwp-tool"
+            @click="store.openUwpTool()"
+          >
+            打开 UWP 工具
+          </button>
+        </div>
+      </section>
+
+      <section class="card" data-testid="proxy-bypass-card">
+        <header class="card-head wrap-head">
+          <div>
+            <h2>代理绕过列表 <span class="muted">{{ proxyDraft.bypass.length }}</span></h2>
+            <p class="muted small">手动代理模式下，命中以下地址或网段的请求将直接连接，不经过内核</p>
+          </div>
+          <div class="head-actions">
+            <button type="button" class="btn ghost sm" data-testid="add-default-bypass" @click="addDefaultBypass">
+              添加默认代理绕过
+            </button>
+            <button type="button" class="btn ghost sm" data-testid="toggle-bypass-batch" @click="toggleBypassBatch">
+              {{ bypassBatchMode ? '列表视图' : '批量编辑' }}
+            </button>
+          </div>
+        </header>
+        <template v-if="!bypassBatchMode">
+          <div class="bypass-add-row">
+            <input
+              v-model="newBypassItem"
+              class="input sm mono grow"
+              placeholder="输入绕过域名、IP 或网段，如 *.corp.local 或 10.*"
+              aria-label="新增代理绕过地址"
+              data-testid="bypass-add-input"
+              @keydown.enter.prevent="addBypassItem"
+            />
+            <button type="button" class="btn sm" :disabled="!newBypassItem.trim()" data-testid="bypass-add-btn" @click="addBypassItem">
+              <Icon name="plus" :size="14" />添加
+            </button>
+          </div>
+          <ul v-if="bypassItems.length" class="bypass-list" data-testid="bypass-list">
+            <li v-for="(item, index) in bypassItems" :key="`${item}-${index}`" class="bypass-item">
+              <span class="mono small ellipsis grow" :title="item">{{ item }}</span>
+              <button
+                type="button"
+                class="icon-btn sm"
+                :title="`删除 ${item}`"
+                :aria-label="`删除 ${item}`"
+                @click="removeBypassItem(index)"
+              >
+                <Icon name="trash" :size="14" />
+              </button>
+            </li>
+          </ul>
+          <p v-else class="muted small empty-hint">当前未配置代理绕过地址，可点击上方“添加默认代理绕过”快速填入局域网与本地回环地址。</p>
+        </template>
+        <div v-else class="setting-row stacked">
+          <p class="muted small">每行一条，也支持分号或逗号分隔</p>
+          <textarea
+            v-model="bypassBatchText"
+            class="input list-input mono"
+            rows="8"
+            spellcheck="false"
+            aria-label="代理绕过列表批量编辑"
+            data-testid="bypass-batch-textarea"
+          />
+        </div>
+      </section>
+
+      <div v-if="proxyDirty" class="save-bar floating-save-bar">
+        <span class="muted small grow">有未保存的系统代理修改（保存后立即生效，不会中断连接）</span>
+        <button type="button" class="btn ghost sm" @click="undoProxy">撤销</button>
+        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-proxy" @click="saveProxy">保存</button>
+      </div>
     </template>
 
     <!-- ───────── 内核 ───────── -->
@@ -699,7 +1192,7 @@ const TABS = computed(() =>
           <input v-model="tun.device" class="input sm mono" placeholder="自动" aria-label="网卡名称" />
         </div>
         <div v-if="tunDirty" class="save-bar">
-          <span class="muted small grow">有未保存的修改{{ snap.kernel_running ? '，保存后内核会重启' : '' }}</span>
+          <span class="muted small grow">有未保存的修改{{ snap.kernel_running ? '，保存后将平滑热重载生效' : '' }}</span>
           <button type="button" class="btn ghost sm" @click="undoTun">撤销</button>
           <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-tun" @click="saveTun">保存</button>
         </div>
@@ -717,7 +1210,7 @@ const TABS = computed(() =>
           <span class="row-icon"><Icon name="sliders" /></span>
           <div class="grow">
             <strong>DNS 覆写</strong>
-            <p class="muted small">开启后用下面的设置替换每份配置里的 dns 段；关闭则使用配置文件自带的 DNS</p>
+            <p class="muted small">开启后用下面的设置替换每份配置里的 dns 段与自定义 hosts；关闭则使用配置文件自带的设置</p>
           </div>
           <Toggle
             :model-value="snap.settings.dns_override"
@@ -733,12 +1226,12 @@ const TABS = computed(() =>
         </p>
         <div class="setting-row">
           <div class="grow">
-            <strong>增强模式</strong>
+            <strong>域名映射模式</strong>
             <p class="muted small">
-              {{ dns.enhanced_mode === 'fake-ip' ? 'Fake-IP：先返回虚拟地址，连接时再解析，速度最快' : dns.enhanced_mode === 'redir-host' ? 'Redir-Host：返回真实 IP，兼容性更好' : 'Normal：不做增强处理' }}
+              {{ dns.enhanced_mode === 'fake-ip' ? 'Fake-IP：先返回虚拟地址，连接时再解析，速度最快' : dns.enhanced_mode === 'redir-host' ? 'Redir-Host：返回真实 IP 并记录映射，兼容性更好' : 'Normal：标准解析，不做增强映射' }}
             </p>
           </div>
-          <Segmented v-model="dns.enhanced_mode" :options="MODES_DNS" size="sm" label="增强模式" />
+          <Segmented v-model="dns.enhanced_mode" :options="MODES_DNS" size="sm" label="增强模式" data-testid="dns-enhanced-mode" />
         </div>
         <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
           <div class="grow">
@@ -747,26 +1240,66 @@ const TABS = computed(() =>
           </div>
           <input v-model="dns.fake_ip_range" class="input sm mono" aria-label="Fake-IP 地址段" />
         </div>
+        <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
+          <div class="grow">
+            <strong>过滤列表模式</strong>
+            <p class="muted small">{{ dns.fake_ip_filter_mode === 'whitelist' ? '白名单：仅列表中的域名返回虚拟地址，其余返回真实 IP' : '黑名单：列表中的域名返回真实 IP，其余返回虚拟地址' }}</p>
+          </div>
+          <Segmented
+            v-model="dns.fake_ip_filter_mode"
+            :options="FILTER_MODES_DNS"
+            size="sm"
+            label="过滤列表模式"
+            data-testid="dns-filter-mode"
+          />
+        </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>DNS 监听地址</strong>
+            <p class="muted small">可选本地监听端口，例如 <code>127.0.0.1:1053</code>；留空则仅在内核内部处理</p>
+          </div>
+          <input
+            v-model="dns.listen"
+            class="input sm mono"
+            placeholder="留空不监听"
+            aria-label="DNS 监听地址"
+            data-testid="dns-listen"
+          />
+        </div>
         <div class="setting-row">
           <div class="grow">
             <strong>IPv6 解析</strong>
-            <p class="muted small">返回 AAAA 记录</p>
+            <p class="muted small">允许返回 AAAA 记录</p>
           </div>
           <Toggle v-model="dns.ipv6" label="IPv6 解析" />
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>使用 hosts</strong>
-            <p class="muted small">优先使用配置中的 hosts 映射</p>
+            <strong>DoH 优先 HTTP/3</strong>
+            <p class="muted small">加密 DNS 支持 QUIC 时优先使用 HTTP/3 连接（prefer-h3）</p>
           </div>
-          <Toggle v-model="dns.use_hosts" label="使用 hosts" />
+          <Toggle v-model="dns.prefer_h3" label="DoH 优先 HTTP/3" data-testid="dns-prefer-h3" />
+        </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>缓存算法</strong>
+            <p class="muted small">ARC 命中率更高，LRU 内存开销更稳定</p>
+          </div>
+          <Segmented v-model="dns.cache_algorithm" :options="CACHE_ALGOS_DNS" size="sm" label="缓存算法" data-testid="dns-cache-algorithm" />
         </div>
         <div class="setting-row">
           <div class="grow">
             <strong>遵循分流规则</strong>
-            <p class="muted small">DNS 查询也按规则走代理或直连（respect-rules）</p>
+            <p class="muted small">DNS 查询也按分流规则走代理或直连（respect-rules）</p>
           </div>
           <Toggle v-model="dns.respect_rules" label="遵循分流规则" />
+        </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>直连遵循解析策略</strong>
+            <p class="muted small">直连出站解析域名时优先匹配下方的域名解析策略（direct-nameserver-follow-policy）</p>
+          </div>
+          <Toggle v-model="dns.direct_nameserver_follow_policy" label="直连遵循解析策略" data-testid="dns-direct-follow-policy" />
         </div>
         <template v-for="item in LISTS" :key="item.key">
           <div v-if="!item.fakeIpOnly || dns.enhanced_mode === 'fake-ip'" class="setting-row stacked">
@@ -783,12 +1316,156 @@ const TABS = computed(() =>
             />
           </div>
         </template>
-        <div v-if="dnsDirty" class="save-bar">
-          <span class="muted small grow">有未保存的修改{{ snap.kernel_running && snap.settings.dns_override ? '，保存后内核会重启' : '' }}</span>
-          <button type="button" class="btn ghost sm" @click="loadDns(snap.settings.dns)">撤销</button>
-          <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-dns" @click="saveDns">保存</button>
+      </section>
+
+      <section class="card" data-testid="dns-policy-card">
+        <header class="card-head wrap-head">
+          <div>
+            <h2>域名解析策略 <span v-if="Object.keys(dnsDraft.nameserver_policy).length" class="muted">{{ Object.keys(dnsDraft.nameserver_policy).length }}</span></h2>
+            <p class="muted small">按域名、通配符或规则集指定专属上游 DNS（nameserver-policy），避免国内外域名分流污染</p>
+          </div>
+          <div class="head-actions">
+            <button type="button" class="btn ghost sm" data-testid="preset-cn-policy" @click="addCnPolicyPreset">
+              <Icon name="plus" :size="14" />国内域名分流
+            </button>
+            <button type="button" class="btn ghost sm" data-testid="toggle-policy-batch" @click="togglePolicyBatch">
+              {{ policyBatchMode ? '列表视图' : '批量编辑' }}
+            </button>
+          </div>
+        </header>
+        <template v-if="!policyBatchMode">
+          <div class="kv-add-row">
+            <input
+              v-model="newPolicyPattern"
+              class="input sm mono kv-key"
+              placeholder="规则，如 geosite:cn 或 +.corp.local"
+              aria-label="解析策略匹配规则"
+              data-testid="policy-pattern-input"
+              @keydown.enter.prevent="addPolicyRow"
+            />
+            <input
+              v-model="newPolicyServers"
+              class="input sm mono grow"
+              placeholder="DNS 服务器，多个用逗号分隔"
+              aria-label="解析策略 DNS 服务器"
+              data-testid="policy-servers-input"
+              @keydown.enter.prevent="addPolicyRow"
+            />
+            <button
+              type="button"
+              class="btn sm"
+              :disabled="!newPolicyPattern.trim() || !newPolicyServers.trim()"
+              data-testid="add-policy-btn"
+              @click="addPolicyRow"
+            >
+              <Icon name="plus" :size="14" />添加
+            </button>
+          </div>
+          <div v-if="policyRows.length" class="kv-list" data-testid="policy-list">
+            <div v-for="(row, index) in policyRows" :key="index" class="kv-row">
+              <input v-model="row.pattern" class="input sm mono kv-key" placeholder="匹配规则" :aria-label="`策略规则 ${index + 1}`" />
+              <input v-model="row.servers" class="input sm mono grow" placeholder="DNS 服务器" :aria-label="`策略服务器 ${index + 1}`" />
+              <button type="button" class="icon-btn sm" title="删除策略" aria-label="删除策略" @click="policyRows.splice(index, 1)">
+                <Icon name="trash" :size="14" />
+              </button>
+            </div>
+          </div>
+          <p v-else class="muted small empty-hint">尚未配置专属域名解析策略，支持 <code>+.domain.com</code>、<code>geosite:cn</code>、<code>rule-set:name</code> 等格式。</p>
+        </template>
+        <div v-else class="setting-row stacked">
+          <p class="muted small">每行一条，格式：<code>规则 = DNS1, DNS2</code>（例如 <code>geosite:cn,private = https://doh.pub/dns-query, 223.5.5.5</code>）</p>
+          <textarea
+            v-model="policyBatchText"
+            class="input list-input mono"
+            rows="6"
+            spellcheck="false"
+            aria-label="域名解析策略批量编辑"
+            data-testid="policy-batch-textarea"
+          />
         </div>
       </section>
+
+      <section class="card" data-testid="dns-hosts-card">
+        <header class="card-head wrap-head">
+          <div>
+            <h2>Hosts 映射 <span v-if="Object.keys(dnsDraft.hosts).length" class="muted">{{ Object.keys(dnsDraft.hosts).length }}</span></h2>
+            <p class="muted small">静态域名解析与本机 Hosts 控制，支持 IP 列表与泛域名映射</p>
+          </div>
+          <button type="button" class="btn ghost sm" data-testid="toggle-host-batch" @click="toggleHostBatch">
+            {{ hostBatchMode ? '列表视图' : '批量编辑' }}
+          </button>
+        </header>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>使用 hosts</strong>
+            <p class="muted small">启用配置与下方自定义的静态域名映射（use-hosts）</p>
+          </div>
+          <Toggle v-model="dns.use_hosts" label="使用 hosts" />
+        </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>读取系统 Hosts</strong>
+            <p class="muted small">同时读取操作系统 /etc/hosts 或 Windows hosts 文件（use-system-hosts）</p>
+          </div>
+          <Toggle v-model="dns.use_system_hosts" label="读取系统 Hosts" data-testid="dns-system-hosts" />
+        </div>
+        <template v-if="!hostBatchMode">
+          <div class="kv-add-row">
+            <input
+              v-model="newHostDomain"
+              class="input sm mono kv-key"
+              placeholder="域名，如 router.local 或 *.dev.test"
+              aria-label="Hosts 域名"
+              data-testid="host-domain-input"
+              @keydown.enter.prevent="addHostRow"
+            />
+            <input
+              v-model="newHostTargets"
+              class="input sm mono grow"
+              placeholder="IP 或目标域名，多个用逗号分隔"
+              aria-label="Hosts 目标地址"
+              data-testid="host-target-input"
+              @keydown.enter.prevent="addHostRow"
+            />
+            <button
+              type="button"
+              class="btn sm"
+              :disabled="!newHostDomain.trim() || !newHostTargets.trim()"
+              data-testid="add-host-btn"
+              @click="addHostRow"
+            >
+              <Icon name="plus" :size="14" />添加
+            </button>
+          </div>
+          <div v-if="hostRows.length" class="kv-list" data-testid="hosts-list">
+            <div v-for="(row, index) in hostRows" :key="index" class="kv-row">
+              <input v-model="row.domain" class="input sm mono kv-key" placeholder="域名" :aria-label="`Hosts 域名 ${index + 1}`" />
+              <input v-model="row.targets" class="input sm mono grow" placeholder="IP 或目标域名" :aria-label="`Hosts 地址 ${index + 1}`" />
+              <button type="button" class="icon-btn sm" title="删除映射" aria-label="删除映射" @click="hostRows.splice(index, 1)">
+                <Icon name="trash" :size="14" />
+              </button>
+            </div>
+          </div>
+          <p v-else class="muted small empty-hint">尚未添加自定义 Hosts 映射。</p>
+        </template>
+        <div v-else class="setting-row stacked">
+          <p class="muted small">支持 <code>域名 = IP1, IP2</code> 或标准系统 hosts 格式 <code>192.168.1.1 router.local</code></p>
+          <textarea
+            v-model="hostBatchText"
+            class="input list-input mono"
+            rows="6"
+            spellcheck="false"
+            aria-label="Hosts 批量编辑"
+            data-testid="host-batch-textarea"
+          />
+        </div>
+      </section>
+
+      <div v-if="dnsDirty" class="save-bar floating-save-bar">
+        <span class="muted small grow">有未保存的 DNS 修改{{ snap.kernel_running && snap.settings.dns_override ? '，保存后将平滑热重载生效' : '' }}</span>
+        <button type="button" class="btn ghost sm" @click="loadDns(snap.settings.dns)">撤销</button>
+        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-dns" @click="saveDns">保存</button>
+      </div>
 
       <section class="card">
         <header class="card-head"><h2>缓存</h2></header>

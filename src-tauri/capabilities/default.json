@@ -63,6 +63,7 @@
     "allow-provider-action",
     "allow-upgrade-geo",
     "allow-provider-detail",
-    "allow-geo-files"
+    "allow-geo-files",
+    "allow-open-uwp-tool"
   ]
 }

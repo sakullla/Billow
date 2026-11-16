@@ -87,7 +87,9 @@ export interface Backend {
   setRuleDisabled(key: string, disabled: boolean): Promise<RulesSnapshot>
   providers(): Promise<ProvidersResult>
   providerAction(kind: 'proxy' | 'rule', name: string, action: 'update' | 'healthcheck'): Promise<void>
-  upgradeGeo(): Promise<void>
+  upgradeGeo(key?: string): Promise<GeoFile[]>
+  /** Opens the Windows UWP loopback exemption tool. */
+  openUwpTool(): Promise<void>
   /** Nodes of a proxy provider or rules of a rule provider. */
   providerDetail(kind: 'proxy' | 'rule', name: string): Promise<ProviderDetail>
   /** GEO database files the kernel loads, with size and modification time. */
@@ -208,7 +210,8 @@ function createTauriBackend(): Backend {
       return { providers: Array.isArray(raw.providers) ? raw.providers : [], error: raw.error ?? null }
     },
     providerAction: (kind, name, action) => call<void>('provider_action', { kind, name, action }),
-    upgradeGeo: () => call<void>('upgrade_geo'),
+    upgradeGeo: (key) => call<GeoFile[]>('upgrade_geo', key ? { key } : {}),
+    openUwpTool: () => call<void>('open_uwp_tool'),
     providerDetail: (kind, name) => call<ProviderDetail>('provider_detail', { kind, name }),
     geoFiles: () => call<GeoFile[]>('geo_files'),
     flushCache: (which) => snap('flush_cache', { which }),
