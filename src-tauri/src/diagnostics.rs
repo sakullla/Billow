@@ -1645,7 +1645,43 @@ rules:
     #[test]
     fn upgrade_geo_prefers_configs_geo_and_surfaces_actionable_errors() {
         use std::io::{Read, Write};
-        use std::net::TcpListener;
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        use std::time::Duration;
+
+        fn drain_http_request(stream: &mut TcpStream) -> String {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                match stream.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&buf[..pos]);
+                            let content_len = head
+                                .lines()
+                                .find_map(|line| {
+                                    let (k, v) = line.split_once(':')?;
+                                    k.eq_ignore_ascii_case("content-length")
+                                        .then(|| v.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= pos + 4 + content_len {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            String::from_utf8_lossy(&buf)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        }
 
         // 1. 404 on /configs/geo falls back to /upgrade/geo -> Ok(())
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1657,11 +1693,11 @@ rules:
                 "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut buf = [0u8; 512];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let line = String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_string();
+                let line = drain_http_request(&mut stream);
                 paths.push(line);
                 let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(Shutdown::Write);
             }
             paths
         });
@@ -1680,8 +1716,7 @@ rules:
         let port2 = listener2.local_addr().unwrap().port();
         let handle2 = std::thread::spawn(move || {
             let (mut stream, _) = listener2.accept().unwrap();
-            let mut buf = [0u8; 512];
-            let _ = stream.read(&mut buf);
+            let _ = drain_http_request(&mut stream);
             let body = r#"{"message":"Get https://github.com/MetaCubeX/meta-rules-dat: context deadline exceeded"}"#;
             let resp = format!(
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1689,6 +1724,8 @@ rules:
                 body
             );
             let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(Shutdown::Write);
         });
         let ep2 = ControllerEndpoint {
             host: "127.0.0.1".to_string(),

@@ -272,24 +272,39 @@ pub const GEO_SPECS: [(&str, &str, &str, &[&str]); 4] = [
     ),
 ];
 
+fn list_dir_files(dir: &Path) -> Vec<(String, u64, Option<u64>)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok().filter(|meta| meta.is_file())?;
+            let name = entry.file_name().into_string().ok()?;
+            let modified_ms = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|age| age.as_millis() as u64);
+            Some((name, meta.len(), modified_ms))
+        })
+        .collect()
+}
+
 pub fn geo_files(home: Option<&Path>) -> Vec<GeoFile> {
+    let entries = home.map(list_dir_files).unwrap_or_default();
     GEO_SPECS
         .into_iter()
         .map(|(key, label, canonical, candidates)| {
-            let matched = home.and_then(|dir| {
-                candidates
-                    .iter()
-                    .filter_map(|&name| {
-                        let meta = fs::metadata(dir.join(name)).ok().filter(|meta| meta.is_file())?;
-                        let modified_ms = meta
-                            .modified()
-                            .ok()
-                            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                            .map(|age| age.as_millis() as u64);
-                        Some((name, meta.len(), modified_ms))
-                    })
-                    .max_by_key(|&(_, size, modified_ms)| (size > 0, modified_ms.unwrap_or(0)))
-            });
+            let matched = candidates
+                .iter()
+                .filter_map(|&candidate| {
+                    entries
+                        .iter()
+                        .find(|(actual, _, _)| actual == candidate)
+                        .map(|(actual, size, modified_ms)| (actual.as_str(), *size, *modified_ms))
+                })
+                .max_by_key(|&(_, size, modified_ms)| (size > 0, modified_ms.unwrap_or(0)));
             GeoFile {
                 key: key.to_string(),
                 label: label.to_string(),
@@ -303,10 +318,10 @@ pub fn geo_files(home: Option<&Path>) -> Vec<GeoFile> {
 }
 
 fn target_geo_path(home: &Path, canonical: &str, candidates: &[&str]) -> PathBuf {
-    for &name in candidates {
-        let path = home.join(name);
-        if fs::metadata(&path).is_ok_and(|meta| meta.is_file()) {
-            return path;
+    let entries = list_dir_files(home);
+    for &candidate in candidates {
+        if let Some((actual, _, _)) = entries.iter().find(|(actual, _, _)| actual == candidate) {
+            return home.join(actual);
         }
     }
     home.join(canonical)
@@ -568,9 +583,19 @@ rule-providers:
         let server = std::thread::spawn(move || {
             for _ in 0..5 {
                 let Ok((mut stream, _)) = listener.accept() else { break };
-                let mut buf = [0u8; 1024];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]);
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 1024];
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let req = String::from_utf8_lossy(&buf);
                 let body: Vec<u8> = if req.contains("GET /html") {
                     b"<!DOCTYPE html><html><body>404</body></html>".to_vec()
                 } else if req.contains("GET /geoip") {
@@ -588,6 +613,8 @@ rule-providers:
                 );
                 let _ = stream.write_all(head.as_bytes());
                 let _ = stream.write_all(&body);
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
             }
         });
 

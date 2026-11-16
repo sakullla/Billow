@@ -1575,8 +1575,17 @@ pub fn ensure_pac_server(host: &str, port: u16, template: &str) -> Result<String
             let mut stream = stream;
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
             let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
-            let mut req = [0u8; 2048];
-            let _ = stream.read(&mut req);
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            while let Ok(n) = stream.read(&mut tmp) {
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() >= 8192 {
+                    break;
+                }
+            }
             let body = shared
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1588,6 +1597,7 @@ pub fn ensure_pac_server(host: &str, port: u16, template: &str) -> Result<String
             let _ = stream.write_all(header.as_bytes());
             let _ = stream.write_all(body.as_bytes());
             let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         }
     });
     *guard = Some(PacServerState {
