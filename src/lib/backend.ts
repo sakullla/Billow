@@ -58,6 +58,7 @@ export interface Backend {
   remove(id: string): Promise<Snapshot>
   rename(id: string, name: string): Promise<Snapshot>
   setSource(id: string, url: string): Promise<Snapshot>
+  setUserAgent(id: string, userAgent: string): Promise<Snapshot>
   setInterval(id: string, hours: number): Promise<Snapshot>
   /** Replace the age identities of a subscription; an empty text clears them. */
   setAgeKey(id: string, key: string): Promise<Snapshot>
@@ -179,6 +180,7 @@ function createTauriBackend(): Backend {
     remove: (id) => snap('delete_profile', { id }),
     rename: (id, name) => snap('rename_profile', { id, name }),
     setSource: (id, url) => snap('set_profile_source', { id, url }),
+    setUserAgent: (id, userAgent) => snap('set_profile_user_agent', { id, userAgent }),
     setInterval: (id, hours) => snap('set_profile_interval', { id, hours }),
     setAgeKey: (id, key) => snap('set_profile_age_key', { id, key }),
     content: async (id) => (await call<string | null>('profile_content', { id })) ?? '',

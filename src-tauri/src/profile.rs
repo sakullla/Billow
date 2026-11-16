@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -62,6 +62,7 @@ struct Profile {
     name: String,
     kind: ProfileKind,
     source: String,
+    user_agent: String,
     content: String,
     override_text: String,
     /// Override included in the last successful apply. Editor text can be newer.
@@ -159,6 +160,8 @@ impl GeoUrls {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct KernelSettings {
+    #[serde(default)]
+    pub subscription_user_agent: String,
     #[serde(default)]
     pub mixed_port: Option<u16>,
     #[serde(default)]
@@ -534,6 +537,7 @@ pub struct ProfileView {
     pub name: String,
     pub kind: String,
     pub source: String,
+    pub user_agent: String,
     pub current: bool,
     pub failure: Option<String>,
     pub override_text: String,
@@ -603,8 +607,28 @@ pub struct FetchedSubscription {
     pub userinfo: Option<String>,
 }
 
+pub const DEFAULT_SUBSCRIPTION_USER_AGENT: &str = "clash.meta";
+
+fn default_subscription_user_agent(version: Option<&str>) -> String {
+    match version.map(str::trim).filter(|version| !version.is_empty()) {
+        Some(version) => format!("{DEFAULT_SUBSCRIPTION_USER_AGENT}/{version}"),
+        None => DEFAULT_SUBSCRIPTION_USER_AGENT.to_string(),
+    }
+}
+
+fn normalize_subscription_user_agent(raw: &str) -> Result<String, String> {
+    if raw.len() > 256 || raw.bytes().any(|byte| byte < 32 || byte > 126) {
+        return Err("User-Agent 只能包含可打印的 ASCII 字符，长度不能超过 256，不能含换行".to_string());
+    }
+    let value = raw.trim();
+    Ok(value.to_string())
+}
+
 pub trait SubscriptionSource {
     fn fetch(&self, url: &str) -> Result<FetchedSubscription, String>;
+    fn fetch_with_user_agent(&self, url: &str, _user_agent: &str) -> Result<FetchedSubscription, String> {
+        self.fetch(url)
+    }
 }
 
 pub trait KernelLaunch {
@@ -699,15 +723,18 @@ pub trait KernelLaunch {
 
 pub struct HttpSubscriptionClient {
     agent: ureq::Agent,
+    default_user_agent: String,
 }
 
 impl HttpSubscriptionClient {
-    pub fn new() -> Self {
+    pub fn new() -> Self { Self::with_kernel_version(None) }
+
+    pub fn with_kernel_version(version: Option<&str>) -> Self {
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
             .timeout_read(Duration::from_secs(30))
             .build();
-        Self { agent }
+        Self { agent, default_user_agent: default_subscription_user_agent(version) }
     }
 }
 
@@ -719,13 +746,19 @@ impl Default for HttpSubscriptionClient {
 
 impl SubscriptionSource for HttpSubscriptionClient {
     fn fetch(&self, url: &str) -> Result<FetchedSubscription, String> {
+        self.fetch_with_user_agent(url, "")
+    }
+
+    fn fetch_with_user_agent(&self, url: &str, user_agent: &str) -> Result<FetchedSubscription, String> {
+        let custom = normalize_subscription_user_agent(user_agent)?;
+        let user_agent = if custom.is_empty() { &self.default_user_agent } else { &custom };
         if validate_subscription_url(url).is_err() {
             return Err(FETCH_ERROR.to_string());
         }
         let response = self
             .agent
             .get(url)
-            .set("User-Agent", "Billow")
+            .set("User-Agent", user_agent)
             .call()
             .map_err(|_| FETCH_ERROR.to_string())?;
         let userinfo = response.header("subscription-userinfo").map(str::to_string);
@@ -944,6 +977,8 @@ pub struct ProcessRuntime {
     launched_privileged: bool,
     tun_active: bool,
     log_buffer: Option<CapturedLogs>,
+    pending_logs: Vec<LogView>,
+    exit_detail: Option<String>,
     traffic_watch: Option<MetricWatch<(u64, u64)>>,
     memory_watch: Option<MetricWatch<u64>>,
     totals: Option<TrafficTotals>,
@@ -1009,6 +1044,8 @@ impl ProcessRuntime {
             launched_privileged: false,
             tun_active: false,
             log_buffer: None,
+            pending_logs: Vec::new(),
+            exit_detail: None,
             traffic_watch: None,
             memory_watch: None,
             totals: None,
@@ -1096,6 +1133,24 @@ impl ProcessRuntime {
         self.started = None;
     }
 
+    fn fail_start(&mut self, reason: Option<String>) -> String {
+        let logs = self.log_buffer.take();
+        let exit_detail = self.exit_detail.clone();
+        self.stop();
+        let lines = logs.map(|buffer| buffer.drain_after_exit()).unwrap_or_default();
+        let message = reason.unwrap_or_else(|| {
+            let detail = lines.iter().rev().find(|line| line.level == "error")
+                .map(|line| friendly_listen_error(&line.message));
+            let status = exit_detail.map(|status| format!("（{status}）")).unwrap_or_default();
+            match detail {
+                Some(detail) => format!("内核启动失败{status}：{detail}"),
+                None => format!("内核进程提前退出{status}，请检查系统崩溃或安全日志"),
+            }
+        });
+        diagnostics::push_logs(&mut self.pending_logs, lines);
+        message
+    }
+
     fn halt_metrics(&mut self) {
         if let Some(watch) = self.traffic_watch.take() {
             watch.halt();
@@ -1106,30 +1161,64 @@ impl ProcessRuntime {
     }
 }
 
+type LogReader = (Box<dyn Read + Send>, bool);
+
 struct CapturedLogs {
     lines: Arc<Mutex<Vec<LogView>>>,
+    finished: Arc<AtomicUsize>,
+    readers: usize,
 }
 
-fn spawn_log_buffer(stdout: impl Read + Send + 'static) -> CapturedLogs {
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let shared = Arc::clone(&lines);
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            let Some(item) = diagnostics::parse_log_line(&line) else {
-                continue;
-            };
-            let mut guard = shared
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.push(item);
-            let overflow = guard.len().saturating_sub(diagnostics::LOG_LIMIT);
-            if overflow > 0 {
-                guard.drain(0..overflow);
-            }
+impl CapturedLogs {
+    fn drain_after_exit(&self) -> Vec<LogView> {
+        // try_wait can observe exit before the reader threads consume the final
+        // fatal line. Bound the wait in case a descendant still holds a pipe.
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while self.finished.load(Ordering::Acquire) < self.readers && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
         }
-    });
-    CapturedLogs { lines }
+        std::mem::take(&mut *self.lines.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+}
+
+fn spawn_log_buffer(streams: Vec<LogReader>) -> CapturedLogs {
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let finished = Arc::new(AtomicUsize::new(0));
+    let readers = streams.len();
+    for (stream, stderr) in streams {
+        let shared = Arc::clone(&lines);
+        let done = Arc::clone(&finished);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stream);
+            let mut chunk = Vec::new();
+            let mut truncated = false;
+            loop {
+                chunk.clear();
+                // Bound a single unstructured panic/dyld line as well as the log count.
+                match (&mut reader).take(8192).read_until(b'\n', &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let complete = chunk.last() == Some(&b'\n');
+                if !truncated {
+                    let text = String::from_utf8_lossy(&chunk);
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        let item = diagnostics::parse_log_line(text).unwrap_or_else(|| LogView {
+                            level: if stderr { "error" } else { "info" }.to_string(),
+                            message: text.to_string(),
+                            time_ms: now_ms(),
+                        });
+                        let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                        diagnostics::push_logs(&mut guard, vec![item]);
+                    }
+                }
+                truncated = !complete;
+            }
+            done.fetch_add(1, Ordering::Release);
+        });
+    }
+    CapturedLogs { lines, finished, readers }
 }
 
 impl Drop for ProcessRuntime {
@@ -1258,13 +1347,8 @@ impl KernelLaunch for ProcessRuntime {
             .arg("-f")
             .arg(&config_path)
             .stdin(Stdio::null())
-            .stderr(Stdio::null());
-        // A stand-in process has no controller. Leaving its stdout discarded avoids a full pipe.
-        if controller.is_some() {
-            command.stdout(Stdio::piped());
-        } else {
-            command.stdout(Stdio::null());
-        }
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -1293,7 +1377,7 @@ impl KernelLaunch for ProcessRuntime {
         }
         #[cfg(not(target_os = "android"))]
         remove_stale_runtime_configs(&self.work_dir, &config_path);
-        let mut spawn_normal = || -> Result<Option<Box<dyn Read + Send>>, String> {
+        let mut spawn_normal = || -> Result<Vec<LogReader>, String> {
             let mut child = command.spawn().map_err(|error| {
                 let _ = fs::remove_file(&config_path);
                 format!("{KERNEL_ERROR}：{error}")
@@ -1302,26 +1386,30 @@ impl KernelLaunch for ProcessRuntime {
             crate::win_process::bind_to_app_lifetime(&child);
             #[cfg(all(unix, not(target_os = "android")))]
             let _ = fs::write(self.work_dir.join("kernel.pid"), format!("{}\n{}", child.id(), path.display()));
-            let stdout = child.stdout.take().map(|stdout| Box::new(stdout) as Box<dyn Read + Send>);
+            let mut streams: Vec<LogReader> = Vec::new();
+            if let Some(stdout) = child.stdout.take() { streams.push((Box::new(stdout), false)); }
+            if let Some(stderr) = child.stderr.take() { streams.push((Box::new(stderr), true)); }
             self.child = Some(child);
-            Ok(stdout)
+            Ok(streams)
         };
         #[cfg(target_os = "windows")]
-        let stdout = if let Some(mut helper) = elevated.take() {
+        let streams = if let Some(mut helper) = elevated.take() {
             helper.start(&path, &self.home_dir, &config_path).map_err(|error| {
                 let _ = fs::remove_file(&config_path);
                 format!("{KERNEL_ERROR}：{error}")
             })?;
-            let stdout = helper.take_stdout().map(|stdout| Box::new(stdout) as Box<dyn Read + Send>);
+            let streams: Vec<LogReader> = helper.take_stdout().into_iter()
+                .map(|stdout| (Box::new(stdout) as Box<dyn Read + Send>, true)).collect();
             self.elevated = Some(helper);
-            stdout
+            streams
         } else { spawn_normal()? };
         #[cfg(not(target_os = "windows"))]
-        let stdout = spawn_normal()?;
+        let streams = spawn_normal()?;
         let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
         let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
         let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
         self.started = Some(Instant::now());
+        self.exit_detail = None;
         self.launched_kernel = Some(path);
         self.launched_privileged = priv_now;
         self.tun_active = tun;
@@ -1329,9 +1417,7 @@ impl KernelLaunch for ProcessRuntime {
         self.last_requested_yaml = Some(config_yaml.to_string());
         self.controller = controller;
         self.cached_catalog = nodes::RuntimeCatalog::default();
-        if let Some(stdout) = stdout {
-            self.log_buffer = Some(spawn_log_buffer(stdout));
-        }
+        self.log_buffer = Some(spawn_log_buffer(streams));
         let wait = if self.controller.is_some() { Duration::from_secs(25) } else { Duration::from_millis(300) };
         let deadline = Instant::now() + wait;
         loop {
@@ -1346,19 +1432,17 @@ impl KernelLaunch for ProcessRuntime {
                     .map(|line| line.message.clone())
             });
             if let Some(message) = failure {
-                self.stop();
-                return Err(friendly_listen_error(&message));
+                return Err(self.fail_start(Some(friendly_listen_error(&message))));
             }
             if !self.running() {
-                self.stop();
-                return Err(KERNEL_ERROR.to_string());
+                return Err(self.fail_start(None));
             }
             if let Some(endpoint) = self.controller.as_ref() {
                 if nodes::listeners_ready(endpoint, mixed, tun) { break; }
                 if Instant::now() >= deadline {
                     let reason = self.log_buffer.as_ref().and_then(|logs| logs.lines.lock().ok()?.last().map(|line| line.message.clone()));
-                    self.stop();
-                    return Err(format!("内核初始化超时：{}", reason.as_deref().unwrap_or("请检查网络、端口占用和 TUN 权限")));
+                    let message = format!("内核初始化超时：{}", reason.as_deref().unwrap_or("请检查网络、端口占用和 TUN 权限"));
+                    return Err(self.fail_start(Some(message)));
                 }
             } else if Instant::now() >= deadline { break; }
             std::thread::sleep(Duration::from_millis(20));
@@ -1372,7 +1456,18 @@ impl KernelLaunch for ProcessRuntime {
 
     fn running(&mut self) -> bool {
         let alive = match self.child.as_mut() {
-            Some(child) => matches!(child.try_wait(), Ok(None)),
+            Some(child) => match child.try_wait() {
+                Ok(None) => true,
+                Ok(Some(status)) => {
+                    self.exit_detail = Some(status.code().map(|code| format!("退出码 {code}"))
+                        .unwrap_or_else(|| status.to_string()));
+                    false
+                }
+                Err(error) => {
+                    self.exit_detail = Some(format!("读取进程状态失败：{error}"));
+                    false
+                }
+            },
             None => false,
         };
         #[cfg(target_os = "windows")]
@@ -1502,14 +1597,12 @@ impl KernelLaunch for ProcessRuntime {
     }
 
     fn pull_logs(&mut self) -> Vec<LogView> {
-        let Some(buffer) = &self.log_buffer else {
-            return Vec::new();
-        };
-        let mut guard = buffer
-            .lines
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::take(&mut *guard)
+        let mut lines = std::mem::take(&mut self.pending_logs);
+        if let Some(buffer) = &self.log_buffer {
+            let mut guard = buffer.lines.lock().unwrap_or_else(|p| p.into_inner());
+            diagnostics::push_logs(&mut lines, std::mem::take(&mut *guard));
+        }
+        lines
     }
 
     fn set_mode(&mut self, mode: &str) -> Result<(), String> {
@@ -1572,6 +1665,8 @@ struct DiskProfile {
     name: String,
     kind: ProfileKind,
     source: String,
+    #[serde(default)]
+    user_agent: String,
     #[serde(default)]
     content: String,
     #[serde(default)]
@@ -1721,6 +1816,7 @@ impl ProfileBook {
                 name: profile.name.clone(),
                 kind: profile.kind.as_str().to_string(),
                 source: profile.source.clone(),
+                user_agent: profile.user_agent.clone(),
                 current: self.active_id.as_deref() == Some(profile.id.as_str()),
                 failure: profile.failure.clone(),
                 override_text: profile.override_text.clone(),
@@ -2301,7 +2397,7 @@ impl ProfileBook {
             return self.snapshot();
         };
         let fetched = if self.profiles[index].kind == ProfileKind::Subscription {
-            match source.fetch(&self.profiles[index].source) {
+            match source.fetch_with_user_agent(&self.profiles[index].source, self.subscription_user_agent(index)) {
                 Ok(fetched) => match age_key::decrypt_if_needed(&fetched.content, &self.profiles[index].age_key) {
                     Ok(plain) => Some(FetchedSubscription {
                         content: normalize_subscription_content(&plain),
@@ -2589,6 +2685,7 @@ impl ProfileBook {
             name,
             kind,
             source,
+            user_agent: String::new(),
             content,
             override_text: String::new(),
             applied_override: String::new(),
@@ -2631,6 +2728,7 @@ impl ProfileBook {
                     name: profile.name,
                     kind: profile.kind,
                     source: profile.source,
+                    user_agent: normalize_subscription_user_agent(&profile.user_agent).unwrap_or_default(),
                     content: profile.content,
                     override_text: profile.override_text,
                     applied_override: profile.applied_override,
@@ -2744,6 +2842,7 @@ impl ProfileBook {
                     name: profile.name.clone(),
                     kind: profile.kind,
                     source: profile.source.clone(),
+                    user_agent: profile.user_agent.clone(),
                     content: profile.content.clone(),
                     override_text: profile.override_text.clone(),
                     applied_override: profile.applied_override.clone(),
@@ -3226,6 +3325,7 @@ impl KernelSettings {
     /// Everything except the delay probe and OS system-proxy settings, which never need a kernel restart.
     fn kernel_part(&self) -> Self {
         let mut copy = self.clone();
+        copy.subscription_user_agent.clear();
         copy.test_url.clear();
         copy.test_timeout_ms = 0;
         copy.system_proxy = Default::default();
@@ -3563,6 +3663,28 @@ impl ProfileBook {
         self.snapshot()
     }
 
+    fn subscription_user_agent(&self, index: usize) -> &str {
+        let custom = self.profiles[index].user_agent.trim();
+        if custom.is_empty() { self.settings.subscription_user_agent.trim() } else { custom }
+    }
+
+    pub fn set_profile_user_agent(&mut self, id: &str, user_agent: &str) -> ProfileSnapshot {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return self.snapshot();
+        };
+        if self.profiles[index].kind != ProfileKind::Subscription { return self.snapshot(); }
+        match normalize_subscription_user_agent(user_agent) {
+            Ok(value) => {
+                self.profiles[index].user_agent = value;
+                self.input_error = None;
+                self.persist();
+            }
+            Err(message) => self.input_error = Some(message),
+        }
+        self.snapshot()
+    }
+
     /// Store (or clear, with empty text) the age identities used to decrypt this subscription.
     pub fn set_profile_age_key(&mut self, id: &str, keys: &str) -> ProfileSnapshot {
         let Some(index) = self.index_of(id) else {
@@ -3652,7 +3774,7 @@ impl ProfileBook {
         if self.profiles[index].kind != ProfileKind::Subscription {
             return self.snapshot();
         }
-        let fetched = match source.fetch(&self.profiles[index].source) {
+        let fetched = match source.fetch_with_user_agent(&self.profiles[index].source, self.subscription_user_agent(index)) {
             Ok(fetched) => fetched,
             Err(_) => {
                 self.profiles[index].failure = Some(FETCH_ERROR.to_string());
@@ -3761,7 +3883,13 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
-        let settings = settings.normalized();
+        let user_agent = match normalize_subscription_user_agent(&settings.subscription_user_agent) {
+            Ok(value) => value,
+            Err(message) => { self.input_error = Some(message); return self.snapshot(); }
+        };
+        let mut settings = settings.normalized();
+        settings.subscription_user_agent = user_agent;
+        self.input_error = None;
         let restart = settings.kernel_part() != self.settings.kernel_part();
         let proxy_changed = settings.system_proxy != self.settings.system_proxy;
         self.settings = settings;
@@ -4468,6 +4596,56 @@ mod tests {
         assert!(!runtime.running());
     }
 
+    /// Use a private local fixture to compare the downloaded YAML with the exact
+    /// configuration transformation used by activate(). Never embeds subscription data.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    #[ignore = "requires BILLOW_TEST_PROFILE_DIR and BILLOW_TEST_KERNEL; isolated loopback listeners, no system proxy/TUN"]
+    fn external_profile_survives_runtime_preparation() {
+        let directory = PathBuf::from(std::env::var_os("BILLOW_TEST_PROFILE_DIR").expect("fixture directory"));
+        let kernel = PathBuf::from(std::env::var_os("BILLOW_TEST_KERNEL").expect("test kernel"));
+        let content = fs::read_to_string(directory.join("input.yaml")).unwrap();
+        let prepared = prepare(&content, "").unwrap_or_else(|_| panic!("fixture could not be prepared"));
+        let settings = KernelSettings::default();
+        let (yaml, _) = apply_settings(&prepared.yaml, &settings, true).unwrap();
+        let yaml = ensure_tun_dns(&yaml, &settings).unwrap();
+        let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&yaml, &BTreeMap::new()));
+        let path = directory.join("prepared.yaml");
+        fs::write(&path, &yaml).unwrap();
+        let output = Command::new(&kernel).arg("-t").arg("-d").arg(directory.join("home"))
+            .arg("-f").arg(path).output().unwrap();
+        let mut logs = output.stdout;
+        logs.extend(output.stderr);
+        fs::write(directory.join("prepared-validation.log"), logs).unwrap();
+        assert!(output.status.success(), "kernel validation failed; inspect the private fixture's prepared-validation.log");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let controller = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let controller_port = controller.local_addr().unwrap().port();
+        let mut config: Value = serde_yaml::from_str(&yaml).unwrap();
+        let map = config.as_mapping_mut().unwrap();
+        map.insert(Value::String("mixed-port".into()), Value::Number(port.into()));
+        map.insert(Value::String("allow-lan".into()), Value::Bool(false));
+        map.insert(Value::String("bind-address".into()), Value::String("127.0.0.1".into()));
+        map.insert(Value::String("external-controller".into()), Value::String(format!("127.0.0.1:{controller_port}")));
+        for name in ["port", "socks-port", "redir-port", "tproxy-port"] {
+            map.insert(Value::String(name.into()), Value::Number(0.into()));
+        }
+        if let Some(dns) = map.get_mut(Value::String("dns".into())).and_then(Value::as_mapping_mut) {
+            dns.insert(Value::String("listen".into()), Value::String("127.0.0.1:0".into()));
+        }
+        let yaml = force_tun(&serde_yaml::to_string(&config).unwrap(), false, None).unwrap();
+        drop((listener, controller));
+        let mut runtime = ProcessRuntime::new(directory.join("runtime"));
+        runtime.home_dir = directory.join("home");
+        runtime.set_kernel_path(Some(kernel));
+        let result = runtime.start_or_reload(&yaml);
+        if let Err(message) = &result { fs::write(directory.join("startup-error.log"), message).unwrap(); }
+        assert!(result.is_ok(), "kernel startup failed; inspect the private fixture's startup-error.log");
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+        runtime.stop();
+    }
+
     /// Opt-in host smoke test: uses an installed Mihomo, never writes system proxy settings.
     #[cfg(target_os = "macos")]
     #[test]
@@ -4505,6 +4683,12 @@ mod tests {
         }
         runtime.stop();
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+        // Rust YAML parsing accepts this, but the real core exits on an unsupported
+        // protocol. The UI must receive that reason, not just "内核没有启动".
+        let invalid = format!("{yaml}proxies:\n  - {{name: invalid-test, type: billow-invalid-test}}\n");
+        let error = runtime.start_or_reload(&invalid).unwrap_err();
+        assert!(error.contains("billow-invalid-test"), "kernel reason was lost: {error}");
+        assert!(runtime.pull_logs().iter().any(|line| line.message.contains("billow-invalid-test")));
     }
 
     #[test]
@@ -5351,6 +5535,91 @@ proxy-groups:
     }
 
     #[test]
+    fn subscription_user_agents_inherit_persist_and_reach_enable_and_refresh() {
+        use std::cell::RefCell;
+        struct Source { seen: RefCell<Vec<String>> }
+        impl SubscriptionSource for Source {
+            fn fetch(&self, _url: &str) -> Result<FetchedSubscription, String> { panic!("UA must be resolved") }
+            fn fetch_with_user_agent(&self, _url: &str, ua: &str) -> Result<FetchedSubscription, String> {
+                self.seen.borrow_mut().push(ua.to_string());
+                Ok(FetchedSubscription { content: config(7890), userinfo: None })
+            }
+        }
+        assert_eq!(default_subscription_user_agent(Some("v1.19.34")), "clash.meta/v1.19.34");
+        assert_eq!(default_subscription_user_agent(Some("alpha-test")), "clash.meta/alpha-test");
+        assert_eq!(default_subscription_user_agent(None), "clash.meta");
+        assert_eq!(default_subscription_user_agent(Some("  ")), "clash.meta");
+        let dir = temp_dir("subscription-ua");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_subscription("https://example.com/sub");
+        assert_eq!(book.snapshot().profiles[0].user_agent, "");
+        let source = Source { seen: RefCell::new(Vec::new()) };
+        let mut kernel = node_kernel();
+        book.enable("p1", &source, &mut kernel);
+        book.settings.subscription_user_agent = "global-client/1".into();
+        book.refresh_profile("p1", &source, &mut kernel);
+        book.set_profile_user_agent("p1", " custom-client/2 ");
+        book.update("p1", &source, &mut kernel);
+        assert_eq!(*source.seen.borrow(), ["", "global-client/1", "custom-client/2"]);
+        let mut reopened = ProfileBook::open(&dir.0);
+        assert_eq!(reopened.snapshot().profiles[0].user_agent, "custom-client/2");
+        for invalid in ["client\r\nX-Injected: yes".to_string(), "x".repeat(257), "客户端".into()] {
+            let denied = reopened.set_profile_user_agent("p1", &invalid);
+            assert!(denied.input_error.is_some());
+            assert_eq!(denied.profiles[0].user_agent, "custom-client/2");
+        }
+        reopened.set_profile_user_agent("p1", " ");
+        assert_eq!(reopened.subscription_user_agent(0), "global-client/1");
+        let calls = kernel.calls;
+        let mut settings = reopened.settings.clone();
+        settings.subscription_user_agent = "another-client".into();
+        let saved = reopened.save_settings(settings, &mut kernel, &mut MemoryProxy::default(), &mut MemoryTun::default(), &mut MemoryVpn::default());
+        assert!(saved.input_error.is_none());
+        assert_eq!(saved.settings.subscription_user_agent, "another-client");
+        assert_eq!(kernel.calls, calls, "saving the global UA must not reload the running kernel");
+        let path = dir.0.join("profiles.json");
+        let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        legacy["profiles"][0].as_object_mut().unwrap().remove("user_agent");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(ProfileBook::open(&dir.0).snapshot().profiles[0].user_agent, "");
+    }
+
+    #[test]
+    fn subscription_http_requests_use_the_actual_kernel_version_or_custom_header() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut agents = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() { break; }
+                    if line.to_ascii_lowercase().starts_with("user-agent:") {
+                        agents.push(line.split_once(':').unwrap().1.trim().to_string());
+                    }
+                }
+                let body = "mixed-port: 7890\n";
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            agents
+        });
+        let client = HttpSubscriptionClient {
+            agent: ureq::AgentBuilder::new().try_proxy_from_env(false).build(),
+            default_user_agent: default_subscription_user_agent(Some("v1.19.34")),
+        };
+        let url = format!("http://{address}/subscription");
+        client.fetch(&url).unwrap();
+        client.fetch_with_user_agent(&url, "other-client/2").unwrap();
+        client.fetch_with_user_agent(&url, " ").unwrap();
+        assert_eq!(server.join().unwrap(), ["clash.meta/v1.19.34", "other-client/2", "clash.meta/v1.19.34"]);
+    }
+
+    #[test]
     fn saved_override_is_not_applied_until_enable() {
         let dir = temp_dir("draft");
         let mut book = ProfileBook::open(&dir.0);
@@ -5366,6 +5635,34 @@ proxy-groups:
         assert_eq!(saved.profiles[0].override_text, "mixed-port: 8010\n");
         assert_eq!(kernel.calls, 1);
         assert_eq!(port_of(kernel.running.as_deref().unwrap()), 7890);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_exit_keeps_fatal_stdout_stderr_and_exit_status_for_the_ui() {
+        use std::os::unix::fs::PermissionsExt;
+        for (name, script, expected) in [
+            ("fatal", "#!/bin/sh\nprintf '%s\\n' 'level=fatal msg=\"unsupported proxy type: test-invalid\"'\nexit 7\n", "unsupported proxy type: test-invalid"),
+            ("stderr", "#!/bin/sh\nprintf '%s\\n' 'dyld: Library not loaded: test-missing-library' >&2\nexit 8\n", "test-missing-library"),
+            ("signal", "#!/bin/sh\nkill -KILL $$\n", "signal: 9"),
+        ] {
+            let dir = temp_dir(name);
+            let path = dir.0.join("core.sh");
+            fs::write(&path, script).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut runtime = ProcessRuntime::new(&dir.0);
+            runtime.home_dir = dir.0.join("home");
+            runtime.set_kernel_path(Some(path));
+            let error = runtime.start_or_reload("mixed-port: 0\n").unwrap_err();
+            assert!(error.contains(expected), "{name}: lost startup reason: {error}");
+            assert!(!runtime.running());
+            if name != "signal" {
+                let logs = runtime.pull_logs();
+                assert!(logs.iter().any(|line| line.level == "error" && line.message.contains(expected)), "{name}: startup logs were discarded");
+                assert!(runtime.pull_logs().is_empty(), "startup logs must be drained once");
+            }
+            assert!(!dir.0.join("kernel.pid").exists());
+        }
     }
 
     #[test]
@@ -5389,10 +5686,7 @@ proxy-groups:
             runtime.set_kernel_path(Some(stand_in));
             runtime.start_or_reload(&config(7890)).unwrap();
             runtime.set_kernel_path(Some(PathBuf::from("/usr/bin/false")));
-            assert_eq!(
-                runtime.start_or_reload(&config(1)).unwrap_err(),
-                KERNEL_ERROR
-            );
+            assert!(runtime.start_or_reload(&config(1)).unwrap_err().contains("退出码 1"));
             runtime.stop();
         }
     }

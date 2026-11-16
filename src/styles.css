@@ -4000,6 +4000,47 @@ button.delay:hover:not(:disabled) {
 .settings-fold[open] > summary svg:first-child {
   transform: rotate(90deg);
 }
+.settings-fold.flush {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+.settings-fold-body > .fold-field {
+  padding: 10px 0;
+}
+
+/* Collapsible low-priority fields inside forms/modals */
+.form-fold {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+.form-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--text-md);
+  font-weight: 650;
+  color: var(--text-2);
+  user-select: none;
+}
+.form-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.form-fold > summary:hover {
+  color: var(--text);
+}
+.form-fold > summary svg:first-child {
+  transition: transform var(--dur-fast) var(--ease);
+}
+.form-fold[open] > summary svg:first-child {
+  transform: rotate(90deg);
+}
+.form-fold > .field {
+  margin-top: var(--space-3);
+}
 .settings-fold-body {
   margin-top: 8px;
   padding: 4px 14px;

@@ -9,6 +9,7 @@ export interface ProfileItem {
   name: string
   kind: 'subscription' | 'local'
   source: string
+  user_agent: string
   current: boolean
   failure: string | null
   override_text: string
@@ -159,6 +160,7 @@ export interface ProvidersResult {
 }
 
 export interface KernelSettings {
+  subscription_user_agent: string
   mixed_port: number | null
   allow_lan: boolean | null
   ipv6: boolean | null
@@ -421,6 +423,7 @@ export function defaultTun(): TunSettings {
 
 export function emptyKernelSettings(): KernelSettings {
   return {
+    subscription_user_agent: '',
     geodata_mode: null,
     geodata_loader: null,
     geo_auto_update: null,
@@ -652,6 +655,7 @@ function normalizeSettings(raw: unknown): KernelSettings {
   const geoSource = str(value.geo_source)
   const geoLoader = str(value.geodata_loader)
   return {
+    subscription_user_agent: str(value.subscription_user_agent).trim(),
     geodata_mode: optBool(value.geodata_mode),
     geodata_loader: geoLoader === 'standard' || geoLoader === 'memconservative' ? geoLoader : null,
     geo_auto_update: optBool(value.geo_auto_update),
@@ -687,6 +691,7 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
         name: str(profile.name),
         kind: profile.kind === 'local' ? 'local' : 'subscription',
         source: str(profile.source),
+        user_agent: str(profile.user_agent).trim(),
         current: Boolean(profile.current),
         failure: optStr(profile.failure),
         override_text: str(profile.override_text),

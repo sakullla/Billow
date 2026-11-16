@@ -39,6 +39,7 @@
     "allow-delete-profile",
     "allow-rename-profile",
     "allow-set-profile-source",
+    "allow-set-profile-user-agent",
     "allow-set-profile-interval",
     "allow-profile-content",
     "allow-effective-config",

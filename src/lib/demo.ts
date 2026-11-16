@@ -138,6 +138,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       updated_ms: null,
       proxy_count: names.length,
       age_recipients: [],
+      user_agent: '',
       ...partial,
     }
     state.profiles.push(profile)
@@ -539,6 +540,17 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async setSource(id, url) {
       const item = profile(id)
       if (item) item.source = url.trim()
+      return done()
+    },
+    async setUserAgent(id, userAgent) {
+      const item = profile(id)
+      if (!item || item.kind !== 'subscription') return done()
+      if (userAgent.length > 256 || /[^\x20-\x7e]/.test(userAgent)) {
+        state.input_error = 'User-Agent 只能包含可打印的 ASCII 字符，长度不能超过 256，不能含换行'
+      } else {
+        item.user_agent = userAgent.trim()
+        state.input_error = null
+      }
       return done()
     },
     async setInterval(id, hours) {

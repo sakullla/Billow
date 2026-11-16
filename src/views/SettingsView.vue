@@ -6,6 +6,7 @@ import SelectField from '../components/SelectField.vue'
 import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import { useStore } from '../lib/store'
+import { subscriptionUserAgent } from '../lib/subscription'
 import {
   DEFAULT_PAC_SCRIPT,
   DEFAULT_PROXY_BYPASS,
@@ -63,6 +64,21 @@ const FLAGS: { key: Flag; title: string; hint: string }[] = [
 
 const pendingSettings = ref<KernelSettings | null>(null)
 const currentSettings = computed(() => pendingSettings.value ?? snap.value.settings)
+const subscriptionUa = ref('')
+const subscriptionUaFocused = ref(false)
+const defaultSubscriptionUa = computed(() => subscriptionUserAgent(kernel.value.version))
+watch(() => snap.value.settings.subscription_user_agent, (value) => {
+  if (!subscriptionUaFocused.value) subscriptionUa.value = value
+}, { immediate: true })
+function commitSubscriptionUa() {
+  const value = subscriptionUa.value
+  if (value.length > 256 || /[^\x20-\x7e]/.test(value)) {
+    store.toast('User-Agent 只能包含可打印的 ASCII 字符，不能含换行', 'error')
+    return
+  }
+  if (value.trim() !== currentSettings.value.subscription_user_agent) save({ subscription_user_agent: value.trim() })
+}
+
 
 const port = ref('')
 const portFocused = ref(false)
@@ -809,6 +825,25 @@ const TABS = computed(() => [
           </div>
           <Toggle :model-value="app.close_to_tray" label="关闭时最小化到托盘" @update:model-value="(on) => store.setBehavior(on, app!.silent_start)" />
         </div>
+      </section>
+
+      <section class="card" data-testid="subscription-settings">
+        <details class="settings-fold flush" :open="Boolean(snap.settings.subscription_user_agent) || undefined">
+          <summary>
+            <Icon name="chevron-right" :size="14" />
+            <span>订阅请求</span>
+            <span v-if="snap.settings.subscription_user_agent" class="tag accent sm">已自定义</span>
+            <span class="muted small">更新订阅时使用的 User-Agent</span>
+          </summary>
+          <div class="settings-fold-body">
+            <label class="field fold-field">
+              <span>默认 User-Agent</span>
+              <input v-model="subscriptionUa" type="text" maxlength="256" :placeholder="defaultSubscriptionUa" spellcheck="false" autocomplete="off" data-testid="global-subscription-user-agent"
+                @focus="subscriptionUaFocused = true" @blur="subscriptionUaFocused = false; commitSubscriptionUa()" @keydown.enter.prevent="commitSubscriptionUa()" />
+              <span class="muted small">留空使用内核默认值；单个订阅可在「编辑信息 › 高级选项」中覆盖。</span>
+            </label>
+          </div>
+        </details>
       </section>
 
       <AppUpdateCard />

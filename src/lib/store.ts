@@ -808,6 +808,7 @@ export function createStore(backend: Backend) {
     remove: (id: string) => act(`remove:${id}`, () => backend.remove(id)),
     rename: (id: string, name: string) => act(null, () => backend.rename(id, name)),
     setSource: (id: string, url: string) => act(null, () => backend.setSource(id, url)),
+    setUserAgent: (id: string, userAgent: string) => act(null, () => backend.setUserAgent(id, userAgent)),
     setInterval: (id: string, hours: number) => act(null, () => backend.setInterval(id, hours)),
     setAgeKey: (id: string, key: string) => act(null, () => backend.setAgeKey(id, key)),
     saveContent: (id: string, content: string) => act('content', () => backend.saveContent(id, content), '配置已保存'),

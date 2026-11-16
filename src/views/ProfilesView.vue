@@ -7,6 +7,7 @@ import SelectField from '../components/SelectField.vue'
 import YamlEditor from '../components/YamlEditor.vue'
 import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent } from '../lib/format'
 import { useStore } from '../lib/store'
+import { subscriptionUserAgent } from '../lib/subscription'
 import type { ProfileItem } from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
@@ -133,7 +134,8 @@ function selectMenuItem(profile: ProfileItem, item: MenuItem) {
 
 // Edit info
 const editing = ref<ProfileItem | null>(null)
-const form = ref({ name: '', url: '', interval: 0 })
+const inheritedUserAgent = computed(() => subscriptionUserAgent(store.kernel.value.version, snap.value.settings.subscription_user_agent))
+const form = ref({ name: '', url: '', userAgent: '', interval: 0 })
 /**
  * age identities for encrypted subscriptions (age 私钥). The backend only returns
  * public keys, so the field starts empty: typing replaces the key, 「清除」 removes it,
@@ -145,6 +147,8 @@ const ageClear = ref(false)
 const ageInput = ref<HTMLTextAreaElement | null>(null)
 /** Opened from an age failure: the dialog lands on the key field instead of the close button. */
 const ageFocus = ref(false)
+/** age key and User-Agent are rarely touched; they fold away unless set or needed right now. */
+const advancedOpen = ref(false)
 const AGE_FAILURE = /age/i
 
 /** Obvious paste mistakes are named before the backend's strict check. */
@@ -176,11 +180,12 @@ const INTERVALS = [
 function openEdit(profile: ProfileItem, focusAge = false) {
   menuFor.value = null
   editing.value = profile
-  form.value = { name: profile.name, url: profile.source, interval: profile.interval_hours }
+  form.value = { name: profile.name, url: profile.source, userAgent: profile.user_agent, interval: profile.interval_hours }
   ageKey.value = ''
   ageClear.value = false
   ageEditing.value = focusAge || profile.age_recipients.length === 0
   ageFocus.value = focusAge
+  advancedOpen.value = focusAge || Boolean(profile.user_agent)
 }
 
 function changeAgeKey() {
@@ -195,6 +200,10 @@ async function saveEdit() {
   if (profile.kind === 'subscription' && form.value.url.trim() !== profile.source) {
     await store.setSource(profile.id, form.value.url)
     if (snap.value.input_error) return
+  }
+  if (profile.kind === 'subscription' && form.value.userAgent !== profile.user_agent) {
+    const result = await store.setUserAgent(profile.id, form.value.userAgent)
+    if (!result || snap.value.input_error) return
   }
   if (form.value.interval !== profile.interval_hours) await store.setInterval(profile.id, form.value.interval)
   let ageChanged = false
@@ -608,53 +617,63 @@ const updateAllLabel = computed(() => {
               @update:model-value="(value) => (form.interval = Number(value))"
             />
           </label>
-          <div class="field age-field" data-testid="age-field">
-            <span class="age-field-label">
-              age 私钥
-              <span class="tag sm">可选</span>
-            </span>
-            <div v-if="editing.age_recipients.length && !ageEditing" class="age-status" :class="{ clearing: ageClear }" data-testid="age-status">
-              <Icon :name="ageClear ? 'trash' : 'shield'" :size="15" />
-              <span class="grow min0">
-                <template v-if="ageClear">保存后将清除私钥，加密订阅将无法更新</template>
-                <template v-else>
-                  已配置 {{ editing.age_recipients.length }} 个 ·
-                  <span class="mono" :title="editing.age_recipients.join('\n')">{{ editing.age_recipients.map(shortKey).join('、') }}</span>
+          <details class="form-fold" data-testid="profile-advanced" :open="advancedOpen || undefined" @toggle="advancedOpen = ($event.target as HTMLDetailsElement).open">
+            <summary>
+              <Icon name="chevron-right" :size="14" />
+              <span class="grow">高级选项</span>
+              <span v-if="editing.age_recipients.length && !ageClear" class="tag sm">已配置私钥</span>
+              <span v-if="form.userAgent.trim()" class="tag accent sm">已自定义 UA</span>
+            </summary>
+            <div class="field age-field" data-testid="age-field">
+              <span class="age-field-label">age 私钥</span>
+              <div v-if="editing.age_recipients.length && !ageEditing" class="age-status" :class="{ clearing: ageClear }" data-testid="age-status">
+                <Icon :name="ageClear ? 'trash' : 'shield'" :size="15" />
+                <span class="grow min0">
+                  <template v-if="ageClear">保存后将清除私钥，加密订阅将无法更新</template>
+                  <template v-else>
+                    已配置 {{ editing.age_recipients.length }} 个 ·
+                    <span class="mono" :title="editing.age_recipients.join('\n')">{{ editing.age_recipients.map(shortKey).join('、') }}</span>
+                  </template>
+                </span>
+                <template v-if="ageClear">
+                  <button type="button" class="btn ghost sm" data-testid="age-undo-clear" @click="ageClear = false">撤销</button>
                 </template>
-              </span>
-              <template v-if="ageClear">
-                <button type="button" class="btn ghost sm" data-testid="age-undo-clear" @click="ageClear = false">撤销</button>
-              </template>
+                <template v-else>
+                  <button type="button" class="btn ghost sm" data-testid="age-change" @click="changeAgeKey">更换</button>
+                  <button type="button" class="btn ghost sm danger-text" data-testid="age-clear" @click="ageClear = true">清除</button>
+                </template>
+              </div>
               <template v-else>
-                <button type="button" class="btn ghost sm" data-testid="age-change" @click="changeAgeKey">更换</button>
-                <button type="button" class="btn ghost sm danger-text" data-testid="age-clear" @click="ageClear = true">清除</button>
+                <textarea
+                  ref="ageInput"
+                  v-model="ageKey"
+                  class="age-input mono"
+                  rows="2"
+                  spellcheck="false"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  placeholder="AGE-SECRET-KEY-1…  订阅内容经 age 加密时填写，可多行"
+                  aria-describedby="age-help"
+                  data-testid="age-input"
+                />
+                <button
+                  v-if="editing.age_recipients.length"
+                  type="button"
+                  class="btn ghost sm age-cancel"
+                  @click="ageEditing = false; ageKey = ''"
+                >
+                  保留原私钥
+                </button>
               </template>
+              <p v-if="ageHint" class="field-error small" role="alert" data-testid="age-hint">{{ ageHint }}</p>
+              <p id="age-help" class="muted small">私钥只保存在本机，用于在更新时解密订阅；界面只显示对应的公钥。</p>
             </div>
-            <template v-else>
-              <textarea
-                ref="ageInput"
-                v-model="ageKey"
-                class="age-input mono"
-                rows="2"
-                spellcheck="false"
-                autocomplete="off"
-                autocapitalize="off"
-                placeholder="AGE-SECRET-KEY-1…  订阅内容经 age 加密时填写，可多行"
-                aria-describedby="age-help"
-                data-testid="age-input"
-              />
-              <button
-                v-if="editing.age_recipients.length"
-                type="button"
-                class="btn ghost sm age-cancel"
-                @click="ageEditing = false; ageKey = ''"
-              >
-                保留原私钥
-              </button>
-            </template>
-            <p v-if="ageHint" class="field-error small" role="alert" data-testid="age-hint">{{ ageHint }}</p>
-            <p id="age-help" class="muted small">私钥只保存在本机，用于在更新时解密订阅；界面只显示对应的公钥。</p>
-          </div>
+            <label class="field">
+              <span>User-Agent</span>
+              <input v-model="form.userAgent" type="text" maxlength="256" :placeholder="inheritedUserAgent" spellcheck="false" autocomplete="off" data-testid="profile-user-agent" aria-describedby="profile-user-agent-help" />
+              <span id="profile-user-agent-help" class="muted small">留空使用默认值，下次更新订阅时生效。</span>
+            </label>
+          </details>
         </template>
         <p v-if="snap.input_error" class="field-error">{{ snap.input_error }}</p>
       </form>

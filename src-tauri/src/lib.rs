@@ -396,12 +396,18 @@ fn with_profile<T>(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> 
     change(&mut session)
 }
 
+fn subscription_client(app: &AppHandle) -> HttpSubscriptionClient {
+    let store = app.state::<KernelStore>();
+    let version = lock_kernel(&store.manager).status().version;
+    HttpSubscriptionClient::with_kernel_version(version.as_deref())
+}
+
 fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot {
     let kernel_path = {
         let store = app.state::<KernelStore>();
         lock_kernel(&store.manager).installed_path()
     };
-    let client = HttpSubscriptionClient::new();
+    let client = subscription_client(&app);
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
     let ProfileSession {
@@ -648,6 +654,11 @@ fn set_profile_source(app: AppHandle, id: String, url: String) -> ProfileSnapsho
 }
 
 #[tauri::command(async)]
+fn set_profile_user_agent(app: AppHandle, id: String, user_agent: String) -> ProfileSnapshot {
+    with_profile(&app, |session| session.book.set_profile_user_agent(&id, &user_agent))
+}
+
+#[tauri::command(async)]
 fn set_profile_interval(app: AppHandle, id: String, hours: u32) -> ProfileSnapshot {
     with_profile(&app, |session| session.book.set_profile_interval(&id, hours))
 }
@@ -677,7 +688,7 @@ fn save_profile_content(app: AppHandle, id: String, content: String) -> ProfileS
 
 #[tauri::command(async)]
 fn refresh_profile(app: AppHandle, id: String) -> ProfileSnapshot {
-    let client = HttpSubscriptionClient::new();
+    let client = subscription_client(&app);
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
         book.refresh_profile(&id, &client, runtime)
@@ -691,7 +702,7 @@ fn refresh_all_profiles(app: AppHandle) -> ProfileSnapshot {
 }
 
 fn refresh_ids(app: &AppHandle, ids: &[String]) -> ProfileSnapshot {
-    let client = HttpSubscriptionClient::new();
+    let client = subscription_client(&app);
     let mut last = None;
     // One lock per profile so a slow subscription does not freeze the whole UI.
     for id in ids {
@@ -1284,6 +1295,7 @@ pub fn run() {
             delete_profile,
             rename_profile,
             set_profile_source,
+            set_profile_user_agent,
             set_profile_interval,
             set_profile_age_key,
             profile_content,
