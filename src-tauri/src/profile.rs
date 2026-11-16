@@ -1121,7 +1121,13 @@ impl KernelLaunch for ProcessRuntime {
             && self.launched_privileged == priv_now
         {
             if self.last_requested_yaml.as_deref() == Some(config_yaml) {
-                return Ok(());
+                let config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
+                let mixed = read_i64(&config, "mixed-port")
+                    .and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
+                let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
+                if self.controller.as_ref().is_none_or(|endpoint| nodes::listeners_ready(endpoint, mixed, tun)) {
+                    return Ok(());
+                }
             }
             #[cfg(not(target_os = "android"))]
             if let Some(endpoint) = self.controller.clone() {
@@ -4303,6 +4309,45 @@ mod tests {
     use crate::nodes::{KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay};
     use crate::takeover::{MemoryProxy, MemoryTun, MemoryVpn};
 
+    /// Opt-in host smoke test: uses an installed Mihomo, never writes system proxy settings.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires BILLOW_TEST_KERNEL; BILLOW_TEST_TUN=1 requests macOS administrator consent"]
+    fn macos_real_kernel_listens_and_reloads() {
+        use crate::takeover::TunGrant;
+        let path = PathBuf::from(std::env::var_os("BILLOW_TEST_KERNEL").expect("BILLOW_TEST_KERNEL"));
+        let dir = temp_dir("macos-real-kernel");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let api = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let api_port = api.local_addr().unwrap().port();
+        drop(api);
+        let yaml = format!("mixed-port: {port}\nexternal-controller: 127.0.0.1:{api_port}\nsecret: billow-local-smoke\nmode: direct\ntun:\n  enable: false\n  auto-route: false\n");
+        let mut runtime = ProcessRuntime::new(&dir.0);
+        runtime.set_kernel_path(Some(path.clone()));
+        runtime.start_or_reload(&yaml).unwrap();
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+        let pid = runtime.child.as_ref().unwrap().id();
+        runtime.start_or_reload(&yaml.replace("mode: direct", "mode: rule")).unwrap();
+        assert_eq!(runtime.child.as_ref().unwrap().id(), pid);
+        nodes::put_config(runtime.controller.as_ref().unwrap(), &yaml.replace(&format!("mixed-port: {port}"), "mixed-port: 0")).unwrap();
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+        runtime.start_or_reload(&yaml.replace("mode: direct", "mode: rule")).unwrap();
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok(), "reconnect must restore a lost listener even when YAML is unchanged");
+        if std::env::var("BILLOW_TEST_TUN").as_deref() == Ok("1") {
+            let mut grant = takeover::HostTun::host();
+            grant.set_kernel_path(Some(path));
+            assert!(grant.authorize().unwrap(), "macOS authorization was cancelled");
+            runtime.start_or_reload(&yaml.replace("enable: false", "enable: true")).unwrap();
+            assert!(nodes::listeners_ready(runtime.controller.as_ref().unwrap(), Some(port), true));
+            assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+            runtime.start_or_reload(&yaml).unwrap();
+        }
+        runtime.stop();
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
+
     #[test]
     fn prepared_configs_resolve_merge_keys_like_the_kernel() {
         let content = "p: &p {type: http, interval: 86400, behavior: classical}
@@ -6400,6 +6445,8 @@ proxy-groups:
         use std::thread;
 
         let dir = temp_dir("runtime-traffic");
+        let mixed_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mixed_port = mixed_listener.local_addr().unwrap().port();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (gate_tx, gate_rx) = mpsc::channel::<()>();
@@ -6453,7 +6500,7 @@ proxy-groups:
                 stream.set_nonblocking(false).unwrap();
                 let headers = read_headers(&mut stream);
                 if headers.contains("GET /configs") {
-                    write_json(&mut stream, r#"{"mixed-port":1,"tun":{"enable":false}}"#);
+                    write_json(&mut stream, &format!(r#"{{"mixed-port":{mixed_port},"tun":{{"enable":false}}}}"#));
                 } else if headers.contains("GET /memory") {
                     write_json(&mut stream, "{\"inuse\":12345}\n");
                 } else { break (stream, headers); }
@@ -6479,7 +6526,7 @@ proxy-groups:
         runtime.set_kernel_path(Some(script));
         runtime
             .start_or_reload(&format!(
-                "mixed-port: 1\nexternal-controller: 127.0.0.1:{port}\nsecret: billow-local\n"
+                "mixed-port: {mixed_port}\nexternal-controller: 127.0.0.1:{port}\nsecret: billow-local\n"
             ))
             .unwrap();
         let first = wait_traffic(&mut runtime, Some((4, 5)));
@@ -6891,8 +6938,10 @@ proxy-groups:
         let put_shared = Arc::clone(&put_payloads);
 
         api_listener.set_nonblocking(true).unwrap();
+        mixed_listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
             while !stop_flag.load(Ordering::Relaxed) {
+                while mixed_listener.accept().is_ok() {}
                 if let Ok((mut stream, _)) = api_listener.accept() {
                     let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
                     let mut buf = vec![0u8; 16384];
@@ -6939,6 +6988,12 @@ proxy-groups:
         let yaml1 = format!(
             "mixed-port: {mixed_port}\nmode: rule\nexternal-controller: 127.0.0.1:{api_port}\nsecret: s1\n"
         );
+        let endpoint = nodes::controller_from_yaml(&yaml1).unwrap();
+        let ready_deadline = Instant::now() + Duration::from_secs(3);
+        while !nodes::listeners_ready(&endpoint, Some(mixed_port), false) {
+            assert!(Instant::now() < ready_deadline, "test controller must be ready before runtime port selection");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         runtime.start_or_reload(&yaml1).unwrap();
         let pid_before = runtime.child.as_ref().unwrap().id();
 

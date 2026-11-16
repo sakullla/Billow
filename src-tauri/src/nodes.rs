@@ -683,8 +683,15 @@ pub fn listeners_ready(endpoint: &ControllerEndpoint, port: Option<u16>, tun: bo
     let Ok(response) = request.call() else { return false; };
     let Ok(body) = read_body(response) else { return false; };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else { return false; };
-    let port_ready = port.is_none_or(|port| value.get("mixed-port").and_then(|p| p.as_u64()) == Some(u64::from(port)));
-    port_ready && (!tun || value.get("tun").and_then(|t| t.get("enable")).and_then(|v| v.as_bool()) == Some(true))
+    let port_ready = port.is_none_or(|port| {
+        value.get("mixed-port").and_then(|p| p.as_u64()) == Some(u64::from(port))
+            && std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                Duration::from_millis(150),
+            ).is_ok()
+    });
+    let tun_ready = value.get("tun").and_then(|t| t.get("enable")).and_then(|v| v.as_bool()) == Some(tun);
+    port_ready && tun_ready
 }
 
 #[cfg(test)]
@@ -873,18 +880,25 @@ mod tests {
 
     #[test]
     fn listener_readiness_requires_the_requested_port_and_tun_state() {
+        let mixed = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mixed_port = mixed.local_addr().unwrap().port();
         let responses = [
             r#"{"mixed-port":0,"tun":{"enable":false}}"#,
             r#"{"mixed-port":7890,"tun":{"enable":false}}"#,
             r#"{"mixed-port":7890,"tun":{"enable":true}}"#,
+            r#"{"mixed-port":7890,"tun":{"enable":true}}"#,
             r#"{"mixed-port":7890,"tun":{"enable":false}}"#,
-        ].into_iter().map(|body| http_response("200 OK", body)).collect();
+            r#"{"mixed-port":7890,"tun":{"enable":false}}"#,
+        ].into_iter().map(|body| http_response("200 OK", &body.replace("7890", &mixed_port.to_string()))).collect();
         let (port, server) = serve(responses);
         let endpoint = ControllerEndpoint { host: "127.0.0.1".to_string(), port, secret: "test".to_string() };
-        assert!(!listeners_ready(&endpoint, Some(7890), false));
-        assert!(!listeners_ready(&endpoint, Some(7890), true));
-        assert!(listeners_ready(&endpoint, Some(7890), true));
-        assert!(listeners_ready(&endpoint, Some(7890), false));
+        assert!(!listeners_ready(&endpoint, Some(mixed_port), false));
+        assert!(!listeners_ready(&endpoint, Some(mixed_port), true));
+        assert!(listeners_ready(&endpoint, Some(mixed_port), true));
+        assert!(!listeners_ready(&endpoint, Some(mixed_port), false), "TUN must actually be disabled");
+        assert!(listeners_ready(&endpoint, Some(mixed_port), false));
+        drop(mixed);
+        assert!(!listeners_ready(&endpoint, Some(mixed_port), false), "reported port without a listener is not ready");
         let requests = server.join().unwrap();
         assert!(requests.iter().all(|request| request.starts_with("GET /configs ")));
     }

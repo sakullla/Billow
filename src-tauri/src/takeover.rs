@@ -828,14 +828,13 @@ fn macos_authorize_kernel(path: &Path) -> Result<bool, String> {
 
 impl TunGrant for HostTun {
     fn authorize(&mut self) -> Result<bool, String> {
-        if tun_allowed(TunHost::current(), (self.evidence)()) {
-            return Ok(true);
-        }
+        // Opening a utun in the app does not grant the separately launched kernel
+        // permission to configure its interface and routes.
         #[cfg(target_os = "macos")]
         if let Some(path) = self.kernel_path.clone() {
             return macos_authorize_kernel(&path);
         }
-        Ok(false)
+        Ok(tun_allowed(TunHost::current(), (self.evidence)()))
     }
 
     fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
@@ -1767,10 +1766,12 @@ mod host_proxy {
                     let _ = run(&["-setsocksfirewallproxystate", service, "off"]);
                     run(&["-setautoproxyurl", service, &pac_url])?;
                     run(&["-setautoproxystate", service, "on"])?;
+                    if parse_macos_autoproxy(&run_text(&["-getautoproxyurl", service])?).as_deref() != Some(&pac_url) {
+                        return Err(format!("系统代理没有生效：{service} 的 PAC 设置与预期不符"));
+                    }
                 }
                 return Ok(());
             }
-            let port = endpoint.port.to_string();
             let bypass: Vec<&str> = settings
                 .bypass
                 .iter()
@@ -1779,9 +1780,7 @@ mod host_proxy {
                 .collect();
             for service in &services {
                 let _ = run(&["-setautoproxystate", service, "off"]);
-                run(&["-setwebproxy", service, &endpoint.host, &port, "off"])?;
-                run(&["-setsecurewebproxy", service, &endpoint.host, &port, "off"])?;
-                let _ = run(&["-setsocksfirewallproxy", service, &endpoint.host, &port, "off"]);
+                enable_manual_proxy(service, endpoint, &mut run_text)?;
                 if bypass.is_empty() {
                     let _ = run(&["-setproxybypassdomains", service, "Empty"]);
                 } else {
@@ -1791,6 +1790,86 @@ mod host_proxy {
                 }
             }
             Ok(())
+        }
+
+        fn enable_manual_proxy(
+            service: &str,
+            endpoint: &ProxyEndpoint,
+            run: &mut impl FnMut(&[&str]) -> Result<String, String>,
+        ) -> Result<(), String> {
+            let port = endpoint.port.to_string();
+            for (set, state, get) in [
+                ("-setwebproxy", "-setwebproxystate", "-getwebproxy"),
+                ("-setsecurewebproxy", "-setsecurewebproxystate", "-getsecurewebproxy"),
+                ("-setsocksfirewallproxy", "-setsocksfirewallproxystate", "-getsocksfirewallproxy"),
+            ] {
+                // The final `off` disables proxy authentication, not the proxy itself.
+                run(&[set, service, &endpoint.host, &port, "off"])?;
+                run(&[state, service, "on"])?;
+                if parse_macos_proxy(&run(&[get, service])?).as_ref() != Some(endpoint) {
+                    return Err(format!("系统代理没有生效：{service} 的 {get} 设置与预期不符"));
+                }
+            }
+            Ok(())
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+
+            #[test]
+            #[ignore = "requires BILLOW_TEST_PROXY_SERVICE; temporarily changes that macOS service's proxy"]
+            fn macos_real_system_proxy_roundtrip() {
+                let service = std::env::var("BILLOW_TEST_PROXY_SERVICE").expect("BILLOW_TEST_PROXY_SERVICE");
+                struct Restore(Vec<Vec<String>>);
+                impl Drop for Restore {
+                    fn drop(&mut self) {
+                        for args in &self.0 {
+                            let _ = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+                        }
+                    }
+                }
+                let mut restore = Restore(Vec::new());
+                for (set, state, get) in [
+                    ("-setwebproxy", "-setwebproxystate", "-getwebproxy"),
+                    ("-setsecurewebproxy", "-setsecurewebproxystate", "-getsecurewebproxy"),
+                    ("-setsocksfirewallproxy", "-setsocksfirewallproxystate", "-getsocksfirewallproxy"),
+                ] {
+                    let text = run_text(&[get, &service]).unwrap();
+                    let field = |key: &str| text.lines().find_map(|line| line.strip_prefix(key)).unwrap_or("").trim().to_string();
+                    assert_eq!(field("Authenticated Proxy Enabled:"), "0", "do not overwrite authenticated proxy settings");
+                    let host = field("Server:");
+                    let port = field("Port:");
+                    assert!(!host.is_empty() && host != "(null)" && port.parse::<u16>().is_ok_and(|p| p > 0), "smoke test requires a restorable endpoint");
+                    restore.0.push(vec![set.into(), service.clone(), host, port, "off".into()]);
+                    restore.0.push(vec![state.into(), service.clone(), if field("Enabled:") == "Yes" { "on" } else { "off" }.into()]);
+                }
+                let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                let endpoint = ProxyEndpoint { host: "127.0.0.1".into(), port: listener.local_addr().unwrap().port() };
+                enable_manual_proxy(&service, &endpoint, &mut run_text).unwrap();
+                for get in ["-getwebproxy", "-getsecurewebproxy", "-getsocksfirewallproxy"] {
+                    assert_eq!(read_service(&service, get).unwrap(), Some(endpoint.clone()));
+                }
+                drop(restore);
+            }
+
+            #[test]
+            fn proxy_enable_checks_the_observed_endpoint_and_enabled_state() {
+                let endpoint = ProxyEndpoint { host: "127.0.0.1".into(), port: 7890 };
+                for observed in [
+                    "Enabled: No\nServer: 127.0.0.1\nPort: 7890\n",
+                    "Enabled: Yes\nServer: 127.0.0.1\nPort: 7891\n",
+                ] {
+                    assert!(enable_manual_proxy("Wi-Fi", &endpoint, &mut |_| Ok(observed.into())).is_err());
+                }
+                let mut enabled = Vec::new();
+                enable_manual_proxy("Wi-Fi", &endpoint, &mut |args| {
+                    if args.last() == Some(&"on") { enabled.push(args[0].to_string()); }
+                    Ok("Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\n".into())
+                }).unwrap();
+                assert_eq!(enabled, ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"]);
+                assert!(enable_manual_proxy("Wi-Fi", &endpoint, &mut |_| Err("permission denied".into())).is_err());
+            }
         }
 
         pub fn clear_if_matches(endpoint: &ProxyEndpoint) -> Result<(), String> {
@@ -1836,12 +1915,13 @@ mod host_proxy {
         }
 
         fn run_text(args: &[&str]) -> Result<String, String> {
-            let output = Command::new("networksetup")
+            let output = Command::new("/usr/sbin/networksetup")
                 .args(args)
                 .output()
-                .map_err(|_| "系统代理没有打开".to_string())?;
+                .map_err(|error| format!("无法设置系统代理：{error}"))?;
             if !output.status.success() {
-                return Err("系统代理没有打开".to_string());
+                let detail = format!("{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                return Err(format!("无法设置系统代理：{}", detail.trim()));
             }
             String::from_utf8(output.stdout).map_err(|_| "系统代理没有打开".to_string())
         }
@@ -3384,5 +3464,14 @@ mod tests {
         assert!(script.contains("chmod u+s,g+s,a+rx"));
         assert!(script.contains("'\\\\''"));
         assert!(build_macos_tun_grant_applescript(Path::new("bad\npath")).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_utun_probe_does_not_authorize_an_unavailable_kernel() {
+        let dir = temp_dir("missing-tun-kernel");
+        let mut tun = HostTun::with_evidence(open_without_linux_node);
+        tun.set_kernel_path(Some(dir.0.join("missing-core")));
+        assert!(tun.authorize().is_err());
     }
 }
