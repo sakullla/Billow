@@ -162,6 +162,10 @@ function resetFilters() {
 
 const labelOf = (rule: RuleRow) => rule.payload || rule.kind
 
+/** Policies that name a proxy group can be opened; DIRECT/REJECT and plain nodes stay labels. */
+const groupNames = computed(() => new Set(snap.value.node_catalog.map((group) => group.name)))
+const isGroup = (name: string) => groupNames.value.has(name)
+
 function lastHitText(rule: RuleRow): string {
   if (!rule.last_hit) return ''
   const ms = Date.parse(rule.last_hit)
@@ -337,6 +341,17 @@ onBeforeUnmount(() => { ++loadId })
     </EmptyState>
 
     <div v-if="filtered.length" ref="scroller" class="card list-card rule-scroll" data-testid="rule-scroll" @scroll="virtual.onScroll">
+      <!-- Column captions: without them the hit count and last-hit time are bare numbers. -->
+      <div v-if="!compact" class="rule-head" aria-hidden="true" data-testid="rule-head">
+        <span class="rule-index">#</span>
+        <span class="rule-head-main">类型 · 内容</span>
+        <span class="rule-head-proxy">策略</span>
+        <template v-if="hasHits">
+          <span class="rule-hit">命中</span>
+          <span class="rule-last-hit">最近命中</span>
+        </template>
+        <span class="rule-toggle" />
+      </div>
       <div v-if="virtual.offset.value" class="rule-spacer" aria-hidden="true" :style="{ height: `${virtual.offset.value}px` }" />
       <div
         v-for="({ rule, index }, position) in visible"
@@ -360,11 +375,19 @@ onBeforeUnmount(() => { ++loadId })
           <template v-else>—</template>
         </span>
         <span class="rule-proxy" :data-policy="rule.proxy.toUpperCase()">
-          <span class="rule-proxy-badge">
+          <component
+            :is="isGroup(rule.proxy) ? 'button' : 'span'"
+            class="rule-proxy-badge"
+            :class="{ link: isGroup(rule.proxy) }"
+            :type="isGroup(rule.proxy) ? 'button' : undefined"
+            :title="isGroup(rule.proxy) ? `前往代理组「${rule.proxy}」` : undefined"
+            :data-testid="isGroup(rule.proxy) ? 'rule-proxy-link' : undefined"
+            @click="isGroup(rule.proxy) && store.go('proxies', rule.proxy)"
+          >
             <template v-for="(part, partIdx) in highlight(rule.proxy)" :key="partIdx">
               <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
             </template>
-          </span>
+          </component>
           <span v-if="rule.disabled" class="rule-flag small" data-rule-flag>临时，重启后恢复</span>
           <span v-else-if="!rule.key" class="rule-flag small muted">内核注入，无法临时禁用</span>
         </span>

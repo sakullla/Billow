@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { getShortcut, SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './shortcuts'
+import { getShortcut, pageShortcutCombo, SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './shortcuts'
 
 describe('shortcut registry', () => {
   it('exports one entry per in-app shortcut without duplicates', () => {
     const ids = SHORTCUTS.map((shortcut) => shortcut.id)
     expect(new Set(ids).size).toBe(ids.length)
-    expect(ids).toEqual(['palette', 'sidebar', 'search', 'escape', 'zoom-in', 'zoom-out', 'zoom-reset', 'help'])
+    expect(ids).toEqual(['palette', 'sidebar', 'pages', 'settings', 'search', 'escape', 'zoom-in', 'zoom-out', 'zoom-reset', 'help'])
     expect(getShortcut('palette').combo).toBe('mod+k')
     expect(getShortcut('sidebar').combo).toBe('mod+b')
     expect(getShortcut('palette').allowInInput).toBe(true)
@@ -17,6 +17,15 @@ describe('shortcut registry', () => {
     expect(shortcutKeyLabel('mod+k', true)).toBe('⌘K')
     expect(shortcutKeyLabel('mod+k', false)).toBe('Ctrl + K')
     expect(shortcutKeyLabel('Escape', false)).toBe('Escape')
+    expect(shortcutKeyLabel(getShortcut('pages').combo, true)).toBe('⌘1…7')
+    expect(shortcutKeyLabel(getShortcut('settings').combo, false)).toBe('Ctrl + ,')
+  })
+
+  it('numbers the sidebar pages and stops after the listed range', () => {
+    expect(pageShortcutCombo(0)).toBe('mod+1')
+    expect(pageShortcutCombo(6)).toBe('mod+7')
+    expect(pageShortcutCombo(7)).toBeNull()
+    expect(pageShortcutCombo(-1)).toBeNull()
   })
 
   it('builds guarded hotkey bindings from the registry', () => {

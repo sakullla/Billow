@@ -17,6 +17,23 @@ import {
 
 export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings' | 'apps'
 export type SettingsTab = 'general' | 'proxy' | 'kernel' | 'tun' | 'dns'
+export type ConfigViewTab = 'overview' | 'yaml'
+
+const CONFIG_TAB_KEY = 'billow.configTab'
+export function readConfigTab(): ConfigViewTab {
+  try {
+    return localStorage.getItem(CONFIG_TAB_KEY) === 'yaml' ? 'yaml' : 'overview'
+  } catch {
+    return 'overview'
+  }
+}
+export function rememberConfigTab(tab: ConfigViewTab) {
+  try {
+    localStorage.setItem(CONFIG_TAB_KEY, tab)
+  } catch {
+    /* storage unavailable */
+  }
+}
 /** Desktop sidebar grouping; settings is pinned below both groups (R25). */
 export type PageGroup = 'core' | 'tools' | null
 
@@ -98,6 +115,8 @@ export function createStore(backend: Backend) {
   /** Samples collected in the current connected session; the chart waits for a few before drawing (R2). */
   const trafficSamples = ref(0)
   const adding = ref(false)
+  /** The effective-config viewer is app-wide so profiles, settings and the palette share one. */
+  const configView = ref<ConfigViewTab | null>(null)
   /** Reason shown in the home failure banner; owned here so a retry can clear it (R24, R29). */
   const lastActionError = ref<string | null>(null)
   const lastFailedAction = ref<HomeAction | null>(null)
@@ -107,6 +126,11 @@ export function createStore(backend: Backend) {
   const testTimes = ref<Record<string, number>>({})
   /** `已测/总数` for the running or just-finished test-all; zeroed when the target changes. */
   const testProgress = ref<{ tested: number; total: number }>({ tested: 0, total: 0 })
+  const activeTest = ref<{ kind: 'all' | 'group' | 'node'; group?: string } | null>(null)
+  const testing = computed(() => activeTest.value !== null)
+  const pendingTests = ref<Set<string>>(new Set())
+  let testProfileId: string | null = null
+
   /** Card-level update feedback and the batch counters, kept here so a page switch keeps them. */
   const profileUpdates = reactive<Record<string, ProfileUpdateState>>({})
   const refreshProgress = ref<ProfileRefreshProgress>({ done: 0, total: 0, failed: 0 })
@@ -337,7 +361,9 @@ export function createStore(backend: Backend) {
 
   /** `node-test` progress: every finished node is kept so rows paint 超时/延迟 before the next snapshot. */
   function recordNodeTest(event: NodeTestEvent) {
+    if (!activeTest.value || testProfileId !== snapshot.value.active_id) return
     if (event.node) {
+      pendingTests.value.delete(event.node)
       testResults.value[event.node] = { delay: event.delay, failed: event.failed }
       testTimes.value[event.node] = Date.now()
     }
@@ -362,12 +388,34 @@ export function createStore(backend: Backend) {
   }
 
   function clearTestProgress() {
+    pendingTests.value = new Set()
     testResults.value = {}
     testTimes.value = {}
     testProgress.value = { tested: 0, total: 0 }
   }
 
-  /** Single-node and per-group tests only stamp a time; values come from the fresh snapshot. */
+  async function runNodeTest(
+    scope: NonNullable<typeof activeTest.value>,
+    key: string,
+    names: string[],
+    action: () => Promise<Snapshot>,
+  ) {
+    if (testing.value) return undefined
+    activeTest.value = scope
+    testProfileId = snapshot.value.active_id
+    testResults.value = {}
+    pendingTests.value = new Set(names)
+    testProgress.value = { tested: 0, total: pendingTests.value.size }
+    try {
+      return await act(key, action)
+    } finally {
+      pendingTests.value = new Set()
+      testResults.value = {}
+      activeTest.value = null
+    }
+  }
+
+  /** Completion stamps local test times after the final snapshot replaces streamed values. */
   function stampTestTimes(names: string[]) {
     if (!names.length) return
     const at = Date.now()
@@ -608,6 +656,8 @@ export function createStore(backend: Backend) {
   }
 
   function stop() {
+    activeTest.value = null
+    pendingTests.value = new Set()
     appUpdate.stop()
     uiScale.uninstall()
     stopped = true
@@ -628,6 +678,11 @@ export function createStore(backend: Backend) {
   function openSettings(tab: SettingsTab) {
     settingsTab.value = tab
     go('settings')
+  }
+
+  /** Open the viewer on a tab, or on the one the user last read. */
+  function openConfig(tab?: ConfigViewTab) {
+    configView.value = tab ?? readConfigTab()
   }
 
   async function saveEntry(next: PageId) {
@@ -748,6 +803,8 @@ export function createStore(backend: Backend) {
     traffic,
     trafficSamples,
     adding,
+    configView,
+    openConfig,
     /** Home failure banner state (R24, R29). */
     lastActionError,
     lastFailedAction,
@@ -755,6 +812,9 @@ export function createStore(backend: Backend) {
     testResults,
     testTimes,
     testProgress,
+    activeTest,
+    testing,
+    pendingTests,
     /** Per-card subscription update state and update-all counters (R27). */
     profileUpdates,
     refreshProgress,
@@ -820,11 +880,13 @@ export function createStore(backend: Backend) {
     saveContent: (id: string, content: string) => act('content', () => backend.saveContent(id, content), '配置已保存'),
     saveOverride: (id: string, text: string) => act('override', () => backend.saveOverride(id, text)),
 
-    selectNode: (group: string, node: string) => act(null, () => backend.selectNode(group, node)),
+    selectNode: (group: string, node: string) => act(`select:${group}`, () => backend.selectNode(group, node)),
 
     /** Per-group test stamps the local result time so headers can show "测速 …" (R26). */
     async testGroup(group: string) {
-      const result = await act(`test:${group}`, () => backend.testGroup(group))
+      if (testing.value) return undefined
+      const names = snapshot.value.node_catalog.find((item) => item.name === group)?.nodes.map((item) => item.name) ?? []
+      const result = await runNodeTest({ kind: 'group', group }, `test:${group}`, names, () => backend.testGroup(group))
       // A snapshot that only reports "kernel not running" is not a test result.
       if (result && !result.nodes_error) {
         const names = snapshot.value.node_catalog.find((item) => item.name === group)?.nodes.map((item) => item.name) ?? []
@@ -838,9 +900,9 @@ export function createStore(backend: Backend) {
      * dropped so newer polled delays win instead of being shadowed forever (R26).
      */
     async testAll() {
-      testProgress.value = { tested: 0, total: 0 }
-      testResults.value = {}
-      const result = await act('testAll', () => backend.testAll())
+      if (testing.value) return undefined
+      const names = [...new Set(snapshot.value.node_catalog.flatMap((group) => group.nodes.map((node) => node.name)))]
+      const result = await runNodeTest({ kind: 'all' }, 'testAll', names, () => backend.testAll())
       if (result && !result.nodes_error) {
         testResults.value = {}
         const summary = testSummary(result)
@@ -849,7 +911,8 @@ export function createStore(backend: Backend) {
       return result
     },
     async testNode(node: string) {
-      const result = await act(`node:${node}`, () => backend.testNode(node))
+      if (testing.value) return undefined
+      const result = await runNodeTest({ kind: 'node' }, `node:${node}`, [node], () => backend.testNode(node))
       if (result && !result.nodes_error) stampTestTimes([node])
       return result
     },

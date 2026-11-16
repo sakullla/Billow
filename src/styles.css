@@ -5969,6 +5969,310 @@ button.nav-row:active {
   border: 0;
 }
 
+/* R17 Rules: column captions, and a fixed action column so every row lines up under them */
+.rule-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 34px;
+  margin-top: -4px;
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 95%, var(--surface));
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.rule-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.rule-head-proxy {
+  flex: none;
+}
+.rule-head .rule-hit {
+  color: inherit;
+}
+.shell:not(.compact) .rule-toggle {
+  width: 56px;
+  padding-inline: 0;
+  text-align: center;
+  justify-content: center;
+}
+/* Phone rows have no caption row, so the count carries its own label. */
+.compact .rule-hit::before {
+  content: '命中 ';
+  color: var(--muted);
+  font-family: var(--font);
+}
+button.rule-proxy-badge.link {
+  cursor: pointer;
+  transition: box-shadow var(--dur-fast) var(--ease);
+}
+button.rule-proxy-badge.link:hover {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent);
+}
+button.rule-proxy-badge.link:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+/* R18 Connections: per-row close recedes until the row is pointed at or focused */
+.shell:not(.compact) .conn-table .conn-close {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.shell:not(.compact) .conn-table tr:hover .conn-close,
+.shell:not(.compact) .conn-table tr:focus-visible .conn-close,
+.shell:not(.compact) .conn-table .conn-close:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .shell:not(.compact) .conn-table .conn-close {
+    opacity: 1;
+  }
+}
+
+/* R19 Home: group card actions sit together on the right */
+.card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+/* R20 Shortcut sheet: keycap column fits the page range; drop the browser's 40px dd indent */
+.shortcut-row dt {
+  min-width: 96px;
+}
+.shortcut-row dd {
+  margin: 0;
+  min-width: 0;
+}
+
+/* R22 Effective config viewer: labelled overview with per-value source */
+.cfg-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.cfg-search {
+  min-width: 0;
+  height: 32px;
+}
+.cfg-sources {
+  flex: none;
+  align-self: flex-start;
+  margin-bottom: var(--space-3);
+}
+.cfg-loading,
+.cfg-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--space-4) 0;
+}
+.cfg-pane {
+  display: flex;
+  flex-direction: column;
+  height: min(58vh, 520px);
+  min-height: 0;
+}
+.cfg-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 calc(-1 * var(--space-2));
+  padding: 0 var(--space-2);
+}
+.cfg-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding-left: 6px;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+details.cfg-section > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+details.cfg-section > summary::-webkit-details-marker {
+  display: none;
+}
+details.cfg-section > summary:hover {
+  color: var(--text);
+}
+.cfg-fold-icon {
+  transition: transform var(--dur-base) var(--ease);
+}
+details.cfg-section[open] .cfg-fold-icon {
+  transform: rotate(90deg);
+}
+.cfg-rows {
+  margin: 0;
+}
+.cfg-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 34%) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 36px;
+  padding: 3px 6px;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+.cfg-row:first-child {
+  border-top: 0;
+}
+/* The whole row opens its setting; touch targets stay row-sized, not icon-sized. */
+.cfg-row.link {
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.cfg-row.link:hover {
+  background: var(--hover);
+}
+.cfg-row dt {
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cfg-row dd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+.cfg-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.cfg-row .tag {
+  flex: none;
+  cursor: help;
+}
+.cfg-go {
+  flex: none;
+  opacity: 0.45;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.cfg-row:hover .cfg-go,
+.cfg-go:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .cfg-go {
+    opacity: 1;
+  }
+}
+.compact .cfg-row {
+  grid-template-columns: minmax(84px, 40%) minmax(0, 1fr);
+}
+
+/* R23 LAN sharing: address, optional sign-in and an allow-list under 局域网连接 */
+.lan-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: -4px 0 var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--sunken);
+}
+.lan-address {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+}
+.lan-address-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.lan-address-value:hover {
+  filter: brightness(1.08);
+}
+.lan-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.lan-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.lan-label strong {
+  font-size: var(--text-md);
+  font-weight: 620;
+}
+.lan-inputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 348px;
+  max-width: 100%;
+  flex: none;
+}
+.lan-inputs > :only-child {
+  grid-column: 1 / -1;
+}
+.lan-inputs .input.sm {
+  width: 100%;
+}
+.lan-pass {
+  position: relative;
+  display: flex;
+}
+.lan-pass .input {
+  width: 100%;
+  padding-right: 32px;
+}
+.lan-pass .icon-btn {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.lan-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.compact .lan-field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.compact .lan-inputs {
+  width: 100%;
+}
+
 /* Reduced Motion */
 @media (prefers-reduced-motion: reduce) {
   .chart-collecting-dot {

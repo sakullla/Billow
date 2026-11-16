@@ -152,6 +152,14 @@ const defaultActions = computed<PaletteAction[]>(() => [
         { id: 'copy-proxy-env', label: '复制终端环境变量', icon: 'terminal', hint: 'HTTP / SOCKS5' },
         { id: 'open-shortcuts', label: '查看快捷键说明', icon: 'keyboard', hint: '?' },
       ]),
+  {
+    id: 'open-config',
+    label: '查看生效配置',
+    icon: 'file',
+    hint: 'YAML',
+    disabled: !props.hasProfiles,
+    reason: !props.hasProfiles ? '先添加配置' : undefined,
+  },
   { id: 'toggle-theme', label: '切换主题', icon: 'moon' },
   { id: 'open-logs', label: '打开日志', icon: 'terminal' },
 ])

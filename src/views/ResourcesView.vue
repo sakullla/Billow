@@ -220,6 +220,12 @@ const GEODATA_MODES = [
   { id: 'db', label: 'MMDB' },
   { id: 'dat', label: 'DAT' },
 ] as const
+/** mihomo defaults to the low-memory loader; 标准 reads each file whole. */
+const GEODATA_LOADERS = [
+  { id: '', label: '默认' },
+  { id: 'memconservative', label: '低内存' },
+  { id: 'standard', label: '标准' },
+] as const
 const GEO_URL_FIELDS: { key: keyof GeoUrls; label: string }[] = [
   { key: 'geoip', label: 'GeoIP' },
   { key: 'mmdb', label: 'MMDB' },
@@ -248,6 +254,12 @@ const geodataModeId = computed(() => {
   return mode == null ? '' : mode ? 'dat' : 'db'
 })
 const shownGeoFiles = computed(() => geoFiles.value)
+const geodataLoaderId = computed(() => geoSettings.value.geodata_loader ?? '')
+const geodataLoaderHint = computed(() => {
+  if (geodataLoaderId.value === 'standard') return '一次读入整个 GEO 文件，内存占用更高'
+  if (geodataLoaderId.value === 'memconservative') return '按需读取 GEO 文件，适合手机与路由器'
+  return '沿用配置；未设置时内核默认低内存模式'
+})
 
 const geoUrlsDraft = reactive<GeoUrls>(defaultGeoUrls())
 const geoUrlFocused = ref(false)
@@ -740,6 +752,20 @@ onMounted(() => {
               label="GeoIP 格式"
               data-testid="geodata-mode"
               @update:model-value="(id) => saveGeo({ geodata_mode: id === '' ? null : id === 'dat' })"
+            />
+          </div>
+          <div class="setting-row">
+            <div class="grow">
+              <strong>加载方式</strong>
+              <p class="muted small">{{ geodataLoaderHint }}</p>
+            </div>
+            <Segmented
+              :model-value="geodataLoaderId"
+              :options="GEODATA_LOADERS"
+              size="sm"
+              label="GEO 加载方式"
+              data-testid="geodata-loader"
+              @update:model-value="(id) => saveGeo({ geodata_loader: id === '' ? null : id })"
             />
           </div>
         </div>

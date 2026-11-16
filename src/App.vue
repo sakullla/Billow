@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import CommandPalette from './components/CommandPalette.vue'
+import ConfigViewer from './components/ConfigViewer.vue'
 import Icon from './components/Icon.vue'
 import Modal from './components/Modal.vue'
 import TitleBar from './components/TitleBar.vue'
@@ -11,7 +12,7 @@ import { closeTopLayer as dismissTopLayer, layerDepth, onLayerChange } from './l
 import { useHotkeys } from './lib/ui/hotkeys'
 import { installInsets, syncSystemBars } from './lib/ui/insets'
 import { detectChrome, type WindowChrome } from './lib/ui/windowChrome'
-import { getShortcut, SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
+import { getShortcut, pageShortcutCombo, SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
 import { scaleLabel } from './lib/ui/scale'
 import AppsView from './views/AppsView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -79,6 +80,21 @@ const navGroups = [
   { id: 'tools', label: '工具', pages: PAGES.filter((page) => page.group === 'tools') },
 ]
 const settingsPage = PAGES.find((page) => page.id === 'settings')!
+/** Sidebar order doubles as the mod+1 … mod+7 order. */
+const sidebarPages = navGroups.flatMap((group) => group.pages)
+const settingsKey = shortcutKeyLabel(getShortcut('settings').combo)
+
+function pageKeyLabel(id: PageId): string | null {
+  const combo = pageShortcutCombo(sidebarPages.findIndex((page) => page.id === id))
+  return combo ? shortcutKeyLabel(combo) : null
+}
+
+/** Nav tooltip: the keycap always; the label and live count only when the rail hides them. */
+function navTitle(item: { id: PageId; label: string }): string {
+  const key = pageKeyLabel(item.id)
+  const count = sidebarCollapsed.value && item.id === 'connections' && snap.value.connected ? `（${snap.value.connections.length}）` : ''
+  return `${item.label}${count}${key ? ` (${key})` : ''}`
+}
 const TOOL_PAGES: readonly PageId[] = ['connections', 'rules', 'resources', 'logs', 'apps']
 
 /** Connections/rules/resources/logs live behind Settings on mobile, so Settings is the current tab there. */
@@ -229,6 +245,9 @@ function onPaletteAction(id: string) {
     case 'open-logs':
       store.go('logs')
       break
+    case 'open-config':
+      store.openConfig()
+      break
     case 'open-shortcuts':
       void nextTick(() => {
         helpOpen.value = true
@@ -287,6 +306,7 @@ useHotkeys(
       sidebar: () => {
         if (!compact.value) toggleSidebar()
       },
+      settings: () => store.go('settings'),
       search: focusSearch,
       escape: clearSearch,
       help: () => {
@@ -303,6 +323,12 @@ useHotkeys(
   )
     // Numpad / shifted "+" reports key "+"; keep it equivalent to mod+=.
     .concat([{ combo: { key: '+', mod: true }, handler: () => zoomBy(1), allowInInput: true }])
+    .concat(
+      sidebarPages.flatMap((page, index) => {
+        const combo = pageShortcutCombo(index)
+        return combo ? [{ combo, handler: () => store.go(page.id), allowInInput: true }] : []
+      }),
+    )
     .map((binding) => {
       const zoom = typeof binding.combo !== 'string' || /^mod\+[-=0]$/.test(binding.combo)
       // In the browser preview the keys stay with the browser's own page zoom.
@@ -560,7 +586,7 @@ defineExpose({ store })
             :class="{ active: store.page.value === item.id }"
             :aria-current="store.page.value === item.id ? 'page' : undefined"
             :aria-label="sidebarCollapsed ? item.label : undefined"
-            :title="sidebarCollapsed ? (item.id === 'connections' && snap.connected ? `${item.label}（${snap.connections.length}）` : item.label) : undefined"
+            :title="navTitle(item)"
             :data-page="item.id"
             @click="store.go(item.id)"
           >
@@ -577,7 +603,7 @@ defineExpose({ store })
           :class="{ active: store.page.value === settingsPage.id }"
           :aria-current="store.page.value === settingsPage.id ? 'page' : undefined"
           :aria-label="sidebarCollapsed ? settingsPage.label : undefined"
-          :title="sidebarCollapsed ? (store.appUpdate.offer.value ? `${settingsPage.label}（有更新）` : settingsPage.label) : undefined"
+          :title="`${settingsPage.label}${sidebarCollapsed && store.appUpdate.offer.value ? '（有更新）' : ''} (${settingsKey})`"
           :data-page="settingsPage.id"
           @click="store.go(settingsPage.id)"
         >
@@ -670,6 +696,8 @@ defineExpose({ store })
       @action="onPaletteAction"
       @close="paletteOpen = false"
     />
+
+    <ConfigViewer v-if="store.configView.value" />
 
     <Modal v-if="helpOpen" title="快捷键" subtitle="在应用内生效，输入框会保留自己的按键" @close="helpOpen = false">
       <dl class="shortcut-list">

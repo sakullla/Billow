@@ -1,8 +1,10 @@
 import {
+  normalizeConfigOverview,
   normalizeKernel,
   normalizeRuleRow,
   normalizeSnapshot,
   type AppInfo,
+  type ConfigOverview,
   type KernelChannel,
   type KernelSettings,
   type KernelStatus,
@@ -66,6 +68,10 @@ export interface Backend {
   saveContent(id: string, content: string): Promise<Snapshot>
   /** The YAML the kernel runs for the active profile (or would run on the next connect). */
   effectiveConfig(): Promise<string>
+  /** Structured view of the same config: options per layer, list counts, masked credentials. */
+  configOverview(): Promise<ConfigOverview>
+  /** This machine's private LAN address, or null when it cannot be told reliably. */
+  lanAddress(): Promise<string | null>
   saveOverride(id: string, text: string): Promise<Snapshot>
 
   connect(): Promise<Snapshot>
@@ -186,6 +192,8 @@ function createTauriBackend(): Backend {
     content: async (id) => (await call<string | null>('profile_content', { id })) ?? '',
     saveContent: (id, content) => snap('save_profile_content', { id, content }),
     effectiveConfig: () => call<string>('effective_config'),
+    configOverview: async () => normalizeConfigOverview(await call<unknown>('config_overview')),
+    lanAddress: async () => (await call<string | null>('lan_address')) ?? null,
     saveOverride: (id, text) => snap('save_profile_override', { id, text }),
 
     connect: () => snap('connect_session'),

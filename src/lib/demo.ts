@@ -4,6 +4,7 @@ import {
   emptyKernelSettings,
   emptySnapshot,
   type AppInfo,
+  type ConfigOverview,
   type ConnectionRow,
   type KernelStatus,
   type LogLine,
@@ -120,6 +121,102 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { name: '国内网站', type: 'select', proxies: ['DIRECT', '节点选择'] },
     { name: '漏网之鱼', type: 'select', proxies: ['节点选择', 'DIRECT'] },
   ]
+
+  /** Top-level options of the demo profile file, as the backend would summarize them. */
+  function demoProfileOptions(): Record<string, unknown> {
+    return {
+      'mixed-port': 7890,
+      mode: 'rule',
+      'allow-lan': false,
+      ipv6: false,
+      'log-level': 'info',
+      'unified-delay': true,
+      'tcp-concurrent': true,
+      'find-process-mode': 'strict',
+      'global-client-fingerprint': 'chrome',
+      'external-controller': '127.0.0.1:9090',
+      profile: { 'store-selected': true, 'store-fake-ip': true },
+      dns: {
+        enable: true,
+        ipv6: false,
+        'enhanced-mode': 'fake-ip',
+        'fake-ip-range': '198.18.0.1/16',
+        'default-nameserver': ['223.5.5.5', '119.29.29.29'],
+        nameserver: ['https://doh.pub/dns-query', 'https://dns.alidns.com/dns-query'],
+        'nameserver-policy': { 'geosite:geolocation-!cn': ['https://1.1.1.1/dns-query'] },
+      },
+      sniffer: { enable: true, sniff: { HTTP: { ports: [80] }, TLS: { ports: [443] }, QUIC: { ports: [443] } } },
+      'geodata-mode': true,
+      'geo-auto-update': false,
+    }
+  }
+
+  /** Simple `key: scalar` lines of a 覆写; enough for the demo to show the layer. */
+  function demoOverrideOptions(text: string): Record<string, unknown> {
+    const out: Record<string, unknown> = {}
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^([A-Za-z][\w-]*):\s*(\S.*)$/.exec(line)
+      if (!match) continue
+      const raw = match[2]!.replace(/\s+#.*$/, '').trim()
+      out[match[1]!] = raw === 'true' ? true : raw === 'false' ? false : /^\d+$/.test(raw) ? Number(raw) : raw.replace(/^['"]|['"]$/g, '')
+    }
+    return out
+  }
+
+  /** Mirror of the backend's apply_settings for the options the overview shows. */
+  function demoEffectiveOptions(prepared: Record<string, unknown>): Record<string, unknown> {
+    const s = state.settings
+    const out: Record<string, unknown> = JSON.parse(JSON.stringify(prepared))
+    if (state.mode) out.mode = state.mode
+    if (s.mixed_port) out['mixed-port'] = s.mixed_port
+    const flags: [keyof typeof s, string][] = [
+      ['allow_lan', 'allow-lan'],
+      ['ipv6', 'ipv6'],
+      ['unified_delay', 'unified-delay'],
+      ['tcp_concurrent', 'tcp-concurrent'],
+    ]
+    for (const [key, name] of flags) if (s[key] != null) out[name] = s[key]
+    if (s.log_level) out['log-level'] = s.log_level
+    if (s.find_process_mode) out['find-process-mode'] = s.find_process_mode
+    if (s.geodata_mode != null) out['geodata-mode'] = s.geodata_mode
+    if (s.geodata_loader) out['geodata-loader'] = s.geodata_loader
+    if (s.geo_auto_update != null) out['geo-auto-update'] = s.geo_auto_update
+    if (s.geo_auto_update && s.geo_update_interval) out['geo-update-interval'] = s.geo_update_interval
+    if (s.keep_alive_interval === 0) out['disable-keep-alive'] = true
+    else if (s.keep_alive_interval != null) {
+      out['disable-keep-alive'] = false
+      out['keep-alive-interval'] = s.keep_alive_interval
+    }
+    const loopback = ['127.0.0.1/8', '::1/128']
+    if (s.lan_auth.length) {
+      out.authentication = s.lan_auth.map((entry) => `${entry.split(':')[0]}:••••`)
+      out['skip-auth-prefixes'] = loopback
+    }
+    if (s.lan_allowed_ips.length) out['lan-allowed-ips'] = [...s.lan_allowed_ips, ...loopback]
+    if (s.sniffer != null) out.sniffer = s.sniffer ? demoProfileOptions().sniffer : { enable: false }
+    if (s.dns_override) {
+      out.dns = {
+        enable: true,
+        ipv6: s.dns.ipv6,
+        'enhanced-mode': s.dns.enhanced_mode,
+        'fake-ip-range': s.dns.fake_ip_range,
+        nameserver: s.dns.nameserver,
+        'default-nameserver': s.dns.default_nameserver,
+      }
+    }
+    if (state.platform !== 'android') {
+      out.tun = {
+        enable: state.tun,
+        ...(s.tun.stack ? { stack: s.tun.stack } : {}),
+        'auto-route': s.tun.auto_route,
+        'auto-detect-interface': s.tun.auto_detect_interface,
+        'strict-route': s.tun.strict_route,
+        'dns-hijack': s.tun.dns_hijack,
+        ...(s.tun.mtu ? { mtu: s.tun.mtu } : {}),
+      }
+    }
+    return out
+  }
 
   function addProfile(partial: Partial<ProfileItem>): ProfileItem {
     const id = `p${nextId++}`
@@ -347,6 +444,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       unified_delay: true,
       tcp_concurrent: true,
       find_process_mode: 'strict',
+      keep_alive_interval: null,
+      disable_keep_alive: null,
     }
     state.mixed_port = state.settings.mixed_port ?? (state.active_id ? 7890 : null)
     return structuredClone(state)
@@ -397,8 +496,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   }
 
   /** Emits one `node-test` event per node on a timer so progress is visible. */
-  function simulateTestAll(): Promise<void> {
-    const list = [...new Set(groupsDef().flatMap((group) => group.proxies))]
+  function simulateTestAll(members = groupsDef().flatMap((group) => group.proxies), interval = 70): Promise<void> {
+    const list = [...new Set(members)]
     const total = list.length
     return new Promise((resolve) => {
       let index = 0
@@ -416,7 +515,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         const event: NodeTestEvent = { node: name, delay, failed: delay === null, tested, total }
         nodeTestListeners.forEach((handler) => handler(event))
         index += 1
-        if (index < list.length) setTimeout(step, 70)
+        if (index < list.length) setTimeout(step, interval)
         else resolve()
       }
       step()
@@ -601,6 +700,33 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       const head = `mixed-port: ${state.mixed_port ?? 7890}\nmode: ${state.mode ?? 'rule'}\nexternal-controller: 127.0.0.1:9090\n`
       return `${head}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
     },
+    async configOverview(): Promise<ConfigOverview> {
+      await wait(120)
+      const active = state.active_id ? profile(state.active_id) : null
+      if (!active) throw new Error('还没有启用配置')
+      const base = demoProfileOptions()
+      const prepared = { ...base, ...demoOverrideOptions(active.override_text) }
+      const groups = groupsDef()
+      const groupTypes: Record<string, number> = {}
+      for (const group of groups) groupTypes[group.type] = (groupTypes[group.type] ?? 0) + 1
+      return {
+        profile: base,
+        prepared,
+        effective: demoEffectiveOptions(prepared),
+        counts: {
+          proxies: names.length,
+          'proxy-groups': groups.length,
+          'proxy-providers': providerRows.filter((row) => row.kind === 'proxy').length,
+          'rule-providers': providerRows.filter((row) => row.kind === 'rule').length,
+          rules: rules.length,
+        },
+        group_types: groupTypes,
+        running: state.kernel_running,
+      }
+    },
+    async lanAddress() {
+      return state.platform === 'android' ? '192.168.1.42' : '192.168.1.23'
+    },
     async saveOverride(id, text) {
       const item = profile(id)
       if (item) {
@@ -666,7 +792,11 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
 
     async selectNode(group, node) {
+      const changed = selections.get(group) !== node
       selections.set(group, node)
+      if (changed && state.settings.close_connections_on_switch) {
+        connections = connections.filter((row) => !row.chains.includes(group) || row.chains.includes(node))
+      }
       return done(60)
     },
     async testGroup(group) {
@@ -674,7 +804,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       if (!state.kernel_running) state.nodes_error = '内核没有运行'
       else {
         state.nodes_error = null
-        await probe(def?.proxies ?? [])
+        await simulateTestAll(def?.proxies ?? [], 25)
       }
       return done(0)
     },

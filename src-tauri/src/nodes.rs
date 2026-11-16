@@ -608,28 +608,29 @@ pub fn fetch_provider_delays(
     if nodes.is_empty() {
         return Ok(Vec::new());
     }
-    // Probe in parallel batches; the controller handles each node independently.
+    // A fixed pool starts another probe as soon as one completes. A slow node
+    // must not hold up the next batch of otherwise idle workers.
     let mut results: Vec<Option<Result<u64, ProbeFail>>> = (0..nodes.len()).map(|_| None).collect();
-    for (chunk_index, chunk) in nodes.chunks(16).enumerate() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            for (offset, name) in chunk.iter().enumerate() {
-                let sender = sender.clone();
-                scope.spawn(move || {
-                    let _ = sender.send((chunk_index * 16 + offset, delay_one(endpoint, name, providers.get(name).map(String::as_str))));
-                });
-            }
-            drop(sender);
-            for (index, outcome) in receiver {
-                let delay = match &outcome {
-                    Ok(ms) => Some(*ms),
-                    Err(_) => None,
-                };
-                on_result(&nodes[index], delay, delay.is_none());
-                results[index] = Some(outcome);
-            }
-        });
-    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for _ in 0..nodes.len().min(16) {
+            let sender = sender.clone();
+            let next = &next;
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(name) = nodes.get(index) else { break };
+                let outcome = delay_one(endpoint, name, providers.get(name).map(String::as_str));
+                if sender.send((index, outcome)).is_err() { break; }
+            });
+        }
+        drop(sender);
+        for (index, outcome) in receiver {
+            let delay = match &outcome { Ok(ms) => Some(*ms), Err(_) => None };
+            on_result(&nodes[index], delay, delay.is_none());
+            results[index] = Some(outcome);
+        }
+    });
     let saw_controller = results
         .iter()
         .any(|item| !matches!(item, Some(Err(ProbeFail::Unavailable)) | None));
@@ -1159,6 +1160,55 @@ proxy-groups:
             Some(length) => buf.len() >= pos + 4 + length,
             None => true,
         }
+    }
+
+    #[test]
+    fn probe_pool_starts_the_next_node_while_an_earlier_one_is_slow() {
+        use std::io::BufRead;
+        use std::sync::{Arc, Condvar, Mutex};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let signal = Arc::new((Mutex::new(false), Condvar::new()));
+        let pipelined = Arc::new(AtomicBool::new(false));
+        let server_signal = Arc::clone(&signal);
+        let server_pipelined = Arc::clone(&pipelined);
+        let server = thread::spawn(move || {
+            thread::scope(|scope| {
+                for _ in 0..17 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let signal = Arc::clone(&server_signal);
+                    let pipelined = Arc::clone(&server_pipelined);
+                    scope.spawn(move || {
+                        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                        let mut reader = BufReader::new(stream.try_clone().unwrap());
+                        let mut first = String::new(); reader.read_line(&mut first).unwrap();
+                        loop {
+                            let mut line = String::new(); reader.read_line(&mut line).unwrap();
+                            if line == "\r\n" || line.is_empty() { break; }
+                        }
+                        if first.contains("/proxies/n16/") {
+                            *signal.0.lock().unwrap() = true;
+                            signal.1.notify_all();
+                        }
+                        if first.contains("/proxies/n0/") {
+                            let (seen, _) = signal.1.wait_timeout_while(signal.0.lock().unwrap(), Duration::from_secs(5), |seen| !*seen).unwrap();
+                            pipelined.store(*seen, Ordering::Relaxed);
+                        }
+                        let response = http_response("200 OK", r#"{"delay":5}"#);
+                        stream.write_all(response.as_bytes()).unwrap();
+                    });
+                }
+            });
+        });
+        let endpoint = ControllerEndpoint { host: "127.0.0.1".into(), port, secret: String::new() };
+        let names: Vec<String> = (0..17).map(|i| format!("n{i}")).collect();
+        let mut progress = Vec::new();
+        let results = fetch_delays_with_progress(&endpoint, &names, &mut |name, _, _| progress.push(name.to_string())).unwrap();
+        server.join().unwrap();
+        assert!(pipelined.load(Ordering::Relaxed), "the 17th probe must start before the first slow batch drains");
+        assert_eq!(progress.len(), 17);
+        assert_eq!(results.iter().map(|result| result.name.clone()).collect::<Vec<_>>(), names);
     }
 
     #[test]

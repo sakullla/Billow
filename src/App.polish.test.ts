@@ -4,7 +4,7 @@ import App from './App.vue'
 import { createDemoBackend } from './lib/demo'
 import type { Store } from './lib/store'
 
-// Regression coverage for docs/requirements/2026-11-08-ui-ux-polish.md (R1–R8).
+// Regression coverage for docs/requirements/2026-11-08-ui-ux-polish.md (R1–R8, R10–R21).
 
 async function settle(ms = 1000) {
   await vi.advanceTimersByTimeAsync(ms)
@@ -235,6 +235,142 @@ describe('UI/UX polish', () => {
     const pinned = disabled.find('[data-testid="rule-toggle"]')
     expect(pinned.classes()).toContain('pinned')
     expect(pinned.text()).toBe('启用')
+  })
+
+  it('R17: rule columns are captioned and a group policy opens that proxy group', async () => {
+    const { wrapper } = await mountApp()
+    await connect(wrapper)
+    await openPage(wrapper, 'rules')
+    await settle(500)
+
+    const head = wrapper.find('[data-testid="rule-head"]')
+    expect(head.text()).toContain('策略')
+    expect(head.text()).toContain('命中')
+    expect(head.text()).toContain('最近命中')
+
+    const store = storeOf(wrapper)
+    const rows = wrapper.findAll('[data-testid="rule-row"]')
+    // DIRECT is a built-in policy, not a group: it stays a plain label.
+    const direct = rows.find((row) => row.find('.rule-proxy').attributes('data-policy') === 'DIRECT')!
+    expect(direct.find('[data-testid="rule-proxy-link"]').exists()).toBe(false)
+
+    const link = rows[0]!.find('[data-testid="rule-proxy-link"]')
+    const group = link.text()
+    expect(store.snapshot.value.node_catalog.some((item) => item.name === group)).toBe(true)
+    await link.trigger('click')
+    await flushPromises()
+    expect(store.page.value).toBe('proxies')
+    expect(wrapper.find(`[data-group-card="${group}"]`).exists()).toBe(true)
+  })
+
+  it('R17: phones keep the wrapped rule rows without a caption row', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    void storeOf(wrapper).connect()
+    await settle(1500)
+    storeOf(wrapper).go('rules')
+    await settle(500)
+    expect(wrapper.findAll('[data-testid="rule-row"]').length).toBeGreaterThan(0)
+    expect(wrapper.find('[data-testid="rule-head"]').exists()).toBe(false)
+  })
+
+  it('R18: connections list download before upload and sort from the table headers on desktop', async () => {
+    const { wrapper } = await mountApp()
+    await connect(wrapper)
+    await openPage(wrapper, 'connections')
+    await settle(1100)
+
+    const summary = wrapper.find('[data-testid="connection-summary"]')
+    const marks = summary.findAll('span[title]').map((item) => item.attributes('title'))
+    expect(marks).toEqual(['本次累计下载', '本次累计上传'])
+
+    // The header buttons own sorting; the duplicate switch is phone-only.
+    expect(wrapper.find('[data-testid="connection-sort"]').exists()).toBe(false)
+    const sortable = wrapper.findAll('.conn-table th[aria-sort]')
+    expect(sortable).toHaveLength(5)
+    const host = sortable[0]!
+    await host.find('button').trigger('click')
+    expect(host.attributes('aria-sort')).toBe('ascending')
+
+    const row = wrapper.find('[data-testid="connection-row"]')
+    expect(row.find('.conn-close').attributes('aria-label')).toContain('断开')
+    await row.trigger('click')
+    await flushPromises()
+    const labels = new DOMWrapper(document.body).findAll('.modal .detail dt').map((item) => item.text())
+    expect(labels.indexOf('下载')).toBeGreaterThan(-1)
+    expect(labels.indexOf('下载')).toBeLessThan(labels.indexOf('上传'))
+  })
+
+  it('R18: phone connection cards keep the sort switch and lead with download', async () => {
+    const { wrapper } = await mountApp({}, 390)
+    void storeOf(wrapper).connect()
+    await settle(1500)
+    storeOf(wrapper).go('connections')
+    await settle(1100)
+    expect(wrapper.find('[data-testid="connection-sort"]').exists()).toBe(true)
+    const traffic = wrapper.find('.conn [data-testid="connection-traffic"]').text()
+    expect(traffic.indexOf('↓')).toBeGreaterThan(-1)
+    expect(traffic.indexOf('↓')).toBeLessThan(traffic.indexOf('↑'))
+  })
+
+  it('R19: home tests every node in place and only offers it while connected', async () => {
+    const { wrapper } = await mountApp()
+    expect(wrapper.find('[data-testid="home-test-all"]').exists()).toBe(false)
+
+    await connect(wrapper)
+    const button = () => wrapper.find('[data-testid="home-test-all"]')
+    const delay = () => wrapper.find('[data-testid="groups-card"] [data-group="节点选择"] [data-testid="home-group-delay"]').text()
+    expect(button().text()).toBe('测速')
+    expect(delay()).toBe('—')
+
+    await button().trigger('click')
+    await flushPromises()
+    expect(button().attributes('disabled')).toBeDefined()
+    expect(button().text()).toBe('测速中')
+
+    await settle(4000)
+    expect(button().attributes('disabled')).toBeUndefined()
+    expect(storeOf(wrapper).page.value).toBe('home')
+    expect(delay()).toMatch(/^(\d+ ms|超时)$/)
+  })
+
+  it('R20: mod+digit follows the sidebar order, mod+comma opens settings, and overlays keep the keys', async () => {
+    const { wrapper } = await mountApp()
+    const store = storeOf(wrapper)
+    const press = (key: string) =>
+      document.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true }))
+
+    press('2')
+    await flushPromises()
+    expect(store.page.value).toBe('proxies')
+    press('7')
+    await flushPromises()
+    expect(store.page.value).toBe('logs')
+    press(',')
+    await flushPromises()
+    expect(store.page.value).toBe('settings')
+    // Nothing is bound past the sidebar list.
+    press('8')
+    await flushPromises()
+    expect(store.page.value).toBe('settings')
+
+    expect(wrapper.find('.sidebar [data-page="proxies"]').attributes('title')).toMatch(/^代理 \((Ctrl \+ 2|⌘2)\)$/)
+
+    await wrapper.find('[data-testid="open-palette"]').trigger('click')
+    await flushPromises()
+    press('1')
+    await flushPromises()
+    expect(store.page.value).toBe('settings')
+  })
+
+  it('R21: the phone import field drops the desktop-only drag hint', async () => {
+    const phone = await mountApp({}, 390)
+    storeOf(phone.wrapper).go('profiles')
+    await flushPromises()
+    expect(phone.wrapper.find('.quick-import input').attributes('placeholder')).toBe('粘贴订阅链接')
+
+    const desktop = await mountApp()
+    await openPage(desktop.wrapper, 'profiles')
+    expect(desktop.wrapper.find('.quick-import input').attributes('placeholder')).toContain('拖入 YAML 文件')
   })
 
   it('R4: phones toggle rules with a labelled icon button', async () => {

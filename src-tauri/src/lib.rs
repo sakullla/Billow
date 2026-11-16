@@ -599,9 +599,14 @@ fn select_profile_node(app: AppHandle, group: String, node: String) -> ProfileSn
 
 #[tauri::command(async)]
 fn test_profile_group(app: AppHandle, group: String) -> ProfileSnapshot {
+    let events = app.clone();
     with_session(&app, |session| {
         let ProfileSession { book, runtime, .. } = session;
-        book.test_group(&group, runtime)
+        book.test_group_with_progress(&group, runtime, &mut |node, delay, failed, tested, total| {
+            let _ = events.emit("node-test", nodes::NodeTestEvent {
+                node: node.to_string(), delay, failed, tested, total,
+            });
+        })
     })
 }
 
@@ -677,6 +682,25 @@ fn profile_content(app: AppHandle, id: String) -> Option<String> {
 #[tauri::command(async)]
 fn effective_config(app: AppHandle) -> Result<String, String> {
     with_profile(&app, |session| session.book.effective_config())
+}
+
+#[tauri::command(async)]
+fn config_overview(app: AppHandle) -> Result<profile::ConfigOverview, String> {
+    with_profile(&app, |session| session.book.config_overview())
+}
+
+/// This machine's address on the local network, for LAN clients to point at.
+/// Only a private IPv4 is reported: under TUN or another VPN the route probe
+/// can return a tunnel address, and a wrong hint is worse than none.
+#[tauri::command(async)]
+fn lan_address() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // connect() on UDP only picks a route; nothing is sent.
+    socket.connect("192.168.255.255:9").or_else(|_| socket.connect("10.255.255.255:9")).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if ip.is_private() => Some(ip.to_string()),
+        _ => None,
+    }
 }
 
 #[tauri::command(async)]
@@ -1301,6 +1325,8 @@ pub fn run() {
             set_profile_age_key,
             profile_content,
             effective_config,
+            config_overview,
+            lan_address,
             save_profile_content,
             refresh_profile,
             refresh_all_profiles,

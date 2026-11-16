@@ -217,8 +217,8 @@ const detail = computed(() => {
     ['网络', `${row.network.toUpperCase()}${row.conn_type ? ` · ${row.conn_type}` : ''}`],
     ['规则', row.rule ? `${row.rule}${row.rule_payload ? ` (${row.rule_payload})` : ''}` : ''],
     ['代理链', [...row.chains].reverse().join(' → ')],
-    ['上传', formatBytes(row.upload)],
     ['下载', formatBytes(row.download)],
+    ['上传', formatBytes(row.upload)],
     ['持续', formatDuration(row.start, at)],
   ]
   return entries.filter(([, value]) => value)
@@ -247,8 +247,8 @@ async function copySummary() {
     row.process ? `进程: ${row.process}` : '',
     `规则: ${row.rule}${row.rule_payload ? ` (${row.rule_payload})` : ''}`,
     `代理链: ${[...row.chains].reverse().join(' → ')}`,
-    `上传: ${formatBytes(row.upload)}`,
     `下载: ${formatBytes(row.download)}`,
+    `上传: ${formatBytes(row.upload)}`,
     `持续: ${formatDuration(row.start, at)}`,
   ].filter(Boolean)
   await store.copyText(text.join('\n'), '已复制连接摘要')
@@ -310,8 +310,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             <template v-if="hiddenRows"> · 显示前 {{ sourceRows.length }} 条</template>
             <template v-if="paused"> · 暂停于 {{ formatClock(pausedAt ?? 0) }}</template>
             <template v-if="paused && newCount"> · <span data-testid="new-connections">{{ newCount }} 条新连接</span></template>
-            · <Icon name="up" :size="11" />{{ formatBytes(displayUp) }}
-            · <Icon name="down" :size="11" />{{ formatBytes(displayDown) }}
+            · <span title="本次累计下载"><Icon name="down" :size="11" />{{ formatBytes(displayDown) }}</span>
+            · <span title="本次累计上传"><Icon name="up" :size="11" />{{ formatBytes(displayUp) }}</span>
           </template>
         </p>
       </div>
@@ -355,7 +355,16 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           <Icon name="x" :size="14" />
         </button>
       </div>
-      <Segmented :model-value="sortKey" :options="SORTS" size="sm" label="排序" @update:model-value="setSort" />
+      <!-- The desktop table sorts from its column headers; phone cards have none, so they keep the switch. -->
+      <Segmented
+        v-if="compact"
+        :model-value="sortKey"
+        :options="SORTS"
+        size="sm"
+        label="排序"
+        data-testid="connection-sort"
+        @update:model-value="setSort"
+      />
     </div>
 
     <EmptyState v-if="!snap.connected" variant="unavailable" icon="activity" title="未连接" description="连接后这里会实时显示经过 Billow 的连接。">
@@ -465,7 +474,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             <td class="num mono muted">{{ formatBytes(row.upload) }}</td>
             <td class="num muted">{{ formatDuration(row.start) }}</td>
             <td class="num">
-              <button type="button" class="icon-btn sm" :aria-label="`断开 ${row.host}`" title="断开" @click.stop="closeOne(row)">
+              <button type="button" class="icon-btn sm conn-close" :aria-label="`断开 ${row.host}`" title="断开" @click.stop="closeOne(row)">
                 <Icon name="x" :size="14" />
               </button>
             </td>
@@ -507,8 +516,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             <span v-if="row.process" class="ellipsis">{{ row.process }}</span>
           </div>
           <div class="conn-meta small muted" data-testid="connection-traffic">
-            <span class="mono">↑{{ formatBytes(row.upload) }}</span>
             <span class="mono">↓{{ formatBytes(row.download) }}</span>
+            <span class="mono">↑{{ formatBytes(row.upload) }}</span>
             <span class="grow" />
             <span>{{ formatDuration(row.start) }}</span>
           </div>

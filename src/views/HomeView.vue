@@ -54,6 +54,9 @@ const activeMode = computed(() => MODES.find((mode) => mode.id === snap.value.mo
 const modeHint = computed(() => activeMode.value?.hint ?? '还没有读到出站模式')
 const modeBusy = computed(() => Boolean(store.busy.mode))
 
+/** Any running test blocks another; only a full run reads as 测速中 here. */
+const testBlocked = computed(() => store.testing.value)
+const testBusy = computed(() => store.activeTest.value?.kind === 'all')
 const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${profile.value.id}`]) : false))
 
 const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual'))
@@ -549,7 +552,24 @@ function onPrimary() {
                 代理组<span v-if="allManualGroups.length" class="card-count">{{ allManualGroups.length }}</span>
                 <span v-if="snap.mode === 'direct' && manualGroups.length" class="tag sm">直连中</span>
               </h2>
-              <button type="button" class="btn ghost sm" @click="store.go('proxies')">查看全部<Icon name="chevron-right" :size="14" /></button>
+              <div class="card-head-actions">
+                <!-- Fills the delay slots below without a detour through the proxy page. -->
+                <button
+                  v-if="snap.connected && manualGroups.length"
+                  type="button"
+                  class="btn ghost sm"
+                  :disabled="testBlocked"
+                  :aria-busy="testBusy || undefined"
+                  title="测试全部节点延迟"
+                  data-testid="home-test-all"
+                  @click="store.testAll()"
+                >
+                  <span v-if="testBusy" class="spinner xs" aria-hidden="true" />
+                  <Icon v-else name="zap" :size="14" />
+                  {{ testBusy ? '测速中' : '测速' }}
+                </button>
+                <button type="button" class="btn ghost sm" @click="store.go('proxies')">查看全部<Icon name="chevron-right" :size="14" /></button>
+              </div>
             </header>
             <p v-if="snap.mode === 'direct' && manualGroups.length" class="card-note muted small">当前为直连模式，新发起的连接不经过代理组</p>
             <p v-if="!manualGroups.length" class="empty-line muted">{{ snap.nodes_notice ?? '这份配置没有可手动选择的代理组' }}</p>

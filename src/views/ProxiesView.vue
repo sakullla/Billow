@@ -532,7 +532,7 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
           v-if="snap.node_catalog.length"
           type="button"
           class="btn primary sm"
-          :disabled="store.busy.testAll || !snap.kernel_running"
+          :disabled="store.testing.value || !snap.kernel_running"
           :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
           :title="snap.kernel_running ? '测试全部节点延迟' : '连接后才能测速'"
           data-testid="test-all"
@@ -661,7 +661,7 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
     <section
       v-for="(group, index) in groups"
       :key="group.name"
-      v-memo="[group, autoNowKey, isOpen(group.name), dense, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, groupTestedAt(group), busyKeys]"
+      v-memo="[group, autoNowKey, isOpen(group.name), dense, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, store.activeTest.value, store.pendingTests.value.size, groupTestedAt(group), busyKeys]"
       class="card group"
       :class="{ open: isOpen(group.name), located: store.focusGroup.value === group.name }"
       :data-group-card="group.name"
@@ -687,7 +687,8 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
               <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
               <span class="group-now-name">{{ group.now || (group.kind === 'auto' ? '连接后显示' : '—') }}</span>
               <span v-if="groupNowDelay(group)" class="group-delay mono" :class="groupNowTone(group)">{{ groupNowDelay(group) }}</span>
-              <span v-if="groupTestedAt(group)" class="group-tested">测速 {{ formatRelative(groupTestedAt(group)!) }}</span>
+              <span v-if="store.activeTest.value?.group === group.name" class="small mono" data-testid="group-test-progress" aria-live="polite">已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
+              <span v-else-if="groupTestedAt(group)" class="group-tested">测速 {{ formatRelative(groupTestedAt(group)!) }}</span>
             </span>
           </span>
           <Icon name="chevron-down" class="chevron" />
@@ -698,7 +699,8 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
           :aria-label="`测速 ${group.name}`"
           :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
           :title="snap.kernel_running ? '测试该组延迟' : '连接后才能测速'"
-          :disabled="!snap.kernel_running || store.busy[`test:${group.name}`]"
+          :disabled="!snap.kernel_running || store.testing.value"
+          :aria-busy="store.activeTest.value?.group === group.name || undefined"
           :data-testid="`test-group-${group.name}`"
           @click="store.testGroup(group.name)"
         >
@@ -788,15 +790,16 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
             <button
               type="button"
               class="delay"
-              :class="[nodeTone(node), { busy: store.busy[`node:${node.name}`], untested: !nodeDelay(node) }]"
+              :class="[nodeTone(node), { busy: store.pendingTests.value.has(node.name), untested: !nodeDelay(node) }]"
               :aria-label="`测速 ${node.name}`"
               :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
-              :disabled="!snap.kernel_running"
+              :disabled="!snap.kernel_running || store.testing.value"
+              :aria-busy="store.pendingTests.value.has(node.name) || undefined"
               :title="snap.kernel_running ? '测试延迟' : '连接后才能测速'"
               :data-testid="`test-node-${node.name}`"
               @click="store.testNode(node.name)"
             >
-              <span v-if="store.busy[`node:${node.name}`]" class="spinner xs" />
+              <template v-if="store.pendingTests.value.has(node.name)"><span class="spinner xs" /><span class="small">测速中</span></template>
               <template v-else-if="nodeDelay(node)">{{ nodeDelay(node) }}</template>
               <Icon v-else name="zap" :size="13" />
             </button>

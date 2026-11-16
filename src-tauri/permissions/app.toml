@@ -129,6 +129,16 @@ description = "Enables the effective_config command without any pre-configured s
 commands.allow = ["effective_config"]
 
 [[permission]]
+identifier = "allow-config-overview"
+description = "Enables the config_overview command without any pre-configured scope."
+commands.allow = ["config_overview"]
+
+[[permission]]
+identifier = "allow-lan-address"
+description = "Enables the lan_address command without any pre-configured scope."
+commands.allow = ["lan_address"]
+
+[[permission]]
 identifier = "allow-provider-detail"
 description = "Enables the provider_detail command without any pre-configured scope."
 commands.allow = ["provider_detail"]

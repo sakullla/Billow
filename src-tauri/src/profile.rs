@@ -102,6 +102,8 @@ impl Profile {
                     log_level: read_string(&value, "log-level"),
                     unified_delay: flag("unified-delay"), tcp_concurrent: flag("tcp-concurrent"),
                     find_process_mode: read_string(&value, "find-process-mode"),
+                    keep_alive_interval: read_i64(&value, "keep-alive-interval"),
+                    disable_keep_alive: flag("disable-keep-alive"),
                 },
             })
         }).as_ref()
@@ -160,6 +162,9 @@ impl GeoUrls {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct KernelSettings {
+    /// None preserves the default: switch existing sessions to the new route.
+    #[serde(default)]
+    pub close_connections_on_switch: Option<bool>,
     #[serde(default)]
     pub subscription_user_agent: String,
     #[serde(default)]
@@ -183,6 +188,15 @@ pub struct KernelSettings {
     /// Domain sniffing; `None` follows the profile.
     #[serde(default)]
     pub sniffer: Option<bool>,
+    /// TCP keep-alive interval in seconds; `Some(0)` turns keep-alive off, `None` follows the profile.
+    #[serde(default)]
+    pub keep_alive_interval: Option<u32>,
+    /// Inbound `user:pass` pairs for LAN clients. Loopback is always exempt so local apps keep working.
+    #[serde(default)]
+    pub lan_auth: Vec<String>,
+    /// Source ranges allowed to use the inbound ports; empty keeps the profile's list.
+    #[serde(default)]
+    pub lan_allowed_ips: Vec<String>,
     /// System proxy host, mode (`manual` / `pac`), PAC script and bypass list.
     #[serde(default)]
     pub system_proxy: takeover::SystemProxySettings,
@@ -304,7 +318,9 @@ pub struct TunSettings {
 impl Default for TunSettings {
     fn default() -> Self {
         Self {
-            stack: "mixed".to_string(),
+            // Empty leaves `stack` to the profile, then the kernel (mips since v1.19.32,
+            // gvisor before), so an older kernel never receives a stack it cannot start.
+            stack: String::new(),
             auto_route: true,
             auto_detect_interface: true,
             strict_route: false,
@@ -353,6 +369,7 @@ impl DnsSettings {
         }
         self.fake_ip_filter_mode = match self.fake_ip_filter_mode.trim().to_ascii_lowercase().as_str() {
             "whitelist" => "whitelist".to_string(),
+            "rule" => "rule".to_string(),
             _ => "blacklist".to_string(),
         };
         self.fake_ip_filter = clean_list(self.fake_ip_filter, 500);
@@ -466,7 +483,9 @@ impl TunSettings {
         self.stack = match self.stack.trim().to_ascii_lowercase().as_str() {
             "system" => "system".to_string(),
             "gvisor" => "gvisor".to_string(),
-            _ => "mixed".to_string(),
+            "mixed" => "mixed".to_string(),
+            "mips" => "mips".to_string(),
+            _ => String::new(),
         };
         self.dns_hijack = clean_list(self.dns_hijack, 20);
         self.mtu = if self.mtu == 0 { 0 } else { self.mtu.clamp(576, 9000) };
@@ -491,6 +510,131 @@ pub struct ConfigValues {
     pub unified_delay: Option<bool>,
     pub tcp_concurrent: Option<bool>,
     pub find_process_mode: Option<String>,
+    pub keep_alive_interval: Option<i64>,
+    pub disable_keep_alive: Option<bool>,
+}
+
+/// Read-only view of the running config for the overview screen. Long lists
+/// (proxies, rules, providers) are reduced to counts and secrets are masked, so
+/// the payload stays small and never carries credentials.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct ConfigOverview {
+    /// Top-level options of the config the kernel runs (or would run next).
+    pub effective: serde_json::Value,
+    /// The profile with its 覆写 merged, before Billow's own settings.
+    pub prepared: serde_json::Value,
+    /// The profile file alone.
+    pub profile: serde_json::Value,
+    /// Sizes of the list sections in the effective config.
+    pub counts: BTreeMap<String, usize>,
+    /// Proxy group count per `type`.
+    pub group_types: BTreeMap<String, usize>,
+    pub running: bool,
+}
+
+/// Sections summarized as counts instead of being shipped whole.
+const OVERVIEW_LISTS: &[&str] = &[
+    "proxies",
+    "proxy-groups",
+    "proxy-providers",
+    "rules",
+    "rule-providers",
+    "sub-rules",
+    "listeners",
+    "tunnels",
+];
+
+/// Keys whose values are credentials at any depth.
+const OVERVIEW_SECRETS: &[&str] = &["secret", "password", "private-key", "passphrase", "token"];
+
+fn overview_json(value: &Value, depth: usize) -> serde_json::Value {
+    use serde_json::Value as Json;
+    match value {
+        Value::Null => Json::Null,
+        Value::Bool(flag) => Json::Bool(*flag),
+        Value::Number(number) => number
+            .as_i64()
+            .map(Json::from)
+            .or_else(|| number.as_u64().map(Json::from))
+            .or_else(|| number.as_f64().and_then(serde_json::Number::from_f64).map(Json::Number))
+            .unwrap_or(Json::Null),
+        Value::String(text) => Json::String(text.clone()),
+        Value::Sequence(items) => Json::Array(items.iter().take(200).map(|item| overview_json(item, depth + 1)).collect()),
+        Value::Mapping(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, item) in map.iter().take(500) {
+                let name = match key {
+                    Value::String(text) => text.clone(),
+                    other => serde_yaml::to_string(other).unwrap_or_default().trim().to_string(),
+                };
+                let masked = OVERVIEW_SECRETS.contains(&name.to_ascii_lowercase().as_str());
+                let json = if masked {
+                    Json::String("••••".to_string())
+                } else if depth >= 6 {
+                    Json::String("…".to_string())
+                } else {
+                    overview_json(item, depth + 1)
+                };
+                out.insert(name, json);
+            }
+            Json::Object(out)
+        }
+        Value::Tagged(tagged) => overview_json(&tagged.value, depth),
+    }
+}
+
+/// Top-level options with list sections removed and credentials masked.
+fn overview_options(value: &Value) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    let Some(map) = value.as_mapping() else { return serde_json::Value::Object(out) };
+    for (key, item) in map {
+        let Some(name) = key.as_str() else { continue };
+        if OVERVIEW_LISTS.contains(&name) || name == "secret" {
+            continue;
+        }
+        let json = if name == "authentication" {
+            // Show who can sign in, never the password.
+            let users = item
+                .as_sequence()
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(Value::as_str)
+                        .map(|entry| format!("{}:••••", entry.split_once(':').map_or(entry, |(user, _)| user)))
+                        .map(serde_json::Value::String)
+                        .collect()
+                })
+                .unwrap_or_default();
+            serde_json::Value::Array(users)
+        } else {
+            overview_json(item, 0)
+        };
+        out.insert(name.to_string(), json);
+    }
+    serde_json::Value::Object(out)
+}
+
+fn overview_counts(value: &Value) -> (BTreeMap<String, usize>, BTreeMap<String, usize>) {
+    let mut counts = BTreeMap::new();
+    for name in OVERVIEW_LISTS {
+        if let Some(item) = mapping_get(value, name) {
+            let size = item
+                .as_sequence()
+                .map(Vec::len)
+                .or_else(|| item.as_mapping().map(serde_yaml::Mapping::len))
+                .unwrap_or(0);
+            counts.insert((*name).to_string(), size);
+        }
+    }
+    let mut types = BTreeMap::new();
+    if let Some(groups) = mapping_get(value, "proxy-groups").and_then(Value::as_sequence) {
+        for group in groups {
+            let kind = read_string(group, "type").unwrap_or_default().to_ascii_lowercase();
+            if !kind.is_empty() {
+                *types.entry(kind).or_insert(0) += 1;
+            }
+        }
+    }
+    (counts, types)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -646,6 +790,10 @@ pub trait KernelLaunch {
 
     fn select_proxy(&mut self, _group: &str, _node: &str) -> Result<(), String> {
         Err(KERNEL_DOWN.to_string())
+    }
+
+    fn close_previous_group_connections(&mut self, _group: &str, _selected: &str) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
     }
 
     fn probe_delays(&mut self, _group: &str, _nodes: &[String]) -> Result<Vec<NodeDelay>, String> {
@@ -1491,6 +1639,11 @@ impl KernelLaunch for ProcessRuntime {
             return Err(KERNEL_DOWN.to_string());
         };
         nodes::put_selection(&endpoint, group, node)
+    }
+
+    fn close_previous_group_connections(&mut self, group: &str, selected: &str) -> Result<Vec<String>, String> {
+        let endpoint = self.controller().ok_or_else(|| KERNEL_DOWN.to_string())?;
+        diagnostics::close_previous_group_connections(&endpoint, group, selected)
     }
 
     fn probe_delays(&mut self, _group: &str, names: &[String]) -> Result<Vec<NodeDelay>, String> {
@@ -2617,6 +2770,32 @@ impl ProfileBook {
             })
     }
 
+    /// Structured summary of [`Self::effective_config`], with the profile and its 覆写
+    /// alongside so the UI can tell where each value comes from.
+    pub fn config_overview(&self) -> Result<ConfigOverview, String> {
+        let effective_yaml = self.effective_config()?;
+        let effective: Value = serde_yaml::from_str(&effective_yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+        let profile = self
+            .active_id
+            .as_ref()
+            .and_then(|id| self.profiles.iter().find(|profile| &profile.id == id))
+            .ok_or_else(|| takeover::NO_PROFILE.to_string())?;
+        let raw = parse_config(&profile.content).unwrap_or(Value::Null);
+        let prepared = prepare(&profile.content, &profile.applied_override)
+            .ok()
+            .and_then(|prepared| serde_yaml::from_str::<Value>(&prepared.yaml).ok())
+            .unwrap_or_else(|| raw.clone());
+        let (counts, group_types) = overview_counts(&effective);
+        Ok(ConfigOverview {
+            effective: overview_options(&effective),
+            prepared: overview_options(&prepared),
+            profile: overview_options(&raw),
+            counts,
+            group_types,
+            running: self.runtime_base.is_some(),
+        })
+    }
+
     fn kernel_yaml(&self, tun_enable: bool, fd: Option<i32>) -> Result<(String, u16), StartError> {
         let Some(active) = self.active_id.clone() else {
             return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
@@ -2989,13 +3168,27 @@ impl ProfileBook {
         self.snapshot()
     }
 
+    /// Interactive node actions only need liveness and the catalog. Reading the
+    /// full connections/statistics snapshot before a selector PUT or a probe
+    /// adds avoidable controller round trips and delays the requested action.
+    fn sync_nodes(&mut self, kernel: &mut dyn KernelLaunch) {
+        if !kernel.running() {
+            self.sync_runtime(kernel);
+            return;
+        }
+        self.kernel_running = true;
+        self.append_logs(kernel.pull_logs());
+        self.runtime_catalog = kernel.node_catalog();
+        self.auto_now = self.runtime_catalog.now.clone();
+    }
+
     pub fn select_node(
         &mut self,
         group: &str,
         node: &str,
         kernel: &mut dyn KernelLaunch,
     ) -> ProfileSnapshot {
-        self.sync_runtime(kernel);
+        self.sync_nodes(kernel);
         let group_name = group.trim();
         let node_name = node.trim();
         let Some(index) = self.nodes_profile_index() else {
@@ -3023,7 +3216,11 @@ impl ProfileBook {
             self.nodes_error = Some("没有这个节点".to_string());
             return self.snapshot();
         }
-        if self.kernel_running {
+        let previous = self.auto_now.get(group_name)
+            .or_else(|| self.profiles[index].selected.get(group_name))
+            .or_else(|| found.proxies.first());
+        let changed = previous.map(String::as_str) != Some(node_name);
+        if self.kernel_running && changed {
             if let Err(message) = kernel.select_proxy(group_name, node_name) {
                 self.nodes_error = Some(if message.is_empty() {
                     SELECT_FAILED.to_string()
@@ -3040,12 +3237,34 @@ impl ProfileBook {
             self.auto_now.insert(group_name.to_string(), node_name.to_string());
         }
         self.nodes_error = None;
+        if self.notice.as_deref().is_some_and(|notice| notice.starts_with("节点已切换，但")) {
+            self.notice = None;
+        }
+        if self.kernel_running && changed && self.settings.close_connections_on_switch.unwrap_or(true) {
+            match kernel.close_previous_group_connections(group_name, node_name) {
+                Ok(ids) => {
+                    let closed: BTreeSet<_> = ids.into_iter().collect();
+                    self.connections.retain(|connection| !closed.contains(&connection.id));
+                    self.connection_total = self.connection_total.saturating_sub(closed.len());
+                }
+                Err(message) => self.notice = Some(format!("节点已切换，但{message}")),
+            }
+        }
         self.persist();
         self.snapshot()
     }
 
     pub fn test_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
-        self.sync_runtime(kernel);
+        self.test_group_with_progress(group, kernel, &mut |_, _, _, _, _| {})
+    }
+
+    pub fn test_group_with_progress(
+        &mut self,
+        group: &str,
+        kernel: &mut dyn KernelLaunch,
+        on_progress: &mut dyn FnMut(&str, Option<u64>, bool, usize, usize),
+    ) -> ProfileSnapshot {
+        self.sync_nodes(kernel);
         if !self.kernel_running {
             self.nodes_error = Some(KERNEL_DOWN.to_string());
             return self.snapshot();
@@ -3073,37 +3292,21 @@ impl ProfileBook {
                 }
             }
         }
+        let mut seen = BTreeSet::new();
+        members.retain(|name| seen.insert(name.clone()));
         let profile_id = self.profiles[index].id.clone();
-        match kernel.probe_delays(&group_key, &members) {
+        let mut tested = 0;
+        let total = members.len();
+        match kernel.probe_delays_with_progress(&group_key, &members, &mut |name, delay, failed| {
+            tested += 1;
+            on_progress(name, delay, failed, tested, total);
+        }) {
             Ok(results) => {
-                let slot = self
-                    .delays
-                    .entry(profile_id)
-                    .or_default()
-                    .entry(group_key)
-                    .or_default();
-                for item in results {
-                    if !members.iter().any(|name| name == &item.name) {
-                        continue;
-                    }
-                    if let Some(ms) = item.delay_ms {
-                        slot.insert(
-                            item.name,
-                            DelayMark {
-                                delay_ms: Some(ms),
-                                failed: false,
-                            },
-                        );
-                    } else {
-                        slot.insert(
-                            item.name,
-                            DelayMark {
-                                delay_ms: None,
-                                failed: true,
-                            },
-                        );
-                    }
-                }
+                // A named proxy has one result for the chosen test URL, even
+                // when several groups list it. Keep the final snapshot aligned
+                // with the streamed per-node overlay.
+                let groups = self.tested_groups(index).unwrap_or_default();
+                self.record_delays(&profile_id, &groups, results);
                 self.nodes_error = None;
             }
             Err(message) => {
@@ -3328,12 +3531,16 @@ impl KernelSettings {
             _ => String::new(),
         };
         self.geo_urls = self.geo_urls.normalized();
+        self.keep_alive_interval = self.keep_alive_interval.map(|secs| if secs == 0 { 0 } else { secs.clamp(5, 3600) });
+        self.lan_auth = normalize_lan_auth(&self.lan_auth);
+        self.lan_allowed_ips = normalize_cidrs(&self.lan_allowed_ips);
         self
     }
 
     /// Everything except the delay probe and OS system-proxy settings, which never need a kernel restart.
     fn kernel_part(&self) -> Self {
         let mut copy = self.clone();
+        copy.close_connections_on_switch = None;
         copy.subscription_user_agent.clear();
         copy.test_url.clear();
         copy.test_timeout_ms = 0;
@@ -3509,6 +3716,29 @@ fn apply_settings(
         }
         map.insert(key("geox-url"), Value::Mapping(geox));
     }
+    match settings.keep_alive_interval {
+        Some(0) => {
+            map.insert(key("disable-keep-alive"), Value::Bool(true));
+        }
+        Some(secs) => {
+            map.insert(key("disable-keep-alive"), Value::Bool(false));
+            map.insert(key("keep-alive-interval"), Value::Number(u64::from(secs).into()));
+        }
+        None => {}
+    }
+    if !settings.lan_auth.is_empty() {
+        map.insert(
+            key("authentication"),
+            Value::Sequence(settings.lan_auth.iter().cloned().map(Value::String).collect()),
+        );
+        let skip = with_loopback(map.get(key("skip-auth-prefixes")), &[]);
+        map.insert(key("skip-auth-prefixes"), skip);
+    }
+    if !settings.lan_allowed_ips.is_empty() {
+        // Replace the profile's list, but never lock out the machine itself.
+        let allowed = with_loopback(None, &settings.lan_allowed_ips);
+        map.insert(key("lan-allowed-ips"), allowed);
+    }
     if let Some(flag) = settings.sniffer {
         if flag {
             map.insert(key("sniffer"), default_sniffer());
@@ -3526,7 +3756,9 @@ fn apply_settings(
             .cloned()
             .unwrap_or_default();
         let tun_settings = &settings.tun;
-        tun.insert(key("stack"), Value::String(tun_settings.stack.clone()));
+        if !tun_settings.stack.is_empty() {
+            tun.insert(key("stack"), Value::String(tun_settings.stack.clone()));
+        }
         tun.insert(key("auto-route"), Value::Bool(tun_settings.auto_route));
         tun.insert(key("auto-detect-interface"), Value::Bool(tun_settings.auto_detect_interface));
         tun.insert(key("strict-route"), Value::Bool(tun_settings.strict_route));
@@ -3545,6 +3777,70 @@ fn apply_settings(
     let port = map.get(key("mixed-port")).and_then(Value::as_i64);
     let text = serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())?;
     Ok((text, port))
+}
+
+/// Loopback ranges stay exempt from LAN authentication and allow-lists, so the
+/// system proxy and local apps never need credentials.
+const LOOPBACK_RANGES: [&str; 2] = ["127.0.0.1/8", "::1/128"];
+
+/// `user:pass` lines with a non-empty user and no whitespace; duplicates and junk dropped.
+fn normalize_lan_auth(items: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let entry = item.trim();
+        let Some((user, pass)) = entry.split_once(':') else { continue };
+        if user.is_empty() || pass.is_empty() || entry.len() > 128 || entry.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+            continue;
+        }
+        if !out.iter().any(|existing| existing.split_once(':').map(|(u, _)| u) == Some(user)) {
+            out.push(entry.to_string());
+        }
+        if out.len() >= 16 {
+            break;
+        }
+    }
+    out
+}
+
+/// IP or CIDR entries in canonical `ip/prefix` form; a bare address becomes a host range.
+fn normalize_cidrs(items: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        let entry = item.trim();
+        let (addr, prefix) = match entry.split_once('/') {
+            Some((addr, prefix)) => (addr, prefix.parse::<u8>().ok()),
+            None => (entry, None),
+        };
+        let Ok(ip) = addr.parse::<std::net::IpAddr>() else { continue };
+        let max = if ip.is_ipv4() { 32 } else { 128 };
+        let prefix = match (entry.contains('/'), prefix) {
+            (false, _) => max,
+            (true, Some(bits)) if bits <= max => bits,
+            _ => continue,
+        };
+        let text = format!("{ip}/{prefix}");
+        if !out.contains(&text) {
+            out.push(text);
+        }
+        if out.len() >= 64 {
+            break;
+        }
+    }
+    out
+}
+
+/// Append loopback ranges to a YAML list without duplicating what the profile already has.
+fn with_loopback(existing: Option<&Value>, extra: &[String]) -> Value {
+    let mut items: Vec<String> = existing
+        .and_then(Value::as_sequence)
+        .map(|seq| seq.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+    for item in extra.iter().map(String::as_str).chain(LOOPBACK_RANGES) {
+        if !items.iter().any(|existing| existing == item) {
+            items.push(item.to_string());
+        }
+    }
+    Value::Sequence(items.into_iter().map(Value::String).collect())
 }
 
 fn default_sniffer() -> Value {
@@ -4012,7 +4308,7 @@ impl ProfileBook {
         kernel: &mut dyn KernelLaunch,
         on_progress: &mut dyn FnMut(&str, Option<u64>, bool, usize, usize),
     ) -> ProfileSnapshot {
-        self.sync_runtime(kernel);
+        self.sync_nodes(kernel);
         if !self.kernel_running {
             self.nodes_error = Some(KERNEL_DOWN.to_string());
             return self.snapshot();
@@ -4026,9 +4322,10 @@ impl ProfileBook {
             return self.snapshot();
         };
         let mut unique: Vec<String> = Vec::new();
+        let mut seen = BTreeSet::new();
         for (_, members) in &groups {
             for name in members {
-                if !unique.iter().any(|item| item == name) {
+                if seen.insert(name.as_str()) {
                     unique.push(name.clone());
                 }
             }
@@ -4052,7 +4349,7 @@ impl ProfileBook {
     }
 
     pub fn test_node(&mut self, node: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
-        self.sync_runtime(kernel);
+        self.sync_nodes(kernel);
         if !self.kernel_running {
             self.nodes_error = Some(KERNEL_DOWN.to_string());
             return self.snapshot();
@@ -4700,6 +4997,95 @@ mod tests {
         assert!(runtime.pull_logs().iter().any(|line| line.message.contains("billow-invalid-test")));
     }
 
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires BILLOW_TEST_KERNEL; uses isolated loopback streams without OS proxy/TUN changes"]
+    fn real_selector_switch_reconnects_old_streams_and_keeps_other_groups() {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+        fn tunnel(port: u16, destination: u16) -> TcpStream {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            write!(stream, "CONNECT 127.0.0.1:{destination} HTTP/1.1\r\nHost: 127.0.0.1:{destination}\r\n\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new(); reader.read_line(&mut line).unwrap();
+            assert!(line.contains("200"), "CONNECT was rejected");
+            loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" || line.is_empty() { break; } }
+            stream
+        }
+        fn echo(stream: &mut TcpStream) {
+            stream.write_all(b"ping").unwrap();
+            let mut data = [0; 4]; stream.read_exact(&mut data).unwrap();
+            assert_eq!(&data, b"ping");
+        }
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").unwrap();
+        let first_port = first.local_addr().unwrap().port();
+        let second_port = second.local_addr().unwrap().port();
+        first.set_nonblocking(true).unwrap(); second.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop);
+        let server = std::thread::spawn(move || {
+            std::thread::scope(|scope| {
+                while !server_stop.load(Ordering::Relaxed) {
+                    for listener in [&first, &second] {
+                        if let Ok((mut stream, _)) = listener.accept() {
+                            let stop = Arc::clone(&server_stop);
+                            scope.spawn(move || {
+                                stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+                                let mut bytes = [0; 64];
+                                while !stop.load(Ordering::Relaxed) {
+                                    match stream.read(&mut bytes) {
+                                        Ok(0) => break,
+                                        Ok(n) => { if stream.write_all(&bytes[..n]).is_err() { break; } }
+                                        Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            });
+        });
+        struct StopOnDrop(Arc<AtomicBool>);
+        impl Drop for StopOnDrop { fn drop(&mut self) { self.0.store(true, Ordering::Relaxed); } }
+        let guard = StopOnDrop(Arc::clone(&stop));
+        let mixed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = mixed.local_addr().unwrap().port();
+        let dir = temp_dir("real-node-switch");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        let config = format!("mixed-port: {port}\nmode: rule\nproxies:\n  - {{name: old, type: direct}}\n  - {{name: new, type: direct}}\n  - {{name: other, type: direct}}\nproxy-groups:\n  - {{name: Switching, type: select, proxies: [old, new]}}\n  - {{name: Unrelated, type: select, proxies: [other]}}\nrules:\n  - DST-PORT,{first_port},Switching\n  - MATCH,Unrelated\n");
+        book.add_local("test", &config);
+        let mut runtime = ProcessRuntime::new(&dir.0);
+        runtime.home_dir = dir.0.join("home");
+        runtime.set_kernel_path(Some(PathBuf::from(std::env::var_os("BILLOW_TEST_KERNEL").expect("test kernel"))));
+        drop(mixed);
+        let initial = book.enable("p1", &RejectSource, &mut runtime);
+        assert!(initial.failure.is_none(), "isolated core did not start");
+        let mut old = tunnel(port, first_port);
+        let mut other = tunnel(port, second_port);
+        echo(&mut old); echo(&mut other);
+        let selected = book.select_node("Switching", "new", &mut runtime);
+        assert!(selected.nodes_error.is_none() && selected.notice.is_none());
+        let mut byte = [0];
+        match old.read(&mut byte) {
+            Ok(0) => {}
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => {}
+            other => panic!("old stream was not closed: {other:?}"),
+        }
+        echo(&mut other);
+        let mut new = tunnel(port, first_port); echo(&mut new);
+        let connections = runtime.connections();
+        assert!(connections.iter().any(|connection| connection.chains.iter().any(|name| name == "new")));
+        drop((old, other, new));
+        runtime.stop();
+        drop(guard);
+        server.join().unwrap();
+    }
+
     #[test]
     fn repeated_anchor_names_do_not_rebind_urls_to_an_unrelated_mapping() {
         let content = "base: &BaseProvider {type: http}\nproxy-providers:\n  first: {<<: *BaseProvider, url: &Subscription 'https://example.com/first'}\n  second: {<<: *BaseProvider, url: &Subscription 'https://example.com/second'}\n  chained: {<<: *BaseProvider, url: *Subscription}\nother: &Other {type: select}\n";
@@ -5051,6 +5437,102 @@ proxy-groups:
     }
 
     #[test]
+    fn lan_access_fingerprint_and_keep_alive_reach_the_running_config() {
+        let dir = temp_dir("lan-access");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nproxies: []\nskip-auth-prefixes: [10.0.0.0/8]\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun_grant = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let settings = KernelSettings {
+            keep_alive_interval: Some(2),
+            lan_auth: vec!["alice:pw".into(), "broken".into(), "alice:again".into(), "bob:has space".into()],
+            lan_allowed_ips: vec!["192.168.1.0/24".into(), "10.0.0.5".into(), "nope".into(), "1.2.3.4/40".into()],
+            ..Default::default()
+        };
+        let saved = book.save_settings(settings, &mut kernel, &mut proxy, &mut tun_grant, &mut vpn);
+        assert_eq!(saved.settings.keep_alive_interval, Some(5), "intervals below 5 s are clamped");
+        assert_eq!(saved.settings.lan_auth, ["alice:pw"]);
+        assert_eq!(saved.settings.lan_allowed_ips, ["192.168.1.0/24", "10.0.0.5/32"]);
+
+        let (yaml, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        let strings = |name: &str| -> Vec<String> {
+            mapping_get(&running, name)
+                .and_then(Value::as_sequence)
+                .map(|seq| seq.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+        assert!(mapping_get(&running, "global-client-fingerprint").is_none(), "removed from mihomo; never written");
+        assert_eq!(read_i64(&running, "keep-alive-interval"), Some(5));
+        assert_eq!(mapping_get(&running, "disable-keep-alive").and_then(Value::as_bool), Some(false));
+        assert_eq!(strings("authentication"), ["alice:pw"]);
+        // The profile's own exemptions survive; loopback is added so local apps never need a password.
+        assert_eq!(strings("skip-auth-prefixes"), ["10.0.0.0/8", "127.0.0.1/8", "::1/128"]);
+        assert_eq!(strings("lan-allowed-ips"), ["192.168.1.0/24", "10.0.0.5/32", "127.0.0.1/8", "::1/128"]);
+
+        let off = KernelSettings { keep_alive_interval: Some(0), lan_auth: Vec::new(), ..saved.settings.clone() };
+        book.save_settings(off, &mut kernel, &mut proxy, &mut tun_grant, &mut vpn);
+        let (yaml, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(mapping_get(&running, "disable-keep-alive").and_then(Value::as_bool), Some(true));
+        assert!(mapping_get(&running, "keep-alive-interval").is_none());
+        assert!(mapping_get(&running, "authentication").is_none(), "clearing the users drops the block");
+    }
+
+    #[test]
+    fn tun_stack_accepts_mips_and_empty_follows_the_kernel() {
+        let normalized = |stack: &str| TunSettings { stack: stack.to_string(), ..TunSettings::default() }.normalized().stack;
+        assert_eq!(TunSettings::default().stack, "");
+        assert_eq!(normalized("MIPS"), "mips");
+        assert_eq!(normalized("mixed"), "mixed");
+        assert_eq!(normalized("bogus"), "", "unknown stacks fall back to the kernel default");
+    }
+
+    #[test]
+    fn config_overview_reports_each_layer_and_masks_credentials() {
+        let dir = temp_dir("overview");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local(
+            "a.yaml",
+            "mixed-port: 7890\nmode: rule\nlog-level: info\nallow-lan: false\nsecret: hunter2\n\
+proxies:\n  - { name: a, type: ss, server: 1.1.1.1, port: 1, cipher: aes-128-gcm, password: sspass }\n  - { name: b, type: trojan, server: 1.1.1.1, port: 2, password: trpass }\n\
+proxy-groups:\n  - { name: pick, type: select, proxies: [auto, a] }\n  - { name: auto, type: url-test, proxies: [a, b] }\n\
+rules:\n  - MATCH,pick\n",
+        );
+        book.save_override("p1", "log-level: debug\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun_grant = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let settings = KernelSettings { allow_lan: Some(true), lan_auth: vec!["alice:pw-secret".into()], ..Default::default() };
+        book.save_settings(settings, &mut kernel, &mut proxy, &mut tun_grant, &mut vpn);
+
+        let overview = book.config_overview().unwrap();
+        assert_eq!(overview.profile["log-level"], "info");
+        assert_eq!(overview.prepared["log-level"], "debug", "覆写 shows up before Billow's settings");
+        assert_eq!(overview.effective["log-level"], "debug");
+        assert_eq!(overview.prepared["allow-lan"], false);
+        assert_eq!(overview.effective["allow-lan"], true, "Billow's setting wins in the running config");
+        assert_eq!(overview.effective["authentication"], serde_json::json!(["alice:••••"]));
+        assert!(overview.effective.get("proxies").is_none() && overview.effective.get("secret").is_none());
+        assert_eq!(overview.counts.get("proxies"), Some(&2));
+        assert_eq!(overview.counts.get("proxy-groups"), Some(&2));
+        assert_eq!(overview.counts.get("rules"), Some(&1));
+        assert_eq!(overview.group_types.get("select"), Some(&1));
+        assert_eq!(overview.group_types.get("url-test"), Some(&1));
+        let wire = serde_json::to_string(&overview).unwrap();
+        for secret in ["hunter2", "sspass", "trpass", "pw-secret"] {
+            assert!(!wire.contains(secret), "{secret} must not leave the backend");
+        }
+    }
+
+    #[test]
     fn tun_gets_routing_and_dns_and_dns_override_replaces_the_profile_block() {
         let dir = temp_dir("tun-dns");
         let mut book = ProfileBook::open(&dir.0);
@@ -5063,7 +5545,7 @@ proxy-groups:
         let tun = mapping_get(&running, "tun").unwrap();
         assert_eq!(mapping_get(tun, "enable").and_then(Value::as_bool), Some(true));
         assert_eq!(mapping_get(tun, "auto-route").and_then(Value::as_bool), Some(true));
-        assert_eq!(read_string(tun, "stack").as_deref(), Some("mixed"));
+        assert_eq!(read_string(tun, "stack"), None, "the default leaves the stack to the kernel (mips)");
         let dns = mapping_get(&running, "dns").unwrap();
         assert_eq!(mapping_get(dns, "enable").and_then(Value::as_bool), Some(true), "TUN turns DNS on");
 
@@ -5735,7 +6217,12 @@ proxy-groups:
             let mut runtime = ProcessRuntime::new(&dir.0);
             runtime.home_dir = dir.0.join("home");
             runtime.set_kernel_path(Some(path));
-            let error = runtime.start_or_reload("mixed-port: 0\n").unwrap_err();
+            // Use the production controller-readiness path. The no-controller
+            // stand-in grace period is not a reliable process-exit deadline on busy CI.
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            let error = runtime.start_or_reload(&format!("mixed-port: 0\nexternal-controller: 127.0.0.1:{port}\n")).unwrap_err();
             assert!(error.contains(expected), "{name}: lost startup reason: {error}");
             assert!(!runtime.running());
             if name != "signal" {
@@ -5822,6 +6309,9 @@ proxy-groups:
         scripts: HashMap<String, Vec<NodeDelay>>,
         auto: BTreeMap<String, String>,
         reject_select: bool,
+        closed_groups: Vec<(String, String)>,
+        fail_close: bool,
+        stats_reads: usize,
         catalog: nodes::RuntimeCatalog,
     }
 
@@ -5843,6 +6333,16 @@ proxy-groups:
             }
             self.applied.push((group.to_string(), node.to_string()));
             Ok(())
+        }
+
+        fn close_previous_group_connections(&mut self, group: &str, selected: &str) -> Result<Vec<String>, String> {
+            self.closed_groups.push((group.into(), selected.into()));
+            if self.fail_close { Err("旧连接未能关闭".into()) } else { Ok(Vec::new()) }
+        }
+
+        fn connections(&mut self) -> Vec<ConnectionView> {
+            self.stats_reads += 1;
+            Vec::new()
         }
 
         fn probe_delays(
@@ -5889,7 +6389,76 @@ proxy-groups:
             scripts: HashMap::new(),
             auto: BTreeMap::new(),
             reject_select: false,
+            closed_groups: Vec::new(),
+            fail_close: false,
+            stats_reads: 0,
             catalog: nodes::RuntimeCatalog::default(),
+        }
+    }
+
+    #[test]
+    fn switching_closes_old_group_connections_only_after_success_and_respects_the_setting() {
+        let dir = temp_dir("switch-connections");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("nodes", &grouped_config());
+        let mut kernel = node_kernel();
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.connected = true;
+        let chosen = book.select_node("manual", "a-node", &mut kernel);
+        assert!(chosen.nodes_error.is_none());
+        assert_eq!(kernel.closed_groups, [("manual".into(), "a-node".into())]);
+        assert_eq!(kernel.stats_reads, 0, "selection must not fetch a full stats snapshot first");
+        book.select_node("manual", "a-node", &mut kernel);
+        assert_eq!(kernel.closed_groups.len(), 1, "reselecting the current node must not drop connections");
+        kernel.reject_select = true;
+        let failed = book.select_node("manual", "m-node", &mut kernel);
+        assert!(failed.nodes_error.is_some());
+        assert_eq!(kernel.closed_groups.len(), 1, "a failed switch must keep the existing route alive");
+        kernel.reject_select = false;
+        let calls = kernel.calls;
+        let mut settings = book.settings.clone();
+        settings.close_connections_on_switch = Some(false);
+        book.save_settings(settings, &mut kernel, &mut MemoryProxy::default(), &mut MemoryTun::default(), &mut MemoryVpn::default());
+        assert_eq!(kernel.calls, calls, "this preference must not reload the core");
+        book.select_node("manual", "m-node", &mut kernel);
+        assert_eq!(kernel.closed_groups.len(), 1);
+        book.settings.close_connections_on_switch = Some(true);
+        kernel.fail_close = true;
+        let partial = book.select_node("manual", "z-node", &mut kernel);
+        assert!(partial.nodes_error.is_none());
+        assert_eq!(group(&partial.node_catalog, "manual").now, "z-node");
+        assert!(partial.notice.unwrap().contains("节点已切换，但"));
+        kernel.report_running = false;
+        book.select_node("manual", "a-node", &mut kernel);
+        assert_eq!(kernel.closed_groups.len(), 2, "offline preferences cannot close connections");
+    }
+
+    #[test]
+    fn group_tests_emit_each_node_and_keep_final_results_in_shared_groups() {
+        let dir = temp_dir("group-progress");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("nodes", &grouped_config());
+        let mut kernel = node_kernel();
+        kernel.report_running = true;
+        kernel.scripts.insert("manual".into(), vec![
+            NodeDelay { name: "a-node".into(), delay_ms: Some(12) },
+            NodeDelay { name: "m-node".into(), delay_ms: None },
+        ]);
+        let mut progress = Vec::new();
+        let next = book.test_group_with_progress("manual", &mut kernel, &mut |name, delay, failed, done, total| {
+            progress.push((name.to_string(), delay, failed, done, total));
+        });
+        assert_eq!(progress.len(), 2);
+        assert_eq!(progress[0].0, "a-node");
+        assert_eq!(progress[0].1, Some(12));
+        assert_eq!(progress[0].3, 1);
+        assert!(progress[1].2);
+        assert_eq!(progress[1].3, 2);
+        assert!(next.nodes_error.is_none());
+        for group in &next.node_catalog {
+            if let Some(node) = group.nodes.iter().find(|node| node.name == "a-node") {
+                assert_eq!(node.delay_ms, Some(12));
+            }
         }
     }
 

@@ -113,7 +113,8 @@ export interface DnsSettings {
   listen: string
   enhanced_mode: 'fake-ip' | 'redir-host' | 'normal'
   fake_ip_range: string
-  fake_ip_filter_mode: 'blacklist' | 'whitelist'
+  /** `rule` (mihomo v1.19.x) reads the filter as rules ending in fake-ip / real-ip. */
+  fake_ip_filter_mode: 'blacklist' | 'whitelist' | 'rule'
   fake_ip_filter: string[]
   ipv6: boolean
   prefer_h3: boolean
@@ -132,7 +133,8 @@ export interface DnsSettings {
 }
 
 export interface TunSettings {
-  stack: 'mixed' | 'system' | 'gvisor'
+  /** '' leaves the stack to the profile, then the kernel (mips since mihomo v1.19.32). */
+  stack: '' | 'mips' | 'mixed' | 'system' | 'gvisor'
   auto_route: boolean
   auto_detect_interface: boolean
   strict_route: boolean
@@ -160,6 +162,7 @@ export interface ProvidersResult {
 }
 
 export interface KernelSettings {
+  close_connections_on_switch: boolean
   subscription_user_agent: string
   mixed_port: number | null
   allow_lan: boolean | null
@@ -171,6 +174,12 @@ export interface KernelSettings {
   test_url: string
   test_timeout_ms: number
   sniffer: boolean | null
+  /** TCP keep-alive interval in seconds; 0 turns keep-alive off, null follows the profile. */
+  keep_alive_interval: number | null
+  /** `user:pass` pairs LAN clients sign in with; loopback stays exempt. */
+  lan_auth: string[]
+  /** Source ranges allowed to use the inbound ports; empty follows the profile. */
+  lan_allowed_ips: string[]
   system_proxy: SystemProxySettings
   dns_override: boolean
   dns: DnsSettings
@@ -223,6 +232,39 @@ export interface ConfigValues {
   unified_delay: boolean | null
   tcp_concurrent: boolean | null
   find_process_mode: string | null
+  keep_alive_interval: number | null
+  disable_keep_alive: boolean | null
+}
+
+/**
+ * Read-only summary of the running config. Each layer holds top-level options
+ * only; list sections are counted and credentials arrive masked.
+ */
+export interface ConfigOverview {
+  effective: Record<string, unknown>
+  /** Profile with its 覆写 merged, before Billow's settings. */
+  prepared: Record<string, unknown>
+  /** The profile file alone. */
+  profile: Record<string, unknown>
+  counts: Record<string, number>
+  group_types: Record<string, number>
+  running: boolean
+}
+
+export function normalizeConfigOverview(raw: unknown): ConfigOverview {
+  const value = obj(raw)
+  const layer = (item: unknown): Record<string, unknown> =>
+    item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : {}
+  const counts = (item: unknown): Record<string, number> =>
+    Object.fromEntries(Object.entries(layer(item)).filter((entry): entry is [string, number] => typeof entry[1] === 'number'))
+  return {
+    effective: layer(value.effective),
+    prepared: layer(value.prepared),
+    profile: layer(value.profile),
+    counts: counts(value.counts),
+    group_types: counts(value.group_types),
+    running: Boolean(value.running),
+  }
 }
 
 export interface Snapshot {
@@ -411,7 +453,7 @@ export function defaultDns(): DnsSettings {
 
 export function defaultTun(): TunSettings {
   return {
-    stack: 'mixed',
+    stack: '',
     auto_route: true,
     auto_detect_interface: true,
     strict_route: false,
@@ -423,6 +465,7 @@ export function defaultTun(): TunSettings {
 
 export function emptyKernelSettings(): KernelSettings {
   return {
+    close_connections_on_switch: true,
     subscription_user_agent: '',
     geodata_mode: null,
     geodata_loader: null,
@@ -431,6 +474,9 @@ export function emptyKernelSettings(): KernelSettings {
     geo_source: '',
     geo_urls: defaultGeoUrls(),
     sniffer: null,
+    keep_alive_interval: null,
+    lan_auth: [],
+    lan_allowed_ips: [],
     system_proxy: defaultSystemProxy(),
     dns_override: false,
     dns: defaultDns(),
@@ -489,6 +535,8 @@ export function emptySnapshot(): Snapshot {
       unified_delay: null,
       tcp_concurrent: null,
       find_process_mode: null,
+      keep_alive_interval: null,
+      disable_keep_alive: null,
     },
     notice: null,
   }
@@ -615,7 +663,7 @@ function normalizeDns(raw: unknown): DnsSettings {
     listen: str(value.listen),
     enhanced_mode: mode === 'redir-host' || mode === 'normal' ? mode : 'fake-ip',
     fake_ip_range: str(value.fake_ip_range, base.fake_ip_range),
-    fake_ip_filter_mode: filterMode === 'whitelist' ? 'whitelist' : 'blacklist',
+    fake_ip_filter_mode: filterMode === 'whitelist' || filterMode === 'rule' ? filterMode : 'blacklist',
     fake_ip_filter: strings(value.fake_ip_filter),
     ipv6: Boolean(value.ipv6),
     prefer_h3: Boolean(value.prefer_h3),
@@ -640,7 +688,7 @@ function normalizeTun(raw: unknown): TunSettings {
   if (!raw || typeof raw !== 'object') return base
   const stack = str(value.stack)
   return {
-    stack: stack === 'system' || stack === 'gvisor' ? stack : 'mixed',
+    stack: stack === 'system' || stack === 'gvisor' || stack === 'mixed' || stack === 'mips' ? stack : '',
     auto_route: value.auto_route !== false,
     auto_detect_interface: value.auto_detect_interface !== false,
     strict_route: Boolean(value.strict_route),
@@ -655,6 +703,7 @@ function normalizeSettings(raw: unknown): KernelSettings {
   const geoSource = str(value.geo_source)
   const geoLoader = str(value.geodata_loader)
   return {
+    close_connections_on_switch: value.close_connections_on_switch !== false,
     subscription_user_agent: str(value.subscription_user_agent).trim(),
     geodata_mode: optBool(value.geodata_mode),
     geodata_loader: geoLoader === 'standard' || geoLoader === 'memconservative' ? geoLoader : null,
@@ -663,6 +712,9 @@ function normalizeSettings(raw: unknown): KernelSettings {
     geo_source: geoSource === 'github' || geoSource === 'jsdelivr' || geoSource === 'testingcf' ? geoSource : '',
     geo_urls: normalizeGeoUrls(value.geo_urls),
     sniffer: optBool(value.sniffer),
+    keep_alive_interval: num(value.keep_alive_interval),
+    lan_auth: strings(value.lan_auth),
+    lan_allowed_ips: strings(value.lan_allowed_ips),
     system_proxy: normalizeSystemProxy(value.system_proxy),
     dns_override: Boolean(value.dns_override),
     dns: normalizeDns(value.dns),
@@ -770,6 +822,8 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
       unified_delay: optBool(config.unified_delay),
       tcp_concurrent: optBool(config.tcp_concurrent),
       find_process_mode: optStr(config.find_process_mode),
+      keep_alive_interval: num(config.keep_alive_interval),
+      disable_keep_alive: optBool(config.disable_keep_alive),
     },
     notice: optStr(source.notice),
   }

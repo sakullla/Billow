@@ -43,6 +43,8 @@
     "allow-set-profile-interval",
     "allow-profile-content",
     "allow-effective-config",
+    "allow-config-overview",
+    "allow-lan-address",
     "allow-save-profile-content",
     "allow-refresh-profile",
     "allow-refresh-all-profiles",

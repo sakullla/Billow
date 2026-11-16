@@ -1,12 +1,12 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::nodes::ControllerEndpoint;
 
@@ -571,6 +571,76 @@ fn authorize(request: ureq::Request, endpoint: &ControllerEndpoint) -> ureq::Req
     } else {
         request.set("Authorization", &format!("Bearer {}", endpoint.secret))
     }
+}
+
+#[derive(Deserialize)]
+struct SwitchConnection {
+    id: String,
+    #[serde(default)]
+    chains: Vec<String>,
+}
+#[derive(Deserialize)]
+struct SwitchConnections {
+    connections: Option<Vec<SwitchConnection>>,
+}
+
+fn switched_connection_ids(reader: impl Read, group: &str, selected: &str) -> Result<Vec<String>, String> {
+    // Unlike the connection screen's 500-row preview, this must see every old
+    // connection. Deserialize only IDs/chains and bound the response bytes.
+    let snapshot: SwitchConnections = serde_json::from_reader(BufReader::new(reader.take(16 * 1024 * 1024)))
+        .map_err(|_| "旧连接列表无法读取".to_string())?;
+    Ok(snapshot.connections.unwrap_or_default().into_iter().filter(|connection| {
+        let Some(position) = connection.chains.iter().position(|name| name == group) else { return false };
+        // Mihomo chains run from the concrete outbound back to the matching
+        // group. Compare its adjacent selected hop: the same node appearing
+        // elsewhere in a nested/dialer chain does not mean this group used it.
+        let uses_selected = position.checked_sub(1)
+            .and_then(|index| connection.chains.get(index)).is_some_and(|name| name == selected);
+        !connection.id.trim().is_empty() && !uses_selected
+    }).map(|connection| connection.id).collect::<BTreeSet<_>>().into_iter().collect())
+}
+
+/// Called only after a successful selector PUT. Keep unrelated groups and newly
+/// routed connections alive; never fall back to DELETE /connections (all).
+pub fn close_previous_group_connections(endpoint: &ControllerEndpoint, group: &str, selected: &str) -> Result<Vec<String>, String> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 || group.is_empty() || selected.is_empty() {
+        return Err("旧连接没有关闭".to_string());
+    }
+    let agent = controller_agent(Duration::from_millis(800));
+    let base = format!("http://{}:{}/connections", endpoint.host, endpoint.port);
+    let response = authorize(agent.get(&base), endpoint).timeout(Duration::from_millis(800))
+        .call().map_err(|_| "旧连接列表无法读取".to_string())?;
+    let ids = switched_connection_ids(response.into_reader(), group, selected)?;
+    if ids.is_empty() { return Ok(ids); }
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let closed = Mutex::new(Vec::new());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    std::thread::scope(|scope| {
+        for _ in 0..ids.len().min(4) {
+            let (ids, next, failed, closed, agent, base) = (&ids, &next, &failed, &closed, &agent, &base);
+            scope.spawn(move || loop {
+                if failed.load(Ordering::Relaxed) || Instant::now() >= deadline { break; }
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(id) = ids.get(index) else { break };
+                let timeout = deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(800));
+                if timeout.is_zero() { break; }
+                let result = authorize(agent.delete(&format!("{base}/{}", encode_path(id))), endpoint)
+                    .timeout(timeout).call();
+                if result.is_ok() || matches!(result, Err(ureq::Error::Status(404, _))) {
+                    closed.lock().unwrap_or_else(|p| p.into_inner()).push(id.clone());
+                } else {
+                    failed.store(true, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    let mut closed = closed.into_inner().unwrap_or_else(|p| p.into_inner());
+    if closed.len() != ids.len() {
+        return Err(format!("部分旧连接未能关闭（{}/{}），可在连接页重试", closed.len(), ids.len()));
+    }
+    closed.sort();
+    Ok(closed)
 }
 
 /// Closes one connection, or all of them when `id` is `None`.
@@ -1160,6 +1230,53 @@ fn loopback(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switch_cleanup_filters_full_chains_without_the_display_row_limit() {
+        let mut connections = vec![serde_json::json!({"id":"other", "chains":["unrelated"]}); 600];
+        connections.extend([
+            serde_json::json!({"id":"old", "chains":["old-node", "目标组"]}),
+            serde_json::json!({"id":"new", "chains":["new-node", "目标组"]}),
+            serde_json::json!({"id":"old-nested", "chains":["new-node", "old-node", "目标组"]}),
+            serde_json::json!({"id":"similar", "chains":["old-node", "目标组-另一个"]}),
+        ]);
+        let body = serde_json::to_vec(&serde_json::json!({"connections": connections})).unwrap();
+        assert_eq!(switched_connection_ids(body.as_slice(), "目标组", "new-node").unwrap(), ["old", "old-nested"]);
+        assert!(switched_connection_ids(b"invalid".as_slice(), "G", "new").is_err());
+        assert!(switched_connection_ids(br#"{"connections":null}"#.as_slice(), "G", "new").unwrap().is_empty());
+    }
+
+    #[test]
+    fn switch_cleanup_deletes_only_matching_old_connections() {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                requests.push(first);
+                loop {
+                    let mut line = String::new(); reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() { break; }
+                }
+                if index == 0 {
+                    let body = r#"{"connections":[{"id":"old/id","chains":["old","G"]},{"id":"new","chains":["new","G"]},{"id":"other","chains":["old","H"]}]}"#;
+                    write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                } else { write!(stream,"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap(); }
+            }
+            requests
+        });
+        let endpoint = ControllerEndpoint { host: "127.0.0.1".into(), port, secret: "test".into() };
+        assert_eq!(close_previous_group_connections(&endpoint, "G", "new").unwrap(), ["old/id"]);
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /connections "));
+        assert!(requests[1].starts_with("DELETE /connections/old%2Fid "));
+    }
 
     #[test]
     fn connection_rows_carry_details_and_filter_on_the_host() {

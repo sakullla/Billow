@@ -127,7 +127,7 @@ function selectMenuItem(profile: ProfileItem, item: MenuItem) {
   else if (item.id === 'edit') openEdit(profile)
   else if (item.id === 'content') void openYaml(profile, 'content')
   else if (item.id === 'override') void openYaml(profile, 'override')
-  else if (item.id === 'effective') void openEffective()
+  else if (item.id === 'effective') openEffective()
   else if (item.id === 'copy') void copyLink(profile)
   else if (item.id === 'remove') removing.value = profile
 }
@@ -290,28 +290,10 @@ async function discardChanges() {
   yaml.value = null
 }
 
-// Effective config: read-only view of what the kernel runs.
-const effective = ref<{ text: string; error: string | null; loading: boolean } | null>(null)
-
-async function openEffective() {
+// Effective config lives in the app-wide viewer; the editor link opens its YAML tab.
+function openEffective(tab?: 'overview' | 'yaml') {
   menuFor.value = null
-  effective.value = { text: '', error: null, loading: true }
-  try {
-    const text = await store.backend.effectiveConfig()
-    if (effective.value) effective.value = { text, error: null, loading: false }
-  } catch (error) {
-    if (effective.value) effective.value = { text: '', error: String((error as Error)?.message ?? error), loading: false }
-  }
-}
-
-async function copyEffective() {
-  if (!effective.value?.text) return
-  try {
-    await navigator.clipboard.writeText(effective.value.text)
-    store.toast('已复制生效配置', 'success')
-  } catch {
-    store.toast('无法写入剪贴板', 'error')
-  }
+  store.openConfig(tab)
 }
 
 async function saveYaml() {
@@ -412,7 +394,7 @@ const updateAllLabel = computed(() => {
         ref="quickInputEl"
         v-model="quickUrl"
         type="url"
-        placeholder="粘贴订阅链接回车导入，或直接拖入 YAML 文件"
+        :placeholder="compact ? '粘贴订阅链接' : '粘贴订阅链接回车导入，或直接拖入 YAML 文件'"
         spellcheck="false"
         :aria-invalid="quickError ? 'true' : undefined"
         :aria-describedby="quickError ? 'quick-import-error' : undefined"
@@ -714,28 +696,11 @@ const updateAllLabel = computed(() => {
             type="button"
             class="link-btn"
             data-testid="open-effective"
-            @click="openEffective"
+            @click="openEffective('yaml')"
           >查看生效配置</button>
         </span>
         <button type="button" class="btn ghost" data-testid="cancel-editor" @click="requestYamlClose">取消</button>
         <button type="button" class="btn primary" :disabled="store.busy.content || store.busy.override" @click="saveYaml">保存</button>
-      </template>
-    </Modal>
-
-    <Modal
-      v-if="effective"
-      wide
-      title="生效配置"
-      :subtitle="snap.kernel_running ? '内核正在运行的配置：订阅内容、覆写与应用设置合并后的结果，只读' : '下次连接时将使用的配置：订阅内容、覆写与应用设置合并后的结果，只读'"
-      @close="effective = null"
-    >
-      <p v-if="effective.error" class="field-error" role="alert">{{ effective.error }}</p>
-      <div v-else-if="effective.loading" class="editor yaml-editor-loading muted small"><span class="spinner xs" /> 正在生成…</div>
-      <YamlEditor v-else class="editor" :model-value="effective.text" readonly label="生效配置" data-testid="effective-config" />
-      <template #footer>
-        <span class="muted small grow">{{ effective.text ? `${effective.text.split('\n').length} 行` : '' }}</span>
-        <button type="button" class="btn ghost" :disabled="!effective.text" @click="copyEffective"><Icon name="copy" :size="15" />复制</button>
-        <button type="button" class="btn primary" @click="effective = null">关闭</button>
       </template>
     </Modal>
 

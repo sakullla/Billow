@@ -1,6 +1,24 @@
 import type { HotkeyBinding } from './hotkeys'
 
-export type ShortcutId = 'palette' | 'sidebar' | 'search' | 'escape' | 'help' | 'zoom-in' | 'zoom-out' | 'zoom-reset'
+export type ShortcutId =
+  | 'palette'
+  | 'sidebar'
+  | 'pages'
+  | 'settings'
+  | 'search'
+  | 'escape'
+  | 'help'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'zoom-reset'
+
+/** `mod+1` … `mod+N` follow the sidebar order; the registry lists them as one row. */
+export const PAGE_SHORTCUT_COUNT = 7
+
+/** Combo for the Nth sidebar page (0-based), or null past the numbered range. */
+export function pageShortcutCombo(index: number): string | null {
+  return index >= 0 && index < PAGE_SHORTCUT_COUNT ? `mod+${index + 1}` : null
+}
 
 export interface ShortcutSpec {
   id: ShortcutId
@@ -31,6 +49,23 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     label: '切换侧边栏',
     description: '展开或收起桌面侧边栏',
     combo: 'mod+b',
+    scope: 'global',
+    allowInInput: true,
+  },
+  {
+    id: 'pages',
+    label: '切换页面',
+    description: '按侧边栏顺序：首页、代理、配置、连接、规则、资源、日志',
+    // Display form of the range; App binds mod+1 … mod+7 individually.
+    combo: `mod+1…${PAGE_SHORTCUT_COUNT}`,
+    scope: 'global',
+    allowInInput: true,
+  },
+  {
+    id: 'settings',
+    label: '打开设置',
+    description: '跳转到设置页',
+    combo: 'mod+,',
     scope: 'global',
     allowInInput: true,
   },

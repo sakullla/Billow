@@ -68,6 +68,16 @@ const PROCESS_MODES = [
   { id: 'off', label: '关闭' },
 ]
 
+/** Seconds; '0' turns TCP keep-alive off. */
+const KEEP_ALIVE = [
+  { id: '', label: '跟随配置' },
+  { id: '15', label: '15 秒' },
+  { id: '30', label: '30 秒' },
+  { id: '60', label: '60 秒' },
+  { id: '120', label: '120 秒（省电）' },
+  { id: '0', label: '关闭' },
+]
+
 type Flag = 'allow_lan' | 'ipv6' | 'unified_delay' | 'tcp_concurrent'
 const FLAGS: { key: Flag; title: string; hint: string }[] = [
   { key: 'allow_lan', title: '局域网连接', hint: '允许同一网络的其他设备使用本机代理' },
@@ -146,9 +156,102 @@ const overridden = computed(() => {
   const s = snap.value.settings
   return Boolean(
     s.mixed_port || s.log_level || s.find_process_mode || s.test_url || s.test_timeout_ms || s.sniffer != null ||
+      s.keep_alive_interval != null || s.lan_auth.length || s.lan_allowed_ips.length ||
       FLAGS.some((flag) => s[flag.key] != null),
   )
 })
+
+/** What the profile itself says about keep-alive, for the "跟随配置" hint. */
+const profileKeepAlive = computed(() => {
+  const config = snap.value.config_values
+  if (config.disable_keep_alive) return '配置中已关闭'
+  return config.keep_alive_interval ? `配置中为 ${config.keep_alive_interval} 秒` : '配置未设置，默认 15 秒'
+})
+
+// ── LAN access: only shown while 局域网连接 is on ──
+const lanAddress = ref<string | null>(null)
+const lanUser = ref('')
+const lanPass = ref('')
+const lanPassVisible = ref(false)
+const lanIps = ref('')
+let lastSyncedLan = ''
+
+function splitAuth(entry: string | undefined): [string, string] {
+  if (!entry) return ['', '']
+  const at = entry.indexOf(':')
+  return at < 0 ? [entry, ''] : [entry.slice(0, at), entry.slice(at + 1)]
+}
+
+watch(
+  () => [snap.value.settings.lan_auth, snap.value.settings.lan_allowed_ips] as const,
+  ([auth, ips]) => {
+    const key = JSON.stringify([auth, ips])
+    if (key === lastSyncedLan) return
+    lastSyncedLan = key
+    ;[lanUser.value, lanPass.value] = splitAuth(auth[0])
+    lanIps.value = ips.join(', ')
+  },
+  { immediate: true },
+)
+
+const splitIps = (text: string) => text.split(/[\s,，;；]+/).map((item) => item.trim()).filter(Boolean)
+const IP_ENTRY = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f:]*:[0-9a-f:.]*)(?:\/\d{1,3})?$/i
+const lanDirty = computed(() => {
+  const [user, pass] = splitAuth(snap.value.settings.lan_auth[0])
+  return (
+    lanUser.value.trim() !== user ||
+    lanPass.value !== pass ||
+    splitIps(lanIps.value).join(',') !== snap.value.settings.lan_allowed_ips.join(',')
+  )
+})
+
+const lanOn = computed(() => effective('allow_lan'))
+watch(
+  lanOn,
+  (on) => {
+    if (on && lanAddress.value == null) {
+      void store.backend
+        .lanAddress()
+        .then((address) => (lanAddress.value = address))
+        .catch(() => (lanAddress.value = null))
+    }
+  },
+  { immediate: true },
+)
+const lanPort = computed(() => snap.value.mixed_port ?? snap.value.settings.mixed_port ?? snap.value.config_values.mixed_port ?? 7890)
+
+function saveLan() {
+  const user = lanUser.value.trim()
+  const pass = lanPass.value
+  if (Boolean(user) !== Boolean(pass)) {
+    store.toast('用户名和密码需要同时填写；都留空则不需要认证', 'error')
+    return
+  }
+  if (/[\s:]/.test(user) || /\s/.test(pass)) {
+    store.toast('用户名不能含空格或冒号，密码不能含空格', 'error')
+    return
+  }
+  const ips = splitIps(lanIps.value)
+  const bad = ips.find((item) => !IP_ENTRY.test(item))
+  if (bad) {
+    store.toast(`无法识别「${bad}」，请填写 IP 或网段，例如 192.168.1.0/24`, 'error')
+    return
+  }
+  // Extra users from earlier versions or other tools stay; this form edits the first one.
+  const rest = snap.value.settings.lan_auth.slice(1)
+  lastSyncedLan = ''
+  save({ lan_auth: user ? [`${user}:${pass}`, ...rest] : rest, lan_allowed_ips: ips })
+}
+
+function undoLan() {
+  ;[lanUser.value, lanPass.value] = splitAuth(snap.value.settings.lan_auth[0])
+  lanIps.value = snap.value.settings.lan_allowed_ips.join(', ')
+}
+
+async function copyLanAddress() {
+  if (!lanAddress.value) return
+  await store.copyText(`${lanAddress.value}:${lanPort.value}`, '已复制局域网代理地址')
+}
 
 function effective(key: Flag): boolean {
   return snap.value.settings[key] ?? snap.value.config_values[key] ?? false
@@ -222,6 +325,9 @@ function reset() {
   lastSyncedProbe = '\n0'
   save({
     sniffer: null,
+    keep_alive_interval: null,
+    lan_auth: [],
+    lan_allowed_ips: [],
     mixed_port: null,
     allow_lan: null,
     ipv6: null,
@@ -382,10 +488,18 @@ function saveProxy() {
 
 // ── TUN draft
 const STACKS = [
+  { id: '', label: '默认' },
   { id: 'mixed', label: 'Mixed' },
   { id: 'gvisor', label: 'gVisor' },
   { id: 'system', label: 'System' },
 ] as const
+const STACK_HINTS: Record<TunSettings['stack'], string> = {
+  '': '跟随配置；配置未指定时用内核推荐的 Mips 自研协议栈（旧内核为 gVisor）',
+  mips: 'Mips：mihomo 自研协议栈，新版内核的默认值',
+  mixed: 'Mixed：TCP 走系统栈、UDP 走 gVisor；开着防火墙时需放行内核',
+  gvisor: 'gVisor：用户态协议栈，隔离性好，不受系统防火墙影响',
+  system: 'System：系统协议栈，占用最低；开着防火墙时需放行内核',
+}
 const tun = ref<TunSettings>(copy(snap.value.settings.tun))
 const tunHijack = ref('')
 const tunMtu = ref('')
@@ -437,7 +551,13 @@ const MODES_DNS = [
 const FILTER_MODES_DNS = [
   { id: 'blacklist', label: '黑名单' },
   { id: 'whitelist', label: '白名单' },
+  { id: 'rule', label: '规则' },
 ] as const
+const FILTER_MODE_HINTS: Record<DnsSettings['fake_ip_filter_mode'], string> = {
+  blacklist: '黑名单：列表中的域名返回真实 IP，其余返回虚拟地址',
+  whitelist: '白名单：仅列表中的域名返回虚拟地址，其余返回真实 IP',
+  rule: '规则：列表按规则写法自上而下匹配，例如 GEOSITE,cn,real-ip，最后写 MATCH,fake-ip',
+}
 const CACHE_ALGOS_DNS = [
   { id: 'lru', label: 'LRU' },
   { id: 'arc', label: 'ARC' },
@@ -449,7 +569,7 @@ const LISTS: { key: ListKey; title: string; hint: string; fakeIpOnly?: boolean; 
   { key: 'proxy_server_nameserver', title: '节点域名解析', hint: '解析代理节点服务器地址' },
   { key: 'direct_nameserver', title: '直连域名解析', hint: '直连出站使用；留空则用主 DNS' },
   { key: 'fallback', title: '备用 DNS', hint: '可选，海外服务器；留空则不启用' },
-  { key: 'fake_ip_filter', title: 'Fake-IP 过滤', hint: '黑名单下这些域名返回真实 IP；白名单下仅这些域名返回 Fake-IP', fakeIpOnly: true },
+  { key: 'fake_ip_filter', title: 'Fake-IP 过滤', hint: '黑名单下这些域名返回真实 IP；白名单下仅这些域名返回 Fake-IP；规则模式下每行一条规则', fakeIpOnly: true },
 ]
 const CORE_DNS_LISTS = LISTS.filter((item) => item.core)
 const ADV_DNS_LISTS = LISTS.filter((item) => !item.core)
@@ -855,6 +975,17 @@ const TABS = computed(() => [
         </div>
       </section>
 
+      <section class="card" data-testid="node-switch-settings">
+        <div class="setting-row">
+          <div class="grow">
+            <strong>切换节点后重连</strong>
+            <p class="muted small">关闭经过当前代理组的旧连接，让应用重连新节点。下载、视频或通话可能中断；关闭后仅新连接使用新节点。</p>
+          </div>
+          <Toggle :model-value="currentSettings.close_connections_on_switch" label="切换节点后重连" data-testid="close-on-node-switch"
+            @update:model-value="(on) => save({ close_connections_on_switch: on })" />
+        </div>
+      </section>
+
       <section class="card" data-testid="subscription-settings">
         <details class="settings-fold flush" :open="Boolean(snap.settings.subscription_user_agent) || undefined">
           <summary>
@@ -1067,6 +1198,21 @@ const TABS = computed(() => [
             <Icon name="refresh" :size="15" :class="{ spin: store.busy.kernel }" />检查
           </button>
         </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>生效配置</strong>
+            <p class="muted small">{{ snap.active_id ? '合并订阅、覆写与下方设置后的全部选项，并标出每项来源' : '启用一份配置后可查看' }}</p>
+          </div>
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="!snap.active_id"
+            data-testid="settings-open-config"
+            @click="store.openConfig()"
+          >
+            <Icon name="file" :size="15" />查看
+          </button>
+        </div>
       </section>
 
       <section class="card">
@@ -1105,18 +1251,91 @@ const TABS = computed(() => [
             </button>
           </div>
         </div>
-        <div v-for="flag in FLAGS" :key="flag.key" class="setting-row">
-          <div class="grow">
-            <strong>{{ flag.title }}<span v-if="snap.settings[flag.key] != null" class="tag accent sm">已覆盖</span></strong>
-            <p class="muted small">{{ flag.hint }}</p>
+        <template v-for="flag in FLAGS" :key="flag.key">
+          <div class="setting-row">
+            <div class="grow">
+              <strong>{{ flag.title }}<span v-if="snap.settings[flag.key] != null" class="tag accent sm">已覆盖</span></strong>
+              <p class="muted small">{{ flag.hint }}</p>
+            </div>
+            <Toggle :model-value="effective(flag.key)" :busy="store.busy.settings" :label="flag.title" @update:model-value="(on) => save({ [flag.key]: on })" />
           </div>
-          <Toggle :model-value="effective(flag.key)" :busy="store.busy.settings" :label="flag.title" @update:model-value="(on) => save({ [flag.key]: on })" />
-        </div>
+          <!-- Sharing the proxy with other devices: where to point them and who may use it. -->
+          <div v-if="flag.key === 'allow_lan' && lanOn" class="lan-block" data-testid="lan-block">
+            <p class="lan-address small">
+              <Icon name="network" :size="14" />
+              <template v-if="lanAddress">
+                其他设备的代理地址填
+                <button type="button" class="lan-address-value mono" title="复制" data-testid="lan-address" @click="copyLanAddress">
+                  {{ lanAddress }}:{{ lanPort }}<Icon name="copy" :size="12" />
+                </button>
+              </template>
+              <template v-else>其他设备的代理地址填本机局域网 IP 与端口 {{ lanPort }}</template>
+            </p>
+            <div class="lan-field">
+              <div class="lan-label">
+                <strong>访问认证<span v-if="snap.settings.lan_auth.length" class="tag accent sm">已开启</span></strong>
+                <p class="muted small">留空则不需要密码；本机访问始终免认证</p>
+              </div>
+              <div class="lan-inputs">
+                <input
+                  v-model="lanUser"
+                  class="input sm"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="用户名"
+                  aria-label="局域网访问用户名"
+                  data-testid="lan-user"
+                />
+                <div class="lan-pass">
+                  <input
+                    v-model="lanPass"
+                    class="input sm"
+                    :type="lanPassVisible ? 'text' : 'password'"
+                    autocomplete="new-password"
+                    placeholder="密码"
+                    aria-label="局域网访问密码"
+                    data-testid="lan-pass"
+                  />
+                  <button
+                    type="button"
+                    class="icon-btn sm"
+                    :aria-pressed="lanPassVisible"
+                    :aria-label="lanPassVisible ? '隐藏密码' : '显示密码'"
+                    @click="lanPassVisible = !lanPassVisible"
+                  >
+                    <Icon :name="lanPassVisible ? 'eye-off' : 'eye'" :size="14" />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="lan-field">
+              <div class="lan-label">
+                <strong>允许的设备</strong>
+                <p class="muted small">留空允许所有局域网设备；填 IP 或网段，逗号分隔</p>
+              </div>
+              <div class="lan-inputs">
+                <input
+                  v-model="lanIps"
+                  class="input sm mono"
+                  spellcheck="false"
+                  :placeholder="lanAddress ? `${lanAddress.replace(/\.\d+$/, '.0')}/24` : '192.168.1.0/24'"
+                  aria-label="允许的设备"
+                  data-testid="lan-ips"
+                  @keydown.enter="saveLan"
+                />
+              </div>
+            </div>
+            <div v-if="lanDirty" class="lan-actions">
+              <button type="button" class="btn ghost sm" data-testid="undo-lan" @click="undoLan">撤销</button>
+              <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-lan" @click="saveLan">保存</button>
+            </div>
+          </div>
+        </template>
         <details class="settings-fold">
           <summary>
             <Icon name="chevron-right" :size="14" />
             <span>高级内核与测速选项</span>
-            <span class="muted small">日志级别、进程匹配、域名嗅探与测速地址</span>
+            <span class="muted small">{{ store.isAndroid.value ? '日志、进程匹配、嗅探与测速地址' : '日志、进程匹配、嗅探、TCP 保活与测速地址' }}</span>
           </summary>
           <div class="settings-fold-body">
             <div class="setting-row">
@@ -1153,6 +1372,22 @@ const TABS = computed(() => [
                 <p class="muted small">从 HTTP / TLS / QUIC 流量中识别域名，让按域名分流在 IP 直连时也生效</p>
               </div>
               <Toggle :model-value="Boolean(snap.settings.sniffer)" :busy="store.busy.settings" label="域名嗅探" @update:model-value="(on) => save({ sniffer: on })" />
+            </div>
+            <!-- mihomo always disables TCP keep-alive on Android, so the choice would do nothing there. -->
+            <div v-if="!store.isAndroid.value" class="setting-row">
+              <div class="grow">
+                <strong>TCP 保活<span v-if="snap.settings.keep_alive_interval != null" class="tag accent sm">已覆盖</span></strong>
+                <p class="muted small">空闲连接的心跳间隔，手机上调长可省电；{{ profileKeepAlive }}</p>
+              </div>
+              <SelectField
+                :model-value="snap.settings.keep_alive_interval == null ? '' : String(snap.settings.keep_alive_interval)"
+                :options="KEEP_ALIVE.map((item) => ({ value: item.id, label: item.label }))"
+                :sheet="compact"
+                size="sm"
+                label="TCP 保活"
+                data-testid="keep-alive-select"
+                @update:model-value="(value) => save({ keep_alive_interval: value === '' ? null : Number(value) })"
+              />
             </div>
             <div class="setting-row wrap">
               <div class="grow">
@@ -1219,9 +1454,9 @@ const TABS = computed(() => [
         <div class="setting-row">
           <div class="grow">
             <strong>协议栈</strong>
-            <p class="muted small">Mixed：TCP 走系统栈、UDP 走 gVisor，兼容性与性能兼顾</p>
+            <p class="muted small">{{ STACK_HINTS[tun.stack] }}</p>
           </div>
-          <Segmented v-model="tun.stack" :options="STACKS" size="sm" label="协议栈" />
+          <Segmented v-model="tun.stack" :options="STACKS" size="sm" label="协议栈" data-testid="tun-stack" />
         </div>
         <div class="setting-row">
           <div class="grow">
@@ -1348,7 +1583,7 @@ const TABS = computed(() => [
             <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
               <div class="grow">
                 <strong>过滤列表模式</strong>
-                <p class="muted small">{{ dns.fake_ip_filter_mode === 'whitelist' ? '白名单：仅列表中的域名返回虚拟地址，其余返回真实 IP' : '黑名单：列表中的域名返回真实 IP，其余返回虚拟地址' }}</p>
+                <p class="muted small">{{ FILTER_MODE_HINTS[dns.fake_ip_filter_mode] }}</p>
               </div>
               <Segmented
                 v-model="dns.fake_ip_filter_mode"
