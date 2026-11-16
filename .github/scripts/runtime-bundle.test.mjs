@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -101,6 +101,17 @@ test('packed resources round trip exactly and repair a corrupted compression cac
     assert.ok(first.size < raw.length / 10)
     assert.equal(first.unpacked_size, raw.length)
     assert.deepEqual(brotliDecompressSync(await readFile(resolve(output, first.file))), raw)
+    const outputPath = resolve(output, first.file)
+    const cachedPath = resolve(cache, `${first.unpacked_sha256}.br`)
+    const stamp = new Date('2001-01-01T00:00:00Z')
+    await utimes(outputPath, stamp, stamp)
+    await utimes(cachedPath, stamp, stamp)
+    await packResource(raw, 'GeoIP.dat', output, cache)
+    assert.equal((await stat(outputPath)).mtimeMs, stamp.getTime(), 'unchanged outputs must not be rewritten')
+    assert.equal((await stat(cachedPath)).mtimeMs, stamp.getTime(), 'verified cache must not be rewritten')
+    await writeFile(outputPath, 'damaged output')
+    await packResource(raw, 'GeoIP.dat', output, cache)
+    assert.deepEqual(brotliDecompressSync(await readFile(outputPath)), raw)
     await writeFile(resolve(cache, `${first.unpacked_sha256}.br`), 'corrupt')
     const repaired = await packResource(raw, 'GeoIP.dat', output, cache)
     assert.deepEqual(repaired, first)

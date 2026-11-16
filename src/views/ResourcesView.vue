@@ -113,6 +113,7 @@ let detailVersion = 0
 let disposed = false
 
 async function load(quiet = false) {
+  if (disposed) return
   const version = ++loadVersion
   if (!quiet) loading.value = true
   try {
@@ -304,11 +305,15 @@ function resetGeoUrls() {
   void store.saveSettings({ ...snap.value.settings, geo_urls: empty })
 }
 
+let geoLoadVersion = 0
 async function loadGeo() {
+  if (disposed) return
+  const version = ++geoLoadVersion
   try {
-    geoFiles.value = await store.backend.geoFiles()
+    const files = await store.backend.geoFiles()
+    if (!disposed && version === geoLoadVersion) geoFiles.value = files
   } catch {
-    geoFiles.value = []
+    if (!disposed && version === geoLoadVersion) geoFiles.value = []
   }
 }
 

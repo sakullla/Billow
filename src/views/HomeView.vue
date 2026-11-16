@@ -169,7 +169,7 @@ const tunSubtitle = computed(() => {
 /** The hero's first line answers "is my traffic going through Billow?", not just "is the kernel up?". */
 const heroEyebrow = computed(() => {
   if (store.connecting.value) return '请稍候'
-  if (!snap.value.connected) return '代理未运行'
+  if (!snap.value.kernel_running) return '代理未运行'
   if (takeoverOn.value) return takeoverSummary.value
   const port = snap.value.mixed_port
   return port ? `未接管系统流量 · 仅端口 ${port} 可用` : '未接管系统流量'
@@ -275,7 +275,7 @@ function onPrimary() {
 
     <div v-else class="home-layout">
       <!-- Unified Cockpit Hero: state, 1-tap profile/node pills, primary power orb/trigger, live rates, chart & runtime -->
-      <section class="card hero" :class="[status.tone, { bare: snap.connected && !takeoverOn }]" data-testid="home-status">
+      <section class="card hero" :class="[status.tone, { bare: snap.kernel_running && !takeoverOn }]" data-testid="home-status">
         <div class="hero-topbar">
           <span class="hero-status-pill">
             <span class="hero-dot" aria-hidden="true" />

@@ -419,16 +419,16 @@ pub fn set_system_proxy_with_settings(
     }
     if !enabled {
         if !clear_owned(model, proxy) {
-            model.connected = model.system_proxy;
+            model.connected = model.system_proxy || model.tun;
             return;
         }
         model.system_proxy = false;
-        model.connected = false;
+        model.connected = model.tun;
         return;
     }
     let Some(port) = port else {
         model.system_proxy = false;
-        model.connected = false;
+        model.connected = model.tun;
         model.failure = Some("没有本地端口".to_string());
         return;
     };
@@ -465,7 +465,7 @@ pub fn set_tun(model: &mut LinkModel, enabled: bool, tun: &mut dyn TunGrant) {
     }
     model.tun = true;
     model.tun_wanted = true;
-    model.connected = model.system_proxy;
+    model.connected = true;
 }
 
 impl LinkModel {
@@ -2332,6 +2332,28 @@ mod tests {
         assert!(enabled.connected);
         assert!(tun.enabled);
         assert_eq!(proxy.sets, 1);
+    }
+
+    #[test]
+    fn tun_alone_is_connected_and_survives_disabling_system_proxy() {
+        let dir = temp_dir("tun-only");
+        let (mut book, mut kernel) = ready_book(&dir.0, ClientPlatform::Desktop);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let enabled = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(enabled.tun && enabled.connected && enabled.kernel_running);
+        assert!(!enabled.system_proxy);
+        assert_eq!(proxy.sets, 0, "TUN enable must not change OS proxy settings");
+        assert_eq!(tun_enable(&kernel.last), Some(true));
+        let both = book.set_system_proxy(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(both.tun && both.system_proxy && both.connected);
+        let tun_only = book.set_system_proxy(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(tun_only.tun && tun_only.connected && !tun_only.system_proxy);
+        assert!(proxy.http.is_none());
+        assert_eq!(tun_enable(&kernel.last), Some(true));
+        let stopped = book.set_tun(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!stopped.tun && !stopped.system_proxy && !stopped.connected);
     }
 
     #[test]

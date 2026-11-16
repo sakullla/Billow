@@ -327,6 +327,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   }
 
   function snapshot(): Snapshot {
+    state.connected = state.kernel_running && (state.system_proxy || state.tun || state.vpn)
     tick()
     state.profiles.forEach((profile) => (profile.current = profile.id === state.active_id))
     const failure = Boolean(options.connectionsFailure) && state.connected

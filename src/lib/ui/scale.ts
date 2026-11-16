@@ -112,38 +112,62 @@ export function createUiScale(driver: ScaleDriver | null) {
   const target = computed(() => (preference.value === 'auto' ? autoFactor.value : preference.value))
 
   let installed = false
+  let generation = 0
   let resizeTimer: ReturnType<typeof setTimeout> | null = null
+  let syncTask: Promise<void> | null = null
+  let requested = false
+  let appliedKnown = true
 
-  async function sync() {
-    if (!driver || !installed) {
-      applied.value = target.value
-      return
-    }
-    const next = fitScale(target.value, await driver.windowSize())
-    if (Math.abs(next - applied.value) < 0.001) return
-    try {
-      await driver.apply(next)
-      applied.value = next
-    } catch (error) {
-      console.error(error)
-    }
+  function sync(): Promise<void> {
+    if (!driver || !installed) return Promise.resolve()
+    requested = true
+    if (syncTask) return syncTask
+    // Only one native zoom can be in flight. Rapid key presses retain the latest
+    // requested factor instead of building a queue of obsolete IPC calls.
+    syncTask = (async () => {
+      while (requested && installed) {
+        requested = false
+        const session = generation
+        try {
+          const size = await driver.windowSize()
+          if (!installed || generation !== session) continue
+          const next = fitScale(target.value, size)
+          if (appliedKnown && Math.abs(next - applied.value) < 0.001) continue
+          await driver.apply(next)
+          appliedKnown = installed && generation === session
+          if (appliedKnown) applied.value = next
+        } catch (error) {
+          appliedKnown = false
+          if (installed && generation === session) console.error(error)
+        }
+      }
+    })().finally(() => {
+      syncTask = null
+      if (requested && installed) return sync()
+    })
+    return syncTask
   }
 
   function onResize() {
+    if (!installed) return
     if (resizeTimer) clearTimeout(resizeTimer)
     // Re-fit only after the drag settles so a resize never stutters.
-    resizeTimer = setTimeout(() => void sync(), 250)
+    resizeTimer = setTimeout(() => { resizeTimer = null; void sync() }, 250)
   }
 
   async function install() {
     if (!driver || installed) return
     installed = true
     supported.value = true
+    const session = ++generation
+    const current = () => installed && generation === session
     try {
       const monitor = await driver.monitor()
+      if (!current()) return
       autoFactor.value = autoScaleFor(monitor)
       // First launch on a big screen: the 960×680 default would be a tiny island.
       const size = await driver.windowSize()
+      if (!current()) return
       const factor = target.value
       if (monitor && size && factor > 1 && Math.abs(size.width - DEFAULT_WINDOW.width) < 2 && Math.abs(size.height - DEFAULT_WINDOW.height) < 2) {
         await driver.resizeWindow({
@@ -152,17 +176,21 @@ export function createUiScale(driver: ScaleDriver | null) {
         })
       }
     } catch (error) {
-      console.error(error)
+      if (current()) console.error(error)
     }
+    if (!current()) return
     window.addEventListener('resize', onResize)
     await sync()
   }
 
   function uninstall() {
+    generation += 1
+    installed = false
+    supported.value = false
+    requested = false
     if (typeof window !== 'undefined') window.removeEventListener('resize', onResize)
     if (resizeTimer) clearTimeout(resizeTimer)
     resizeTimer = null
-    installed = false
   }
 
   function set(next: UiScalePreference) {

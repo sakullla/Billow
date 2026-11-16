@@ -2127,6 +2127,7 @@ impl ProfileBook {
                 if tun_enable {
                     model.tun = true;
                 }
+                model.connected = model.system_proxy || model.tun;
                 self.apply_model(model);
             }
             Err(StartError::Idle(message)) => {
@@ -2178,7 +2179,7 @@ impl ProfileBook {
                 let mut model = self.link_model();
                 model.tun = true;
                 model.tun_wanted = true;
-                model.connected = model.system_proxy;
+                model.connected = true;
                 self.apply_model(model);
             }
             Err(StartError::Idle(message)) => {
@@ -2239,6 +2240,7 @@ impl ProfileBook {
                     proxy,
                 );
                 model.tun = tun_enable;
+                model.connected = model.system_proxy || model.tun;
                 let _ = vpn.close();
                 model.vpn = false;
                 self.apply_model(model);
@@ -2480,8 +2482,10 @@ impl ProfileBook {
                 profile.updated_ms = Some(now);
                 profile.proxy_count = count_proxies(&profile.content);
             }
-            profile.node_metadata.take();
-            profile.applied_override = profile.override_text.clone();
+            if profile.applied_override != profile.override_text {
+                profile.node_metadata.take();
+                profile.applied_override.clone_from(&profile.override_text);
+            }
             profile.override_error = None;
             profile.failure = None;
             profile.last_success_ms = Some(now);
@@ -4697,6 +4701,24 @@ mod tests {
     }
 
     #[test]
+    fn repeated_anchor_names_do_not_rebind_urls_to_an_unrelated_mapping() {
+        let content = "base: &BaseProvider {type: http}\nproxy-providers:\n  first: {<<: *BaseProvider, url: &Subscription 'https://example.com/first'}\n  second: {<<: *BaseProvider, url: &Subscription 'https://example.com/second'}\n  chained: {<<: *BaseProvider, url: *Subscription}\nother: &Other {type: select}\n";
+        let config = parse_yaml(content).unwrap();
+        assert_eq!(config["proxy-providers"]["chained"]["url"].as_str(), Some("https://example.com/second"));
+        assert_eq!(config["proxy-providers"]["first"]["url"].as_str(), Some("https://example.com/first"));
+        for (first, second) in [("one", "two"), ("[one]", "[two]"), ("{key: one}", "{key: two}")] {
+            let text = format!("first: &same {first}\nbefore: *same\nsecond: &same {second}\nafter: *same\nother: &other {{kind: unrelated}}\n");
+            let parsed = parse_yaml(&text).unwrap();
+            assert_eq!(parsed["before"], parsed["first"], "earlier aliases retain their original definition");
+            assert_eq!(parsed["after"], parsed["second"], "later aliases follow the nearest preceding definition");
+        }
+        let prepared = prepare(content, "").unwrap_or_else(|_| panic!("valid repeated anchors"));
+        let (yaml, _) = apply_settings(&prepared.yaml, &KernelSettings::default(), true).unwrap();
+        let final_config: Value = serde_yaml::from_str(&nodes::ensure_controller(&yaml)).unwrap();
+        assert_eq!(final_config["proxy-providers"]["chained"]["url"].as_str(), Some("https://example.com/second"));
+    }
+
+    #[test]
     fn provider_urls_keep_scalar_types_through_aliases_overrides_and_runtime_settings() {
         let content = "provider-url: &provider-url 'https://example.com/sub?token=test'\nhttp-provider: &http-provider\n  type: http\n  url: *provider-url\nproxy-providers:\n  inherited:\n    <<: *http-provider\n  explicit:\n    <<: *http-provider\n    url: 'https://example.org/other'\nproxy-groups:\n  - {name: Select, type: select, use: [inherited, explicit]}\n";
         for overlay in ["", "proxy-providers:\n  inherited:\n    url: 'https://example.net/override'\n"] {
@@ -6338,6 +6360,29 @@ proxy-groups:
                 Vec::new()
             }
         }
+    }
+
+    #[test]
+    fn tun_only_session_publishes_connections_without_a_system_proxy() {
+        let dir = temp_dir("tun-only-connections");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("local", &config(7890));
+        let mut kernel = TrafficKernel { running: false, fail: false,
+            connections: vec![ConnectionView { host: "example.com".into(), outbound: "DIRECT".into(), ..Default::default() }], logs: Vec::new() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let next = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(next.connected && next.tun && !next.system_proxy);
+        assert_eq!(next.connections.len(), 1);
+        let next = book.set_system_proxy(false, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(next.connected);
+        assert_eq!(next.connections.len(), 1);
+        kernel.running = false;
+        book.sync_runtime(&mut kernel);
+        assert!(!book.snapshot().connected);
     }
 
     #[test]

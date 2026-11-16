@@ -28,14 +28,16 @@ export async function prepareGeo(target) {
     const expected = checksum.toString().trim().split(/\s+/)[0]
     if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error(`Invalid GEO checksum: ${entry.name}`)
     const path = resolve(cache, expected)
-    let bytes = await readFile(path).catch(() => readFile(resolve(target, entry.name)).catch(() => null))
+    let bytes = await readFile(path).catch(() => null)
     if (!bytes || sha(bytes) !== expected) {
-      console.log(`Downloading bundled ${entry.name}`)
-      bytes = await downloadBytes(url)
-      if (sha(bytes) !== expected) throw new Error(`GEO checksum mismatch: ${entry.name}`)
+      bytes = await readFile(resolve(target, entry.name)).catch(() => null)
+      if (!bytes || sha(bytes) !== expected) {
+        console.log(`Downloading bundled ${entry.name}`)
+        bytes = await downloadBytes(url)
+        if (sha(bytes) !== expected) throw new Error(`GEO checksum mismatch: ${entry.name}`)
+      }
       await writeFile(path, bytes)
     }
-    await writeFile(path, bytes)
     const packed = await packResource(bytes, entry.name, target, resolve(cache, 'packed'))
     await rm(resolve(target, entry.name), { force: true })
     provenance.files.push({ ...entry, sha256: expected, packed })

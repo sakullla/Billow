@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
 import { autoScaleFor, createUiScale, fitScale, scaleLabel, type ScaleDriver, type Size } from './scale'
 
 function fakeDriver(monitor: Size | null, window: Size) {
@@ -23,6 +24,7 @@ function fakeDriver(monitor: Size | null, window: Size) {
 afterEach(() => {
   localStorage.clear()
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 describe('ui scale', () => {
@@ -70,6 +72,79 @@ describe('ui scale', () => {
     expect(scale.preference.value).toBe('auto')
     scale.uninstall()
     expect(createUiScale(null).preference.value).toBe('auto')
+  })
+
+  it('does not attach listeners or resize after an asynchronous install is uninstalled', async () => {
+    let resolve!: (size: Size | null) => void
+    const monitor = new Promise<Size | null>((done) => { resolve = done })
+    const fake = fakeDriver(null, { width: 960, height: 680 })
+    fake.driver.monitor = () => monitor
+    const listen = vi.spyOn(window, 'addEventListener')
+    const scale = createUiScale(fake.driver)
+    const installing = scale.install()
+    scale.uninstall()
+    resolve({ width: 3840, height: 2160 })
+    await installing
+    expect(fake.resized).toEqual([])
+    expect(fake.applied).toEqual([])
+    expect(listen.mock.calls.filter(([name]) => name === 'resize')).toHaveLength(0)
+    expect(scale.supported.value).toBe(false)
+  })
+
+  it('coalesces rapid zoom changes while a native apply is pending', async () => {
+    const fake = fakeDriver(null, { width: 2400, height: 1600 })
+    const scale = createUiScale(fake.driver)
+    await scale.install()
+    let finish!: () => void
+    const pending = new Promise<void>((done) => { finish = done })
+    const apply = vi.spyOn(fake.driver, 'apply').mockImplementationOnce(async () => { await pending })
+    scale.set(1.1)
+    await flushPromises()
+    scale.set(1.25)
+    scale.set(1.5)
+    scale.set(2)
+    expect(apply.mock.calls).toEqual([[1.1]])
+    finish()
+    await flushPromises()
+    expect(apply.mock.calls).toEqual([[1.1], [2]])
+    expect(scale.applied.value).toBe(2)
+    scale.uninstall()
+  })
+
+  it('restores the current zoom when a previous lifecycle apply completes late', async () => {
+    const fake = fakeDriver(null, { width: 2400, height: 1600 })
+    const scale = createUiScale(fake.driver)
+    await scale.install()
+    let finish!: () => void
+    const pending = new Promise<void>((done) => { finish = done })
+    const apply = vi.spyOn(fake.driver, 'apply').mockImplementationOnce(async () => { await pending })
+    scale.set(1.5)
+    await flushPromises()
+    scale.uninstall()
+    scale.set(1)
+    const installing = scale.install()
+    await flushPromises()
+    finish()
+    await installing
+    expect(apply.mock.calls).toEqual([[1.5], [1]])
+    expect(scale.applied.value).toBe(1)
+    scale.uninstall()
+  })
+
+  it('drops pending size reads and resize timers on uninstall', async () => {
+    vi.useFakeTimers()
+    const fake = fakeDriver(null, { width: 2400, height: 1600 })
+    const scale = createUiScale(fake.driver)
+    await scale.install()
+    let finish!: (size: Size | null) => void
+    fake.driver.windowSize = () => new Promise((done) => { finish = done })
+    scale.set(1.5)
+    window.dispatchEvent(new Event('resize'))
+    scale.uninstall()
+    finish({ width: 2400, height: 1600 })
+    await vi.advanceTimersByTimeAsync(500)
+    expect(fake.applied).toEqual([])
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('reads a saved preference and ignores junk', () => {

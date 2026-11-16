@@ -156,6 +156,24 @@ afterEach(() => {
 })
 
 describe('App', () => {
+  it('does not fetch another provider list after leaving during an update', async () => {
+    const { wrapper, backend } = await mountApp()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(500)
+    const providers = vi.spyOn(backend, 'providers')
+    let complete!: () => void
+    vi.spyOn(backend, 'providerAction').mockImplementationOnce(() => new Promise<void>((resolve) => { complete = resolve }))
+    const update = wrapper.find('[data-testid="update-all-rule"]')
+    await update.trigger('click')
+    await flushPromises()
+    await openPage(wrapper, 'home')
+    complete()
+    await settle(2000)
+    expect(providers).not.toHaveBeenCalled()
+  })
+
   it('shows the sidebar with every page on desktop and a tab bar on narrow screens', async () => {
     const { wrapper } = await mountApp()
     const pages = wrapper.findAll('.sidebar [data-page]').map((item) => item.attributes('data-page'))
@@ -183,6 +201,27 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="rates"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="toggle-proxy"]').attributes('aria-checked')).toBe('true')
     expect(wrapper.find('[data-testid="toggle-tun"]').attributes('aria-checked')).toBe('false')
+  })
+
+  it('shows a TUN-only session as connected and keeps traffic when system proxy is off', async () => {
+    const { wrapper, backend } = await mountApp()
+    const proxy = vi.spyOn(backend, 'setSystemProxy')
+    await wrapper.find('[data-testid="toggle-tun"]').trigger('click')
+    await settle(1000)
+    expect(proxy).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('已连接')
+    expect(wrapper.find('[data-testid="toggle-proxy"]').attributes('aria-checked')).toBe('false')
+    expect(wrapper.find('[data-testid="rates"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="toggle-proxy"]').trigger('click')
+    await settle(500)
+    await wrapper.find('[data-testid="toggle-proxy"]').trigger('click')
+    await settle(500)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('已连接')
+    expect(wrapper.find('[data-testid="toggle-tun"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="rates"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="toggle-tun"]').trigger('click')
+    await settle(1000)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('未连接')
   })
 
   it('says in the hero whether traffic is taken over, not only that the kernel runs', async () => {

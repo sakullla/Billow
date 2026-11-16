@@ -1,6 +1,6 @@
 [package]
 name = "billow"
-version = "0.1.15"
+version = "0.1.16"
 description = "Billow"
 license = "GPL-3.0-only"
 edition = "2024"
@@ -47,3 +47,8 @@ opt-level = "s"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Upstream 0.9.34 reuses alias IDs when anchor names are redefined.
+# Keep the parser/API unchanged and apply the scoped loader fix documented here.
+[patch.crates-io]
+serde_yaml = { path = "vendor/serde_yaml" }

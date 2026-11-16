@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -31,11 +31,14 @@ struct GeoBundle { files: Vec<GeoEntry> }
 #[derive(Deserialize)]
 struct GeoEntry { name: String, packed: Option<PackedResource> }
 
-fn packed_entry(manifest: impl Read, name: &str) -> Result<PackedResource, String> {
-    let manifest: GeoBundle = serde_json::from_reader(manifest.take(64 * 1024))
-        .map_err(|_| "GEO 压缩资源清单无效".to_string())?;
-    let packed = manifest.files.into_iter().find(|entry| entry.name == name)
-        .and_then(|entry| entry.packed).ok_or_else(|| format!("GEO 压缩资源清单缺少 {name}"))?;
+fn read_manifest(manifest: impl Read) -> Result<GeoBundle, String> {
+    serde_json::from_reader(BufReader::new(manifest.take(64 * 1024)))
+        .map_err(|_| "GEO 压缩资源清单无效".to_string())
+}
+
+fn packed_entry<'a>(manifest: &'a GeoBundle, name: &str) -> Result<&'a PackedResource, String> {
+    let packed = manifest.files.iter().find(|entry| entry.name == name)
+        .and_then(|entry| entry.packed.as_ref()).ok_or_else(|| format!("GEO 压缩资源清单缺少 {name}"))?;
     if packed.file != format!("{name}.br") { return Err("GEO 压缩资源路径无效".to_string()); }
     Ok(packed)
 }
@@ -43,6 +46,7 @@ fn packed_entry(manifest: impl Read, name: &str) -> Result<PackedResource, Strin
 /// Desktop installers carry the same GEO snapshot as Android, as ordinary resources.
 pub fn seed_directory(resources: &Path, home: &Path) -> Result<(), String> {
     fs::create_dir_all(home).map_err(|error| format!("GEO 数据目录不可用：{error}"))?;
+    let mut manifest = None;
     for name in FILES {
         if usable_cache(&home.join(name)) { continue; }
         // Mihomo also recognises lowercase files and the historic MMDB filenames.
@@ -63,10 +67,13 @@ pub fn seed_directory(resources: &Path, home: &Path) -> Result<(), String> {
         }
         let source = resources.join(name);
         if !source.exists() {
-            let manifest = File::open(resources.join("build.json")).map_err(|_| format!("安装包中的 GEO 数据缺失：{name}"))?;
-            let packed = packed_entry(manifest, name)?;
+            if manifest.is_none() {
+                let file = File::open(resources.join("build.json")).map_err(|_| format!("安装包中的 GEO 数据缺失：{name}"))?;
+                manifest = Some(read_manifest(file)?);
+            }
+            let packed = packed_entry(manifest.as_ref().unwrap(), name)?;
             let input = File::open(resources.join(&packed.file)).map_err(|_| format!("安装包中的 GEO 数据缺失：{name}"))?;
-            packed::unpack(input, &home.join(name), &packed, |path| usable_geo(path, Path::new(name)))
+            packed::unpack(input, &home.join(name), packed, |path| usable_geo(path, Path::new(name)))
                 .map_err(|error| format!("内置 GEO 数据初始化失败：{name}：{error}"))?;
             continue;
         }
@@ -95,15 +102,17 @@ pub fn seed(apk: &Path, home: &Path) -> Result<(), String> {
     let install = || -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(home)?;
         let mut archive = zip::ZipArchive::new(File::open(apk)?)?;
+        let mut manifest = None;
         for name in missing {
             let legacy = format!("assets/billow-geo/{name}");
             if archive.index_for_name(&legacy).is_none() {
-                let metadata = {
-                    let manifest = archive.by_name("assets/billow-geo/build.json")?;
-                    packed_entry(manifest, name)?
-                };
+                if manifest.is_none() {
+                    let file = archive.by_name("assets/billow-geo/build.json")?;
+                    manifest = Some(read_manifest(file)?);
+                }
+                let metadata = packed_entry(manifest.as_ref().unwrap(), name)?;
                 let input = archive.by_name(&format!("assets/billow-geo/{}", metadata.file))?;
-                packed::unpack(input, &home.join(name), &metadata, |path| usable_geo(path, Path::new(name)))?;
+                packed::unpack(input, &home.join(name), metadata, |path| usable_geo(path, Path::new(name)))?;
                 continue;
             }
             let mut source = archive.by_name(&legacy)?;
