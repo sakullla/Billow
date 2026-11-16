@@ -18,6 +18,10 @@ on:
         default: gzip
         type: choice
         options: [gzip, xz]
+      macos_manifest_sha256:
+        description: Optional SHA-256 of uploaded native-validated macOS build manifest (capacity recovery)
+        default: ''
+        type: string
       macos_runner:
         description: Hosted ARM64 macOS runner
         default: macos-15
@@ -141,13 +145,43 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.prebuiltMacos }}
         with:
           targets: ${{ matrix.target }}
       - uses: swatinem/rust-cache@v2
+        if: ${{ !matrix.prebuiltMacos }}
         with:
           workspaces: src-tauri -> target
           key: release-${{ matrix.target }}
+          cache-on-failure: true
       - run: npm ci
+      - name: Restore verified runtime compression cache
+        if: ${{ !matrix.prebuiltMacos }}
+        id: runtime-cache
+        uses: actions/cache/restore@v6.1.0
+        continue-on-error: true
+        with:
+          path: src-tauri/.runtime-cache
+          key: runtime-${{ matrix.target }}-${{ hashFiles('src-tauri/desktop-kernel.json', 'src-tauri/android-geo.json', 'tool/pack_resource.mjs') }}-${{ github.run_id }}
+          restore-keys: |
+            runtime-${{ matrix.target }}-${{ hashFiles('src-tauri/desktop-kernel.json', 'src-tauri/android-geo.json', 'tool/pack_resource.mjs') }}-
+      - uses: actions/checkout@v7
+        if: matrix.prebuiltMacos
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          persist-credentials: false
+      - name: Verify and sign native-validated macOS recovery artifacts
+        if: matrix.prebuiltMacos
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.id }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+          MACOS_MANIFEST_SHA256: ${{ matrix.macosManifestSha256 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node .release-tools/.github/scripts/sign-prebuilt-macos.cjs
       - uses: actions/setup-java@v5
         if: matrix.platform == 'android'
         with:
@@ -179,7 +213,7 @@ jobs:
             printf 'storeFile=%s\n' "$RUNNER_TEMP/billow.p12"
           } > src-tauri/gen/android/keystore.properties
       - name: Build signed release artifacts
-        if: matrix.platform != 'android'
+        if: matrix.platform != 'android' && !matrix.prebuiltMacos
         uses: tauri-apps/tauri-action@v1
         env:
           # Emit linuxdeploy diagnostics instead of hiding the actual AppImage error.
@@ -198,7 +232,7 @@ jobs:
           args: ${{ matrix.args }}
           retryAttempts: 1
       - name: Verify packaged desktop kernel and GEO work offline
-        if: matrix.platform != 'android'
+        if: matrix.platform != 'android' && !matrix.prebuiltMacos
         env:
           BILLOW_TEST_RESOURCES: ${{ github.workspace }}/src-tauri/resources/runtime
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked desktop_packaged_runtime_starts_offline -- --ignored --nocapture
@@ -228,6 +262,14 @@ jobs:
           test "$abis" = 'arm64-v8a'
           cp "${apks[0]}" "$RUNNER_TEMP/Billow_${RELEASE_VERSION}_arm64.apk"
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/Billow_${RELEASE_VERSION}_arm64.apk" --clobber
+
+      - name: Save runtime compression cache even after a packaging failure
+        if: ${{ always() && !matrix.prebuiltMacos && steps.runtime-cache.outputs.cache-hit != 'true' && steps.runtime-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v6.1.0
+        continue-on-error: true
+        with:
+          path: src-tauri/.runtime-cache
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
 
   publish:
     needs: [prepare, build]

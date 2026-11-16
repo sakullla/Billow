@@ -28,3 +28,15 @@ test('release and recovery reject mismatched versions, untrusted events, and arb
     { inputs: { tag: 'v0.1.16', appimage_compression: 'unknown' } },
   ]) assert.throws(() => releaseRequest({ ...valid, ...change }))
 })
+
+test('prebuilt recovery is explicit, checksummed, and limited to macOS', () => {
+  const inputs = { tag: 'v0.1.16', platforms: 'macos,linux', macos_manifest_sha256: 'a'.repeat(64) }
+  const options = { eventName: 'workflow_dispatch', ref: 'refs/heads/main', version: '0.1.16', inputs }
+  const result = releaseRequest(options)
+  assert.equal(result.matrix[0].prebuiltMacos, true)
+  assert.equal(result.matrix[0].os, 'ubuntu-22.04')
+  assert.equal(result.matrix[1].prebuiltMacos, false)
+  assert.throws(() => releaseRequest({ ...options, eventName: 'push', ref: 'refs/tags/v0.1.16' }))
+  assert.throws(() => releaseRequest({ ...options, inputs: { ...inputs, macos_manifest_sha256: 'bad' } }))
+  assert.throws(() => releaseRequest({ ...options, inputs: { ...inputs, platforms: 'linux' } }))
+})
