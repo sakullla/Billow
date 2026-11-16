@@ -12,6 +12,7 @@ import { useHotkeys } from './lib/ui/hotkeys'
 import { installInsets, syncSystemBars } from './lib/ui/insets'
 import { detectChrome, type WindowChrome } from './lib/ui/windowChrome'
 import { getShortcut, SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
+import { scaleLabel } from './lib/ui/scale'
 import AppsView from './views/AppsView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
 import HomeView from './views/HomeView.vue'
@@ -237,6 +238,20 @@ function onPaletteAction(id: string) {
 }
 
 // ── Shortcuts ──
+/** Zoom keys only mean something where the webview can actually zoom (desktop app). */
+const visibleShortcuts = computed(() =>
+  SHORTCUTS.filter((shortcut) => !shortcut.id.startsWith('zoom') || store.uiScale.supported.value),
+)
+
+function zoomBy(direction: 1 | -1) {
+  const next = store.uiScale.step(direction)
+  if (next == null) {
+    store.toast(direction > 0 ? '已是最大缩放' : '已是最小缩放', 'info')
+    return
+  }
+  store.toast(`界面缩放：${scaleLabel(next)}`, 'info')
+}
+
 /** Every dialog, palette and menu registers in the shared layer stack. */
 function layerOpen(): boolean {
   return layerDepth() > 0
@@ -277,9 +292,22 @@ useHotkeys(
       help: () => {
         helpOpen.value = true
       },
+      'zoom-in': () => zoomBy(1),
+      'zoom-out': () => zoomBy(-1),
+      'zoom-reset': () => {
+        store.uiScale.reset()
+        store.toast(`界面缩放：自动（${scaleLabel(store.uiScale.target.value)}）`, 'info')
+      },
     },
     { allowInInput: ['escape'] },
-  ).map((binding) => ({ ...binding, when: () => !layerOpen() })),
+  )
+    // Numpad / shifted "+" reports key "+"; keep it equivalent to mod+=.
+    .concat([{ combo: { key: '+', mod: true }, handler: () => zoomBy(1), allowInInput: true }])
+    .map((binding) => {
+      const zoom = typeof binding.combo !== 'string' || /^mod\+[-=0]$/.test(binding.combo)
+      // In the browser preview the keys stay with the browser's own page zoom.
+      return { ...binding, when: () => !layerOpen() && (!zoom || store.uiScale.supported.value) }
+    }),
 )
 
 // ── Scroll memory (R25) ──
@@ -645,7 +673,7 @@ defineExpose({ store })
 
     <Modal v-if="helpOpen" title="快捷键" subtitle="在应用内生效，输入框会保留自己的按键" @close="helpOpen = false">
       <dl class="shortcut-list">
-        <div v-for="shortcut in SHORTCUTS" :key="shortcut.id" class="shortcut-row">
+        <div v-for="shortcut in visibleShortcuts" :key="shortcut.id" class="shortcut-row">
           <dt><kbd class="palette-kbd">{{ shortcutKeyLabel(shortcut.combo) }}</kbd></dt>
           <dd>
             <strong>{{ shortcut.label }}</strong>

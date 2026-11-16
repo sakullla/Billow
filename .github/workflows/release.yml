@@ -162,6 +162,9 @@ jobs:
         if: matrix.platform != 'android'
         uses: tauri-apps/tauri-action@v1
         env:
+          # Compress bundled Linux WebKit/GTK libraries as well as application data.
+          LDAI_COMP: xz
+          APPIMAGE_COMP: xz
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

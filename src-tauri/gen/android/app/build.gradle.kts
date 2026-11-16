@@ -40,6 +40,10 @@ android {
             }
         }
     }
+    androidResources {
+        // Already compressed and verified by Billow at first launch.
+        noCompress += "br"
+    }
     packaging {
         jniLibs.useLegacyPackaging = true
         jniLibs.keepDebugSymbols.add("**/libmihomo.so")

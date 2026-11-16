@@ -1,6 +1,7 @@
 import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey } from 'vue'
 import type { Backend, NodeTestEvent } from './backend'
 import { createAppUpdater, nativeUpdateDriver } from './appUpdate'
+import { createUiScale, tauriScaleDriver } from './ui/scale'
 import {
   emptySnapshot,
   type AppInfo,
@@ -130,6 +131,8 @@ export function createStore(backend: Backend) {
   const connecting = computed(() => Boolean(busy.connect))
   const connectStage = ref('')
   const appUpdate = createAppUpdater(nativeUpdateDriver(() => isAndroid.value))
+  /** Desktop webview zoom for 2K/4K screens; preview and Android keep 100 %. */
+  const uiScale = createUiScale(backend.live ? tauriScaleDriver() : null)
 
   function dismissToast(id: number) {
     const timer = toastTimers.get(id)
@@ -560,6 +563,7 @@ export function createStore(backend: Backend) {
     if (!isCurrent(session)) return
     loaded.value = true
     if (backend.live) void appUpdate.check(true)
+    if (backend.live && !isAndroid.value) void uiScale.install()
     void backend.kernel().then((value) => {
       if (isCurrent(session)) kernel.value = value
     }).catch(console.error)
@@ -605,6 +609,7 @@ export function createStore(backend: Backend) {
 
   function stop() {
     appUpdate.stop()
+    uiScale.uninstall()
     stopped = true
     generation += 1
     starting = null
@@ -728,6 +733,7 @@ export function createStore(backend: Backend) {
   return {
     backend,
     appUpdate,
+    uiScale,
     snapshot,
     kernel,
     app,

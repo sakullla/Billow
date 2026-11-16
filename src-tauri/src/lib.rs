@@ -6,6 +6,7 @@ mod diagnostics;
 mod elevation;
 mod kernel;
 mod nodes;
+mod packed;
 mod profile;
 mod shell;
 mod takeover;

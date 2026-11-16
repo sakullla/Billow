@@ -1519,6 +1519,31 @@ describe('App', () => {
     for (const name of names) expect(['日本 02', '美国 02', '德国 02']).toContain(name)
   })
 
+  it('filters a long provider list and folds sections across visits', async () => {
+    localStorage.removeItem('billow.resources.collapsed')
+    const { wrapper } = await mountApp({ manyProviders: true })
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'resources')
+    await settle(400)
+    expect(wrapper.findAll('[data-section="rule"] [data-provider]')).toHaveLength(16)
+
+    // Search: hits survive a folded section and the counter reads hits/total.
+    await wrapper.find('[data-testid="fold-rule"]').trigger('click')
+    expect(wrapper.find('[data-section="rule"] [data-provider]').exists()).toBe(false)
+    expect(JSON.parse(localStorage.getItem('billow.resources.collapsed')!)).toEqual({ proxy: false, rule: true })
+    await wrapper.find('[data-testid="provider-search"]').setValue('goo')
+    expect(wrapper.findAll('[data-section="rule"] [data-provider]').map((row) => row.attributes('data-provider'))).toEqual(['Google'])
+    expect(wrapper.find('[data-section="proxy"]').exists()).toBe(false)
+    expect(wrapper.find('[data-section="rule"] .count-pill').text()).toBe('1/16')
+    await wrapper.find('[data-testid="provider-search"]').setValue('zzz')
+    expect(wrapper.find('[data-testid="provider-no-match"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="provider-search"]').setValue('')
+    expect(wrapper.find('[data-section="rule"] [data-provider]').exists()).toBe(false)
+    expect(wrapper.find('[data-section="rule"] .provider-fold-summary').text()).toContain('最近更新')
+    localStorage.removeItem('billow.resources.collapsed')
+  })
+
   it('opens provider details: nodes with tags, rules, and a notice for binary sets', async () => {
     const { wrapper } = await mountApp()
     await wrapper.find('[data-testid="power"]').trigger('click')

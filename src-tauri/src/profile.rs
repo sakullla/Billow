@@ -2026,7 +2026,9 @@ impl ProfileBook {
         source: &dyn SubscriptionSource,
         kernel: &mut dyn KernelLaunch,
     ) -> ProfileSnapshot {
-        self.activate(id, source, kernel)
+        // Switching runs the last downloaded copy: it must work offline and stay instant.
+        // Only a subscription that was never downloaded has to be fetched first.
+        self.activate(id, source, kernel, false)
     }
 
     pub fn update(
@@ -2035,7 +2037,7 @@ impl ProfileBook {
         source: &dyn SubscriptionSource,
         kernel: &mut dyn KernelLaunch,
     ) -> ProfileSnapshot {
-        self.activate(id, source, kernel)
+        self.activate(id, source, kernel, true)
     }
 
     pub fn connect(
@@ -2391,12 +2393,15 @@ impl ProfileBook {
         id: &str,
         source: &dyn SubscriptionSource,
         kernel: &mut dyn KernelLaunch,
+        refresh: bool,
     ) -> ProfileSnapshot {
         let Some(index) = self.profiles.iter().position(|profile| profile.id == id) else {
             self.home_failure = Some(MISSING_PROFILE.to_string());
             return self.snapshot();
         };
-        let fetched = if self.profiles[index].kind == ProfileKind::Subscription {
+        let needs_fetch = self.profiles[index].kind == ProfileKind::Subscription
+            && (refresh || self.profiles[index].content.trim().is_empty());
+        let fetched = if needs_fetch {
             match source.fetch_with_user_agent(&self.profiles[index].source, self.subscription_user_agent(index)) {
                 Ok(fetched) => match age_key::decrypt_if_needed(&fetched.content, &self.profiles[index].age_key) {
                     Ok(plain) => Some(FetchedSubscription {
@@ -4692,6 +4697,27 @@ mod tests {
     }
 
     #[test]
+    fn provider_urls_keep_scalar_types_through_aliases_overrides_and_runtime_settings() {
+        let content = "provider-url: &provider-url 'https://example.com/sub?token=test'\nhttp-provider: &http-provider\n  type: http\n  url: *provider-url\nproxy-providers:\n  inherited:\n    <<: *http-provider\n  explicit:\n    <<: *http-provider\n    url: 'https://example.org/other'\nproxy-groups:\n  - {name: Select, type: select, use: [inherited, explicit]}\n";
+        for overlay in ["", "proxy-providers:\n  inherited:\n    url: 'https://example.net/override'\n"] {
+            let prepared = prepare(content, overlay).unwrap_or_else(|_| panic!("valid provider YAML"));
+            let (yaml, _) = apply_settings(&prepared.yaml, &KernelSettings::default(), true).unwrap();
+            let yaml = ensure_tun_dns(&yaml, &KernelSettings::default()).unwrap();
+            let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&yaml, &BTreeMap::new()));
+            let final_config: Value = serde_yaml::from_str(&yaml).unwrap();
+            let expected = if overlay.is_empty() { "https://example.com/sub?token=test" } else { "https://example.net/override" };
+            assert_eq!(final_config["proxy-providers"]["inherited"]["url"].as_str(), Some(expected));
+            assert_eq!(final_config["proxy-providers"]["explicit"]["url"].as_str(), Some("https://example.org/other"));
+        }
+        // A URL mapping has no unambiguous string value; rewriting it would invent
+        // an address. Preserve the input for the kernel's explicit type diagnostic.
+        let invalid = "proxy-providers:\n  broken:\n    type: http\n    url: {subscription: null}\n";
+        let prepared = prepare(invalid, "").unwrap_or_else(|_| panic!("syntactically valid YAML"));
+        let output: Value = serde_yaml::from_str(&prepared.yaml).unwrap();
+        assert!(output["proxy-providers"]["broken"]["url"].is_mapping());
+    }
+
+    #[test]
     fn prepared_configs_resolve_merge_keys_like_the_kernel() {
         let content = "p: &p {type: http, interval: 86400, behavior: classical}
 proxies: []
@@ -5323,6 +5349,40 @@ proxy-groups:
         assert_eq!(
             confirmed.pending_url.as_deref(),
             Some("https://example.com/sub")
+        );
+    }
+
+    #[test]
+    fn enabling_a_downloaded_subscription_works_offline_and_only_update_fetches() {
+        let dir = temp_dir("offline-enable");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("local.yaml", &config(7890));
+        book.add_subscription("https://sub.example/a");
+        let mut online = MapSource { items: HashMap::new() };
+        online.items.insert(
+            "https://sub.example/a".to_string(),
+            Ok(FetchedSubscription { content: config(7891), userinfo: None }),
+        );
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        // Never downloaded: the first enable still has to fetch.
+        let first = book.enable("p2", &online, &mut kernel);
+        assert_eq!(first.active_id.as_deref(), Some("p2"));
+        let updated_ms = first.profiles.iter().find(|p| p.id == "p2").unwrap().updated_ms;
+        book.enable("p1", &RejectSource, &mut kernel);
+
+        // Offline switch back: the cached copy runs, nothing is fetched or marked failed.
+        let back = book.enable("p2", &RejectSource, &mut kernel);
+        assert_eq!(back.active_id.as_deref(), Some("p2"));
+        assert_eq!(back.mixed_port, Some(7891));
+        let p2 = back.profiles.iter().find(|p| p.id == "p2").unwrap();
+        assert!(p2.failure.is_none());
+        assert_eq!(p2.updated_ms, updated_ms, "a switch must not pretend the subscription was refreshed");
+
+        // An explicit update still goes to the network and reports its failure.
+        let update = book.update("p2", &RejectSource, &mut kernel);
+        assert_eq!(
+            update.profiles.iter().find(|p| p.id == "p2").unwrap().failure.as_deref(),
+            Some(FETCH_ERROR)
         );
     }
 

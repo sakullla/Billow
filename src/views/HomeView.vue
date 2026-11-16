@@ -343,7 +343,7 @@ function onPrimary() {
             </div>
           </div>
 
-          <div v-if="snap.connected" class="hero-rates mono" data-testid="rates">
+          <div v-if="snap.connected" class="hero-rates" data-testid="rates">
             <div class="rate down">
               <span class="rate-label"><Icon name="down" :size="13" />下载</span>
               <span class="rate-value">{{ formatSpeed(snap.download ?? 0) }}</span>
@@ -379,7 +379,7 @@ function onPrimary() {
           <TrafficChart
             :up="store.traffic.value.up"
             :down="store.traffic.value.down"
-            :height="compact ? 72 : 84"
+            :height="compact ? 52 : 84"
             :collecting="store.trafficSamples.value < MIN_CHART_SAMPLES"
           />
         </div>
@@ -387,7 +387,7 @@ function onPrimary() {
         <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
           <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">
             <dt>{{ item.label }}</dt>
-            <dd class="mono">
+            <dd>
               <button v-if="item.key === 'connections'" type="button" class="runtime-link" @click="store.go('connections')">
                 {{ item.value }}<Icon name="chevron-right" :size="13" />
               </button>

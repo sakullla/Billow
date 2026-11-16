@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import { prepareGeo } from './prepare_geo.mjs'
 import { downloadBytes } from './build_download.mjs'
+import { kernelBytes, packResource } from './pack_resource.mjs'
 
 export function desktopTarget(platform, arch) {
   const os = { darwin: 'darwin', macos: 'darwin', win32: 'windows', windows: 'windows', linux: 'linux' }[platform]
@@ -31,13 +32,12 @@ export async function prepareDesktop({ platform, arch, root = fileURLToPath(new 
     if (sha(bytes) !== entry.sha256) throw new Error('Bundled kernel checksum mismatch')
     await writeFile(archivePath, bytes)
   }
-  // Ship the verified archive; Rust extracts it into writable app data at startup.
-  // macOS TUN authorization must never modify a signed application bundle.
-  const archiveName = entry.asset.endsWith('.zip') ? 'kernel.zip' : 'kernel.gz'
-  await writeFile(resolve(bundle, archiveName), bytes)
-  await rm(resolve(bundle, archiveName === 'kernel.zip' ? 'kernel.gz' : 'kernel.zip'), { force: true })
+  const packed = await packResource(kernelBytes(entry.asset, bytes), 'kernel', bundle, resolve(cache, 'packed'))
+  // An architecture switch or a build from an older checkout must not ship duplicate cores.
+  await rm(resolve(bundle, 'kernel.gz'), { force: true })
+  await rm(resolve(bundle, 'kernel.zip'), { force: true })
   await copyFile(resolve(root, 'assets/mihomo/LICENSE'), resolve(bundle, 'mihomo-LICENSE'))
   await prepareGeoImpl(resolve(bundle, 'geo'))
-  await writeFile(resolve(bundle, 'kernel.json'), JSON.stringify({ version: manifest.version, ...entry }, null, 2))
+  await writeFile(resolve(bundle, 'kernel.json'), JSON.stringify({ version: manifest.version, ...entry, packed }, null, 2))
   console.log(`Bundled verified Mihomo ${manifest.version} for ${target}`)
 }

@@ -7,6 +7,8 @@ import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import { useStore } from '../lib/store'
 import { subscriptionUserAgent } from '../lib/subscription'
+import { scaleLabel, UI_SCALE_STEPS } from '../lib/ui/scale'
+import { shortcutKeyLabel } from '../lib/ui/shortcuts'
 import {
   DEFAULT_PAC_SCRIPT,
   DEFAULT_PROXY_BYPASS,
@@ -29,6 +31,18 @@ const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const app = computed(() => store.app.value)
 const kernel = computed(() => store.kernel.value)
+
+const uiScale = store.uiScale
+const scaleOptions = computed(() => [
+  { value: 'auto', label: `自动（${scaleLabel(uiScale.autoFactor.value)}）` },
+  ...UI_SCALE_STEPS.map((step) => ({ value: String(step), label: scaleLabel(step) })),
+])
+/** Explain a fitted value instead of silently showing a different number than chosen. */
+const scaleNote = computed(() => {
+  const { target, applied } = uiScale
+  if (applied.value + 0.001 < target.value) return `窗口较小，当前按 ${scaleLabel(applied.value)} 显示；放大窗口后自动生效`
+  return `2K / 4K 屏幕可调大；${shortcutKeyLabel('mod+=')} / ${shortcutKeyLabel('mod+-')} 快速调整，${shortcutKeyLabel('mod+0')} 恢复自动`
+})
 
 const THEMES: { id: ThemePreference; label: string; icon: string }[] = [
   { id: 'system', label: '跟随系统', icon: 'laptop' },
@@ -790,6 +804,20 @@ const TABS = computed(() => [
             <p class="muted small">浅色、深色或跟随系统</p>
           </div>
           <Segmented :model-value="store.theme.value" :options="THEMES" size="sm" label="主题" @update:model-value="store.setTheme" />
+        </div>
+        <div v-if="uiScale.supported.value" class="setting-row" data-testid="ui-scale-row">
+          <div class="grow">
+            <strong>界面缩放</strong>
+            <p class="muted small">{{ scaleNote }}</p>
+          </div>
+          <SelectField
+            :model-value="String(uiScale.preference.value)"
+            :options="scaleOptions"
+            size="sm"
+            label="界面缩放"
+            data-testid="ui-scale"
+            @update:model-value="(value) => uiScale.set(value === 'auto' ? 'auto' : Number(value))"
+          />
         </div>
         <div v-if="openShortcuts" class="setting-row">
           <div class="grow">

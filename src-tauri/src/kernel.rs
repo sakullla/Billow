@@ -732,6 +732,8 @@ impl KernelManager {
             version: String,
             asset: String,
             sha256: String,
+            #[serde(default)]
+            packed: Option<crate::packed::PackedResource>,
         }
         let install = || -> Result<InstalledKernel, String> {
             let bundle: Bundle = serde_json::from_slice(&fs::read(resources.join("kernel.json")).map_err(|e| e.to_string())?)
@@ -740,13 +742,27 @@ impl KernelManager {
             if bundle.asset != expected_asset || bundle.sha256.len() != 64 || !bundle.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("安装包内核与当前平台不匹配".to_string());
             }
-            let archive = fs::read(resources.join(format!("kernel.{}", self.target.archive_ext())))
-                .map_err(|e| e.to_string())?;
-            if sha256_hex(&archive) != bundle.sha256 {
-                return Err("安装包内核校验和不一致".to_string());
-            }
             let relative_path = format!("files/{}/{}", bundle.sha256, self.target.binary_file_name());
-            extract_kernel(&bundle.asset, &archive, &self.root.join(&relative_path))?;
+            let destination = self.root.join(&relative_path);
+            if let Some(packed) = &bundle.packed {
+                if packed.file != "kernel.br" { return Err("安装包内核资源路径无效".into()); }
+                fs::create_dir_all(destination.parent().unwrap()).map_err(|error| error.to_string())?;
+                let source = fs::File::open(resources.join(&packed.file)).map_err(|error| error.to_string())?;
+                crate::packed::unpack(source, &destination, packed, |_| true).map_err(|error| error.to_string())?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&destination, fs::Permissions::from_mode(0o755)).map_err(|error| error.to_string())?;
+                }
+            } else {
+                // Older runtime bundles remain readable.
+                let archive = fs::read(resources.join(format!("kernel.{}", self.target.archive_ext())))
+                    .map_err(|error| error.to_string())?;
+                if sha256_hex(&archive) != bundle.sha256 {
+                    return Err("安装包内核校验和不一致".to_string());
+                }
+                extract_kernel(&bundle.asset, &archive, &destination)?;
+            }
             Ok(InstalledKernel {
                 channel: Channel::Stable,
                 identity: format!("{}:{}:{}", bundle.version, bundle.asset, bundle.sha256),
@@ -1125,6 +1141,37 @@ mod tests {
             assert_eq!(reopened.channel(), Channel::Preview);
             assert_eq!(fs::read(&path).unwrap(), b"independent-update");
         }
+    }
+
+    #[test]
+    fn compressed_kernel_bootstrap_preserves_bytes_permissions_and_rejects_damage() {
+        let root = std::env::temp_dir().join(format!("billow-kernel-packed-{}", std::process::id()));
+        let resources = root.join("resources");
+        fs::create_dir_all(&resources).unwrap();
+        let target = PlatformTarget::current();
+        let version = "v1.19.34";
+        let asset = format!("{}{}.{}", target.asset_prefix().unwrap(), version, target.archive_ext());
+        let data = b"signed upstream executable bytes";
+        let (bytes, metadata) = crate::packed::tests::fixture(data, "kernel.br");
+        fs::write(resources.join("kernel.br"), &bytes).unwrap();
+        fs::write(resources.join("kernel.json"), serde_json::to_vec(&serde_json::json!({
+            "version": version, "asset": asset, "sha256": "a".repeat(64), "packed": metadata
+        })).unwrap()).unwrap();
+        let mut manager = KernelManager::open(root.join("kernels"), target);
+        manager.seed_desktop(&resources).unwrap();
+        let installed = manager.installed_path().unwrap();
+        assert_eq!(fs::read(&installed).unwrap(), data);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&installed).unwrap().permissions().mode() & 0o777, 0o755);
+        }
+        fs::write(resources.join("kernel.br"), b"damaged").unwrap();
+        manager.seed_desktop(&resources).unwrap(); // An independently installed core stays usable.
+        let mut fresh = KernelManager::open(root.join("fresh"), target);
+        assert!(fresh.seed_desktop(&resources).is_err());
+        assert!(!fresh.status().ready);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

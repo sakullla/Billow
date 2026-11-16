@@ -49,6 +49,54 @@ const allProgress = reactive<Record<'proxy' | 'rule', { done: number; total: num
 const proxySets = computed(() => providers.value.filter((item) => item.kind === 'proxy'))
 const ruleSets = computed(() => providers.value.filter((item) => item.kind === 'rule'))
 
+/** Long provider lists (a dozen rule sets is common) get a name filter. */
+const SEARCH_THRESHOLD = 8
+const query = ref('')
+const needle = computed(() => query.value.trim().toLowerCase())
+const showSearch = computed(() => providers.value.length > SEARCH_THRESHOLD || Boolean(query.value))
+const matches = (row: ProviderRow) =>
+  !needle.value || row.name.toLowerCase().includes(needle.value) || row.behavior.toLowerCase() === needle.value
+const sections = computed(() => [
+  { kind: 'proxy' as const, title: '代理集', all: proxySets.value, rows: proxySets.value.filter(matches) },
+  { kind: 'rule' as const, title: '规则集', all: ruleSets.value, rows: ruleSets.value.filter(matches) },
+])
+const noMatch = computed(() => Boolean(needle.value) && providers.value.length > 0 && sections.value.every((section) => !section.rows.length))
+
+/** Sections fold away once they are just plumbing; the choice survives restarts. */
+const COLLAPSE_KEY = 'billow.resources.collapsed'
+function readCollapsed(): Record<'proxy' | 'rule', boolean> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '{}') as Record<string, unknown>
+    return { proxy: raw.proxy === true, rule: raw.rule === true }
+  } catch {
+    return { proxy: false, rule: false }
+  }
+}
+const collapsed = reactive(readCollapsed())
+function toggleSection(kind: 'proxy' | 'rule') {
+  collapsed[kind] = !collapsed[kind]
+  try {
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed))
+  } catch {
+    // Storage is optional; the fold still applies for this session.
+  }
+}
+/** A search always shows its hits, folded or not. */
+const isOpen = (kind: 'proxy' | 'rule') => !collapsed[kind] || Boolean(needle.value)
+
+/** One-line digest for a folded section: freshest update and anything needing attention. */
+function sectionSummary(rows: ProviderRow[]): string {
+  const parts: string[] = []
+  const failed = rows.filter((row) => stateOf(row)?.state === 'error').length
+  if (failed) parts.push(`${failed} 个更新失败`)
+  const latest = rows.reduce<number | null>((max, row) => {
+    const ms = updatedMs(row)
+    return ms != null && (max == null || ms > max) ? ms : max
+  }, null)
+  if (latest != null) parts.push(`最近更新 ${formatRelative(latest)}`)
+  return parts.join(' · ')
+}
+
 /** Inline providers carry their content in the config, so no fetch can update them (R28). */
 const isInline = (row: ProviderRow) => row.vehicle.toLowerCase().includes('inline')
 
@@ -382,6 +430,14 @@ onMounted(() => {
         <p class="muted small">配置引用的代理集与规则集</p>
       </div>
       <div v-if="snap.kernel_running" class="head-actions">
+        <div v-if="showSearch && providers.length" class="search provider-search">
+          <Icon name="search" :size="16" />
+          <input v-model="query" type="search" placeholder="筛选代理集与规则集" data-page-search data-testid="provider-search" />
+          <span v-if="needle" class="small muted mono">{{ sections.reduce((sum, section) => sum + section.rows.length, 0) }}</span>
+          <button v-if="query" type="button" class="icon-btn sm" aria-label="清空筛选" @click="query = ''">
+            <Icon name="x" :size="14" />
+          </button>
+        </div>
         <button
           type="button"
           class="btn ghost sm"
@@ -426,27 +482,46 @@ onMounted(() => {
       </template>
     </EmptyState>
 
-    <template v-for="section in [
-      { kind: 'proxy' as const, title: '代理集', rows: proxySets },
-      { kind: 'rule' as const, title: '规则集', rows: ruleSets },
-    ]" :key="section.kind">
-      <section v-if="section.rows.length" class="card provider-card">
-        <header class="card-head">
-          <h2>{{ section.title }} <span class="count-pill">{{ section.rows.length }}</span></h2>
+    <p v-if="noMatch" class="empty-line muted" data-testid="provider-no-match">没有名称匹配「{{ query.trim() }}」的资源</p>
+
+    <template v-for="section in sections" :key="section.kind">
+      <section v-if="section.rows.length" class="card provider-card" :class="{ folded: !isOpen(section.kind) }" :data-section="section.kind">
+        <header class="card-head provider-head">
+          <button
+            type="button"
+            class="provider-fold"
+            :aria-expanded="isOpen(section.kind)"
+            :disabled="Boolean(needle)"
+            :data-testid="`fold-${section.kind}`"
+            @click="toggleSection(section.kind)"
+          >
+            <Icon name="chevron-right" :size="15" class="fold-chevron" />
+            <h2>{{ section.title }}</h2>
+            <span class="count-pill">{{ needle ? `${section.rows.length}/${section.all.length}` : section.all.length }}</span>
+            <span v-if="!isOpen(section.kind)" class="muted small ellipsis provider-fold-summary">{{ sectionSummary(section.all) }}</span>
+          </button>
           <button
             type="button"
             class="btn ghost sm"
             :disabled="allRunning[section.kind]"
             :aria-busy="allRunning[section.kind] || undefined"
             :data-testid="`update-all-${section.kind}`"
-            @click="updateAll(section.rows, section.kind)"
+            @click="updateAll(section.all, section.kind)"
           >
             <span v-if="allRunning[section.kind]" class="spinner sm" aria-hidden="true" />
             <Icon v-else name="refresh" :size="15" />
             {{ allRunning[section.kind] ? `更新中 ${allProgress[section.kind].done}/${allProgress[section.kind].total}` : '全部更新' }}
           </button>
         </header>
-        <div v-for="row in section.rows" :key="row.name" class="provider" :data-provider="row.name" :data-inline="isInline(row) ? 'true' : undefined">
+        <div v-if="isOpen(section.kind)" class="provider-list" :class="{ multi: section.rows.length >= 6 }">
+        <div
+          v-for="row in section.rows"
+          :key="row.name"
+          class="provider"
+          :data-provider="row.name"
+          :data-inline="isInline(row) ? 'true' : undefined"
+          :data-busy="stateOf(row) && stateOf(row)?.state !== 'success' ? 'true' : undefined"
+        >
           <div class="provider-main">
             <button
               type="button"
@@ -512,6 +587,7 @@ onMounted(() => {
             </button>
             <span class="provider-chevron" aria-hidden="true"><Icon name="chevron-right" :size="15" /></span>
           </div>
+        </div>
         </div>
       </section>
     </template>

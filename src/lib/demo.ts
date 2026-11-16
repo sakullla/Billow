@@ -67,6 +67,8 @@ interface DemoOptions {
   rulesExtra?: boolean
   /** Fail every refresh of this profile, so partial update-all and retry can be exercised. */
   failRefreshId?: string
+  /** Add a dozen more rule sets, the shape of a typical rule-heavy subscription. */
+  manyProviders?: boolean
 }
 
 const DUPLICATE_ERROR = '该订阅已存在'
@@ -223,6 +225,15 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { name: 'telegram', kind: 'rule', vehicle: 'HTTP', behavior: 'IPCIDR', format: 'YamlRule', count: 18, updated_at: hoursAgo(20), used: null, total: null, expire: null },
     { name: 'private', kind: 'rule', vehicle: 'Inline', behavior: 'Classical', format: '', count: 6, updated_at: hoursAgo(20), used: null, total: null, expire: null },
   ]
+  if (options.manyProviders) {
+    const extra: [string, number][] = [
+      ['Apple', 1592], ['BiliBili', 129], ['ChinaMax', 123062], ['Claude', 3], ['Disney', 174], ['GlobalMedia', 2265],
+      ['Google', 701], ['Lan', 18], ['Microsoft', 380], ['Netflix', 47], ['OpenAI', 26], ['Steam', 64], ['YouTube', 59],
+    ]
+    for (const [name, count] of extra) {
+      providerRows.push({ name, kind: 'rule', vehicle: 'HTTP', behavior: 'Classical', format: 'YamlRule', count, updated_at: hoursAgo(1), used: null, total: null, expire: null })
+    }
+  }
 
   const initialGeoAt = Date.now() - 3 * 86_400_000
   const geoStore: Record<string, { exists: boolean; size: number | null; modified_ms: number | null }> = {

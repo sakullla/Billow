@@ -242,13 +242,14 @@ function createTauriBackend(): Backend {
   }
 }
 
-/** Browser previews can pick the demo shape: `?demo=android` and/or `?demo=empty`. */
+/** Browser previews can pick the demo shape: `?demo=android`, `?demo=empty` and/or `?demo=many`. */
 function demoOptionsFromUrl() {
   if (typeof window === 'undefined') return {}
   const flags = new URLSearchParams(window.location.search).getAll('demo').join(',').split(',')
   return {
     platform: flags.includes('android') ? ('android' as const) : ('desktop' as const),
     profiles: !flags.includes('empty'),
+    manyProviders: flags.includes('many'),
   }
 }
 
