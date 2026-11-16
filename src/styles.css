@@ -2036,38 +2036,38 @@ button.delay:hover:not(:disabled) {
 .chart-dot.up {
   background: var(--data-up);
 }
-.chart-tooltip {
-  position: absolute;
-  top: 0;
-  left: 6px;
+.chart-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 20px;
+}
+.chart-head .legend {
+  font-size: var(--text-xs);
+}
+.chart-readout {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-xs);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
+  gap: var(--space-3);
   font-size: var(--text-xs);
-  pointer-events: none;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.chart-tooltip.right {
-  left: auto;
-  right: 68px;
-}
-.chart-tooltip .up {
+.chart-readout .up {
   color: var(--data-up);
   font-weight: 600;
 }
-.chart-tooltip .down {
+.chart-readout .down {
   color: var(--data-down);
   font-weight: 600;
 }
 .chart-peak {
-  position: absolute;
-  top: 0;
-  right: 6px;
   font-size: var(--text-xs);
   color: var(--muted);
   font-family: var(--mono);
@@ -2191,6 +2191,12 @@ button.delay:hover:not(:disabled) {
   border-radius: var(--radius-xs);
   background: var(--sunken);
   color: var(--text-2);
+}
+.group-icon > * {
+  grid-area: 1 / 1;
+}
+.group-icon-img:not(.ready) {
+  visibility: hidden;
 }
 .group-icon-img {
   display: block;
@@ -3685,11 +3691,13 @@ textarea.input {
 .provider-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   min-width: 0;
 }
 .provider-title strong {
+  display: block;
   font-size: var(--text-base);
+  font-weight: 600;
   min-width: 0;
 }
 .provider-main > p {
@@ -4591,12 +4599,6 @@ html[data-keyboard] .compact .page {
 .hero-chart {
   position: relative;
 }
-.hero-legend {
-  position: absolute;
-  top: 0;
-  left: 0;
-  font-size: var(--text-xs);
-}
 .hero .runtime {
   grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   padding-top: var(--space-3);
@@ -5096,65 +5098,151 @@ html[data-keyboard] .compact .page {
 }
 
 /* ───────────── Resources: GEO and provider details ───────────── */
-.geo-files {
+.geo-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.geo-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.geo-strip strong {
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+.geo-strip p {
+  margin-top: 2px;
+}
+.geo-glyph,
+.provider-glyph {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: var(--space-2);
-  margin: 0 0 var(--space-2);
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.geo-glyph.warn {
+  background: var(--fair-soft);
+  color: var(--fair-ink);
+}
+.geo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
-.compact .geo-files {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.geo-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: var(--text-xs);
+  white-space: nowrap;
 }
-.geo-files li {
+.geo-chips strong {
+  font-weight: 600;
+  color: var(--text-2);
+}
+.geo-chip-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--good);
+}
+.missing > .geo-chip-dot {
+  background: var(--fair);
+}
+.geo-sheet {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 4px;
-  padding: var(--space-2) var(--space-3);
+  gap: var(--space-4, 16px);
+}
+.geo-file-list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
   border-radius: var(--radius-control);
   background: var(--surface-2);
   border: 1px solid var(--border);
-  min-width: 0;
 }
-.geo-file-top {
+.geo-file-list li {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 8px 8px 8px 12px;
+  border-radius: calc(var(--radius-control) - 2px);
+}
+.geo-file-list li + li {
+  border-top: 1px solid var(--border);
+}
+.geo-file-list .min0 {
+  display: flex;
+  align-items: baseline;
   gap: var(--space-2);
-  min-width: 0;
 }
-.geo-file-top > .min0 {
-  display: flex;
+.geo-file-list strong {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.geo-file-meta {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.compact .geo-file-list .min0 {
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
 }
-.geo-file-name {
-  font-size: 11px;
-  line-height: 1.25;
+.geo-options .setting-row:first-child {
+  padding-top: 0;
 }
-.geo-file-dl {
-  flex: none;
-  margin: -2px -4px 0 0;
+.compact .geo-options .setting-row:has(> .segmented) {
+  flex-wrap: wrap;
 }
-.geo-files li.missing strong {
-  color: var(--text-3);
+.compact .geo-options .setting-row > .segmented {
+  width: 100%;
 }
-.geo-urls-section {
+.geo-advanced {
   border-top: 1px solid var(--border);
   padding-top: var(--space-3);
-  margin-top: var(--space-1);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
 }
-.geo-urls-head {
+.geo-advanced summary {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-2);
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-2);
+  border-radius: var(--radius-xs);
+}
+.geo-advanced summary::-webkit-details-marker {
+  display: none;
+}
+.geo-advanced summary .icon,
+.geo-advanced summary svg:first-child {
+  transition: transform var(--dur-fast) var(--ease);
+}
+.geo-advanced[open] summary svg:first-child {
+  transform: rotate(90deg);
+}
+.geo-advanced summary:hover {
+  color: var(--text);
+}
+.geo-advanced > p {
+  margin: var(--space-2) 0;
 }
 .geo-url-list {
   display: flex;
@@ -5163,34 +5251,30 @@ html[data-keyboard] .compact .page {
 }
 .geo-url-row {
   display: grid;
-  grid-template-columns: 168px minmax(0, 1fr);
+  grid-template-columns: 64px minmax(0, 1fr);
   align-items: center;
-  gap: var(--space-2) var(--space-3);
+  gap: var(--space-2);
 }
-.compact .geo-url-row {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 4px;
+.geo-url-row .input {
+  width: 100%;
+  min-width: 0;
 }
 .geo-url-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   font-size: var(--text-sm);
-  font-weight: 550;
+  font-weight: 600;
   color: var(--text-2);
 }
-.geo-url-control {
+.geo-url-actions {
   display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: var(--space-3);
 }
 .geo-alert {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  margin: 0 0 var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);
   background: var(--poor-soft);
@@ -5208,16 +5292,41 @@ html[data-keyboard] .compact .page {
   gap: 6px;
   margin-left: auto;
 }
-.geo-card .setting-row + .setting-row,
-.geo-files + .setting-row,
-.geo-alert + .setting-row {
-  border-top: 1px solid var(--border);
+.count-pill {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  margin-left: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  vertical-align: 1px;
+  font-variant-numeric: tabular-nums;
 }
-.compact .geo-card .setting-row:has(> .segmented) {
+.provider-glyph.rule {
+  background: var(--sunken);
+  color: var(--text-2);
+}
+.provider-meta {
+  display: flex;
   flex-wrap: wrap;
+  gap: 0 6px;
+  margin-top: 2px;
 }
-.compact .geo-card .setting-row > .segmented {
-  width: 100%;
+.provider-meta > span + span::before {
+  content: '·';
+  margin-right: 6px;
+  color: var(--text-3);
+}
+.provider .compact-usage {
+  margin-left: 48px;
+}
+.provider .provider-note {
+  margin-left: 48px;
 }
 
 /* The whole row opens the detail; action buttons sit above the hit area. */

@@ -313,10 +313,6 @@ function onPrimary() {
         </div>
         <div v-if="snap.connected" class="hero-chart" data-testid="traffic-card">
           <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 72 : 88" />
-          <div class="legend hero-legend" aria-hidden="true">
-            <span class="legend-item up">上传</span>
-            <span class="legend-item down">下载</span>
-          </div>
         </div>
         <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
           <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">

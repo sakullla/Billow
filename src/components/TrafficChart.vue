@@ -148,54 +148,57 @@ const label = computed(
 </script>
 
 <template>
-  <div
-    ref="chartEl"
-    class="chart"
-    @pointermove="onPointerMove"
-    @pointerleave="onPointerLeave"
-    @pointercancel="onPointerLeave"
-  >
-    <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" :height="H" role="img" :aria-label="label">
-      <title>{{ label }}</title>
-      <defs>
-        <linearGradient :id="`${uid}-down`" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--data-down)" stop-opacity="0.22" />
-          <stop offset="100%" stop-color="var(--data-down)" stop-opacity="0.01" />
-        </linearGradient>
-        <linearGradient :id="`${uid}-up`" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--data-up)" stop-opacity="0.18" />
-          <stop offset="100%" stop-color="var(--data-up)" stop-opacity="0.01" />
-        </linearGradient>
-      </defs>
-      <line v-for="i in 3" :key="i" x1="0" :x2="W" :y1="(H / 4) * i" :y2="(H / 4) * i" class="chart-grid" />
-      <path :d="downArea" :fill="`url(#${uid}-down)`" class="chart-area down" />
-      <path :d="upArea" :fill="`url(#${uid}-up)`" class="chart-area up" />
-      <path :d="downLine" class="chart-line down" vector-effect="non-scaling-stroke" stroke-linecap="round" />
-      <path :d="upLine" class="chart-line up" vector-effect="non-scaling-stroke" stroke-linecap="round" />
-      <line
-        v-if="inspected"
-        :x1="inspected.svgX"
-        :x2="inspected.svgX"
-        y1="2"
-        :y2="H - 2"
-        class="chart-cursor"
-        vector-effect="non-scaling-stroke"
-      />
-    </svg>
-    <template v-if="inspected">
-      <span class="chart-dot down" :style="{ left: `${inspected.xPct}%`, top: `${inspected.downY}px` }" aria-hidden="true" />
-      <span class="chart-dot up" :style="{ left: `${inspected.xPct}%`, top: `${inspected.upY}px` }" aria-hidden="true" />
-      <div
-        class="chart-tooltip mono"
-        :class="{ right: inspected.xPct > 62 }"
-        data-testid="chart-tooltip"
-        aria-hidden="true"
-      >
+  <div class="chart-wrap">
+    <!-- One header row: the legend, swapped for the hovered sample's readout, so nothing ever stacks. -->
+    <div class="chart-head" aria-hidden="true">
+      <div v-if="inspected" class="chart-readout mono" data-testid="chart-tooltip">
         <span class="muted">{{ inspected.when }}</span>
         <span class="up">↑ {{ formatSpeed(inspected.upVal) }}</span>
         <span class="down">↓ {{ formatSpeed(inspected.downVal) }}</span>
       </div>
-    </template>
-    <span class="chart-peak">{{ formatSpeed(peak) }}</span>
+      <div v-else class="legend">
+        <span class="legend-item up">上传</span>
+        <span class="legend-item down">下载</span>
+      </div>
+      <span class="chart-peak">{{ formatSpeed(peak) }}</span>
+    </div>
+    <div
+      ref="chartEl"
+      class="chart"
+      @pointermove="onPointerMove"
+      @pointerleave="onPointerLeave"
+      @pointercancel="onPointerLeave"
+    >
+      <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" :height="H" role="img" :aria-label="label">
+        <defs>
+          <linearGradient :id="`${uid}-down`" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--data-down)" stop-opacity="0.22" />
+            <stop offset="100%" stop-color="var(--data-down)" stop-opacity="0.01" />
+          </linearGradient>
+          <linearGradient :id="`${uid}-up`" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--data-up)" stop-opacity="0.18" />
+            <stop offset="100%" stop-color="var(--data-up)" stop-opacity="0.01" />
+          </linearGradient>
+        </defs>
+        <line v-for="i in 3" :key="i" x1="0" :x2="W" :y1="(H / 4) * i" :y2="(H / 4) * i" class="chart-grid" />
+        <path :d="downArea" :fill="`url(#${uid}-down)`" class="chart-area down" />
+        <path :d="upArea" :fill="`url(#${uid}-up)`" class="chart-area up" />
+        <path :d="downLine" class="chart-line down" vector-effect="non-scaling-stroke" stroke-linecap="round" />
+        <path :d="upLine" class="chart-line up" vector-effect="non-scaling-stroke" stroke-linecap="round" />
+        <line
+          v-if="inspected"
+          :x1="inspected.svgX"
+          :x2="inspected.svgX"
+          y1="2"
+          :y2="H - 2"
+          class="chart-cursor"
+          vector-effect="non-scaling-stroke"
+        />
+      </svg>
+      <template v-if="inspected">
+        <span class="chart-dot down" :style="{ left: `${inspected.xPct}%`, top: `${inspected.downY}px` }" aria-hidden="true" />
+        <span class="chart-dot up" :style="{ left: `${inspected.xPct}%`, top: `${inspected.upY}px` }" aria-hidden="true" />
+      </template>
+    </div>
   </div>
 </template>

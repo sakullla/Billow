@@ -16,12 +16,21 @@ const props = withDefaults(
 // A remote icon can fail at any time (offline, hot-link protection). One failure
 // falls back for this URL; a new URL gets a fresh attempt so config updates swap (R33).
 const broken = ref(false)
+// Until the image actually paints, keep the glyph visible so a slow host never leaves a blank tile.
+const ready = ref(false)
 watch(
   () => props.icon,
   () => {
     broken.value = false
+    ready.value = false
   },
 )
+
+function onLoad(event: Event) {
+  const img = event.target as HTMLImageElement
+  if (img.naturalWidth > 0) ready.value = true
+  else broken.value = true
+}
 
 const source = computed(() => (props.icon && !broken.value ? props.icon : null))
 
@@ -48,12 +57,14 @@ const glyphSize = computed(() => Math.max(12, Math.round(props.size * 0.7)))
       :src="source"
       :width="size"
       :height="size"
+      :class="{ ready }"
       loading="lazy"
       decoding="async"
       alt=""
       aria-hidden="true"
+      @load="onLoad"
       @error="broken = true"
     />
-    <Icon v-else :name="fallback" :size="glyphSize" />
+    <Icon v-if="!source || !ready" :name="fallback" :size="glyphSize" />
   </span>
 </template>

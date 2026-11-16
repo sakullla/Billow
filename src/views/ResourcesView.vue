@@ -161,23 +161,38 @@ const GEO_INTERVALS = [
   { id: '168', label: '每周' },
 ] as const
 const GEO_SOURCES: { id: GeoSource; label: string }[] = [
-  { id: '', label: '跟随配置' },
+  { id: '', label: '默认' },
   { id: 'github', label: 'GitHub' },
-  { id: 'jsdelivr', label: 'jsDelivr 加速' },
-  { id: 'testingcf', label: 'CF 加速' },
+  { id: 'jsdelivr', label: 'jsDelivr' },
+  { id: 'testingcf', label: 'CF' },
 ]
 const GEODATA_MODES = [
-  { id: '', label: '跟随配置' },
-  { id: 'db', label: 'MMDB (db)' },
-  { id: 'dat', label: 'GeoIP (dat)' },
+  { id: '', label: '默认' },
+  { id: 'db', label: 'MMDB' },
+  { id: 'dat', label: 'DAT' },
 ] as const
-const GEO_URL_FIELDS: { key: keyof GeoUrls; label: string; file: string }[] = [
-  { key: 'geoip', label: 'GeoIP-DAT 数据库', file: 'GeoIP.dat' },
-  { key: 'mmdb', label: 'GeoIP-MMDB 数据库', file: 'Country.mmdb' },
-  { key: 'geosite', label: 'GeoSite 数据库', file: 'GeoSite.dat' },
-  { key: 'asn', label: 'IP-ASN 数据库', file: 'ASN.mmdb' },
+const GEO_URL_FIELDS: { key: keyof GeoUrls; label: string }[] = [
+  { key: 'geoip', label: 'GeoIP' },
+  { key: 'mmdb', label: 'MMDB' },
+  { key: 'geosite', label: 'GeoSite' },
+  { key: 'asn', label: 'ASN' },
 ]
+const geoOpen = ref(false)
 const geoSettings = computed(() => snap.value.settings)
+const geoMissing = computed(() => geoFiles.value.filter((file) => !file.exists).length)
+const geoLatest = computed(() =>
+  geoFiles.value.reduce<number | null>((latest, file) => (file.exists && file.modified_ms && (!latest || file.modified_ms > latest) ? file.modified_ms : latest), null),
+)
+/** One plain sentence instead of four cards: ready or not, how fresh, and whether it maintains itself. */
+const geoSummary = computed(() => {
+  if (!geoFiles.value.length) return '分流规则依赖的地域与域名数据'
+  const parts = [
+    geoMissing.value ? `${geoMissing.value} 个尚未下载` : '全部就绪',
+  ]
+  if (geoLatest.value) parts.push(`${formatRelative(geoLatest.value)}更新`)
+  parts.push(geoSettings.value.geo_auto_update ? '自动更新' : '手动更新')
+  return parts.join(' · ')
+})
 const geoInterval = computed(() => String(geoSettings.value.geo_update_interval ?? 24))
 const geodataModeId = computed(() => {
   const mode = geoSettings.value.geodata_mode
@@ -363,10 +378,10 @@ onMounted(() => {
   <div class="page resources">
     <header class="page-head">
       <div>
-        <h1>外部资源</h1>
-        <p class="muted small">代理集、规则集与分流数据库</p>
+        <h1>资源</h1>
+        <p class="muted small">配置引用的代理集与规则集</p>
       </div>
-      <div class="head-actions">
+      <div v-if="snap.kernel_running" class="head-actions">
         <button
           type="button"
           class="btn ghost sm"
@@ -381,192 +396,6 @@ onMounted(() => {
         </button>
       </div>
     </header>
-
-    <section class="card geo-card" data-testid="geo-card">
-      <header class="card-head">
-        <div>
-          <h2>GEO 数据库</h2>
-          <p class="muted small">分流规则依赖的地域、域名与自治系统数据库，支持独立配置与离线更新</p>
-        </div>
-        <button
-          type="button"
-          class="btn sm"
-          :disabled="geoBusy"
-          :aria-busy="geoBusy || undefined"
-          title="立即下载并更新全部四个 GEO 数据库"
-          data-testid="upgrade-geo"
-          @click="upgradeGeo()"
-        >
-          <span v-if="geoBusy && geoBusyKey === 'all'" class="spinner sm" aria-hidden="true" />
-          <Icon v-else name="download" :size="15" />
-          {{ geoBusy && geoBusyKey === 'all' ? '更新中' : '立即更新' }}
-        </button>
-      </header>
-      <ul v-if="shownGeoFiles.length" class="geo-files" data-testid="geo-files">
-        <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }" :title="file.file">
-          <div class="geo-file-top">
-            <div class="min0 grow">
-              <strong>{{ file.label }}</strong>
-              <span class="geo-file-name mono muted">{{ file.file }}</span>
-            </div>
-            <button
-              type="button"
-              class="icon-btn sm geo-file-dl"
-              :disabled="geoBusy"
-              :title="`单独下载更新 ${file.label} (${file.file})`"
-              :aria-label="`更新 ${file.label}`"
-              :data-testid="`upgrade-geo-${file.key}`"
-              @click="upgradeGeo(file.key)"
-            >
-              <span v-if="geoBusy && (geoBusyKey === file.key || geoBusyKey === 'all')" class="spinner xs" aria-hidden="true" />
-              <Icon v-else name="download" :size="14" />
-            </button>
-          </div>
-          <span class="muted small">
-            {{ file.exists ? `${formatBytes(file.size)} · ${formatRelative(file.modified_ms)}` : '尚未下载' }}
-          </span>
-        </li>
-      </ul>
-      <div v-if="geoError" class="geo-alert" role="alert" data-testid="geo-error">
-        <Icon name="alert" :size="15" />
-        <span class="geo-alert-text small">{{ geoError }}</span>
-        <div class="geo-alert-actions">
-          <button
-            v-if="geoSettings.geo_source !== 'jsdelivr'"
-            type="button"
-            class="btn primary sm"
-            :disabled="geoBusy"
-            data-testid="geo-switch-jsdelivr"
-            @click="switchJsdelivrAndUpgrade"
-          >
-            切换 jsDelivr 重试
-          </button>
-          <button
-            type="button"
-            class="btn ghost sm"
-            :disabled="geoBusy"
-            data-testid="geo-retry"
-            @click="upgradeGeo(lastFailedGeoKey)"
-          >
-            重试
-          </button>
-        </div>
-      </div>
-      <div class="setting-row">
-        <div class="grow">
-          <strong>GeoIP 模式</strong>
-          <p class="muted small">{{ geodataModeId === 'dat' ? '使用 GeoIP.dat 数据库格式（geodata-mode: true）' : geodataModeId === 'db' ? '使用 Country.mmdb 数据库格式（geodata-mode: false）' : '沿用配置文件中的 geodata-mode 设置' }}</p>
-        </div>
-        <Segmented
-          :model-value="geodataModeId"
-          :options="GEODATA_MODES"
-          size="sm"
-          label="GeoIP 模式"
-          data-testid="geodata-mode"
-          @update:model-value="(id) => saveGeo({ geodata_mode: id === '' ? null : id === 'dat' })"
-        />
-      </div>
-      <div class="setting-row">
-        <div class="grow">
-          <strong>自动更新数据库</strong>
-          <p class="muted small">内核运行时按周期在后台自动同步最新数据</p>
-        </div>
-        <Toggle
-          :model-value="geoSettings.geo_auto_update === true"
-          label="GEO 自动更新"
-          data-testid="geo-auto-update"
-          @update:model-value="(on) => saveGeo({ geo_auto_update: on, geo_update_interval: on ? Number(geoInterval) : geoSettings.geo_update_interval })"
-        />
-      </div>
-      <div v-if="geoSettings.geo_auto_update" class="setting-row">
-        <div class="grow"><strong>更新频率</strong></div>
-        <Segmented
-          :model-value="geoInterval"
-          :options="GEO_INTERVALS"
-          size="sm"
-          label="更新频率"
-          @update:model-value="(id) => saveGeo({ geo_update_interval: Number(id) })"
-        />
-      </div>
-      <div class="setting-row">
-        <div class="grow">
-          <strong>下载源预设</strong>
-          <p class="muted small">{{ geoSettings.geo_source ? '未单独填写地址的数据库将统一使用该镜像源' : '沿用配置 geox-url 或默认 GitHub 源' }}</p>
-        </div>
-        <Segmented
-          :model-value="geoSettings.geo_source"
-          :options="GEO_SOURCES"
-          size="sm"
-          label="下载源"
-          data-testid="geo-source"
-          @update:model-value="(id) => saveGeo({ geo_source: id })"
-        />
-      </div>
-      <div class="geo-urls-section" data-testid="geo-urls-section">
-        <div class="geo-urls-head">
-          <div>
-            <strong>数据库下载地址</strong>
-            <p class="muted small">可为每个数据库单独指定自定义 URL，留空则跟随上方下载源预设</p>
-          </div>
-          <div class="head-actions">
-            <button
-              v-if="hasCustomGeoUrls && !geoUrlsDirty"
-              type="button"
-              class="btn ghost sm"
-              data-testid="reset-geo-urls"
-              @click="resetGeoUrls"
-            >
-              清空自定义
-            </button>
-            <button
-              v-if="geoUrlsDirty"
-              type="button"
-              class="btn primary sm"
-              data-testid="save-geo-urls"
-              @mousedown.prevent
-              @click="commitGeoUrls"
-            >
-              保存地址
-            </button>
-          </div>
-        </div>
-        <div class="geo-url-list">
-          <div v-for="item in GEO_URL_FIELDS" :key="item.key" class="geo-url-row">
-            <label class="geo-url-label" :for="`geo-url-${item.key}`">
-              <span>{{ item.label }}</span>
-              <span v-if="geoUrlsDraft[item.key].trim()" class="tag accent sm">已自定义</span>
-            </label>
-            <div class="geo-url-control">
-              <input
-                :id="`geo-url-${item.key}`"
-                v-model="geoUrlsDraft[item.key]"
-                type="url"
-                class="input sm mono grow"
-                :placeholder="geoUrlPlaceholder(item.key)"
-                :aria-label="item.label"
-                :data-testid="`geo-url-${item.key}`"
-                @focus="geoUrlFocused = true"
-                @blur="geoUrlFocused = false; commitGeoUrls()"
-                @keydown.enter="($event.target as HTMLInputElement).blur()"
-              />
-              <button
-                type="button"
-                class="icon-btn sm"
-                :disabled="geoBusy"
-                :title="`下载 ${item.label}`"
-                :aria-label="`下载 ${item.label}`"
-                :data-testid="`download-geo-url-${item.key}`"
-                @mousedown.prevent
-                @click="upgradeGeo(item.key)"
-              >
-                <span v-if="geoBusy && (geoBusyKey === item.key || geoBusyKey === 'all')" class="spinner xs" aria-hidden="true" />
-                <Icon v-else name="download" :size="15" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
 
     <Skeleton v-if="loading && !providers.length && snap.kernel_running" variant="card" :cards="2" />
 
@@ -603,7 +432,7 @@ onMounted(() => {
     ]" :key="section.kind">
       <section v-if="section.rows.length" class="card provider-card">
         <header class="card-head">
-          <h2>{{ section.title }} <span class="muted">{{ section.rows.length }}</span></h2>
+          <h2>{{ section.title }} <span class="count-pill">{{ section.rows.length }}</span></h2>
           <button
             type="button"
             class="btn ghost sm"
@@ -627,23 +456,24 @@ onMounted(() => {
               @click="openDetail(row)"
             />
             <div class="provider-title">
-              <strong class="ellipsis">{{ row.name }}</strong>
-              <span class="tag">{{ row.vehicle || '—' }}</span>
-              <span v-if="row.behavior" class="tag accent">{{ row.behavior }}</span>
-              <span v-if="row.format" class="tag">{{ row.format }}</span>
+              <span class="provider-glyph" :class="row.kind" aria-hidden="true">
+                <Icon :name="row.kind === 'proxy' ? 'globe' : isInline(row) ? 'code' : 'route'" :size="16" />
+              </span>
+              <div class="min0 grow">
+                <strong class="ellipsis">{{ row.name }}</strong>
+                <p class="muted small provider-meta">
+                  <span>{{ row.kind === 'proxy' ? `${row.count} 个节点` : `${row.count.toLocaleString()} 条规则` }}</span>
+                  <span v-if="row.behavior">{{ row.behavior }}</span>
+                  <span v-if="isInline(row)" data-provider-inline>内联 · 无需更新</span>
+                  <span v-else>{{ formatRelative(updatedMs(row)) }}更新</span>
+                  <span v-if="row.expire">{{ formatDate(row.expire) }} 到期</span>
+                </p>
+              </div>
             </div>
-            <p class="muted small">
-              {{ row.kind === 'proxy' ? `${row.count} 个节点` : `${row.count.toLocaleString()} 条规则` }}
-              · 更新于 {{ formatRelative(updatedMs(row)) }}
-              <template v-if="row.expire"> · {{ formatDate(row.expire) }} 到期</template>
-            </p>
             <div v-if="usagePercent(row.used, row.total) != null" class="usage compact-usage">
               <div class="usage-bar"><span :style="{ width: `${usagePercent(row.used, row.total)}%` }" /></div>
               <span class="small mono muted">{{ formatBytes(row.used) }} / {{ formatBytes(row.total) }}</span>
             </div>
-            <p v-if="isInline(row)" class="provider-note small" data-provider-inline>
-              <Icon name="check" :size="13" />内联资源无需更新
-            </p>
             <p v-if="stateOf(row)?.state === 'pending'" class="provider-note small muted" role="status" data-provider-state="pending">
               <span class="spinner sm" aria-hidden="true" />{{ stateOf(row)?.action === 'healthcheck' ? '检查中' : '更新中' }}
             </p>
@@ -685,6 +515,203 @@ onMounted(() => {
         </div>
       </section>
     </template>
+
+
+    <!-- GEO data is plumbing: one quiet strip with a single action; everything else lives behind 设置. -->
+    <section class="card geo-card" data-testid="geo-card">
+      <div class="geo-strip">
+        <span class="geo-glyph" :class="{ warn: geoMissing > 0 }" aria-hidden="true"><Icon name="globe" :size="18" /></span>
+        <div class="grow min0">
+          <strong>GEO 数据库</strong>
+          <p class="muted small ellipsis" data-testid="geo-summary">{{ geoSummary }}</p>
+        </div>
+        <button
+          type="button"
+          class="icon-btn"
+          title="GEO 设置"
+          aria-label="GEO 设置"
+          data-testid="open-geo-settings"
+          @click="geoOpen = true"
+        >
+          <Icon name="sliders" :size="16" />
+        </button>
+        <button
+          type="button"
+          class="btn sm"
+          :disabled="geoBusy"
+          :aria-busy="geoBusy || undefined"
+          title="下载并更新全部 GEO 数据库"
+          data-testid="upgrade-geo"
+          @click="upgradeGeo()"
+        >
+          <span v-if="geoBusy" class="spinner sm" aria-hidden="true" />
+          <Icon v-else name="download" :size="15" />
+          {{ geoBusy ? '更新中' : '更新' }}
+        </button>
+      </div>
+      <ul v-if="shownGeoFiles.length" class="geo-chips" data-testid="geo-files">
+        <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }" :title="file.file">
+          <span class="geo-chip-dot" aria-hidden="true" />
+          <strong>{{ file.label }}</strong>
+          <span class="muted">{{ file.exists ? formatBytes(file.size) : '未下载' }}</span>
+        </li>
+      </ul>
+      <div v-if="geoError" class="geo-alert" role="alert" data-testid="geo-error">
+        <Icon name="alert" :size="15" />
+        <span class="geo-alert-text small">{{ geoError }}</span>
+        <div class="geo-alert-actions">
+          <button
+            v-if="geoSettings.geo_source !== 'jsdelivr'"
+            type="button"
+            class="btn primary sm"
+            :disabled="geoBusy"
+            data-testid="geo-switch-jsdelivr"
+            @click="switchJsdelivrAndUpgrade"
+          >
+            切换 jsDelivr 重试
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="geoBusy"
+            data-testid="geo-retry"
+            @click="upgradeGeo(lastFailedGeoKey)"
+          >
+            重试
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <Modal v-if="geoOpen" title="GEO 数据库" subtitle="GEOIP、GEOSITE 规则使用的地域与域名数据" @close="geoOpen = false">
+      <div class="geo-sheet" data-testid="geo-settings">
+        <ul class="geo-file-list" data-testid="geo-file-list">
+          <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }">
+            <span class="geo-chip-dot" aria-hidden="true" />
+            <div class="grow min0">
+              <strong>{{ file.label }}</strong>
+              <span class="muted small mono">{{ file.file }}</span>
+            </div>
+            <span class="muted small geo-file-meta">
+              {{ file.exists ? `${formatBytes(file.size)} · ${formatRelative(file.modified_ms)}` : '尚未下载' }}
+            </span>
+            <button
+              type="button"
+              class="icon-btn sm"
+              :disabled="geoBusy"
+              :title="`更新 ${file.label}`"
+              :aria-label="`更新 ${file.label}`"
+              :data-testid="`upgrade-geo-${file.key}`"
+              @click="upgradeGeo(file.key)"
+            >
+              <span v-if="geoBusy && (geoBusyKey === file.key || geoBusyKey === 'all')" class="spinner xs" aria-hidden="true" />
+              <Icon v-else name="download" :size="14" />
+            </button>
+          </li>
+        </ul>
+
+        <div class="geo-options">
+          <div class="setting-row">
+            <div class="grow">
+              <strong>自动更新</strong>
+              <p class="muted small">内核运行时在后台定期同步</p>
+            </div>
+            <Toggle
+              :model-value="geoSettings.geo_auto_update === true"
+              label="GEO 自动更新"
+              data-testid="geo-auto-update"
+              @update:model-value="(on) => saveGeo({ geo_auto_update: on, geo_update_interval: on ? Number(geoInterval) : geoSettings.geo_update_interval })"
+            />
+          </div>
+          <div v-if="geoSettings.geo_auto_update" class="setting-row">
+            <div class="grow"><strong>更新频率</strong></div>
+            <Segmented
+              :model-value="geoInterval"
+              :options="GEO_INTERVALS"
+              size="sm"
+              label="更新频率"
+              @update:model-value="(id) => saveGeo({ geo_update_interval: Number(id) })"
+            />
+          </div>
+          <div class="setting-row">
+            <div class="grow">
+              <strong>下载源</strong>
+              <p class="muted small">{{ geoSettings.geo_source ? '下载慢或失败时可换用加速镜像' : '沿用配置中的 geox-url' }}</p>
+            </div>
+            <Segmented
+              :model-value="geoSettings.geo_source"
+              :options="GEO_SOURCES"
+              size="sm"
+              label="下载源"
+              data-testid="geo-source"
+              @update:model-value="(id) => saveGeo({ geo_source: id })"
+            />
+          </div>
+          <div class="setting-row">
+            <div class="grow">
+              <strong>GeoIP 格式</strong>
+              <p class="muted small">{{ geodataModeId === 'dat' ? '使用 GeoIP.dat' : geodataModeId === 'db' ? '使用 Country.mmdb' : '沿用配置中的 geodata-mode' }}</p>
+            </div>
+            <Segmented
+              :model-value="geodataModeId"
+              :options="GEODATA_MODES"
+              size="sm"
+              label="GeoIP 格式"
+              data-testid="geodata-mode"
+              @update:model-value="(id) => saveGeo({ geodata_mode: id === '' ? null : id === 'dat' })"
+            />
+          </div>
+        </div>
+
+        <details class="geo-advanced" data-testid="geo-urls-section" :open="hasCustomGeoUrls || undefined">
+          <summary>
+            <Icon name="chevron-right" :size="14" />
+            <span class="grow">自定义下载地址</span>
+            <span v-if="hasCustomGeoUrls" class="tag accent sm">已自定义</span>
+          </summary>
+          <p class="muted small">留空则使用上方下载源。</p>
+          <div class="geo-url-list">
+            <label v-for="item in GEO_URL_FIELDS" :key="item.key" class="geo-url-row" :for="`geo-url-${item.key}`">
+              <span class="geo-url-label">{{ item.label }}</span>
+              <input
+                :id="`geo-url-${item.key}`"
+                v-model="geoUrlsDraft[item.key]"
+                type="url"
+                class="input sm mono"
+                spellcheck="false"
+                :placeholder="geoUrlPlaceholder(item.key)"
+                :aria-label="`${item.label} 下载地址`"
+                :data-testid="`geo-url-${item.key}`"
+                @focus="geoUrlFocused = true"
+                @blur="geoUrlFocused = false; commitGeoUrls()"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </label>
+          </div>
+          <div v-if="geoUrlsDirty || hasCustomGeoUrls" class="geo-url-actions">
+            <button
+              v-if="hasCustomGeoUrls && !geoUrlsDirty"
+              type="button"
+              class="btn ghost sm"
+              data-testid="reset-geo-urls"
+              @click="resetGeoUrls"
+            >
+              恢复默认
+            </button>
+            <button
+              v-if="geoUrlsDirty"
+              type="button"
+              class="btn primary sm"
+              data-testid="save-geo-urls"
+              @mousedown.prevent
+              @click="commitGeoUrls"
+            >
+              保存地址
+            </button>
+          </div>
+        </details>
+      </div>
+    </Modal>
 
     <Modal
       v-if="detail"

@@ -1568,7 +1568,7 @@ describe('App', () => {
     expect(wrapper.text()).toContain('内核未运行')
   })
 
-  it('shows all four GEO files, allows offline/individual updates, and saves GEO settings', async () => {
+  it('summarises GEO on one strip and keeps per-file updates and options in the GEO sheet', async () => {
     const { wrapper, backend } = await mountApp()
     const save = vi.spyOn(backend, 'saveSettings')
     const upgrade = vi.spyOn(backend, 'upgradeGeo')
@@ -1576,30 +1576,40 @@ describe('App', () => {
     await settle(300)
     const items = wrapper.findAll('[data-testid="geo-files"] li')
     expect(items.map((item) => item.find('strong').text())).toEqual(['GeoIP', 'GeoSite', 'MMDB', 'ASN'])
-    expect(items[3].text()).toContain('尚未下载')
+    expect(items[3].text()).toContain('未下载')
+    expect(wrapper.find('[data-testid="geo-summary"]').text()).toContain('1 个尚未下载')
     expect(wrapper.find('[data-testid="upgrade-geo"]').attributes('disabled')).toBeUndefined()
+    // Options stay out of the page until asked for.
+    expect(document.body.querySelector('[data-testid="geo-settings"]')).toBeNull()
+
+    await wrapper.find('[data-testid="open-geo-settings"]').trigger('click')
+    await flushPromises()
+    const q = <T extends HTMLElement = HTMLElement>(selector: string) => document.body.querySelector<T>(selector)!
+    expect(q('[data-testid="geo-settings"]')).not.toBeNull()
 
     // Download ASN individually while disconnected: turns "尚未下载" into downloaded size/time
-    await wrapper.find('[data-testid="upgrade-geo-asn"]').trigger('click')
+    q('[data-testid="upgrade-geo-asn"]').click()
     await settle(500)
     expect(upgrade).toHaveBeenCalledWith('asn')
-    expect(wrapper.findAll('[data-testid="geo-files"] li')[3].text()).not.toContain('尚未下载')
+    expect(document.body.querySelectorAll('[data-testid="geo-file-list"] li')[3].textContent).not.toContain('尚未下载')
+    expect(wrapper.find('[data-testid="geo-summary"]').text()).toContain('全部就绪')
 
-    await wrapper.find('[data-testid="geodata-mode"] [data-value="db"]').trigger('click')
+    q('[data-testid="geodata-mode"] [data-value="db"]').click()
     await settle(200)
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geodata_mode: false }))
 
-    await wrapper.find('[data-testid="geo-auto-update"]').trigger('click')
+    q('[data-testid="geo-auto-update"]').click()
     await settle(500)
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geo_auto_update: true, geo_update_interval: 24 }))
-    await wrapper.find('[data-testid="geo-source"] [data-value="jsdelivr"]').trigger('click')
+    q('[data-testid="geo-source"] [data-value="jsdelivr"]').click()
     await settle(200)
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ geo_source: 'jsdelivr', geo_auto_update: true }))
 
     // Configure an individual database URL and save it
-    const asnUrlInput = wrapper.find('[data-testid="geo-url-asn"]')
-    await asnUrlInput.setValue('https://mirror.example.com/ASN.mmdb')
-    await asnUrlInput.trigger('blur')
+    const asnUrlInput = q<HTMLInputElement>('[data-testid="geo-url-asn"]')
+    asnUrlInput.value = 'https://mirror.example.com/ASN.mmdb'
+    asnUrlInput.dispatchEvent(new Event('input'))
+    asnUrlInput.dispatchEvent(new Event('blur'))
     await settle(300)
     expect(save).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -2914,7 +2924,9 @@ describe('App', () => {
     await settle(500)
     expect(wrapper.find('[data-provider="机场订阅"]').exists()).toBe(true)
 
-    await wrapper.find('[data-testid="geo-source"] [data-value="jsdelivr"]').trigger('click')
+    await wrapper.find('[data-testid="open-geo-settings"]').trigger('click')
+    await flushPromises()
+    document.body.querySelector<HTMLElement>('[data-testid="geo-source"] [data-value="jsdelivr"]')!.click()
     await settle(400)
     expect(store.snapshot.value.connected).toBe(true)
     expect(store.snapshot.value.kernel_running).toBe(true)
