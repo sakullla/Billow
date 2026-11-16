@@ -172,12 +172,12 @@ const label = computed(
       <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none" :height="H" role="img" :aria-label="label">
         <defs>
           <linearGradient :id="`${uid}-down`" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--data-down)" stop-opacity="0.22" />
-            <stop offset="100%" stop-color="var(--data-down)" stop-opacity="0.01" />
+            <stop offset="0%" stop-color="var(--data-down)" stop-opacity="0.26" />
+            <stop offset="100%" stop-color="var(--data-down)" stop-opacity="0.0" />
           </linearGradient>
           <linearGradient :id="`${uid}-up`" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--data-up)" stop-opacity="0.18" />
-            <stop offset="100%" stop-color="var(--data-up)" stop-opacity="0.01" />
+            <stop offset="0%" stop-color="var(--data-up)" stop-opacity="0.20" />
+            <stop offset="100%" stop-color="var(--data-up)" stop-opacity="0.0" />
           </linearGradient>
         </defs>
         <line v-for="i in 3" :key="i" x1="0" :x2="W" :y1="(H / 4) * i" :y2="(H / 4) * i" class="chart-grid" />

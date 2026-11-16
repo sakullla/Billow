@@ -54,6 +54,11 @@ const sideStatusWord = computed(() => {
   if (store.connecting.value) return snap.value.connected ? '断开中…' : '连接中…'
   return snap.value.connected ? '已连接' : '未连接'
 })
+const themeMeta = computed(() => {
+  if (store.theme.value === 'light') return { icon: 'sun', label: '浅色主题' }
+  if (store.theme.value === 'dark') return { icon: 'moon', label: '深色主题' }
+  return { icon: 'laptop', label: '跟随系统' }
+})
 
 const views = {
   home: HomeView,
@@ -479,18 +484,30 @@ defineExpose({ store })
       <div class="brand" :data-tauri-drag-region="chrome ? '' : undefined">
         <span class="brand-mark"><img :src="appIcon" alt="" /></span>
         <span class="brand-name">Billow</span>
-        <button
-          type="button"
-          class="icon-btn sm sidebar-toggle"
-          :aria-expanded="!sidebarCollapsed"
-          :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
-          :title="`${sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} (${sidebarKey})`"
-          data-testid="sidebar-toggle"
-          @mousedown.stop
-          @click="toggleSidebar"
-        >
-          <Icon :name="sidebarCollapsed ? 'panel-left-open' : 'panel-left-close'" :size="16" />
-        </button>
+        <div class="brand-actions" @mousedown.stop>
+          <button
+            v-if="!sidebarCollapsed"
+            type="button"
+            class="icon-btn sm theme-quick-btn"
+            :aria-label="`切换主题（当前：${themeMeta.label}）`"
+            :title="`切换主题（当前：${themeMeta.label}）`"
+            data-testid="sidebar-theme-toggle"
+            @click="store.cycleTheme()"
+          >
+            <Icon :name="themeMeta.icon" :size="15" />
+          </button>
+          <button
+            type="button"
+            class="icon-btn sm sidebar-toggle"
+            :aria-expanded="!sidebarCollapsed"
+            :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+            :title="`${sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} (${sidebarKey})`"
+            data-testid="sidebar-toggle"
+            @click="toggleSidebar"
+          >
+            <Icon :name="sidebarCollapsed ? 'panel-left-open' : 'panel-left-close'" :size="16" />
+          </button>
+        </div>
       </div>
       <button
         type="button"
@@ -543,17 +560,17 @@ defineExpose({ store })
         <div
           class="side-status"
           :class="{ on: snap.connected && !store.connecting.value, pending: store.connecting.value }"
-          :title="sidebarCollapsed ? `${sideStatusWord}${snap.connected ? ` · ↑${formatSpeed(snap.upload ?? 0)} ↓${formatSpeed(snap.download ?? 0)}` : ''}` : undefined"
+          :title="sidebarCollapsed ? `${sideStatusWord}${snap.connected ? ` · ↓${formatSpeed(snap.download ?? 0)} ↑${formatSpeed(snap.upload ?? 0)}` : ''}` : undefined"
           data-testid="side-status"
         >
-          <div class="side-status-body">
+          <div class="side-status-body" @click="store.page.value !== 'home' && store.go('home')">
             <div class="side-status-head">
               <span class="dot" />
               <span>{{ sideStatusWord }}</span>
             </div>
             <div v-if="snap.connected" class="side-rates mono">
-              <span><Icon name="up" :size="12" />{{ formatSpeed(snap.upload ?? 0) }}</span>
-              <span><Icon name="down" :size="12" />{{ formatSpeed(snap.download ?? 0) }}</span>
+              <span class="down"><Icon name="down" :size="11" />{{ formatSpeed(snap.download ?? 0) }}</span>
+              <span class="up"><Icon name="up" :size="11" />{{ formatSpeed(snap.upload ?? 0) }}</span>
             </div>
             <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? '还没有配置' }}</div>
           </div>

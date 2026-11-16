@@ -453,7 +453,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             </td>
             <td class="muted ellipsis">{{ row.process || '—' }}</td>
             <td class="ellipsis"><span class="muted">{{ row.rule }}</span><span v-if="row.rule_payload" class="rule-payload-inline">{{ row.rule_payload }}</span></td>
-            <td class="ellipsis">{{ row.outbound }}</td>
+            <td class="ellipsis"><span class="outbound-pill" :data-policy="row.outbound.toUpperCase()">{{ row.outbound }}</span></td>
             <td
               class="num mono"
               :class="{ muted: speedDisplay(row).idle, 'conn-rate-up': speedDisplay(row).upOnly }"
@@ -503,8 +503,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             </button>
           </div>
           <div class="conn-meta small muted">
-            <span class="ellipsis">{{ row.outbound }}</span>
-            <span v-if="row.process">· {{ row.process }}</span>
+            <span class="outbound-pill" :data-policy="row.outbound.toUpperCase()">{{ row.outbound }}</span>
+            <span v-if="row.process" class="ellipsis">{{ row.process }}</span>
           </div>
           <div class="conn-meta small muted" data-testid="connection-traffic">
             <span class="mono">↑{{ formatBytes(row.upload) }}</span>

@@ -22,6 +22,29 @@ const DUPLICATE_HINT = '该订阅已存在'
 const quickUrl = ref('')
 const quickError = ref<string | null>(null)
 const quickInputEl = ref<HTMLInputElement | null>(null)
+const pageDragging = ref(false)
+
+async function importLocalFile(file: File | undefined) {
+  if (!file) return
+  const before = snap.value.profiles.length
+  await store.addLocal(file.name.replace(/\.(ya?ml|txt)$/i, ''), await file.text())
+  if (snap.value.profiles.length > before) {
+    store.toast(`已导入 ${file.name}`, 'success')
+    const added = snap.value.profiles[snap.value.profiles.length - 1]
+    if (!snap.value.active_id && added) void store.enable(added.id)
+  }
+}
+
+function onQuickFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  void importLocalFile(input.files?.[0])
+  input.value = ''
+}
+
+function onPageDrop(event: DragEvent) {
+  pageDragging.value = false
+  void importLocalFile(event.dataTransfer?.files?.[0])
+}
 
 async function pasteQuickUrl() {
   try {
@@ -289,7 +312,13 @@ const updateAllLabel = computed(() => {
 </script>
 
 <template>
-  <div class="page profiles">
+  <div
+    class="page profiles"
+    :class="{ 'drop-active': pageDragging }"
+    @dragover.prevent="pageDragging = true"
+    @dragleave.self="pageDragging = false"
+    @drop.prevent="onPageDrop"
+  >
     <header class="page-head">
       <div>
         <h1>配置</h1>
@@ -320,22 +349,27 @@ const updateAllLabel = computed(() => {
         ref="quickInputEl"
         v-model="quickUrl"
         type="url"
-        placeholder="粘贴订阅链接，回车导入"
+        placeholder="粘贴订阅链接回车导入，或直接拖入 YAML 文件"
         spellcheck="false"
         :aria-invalid="quickError ? 'true' : undefined"
         :aria-describedby="quickError ? 'quick-import-error' : undefined"
         @input="quickError = null"
       />
-      <button
-        v-if="!quickUrl"
-        type="button"
-        class="btn ghost sm"
-        title="从剪贴板粘贴订阅链接"
-        data-testid="quick-paste"
-        @click="pasteQuickUrl"
-      >
-        <Icon name="clipboard" :size="14" />粘贴
-      </button>
+      <template v-if="!quickUrl">
+        <button
+          type="button"
+          class="btn ghost sm"
+          title="从剪贴板粘贴订阅链接"
+          data-testid="quick-paste"
+          @click="pasteQuickUrl"
+        >
+          <Icon name="clipboard" :size="14" />粘贴
+        </button>
+        <label v-if="!compact" class="btn ghost sm quick-file-btn" title="选择本地 YAML 配置文件">
+          <Icon name="file" :size="14" />本地文件
+          <input type="file" accept=".yaml,.yml,.txt,text/yaml" hidden @change="onQuickFile" />
+        </label>
+      </template>
       <button
         v-else
         type="button"
@@ -347,7 +381,7 @@ const updateAllLabel = computed(() => {
       >
         <Icon name="x" :size="14" />
       </button>
-      <button type="submit" class="btn sm" :disabled="!quickUrl.trim() || store.busy.add">导入</button>
+      <button type="submit" class="btn primary sm" :disabled="!quickUrl.trim() || store.busy.add">导入</button>
     </form>
     <p v-if="quickError" id="quick-import-error" class="field-error small" role="alert">{{ quickError }}</p>
 

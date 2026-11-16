@@ -61,10 +61,13 @@ const primaryGroup = computed(() => {
   return allManualGroups.value.find((group) => Boolean(group.now)) ?? allManualGroups.value[0] ?? null
 })
 const primaryNode = computed(() => (primaryGroup.value ? nodeOf(primaryGroup.value) : undefined))
+
 const profileSheetOpen = ref(false)
+const welcomeDragging = ref(false)
 const orderedProfiles = computed(() =>
   [...snap.value.profiles].sort((a, b) => Number(b.current) - Number(a.current)),
 )
+
 function switchFromSheet(target: ProfileItem) {
   profileSheetOpen.value = false
   if (!target.current && !store.busy[`enable:${target.id}`]) {
@@ -79,6 +82,20 @@ function manageFromSheet() {
   profileSheetOpen.value = false
   store.go('profiles')
 }
+
+async function onWelcomeDrop(event: DragEvent) {
+  welcomeDragging.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (!file) return
+  const before = snap.value.profiles.length
+  await store.addLocal(file.name.replace(/\.(ya?ml|txt)$/i, ''), await file.text())
+  if (snap.value.profiles.length > before) {
+    store.toast(`已导入 ${file.name}`, 'success')
+    const added = snap.value.profiles[snap.value.profiles.length - 1]
+    if (!snap.value.active_id && added) void store.enable(added.id)
+  }
+}
+
 const usage = computed(() => (profile.value ? usagePercent(profile.value.used, profile.value.total) : null))
 const remainingBytes = computed(() => {
   const p = profile.value
@@ -103,17 +120,17 @@ const failureSettingsAction = computed<{ label: string; tab: 'kernel' | 'tun' } 
 /** Only values the kernel actually reported survive; a missing reading hides the row (R24). */
 const runtime = computed(() => {
   const items: { key: string; label: string; value: string }[] = []
-  const version = store.kernel.value.version
-  if (version) items.push({ key: 'kernel', label: '内核版本', value: version })
+  if (snap.value.connected) {
+    items.push({ key: 'connections', label: '活动连接', value: String(snap.value.connection_total) })
+  }
   if (snap.value.kernel_memory != null) {
     items.push({ key: 'memory', label: '内核内存', value: formatBytes(snap.value.kernel_memory) })
   }
   if (snap.value.kernel_uptime_secs != null) {
     items.push({ key: 'uptime', label: '运行时长', value: uptimeText(snap.value.kernel_uptime_secs) })
   }
-  if (snap.value.connected) {
-    items.push({ key: 'connections', label: '活动连接', value: String(snap.value.connection_total) })
-  }
+  const version = store.kernel.value.version
+  if (version) items.push({ key: 'kernel', label: '内核版本', value: version })
   return items
 })
 
@@ -130,13 +147,19 @@ const takeoverOn = computed(() => (store.isAndroid.value ? snap.value.vpn : snap
 const proxySubtitle = computed(() => {
   const sp = snap.value.settings.system_proxy
   const host = sp.host.trim()
+  const port = snap.value.mixed_port ?? snap.value.settings.mixed_port ?? 7890
   if (sp.mode === 'pac') {
-    return host ? `PAC 自动配置 · ${host}` : 'PAC 自动配置脚本 · 按规则接管应用'
+    return host ? `PAC 自动分流 · ${host}` : 'PAC 脚本自动分流'
   }
   if (host && host !== '127.0.0.1') {
-    return `${host}:${snap.value.mixed_port ?? snap.value.settings.mixed_port ?? 7890} · 浏览器和系统应用`
+    return `${host}:${port}`
   }
-  return '浏览器和遵守系统设置的应用'
+  return snap.value.system_proxy ? `HTTP / SOCKS · :${port}` : '浏览器与常规应用'
+})
+
+const tunSubtitle = computed(() => {
+  if (snap.value.tun) return `${snap.value.settings.tun.stack.toUpperCase()} 栈 · 全局接管`
+  return '虚拟网卡接管全部流量'
 })
 
 /** The hero's first line answers "is my traffic going through Billow?", not just "is the kernel up?". */
@@ -155,7 +178,6 @@ function uptimeText(seconds: number): string {
   const minutes = Math.floor((total % 3600) / 60)
   if (days > 0) return `${days} 天 ${hours} 时`
   if (hours > 0) return `${hours} 时 ${minutes} 分`
-  // "0 分" reads like a stalled counter right after connecting.
   return minutes > 0 ? `${minutes} 分` : '不到 1 分'
 }
 
@@ -170,7 +192,6 @@ function onPrimary() {
   }
   void store.toggleConnection()
 }
-
 </script>
 
 <template>
@@ -199,56 +220,83 @@ function onPrimary() {
       <button type="button" class="btn ghost sm" @click="store.go('logs')">查看日志</button>
     </div>
 
-    <section v-if="!store.hasProfiles.value" class="card welcome" data-testid="welcome">
-      <span class="brand-mark lg"><img :src="appIcon" alt="" /></span>
+    <section
+      v-if="!store.hasProfiles.value"
+      class="card welcome"
+      :class="{ over: welcomeDragging }"
+      data-testid="welcome"
+      @dragover.prevent="welcomeDragging = true"
+      @dragleave="welcomeDragging = false"
+      @drop.prevent="onWelcomeDrop"
+    >
+      <div class="welcome-emblem">
+        <span class="brand-mark lg"><img :src="appIcon" alt="" /></span>
+      </div>
       <h1 class="status-word" data-testid="status">欢迎使用 Billow</h1>
-      <p class="hero-sub muted">添加一个订阅或本地配置即可开始</p>
+      <p class="hero-sub muted">轻量、纯净的现代网络代理客户端，导入一份配置即可开始</p>
       <button type="button" class="connect-control" data-testid="power" @click="store.adding.value = true">
         <span class="connect-glyph"><Icon name="plus" :size="22" :stroke="2.2" /></span>
         <span class="connect-label">添加配置</span>
       </button>
-      <p class="muted small" data-testid="import-hint">支持订阅链接与 Clash / Mihomo YAML 文件；导入后在这里一键连接。</p>
+      <div class="welcome-steps" aria-hidden="true">
+        <span><Icon name="link" :size="13" />粘贴订阅链接</span>
+        <span><Icon name="file" :size="13" />拖入本地文件</span>
+        <span><Icon name="zap" :size="13" />一键开启分流</span>
+      </div>
+      <p class="muted small welcome-hint" data-testid="import-hint">支持订阅链接与 Clash / Mihomo YAML 文件；也可直接将配置文件拖入此处。</p>
     </section>
 
     <div v-else class="home-layout">
-      <!-- One hero owns state, the primary action and everything live: rates, the
-           traffic chart and runtime facts, so no number is repeated elsewhere (R24). -->
+      <!-- Unified Cockpit Hero: state, 1-tap profile/node pills, primary power orb/trigger, live rates, chart & runtime -->
       <section class="card hero" :class="[status.tone, { bare: snap.connected && !takeoverOn }]" data-testid="home-status">
-        <div v-if="compact" class="hero-mobile-top">
+        <div class="hero-topbar">
           <span class="hero-status-pill">
             <span class="hero-dot" aria-hidden="true" />
             <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
           </span>
-          <button
-            v-if="profile"
-            type="button"
-            class="hero-profile-pill"
-            data-testid="mobile-profile-trigger"
-            @click="profileSheetOpen = true"
-          >
-            <Icon :name="profile.kind === 'local' ? 'file' : 'link'" :size="13" />
-            <span class="hero-profile ellipsis">{{ profile.name }}</span>
-            <Icon name="chevron-down" :size="13" />
-          </button>
+          <div class="hero-pills-right">
+            <button
+              v-if="!compact && !store.isAndroid.value && snap.mixed_port"
+              type="button"
+              class="hero-port-btn mono"
+              :title="`点击复制终端环境变量 (127.0.0.1:${snap.mixed_port})`"
+              data-testid="copy-proxy-cmd"
+              @click="store.copyProxyEnv()"
+            >
+              <span>:{{ snap.mixed_port }}</span>
+              <Icon name="copy" :size="12" />
+            </button>
+            <button
+              v-if="profile"
+              type="button"
+              class="hero-profile-pill"
+              data-testid="mobile-profile-trigger"
+              title="快速切换配置"
+              @click="profileSheetOpen = true"
+            >
+              <Icon :name="profile.kind === 'local' ? 'file' : 'link'" :size="13" />
+              <span class="hero-profile ellipsis">{{ profile.name }}</span>
+              <Icon name="chevron-down" :size="13" />
+            </button>
+          </div>
         </div>
 
         <div class="hero-main">
           <div class="hero-state">
-            <p v-if="!compact" class="hero-eyebrow">
-              <span class="hero-dot" aria-hidden="true" />
-              <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
-            </p>
             <h1 class="status-word" data-testid="status">{{ status.word }}</h1>
             <p v-if="store.connectStage.value" class="hero-sub muted" role="status">{{ store.connectStage.value }}</p>
-            <template v-else-if="compact">
+            <div v-else class="hero-context">
               <button
                 v-if="primaryGroup && snap.mode !== 'direct'"
                 type="button"
                 class="hero-node-pill"
                 data-testid="hero-node-pill"
+                :title="`点击前往「${primaryGroup.name}」切换节点`"
                 @click="store.go('proxies', primaryGroup.name)"
               >
                 <Icon name="globe" :size="14" class="hero-node-icon" />
+                <span v-if="!compact" class="hero-node-group">{{ primaryGroup.name }}</span>
+                <span v-if="!compact" class="hero-node-sep" aria-hidden="true">·</span>
                 <span class="hero-node-name ellipsis">{{ primaryGroup.now || primaryGroup.name }}</span>
                 <span
                   v-if="primaryNode && (primaryNode.delay_ms != null || primaryNode.failed)"
@@ -258,29 +306,16 @@ function onPrimary() {
                 <Icon name="chevron-right" :size="13" class="muted" />
               </button>
               <p v-else-if="snap.mode === 'direct'" class="hero-sub muted">当前直连出站 · 不经过代理节点</p>
-              <p v-else-if="!profile" class="hero-sub muted">选择一份配置后连接</p>
-            </template>
-            <p v-else-if="profile" class="hero-sub">
-              <span class="hero-profile">{{ profile.name }}</span>
-              <span v-if="activeMode" class="muted">· {{ activeMode.label }}模式</span>
-              <template v-if="snap.mixed_port">
-                <span class="muted">·</span>
-                <button
-                  v-if="!store.isAndroid.value"
-                  type="button"
-                  class="hero-port-btn"
-                  :title="`点击复制终端环境变量 (127.0.0.1:${snap.mixed_port})`"
-                  data-testid="copy-proxy-cmd"
-                  @click="store.copyProxyEnv()"
-                >
-                  端口 {{ snap.mixed_port }}
-                  <Icon name="copy" :size="12" />
-                </button>
-                <span v-else class="muted">端口 {{ snap.mixed_port }}</span>
-              </template>
-            </p>
-            <p v-else class="hero-sub muted">选择一份配置后连接</p>
+              <p v-else-if="!profile" class="hero-sub muted">选择一份配置后即可开启代理</p>
+              <p v-else class="hero-sub muted">
+                <span>{{ activeMode ? `${activeMode.label}模式` : '就绪' }}</span>
+                <template v-if="store.isAndroid.value && snap.mixed_port">
+                  <span>· 端口 {{ snap.mixed_port }}</span>
+                </template>
+              </p>
+            </div>
           </div>
+
           <div v-if="snap.connected" class="hero-rates mono" data-testid="rates">
             <div class="rate down">
               <span class="rate-label"><Icon name="down" :size="13" />下载</span>
@@ -293,6 +328,7 @@ function onPrimary() {
               <span v-if="snap.upload_total != null" class="rate-total">本次 {{ formatBytes(snap.upload_total) }}</span>
             </div>
           </div>
+
           <div class="hero-action" data-testid="home-action">
             <button
               type="button"
@@ -305,15 +341,17 @@ function onPrimary() {
             >
               <span class="connect-glyph">
                 <span v-if="store.connecting.value" class="spinner sm" />
-                <Icon v-else :name="connectIcon" :size="compact ? 30 : 20" :stroke="2.2" />
+                <Icon v-else :name="connectIcon" :size="compact ? 30 : 21" :stroke="2.3" />
               </span>
               <span class="connect-label">{{ connectLabel }}</span>
             </button>
           </div>
         </div>
+
         <div v-if="snap.connected" class="hero-chart" data-testid="traffic-card">
-          <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 72 : 88" />
+          <TrafficChart :up="store.traffic.value.up" :down="store.traffic.value.down" :height="compact ? 72 : 84" />
         </div>
+
         <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
           <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">
             <dt>{{ item.label }}</dt>
@@ -329,7 +367,7 @@ function onPrimary() {
 
       <div class="home-columns">
         <div class="home-col">
-          <!-- Everything that changes where traffic goes lives in one card. -->
+          <!-- Control Center: Outbound Mode + Tactile Traffic Takeover Bento Tiles -->
           <section class="card control-card" data-testid="control-card">
             <div class="control-block" data-testid="mode-card">
               <header class="control-head">
@@ -346,33 +384,81 @@ function onPrimary() {
                 />
               </div>
             </div>
-            <!-- Android: the VPN follows the connection and the hero reports it; per-app
-                 access control lives in Settings (R24). -->
+
             <div v-if="!store.isAndroid.value" class="control-block takeover" data-testid="takeover-card">
-              <div class="setting-row">
-                <span class="row-icon"><Icon name="monitor" /></span>
-                <div class="grow">
-                  <strong>系统代理</strong>
-                  <p class="muted small">{{ proxySubtitle }}</p>
+              <div class="takeover-grid">
+                <div
+                  class="takeover-tile"
+                  :class="{ active: snap.system_proxy }"
+                  @click="store.setSystemProxy(!snap.system_proxy)"
+                >
+                  <div class="takeover-tile-top">
+                    <span class="row-icon"><Icon name="monitor" :size="17" /></span>
+                    <div class="takeover-tile-actions" @click.stop>
+                      <button
+                        type="button"
+                        class="icon-btn sm"
+                        title="系统代理设置"
+                        aria-label="系统代理设置"
+                        data-testid="proxy-settings-link"
+                        @click="store.openSettings('proxy')"
+                      >
+                        <Icon name="sliders" :size="14" />
+                      </button>
+                      <Toggle
+                        :model-value="snap.system_proxy"
+                        :busy="store.busy.proxy"
+                        label="系统代理"
+                        data-testid="toggle-proxy"
+                        @update:model-value="store.setSystemProxy"
+                      />
+                    </div>
+                  </div>
+                  <div class="takeover-tile-body">
+                    <strong>系统代理</strong>
+                    <p class="muted small ellipsis">{{ proxySubtitle }}</p>
+                  </div>
                 </div>
-                <button type="button" class="icon-btn" title="系统代理设置" aria-label="系统代理设置" data-testid="proxy-settings-link" @click="store.openSettings('proxy')"><Icon name="sliders" :size="16" /></button>
-                <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" label="系统代理" data-testid="toggle-proxy" @update:model-value="store.setSystemProxy" />
-              </div>
-              <div class="setting-row">
-                <span class="row-icon"><Icon name="shield" /></span>
-                <div class="grow">
-                  <strong>TUN 模式</strong>
-                  <p class="muted small">接管全部流量，包括不支持代理的应用</p>
+
+                <div
+                  class="takeover-tile"
+                  :class="{ active: snap.tun }"
+                  @click="store.setTun(!snap.tun)"
+                >
+                  <div class="takeover-tile-top">
+                    <span class="row-icon"><Icon name="shield" :size="17" /></span>
+                    <div class="takeover-tile-actions" @click.stop>
+                      <button
+                        type="button"
+                        class="icon-btn sm"
+                        title="TUN 设置"
+                        aria-label="TUN 设置"
+                        data-testid="tun-settings-link"
+                        @click="store.openSettings('tun')"
+                      >
+                        <Icon name="sliders" :size="14" />
+                      </button>
+                      <Toggle
+                        :model-value="snap.tun"
+                        :busy="store.busy.tun"
+                        label="TUN 模式"
+                        data-testid="toggle-tun"
+                        @update:model-value="store.setTun"
+                      />
+                    </div>
+                  </div>
+                  <div class="takeover-tile-body">
+                    <strong>TUN 模式</strong>
+                    <p class="muted small ellipsis">{{ tunSubtitle }}</p>
+                  </div>
                 </div>
-                <button type="button" class="icon-btn" title="TUN 设置" aria-label="TUN 设置" data-testid="tun-settings-link" @click="store.openSettings('tun')"><Icon name="sliders" :size="16" /></button>
-                <Toggle :model-value="snap.tun" :busy="store.busy.tun" label="TUN 模式" data-testid="toggle-tun" @update:model-value="store.setTun" />
               </div>
             </div>
           </section>
 
           <section class="card home-subscription" data-testid="profile-card">
             <header class="card-head">
-              <h2>订阅</h2>
+              <h2>当前配置</h2>
               <button type="button" class="btn ghost sm" @click="store.go('profiles')">管理<Icon name="chevron-right" :size="14" /></button>
             </header>
             <template v-if="profile">
@@ -404,7 +490,7 @@ function onPrimary() {
                 <div class="usage-text small">
                   <span class="mono">
                     {{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}
-                    <span v-if="remainingBytes != null" class="muted">· 剩余 {{ formatBytes(remainingBytes) }}</span>
+                    <span v-if="remainingBytes != null" class="muted">· 剩 {{ formatBytes(remainingBytes) }}</span>
                   </span>
                   <span
                     v-if="profile.expire"
@@ -417,7 +503,7 @@ function onPrimary() {
                   </span>
                 </div>
               </div>
-              <p v-else class="muted small">订阅没有提供流量信息</p>
+              <p v-else class="muted small">本地或无流量统计信息</p>
               <p v-if="profile.failure" class="field-error">{{ profile.failure }}</p>
             </template>
             <p v-else class="empty-line muted">还没有启用配置，去配置页选择一份</p>
@@ -444,17 +530,19 @@ function onPrimary() {
                 :data-group="group.name"
                 @click="store.go('proxies', group.name)"
               >
-                <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="compact ? 22 : 20" /></span>
-                <span class="group-row-text">
+                <div class="group-tile-top">
+                  <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="compact ? 22 : 20" /></span>
+                  <span
+                    v-if="nodeOf(group) && (nodeOf(group)!.delay_ms != null || nodeOf(group)!.failed)"
+                    class="delay"
+                    :class="delayTone(nodeOf(group)!.delay_ms, nodeOf(group)!.failed)"
+                  >{{ delayText(nodeOf(group)!.delay_ms, nodeOf(group)!.failed) }}</span>
+                  <Icon v-else name="chevron-right" :size="14" class="muted group-tile-arrow" />
+                </div>
+                <div class="group-row-text">
                   <span class="group-row-name">{{ group.name }}</span>
                   <span class="group-row-now">{{ group.now || '—' }}</span>
-                </span>
-                <span
-                  v-if="nodeOf(group) && (nodeOf(group)!.delay_ms != null || nodeOf(group)!.failed)"
-                  class="delay"
-                  :class="delayTone(nodeOf(group)!.delay_ms, nodeOf(group)!.failed)"
-                >{{ delayText(nodeOf(group)!.delay_ms, nodeOf(group)!.failed) }}</span>
-                <Icon v-if="!compact" name="chevron-right" :size="16" class="muted" />
+                </div>
               </button>
             </div>
           </section>
@@ -479,7 +567,7 @@ function onPrimary() {
             <span class="muted small">
               {{ item.proxy_count ? `${item.proxy_count} 个节点` : item.kind === 'local' ? '本地配置' : '远程订阅' }}
               <template v-if="usagePercent(item.used, item.total) != null">
-                · 已用 {{ usagePercent(item.used, item.total) }}%
+                · 已用 {{ Math.round(usagePercent(item.used, item.total)!) }}%
               </template>
             </span>
           </span>

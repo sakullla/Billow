@@ -413,14 +413,16 @@ const CACHE_ALGOS_DNS = [
   { id: 'arc', label: 'ARC' },
 ] as const
 type ListKey = 'nameserver' | 'default_nameserver' | 'fallback' | 'proxy_server_nameserver' | 'direct_nameserver' | 'fake_ip_filter'
-const LISTS: { key: ListKey; title: string; hint: string; fakeIpOnly?: boolean }[] = [
-  { key: 'nameserver', title: '主 DNS 服务器', hint: '默认用于解析所有域名，支持 DoH / DoT / DoQ' },
-  { key: 'default_nameserver', title: '引导 DNS', hint: '只用 IP 形式，用于解析上面 DoH 等服务器自身的域名' },
+const LISTS: { key: ListKey; title: string; hint: string; fakeIpOnly?: boolean; core?: boolean }[] = [
+  { key: 'nameserver', title: '主 DNS 服务器', hint: '默认用于解析所有域名，支持 DoH / DoT / DoQ', core: true },
+  { key: 'default_nameserver', title: '引导 DNS', hint: '只用 IP 形式，用于解析上面 DoH 等服务器自身的域名', core: true },
   { key: 'proxy_server_nameserver', title: '节点域名解析', hint: '解析代理节点服务器地址' },
   { key: 'direct_nameserver', title: '直连域名解析', hint: '直连出站使用；留空则用主 DNS' },
   { key: 'fallback', title: '备用 DNS', hint: '可选，海外服务器；留空则不启用' },
   { key: 'fake_ip_filter', title: 'Fake-IP 过滤', hint: '黑名单下这些域名返回真实 IP；白名单下仅这些域名返回 Fake-IP', fakeIpOnly: true },
 ]
+const CORE_DNS_LISTS = LISTS.filter((item) => item.core)
+const ADV_DNS_LISTS = LISTS.filter((item) => !item.core)
 const dns = ref<DnsSettings>(copy(snap.value.settings.dns))
 const dnsText = ref<Record<ListKey, string>>({} as Record<ListKey, string>)
 const policyRows = ref<{ pattern: string; servers: string }[]>([])
@@ -652,11 +654,11 @@ function resetDns() {
 }
 
 const TABS = computed(() => [
-  { id: 'general' as SettingsTab, label: '通用' },
-  ...(store.isAndroid.value ? [] : [{ id: 'proxy' as SettingsTab, label: proxyDirty.value ? '系统代理 •' : '系统代理' }]),
-  { id: 'kernel' as SettingsTab, label: '内核' },
-  ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: tunDirty.value ? 'TUN •' : 'TUN' }]),
-  { id: 'dns' as SettingsTab, label: dnsDirty.value ? 'DNS •' : 'DNS' },
+  { id: 'general' as SettingsTab, label: '通用', icon: 'sliders' },
+  ...(store.isAndroid.value ? [] : [{ id: 'proxy' as SettingsTab, label: proxyDirty.value ? '系统代理 •' : '系统代理', icon: 'monitor' }]),
+  { id: 'kernel' as SettingsTab, label: '内核', icon: 'cpu' },
+  ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: tunDirty.value ? 'TUN •' : 'TUN', icon: 'shield' }]),
+  { id: 'dns' as SettingsTab, label: dnsDirty.value ? 'DNS •' : 'DNS', icon: 'globe' },
 ])
 </script>
 
@@ -845,7 +847,7 @@ const TABS = computed(() => [
           <button type="button" class="btn ghost sm" @click="resetProxy">恢复默认</button>
         </header>
         <p class="muted small card-note">配置系统级 HTTP / SOCKS 接管方式、代理主机与 PAC 脚本。修改后立即应用，不会中断当前内核连接。</p>
-        <div class="setting-row">
+        <div class="setting-row master-row" :class="{ active: snap.system_proxy }">
           <span class="row-icon"><Icon name="monitor" /></span>
           <div class="grow">
             <strong>启用系统代理</strong>
@@ -1047,82 +1049,91 @@ const TABS = computed(() => [
           </div>
           <Toggle :model-value="effective(flag.key)" :busy="store.busy.settings" :label="flag.title" @update:model-value="(on) => save({ [flag.key]: on })" />
         </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>日志级别</strong>
-            <p class="muted small">配置中为 {{ snap.config_values.log_level ?? 'info' }}</p>
-          </div>
-          <SelectField
-            :model-value="snap.settings.log_level ?? ''"
-            :options="LOG_LEVELS.map((level) => ({ value: level.id, label: level.label }))"
-            :sheet="compact"
-            size="sm"
-            label="日志级别"
-            @update:model-value="(value) => save({ log_level: String(value) || null })"
-          />
-        </div>
-        <div v-if="!store.isAndroid.value" class="setting-row">
-          <div class="grow">
-            <strong>进程匹配</strong>
-            <p class="muted small">识别连接来自哪个应用，用于连接页与进程规则</p>
-          </div>
-          <SelectField
-            :model-value="snap.settings.find_process_mode ?? ''"
-            :options="PROCESS_MODES.map((mode) => ({ value: mode.id, label: mode.label }))"
-            :sheet="compact"
-            size="sm"
-            label="进程匹配"
-            @update:model-value="(value) => save({ find_process_mode: String(value) || null })"
-          />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>域名嗅探<span v-if="snap.settings.sniffer != null" class="tag accent sm">已覆盖</span></strong>
-            <p class="muted small">从 HTTP / TLS / QUIC 流量中识别域名，让按域名分流在 IP 直连时也生效</p>
-          </div>
-          <Toggle :model-value="Boolean(snap.settings.sniffer)" :busy="store.busy.settings" label="域名嗅探" @update:model-value="(on) => save({ sniffer: on })" />
-        </div>
-        <div class="setting-row wrap">
-          <div class="grow">
-            <strong>测速地址</strong>
-            <p class="muted small">延迟测试请求的网址与超时（毫秒）</p>
-          </div>
-          <div class="inline-field">
-            <div class="input-pair">
-              <input
-                v-model="testUrl"
-                class="input sm mono"
-                type="url"
-                placeholder="http://www.gstatic.com/generate_204"
-                aria-label="测速地址"
-                @focus="testUrlFocused = true"
-                @blur="testUrlFocused = false; commitProbe()"
-                @keydown.enter="($event.target as HTMLInputElement).blur()"
-              />
-              <input
-                v-model="timeout"
-                class="input sm mono short"
-                inputmode="numeric"
-                placeholder="5000"
-                aria-label="测速超时"
-                @focus="timeoutFocused = true"
-                @blur="timeoutFocused = false; commitProbe()"
-                @keydown.enter="($event.target as HTMLInputElement).blur()"
+        <details class="settings-fold">
+          <summary>
+            <Icon name="chevron-right" :size="14" />
+            <span>高级内核与测速选项</span>
+            <span class="muted small">日志级别、进程匹配、域名嗅探与测速地址</span>
+          </summary>
+          <div class="settings-fold-body">
+            <div class="setting-row">
+              <div class="grow">
+                <strong>日志级别</strong>
+                <p class="muted small">配置中为 {{ snap.config_values.log_level ?? 'info' }}</p>
+              </div>
+              <SelectField
+                :model-value="snap.settings.log_level ?? ''"
+                :options="LOG_LEVELS.map((level) => ({ value: level.id, label: level.label }))"
+                :sheet="compact"
+                size="sm"
+                label="日志级别"
+                @update:model-value="(value) => save({ log_level: String(value) || null })"
               />
             </div>
-            <button
-              v-if="probeDirty"
-              type="button"
-              class="btn primary sm"
-              :disabled="store.busy.settings"
-              data-testid="save-probe"
-              @mousedown.prevent
-              @click="commitProbe()"
-            >
-              保存
-            </button>
+            <div v-if="!store.isAndroid.value" class="setting-row">
+              <div class="grow">
+                <strong>进程匹配</strong>
+                <p class="muted small">识别连接来自哪个应用，用于连接页与进程规则</p>
+              </div>
+              <SelectField
+                :model-value="snap.settings.find_process_mode ?? ''"
+                :options="PROCESS_MODES.map((mode) => ({ value: mode.id, label: mode.label }))"
+                :sheet="compact"
+                size="sm"
+                label="进程匹配"
+                @update:model-value="(value) => save({ find_process_mode: String(value) || null })"
+              />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>域名嗅探<span v-if="snap.settings.sniffer != null" class="tag accent sm">已覆盖</span></strong>
+                <p class="muted small">从 HTTP / TLS / QUIC 流量中识别域名，让按域名分流在 IP 直连时也生效</p>
+              </div>
+              <Toggle :model-value="Boolean(snap.settings.sniffer)" :busy="store.busy.settings" label="域名嗅探" @update:model-value="(on) => save({ sniffer: on })" />
+            </div>
+            <div class="setting-row wrap">
+              <div class="grow">
+                <strong>测速地址</strong>
+                <p class="muted small">延迟测试请求的网址与超时（毫秒）</p>
+              </div>
+              <div class="inline-field">
+                <div class="input-pair">
+                  <input
+                    v-model="testUrl"
+                    class="input sm mono"
+                    type="url"
+                    placeholder="http://www.gstatic.com/generate_204"
+                    aria-label="测速地址"
+                    @focus="testUrlFocused = true"
+                    @blur="testUrlFocused = false; commitProbe()"
+                    @keydown.enter="($event.target as HTMLInputElement).blur()"
+                  />
+                  <input
+                    v-model="timeout"
+                    class="input sm mono short"
+                    inputmode="numeric"
+                    placeholder="5000"
+                    aria-label="测速超时"
+                    @focus="timeoutFocused = true"
+                    @blur="timeoutFocused = false; commitProbe()"
+                    @keydown.enter="($event.target as HTMLInputElement).blur()"
+                  />
+                </div>
+                <button
+                  v-if="probeDirty"
+                  type="button"
+                  class="btn primary sm"
+                  :disabled="store.busy.settings"
+                  data-testid="save-probe"
+                  @mousedown.prevent
+                  @click="commitProbe()"
+                >
+                  保存
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+        </details>
       </section>
     </template>
 
@@ -1134,7 +1145,7 @@ const TABS = computed(() => [
           <button type="button" class="btn ghost sm" @click="resetTun">恢复默认</button>
         </header>
         <p class="muted small card-note">在系统中创建虚拟网卡接管全部流量，包括不读取系统代理的应用和命令行工具。以下设置覆盖配置文件中的 tun 段。</p>
-        <div class="setting-row">
+        <div class="setting-row master-row" :class="{ active: snap.tun }">
           <span class="row-icon"><Icon name="shield" /></span>
           <div class="grow">
             <strong>启用 TUN</strong>
@@ -1158,39 +1169,48 @@ const TABS = computed(() => [
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>自动选择出口网卡</strong>
-            <p class="muted small">避免代理流量绕回 TUN 造成回环</p>
-          </div>
-          <Toggle v-model="tun.auto_detect_interface" label="自动选择出口网卡" />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
             <strong>严格路由</strong>
             <p class="muted small">阻止流量绕过 TUN（防 DNS 泄漏），但可能让局域网访问失效</p>
           </div>
           <Toggle v-model="tun.strict_route" label="严格路由" />
         </div>
-        <div class="setting-row wrap">
-          <div class="grow">
-            <strong>DNS 劫持</strong>
-            <p class="muted small">把发往这些地址的 DNS 查询交给内核，每行一个</p>
+        <details class="settings-fold">
+          <summary>
+            <Icon name="chevron-right" :size="14" />
+            <span>高级虚拟网卡参数</span>
+            <span class="muted small">出口接口、DNS 劫持、MTU 与网卡名称</span>
+          </summary>
+          <div class="settings-fold-body">
+            <div class="setting-row">
+              <div class="grow">
+                <strong>自动选择出口网卡</strong>
+                <p class="muted small">避免代理流量绕回 TUN 造成回环</p>
+              </div>
+              <Toggle v-model="tun.auto_detect_interface" label="自动选择出口网卡" />
+            </div>
+            <div class="setting-row wrap">
+              <div class="grow">
+                <strong>DNS 劫持</strong>
+                <p class="muted small">把发往这些地址的 DNS 查询交给内核，每行一个</p>
+              </div>
+              <textarea v-model="tunHijack" class="input list-input mono" rows="2" spellcheck="false" aria-label="DNS 劫持" />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>MTU</strong>
+                <p class="muted small">一般保持 1500；遇到大包问题可调小，例如 1400</p>
+              </div>
+              <input v-model="tunMtu" class="input sm mono short" inputmode="numeric" placeholder="1500" aria-label="MTU" />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>网卡名称</strong>
+                <p class="muted small">留空由内核决定（macOS 需为 utun 开头）</p>
+              </div>
+              <input v-model="tun.device" class="input sm mono" placeholder="自动" aria-label="网卡名称" />
+            </div>
           </div>
-          <textarea v-model="tunHijack" class="input list-input mono" rows="2" spellcheck="false" aria-label="DNS 劫持" />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>MTU</strong>
-            <p class="muted small">一般保持 1500；遇到大包问题可调小，例如 1400</p>
-          </div>
-          <input v-model="tunMtu" class="input sm mono short" inputmode="numeric" placeholder="1500" aria-label="MTU" />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>网卡名称</strong>
-            <p class="muted small">留空由内核决定（macOS 需为 utun 开头）</p>
-          </div>
-          <input v-model="tun.device" class="input sm mono" placeholder="自动" aria-label="网卡名称" />
-        </div>
+        </details>
         <div v-if="tunDirty" class="save-bar">
           <span class="muted small grow">有未保存的修改{{ snap.kernel_running ? '，保存后将平滑热重载生效' : '' }}</span>
           <button type="button" class="btn ghost sm" @click="undoTun">撤销</button>
@@ -1206,7 +1226,7 @@ const TABS = computed(() => [
           <h2>DNS</h2>
           <button type="button" class="btn ghost sm" @click="resetDns">恢复默认</button>
         </header>
-        <div class="setting-row">
+        <div class="setting-row master-row" :class="{ active: snap.settings.dns_override }">
           <span class="row-icon"><Icon name="sliders" /></span>
           <div class="grow">
             <strong>DNS 覆写</strong>
@@ -1233,76 +1253,8 @@ const TABS = computed(() => [
           </div>
           <Segmented v-model="dns.enhanced_mode" :options="MODES_DNS" size="sm" label="增强模式" data-testid="dns-enhanced-mode" />
         </div>
-        <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
-          <div class="grow">
-            <strong>Fake-IP 地址段</strong>
-            <p class="muted small">虚拟地址池，不要与本地网络冲突</p>
-          </div>
-          <input v-model="dns.fake_ip_range" class="input sm mono" aria-label="Fake-IP 地址段" />
-        </div>
-        <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
-          <div class="grow">
-            <strong>过滤列表模式</strong>
-            <p class="muted small">{{ dns.fake_ip_filter_mode === 'whitelist' ? '白名单：仅列表中的域名返回虚拟地址，其余返回真实 IP' : '黑名单：列表中的域名返回真实 IP，其余返回虚拟地址' }}</p>
-          </div>
-          <Segmented
-            v-model="dns.fake_ip_filter_mode"
-            :options="FILTER_MODES_DNS"
-            size="sm"
-            label="过滤列表模式"
-            data-testid="dns-filter-mode"
-          />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>DNS 监听地址</strong>
-            <p class="muted small">可选本地监听端口，例如 <code>127.0.0.1:1053</code>；留空则仅在内核内部处理</p>
-          </div>
-          <input
-            v-model="dns.listen"
-            class="input sm mono"
-            placeholder="留空不监听"
-            aria-label="DNS 监听地址"
-            data-testid="dns-listen"
-          />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>IPv6 解析</strong>
-            <p class="muted small">允许返回 AAAA 记录</p>
-          </div>
-          <Toggle v-model="dns.ipv6" label="IPv6 解析" />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>DoH 优先 HTTP/3</strong>
-            <p class="muted small">加密 DNS 支持 QUIC 时优先使用 HTTP/3 连接（prefer-h3）</p>
-          </div>
-          <Toggle v-model="dns.prefer_h3" label="DoH 优先 HTTP/3" data-testid="dns-prefer-h3" />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>缓存算法</strong>
-            <p class="muted small">ARC 命中率更高，LRU 内存开销更稳定</p>
-          </div>
-          <Segmented v-model="dns.cache_algorithm" :options="CACHE_ALGOS_DNS" size="sm" label="缓存算法" data-testid="dns-cache-algorithm" />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>遵循分流规则</strong>
-            <p class="muted small">DNS 查询也按分流规则走代理或直连（respect-rules）</p>
-          </div>
-          <Toggle v-model="dns.respect_rules" label="遵循分流规则" />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>直连遵循解析策略</strong>
-            <p class="muted small">直连出站解析域名时优先匹配下方的域名解析策略（direct-nameserver-follow-policy）</p>
-          </div>
-          <Toggle v-model="dns.direct_nameserver_follow_policy" label="直连遵循解析策略" data-testid="dns-direct-follow-policy" />
-        </div>
-        <template v-for="item in LISTS" :key="item.key">
-          <div v-if="!item.fakeIpOnly || dns.enhanced_mode === 'fake-ip'" class="setting-row stacked">
+        <template v-for="item in CORE_DNS_LISTS" :key="item.key">
+          <div class="setting-row stacked">
             <div>
               <strong>{{ item.title }}</strong>
               <p class="muted small">{{ item.hint }}，每行一个</p>
@@ -1310,12 +1262,104 @@ const TABS = computed(() => [
             <textarea
               v-model="dnsText[item.key]"
               class="input list-input mono"
-              :rows="Math.min(8, Math.max(2, (dnsText[item.key] ?? '').split('\n').length))"
+              :rows="Math.min(6, Math.max(2, (dnsText[item.key] ?? '').split('\n').length))"
               spellcheck="false"
               :aria-label="item.title"
             />
           </div>
         </template>
+        <details class="settings-fold">
+          <summary>
+            <Icon name="chevron-right" :size="14" />
+            <span>高级解析参数</span>
+            <span class="muted small">{{ dns.enhanced_mode === 'fake-ip' ? 'Fake-IP 地址池、监听端口、HTTP/3、缓存与分流解析' : '监听端口、HTTP/3、缓存算法与分流解析' }}</span>
+          </summary>
+          <div class="settings-fold-body">
+            <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
+              <div class="grow">
+                <strong>Fake-IP 地址段</strong>
+                <p class="muted small">虚拟地址池，不要与本地网络冲突</p>
+              </div>
+              <input v-model="dns.fake_ip_range" class="input sm mono" aria-label="Fake-IP 地址段" />
+            </div>
+            <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
+              <div class="grow">
+                <strong>过滤列表模式</strong>
+                <p class="muted small">{{ dns.fake_ip_filter_mode === 'whitelist' ? '白名单：仅列表中的域名返回虚拟地址，其余返回真实 IP' : '黑名单：列表中的域名返回真实 IP，其余返回虚拟地址' }}</p>
+              </div>
+              <Segmented
+                v-model="dns.fake_ip_filter_mode"
+                :options="FILTER_MODES_DNS"
+                size="sm"
+                label="过滤列表模式"
+                data-testid="dns-filter-mode"
+              />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>DNS 监听地址</strong>
+                <p class="muted small">可选本地监听端口，例如 <code>127.0.0.1:1053</code>；留空则仅在内核内部处理</p>
+              </div>
+              <input
+                v-model="dns.listen"
+                class="input sm mono"
+                placeholder="留空不监听"
+                aria-label="DNS 监听地址"
+                data-testid="dns-listen"
+              />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>IPv6 解析</strong>
+                <p class="muted small">允许返回 AAAA 记录</p>
+              </div>
+              <Toggle v-model="dns.ipv6" label="IPv6 解析" />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>DoH 优先 HTTP/3</strong>
+                <p class="muted small">加密 DNS 支持 QUIC 时优先使用 HTTP/3 连接（prefer-h3）</p>
+              </div>
+              <Toggle v-model="dns.prefer_h3" label="DoH 优先 HTTP/3" data-testid="dns-prefer-h3" />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>缓存算法</strong>
+                <p class="muted small">ARC 命中率更高，LRU 内存开销更稳定</p>
+              </div>
+              <Segmented v-model="dns.cache_algorithm" :options="CACHE_ALGOS_DNS" size="sm" label="缓存算法" data-testid="dns-cache-algorithm" />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>遵循分流规则</strong>
+                <p class="muted small">DNS 查询也按分流规则走代理或直连（respect-rules）</p>
+              </div>
+              <Toggle v-model="dns.respect_rules" label="遵循分流规则" />
+            </div>
+            <div class="setting-row">
+              <div class="grow">
+                <strong>直连遵循解析策略</strong>
+                <p class="muted small">直连出站解析域名时优先匹配下方的域名解析策略（direct-nameserver-follow-policy）</p>
+              </div>
+              <Toggle v-model="dns.direct_nameserver_follow_policy" label="直连遵循解析策略" data-testid="dns-direct-follow-policy" />
+            </div>
+            <template v-for="item in ADV_DNS_LISTS" :key="item.key">
+              <div v-if="!item.fakeIpOnly || dns.enhanced_mode === 'fake-ip'" class="setting-row stacked">
+                <div>
+                  <strong>{{ item.title }}</strong>
+                  <p class="muted small">{{ item.hint }}，每行一个</p>
+                </div>
+                <textarea
+                  v-model="dnsText[item.key]"
+                  class="input list-input mono"
+                  :rows="Math.min(8, Math.max(2, (dnsText[item.key] ?? '').split('\n').length))"
+                  spellcheck="false"
+                  :aria-label="item.title"
+                />
+              </div>
+            </template>
+          </div>
+        </details>
       </section>
 
       <section class="card" data-testid="dns-policy-card">

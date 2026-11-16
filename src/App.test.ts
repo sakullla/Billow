@@ -2960,4 +2960,46 @@ describe('App', () => {
     expect(localStorage.getItem('billow.sidebarCollapsed')).toBe('0')
     localStorage.clear()
   })
+
+  it('cycles theme in 1 click from the sidebar and switches profiles or nodes right from desktop home', async () => {
+    const { wrapper, backend } = await mountApp({}, 1200)
+    const enableSpy = vi.spyOn(backend, 'enable')
+    const store = storeOf(wrapper)
+
+    // 1-click theme cycle in sidebar brand header
+    const themeBtn = wrapper.find('[data-testid="sidebar-theme-toggle"]')
+    expect(themeBtn.exists()).toBe(true)
+    expect(store.theme.value).toBe('system')
+    await themeBtn.trigger('click')
+    expect(store.theme.value).toBe('light')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    await themeBtn.trigger('click')
+    expect(store.theme.value).toBe('dark')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+
+    // Desktop Home quick profile switch sheet without leaving Home
+    const profilePill = wrapper.find('[data-testid="mobile-profile-trigger"]')
+    expect(profilePill.exists()).toBe(true)
+    await profilePill.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-profile-sheet"]')).not.toBeNull()
+    document.body.querySelector<HTMLElement>('[data-testid="sheet-profile-p2"]')?.click()
+    await settle(400)
+    expect(enableSpy).toHaveBeenCalledWith('p2')
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+
+    // Desktop Home active node capsule jumps directly to the outbound group
+    const nodePill = wrapper.find('[data-testid="hero-node-pill"]')
+    expect(nodePill.exists()).toBe(true)
+    await nodePill.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
+
+    // Desktop Proxies also offers inline 1-click connect when disconnected
+    expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="proxies-connect"]').trigger('click')
+    await settle(1500)
+    expect(store.snapshot.value.connected).toBe(true)
+    expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(false)
+  })
 })

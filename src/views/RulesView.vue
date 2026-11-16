@@ -358,8 +358,8 @@ onBeforeUnmount(() => { ++loadId })
           </template>
           <template v-else>—</template>
         </span>
-        <span class="rule-proxy">
-          <span>
+        <span class="rule-proxy" :data-policy="rule.proxy.toUpperCase()">
+          <span class="rule-proxy-badge">
             <template v-for="(part, partIdx) in highlight(rule.proxy)" :key="partIdx">
               <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
             </template>

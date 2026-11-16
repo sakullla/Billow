@@ -466,8 +466,7 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
         <span
           v-if="!snap.kernel_running && snap.node_catalog.length"
           id="proxy-test-hint"
-          class="test-hint muted small"
-          :class="{ 'sr-only': compact }"
+          class="test-hint sr-only"
           data-testid="test-hint"
         >
           连接后可测速
@@ -491,13 +490,13 @@ const optionsActive = computed(() => sort.value !== 'default' || hideAuto.value 
     </header>
 
     <div
-      v-if="compact && !snap.kernel_running && snap.node_catalog.length"
+      v-if="!snap.kernel_running && snap.node_catalog.length"
       class="proxies-connect-bar"
       data-testid="proxies-connect-bar"
     >
       <span class="proxies-connect-text small">
         <span class="proxies-connect-dot" aria-hidden="true" />
-        当前未连接，连接后即可测速与生效
+        当前未连接，连接后即可测速与实时生效
       </span>
       <button
         type="button"
