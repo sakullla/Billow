@@ -722,6 +722,47 @@ impl KernelManager {
         self.state.channel
     }
 
+    /// Bootstrap desktop installations offline, preserving independently updated kernels.
+    pub fn seed_desktop(&mut self, resources: &Path) -> Result<(), String> {
+        if self.installed_path().is_some_and(|path| fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)) {
+            return Ok(());
+        }
+        #[derive(Deserialize)]
+        struct Bundle {
+            version: String,
+            asset: String,
+            sha256: String,
+        }
+        let install = || -> Result<InstalledKernel, String> {
+            let bundle: Bundle = serde_json::from_slice(&fs::read(resources.join("kernel.json")).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            let expected_asset = format!("{}{}.{}", self.target.asset_prefix().ok_or("不支持的内核平台")?, bundle.version, self.target.archive_ext());
+            if bundle.asset != expected_asset || bundle.sha256.len() != 64 || !bundle.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("安装包内核与当前平台不匹配".to_string());
+            }
+            let archive = fs::read(resources.join(format!("kernel.{}", self.target.archive_ext())))
+                .map_err(|e| e.to_string())?;
+            if sha256_hex(&archive) != bundle.sha256 {
+                return Err("安装包内核校验和不一致".to_string());
+            }
+            let relative_path = format!("files/{}/{}", bundle.sha256, self.target.binary_file_name());
+            extract_kernel(&bundle.asset, &archive, &self.root.join(&relative_path))?;
+            Ok(InstalledKernel {
+                channel: Channel::Stable,
+                identity: format!("{}:{}:{}", bundle.version, bundle.asset, bundle.sha256),
+                relative_path,
+            })
+        };
+        let installed = install().map_err(|error| format!("内置内核初始化失败：{error}"))?;
+        let previous = self.state.clone();
+        self.state = KernelState { channel: Channel::Stable, installed: Some(installed), failure: None };
+        if let Err(error) = self.persist() {
+            self.state = previous;
+            return Err(format!("内置内核状态保存失败：{error}"));
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn failure(&self) -> Option<&str> {
         self.state.failure.as_deref()
@@ -1044,6 +1085,60 @@ mod tests {
         assert!(!manager.status().ready);
         assert!(manager.connect().failed);
         assert!(manager.status().failure.unwrap().contains("安装包缺少内核"));
+    }
+
+    fn desktop_bundle(dir: &Path, target: PlatformTarget) -> Vec<u8> {
+        fs::create_dir_all(dir).unwrap();
+        let asset = format!("{}v1.19.34.{}", target.asset_prefix().unwrap(), target.archive_ext());
+        let bytes = archive_for(&asset, b"packaged-kernel");
+        fs::write(dir.join(format!("kernel.{}", target.archive_ext())), &bytes).unwrap();
+        fs::write(dir.join("kernel.json"), serde_json::to_vec(&serde_json::json!({
+            "version": "v1.19.34", "asset": asset, "sha256": sha256_hex(&bytes),
+        })).unwrap()).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn desktop_first_launch_and_missing_kernel_repair_work_without_network() {
+        for target in [linux_amd64(), PlatformTarget::Desktop { os: DesktopOs::Windows, arch: CpuArch::Amd64 }] {
+            let dir = temp_dir("desktop-bootstrap");
+            let resources = dir.0.join("package");
+            desktop_bundle(&resources, target);
+            let home = dir.0.join("kernels");
+            let mut manager = KernelManager::open(&home, target);
+            assert!(!manager.status().ready);
+            manager.seed_desktop(&resources).unwrap();
+            assert!(manager.status().ready);
+            assert_eq!(manager.status().version.as_deref(), Some("v1.19.34"));
+            let path = manager.connect().kernel_path.unwrap();
+            assert!(path.starts_with(&home));
+            assert_eq!(fs::read(&path).unwrap(), b"packaged-kernel");
+            fs::remove_file(&path).unwrap();
+            let mut reopened = KernelManager::open(&home, target);
+            assert!(!reopened.status().ready);
+            reopened.seed_desktop(&resources).unwrap();
+            assert_eq!(fs::read(reopened.installed_path().unwrap()).unwrap(), b"packaged-kernel");
+            fs::write(&path, b"independent-update").unwrap();
+            reopened.state.channel = Channel::Preview;
+            fs::remove_dir_all(resources.clone()).unwrap();
+            reopened.seed_desktop(&resources).unwrap();
+            assert_eq!(reopened.channel(), Channel::Preview);
+            assert_eq!(fs::read(&path).unwrap(), b"independent-update");
+        }
+    }
+
+    #[test]
+    fn desktop_bootstrap_rejects_corrupt_and_wrong_platform_packages() {
+        let dir = temp_dir("desktop-corrupt-bundle");
+        let resources = dir.0.join("package");
+        desktop_bundle(&resources, linux_amd64());
+        let mut manager = KernelManager::open(dir.0.join("kernels"), linux_amd64());
+        fs::write(resources.join("kernel.gz"), b"truncated").unwrap();
+        assert!(manager.seed_desktop(&resources).unwrap_err().contains("校验和"));
+        assert!(!manager.status().ready);
+        desktop_bundle(&resources, PlatformTarget::Desktop { os: DesktopOs::Darwin, arch: CpuArch::Arm64 });
+        assert!(manager.seed_desktop(&resources).unwrap_err().contains("平台"));
+        assert!(!manager.status().ready);
     }
 
     #[test]

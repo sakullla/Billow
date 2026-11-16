@@ -54,7 +54,7 @@ pub struct GeoFile {
     pub modified_ms: Option<u64>,
 }
 
-/// Desktop kernels run without `-d`, so their home is mihomo's default.
+/// Desktop data home, passed explicitly to Mihomo and shared by resource readers.
 #[cfg(not(target_os = "android"))]
 pub fn kernel_home() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CLASH_HOME_DIR").filter(|value| !value.is_empty()) {

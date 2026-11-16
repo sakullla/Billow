@@ -11,3 +11,6 @@ src-tauri/gen/schemas
 __pycache__/
 src-tauri/icons/ios/
 /docs/sakullla-workflow
+/src-tauri/.runtime-cache/
+/src-tauri/resources/runtime/*
+!/src-tauri/resources/runtime/.gitkeep

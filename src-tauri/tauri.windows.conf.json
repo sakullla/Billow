@@ -18,6 +18,7 @@
   },
   "bundle": {
     "resources": {
+      "resources/runtime/": "runtime/",
       "../assets/wintun/wintun.dll": "wintun.dll",
       "../assets/wintun/LICENSE.txt": "wintun-LICENSE.txt"
     }

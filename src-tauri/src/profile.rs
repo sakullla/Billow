@@ -920,6 +920,8 @@ fn kernel_file_privileged(path: &std::path::Path) -> bool {
 pub struct ProcessRuntime {
     kernel_path: Option<PathBuf>,
     work_dir: PathBuf,
+    home_dir: PathBuf,
+    bundled_resources: Option<PathBuf>,
     child: Option<Child>,
     config_path: Option<PathBuf>,
     last_requested_yaml: Option<String>,
@@ -973,9 +975,16 @@ impl<T: Copy + Send + 'static> MetricWatch<T> {
 
 impl ProcessRuntime {
     pub fn new(work_dir: impl Into<PathBuf>) -> Self {
+        let work_dir = work_dir.into();
+        #[cfg(target_os = "android")]
+        let home_dir = work_dir.clone();
+        #[cfg(not(target_os = "android"))]
+        let home_dir = crate::resources::kernel_home().unwrap_or_else(|| work_dir.clone());
         Self {
             kernel_path: None,
-            work_dir: work_dir.into(),
+            work_dir,
+            home_dir,
+            bundled_resources: None,
             child: None,
             config_path: None,
             last_requested_yaml: None,
@@ -997,6 +1006,10 @@ impl ProcessRuntime {
 
     pub fn set_kernel_path(&mut self, path: Option<PathBuf>) {
         self.kernel_path = path;
+    }
+
+    pub fn set_bundled_resources(&mut self, resources: PathBuf) {
+        self.bundled_resources = Some(resources);
     }
 
     pub fn shutdown(&mut self) {
@@ -1115,6 +1128,9 @@ impl KernelLaunch for ProcessRuntime {
         if !path.is_file() {
             return Err(MISSING_KERNEL.to_string());
         }
+        if let Some(resources) = &self.bundled_resources {
+            crate::bundled_geo::seed_directory(&resources.join("geo"), &self.home_dir)?;
+        }
         let priv_now = kernel_file_privileged(&path);
         if self.running()
             && self.launched_kernel.as_ref() == Some(&path)
@@ -1203,11 +1219,10 @@ impl KernelLaunch for ProcessRuntime {
         {
             let apk = crate::kernel::android_app_dir("sourceDir")
                 .ok_or_else(|| "无法读取安装包中的 GEO 数据".to_string())?;
-            crate::android_geo::seed(&apk, &self.work_dir)?;
+            crate::bundled_geo::seed(&apk, &self.work_dir)?;
         }
         let mut command = Command::new(&path);
-        #[cfg(target_os = "android")]
-        command.arg("-d").arg(&self.work_dir);
+        command.arg("-d").arg(&self.home_dir);
         command
             .arg("-f")
             .arg(&config_path)
@@ -2398,6 +2413,7 @@ impl ProfileBook {
             })
         })?;
         self.runtime_base = Some(base);
+        self.mixed_port = Some(i64::from(port));
         self.runtime_catalog = kernel.node_catalog();
         self.auto_now = self.runtime_catalog.now.clone();
         self.apply_live_selections(kernel);
@@ -2610,7 +2626,14 @@ impl ProfileBook {
             return;
         };
         if let Ok(prepared) = prepare(&profile.content, &profile.applied_override) {
-            self.mixed_port = prepared.mixed_port;
+            let configured = apply_settings(&prepared.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
+                .ok().and_then(|(_, port)| port);
+            // Proxy-only edits must not replace the live port with the subscription's
+            // original value. A successful reload publishes its new port separately.
+            let running = self.runtime_base.as_deref().filter(|_| self.kernel_running)
+                .and_then(|yaml| serde_yaml::from_str::<Value>(yaml).ok())
+                .and_then(|value| read_i64(&value, "mixed-port"));
+            self.mixed_port = running.or(configured);
             self.mode = prepared.mode;
         }
     }
@@ -4308,6 +4331,36 @@ mod tests {
 
     use crate::nodes::{KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay};
     use crate::takeover::{MemoryProxy, MemoryTun, MemoryVpn};
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    #[ignore = "requires BILLOW_TEST_RESOURCES pointing to the built desktop runtime bundle"]
+    fn desktop_packaged_runtime_starts_offline() {
+        let resources = PathBuf::from(std::env::var_os("BILLOW_TEST_RESOURCES").expect("BILLOW_TEST_RESOURCES"));
+        let dir = temp_dir("offline-package");
+        let home = dir.0.join("home");
+        let mut manager = crate::kernel::KernelManager::open(dir.0.join("kernels"), crate::kernel::PlatformTarget::current());
+        assert!(!manager.status().ready);
+        manager.seed_desktop(&resources).unwrap();
+        crate::bundled_geo::seed_directory(&resources.join("geo"), &home).unwrap();
+        let port_socket = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = port_socket.local_addr().unwrap().port();
+        let api_socket = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let api_port = api_socket.local_addr().unwrap().port();
+        drop((port_socket, api_socket));
+        // Refuse any GEO download: these rules must load from the installer snapshot.
+        let yaml = format!("mixed-port: {port}\nexternal-controller: 127.0.0.1:{api_port}\nsecret: billow-offline-test\nmode: rule\ngeodata-mode: true\ngeox-url:\n  geoip: http://127.0.0.1:9/unavailable\n  geosite: http://127.0.0.1:9/unavailable\n  mmdb: http://127.0.0.1:9/unavailable\n  asn: http://127.0.0.1:9/unavailable\nrules:\n  - GEOIP,CN,DIRECT\n  - GEOSITE,cn,DIRECT\n  - IP-ASN,13335,DIRECT\n  - MATCH,DIRECT\n");
+        let mut runtime = ProcessRuntime::new(dir.0.join("profiles"));
+        runtime.home_dir = home;
+        runtime.set_bundled_resources(resources);
+        runtime.set_kernel_path(manager.connect().kernel_path);
+        runtime.start_or_reload(&yaml).unwrap();
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+        runtime.start_or_reload(&yaml.replace("geodata-mode: true", "geodata-mode: false")).unwrap();
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+        runtime.stop();
+        assert!(!runtime.running());
+    }
 
     /// Opt-in host smoke test: uses an installed Mihomo, never writes system proxy settings.
     #[cfg(target_os = "macos")]
@@ -6885,6 +6938,9 @@ proxy-groups:
         let mut tun = MemoryTun { grant: true, ..Default::default() };
         let mut vpn = MemoryVpn::default();
         book.enable("p1", &RejectSource, &mut kernel);
+        let mut overridden = book.snapshot().settings;
+        overridden.mixed_port = Some(7891);
+        book.save_settings(overridden, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         let initial_calls = kernel.calls;
 
@@ -6894,12 +6950,13 @@ proxy-groups:
         next.system_proxy.bypass = vec!["localhost".to_string(), "*.lan".to_string()];
         let snap = book.save_settings(next, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(snap.connected);
+        assert_eq!(snap.mixed_port, Some(7891));
         assert_eq!(kernel.calls, initial_calls, "system_proxy-only edits must not reload kernel");
         assert_eq!(
             proxy.http,
             Some(takeover::ProxyEndpoint {
                 host: "127.0.0.2".to_string(),
-                port: 7890,
+                port: 7891,
             })
         );
         assert_eq!(
@@ -6919,6 +6976,17 @@ proxy-groups:
         assert!(snap2.failure.is_none());
         assert_eq!(tun.authorize_calls, auth_before);
         assert_eq!(kernel.calls, initial_calls + 1);
+        assert_eq!(snap2.mixed_port, Some(7891));
+
+        // Restoring the default must move both the real listener config and all UI/proxy endpoints.
+        let mut defaults = snap2.settings;
+        defaults.mixed_port = None;
+        let restored = book.save_settings(defaults, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(restored.mixed_port, Some(7890));
+        assert_eq!(proxy.http.as_ref().unwrap().port, 7890);
+        let running: Value = serde_yaml::from_str(kernel.running.as_deref().unwrap()).unwrap();
+        assert_eq!(read_i64(&running, "mixed-port"), Some(7890));
+        assert_eq!(ProfileBook::open(&dir.0).snapshot().mixed_port, Some(7890));
     }
 
     #[cfg(unix)]

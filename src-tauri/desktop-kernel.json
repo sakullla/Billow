@@ -1,0 +1,42 @@
+{
+  "version": "v1.19.34",
+  "repository": "MetaCubeX/mihomo",
+  "targets": {
+    "darwin-aarch64": {
+      "asset": "mihomo-darwin-arm64-v1.19.34.gz",
+      "sha256": "1a7a20eca63fbbaec90137717465bfde488d0db2a3a79b8fadebf9b2545b6e4c"
+    },
+    "darwin-x86_64": {
+      "asset": "mihomo-darwin-amd64-v1.19.34.gz",
+      "sha256": "089b033be801ff365b6558851115238b443b237433aa0841bc3fa41ad75a3927"
+    },
+    "windows-aarch64": {
+      "asset": "mihomo-windows-arm64-v1.19.34.zip",
+      "sha256": "076cb04a21377675bcf009b8d1dd83006ce2464aa537e37bce1faf6d3504f554"
+    },
+    "windows-x86_64": {
+      "asset": "mihomo-windows-amd64-v1.19.34.zip",
+      "sha256": "f6b855de8722781caea62686f0301f89625fc558d48c1103ffdd98dad7f7f488"
+    },
+    "windows-i686": {
+      "asset": "mihomo-windows-386-v1.19.34.zip",
+      "sha256": "af003e9d42dd19724cabb8c1acc7cd9315406b09abc6e92d6f274fbdccffff4d"
+    },
+    "linux-aarch64": {
+      "asset": "mihomo-linux-arm64-v1.19.34.gz",
+      "sha256": "daaf78a6240a282cdfd75bcbf98fe321f6bd52765cc29e79f344191198f0b50f"
+    },
+    "linux-x86_64": {
+      "asset": "mihomo-linux-amd64-v1.19.34.gz",
+      "sha256": "223fab877e5795ce780ba39902e5f0b1113c1256ae244a7160f1165e017e9ccc"
+    },
+    "linux-i686": {
+      "asset": "mihomo-linux-386-v1.19.34.gz",
+      "sha256": "035c37e926a396bffacf4109caab451df891b8c32978238f3757e2b788715287"
+    },
+    "linux-armv7": {
+      "asset": "mihomo-linux-armv7-v1.19.34.gz",
+      "sha256": "aa5e51572e29ce22ace7b6e28e611e1f1f635210d76420d161ce12a5431bf93e"
+    }
+  }
+}

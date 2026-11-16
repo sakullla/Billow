@@ -173,6 +173,11 @@ jobs:
           mobile: ${{ matrix.mobile }}
           args: ${{ matrix.args }}
           retryAttempts: 1
+      - name: Verify packaged desktop kernel and GEO work offline
+        if: matrix.platform != 'android'
+        env:
+          BILLOW_TEST_RESOURCES: ${{ github.workspace }}/src-tauri/resources/runtime
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked desktop_packaged_runtime_starts_offline -- --ignored --nocapture
       - uses: actions/setup-go@v7
         if: matrix.platform == 'android'
         with:

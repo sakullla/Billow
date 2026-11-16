@@ -1,6 +1,5 @@
 mod app_update;
-#[cfg(any(target_os = "android", test))]
-mod android_geo;
+mod bundled_geo;
 mod diagnostics;
 #[cfg(target_os = "windows")]
 mod elevation;
@@ -192,9 +191,7 @@ fn kernel_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(directory)
 }
 
-/// The kernel's home, where provider caches and GEO files live. Android starts
-/// the kernel with `-d <profiles dir>`, so readers must use that same directory
-/// rather than re-deriving it through JNI; desktop kernels use mihomo's default.
+/// Use the same home for resource initialization, readers and the kernel's `-d` argument.
 fn kernel_home(app: &AppHandle) -> Option<std::path::PathBuf> {
     #[cfg(target_os = "android")]
     return profiles_dir(app).ok();
@@ -224,7 +221,11 @@ fn prepare_profiles(app: &tauri::App) {
         )),
     };
     let mut book = ProfileBook::open(&directory);
-    let runtime = ProcessRuntime::new(&directory);
+    let mut runtime = ProcessRuntime::new(&directory);
+    #[cfg(not(target_os = "android"))]
+    if let Ok(resources) = app.path().resource_dir() {
+        runtime.set_bundled_resources(resources.join("runtime"));
+    }
     let mut proxy = takeover::host_proxy();
     book.release_lingering_proxy(&mut proxy);
     let mut installed = takeover::HostInstalledApps;
@@ -271,7 +272,7 @@ fn bind_install_links(app: &AppHandle) {
 }
 
 fn prepare_kernel(app: &tauri::App) {
-    let manager = match kernel_dir(app.handle()) {
+    let mut manager = match kernel_dir(app.handle()) {
         Ok(dir) => KernelManager::open(dir, PlatformTarget::current()),
         Err(message) => {
             let mut manager = KernelManager::open(
@@ -286,19 +287,19 @@ fn prepare_kernel(app: &tauri::App) {
             return;
         }
     };
+    #[cfg(not(target_os = "android"))]
+    {
+        let initialized = (|| -> Result<(), String> {
+            let resources = app.path().resource_dir().map_err(|error| error.to_string())?.join("runtime");
+            manager.seed_desktop(&resources)?;
+            let home = kernel_home(app.handle()).ok_or("GEO 数据目录不可用")?;
+            bundled_geo::seed_directory(&resources.join("geo"), &home)
+        })();
+        if let Err(message) = initialized { manager.fail_without_change(message); }
+    }
+    // First launch is ready before the UI can connect, with no network dependency.
     app.manage(KernelStore {
         manager: Mutex::new(manager),
-    });
-    // An installed kernel is immediately usable; network upgrades are explicit in Settings.
-    if app.state::<KernelStore>().manager.lock().unwrap_or_else(|p| p.into_inner()).status().ready {
-        return;
-    }
-    let handle = app.handle().clone();
-    std::thread::spawn(move || {
-        let store = handle.state::<KernelStore>();
-        let mut manager = lock_kernel(&store.manager);
-        let channel = manager.channel();
-        manager.sync(channel, &GithubReleaseClient::new());
     });
 }
 
@@ -828,7 +829,7 @@ fn geo_files(app: AppHandle) -> Vec<resources::GeoFile> {
     let home = kernel_home(&app);
     #[cfg(target_os = "android")]
     if let (Some(apk), Some(dir)) = (kernel::android_app_dir("sourceDir"), home.as_deref()) {
-        let _ = android_geo::seed(&apk, dir);
+        let _ = bundled_geo::seed(&apk, dir);
     }
     resources::geo_files(home.as_deref())
 }

@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Billow",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "identifier": "app.billow.client",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "node tool/prepare_runtime.mjs && npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
