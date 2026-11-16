@@ -11,11 +11,11 @@ test('matching version tag builds every supported installer', () => {
 
 test('recovery selects only failed platforms without changing the target version', () => {
   const result = releaseRequest({ eventName: 'workflow_dispatch', ref: 'refs/heads/main', version: '0.1.16',
-    inputs: { tag: 'v0.1.16', platforms: 'macos,linux', appimage_compression: 'gzip', macos_runner: 'macos-15' } })
+    inputs: { tag: 'v0.1.16', platforms: 'macos,linux', appimage_compression: 'zstd', macos_runner: 'macos-15' } })
   assert.deepEqual(result.matrix.map(target => target.platform), ['macos', 'linux'])
   assert.equal(result.matrix[0].target, 'aarch64-apple-darwin')
   assert.equal(result.matrix[0].os, 'macos-15')
-  assert.equal(result.matrix[1].appimageCompression, 'gzip')
+  assert.equal(result.matrix[1].appimageCompression, 'zstd')
 })
 
 test('release and recovery reject mismatched versions, untrusted events, and arbitrary runners', () => {
@@ -39,4 +39,11 @@ test('prebuilt recovery is explicit, checksummed, and limited to macOS', () => {
   assert.throws(() => releaseRequest({ ...options, eventName: 'push', ref: 'refs/tags/v0.1.16' }))
   assert.throws(() => releaseRequest({ ...options, inputs: { ...inputs, macos_manifest_sha256: 'bad' } }))
   assert.throws(() => releaseRequest({ ...options, inputs: { ...inputs, platforms: 'linux' } }))
+})
+
+test('rejects compressors absent from the distributed AppImage tool', () => {
+  for (const appimage_compression of ['gzip', 'xz']) {
+    assert.throws(() => releaseRequest({ eventName: 'workflow_dispatch', version: '0.1.16',
+      inputs: { tag: 'v0.1.16', platforms: 'linux', appimage_compression } }), /compression/)
+  }
 })

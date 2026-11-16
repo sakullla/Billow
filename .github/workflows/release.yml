@@ -15,9 +15,9 @@ on:
         type: string
       appimage_compression:
         description: AppImage compression
-        default: gzip
+        default: zstd
         type: choice
-        options: [gzip, xz]
+        options: [zstd]
       macos_manifest_sha256:
         description: Optional SHA-256 of uploaded native-validated macOS build manifest (capacity recovery)
         default: ''

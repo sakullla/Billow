@@ -20,7 +20,7 @@ macOS arm64，版本 0.1.14，前后均使用 release 构建及同一份 Mihomo/
 - 四份 GEO 全部保留并压缩，桌面与 Android 共用。APK 中 .br 不再重复压缩。Android 原生内核仍走 jniLibs 原有安装路径，保持可执行权限机制。
 - 原始文件与压缩文件分别记录长度和 SHA-256；运行时流式解压到临时文件，全部校验后再替换目标。解码失败清理临时文件并保留旧数据。旧格式归档和资源仍可读取；用户已更新的有效 GEO 不会被覆盖。
 - 发布构建使用 `opt-level = "s"`、thin LTO、单 codegen unit 和符号剥离；保留现有 panic 行为。
-- Linux 本地打包命令及发布任务设置 XZ AppImage 压缩，覆盖随包 WebKit/GTK。此设置来自 [linuxdeploy 官方参数处理](https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/blob/master/src/main.cpp)，尚待 Linux 安装包运行验证。
+- Linux 曾尝试显式 XZ 压缩。2026-11-17 的实际发布日志确认，当前分发的 appimagetool/mksquashfs 仅支持 zstd；XZ 和 gzip 均被拒绝。因此恢复本地打包器默认值，发布任务使用 zstd，保留 Brotli 资源压缩与 Rust 体积优化。
 - 压缩结果按原始内容哈希缓存，每次复用前解压比对；缓存或输出损坏会重建。首次高压缩率构建较慢，同内容再次构建不再重新压缩。
 
 ## 验证

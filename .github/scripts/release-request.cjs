@@ -17,8 +17,8 @@ function releaseRequest({ eventName, ref, inputs = {}, version }) {
     ? [...new Set(inputs.platforms.split(',').map(value => value.trim()))]
     : targets.map(target => target.platform)
   if (!names.length || names.some(name => !targets.some(target => target.platform === name))) throw new Error('Unknown release platform')
-  const compression = inputs.appimage_compression || 'gzip'
-  if (!['gzip', 'xz'].includes(compression)) throw new Error('Unknown AppImage compression')
+  const compression = inputs.appimage_compression || 'zstd'
+  if (compression !== 'zstd') throw new Error('Unknown AppImage compression')
   const macosRunner = inputs.macos_runner || 'macos-15'
   if (!['macos-15', 'macos-latest'].includes(macosRunner)) throw new Error('Unsupported macOS runner')
   const prebuilt = inputs.macos_manifest_sha256 || ''
