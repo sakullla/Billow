@@ -120,6 +120,8 @@ export function createStore(backend: Backend) {
   let queue: Promise<unknown> = Promise.resolve()
   let unlisten: (() => void) | null = null
   let unlistenNodeTest: (() => void) | null = null
+  let pendingEntry: PageId | null = null
+  let savingEntry = false
   const lastRunError = ref<string | null>(null)
 
   const current = computed(() => snapshot.value.profiles.find((item) => item.current) ?? null)
@@ -240,19 +242,18 @@ export function createStore(backend: Backend) {
           node.selected === other.selected && node.delay_ms === other.delay_ms && node.failed === other.failed &&
           node.tags.length === other.tags.length && node.tags.every((tag, i) => tag === other.tags[i])
       })
-    if (previous.length === next.node_catalog.length &&
-      previous.every((group, index) => sameGroup(group, next.node_catalog[index]!))) {
+    const byName = new Map(previous.map((group) => [group.name, group]))
+    let reused = false
+    const catalog = next.node_catalog.map((group) => {
+      const old = byName.get(group.name)
+      if (!old || (old !== group && !sameGroup(old, group))) return group
+      reused = true
+      return old
+    })
+    if (catalog.length === previous.length && catalog.every((group, index) => group === previous[index])) {
       next = { ...next, node_catalog: previous }
-    } else {
-      const byName = new Map(previous.map((group) => [group.name, group]))
-      let reused = false
-      const catalog = next.node_catalog.map((group) => {
-        const old = byName.get(group.name)
-        if (!old || !sameGroup(old, group)) return group
-        reused = true
-        return old
-      })
-      if (reused) next = { ...next, node_catalog: catalog }
+    } else if (reused) {
+      next = { ...next, node_catalog: catalog }
     }
     const logs = snapshot.value.logs
     if (logs.length === next.logs.length && logs.every((line, index) => {
@@ -624,10 +625,28 @@ export function createStore(backend: Backend) {
     go('settings')
   }
 
+  async function saveEntry(next: PageId) {
+    pendingEntry = next
+    if (savingEntry) return
+    savingEntry = true
+    try {
+      while (pendingEntry !== null) {
+        const entry: PageId = pendingEntry
+        pendingEntry = null
+        await backend.setEntry(entry).catch(console.error)
+      }
+    } finally {
+      savingEntry = false
+    }
+  }
+
   function go(next: PageId, group?: string) {
+    const changed = page.value !== next
     page.value = next
     focusGroup.value = group ?? null
-    void backend.setEntry(next).catch(console.error)
+    // Native writes run off the UI thread. Serialize/coalesce them so rapid
+    // navigation cannot save an older page after the latest one.
+    if (changed) void saveEntry(next)
   }
 
   function setTheme(next: ThemePreference) {

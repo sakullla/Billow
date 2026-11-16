@@ -5,6 +5,7 @@ use std::sync::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 
 pub const TUN_DENIED: &str = "系统授权被拒绝";
+pub const TUN_AUTHORIZATION_FAILED: &str = "TUN 授权未完成";
 pub const VPN_DENIED: &str = "VPN 授权被拒绝";
 pub const NO_PROFILE: &str = "没有生效配置";
 pub const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
@@ -723,8 +724,8 @@ pub fn tun_allowed(host: TunHost, evidence: TunEvidence) -> bool {
     }
 }
 
-/// Desktop TUN grant. Authorization uses [`tun_allowed`] and the host's own probe,
-/// plus native privilege elevation for the managed Mihomo core binary on macOS.
+/// Desktop TUN authorization. Windows defers consent to the managed kernel
+/// supervisor; macOS authorizes the core binary. Other hosts use their own probe.
 pub struct HostTun {
     evidence: fn() -> TunEvidence,
     enabled: bool,
@@ -828,6 +829,15 @@ fn macos_authorize_kernel(path: &Path) -> Result<bool, String> {
 
 impl TunGrant for HostTun {
     fn authorize(&mut self) -> Result<bool, String> {
+        // Windows elevates only the kernel supervisor at launch. Creating and
+        // immediately deleting a probe adapter here duplicates expensive driver
+        // setup; the actual kernel's listener check verifies the resulting TUN.
+        #[cfg(target_os = "windows")]
+        if let Some(path) = &self.kernel_path {
+            return if path.is_file() { Ok(true) } else {
+                Err("还没有可用内核，请先等待内核准备完成".to_string())
+            };
+        }
         // Opening a utun in the app does not grant the separately launched kernel
         // permission to configure its interface and routes.
         #[cfg(target_os = "macos")]

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -933,6 +933,8 @@ pub struct ProcessRuntime {
     home_dir: PathBuf,
     bundled_resources: Option<PathBuf>,
     child: Option<Child>,
+    #[cfg(target_os = "windows")]
+    elevated: Option<crate::elevation::ElevatedKernel>,
     config_path: Option<PathBuf>,
     last_requested_yaml: Option<String>,
     controller: Option<ControllerEndpoint>,
@@ -996,6 +998,8 @@ impl ProcessRuntime {
             home_dir,
             bundled_resources: None,
             child: None,
+            #[cfg(target_os = "windows")]
+            elevated: None,
             config_path: None,
             last_requested_yaml: None,
             controller: None,
@@ -1071,6 +1075,8 @@ impl ProcessRuntime {
             }
             let _ = child.wait();
         }
+        #[cfg(target_os = "windows")]
+        drop(self.elevated.take());
         if let Some(path) = self.config_path.take() {
             let _ = fs::remove_file(path);
         }
@@ -1104,7 +1110,7 @@ struct CapturedLogs {
     lines: Arc<Mutex<Vec<LogView>>>,
 }
 
-fn spawn_log_buffer(stdout: ChildStdout) -> CapturedLogs {
+fn spawn_log_buffer(stdout: impl Read + Send + 'static) -> CapturedLogs {
     let lines = Arc::new(Mutex::new(Vec::new()));
     let shared = Arc::clone(&lines);
     std::thread::spawn(move || {
@@ -1144,7 +1150,15 @@ impl KernelLaunch for ProcessRuntime {
             crate::bundled_geo::seed_directory(&resources.join("geo"), &self.home_dir)?;
         }
         let priv_now = kernel_file_privileged(&path);
-        if self.running()
+        #[cfg(target_os = "windows")]
+        let needs_elevation = serde_yaml::from_str::<Value>(config_yaml).ok()
+            .and_then(|value| value.get("tun")?.get("enable")?.as_bool()) == Some(true)
+            && !crate::elevation::is_admin();
+        #[cfg(target_os = "windows")]
+        let can_reload = !needs_elevation || self.elevated.is_some();
+        #[cfg(not(target_os = "windows"))]
+        let can_reload = true;
+        if can_reload && self.running()
             && self.launched_kernel.as_ref() == Some(&path)
             && self.launched_privileged == priv_now
         {
@@ -1216,6 +1230,11 @@ impl KernelLaunch for ProcessRuntime {
             }
         }
         fs::create_dir_all(&self.work_dir).map_err(|_| "配置没有写入".to_string())?;
+        // Consent/handshake precedes shutdown, so cancelling UAC leaves the old session intact.
+        #[cfg(target_os = "windows")]
+        let mut elevated = if needs_elevation {
+            Some(crate::elevation::ElevatedKernel::prepare()?)
+        } else { None };
         self.stop();
         #[cfg(all(unix, not(target_os = "android")))]
         reap_stale_unix_kernel(&self.work_dir, &path);
@@ -1274,26 +1293,35 @@ impl KernelLaunch for ProcessRuntime {
         }
         #[cfg(not(target_os = "android"))]
         remove_stale_runtime_configs(&self.work_dir, &config_path);
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
+        let mut spawn_normal = || -> Result<Option<Box<dyn Read + Send>>, String> {
+            let mut child = command.spawn().map_err(|error| {
                 let _ = fs::remove_file(&config_path);
-                return Err(format!("{KERNEL_ERROR}：{error}"));
-            }
+                format!("{KERNEL_ERROR}：{error}")
+            })?;
+            #[cfg(target_os = "windows")]
+            crate::win_process::bind_to_app_lifetime(&child);
+            #[cfg(all(unix, not(target_os = "android")))]
+            let _ = fs::write(self.work_dir.join("kernel.pid"), format!("{}\n{}", child.id(), path.display()));
+            let stdout = child.stdout.take().map(|stdout| Box::new(stdout) as Box<dyn Read + Send>);
+            self.child = Some(child);
+            Ok(stdout)
         };
         #[cfg(target_os = "windows")]
-        crate::win_process::bind_to_app_lifetime(&child);
-        #[cfg(all(unix, not(target_os = "android")))]
-        let _ = fs::write(
-            self.work_dir.join("kernel.pid"),
-            format!("{}\n{}", child.id(), path.display()),
-        );
-        let stdout = child.stdout.take();
+        let stdout = if let Some(mut helper) = elevated.take() {
+            helper.start(&path, &self.home_dir, &config_path).map_err(|error| {
+                let _ = fs::remove_file(&config_path);
+                format!("{KERNEL_ERROR}：{error}")
+            })?;
+            let stdout = helper.take_stdout().map(|stdout| Box::new(stdout) as Box<dyn Read + Send>);
+            self.elevated = Some(helper);
+            stdout
+        } else { spawn_normal()? };
+        #[cfg(not(target_os = "windows"))]
+        let stdout = spawn_normal()?;
         let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
         let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
         let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
         self.started = Some(Instant::now());
-        self.child = Some(child);
         self.launched_kernel = Some(path);
         self.launched_privileged = priv_now;
         self.tun_active = tun;
@@ -1347,7 +1375,11 @@ impl KernelLaunch for ProcessRuntime {
             Some(child) => matches!(child.try_wait(), Ok(None)),
             None => false,
         };
+        #[cfg(target_os = "windows")]
+        let alive = alive || self.elevated.as_ref().is_some_and(|helper| helper.running());
         if !alive {
+            #[cfg(target_os = "windows")]
+            { self.elevated = None; }
             self.child = None;
             self.controller = None;
             self.cached_catalog = nodes::RuntimeCatalog::default();
@@ -2004,6 +2036,10 @@ impl ProfileBook {
                 self.connected = false;
                 self.remember_current_failure();
             }
+            Err(StartError::Failed(message)) if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
+                self.home_failure = Some(message);
+                self.remember_current_failure();
+            }
             Err(StartError::Failed(message)) => {
                 let mut model = self.link_model();
                 takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
@@ -2050,6 +2086,10 @@ impl ProfileBook {
             Err(StartError::Idle(message)) => {
                 self.home_failure = Some(message);
                 self.connected = false;
+                self.remember_current_failure();
+            }
+            Err(StartError::Failed(message)) if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
+                self.home_failure = Some(message);
                 self.remember_current_failure();
             }
             Err(StartError::Failed(message)) => {
@@ -2108,6 +2148,10 @@ impl ProfileBook {
             Err(StartError::Idle(message)) => {
                 self.home_failure = Some(message);
                 self.connected = false;
+                self.remember_current_failure();
+            }
+            Err(StartError::Failed(message)) if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
+                self.home_failure = Some(message);
                 self.remember_current_failure();
             }
             Err(StartError::Failed(message)) => {
@@ -2314,7 +2358,13 @@ impl ProfileBook {
             } else {
                 message
             };
-            self.fail_activation(index, message);
+            if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) {
+                self.profiles[index].failure = Some(message.clone());
+                self.home_failure = Some(message);
+                self.remember_current_failure();
+            } else {
+                self.fail_activation(index, message);
+            }
             return self.publish(kernel);
         }
         self.runtime_base = Some(yaml);
@@ -2433,6 +2483,9 @@ impl ProfileBook {
                 message
             })
         })?;
+        if self.home_failure.as_deref().is_some_and(|message| message.starts_with(takeover::TUN_AUTHORIZATION_FAILED)) {
+            self.home_failure = None;
+        }
         self.runtime_base = Some(base);
         self.mixed_port = Some(i64::from(port));
         self.runtime_catalog = kernel.node_catalog();
@@ -6209,6 +6262,63 @@ proxy-groups:
 
         fn pull_logs(&mut self) -> Vec<LogView> {
             std::mem::take(&mut self.pending_logs)
+        }
+    }
+
+    #[test]
+    fn cancelled_kernel_elevation_preserves_the_running_session_and_can_retry() {
+        struct ConsentKernel { running: bool, cancelled: bool, calls: usize }
+        impl KernelLaunch for ConsentKernel {
+            fn start_or_reload(&mut self, _yaml: &str) -> Result<(), String> {
+                self.calls += 1;
+                if self.cancelled {
+                    return Err(format!("{}：cancelled", takeover::TUN_AUTHORIZATION_FAILED));
+                }
+                self.running = true;
+                Ok(())
+            }
+            fn running(&mut self) -> bool { self.running }
+        }
+        for action in ["tun", "connect", "proxy", "activate"] {
+            let dir = temp_dir("cancel-elevation");
+            let mut book = ProfileBook::open(&dir.0);
+            book.set_platform(ClientPlatform::Desktop);
+            book.add_local("local", &config(7890));
+            let mut kernel = ConsentKernel { running: false, cancelled: false, calls: 0 };
+            book.enable("p1", &RejectSource, &mut kernel);
+            let mut proxy = MemoryProxy::default();
+            let mut tun = MemoryTun::default();
+            let mut vpn = MemoryVpn::default();
+            let before = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+            assert!(before.connected && before.system_proxy);
+            let proxy_before = proxy.http.clone();
+            kernel.cancelled = true;
+            let cancelled = match action {
+                "tun" => book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn),
+                "connect" => {
+                    book.tun_wanted = true;
+                    book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn)
+                }
+                "proxy" => {
+                    book.tun_wanted = true;
+                    book.set_system_proxy(true, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+                }
+                _ => {
+                    book.add_local("other", &config(7891));
+                    book.enable("p2", &RejectSource, &mut kernel)
+                }
+            };
+            assert_eq!(cancelled.active_id, before.active_id);
+            assert!(cancelled.connected && cancelled.system_proxy && cancelled.kernel_running);
+            assert!(!cancelled.tun);
+            assert_eq!(proxy.http, proxy_before);
+            assert!(cancelled.failure.unwrap().starts_with(takeover::TUN_AUTHORIZATION_FAILED));
+            kernel.cancelled = false;
+            let calls = kernel.calls;
+            let ready = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+            assert!(ready.tun && ready.connected);
+            assert!(ready.failure.is_none());
+            assert_eq!(kernel.calls, calls + 1, "TUN starts in a single pass");
         }
     }
 

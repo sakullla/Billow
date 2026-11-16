@@ -113,11 +113,16 @@ fn app_job() -> Option<Handle> {
 
 /// Tie the kernel to this app process so it can never outlive it and hold the ports.
 pub fn bind_to_app_lifetime(child: &Child) {
-    if let Some(job) = app_job() {
-        unsafe {
-            AssignProcessToJobObject(job, child.as_raw_handle() as Handle);
-        }
+    let _ = try_bind_to_app_lifetime(child);
+}
+
+/// The elevated supervisor must refuse to run an unowned privileged kernel.
+pub fn try_bind_to_app_lifetime(child: &Child) -> std::io::Result<()> {
+    let job = app_job().ok_or_else(|| std::io::Error::other("无法创建内核进程组"))?;
+    if unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as Handle) } == 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(())
 }
 
 struct ProcessRow {

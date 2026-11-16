@@ -484,10 +484,6 @@ fn save_profile_override(app: AppHandle, id: String, text: String) -> ProfileSna
 
 #[tauri::command(async)]
 fn connect_session(app: AppHandle) -> Result<ProfileSnapshot, String> {
-    #[cfg(target_os = "windows")]
-    if !elevation::is_admin() && with_profile(&app, |session| session.book.snapshot().tun_wanted) {
-        return elevate_for_tun(&app);
-    }
     Ok(with_session(&app, |session| {
         let ProfileSession {
             book,
@@ -541,24 +537,8 @@ fn set_system_proxy(app: AppHandle, enabled: bool) -> ProfileSnapshot {
     })
 }
 
-#[cfg(target_os = "windows")]
-fn elevate_for_tun(app: &AppHandle) -> Result<ProfileSnapshot, String> {
-    elevation::relaunch_for_tun()?;
-    let next = with_profile(app, |session| {
-        session.book.release_lingering_proxy(&mut session.proxy);
-        session.runtime.shutdown();
-        session.book.snapshot()
-    });
-    app.exit(0);
-    Ok(next)
-}
-
 #[tauri::command(async)]
 fn set_tun_enabled(app: AppHandle, enabled: bool) -> Result<ProfileSnapshot, String> {
-    #[cfg(target_os = "windows")]
-    if enabled && !elevation::is_admin() {
-        return elevate_for_tun(&app);
-    }
     Ok(with_session(&app, |session| {
         let ProfileSession {
             book,
@@ -1256,7 +1236,7 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "windows")]
-    let enable_tun = elevation::startup_tun_requested();
+    if elevation::run_helper_if_requested() { return; }
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init());
@@ -1338,19 +1318,6 @@ pub fn run() {
             prepare_kernel(app);
             prepare_profiles(app);
             spawn_auto_update(app.handle());
-            #[cfg(target_os = "windows")]
-            if enable_tun {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    let next = with_session(&handle, |session| {
-                        let ProfileSession { book, runtime, proxy, tun, vpn } = session;
-                        let next = book.set_tun(true, runtime, proxy, tun, vpn);
-                        if next.tun { book.connect(runtime, proxy, tun, vpn) } else { next }
-                    });
-                    let _ = handle.emit("profile-changed", &next);
-                    refresh_tray(&handle, &next);
-                });
-            }
             #[cfg(desktop)]
             {
                 prepare_tray(app);

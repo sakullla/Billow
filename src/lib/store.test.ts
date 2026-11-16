@@ -38,6 +38,21 @@ afterEach(() => {
 })
 
 describe('store lifecycle', () => {
+  it('navigates immediately and coalesces pending page writes in order', async () => {
+    const { store, backend } = setup()
+    const first = deferred<void>()
+    const save = vi.spyOn(backend, 'setEntry').mockReturnValueOnce(first.promise).mockResolvedValue(undefined)
+    store.go('proxies')
+    store.go('rules')
+    store.go('logs')
+    store.go('logs')
+    expect(store.page.value).toBe('logs')
+    expect(save.mock.calls).toEqual([['proxies']])
+    first.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(save.mock.calls).toEqual([['proxies'], ['logs']])
+  })
+
   it('preserves unaffected groups and log rows when one group changes', async () => {
     const { store, state } = setup()
     const catalog: Snapshot['node_catalog'] = ['a', 'b'].map((name) => ({ name, kind: 'manual', now: '',

@@ -4,6 +4,7 @@ import type { NodeItem } from '../lib/types'
 
 const props = defineProps<{ nodes: NodeItem[]; dense: boolean; compact?: boolean }>()
 const root = ref<HTMLElement | null>(null)
+const header = ref<HTMLElement | null>(null)
 const columns = ref(1)
 const top = ref(0)
 const viewport = ref(600)
@@ -19,25 +20,29 @@ const range = computed(() => {
   const end = Math.min(rows.value, Math.max(start + 1, Math.ceil((top.value + viewport.value) / stride.value) + 3))
   return { start, end }
 })
-const visible = computed(() => props.nodes.slice(range.value.start * columns.value, range.value.end * columns.value))
+const visible = computed(() => virtual.value
+  ? props.nodes.slice(range.value.start * columns.value, range.value.end * columns.value) : props.nodes)
 const before = computed(() => Math.max(0, range.value.start * stride.value - gap.value))
 const after = computed(() => Math.max(0, (rows.value - range.value.end) * stride.value - gap.value))
 let scroller: HTMLElement | null = null
 let observer: ResizeObserver | null = null
 let frame: number | null = null
 let disposed = false
+let mounted = false
 
 function measure() {
   const el = root.value
-  if (!el || !scroller) return
+  if (!virtual.value || !el || !scroller) return
   const style = getComputedStyle(el)
   columns.value = Math.max(1, style.gridTemplateColumns.split(' ').filter(Boolean).length)
-  top.value = scroller.getBoundingClientRect().top - el.getBoundingClientRect().top - (parseFloat(style.paddingTop) || 0)
+  const contentTop = header.value ? header.value.getBoundingClientRect().bottom + gap.value
+    : el.getBoundingClientRect().top + (parseFloat(style.paddingTop) || 0)
+  top.value = scroller.getBoundingClientRect().top - contentTop
   viewport.value = scroller.clientHeight || 600
 }
 
 function schedule() {
-  if (disposed || frame !== null) return
+  if (disposed || !virtual.value || frame !== null) return
   frame = requestAnimationFrame(() => { frame = null; measure() })
 }
 
@@ -68,7 +73,8 @@ async function onKeydown(event: KeyboardEvent) {
   if (targets?.length) targets[backward ? targets.length - 1 : 0]?.focus({ preventScroll: true })
 }
 
-onMounted(() => {
+function observe() {
+  if (!virtual.value || scroller) return
   scroller = root.value?.closest<HTMLElement>('.main') ?? null
   scroller?.addEventListener('scroll', schedule, { passive: true })
   window.addEventListener('resize', schedule)
@@ -79,20 +85,33 @@ onMounted(() => {
     if (scroller.firstElementChild) observer.observe(scroller.firstElementChild)
   }
   measure()
-})
+}
+function disconnect() {
+  observer?.disconnect()
+  observer = null
+  scroller?.removeEventListener('scroll', schedule)
+  scroller = null
+  window.removeEventListener('resize', schedule)
+  if (frame !== null) cancelAnimationFrame(frame)
+  frame = null
+}
+onMounted(() => { mounted = true; observe() })
+watch(virtual, (enabled) => {
+  if (!mounted) return
+  if (enabled) observe()
+  else disconnect()
+}, { flush: 'post' })
 watch(() => [props.nodes, props.dense, props.compact], () => { void nextTick(schedule) })
 onBeforeUnmount(() => {
   disposed = true
-  observer?.disconnect()
-  scroller?.removeEventListener('scroll', schedule)
-  window.removeEventListener('resize', schedule)
-  if (frame !== null) cancelAnimationFrame(frame)
+  disconnect()
 })
 defineExpose({ reveal })
 </script>
 
 <template>
   <div ref="root" class="nodes" :class="{ dense, 'windowed-nodes': virtual }" :style="virtual ? { '--node-height': `${height}px` } : undefined" @keydown="onKeydown">
+    <div v-if="$slots.header" ref="header" class="node-grid-header"><slot name="header" /></div>
     <div v-if="range.start > 0" class="node-spacer" :style="{ height: `${before}px` }" aria-hidden="true" />
     <slot :nodes="visible" />
     <div v-if="range.end < rows" class="node-spacer" :style="{ height: `${after}px` }" aria-hidden="true" />
@@ -100,6 +119,7 @@ defineExpose({ reveal })
 </template>
 
 <style scoped>
+.node-grid-header { grid-column: 1 / -1; display: grid; gap: inherit; }
 .node-spacer { grid-column: 1 / -1; pointer-events: none; }
 .windowed-nodes :deep(.node) { height: var(--node-height); min-height: var(--node-height); }
 </style>

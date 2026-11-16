@@ -714,92 +714,95 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
         :nodes="group.nodes"
         :dense="dense"
         :compact="compact"
-        v-slot="{ nodes: visibleNodes }"
       >
-        <p v-if="groupStrategy(group.group_type)" class="group-strategy small" data-testid="group-strategy">
-          <Icon :name="groupStrategy(group.group_type)!.icon" :size="14" />
-          <span>{{ groupStrategy(group.group_type)!.hint }}</span>
-        </p>
-        <p v-if="group.info?.length" class="group-info small" data-testid="group-info">
-          <Icon name="info" :size="13" />
-          <span v-for="item in group.info" :key="item.name" class="group-info-item" :title="item.name">{{ infoText(item.name) }}</span>
-        </p>
-        <p v-if="!group.nodes.length" class="muted small">
-          {{ needle ? '没有匹配的节点' : snap.kernel_running ? '该组暂时没有可用节点，请检查资源页中的订阅源状态。' : '连接后加载订阅源节点。' }}
-        </p>
-        <div
-          v-for="node in visibleNodes"
-          :key="node.name"
-          class="node"
-          :class="{
-            selected: node.selected,
-            locked: group.kind !== 'manual',
-            located: locatedNodeKey === `${group.name}::${node.name}`,
-            'failed-node': nodeState(node).failed,
-          }"
-          :data-node="node.name"
-        >
-          <button
-            type="button"
-            class="node-select"
-            :tabindex="group.kind === 'manual' ? undefined : -1"
-            :aria-disabled="group.kind === 'manual' ? undefined : 'true'"
-            :aria-pressed="group.kind === 'manual' ? node.selected : undefined"
-            :title="group.kind === 'manual' ? undefined : `${groupTypeLabel(group)}组由内核自动择优，不可手动切换`"
-            :data-testid="`node-select-${node.name}`"
-            @click="pick(group, node)"
-            @keydown.enter.prevent="pick(group, node)"
-            @keydown.space.prevent="pick(group, node)"
+        <template v-if="groupStrategy(group.group_type) || group.info?.length" #header>
+          <p v-if="groupStrategy(group.group_type)" class="group-strategy small" data-testid="group-strategy">
+            <Icon :name="groupStrategy(group.group_type)!.icon" :size="14" />
+            <span>{{ groupStrategy(group.group_type)!.hint }}</span>
+          </p>
+          <p v-if="group.info?.length" class="group-info small" data-testid="group-info">
+            <Icon name="info" :size="13" />
+            <span v-for="item in group.info" :key="item.name" class="group-info-item" :title="item.name">{{ infoText(item.name) }}</span>
+          </p>
+        </template>
+        <template #default="{ nodes: visibleNodes }">
+          <p v-if="!group.nodes.length" class="muted small">
+            {{ needle ? '没有匹配的节点' : snap.kernel_running ? '该组暂时没有可用节点，请检查资源页中的订阅源状态。' : '连接后加载订阅源节点。' }}
+          </p>
+          <div
+            v-for="node in visibleNodes"
+            :key="node.name"
+            class="node"
+            :class="{
+              selected: node.selected,
+              locked: group.kind !== 'manual',
+              located: locatedNodeKey === `${group.name}::${node.name}`,
+              'failed-node': nodeState(node).failed,
+            }"
+            :data-node="node.name"
           >
-            <span class="node-name" :title="node.name">
-              <span
-                v-if="groupStrategy(group.group_type)?.ordered"
-                class="node-rank mono"
-                :title="`优先级 ${rankOf(group, node)}`"
-                data-testid="node-rank"
-              >{{ rankOf(group, node) }}</span>
-              <template v-for="(part, partIndex) in highlight(node.name)" :key="partIndex">
-                <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
-              </template>
-            </span>
-            <!-- An auto group entry says how it picks and where it currently points (R14). -->
-            <span v-if="!dense && autoOf(node)" class="node-meta node-via" data-testid="node-via">
-              <span class="node-type strategy">{{ groupTypeLabel(autoOf(node)!) }}</span>
-              <span class="node-via-target" :title="viaOf(node) || undefined">{{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? '→ 等待测速' : '→ 连接后显示' }}</span>
-            </span>
-            <span v-else-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
-              <span class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
-              <span v-for="tag in node.tags" :key="tag" class="node-tag" :class="{ udp: tag === 'UDP' }">{{ tag }}</span>
-            </span>
-          </button>
-          <button
-            v-if="autoOf(node)"
-            type="button"
-            class="icon-btn sm node-open-auto"
-            :aria-label="`查看${groupTypeLabel(autoOf(node)!)}组 ${node.name}`"
-            :title="`查看「${node.name}」的${groupTypeLabel(autoOf(node)!)}策略与成员`"
-            :data-testid="`open-auto-${node.name}`"
-            @click="openAuto(node.name)"
-          >
-            <Icon name="chevron-right" :size="14" />
-          </button>
-          <button
-            type="button"
-            class="delay"
-            :class="[nodeTone(node), { busy: store.busy[`node:${node.name}`], untested: !nodeDelay(node) }]"
-            :aria-label="`测速 ${node.name}`"
-            :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
-            :disabled="!snap.kernel_running"
-            :title="snap.kernel_running ? '测试延迟' : '连接后才能测速'"
-            :data-testid="`test-node-${node.name}`"
-            @click="store.testNode(node.name)"
-          >
-            <span v-if="store.busy[`node:${node.name}`]" class="spinner xs" />
-            <template v-else-if="nodeDelay(node)">{{ nodeDelay(node) }}</template>
-            <Icon v-else name="zap" :size="13" />
-          </button>
-          <Icon v-if="node.selected" name="check" :size="14" class="node-check" :stroke="2.6" />
-        </div>
+            <button
+              type="button"
+              class="node-select"
+              :tabindex="group.kind === 'manual' ? undefined : -1"
+              :aria-disabled="group.kind === 'manual' ? undefined : 'true'"
+              :aria-pressed="group.kind === 'manual' ? node.selected : undefined"
+              :title="group.kind === 'manual' ? undefined : `${groupTypeLabel(group)}组由内核自动择优，不可手动切换`"
+              :data-testid="`node-select-${node.name}`"
+              @click="pick(group, node)"
+              @keydown.enter.prevent="pick(group, node)"
+              @keydown.space.prevent="pick(group, node)"
+            >
+              <span class="node-name" :title="node.name">
+                <span
+                  v-if="groupStrategy(group.group_type)?.ordered"
+                  class="node-rank mono"
+                  :title="`优先级 ${rankOf(group, node)}`"
+                  data-testid="node-rank"
+                >{{ rankOf(group, node) }}</span>
+                <template v-for="(part, partIndex) in highlight(node.name)" :key="partIndex">
+                  <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                </template>
+              </span>
+              <!-- An auto group entry says how it picks and where it currently points (R14). -->
+              <span v-if="!dense && autoOf(node)" class="node-meta node-via" data-testid="node-via">
+                <span class="node-type strategy">{{ groupTypeLabel(autoOf(node)!) }}</span>
+                <span class="node-via-target" :title="viaOf(node) || undefined">{{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? '→ 等待测速' : '→ 连接后显示' }}</span>
+              </span>
+              <span v-else-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
+                <span class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
+                <span v-for="tag in node.tags" :key="tag" class="node-tag" :class="{ udp: tag === 'UDP' }">{{ tag }}</span>
+              </span>
+            </button>
+            <button
+              v-if="autoOf(node)"
+              type="button"
+              class="icon-btn sm node-open-auto"
+              :aria-label="`查看${groupTypeLabel(autoOf(node)!)}组 ${node.name}`"
+              :title="`查看「${node.name}」的${groupTypeLabel(autoOf(node)!)}策略与成员`"
+              :data-testid="`open-auto-${node.name}`"
+              @click="openAuto(node.name)"
+            >
+              <Icon name="chevron-right" :size="14" />
+            </button>
+            <button
+              type="button"
+              class="delay"
+              :class="[nodeTone(node), { busy: store.busy[`node:${node.name}`], untested: !nodeDelay(node) }]"
+              :aria-label="`测速 ${node.name}`"
+              :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
+              :disabled="!snap.kernel_running"
+              :title="snap.kernel_running ? '测试延迟' : '连接后才能测速'"
+              :data-testid="`test-node-${node.name}`"
+              @click="store.testNode(node.name)"
+            >
+              <span v-if="store.busy[`node:${node.name}`]" class="spinner xs" />
+              <template v-else-if="nodeDelay(node)">{{ nodeDelay(node) }}</template>
+              <Icon v-else name="zap" :size="13" />
+            </button>
+            <Icon v-if="node.selected" name="check" :size="14" class="node-check" :stroke="2.6" />
+          </div>
+        </template>
       </ProxyNodeGrid>
     </section>
   </div>
