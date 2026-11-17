@@ -26,8 +26,8 @@ use kernel::{
     ConnectResult, GithubReleaseClient, KernelManager, KernelStatus, PlatformTarget, parse_channel,
 };
 use profile::{
-    HttpSubscriptionClient, KernelSettings, ProcessRuntime, ProfileBook, ProfileSnapshot,
-    ProvidersSnapshot, RuleToggle, RulesSnapshot,
+    HttpSubscriptionClient, KernelLaunch, KernelSettings, ProcessRuntime, ProfileBook,
+    ProfileSnapshot, ProvidersSnapshot, RuleToggle, RulesSnapshot,
 };
 use shell::{ShellState, read_shell_state, resolve_entry, resolve_theme, write_shell_state};
 
