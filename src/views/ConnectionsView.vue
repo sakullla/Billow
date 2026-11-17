@@ -5,15 +5,26 @@ import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
-import { formatBytes, formatClock, formatDuration, formatSpeed } from '../lib/format'
+import {
+  connectionRules,
+  extractEndpointIp,
+  formatBytes,
+  formatClock,
+  formatDuration,
+  formatSpeed,
+  isFakeIp,
+  resolveChain,
+} from '../lib/format'
 import { useStore } from '../lib/store'
+import { useColumnResize } from '../lib/ui/columns'
 import { useVirtualList } from '../lib/ui/virtual'
-import type { ConnectionRow } from '../lib/types'
+import type { ClosedConnectionRow, ConnectionRow } from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 
+type ConnTab = 'active' | 'closed'
 type SortKey = 'time' | 'speed' | 'download' | 'upload' | 'host'
 const SORTS: { id: SortKey; label: string }[] = [
   { id: 'time', label: '时间' },
@@ -22,13 +33,54 @@ const SORTS: { id: SortKey; label: string }[] = [
   { id: 'upload', label: '上传' },
   { id: 'host', label: '主机' },
 ]
+const CLOSED_SORTS: { id: SortKey; label: string }[] = [
+  { id: 'time', label: '关闭时间' },
+  { id: 'download', label: '下载' },
+  { id: 'upload', label: '上传' },
+  { id: 'host', label: '主机' },
+]
 
 const TABLE_ROW = 40
 const CARD_ROW = 100
 
+const connCols = useColumnResize('connections', [
+  { id: 'host', defaultWidth: 214, minWidth: 120, maxWidth: 680 },
+  { id: 'process', defaultWidth: 96, minWidth: 68, maxWidth: 360 },
+  { id: 'rule', defaultWidth: 142, minWidth: 84, maxWidth: 480 },
+  { id: 'chain', defaultWidth: 192, minWidth: 110, maxWidth: 640 },
+  { id: 'speed', defaultWidth: 88, minWidth: 70, maxWidth: 200 },
+  { id: 'download', defaultWidth: 74, minWidth: 60, maxWidth: 180 },
+  { id: 'upload', defaultWidth: 74, minWidth: 60, maxWidth: 180 },
+  { id: 'time', defaultWidth: 64, minWidth: 54, maxWidth: 180 },
+])
+
+const connTableStyle = computed(() => {
+  const total =
+    connCols.widths.host +
+    connCols.widths.process +
+    connCols.widths.rule +
+    connCols.widths.chain +
+    connCols.widths.speed +
+    connCols.widths.download +
+    connCols.widths.upload +
+    connCols.widths.time +
+    36
+  return { '--conn-table-w': `${total}px` }
+})
+
+const tab = ref<ConnTab>('active')
 const query = ref('')
 const sortKey = ref<SortKey>('time')
 const sortDir = ref<'asc' | 'desc'>('desc')
+
+function setTab(next: ConnTab) {
+  if (tab.value === next) return
+  tab.value = next
+  if (next === 'closed' && sortKey.value === 'speed') {
+    sortKey.value = 'time'
+    sortDir.value = 'desc'
+  }
+}
 
 function setSort(key: SortKey) {
   sortKey.value = key
@@ -47,6 +99,7 @@ function ariaSortOf(key: SortKey): 'ascending' | 'descending' | 'none' {
   if (sortKey.value !== key) return 'none'
   return sortDir.value === 'asc' ? 'ascending' : 'descending'
 }
+
 const paused = ref(false)
 const pausedAt = ref<number | null>(null)
 const frozenRows = shallowRef<ConnectionRow[]>([])
@@ -56,13 +109,51 @@ const frozenUp = ref<number | null>(null)
 const frozenDown = ref<number | null>(null)
 const selecting = ref<string | null>(null)
 const selectedHost = ref('')
-const selectedLast = shallowRef<ConnectionRow | null>(null)
+const selectedLast = shallowRef<(ConnectionRow & { closed_at_ms?: number }) | null>(null)
 const selectedAt = ref(Date.now())
+const detailFromClosed = ref(false)
+const rulePolicy = ref('DIRECT')
 const confirmAll = ref(false)
 const rates = shallowRef(new Map<string, { up: number; down: number }>())
 let previous = new Map<string, { upload: number; download: number; at: number }>()
 
 const idOf = (row: ConnectionRow) => row.id || `${row.host}|${row.source}`
+const closedRows = computed(() => store.closedConnections.value)
+
+const groupNames = computed(() => new Set(snap.value.node_catalog.map((group) => group.name)))
+const dialersByNode = computed(() => {
+  const map = new Map<string, string>()
+  for (const group of snap.value.node_catalog) {
+    for (const node of group.nodes) {
+      if (node.dialer_proxy && !map.has(node.name)) {
+        map.set(node.name, node.dialer_proxy)
+      }
+    }
+  }
+  return map
+})
+
+/**
+ * Mihomo lists chains from the server back to the rule's target; people read them forwards.
+ * If the exit server declares a `dialer-proxy` that was not expanded in `chains`, insert it
+ * right before the exit server so chained proxies always show their transit hop.
+ */
+function hopsOf(row: ConnectionRow): string[] {
+  const hops = row.chains.length ? [...row.chains].reverse() : [row.outbound]
+  if (hops.length === 0 || dialersByNode.value.size === 0) return hops
+  const exit = hops[hops.length - 1]!
+  const dialer = dialersByNode.value.get(exit)
+  if (!dialer) return hops
+  let transit = dialer
+  if (groupNames.value.has(dialer)) {
+    const sub = resolveChain(dialer, snap.value.node_catalog)
+    transit = sub[sub.length - 1] || dialer
+  }
+  if (transit && !hops.includes(transit)) {
+    hops.splice(hops.length - 1, 0, transit)
+  }
+  return hops
+}
 
 watch(
   () => snap.value.connections,
@@ -112,12 +203,15 @@ function togglePause() {
   else pause()
 }
 
-/** The list source: a frozen copy while paused, the live snapshot otherwise (R28). */
-const sourceRows = computed(() => (paused.value ? frozenRows.value : snap.value.connections))
+/** The list source: closed ring buffer in 已关闭, frozen or live snapshot in 活动 (R28). */
+const activeSourceRows = computed(() => (paused.value ? frozenRows.value : snap.value.connections))
+const sourceRows = computed<(ConnectionRow & { closed_at_ms?: number })[]>(() =>
+  tab.value === 'closed' ? closedRows.value : activeSourceRows.value,
+)
 
 /** New ids that arrived after the freeze, so the pause screen can say how far behind it is. */
 const newCount = computed(() => {
-  if (!paused.value) return 0
+  if (!paused.value || tab.value !== 'active') return 0
   return snap.value.connections.filter((row) => !frozenIds.value.has(idOf(row))).length
 })
 
@@ -125,14 +219,18 @@ const rows = computed(() => {
   const needle = query.value.trim().toLowerCase()
   const list = needle
     ? sourceRows.value.filter((row) =>
-        [row.host, row.destination, row.process, row.rule, row.rule_payload, row.chains.join(' '), row.network]
+        [row.host, row.destination, row.process, row.rule, row.rule_payload, hopsOf(row).join(' '), row.network]
           .some((text) => text.toLowerCase().includes(needle)),
       )
     : [...sourceRows.value]
   const dir = sortDir.value === 'asc' ? -1 : 1
   switch (sortKey.value) {
     case 'speed':
-      list.sort((a, b) => dir * (rateOf(b).down + rateOf(b).up - (rateOf(a).down + rateOf(a).up)))
+      if (tab.value === 'closed') {
+        list.sort((a, b) => dir * ((b.closed_at_ms ?? 0) - (a.closed_at_ms ?? 0)))
+      } else {
+        list.sort((a, b) => dir * (rateOf(b).down + rateOf(b).up - (rateOf(a).down + rateOf(a).up)))
+      }
       break
     case 'download':
       list.sort((a, b) => dir * (b.download - a.download))
@@ -144,7 +242,11 @@ const rows = computed(() => {
       list.sort((a, b) => (sortDir.value === 'asc' ? 1 : -1) * a.host.localeCompare(b.host))
       break
     default:
-      list.sort((a, b) => dir * (Date.parse(b.start || '0') - Date.parse(a.start || '0')))
+      if (tab.value === 'closed') {
+        list.sort((a, b) => dir * ((b.closed_at_ms ?? 0) - (a.closed_at_ms ?? 0)))
+      } else {
+        list.sort((a, b) => dir * (Date.parse(b.start || '0') - Date.parse(a.start || '0')))
+      }
   }
   return list
 })
@@ -164,10 +266,10 @@ onMounted(() => {
 })
 
 // Empty/error states unmount the list, so a remount must not reuse the old offset
-// or window index; a filter or sort change returns to the first row (R31).
+// or window index; a filter, sort or tab change returns to the first row (R31).
 watch(tableScroll, (el) => table.measure(el))
 watch(cardScroll, (el) => cards.measure(el))
-watch([query, sortKey, sortDir], () => {
+watch([query, sortKey, sortDir, tab], () => {
   table.reset(tableScroll.value)
   cards.reset(cardScroll.value)
 })
@@ -178,11 +280,32 @@ const displayTotal = computed(() =>
 )
 const displayUp = computed(() => (paused.value ? frozenUp.value : snap.value.upload_total))
 const displayDown = computed(() => (paused.value ? frozenDown.value : snap.value.download_total))
-const hiddenRows = computed(() => Math.max(0, displayTotal.value - sourceRows.value.length))
+const hiddenRows = computed(() =>
+  tab.value === 'active' ? Math.max(0, displayTotal.value - activeSourceRows.value.length) : 0,
+)
 
-const detailRow = computed(() => snap.value.connections.find((row) => idOf(row) === selecting.value) ?? null)
+const tabOptions = computed<{ id: ConnTab; label: string }[]>(() => [
+  { id: 'active', label: `活动 ${displayTotal.value}` },
+  { id: 'closed', label: closedRows.value.length ? `已关闭 ${closedRows.value.length}` : '已关闭' },
+])
+
+const showToolbar = computed(
+  () =>
+    snap.value.connected &&
+    (snap.value.connections.length > 0 || closedRows.value.length > 0 || tab.value === 'closed' || Boolean(query.value)),
+)
+
+const detailRow = computed(() => {
+  if (selecting.value === null || detailFromClosed.value) return null
+  return snap.value.connections.find((row) => idOf(row) === selecting.value) ?? null
+})
 const detailSource = computed(() => detailRow.value ?? selectedLast.value)
 const detailGone = computed(() => selecting.value !== null && !detailRow.value)
+const detailClosedClock = computed(() => {
+  const closedMs = selectedLast.value?.closed_at_ms
+  if (closedMs) return formatClock(closedMs)
+  return detailFromClosed.value ? formatClock(selectedAt.value) : ''
+})
 
 watch(detailRow, (row) => {
   if (!row) return
@@ -195,6 +318,7 @@ watch(
   () => [snap.value.connected, snap.value.kernel_running] as const,
   ([connected]) => {
     if (connected) return
+    tab.value = 'active'
     resume()
     frozenRows.value = []
     frozenIds.value = new Set()
@@ -202,51 +326,105 @@ watch(
       selectedLast.value = null
       selecting.value = null
       selectedHost.value = ''
+      detailFromClosed.value = false
     }
   },
 )
 
-/** Mihomo lists chains from the server back to the rule's target; people read them forwards. */
-function hopsOf(row: ConnectionRow): string[] {
-  return row.chains.length ? [...row.chains].reverse() : [row.outbound]
-}
-
-const detail = computed(() => {
-  const row = detailSource.value
-  if (!row) return []
-  const at = detailRow.value ? Date.now() : selectedAt.value
-  const entries: [string, string][] = [
-    ['主机', row.host],
-    ['目标地址', row.destination],
-    ['来源', row.source],
-    ['进程', row.process],
-    ['网络', `${row.network.toUpperCase()}${row.conn_type ? ` · ${row.conn_type}` : ''}`],
-    ['规则', row.rule ? `${row.rule}${row.rule_payload ? ` (${row.rule_payload})` : ''}` : ''],
-    ['代理链', hopsOf(row).join(' → ')],
-    ['下载', formatBytes(row.download)],
-    ['上传', formatBytes(row.upload)],
-    ['持续', formatDuration(row.start, at)],
-  ]
-  return entries.filter(([, value]) => value)
+const detailEntryGroup = computed(() => {
+  if (!detailSource.value) return null
+  const entry = hopsOf(detailSource.value)[0]
+  return entry && groupNames.value.has(entry) ? entry : null
 })
 
-function openDetail(row: ConnectionRow) {
+const primaryManualGroup = computed(
+  () => snap.value.node_catalog.find((group) => group.kind === 'manual')?.name ?? null,
+)
+
+const rulePolicies = computed(() => {
+  const set = new Set<string>(['DIRECT'])
+  if (detailEntryGroup.value) set.add(detailEntryGroup.value)
+  else if (primaryManualGroup.value) set.add(primaryManualGroup.value)
+  set.add('REJECT')
+  return [...set]
+})
+
+const generatedRules = computed(() =>
+  detailSource.value ? connectionRules(detailSource.value, rulePolicy.value) : [],
+)
+
+const detailDestIp = computed(() => {
+  const dest = detailSource.value?.destination ?? ''
+  const info = extractEndpointIp(dest)
+  return info && !isFakeIp(info.ip) ? info.ip : ''
+})
+
+const detailIsFakeIp = computed(() => {
+  const dest = detailSource.value?.destination ?? ''
+  return Boolean(dest && isFakeIp(dest))
+})
+
+function openConnectionGroup(group: string) {
+  closeDetail()
+  store.go('proxies', group)
+}
+
+interface DetailEntry {
+  label: string
+  value: string
+  copyValue?: string
+  copyToast?: string
+  badge?: string
+}
+
+const detail = computed<DetailEntry[]>(() => {
+  const row = detailSource.value
+  if (!row) return []
+  const endAt = detailRow.value ? Date.now() : (selectedLast.value?.closed_at_ms ?? selectedAt.value)
+  const entries: DetailEntry[] = [
+    { label: '主机', value: row.host, copyValue: row.host, copyToast: '已复制主机' },
+    {
+      label: '目标地址',
+      value: row.destination,
+      copyValue: row.destination,
+      copyToast: '已复制目标地址',
+      badge: detailIsFakeIp.value ? 'Fake-IP' : undefined,
+    },
+    { label: '来源', value: row.source, copyValue: row.source, copyToast: '已复制来源地址' },
+    { label: '进程', value: row.process, copyValue: row.process, copyToast: '已复制进程名' },
+    { label: '网络', value: `${row.network.toUpperCase()}${row.conn_type ? ` · ${row.conn_type}` : ''}` },
+    { label: '规则', value: row.rule ? `${row.rule}${row.rule_payload ? ` (${row.rule_payload})` : ''}` : '' },
+    { label: '代理链', value: hopsOf(row).join(' → ') },
+    { label: '下载', value: formatBytes(row.download) },
+    { label: '上传', value: formatBytes(row.upload) },
+    { label: '持续', value: formatDuration(row.start, endAt) },
+  ]
+  return entries.filter((item) => Boolean(item.value))
+})
+
+function openDetail(row: ConnectionRow & { closed_at_ms?: number }) {
+  const isClosed = Boolean(row.closed_at_ms) || tab.value === 'closed'
+  detailFromClosed.value = isClosed
   selecting.value = idOf(row)
-  selectedHost.value = row.host
+  selectedHost.value = row.host || row.destination
   selectedLast.value = row
-  selectedAt.value = Date.now()
+  selectedAt.value = row.closed_at_ms ?? Date.now()
+  if (!rulePolicies.value.includes(rulePolicy.value)) {
+    rulePolicy.value = 'DIRECT'
+  }
 }
 
 function closeDetail() {
   selecting.value = null
   selectedHost.value = ''
   selectedLast.value = null
+  detailFromClosed.value = false
 }
 
 async function copySummary() {
   const row = detailSource.value
   if (!row) return
-  const at = detailRow.value ? Date.now() : selectedAt.value
+  const at = detailRow.value ? Date.now() : (selectedLast.value?.closed_at_ms ?? selectedAt.value)
   const text = [
     `主机: ${row.host}`,
     row.destination ? `目标地址: ${row.destination}` : '',
@@ -258,6 +436,21 @@ async function copySummary() {
     `持续: ${formatDuration(row.start, at)}`,
   ].filter(Boolean)
   await store.copyText(text.join('\n'), '已复制连接摘要')
+}
+
+async function copyRule(rule: string) {
+  await store.copyText(rule, `已复制规则：${rule}`)
+}
+
+function writeRuleToOverride(rule: string) {
+  const id = snap.value.active_id
+  if (!id) {
+    store.toast('请先启用一份配置', 'info')
+    return
+  }
+  closeDetail()
+  store.overrideRequest.value = { id, append: `# 由连接详情添加\n+rules:\n  - ${rule}\n` }
+  store.go('profiles')
 }
 
 async function closeOne(row: ConnectionRow) {
@@ -278,6 +471,14 @@ function filterBy(value: string) {
   if (!value) return
   query.value = value
   closeDetail()
+}
+
+function rowDuration(row: ConnectionRow & { closed_at_ms?: number }): string {
+  return row.closed_at_ms ? formatDuration(row.start, row.closed_at_ms) : formatDuration(row.start)
+}
+
+function closedTimeText(row: ConnectionRow & { closed_at_ms?: number }): string {
+  return row.closed_at_ms ? formatClock((row as ClosedConnectionRow).closed_at_ms) : '—'
 }
 
 function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly: boolean; title: string } {
@@ -310,10 +511,14 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         <h1>连接</h1>
         <p class="muted small mono" data-testid="connection-summary">
           <template v-if="!snap.connected">未连接</template>
+          <template v-else-if="tab === 'closed'">
+            已记录 {{ closedRows.length }} 条已关闭连接
+            <template v-if="query.trim()"> · 匹配 {{ rows.length }} 条</template>
+          </template>
           <template v-else>
             {{ displayTotal }} 个活动连接
             <template v-if="query.trim()"> · 匹配 {{ rows.length }} 条</template>
-            <template v-if="hiddenRows"> · 显示前 {{ sourceRows.length }} 条</template>
+            <template v-if="hiddenRows"> · 显示前 {{ activeSourceRows.length }} 条</template>
             <template v-if="paused"> · 暂停于 {{ formatClock(pausedAt ?? 0) }}</template>
             <template v-if="paused && newCount"> · <span data-testid="new-connections">{{ newCount }} 条新连接</span></template>
             · <span title="本次累计下载"><Icon name="down" :size="11" />{{ formatBytes(displayDown) }}</span>
@@ -323,33 +528,55 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </div>
       <!-- Nothing to pause or close while disconnected; the empty state owns the next step. -->
       <div v-if="snap.connected" class="head-actions">
-        <button
-          type="button"
-          class="btn ghost sm"
-          :class="{ active: paused }"
-          :disabled="!snap.connected"
-          :aria-pressed="paused"
-          data-testid="pause-connections"
-          @click="togglePause"
-        >
-          <Icon :name="paused ? 'play' : 'pause'" :size="14" />{{ paused ? '继续' : '暂停' }}
-        </button>
-        <button
-          type="button"
-          class="btn ghost sm danger-text"
-          :disabled="!snap.connections.length"
-          data-testid="disconnect-all"
-          @click="confirmAll = true"
-        >
-          <Icon name="x" :size="15" />全部断开
-        </button>
+        <template v-if="tab === 'closed'">
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="!closedRows.length"
+            data-testid="clear-closed-connections"
+            @click="store.clearClosedConnections()"
+          >
+            <Icon name="trash" :size="14" />清空记录
+          </button>
+        </template>
+        <template v-else>
+          <button
+            type="button"
+            class="btn ghost sm"
+            :class="{ active: paused }"
+            :disabled="!snap.connected"
+            :aria-pressed="paused"
+            data-testid="pause-connections"
+            @click="togglePause"
+          >
+            <Icon :name="paused ? 'play' : 'pause'" :size="14" />{{ paused ? '继续' : '暂停' }}
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm danger-text"
+            :disabled="!snap.connections.length"
+            data-testid="disconnect-all"
+            @click="confirmAll = true"
+          >
+            <Icon name="x" :size="15" />全部断开
+          </button>
+        </template>
       </div>
     </header>
 
-    <div v-if="snap.connected && snap.connections.length" class="toolbar">
+    <div v-if="showToolbar" class="toolbar">
+      <Segmented
+        :model-value="tab"
+        :options="tabOptions"
+        size="sm"
+        label="连接范围"
+        data-testid="connection-tab"
+        @update:model-value="setTab"
+      />
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="按主机、进程、规则或节点筛选" data-testid="connection-search" data-page-search />
+        <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
         <button
           v-if="query"
           type="button"
@@ -365,7 +592,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       <Segmented
         v-if="compact"
         :model-value="sortKey"
-        :options="SORTS"
+        :options="tab === 'closed' ? CLOSED_SORTS : SORTS"
         size="sm"
         label="排序"
         data-testid="connection-sort"
@@ -389,7 +616,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         </button>
       </template>
     </EmptyState>
-    <EmptyState v-else-if="snap.connections_error" variant="error" title="读取失败" :description="snap.connections_error">
+    <EmptyState v-else-if="tab === 'active' && snap.connections_error" variant="error" title="读取失败" :description="snap.connections_error">
       <template #action>
         <button type="button" class="btn ghost sm" data-testid="retry-connections" @click="store.refresh()">重试</button>
       </template>
@@ -399,14 +626,32 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         <button type="button" class="btn ghost sm" data-testid="clear-connection-filter" @click="resetFilters">清空筛选</button>
       </template>
     </EmptyState>
+    <EmptyState
+      v-else-if="!rows.length && tab === 'closed'"
+      variant="no-data"
+      icon="clock"
+      title="暂无已关闭连接"
+      description="本次连接期间结束的请求会自动保留在这里，便于排查规则与节点链路。"
+    />
     <EmptyState v-else-if="!rows.length" variant="no-data" icon="activity" title="没有当前连接" description="应用发起连接后会出现在这里。">
       <template #action>
         <button type="button" class="btn ghost sm" @click="store.refresh()">刷新</button>
       </template>
     </EmptyState>
 
-    <div v-else-if="!compact" ref="tableScroll" class="card table-card conn-table" data-testid="connection-scroll" @scroll="table.onScroll">
-      <table class="table virtual">
+    <div v-else-if="!compact" ref="tableScroll" class="card table-card conn-table" :class="{ paused: paused && tab === 'active' }" data-testid="connection-scroll" @scroll="table.onScroll">
+      <table class="table virtual resizable-table" :style="connTableStyle">
+        <colgroup>
+          <col :style="{ width: `${connCols.widths.host}px` }" />
+          <col class="col-process" :style="{ width: `${connCols.widths.process}px` }" />
+          <col :style="{ width: `${connCols.widths.rule}px` }" />
+          <col :style="{ width: `${connCols.widths.chain}px` }" />
+          <col :style="{ width: `${connCols.widths.speed}px` }" />
+          <col class="col-down" :style="{ width: `${connCols.widths.download}px` }" />
+          <col class="col-up" :style="{ width: `${connCols.widths.upload}px` }" />
+          <col :style="{ width: `${connCols.widths.time}px` }" />
+          <col style="width: 36px" />
+        </colgroup>
         <thead>
           <tr>
             <th :aria-sort="ariaSortOf('host')">
@@ -414,33 +659,133 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
                 主机
                 <Icon v-if="sortKey === 'host'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
               </button>
+              <span
+                class="col-resizer"
+                :class="{ active: connCols.resizingId.value === 'host' }"
+                role="separator"
+                aria-orientation="vertical"
+                title="拖拽调整列宽，双击恢复默认"
+                data-testid="col-resize-host"
+                @pointerdown="connCols.startResize('host', $event)"
+                @dblclick="connCols.resetColumn('host', $event)"
+                @click.stop
+              />
             </th>
-            <th class="col-process">进程</th>
-            <th>规则</th>
-            <th>代理链</th>
-            <th class="num" :aria-sort="ariaSortOf('speed')">
-              <button type="button" class="th-sort num" :class="{ active: sortKey === 'speed' }" @click="toggleColumnSort('speed')">
-                速度
-                <Icon v-if="sortKey === 'speed'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
+            <th class="col-process">
+              进程
+              <span
+                class="col-resizer"
+                :class="{ active: connCols.resizingId.value === 'process' }"
+                role="separator"
+                aria-orientation="vertical"
+                title="拖拽调整列宽，双击恢复默认"
+                data-testid="col-resize-process"
+                @pointerdown="connCols.startResize('process', $event)"
+                @dblclick="connCols.resetColumn('process', $event)"
+                @click.stop
+              />
+            </th>
+            <th>
+              规则
+              <span
+                class="col-resizer"
+                :class="{ active: connCols.resizingId.value === 'rule' }"
+                role="separator"
+                aria-orientation="vertical"
+                title="拖拽调整列宽，双击恢复默认"
+                data-testid="col-resize-rule"
+                @pointerdown="connCols.startResize('rule', $event)"
+                @dblclick="connCols.resetColumn('rule', $event)"
+                @click.stop
+              />
+            </th>
+            <th>
+              代理链
+              <span
+                class="col-resizer"
+                :class="{ active: connCols.resizingId.value === 'chain' }"
+                role="separator"
+                aria-orientation="vertical"
+                title="拖拽调整列宽，双击恢复默认"
+                data-testid="col-resize-chain"
+                @pointerdown="connCols.startResize('chain', $event)"
+                @dblclick="connCols.resetColumn('chain', $event)"
+                @click.stop
+              />
+            </th>
+            <th class="num" :aria-sort="ariaSortOf(tab === 'closed' ? 'time' : 'speed')">
+              <button
+                type="button"
+                class="th-sort num"
+                :class="{ active: sortKey === (tab === 'closed' ? 'time' : 'speed') }"
+                @click="toggleColumnSort(tab === 'closed' ? 'time' : 'speed')"
+              >
+                {{ tab === 'closed' ? '关闭于' : '速度' }}
+                <Icon v-if="sortKey === (tab === 'closed' ? 'time' : 'speed')" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
               </button>
+              <span
+                class="col-resizer"
+                :class="{ active: connCols.resizingId.value === 'speed' }"
+                role="separator"
+                aria-orientation="vertical"
+                title="拖拽调整列宽，双击恢复默认"
+                data-testid="col-resize-speed"
+                @pointerdown="connCols.startResize('speed', $event)"
+                @dblclick="connCols.resetColumn('speed', $event)"
+                @click.stop
+              />
             </th>
             <th class="num col-down" :aria-sort="ariaSortOf('download')">
               <button type="button" class="th-sort num" :class="{ active: sortKey === 'download' }" @click="toggleColumnSort('download')">
                 下载
                 <Icon v-if="sortKey === 'download'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
               </button>
+              <span
+                class="col-resizer"
+                :class="{ active: connCols.resizingId.value === 'download' }"
+                role="separator"
+                aria-orientation="vertical"
+                title="拖拽调整列宽，双击恢复默认"
+                data-testid="col-resize-download"
+                @pointerdown="connCols.startResize('download', $event)"
+                @dblclick="connCols.resetColumn('download', $event)"
+                @click.stop
+              />
             </th>
             <th class="num col-up" :aria-sort="ariaSortOf('upload')">
               <button type="button" class="th-sort num" :class="{ active: sortKey === 'upload' }" @click="toggleColumnSort('upload')">
                 上传
                 <Icon v-if="sortKey === 'upload'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
               </button>
+              <span
+                class="col-resizer"
+                :class="{ active: connCols.resizingId.value === 'upload' }"
+                role="separator"
+                aria-orientation="vertical"
+                title="拖拽调整列宽，双击恢复默认"
+                data-testid="col-resize-upload"
+                @pointerdown="connCols.startResize('upload', $event)"
+                @dblclick="connCols.resetColumn('upload', $event)"
+                @click.stop
+              />
             </th>
-            <th class="num" :aria-sort="ariaSortOf('time')">
-              <button type="button" class="th-sort num" :class="{ active: sortKey === 'time' }" @click="toggleColumnSort('time')">
+            <th class="num" :aria-sort="tab === 'active' ? ariaSortOf('time') : undefined">
+              <button v-if="tab === 'active'" type="button" class="th-sort num" :class="{ active: sortKey === 'time' }" @click="toggleColumnSort('time')">
                 时长
                 <Icon v-if="sortKey === 'time'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
               </button>
+              <span v-else>历时</span>
+              <span
+                class="col-resizer"
+                :class="{ active: connCols.resizingId.value === 'time' }"
+                role="separator"
+                aria-orientation="vertical"
+                title="拖拽调整列宽，双击恢复默认"
+                data-testid="col-resize-time"
+                @pointerdown="connCols.startResize('time', $event)"
+                @dblclick="connCols.resetColumn('time', $event)"
+                @click.stop
+              />
             </th>
             <th />
           </tr>
@@ -451,7 +796,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           </tr>
           <tr
             v-for="(row, index) in tableRows"
-            :key="idOf(row)"
+            :key="`${idOf(row)}:${row.closed_at_ms ?? ''}`"
             :data-row-index="table.window.value.start + index"
             :data-connection-id="idOf(row)"
             tabindex="0"
@@ -463,24 +808,37 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             <td>
               <div class="cell-host">
                 <span class="net" :class="row.network">{{ row.network.toUpperCase() || 'TCP' }}</span>
-                <span class="ellipsis" :title="row.host">{{ row.host }}</span>
+                <span class="ellipsis" :title="row.host || row.destination">{{ row.host || row.destination }}</span>
               </div>
             </td>
             <td class="muted ellipsis col-process" :title="row.process || undefined">{{ row.process || '—' }}</td>
             <td class="ellipsis" :title="row.rule_payload ? `${row.rule} ${row.rule_payload}` : row.rule"><span class="muted">{{ row.rule }}</span><span v-if="row.rule_payload" class="rule-payload-inline">{{ row.rule_payload }}</span></td>
-            <td><ChainPath :hops="hopsOf(row)" pill fold /></td>
+            <td><ChainPath :hops="hopsOf(row)" :groups="groupNames" pill fold /></td>
+            <td v-if="tab === 'closed'" class="num mono muted">{{ closedTimeText(row) }}</td>
             <td
+              v-else
               class="num mono"
-              :class="{ muted: speedDisplay(row).idle, 'conn-rate-up': speedDisplay(row).upOnly }"
+              :class="{
+                muted: speedDisplay(row).idle,
+                'conn-rate-up': speedDisplay(row).upOnly,
+                'conn-rate-down': !speedDisplay(row).idle && !speedDisplay(row).upOnly,
+              }"
               :title="speedDisplay(row).title"
             >
               {{ speedDisplay(row).text }}
             </td>
             <td class="num mono col-down">{{ formatBytes(row.download) }}</td>
             <td class="num mono muted col-up">{{ formatBytes(row.upload) }}</td>
-            <td class="num muted">{{ formatDuration(row.start) }}</td>
+            <td class="num muted">{{ rowDuration(row) }}</td>
             <td class="num">
-              <button type="button" class="icon-btn sm conn-close" :aria-label="`断开 ${row.host}`" title="断开" @click.stop="closeOne(row)">
+              <button
+                v-if="tab === 'active'"
+                type="button"
+                class="icon-btn sm conn-close"
+                :aria-label="`断开 ${row.host}`"
+                title="断开"
+                @click.stop="closeOne(row)"
+              >
                 <Icon name="x" :size="14" />
               </button>
             </td>
@@ -497,7 +855,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         <li v-if="cards.offset.value" class="v-spacer" aria-hidden="true" :style="{ height: `${cards.offset.value}px` }" />
         <li
           v-for="(row, index) in cardRows"
-          :key="idOf(row)"
+          :key="`${idOf(row)}:${row.closed_at_ms ?? ''}`"
           :data-row-index="cards.window.value.start + index"
           :data-connection-id="idOf(row)"
           class="card conn"
@@ -509,23 +867,33 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         >
           <div class="conn-top">
             <span class="net" :class="row.network">{{ row.network.toUpperCase() || 'TCP' }}</span>
-            <strong class="ellipsis grow">{{ row.host }}</strong>
-            <span class="mono small" :class="{ muted: speedDisplay(row).idle, 'conn-rate-up': speedDisplay(row).upOnly }">
-              {{ speedDisplay(row).text }}
-            </span>
-            <button type="button" class="icon-btn sm" :aria-label="`断开 ${row.host}`" title="断开" @click.stop="closeOne(row)">
-              <Icon name="x" :size="14" />
-            </button>
+            <strong class="ellipsis grow">{{ row.host || row.destination }}</strong>
+            <span v-if="tab === 'closed'" class="mono small muted">{{ closedTimeText(row) }}</span>
+            <template v-else>
+              <span
+                class="mono small"
+                :class="{
+                  muted: speedDisplay(row).idle,
+                  'conn-rate-up': speedDisplay(row).upOnly,
+                  'conn-rate-down': !speedDisplay(row).idle && !speedDisplay(row).upOnly,
+                }"
+              >
+                {{ speedDisplay(row).text }}
+              </span>
+              <button type="button" class="icon-btn sm" :aria-label="`断开 ${row.host}`" title="断开" @click.stop="closeOne(row)">
+                <Icon name="x" :size="14" />
+              </button>
+            </template>
           </div>
           <div class="conn-meta small muted">
-            <ChainPath :hops="hopsOf(row)" pill fold />
+            <ChainPath :hops="hopsOf(row)" :groups="groupNames" pill fold />
             <span v-if="row.process" class="ellipsis conn-process">{{ row.process }}</span>
           </div>
           <div class="conn-meta small muted" data-testid="connection-traffic">
             <span class="mono">↓{{ formatBytes(row.download) }}</span>
             <span class="mono">↑{{ formatBytes(row.upload) }}</span>
             <span class="grow" />
-            <span>{{ formatDuration(row.start) }}</span>
+            <span>{{ rowDuration(row) }}</span>
           </div>
         </li>
         <li v-if="cards.tail.value" class="v-spacer" aria-hidden="true" :style="{ height: `${cards.tail.value}px` }" />
@@ -533,17 +901,50 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
     </div>
 
     <Modal v-if="selecting !== null" title="连接详情" :subtitle="selectedHost" @close="closeDetail">
-      <p v-if="detailGone" class="detail-status" role="status" data-testid="detail-disconnected">
-        <Icon name="x" :size="14" />已断开
+      <p
+        v-if="detailGone"
+        class="detail-status"
+        :class="{ calm: detailFromClosed }"
+        role="status"
+        data-testid="detail-disconnected"
+      >
+        <Icon :name="detailFromClosed ? 'clock' : 'x'" :size="14" />
+        <span>{{ detailClosedClock ? `已断开 · 关闭于 ${detailClosedClock}` : '已断开' }}</span>
       </p>
-      <dl class="detail">
-        <template v-for="[label, value] in detail" :key="label">
-          <dt>{{ label }}</dt>
-          <dd v-if="label === '代理链' && detailSource" data-testid="detail-chain"><ChainPath :hops="hopsOf(detailSource)" variant="steps" /></dd>
-          <dd v-else class="mono">{{ value }}</dd>
+
+      <dl class="detail conn-detail-grid">
+        <template v-for="entry in detail" :key="entry.label">
+          <dt>{{ entry.label }}</dt>
+          <dd v-if="entry.label === '代理链' && detailSource" data-testid="detail-chain">
+            <ChainPath :hops="hopsOf(detailSource)" :groups="groupNames" variant="steps" />
+          </dd>
+          <dd v-else class="mono detail-val-row">
+            <span>{{ entry.value }}</span>
+            <span v-if="entry.badge" class="tag sm" title="内核分配的虚拟映射地址">{{ entry.badge }}</span>
+            <button
+              v-if="entry.copyValue && entry.copyToast"
+              type="button"
+              class="icon-btn xs detail-copy-inline"
+              :aria-label="`复制${entry.label}`"
+              :title="`复制${entry.label}`"
+              @click="store.copyText(entry.copyValue, entry.copyToast)"
+            >
+              <Icon name="copy" :size="12" />
+            </button>
+          </dd>
         </template>
       </dl>
+
       <div v-if="detailSource" class="chips conn-detail-chips">
+        <button
+          v-if="detailEntryGroup"
+          type="button"
+          class="chip"
+          data-testid="open-conn-group"
+          @click="openConnectionGroup(detailEntryGroup)"
+        >
+          <Icon name="globe" :size="13" />前往「{{ detailEntryGroup }}」
+        </button>
         <button
           type="button"
           class="chip"
@@ -551,6 +952,15 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           @click="store.copyText(detailSource.host || detailSource.destination, '已复制目标主机')"
         >
           <Icon name="copy" :size="13" />复制主机
+        </button>
+        <button
+          v-if="detailDestIp"
+          type="button"
+          class="chip"
+          data-testid="copy-conn-ip"
+          @click="store.copyText(detailDestIp, '已复制目标 IP')"
+        >
+          <Icon name="copy" :size="13" />复制 IP
         </button>
         <button
           v-if="detailSource.host"
@@ -571,12 +981,58 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           <Icon name="filter" :size="13" />筛选 {{ detailSource.process }}
         </button>
       </div>
+
+      <section v-if="generatedRules.length" class="conn-rule-box" data-testid="conn-rule-box">
+        <header class="conn-rule-head">
+          <span class="small muted">复制为规则</span>
+          <div class="conn-rule-policies" role="group" aria-label="规则出站策略">
+            <button
+              v-for="policy in rulePolicies"
+              :key="policy"
+              type="button"
+              class="conn-policy-pill"
+              :class="{ active: rulePolicy === policy }"
+              :data-testid="`rule-policy-${policy}`"
+              @click="rulePolicy = policy"
+            >
+              {{ policy }}
+            </button>
+          </div>
+        </header>
+        <div class="conn-rule-list">
+          <div v-for="item in generatedRules" :key="item.id" class="conn-rule-row">
+            <button
+              type="button"
+              class="conn-rule-copy"
+              :data-testid="`copy-rule-${item.id}`"
+              :title="`点击复制 ${item.rule}`"
+              @click="copyRule(item.rule)"
+            >
+              <span class="tag sm">{{ item.label }}</span>
+              <code class="mono ellipsis">{{ item.rule }}</code>
+              <Icon name="copy" :size="13" class="muted" />
+            </button>
+            <button
+              v-if="snap.active_id"
+              type="button"
+              class="btn ghost sm conn-rule-write"
+              :data-testid="`write-rule-${item.id}`"
+              title="写入当前配置的覆写编辑器"
+              @click="writeRuleToOverride(item.rule)"
+            >
+              覆写
+            </button>
+          </div>
+        </div>
+      </section>
+
       <template #footer>
         <button type="button" class="btn ghost" @click="closeDetail">关闭</button>
         <button type="button" class="btn ghost" data-testid="copy-connection" :disabled="!detailSource" @click="copySummary">
           <Icon name="copy" :size="15" />复制摘要
         </button>
         <button
+          v-if="!detailFromClosed"
           type="button"
           class="btn danger"
           data-testid="disconnect-connection"

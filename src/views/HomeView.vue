@@ -11,6 +11,7 @@ import {
   daysLeft,
   delayText,
   delayTone,
+  effectiveGroupDelay,
   formatBytes,
   formatDate,
   formatRelative,
@@ -58,6 +59,12 @@ const modeBusy = computed(() => Boolean(store.busy.mode))
 /** Any running test blocks another; only a full run reads as 测速中 here. */
 const testBlocked = computed(() => store.testing.value)
 const testBusy = computed(() => store.activeTest.value?.kind === 'all')
+const homeTestTitle = computed(() => {
+  if (testBusy.value && store.testProgress.value.total > 0) {
+    return `测速中 (${store.testProgress.value.tested}/${store.testProgress.value.total})`
+  }
+  return '测试全部节点延迟'
+})
 const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${profile.value.id}`]) : false))
 
 const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual'))
@@ -68,7 +75,12 @@ const primaryGroup = computed(() => {
   }
   return allManualGroups.value.find((group) => Boolean(group.now)) ?? allManualGroups.value[0] ?? null
 })
-const primaryNode = computed(() => (primaryGroup.value ? nodeOf(primaryGroup.value) : undefined))
+const primaryDelay = computed(() => (primaryGroup.value ? groupDelay(primaryGroup.value) : { text: '—', tone: 'none' }))
+
+function openProfileOverride(id: string) {
+  store.overrideRequest.value = { id, append: '' }
+  store.go('profiles')
+}
 
 const profileSheetOpen = ref(false)
 const welcomeDragging = ref(false)
@@ -189,30 +201,32 @@ function uptimeText(seconds: number): string {
   return minutes > 0 ? `${minutes} 分` : '不到 1 分'
 }
 
-function nodeOf(group: { now: string; nodes: { name: string; delay_ms: number | null; failed: boolean }[] }) {
-  return group.nodes.find((node) => node.name === group.now)
-}
+const groupNames = computed(() => new Set(snap.value.node_catalog.map((group) => group.name)))
 
 /**
- * Home group cards always reserve a delay slot (R1). Only a real reading or a
- * timeout is shown; disconnected, untested and DIRECT/REJECT targets read as "—".
+ * Home group cards always reserve a delay slot (R1). Nested policy groups follow
+ * their chain to the real exit server; disconnected, untested and DIRECT/REJECT read as "—".
  */
 function groupDelay(group: NodeGroup): { text: string; tone: string } {
   const none = { text: '—', tone: 'none' }
   if (!snap.value.connected) return none
-  const node = nodeOf(group)
-  if (!node || ['direct', 'reject'].includes(node.name.toLowerCase())) return none
-  const result = store.testResults.value[node.name]
-  const delay = result ? result.delay : node.delay_ms
-  const failed = result ? result.failed : node.failed
-  if (!failed && delay == null) return none
-  return { text: delayText(delay, failed), tone: delayTone(delay, failed) }
+  const state = effectiveGroupDelay(group, snap.value.node_catalog, store.testResults.value)
+  if (!state.target || (!state.failed && state.delay == null)) return none
+  return { text: delayText(state.delay, state.failed), tone: delayTone(state.delay, state.failed) }
 }
 
 /** 自动选择 › 香港 01 when a group points at another group, so the real server stays visible (R14). */
 function hopsOf(group: NodeGroup): string[] {
   const chain = resolveChain(group.name, snap.value.node_catalog)
   return chain.length ? chain : group.now ? [group.now] : []
+}
+
+function heroHopsOf(group: NodeGroup): string[] {
+  if (!group.now) return [group.name]
+  const hops = hopsOf(group)
+  // On phones, drop policy group prefixes; keep an upstream transit server if chained.
+  const serverTail = hops.filter((hop, idx) => idx === hops.length - 1 || (!groupNames.value.has(hop) && hop !== 'GLOBAL'))
+  return serverTail.length ? serverTail : hops.slice(-1)
 }
 
 function onPrimary() {
@@ -327,13 +341,13 @@ function onPrimary() {
                 <Icon name="globe" :size="14" class="hero-node-icon" />
                 <span v-if="!compact" class="hero-node-group">{{ primaryGroup.name }}</span>
                 <span v-if="!compact" class="hero-node-sep" aria-hidden="true">·</span>
-                <!-- Phones drop the group label here, so they show only the server the traffic leaves through. -->
-                <ChainPath class="hero-node-name" :hops="primaryGroup.now ? (compact ? hopsOf(primaryGroup).slice(-1) : hopsOf(primaryGroup)) : [primaryGroup.name]" />
+                <!-- Phones drop the group label here, so they show only the server (or relay → server) the traffic leaves through. -->
+                <ChainPath class="hero-node-name" :hops="compact ? heroHopsOf(primaryGroup) : (primaryGroup.now ? hopsOf(primaryGroup) : [primaryGroup.name])" :groups="groupNames" />
                 <span
-                  v-if="primaryNode && (primaryNode.delay_ms != null || primaryNode.failed)"
+                  v-if="primaryDelay.tone !== 'none'"
                   class="hero-node-delay mono"
-                  :class="delayTone(primaryNode.delay_ms, primaryNode.failed)"
-                >{{ delayText(primaryNode.delay_ms, primaryNode.failed) }}</span>
+                  :class="primaryDelay.tone"
+                >{{ primaryDelay.text }}</span>
                 <Icon name="chevron-right" :size="13" class="muted" />
               </button>
               <p v-else-if="snap.mode === 'direct'" class="hero-sub muted">当前直连出站 · 不经过代理节点</p>
@@ -540,7 +554,11 @@ function onPrimary() {
                 </div>
               </div>
               <p v-else class="muted small">本地或无流量统计信息</p>
-              <p v-if="profile.failure" class="field-error">{{ profile.failure }}</p>
+              <p v-if="profile.failure" class="field-error"><Icon name="alert" :size="13" /> {{ profile.failure }}</p>
+              <p v-if="profile.override_error" class="field-error">
+                <Icon name="alert" :size="13" /> {{ profile.override_error }}
+                <button type="button" class="btn ghost sm" data-testid="home-override-fix" @click="openProfileOverride(profile.id)">修改覆写</button>
+              </p>
             </template>
             <p v-else class="empty-line muted">还没有启用配置，去配置页选择一份</p>
           </section>
@@ -561,7 +579,7 @@ function onPrimary() {
                   class="btn ghost sm"
                   :disabled="testBlocked"
                   :aria-busy="testBusy || undefined"
-                  title="测试全部节点延迟"
+                  :title="homeTestTitle"
                   data-testid="home-test-all"
                   @click="store.testAll()"
                 >
@@ -583,24 +601,46 @@ function onPrimary() {
                 :data-group="group.name"
                 @click="store.go('proxies', group.name)"
               >
-                <div class="group-tile-top">
-                  <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="compact ? 22 : 20" /></span>
-                  <span class="group-tile-meta">
-                    <span class="tag sm" data-testid="home-group-type">{{ groupTypeLabel(group) }}</span>
+                <template v-if="compact">
+                  <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="20" /></span>
+                  <div class="group-row-text">
+                    <span class="group-row-head">
+                      <span class="group-row-name">{{ group.name }}</span>
+                      <span class="tag sm" data-testid="home-group-type">{{ groupTypeLabel(group) }}</span>
+                    </span>
+                    <span class="group-row-now">
+                      <ChainPath :hops="hopsOf(group)" :groups="groupNames" fold data-testid="home-group-now" />
+                    </span>
+                  </div>
+                  <span class="group-row-side">
                     <span
                       class="delay home-group-delay mono"
                       :class="groupDelay(group).tone"
                       data-testid="home-group-delay"
                     >{{ groupDelay(group).text }}</span>
+                    <Icon name="chevron-right" :size="14" class="group-tile-arrow" />
                   </span>
-                </div>
-                <div class="group-row-text">
-                  <span class="group-row-name">{{ group.name }}</span>
-                  <span class="group-row-now">
-                    <ChainPath :hops="hopsOf(group)" fold data-testid="home-group-now" />
-                    <Icon name="chevron-right" :size="13" class="group-tile-arrow" />
-                  </span>
-                </div>
+                </template>
+                <template v-else>
+                  <div class="group-tile-top">
+                    <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="20" /></span>
+                    <span class="group-tile-meta">
+                      <span class="tag sm" data-testid="home-group-type">{{ groupTypeLabel(group) }}</span>
+                      <span
+                        class="delay home-group-delay mono"
+                        :class="groupDelay(group).tone"
+                        data-testid="home-group-delay"
+                      >{{ groupDelay(group).text }}</span>
+                    </span>
+                  </div>
+                  <div class="group-row-text">
+                    <span class="group-row-name">{{ group.name }}</span>
+                    <span class="group-row-now">
+                      <ChainPath :hops="hopsOf(group)" :groups="groupNames" fold data-testid="home-group-now" />
+                      <Icon name="chevron-right" :size="13" class="group-tile-arrow" />
+                    </span>
+                  </div>
+                </template>
               </button>
             </div>
           </section>
@@ -627,6 +667,8 @@ function onPrimary() {
               <template v-if="usagePercent(item.used, item.total) != null">
                 · 已用 {{ Math.round(usagePercent(item.used, item.total)!) }}%
               </template>
+              <span v-if="item.expire && daysLeft(item.expire) < 0" class="text-error">· 已过期</span>
+              <span v-else-if="item.failure || item.override_error" class="text-error">· 有异常</span>
             </span>
           </span>
           <Icon v-if="item.current" name="check" :size="18" class="option-check" />

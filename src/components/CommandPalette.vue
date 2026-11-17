@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
+import { delayText, groupTypeLabel, isInfoNode, protocolLabel } from '../lib/format'
 import { getFocusable, useFocusTrap } from '../lib/ui/focus'
 import { getShortcut, shortcutKeyLabel } from '../lib/ui/shortcuts'
 import { PAGES } from '../lib/store'
+import type { NodeGroup, ProfileItem } from '../lib/types'
 import Icon from './Icon.vue'
 
 export interface PalettePage {
@@ -34,8 +36,12 @@ const props = withDefaults(
     settings?: readonly PaletteSetting[]
     /** Override the built-in action list; it must not add destructive actions. */
     actions?: readonly PaletteAction[]
+    profiles?: readonly ProfileItem[]
+    nodeCatalog?: readonly NodeGroup[]
     connected?: boolean
     hasProfiles?: boolean
+    systemProxy?: boolean
+    tun?: boolean
     currentPage?: string
     mode?: string | null
     sidebarCollapsed?: boolean
@@ -52,8 +58,12 @@ const props = withDefaults(
       { id: 'tun', label: 'TUN 设置', description: '栈、DNS 劫持与 MTU', icon: 'shield' },
       { id: 'dns', label: 'DNS 设置', description: 'Fake-IP、解析策略与 Hosts', icon: 'globe' },
     ],
+    profiles: () => [],
+    nodeCatalog: () => [],
     connected: false,
     hasProfiles: true,
+    systemProxy: false,
+    tun: false,
     sidebarCollapsed: false,
     platform: 'desktop',
   },
@@ -62,15 +72,19 @@ const emit = defineEmits<{
   navigate: [page: string]
   'open-settings': [tab: string]
   action: [id: string]
+  'select-profile': [id: string]
+  'open-group': [group: string]
+  'select-node': [group: string, node: string]
   close: []
 }>()
 
-type EntryKind = 'page' | 'setting' | 'action'
+type EntryKind = 'page' | 'setting' | 'action' | 'profile' | 'group' | 'node'
 
 interface PaletteEntry {
   key: string
   kind: EntryKind
   id: string
+  groupName?: string
   label: string
   icon?: string
   hint?: string
@@ -144,6 +158,18 @@ const defaultActions = computed<PaletteAction[]>(() => [
     ? []
     : [
         {
+          id: 'toggle-system-proxy',
+          label: props.systemProxy ? '关闭系统代理' : '开启系统代理',
+          icon: 'monitor',
+          hint: props.systemProxy ? '已开启' : 'HTTP / SOCKS',
+        },
+        {
+          id: 'toggle-tun',
+          label: props.tun ? '关闭 TUN 模式' : '开启 TUN 模式',
+          icon: 'shield',
+          hint: props.tun ? '已开启' : '虚拟网卡',
+        },
+        {
           id: 'toggle-sidebar',
           label: props.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏',
           icon: props.sidebarCollapsed ? 'panel-left-open' : 'panel-left-close',
@@ -173,6 +199,14 @@ function matches(label: string, hint?: string): boolean {
   if (!normalized.value) return true
   return `${label} ${hint ?? ''}`.toLowerCase().includes(normalized.value)
 }
+
+const primaryManualGroup = computed(() => {
+  const manual = props.nodeCatalog.filter((group) => group.kind === 'manual')
+  if (props.mode === 'global') {
+    return props.nodeCatalog.find((group) => group.name === 'GLOBAL') ?? manual[0] ?? null
+  }
+  return manual.find((group) => Boolean(group.now)) ?? manual[0] ?? null
+})
 
 const groups = computed(() => {
   let index = 0
@@ -208,7 +242,68 @@ const groups = computed(() => {
   const actionItems = (props.actions ?? defaultActions.value).filter(
     (item) => !DESTRUCTIVE_ACTION.test(`${item.id} ${item.label}`),
   )
-  return [
+
+  const profileEntries: PaletteEntry[] = []
+  const proxyEntries: PaletteEntry[] = []
+  if (normalized.value) {
+    for (const item of props.profiles) {
+      const itemHint = item.current ? '当前' : item.proxy_count ? `${item.proxy_count} 个节点` : undefined
+      if (!matches(item.name, itemHint)) continue
+      profileEntries.push({
+        key: `profile:${item.id}`,
+        kind: 'profile',
+        id: item.id,
+        label: item.name,
+        icon: item.kind === 'local' ? 'file' : 'link',
+        hint: itemHint,
+        index: 0,
+      })
+    }
+
+    const visibleGroups = props.mode === 'global'
+      ? props.nodeCatalog
+      : props.nodeCatalog.filter((group) => group.name !== 'GLOBAL')
+    for (const group of visibleGroups) {
+      const typeLabel = groupTypeLabel(group)
+      if (!matches(group.name, typeLabel)) continue
+      proxyEntries.push({
+        key: `group:${group.name}`,
+        kind: 'group',
+        id: group.name,
+        label: group.name,
+        icon: 'route',
+        hint: group.now ? `${typeLabel} · ${group.now}` : typeLabel,
+        index: 0,
+      })
+    }
+
+    const targetGroup = primaryManualGroup.value
+    if (targetGroup && targetGroup.kind === 'manual') {
+      const groupNames = new Set(props.nodeCatalog.map((group) => group.name))
+      let added = 0
+      for (const node of targetGroup.nodes) {
+        if (added >= 8) break
+        if (groupNames.has(node.name) || isInfoNode(node.name)) continue
+        const proto = protocolLabel(node.node_type)
+        const tagText = [proto, ...node.tags].filter(Boolean).join(' ')
+        if (!matches(node.name, tagText)) continue
+        const delay = props.connected ? delayText(node.delay_ms, node.failed) : ''
+        proxyEntries.push({
+          key: `node:${targetGroup.name}:${node.name}`,
+          kind: 'node',
+          id: node.name,
+          groupName: targetGroup.name,
+          label: node.name,
+          icon: 'globe',
+          hint: [targetGroup.name, node.selected ? '当前' : delay || proto].filter(Boolean).join(' · '),
+          index: 0,
+        })
+        added += 1
+      }
+    }
+  }
+
+  const sections = [
     build(
       'page',
       '页面',
@@ -236,7 +331,17 @@ const groups = computed(() => {
       (item) => Boolean(item.disabled),
       (item) => item.reason,
     ),
+    { id: 'profile', label: '配置', entries: profileEntries },
+    { id: 'proxy', label: '代理组与节点', entries: proxyEntries },
   ].filter((group) => group.entries.length > 0)
+
+  let finalIndex = 0
+  for (const section of sections) {
+    for (const entry of section.entries) {
+      entry.index = finalIndex++
+    }
+  }
+  return sections
 })
 
 const entries = computed(() => groups.value.flatMap((group) => group.entries))
@@ -280,6 +385,9 @@ function choose(entry: PaletteEntry) {
   if (entry.disabled) return
   if (entry.kind === 'page') emit('navigate', entry.id)
   else if (entry.kind === 'setting') emit('open-settings', entry.id)
+  else if (entry.kind === 'profile') emit('select-profile', entry.id)
+  else if (entry.kind === 'group') emit('open-group', entry.id)
+  else if (entry.kind === 'node' && entry.groupName) emit('select-node', entry.groupName, entry.id)
   else emit('action', entry.id)
   emit('close')
 }
@@ -332,7 +440,7 @@ useFocusTrap(() => panel.value, {
             :aria-controls="listId"
             :aria-activedescendant="activeEntry?.key"
             aria-label="搜索命令"
-            placeholder="搜索页面、设置或动作"
+            placeholder="搜索页面、设置、节点或动作"
             autocomplete="off"
             spellcheck="false"
             @input="active = 0"

@@ -386,11 +386,28 @@ fn connect_kernel(app: AppHandle) -> ConnectStatus {
 }
 
 fn profile_snapshot(app: &AppHandle) -> ProfileSnapshot {
+    let kernel_path = {
+        let store = app.state::<KernelStore>();
+        lock_kernel(&store.manager).installed_path()
+    };
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
+    session.runtime.set_kernel_path(kernel_path.clone());
+    session.tun.set_kernel_path(kernel_path);
     let mut installed = takeover::HostInstalledApps;
     session.book.refresh_installed(&mut installed);
-    let ProfileSession { book, runtime, .. } = &mut *session;
+    let ProfileSession {
+        book,
+        runtime,
+        proxy,
+        tun,
+        vpn,
+    } = &mut *session;
+    if !runtime.running() {
+        if let Some(recovered) = book.recover_crashed_kernel(runtime, proxy, tun, vpn) {
+            return recovered;
+        }
+    }
     book.sync_runtime(runtime);
     book.snapshot()
 }
@@ -723,15 +740,29 @@ fn save_profile_content(app: AppHandle, id: String, content: String) -> ProfileS
     })
 }
 
-#[tauri::command(async)]
-fn refresh_profile(app: AppHandle, id: String) -> ProfileSnapshot {
-    let client = subscription_client(&app);
-    with_session(&app, |session| {
+fn refresh_one(app: &AppHandle, client: &HttpSubscriptionClient, id: &str) -> ProfileSnapshot {
+    use profile::SubscriptionSource;
+    let prepared = with_profile(app, |session| session.book.prepare_refresh(id));
+    let (url, user_agent) = match prepared {
+        Err(snapshot) => return snapshot,
+        Ok(None) => return profile_snapshot(app),
+        Ok(Some(pair)) => pair,
+    };
+    // Network download runs completely outside ProfileSession's mutex so concurrent
+    // refreshes execute in parallel and UI state polling never stalls on slow servers.
+    let fetched = client.fetch_with_user_agent(&url, &user_agent);
+    with_session(app, |session| {
         let ProfileSession { book, runtime, proxy, .. } = session;
-        book.refresh_profile(&id, &client, runtime);
+        book.finish_refresh(id, &url, fetched, runtime);
         book.reconcile_system_proxy(proxy);
         book.snapshot()
     })
+}
+
+#[tauri::command(async)]
+fn refresh_profile(app: AppHandle, id: String) -> ProfileSnapshot {
+    let client = subscription_client(&app);
+    refresh_one(&app, &client, &id)
 }
 
 #[tauri::command(async)]
@@ -740,19 +771,27 @@ fn refresh_all_profiles(app: AppHandle) -> ProfileSnapshot {
     refresh_ids(&app, &ids)
 }
 
+const SUBSCRIPTION_REFRESH_CONCURRENCY: usize = 4;
+
 fn refresh_ids(app: &AppHandle, ids: &[String]) -> ProfileSnapshot {
-    let client = subscription_client(&app);
-    let mut last = None;
-    // One lock per profile so a slow subscription does not freeze the whole UI.
-    for id in ids {
-        last = Some(with_session(app, |session| {
-            let ProfileSession { book, runtime, proxy, .. } = session;
-            book.refresh_profile(id, &client, runtime);
-            book.reconcile_system_proxy(proxy);
-            book.snapshot()
-        }));
+    if ids.is_empty() {
+        return profile_snapshot(app);
     }
-    last.unwrap_or_else(|| profile_snapshot(app))
+    let client = subscription_client(app);
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let workers = ids.len().min(SUBSCRIPTION_REFRESH_CONCURRENCY);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let client = &client;
+            let cursor = &cursor;
+            scope.spawn(move || loop {
+                let index = cursor.fetch_add(1, Ordering::Relaxed);
+                let Some(id) = ids.get(index) else { break };
+                let _ = refresh_one(app, client, id);
+            });
+        }
+    });
+    profile_snapshot(app)
 }
 
 #[tauri::command(async)]
@@ -835,11 +874,40 @@ fn controller(app: &AppHandle) -> Result<nodes::ControllerEndpoint, String> {
         .ok_or_else(|| "内核没有运行".to_string())
 }
 
-/// Provider downloads can take a while, so they run without the profile lock held.
+const MAX_CONCURRENT_PROVIDER_ACTIONS: usize = 6;
+static PROVIDER_ACTION_SLOTS: (Mutex<usize>, std::sync::Condvar) =
+    (Mutex::new(0), std::sync::Condvar::new());
+
+struct ProviderActionGuard;
+
+impl ProviderActionGuard {
+    fn acquire() -> Self {
+        let (lock, cvar) = &PROVIDER_ACTION_SLOTS;
+        let mut active = lock.lock().unwrap_or_else(|p| p.into_inner());
+        while *active >= MAX_CONCURRENT_PROVIDER_ACTIONS {
+            active = cvar.wait(active).unwrap_or_else(|p| p.into_inner());
+        }
+        *active += 1;
+        Self
+    }
+}
+
+impl Drop for ProviderActionGuard {
+    fn drop(&mut self) {
+        let (lock, cvar) = &PROVIDER_ACTION_SLOTS;
+        let mut active = lock.lock().unwrap_or_else(|p| p.into_inner());
+        *active = active.saturating_sub(1);
+        cvar.notify_one();
+    }
+}
+
+/// Provider downloads can take a while, so they run without the profile lock held
+/// while bounded by `MAX_CONCURRENT_PROVIDER_ACTIONS` to protect kernel load.
 #[tauri::command]
 async fn provider_action(app: AppHandle, kind: String, name: String, action: String) -> Result<(), String> {
     let endpoint = controller(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = ProviderActionGuard::acquire();
         diagnostics::provider_action(&endpoint, &kind, &name, &action)
     })
     .await
@@ -1044,7 +1112,8 @@ fn with_session_raw<T>(app: &AppHandle, change: impl FnOnce(&mut ProfileSession)
     };
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
-    session.runtime.set_kernel_path(kernel_path);
+    session.runtime.set_kernel_path(kernel_path.clone());
+    session.tun.set_kernel_path(kernel_path);
     change(&mut session)
 }
 
@@ -1061,6 +1130,63 @@ fn spawn_auto_update(app: &AppHandle) {
             }
             let snapshot = refresh_ids(&handle, &due);
             let _ = handle.emit("profile-changed", snapshot);
+        }
+    });
+}
+
+/// Runs optional launch auto-connect off the UI setup thread, clears the startup
+/// crash guard once the kernel has stayed up, and watches for unexpected exits
+/// even while the window is hidden in the system tray.
+fn spawn_kernel_guardian(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let auto = with_session_raw(&handle, |session| {
+            if !session.book.should_auto_connect() {
+                return None;
+            }
+            let ProfileSession {
+                book,
+                runtime,
+                proxy,
+                tun,
+                vpn,
+            } = session;
+            book.auto_connect_on_launch(runtime, proxy, tun, vpn)
+        });
+        if let Some(snapshot) = auto {
+            refresh_tray(&handle, &snapshot);
+            let _ = handle.emit("profile-changed", snapshot);
+        }
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let recovered = with_session_raw(&handle, |session| {
+                if session.book.startup_guard_pending()
+                    && session
+                        .runtime
+                        .kernel_uptime_secs()
+                        .is_some_and(|secs| secs >= 8)
+                {
+                    session.book.clear_startup_guard();
+                }
+                if !(session.book.is_connected() || session.book.startup_guard_pending()) {
+                    return None;
+                }
+                if session.runtime.running() {
+                    return None;
+                }
+                let ProfileSession {
+                    book,
+                    runtime,
+                    proxy,
+                    tun,
+                    vpn,
+                } = session;
+                book.recover_crashed_kernel(runtime, proxy, tun, vpn)
+            });
+            if let Some(snapshot) = recovered {
+                refresh_tray(&handle, &snapshot);
+                let _ = handle.emit("profile-changed", snapshot);
+            }
         }
     });
 }
@@ -1395,6 +1521,7 @@ pub fn run() {
                     }
                 }
             }
+            spawn_kernel_guardian(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

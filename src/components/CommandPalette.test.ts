@@ -173,6 +173,92 @@ describe('CommandPalette', () => {
     await settle()
     expect(option('action:copy-proxy-env')).toBeNull()
     expect(option('action:open-shortcuts')).toBeNull()
+    expect(option('action:toggle-system-proxy')).toBeNull()
+    expect(option('action:toggle-tun')).toBeNull()
     android.wrapper.unmount()
+  })
+
+  it('searches profiles, proxy groups and manual nodes only when a query is entered', async () => {
+    const { wrapper } = mountPalette({
+      platform: 'desktop',
+      connected: true,
+      systemProxy: true,
+      tun: false,
+      profiles: [
+        {
+          id: 'p1',
+          name: '星河云',
+          kind: 'subscription',
+          source: 'https://example.com',
+          current: true,
+          failure: null,
+          override_text: '',
+          override_error: null,
+          used: null,
+          total: null,
+          expire: null,
+          last_success_ms: null,
+          interval_hours: 0,
+          updated_ms: null,
+          proxy_count: 10,
+          age_recipients: [],
+          user_agent: '',
+        },
+        {
+          id: 'p2',
+          name: '备用机场',
+          kind: 'subscription',
+          source: 'https://backup.example.com',
+          current: false,
+          failure: null,
+          override_text: '',
+          override_error: null,
+          used: null,
+          total: null,
+          expire: null,
+          last_success_ms: null,
+          interval_hours: 0,
+          updated_ms: null,
+          proxy_count: 8,
+          age_recipients: [],
+          user_agent: '',
+        },
+      ],
+      nodeCatalog: [
+        {
+          name: '节点选择',
+          kind: 'manual',
+          now: '香港 01',
+          sort: 'default',
+          group_type: 'select',
+          icon: null,
+          nodes: [
+            { name: '香港 01', delay_ms: 42, failed: false, selected: true, node_type: 'vless', tags: ['UDP', 'Reality'] },
+            { name: '日本 02', delay_ms: 68, failed: false, selected: false, node_type: 'trojan', tags: ['UDP'] },
+          ],
+        },
+      ],
+    })
+    await settle()
+    // Empty query stays concise: no profile or node spam.
+    expect(option('profile:p2')).toBeNull()
+    expect(option('node:节点选择:日本 02')).toBeNull()
+    expect(option('action:toggle-system-proxy')?.textContent).toContain('关闭系统代理')
+    expect(option('action:toggle-tun')?.textContent).toContain('开启 TUN 模式')
+
+    const input = search('备用')
+    await nextTick()
+    expect(option('profile:p2')).not.toBeNull()
+    press(input, 'Enter')
+    expect(wrapper.emitted('select-profile')).toEqual([['p2']])
+
+    search('日本 02')
+    await nextTick()
+    const nodeOpt = option('node:节点选择:日本 02')
+    expect(nodeOpt).not.toBeNull()
+    expect(nodeOpt?.textContent).toContain('68 ms')
+    nodeOpt?.click()
+    expect(wrapper.emitted('select-node')).toEqual([['节点选择', '日本 02']])
+    wrapper.unmount()
   })
 })

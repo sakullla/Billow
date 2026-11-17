@@ -50,6 +50,7 @@ pub struct RuntimeCatalog {
     pub types: BTreeMap<String, String>,
     pub tags: BTreeMap<String, Vec<String>>,
     pub providers: BTreeMap<String, String>,
+    pub dialers: BTreeMap<String, String>,
 }
 
 impl RuntimeCatalog {
@@ -60,6 +61,7 @@ impl RuntimeCatalog {
             self.providers.insert(name.clone(), provider.clone());
             if let Some(kind) = other.types.get(name) { self.types.insert(name.clone(), kind.clone()); }
             if let Some(tags) = other.tags.get(name) { self.tags.insert(name.clone(), tags.clone()); }
+            if let Some(dialer) = other.dialers.get(name) { self.dialers.insert(name.clone(), dialer.clone()); }
         }
     }
 }
@@ -112,7 +114,10 @@ fn add_proxy_metadata(catalog: &mut RuntimeCatalog, name: &str, item: &Controlle
     let mut tags: Vec<String> = [(item.udp, "UDP"), (item.xudp, "XUDP"), (item.smux, "Mux"),
         (item.tfo, "TFO"), (item.mptcp, "MPTCP")].into_iter()
         .filter(|(on, _)| *on == Some(true)).map(|(_, tag)| tag.to_string()).collect();
-    if item.dialer_proxy.as_ref().is_some_and(|value| !value.is_empty()) { tags.push("链式".to_string()); }
+    if let Some(dialer) = item.dialer_proxy.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        tags.push("链式".to_string());
+        catalog.dialers.insert(name.to_string(), dialer.to_string());
+    }
     if !tags.is_empty() { catalog.tags.insert(name.to_string(), tags); }
     if let Some(kind) = &item.kind { catalog.types.insert(name.to_string(), kind.clone()); }
 }
@@ -161,6 +166,9 @@ pub struct NodeItemView {
     /// Capability tags in display order (UDP, Reality/TLS, transport, …); see `proxy_tags`.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Upstream transit proxy or group when `dialer-proxy` is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialer_proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -225,6 +233,7 @@ pub fn proxy_types(value: &Value) -> BTreeMap<String, String> {
 pub struct ProxyInfo {
     pub kind: String,
     pub tags: Vec<String>,
+    pub dialer_proxy: Option<String>,
 }
 
 fn read_bool(value: &Value, key: &str) -> Option<bool> {
@@ -292,13 +301,18 @@ pub fn proxy_tags(item: &Value) -> Vec<String> {
 pub fn proxy_infos(value: &Value) -> BTreeMap<String, ProxyInfo> {
     let mut out: BTreeMap<String, ProxyInfo> = proxy_types(value)
         .into_iter()
-        .map(|(name, kind)| (name, ProxyInfo { kind, tags: Vec::new() }))
+        .map(|(name, kind)| (name, ProxyInfo { kind, tags: Vec::new(), dialer_proxy: None }))
         .collect();
     if let Some(list) = mapping_get(value, "proxies").and_then(Value::as_sequence) {
         for item in list {
             if let Some(name) = read_string(item, "name") {
                 if let Some(info) = out.get_mut(&name) {
                     info.tags = proxy_tags(item);
+                    info.dialer_proxy = mapping_get(item, "dialer-proxy")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
                 }
             }
         }

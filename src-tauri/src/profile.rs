@@ -162,6 +162,9 @@ impl GeoUrls {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct KernelSettings {
+    /// Start the kernel and connect automatically when Billow opens, guarded against crash loops.
+    #[serde(default)]
+    pub auto_connect: bool,
     /// None preserves the default: switch existing sessions to the new route.
     #[serde(default)]
     pub close_connections_on_switch: Option<bool>,
@@ -867,6 +870,11 @@ pub trait KernelLaunch {
     fn controller(&mut self) -> Option<ControllerEndpoint> {
         None
     }
+
+    /// Consumes the exit status recorded when a running kernel process died unexpectedly.
+    fn take_exit_detail(&mut self) -> Option<String> {
+        None
+    }
 }
 
 pub struct HttpSubscriptionClient {
@@ -1279,6 +1287,7 @@ impl ProcessRuntime {
         self.cached_catalog = nodes::RuntimeCatalog::default();
         self.provider_catalog = None;
         self.log_buffer = None;
+        self.exit_detail = None;
         self.totals = None;
         self.connection_total = None;
         self.connections_error = None;
@@ -1753,6 +1762,14 @@ impl KernelLaunch for ProcessRuntime {
         self.controller.clone()
     }
 
+    fn take_exit_detail(&mut self) -> Option<String> {
+        let detail = self.exit_detail.take()?;
+        if let Some(buffer) = self.log_buffer.take() {
+            diagnostics::push_logs(&mut self.pending_logs, buffer.drain_after_exit());
+        }
+        Some(detail)
+    }
+
     fn pull_logs(&mut self) -> Vec<LogView> {
         let mut lines = std::mem::take(&mut self.pending_logs);
         if let Some(buffer) = &self.log_buffer {
@@ -1899,7 +1916,14 @@ pub struct ProfileBook {
     totals: Option<TrafficTotals>,
     settings: KernelSettings,
     notice: Option<String>,
+    startup_guard_active: bool,
+    crash_recoveries: u8,
+    last_crash_ms: Option<u64>,
 }
+
+const STARTUP_GUARD_FILE: &str = "auto-connect.guard";
+const STARTUP_STABLE_SECS: u64 = 8;
+const CRASH_WINDOW_MS: u64 = 60_000;
 
 struct DelayMark {
     delay_ms: Option<u64>,
@@ -1954,6 +1978,9 @@ impl ProfileBook {
             totals: None,
             settings: KernelSettings::default(),
             notice: None,
+            startup_guard_active: false,
+            crash_recoveries: 0,
+            last_crash_ms: None,
         };
         book.load();
         book
@@ -2213,8 +2240,10 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
-        // A new connection attempt retires the previous home failure. Switches do not.
+        // A new connection attempt retires the previous home failure and crash counter. Switches do not.
         self.home_failure = None;
+        self.crash_recoveries = 0;
+        self.last_crash_ms = None;
         if self.platform == ClientPlatform::Android {
             return self.connect_android(kernel, vpn);
         }
@@ -2228,6 +2257,9 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
+        self.clear_startup_guard();
+        self.crash_recoveries = 0;
+        self.last_crash_ms = None;
         if self.takeover.tun || self.takeover.vpn {
             let _ = self.reload(kernel, false, None);
         }
@@ -2236,6 +2268,130 @@ impl ProfileBook {
         self.apply_model(model);
         self.connections.clear();
         self.publish(kernel)
+    }
+
+    fn startup_guard_path(&self) -> PathBuf {
+        self.path.with_file_name(STARTUP_GUARD_FILE)
+    }
+
+    pub fn clear_startup_guard(&mut self) {
+        self.startup_guard_active = false;
+        let _ = fs::remove_file(self.startup_guard_path());
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    pub fn startup_guard_pending(&self) -> bool {
+        self.startup_guard_active
+    }
+
+    pub fn should_auto_connect(&self) -> bool {
+        self.settings.auto_connect && !self.connected && self.active_id.is_some()
+    }
+
+    /// Runs at most once on app launch when `settings.auto_connect` is enabled.
+    /// A leftover guard file from an earlier aborted startup pauses auto-connect
+    /// instead of re-entering a crash loop.
+    pub fn auto_connect_on_launch(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> Option<ProfileSnapshot> {
+        if !self.should_auto_connect() {
+            return None;
+        }
+        let guard = self.startup_guard_path();
+        if guard.exists() {
+            self.clear_startup_guard();
+            self.release_lingering_proxy(proxy);
+            self.home_failure = Some(
+                "上次自动启动内核时异常退出，本次已暂停自动连接；请检查配置后手动连接".to_string(),
+            );
+            self.remember_current_failure();
+            self.persist();
+            return Some(self.snapshot());
+        }
+        if let Some(parent) = guard.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&guard, format!("{}\n", now_ms()));
+        self.startup_guard_active = true;
+        let snapshot = self.connect(kernel, proxy, tun, vpn);
+        if !self.connected {
+            // A configuration, listener or permission error was handled cleanly; do not
+            // mistake the next launch for a native crash.
+            self.clear_startup_guard();
+        }
+        Some(snapshot)
+    }
+
+    /// Handles an unexpected kernel process exit observed at runtime: attempts at most
+    /// one silent restart for a desktop proxy session, otherwise releases OS traffic
+    /// takeover so user networking is never blackholed and surfaces a calm explanation.
+    pub fn recover_crashed_kernel(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> Option<ProfileSnapshot> {
+        let exit_status = kernel.take_exit_detail()?;
+        self.append_logs(kernel.pull_logs());
+        if !self.connected && !self.takeover.system_proxy && !self.takeover.tun && !self.takeover.vpn {
+            return None;
+        }
+        let now = now_ms();
+        if self
+            .last_crash_ms
+            .is_none_or(|last| now.saturating_sub(last) > CRASH_WINDOW_MS)
+        {
+            self.crash_recoveries = 0;
+        }
+        self.last_crash_ms = Some(now);
+        let can_silent_restart = self.crash_recoveries == 0
+            && !self.startup_guard_active
+            && self.platform == ClientPlatform::Desktop
+            && !self.takeover.tun;
+        if can_silent_restart {
+            self.crash_recoveries = 1;
+            if self.reload(kernel, false, None).is_ok() && kernel.running() {
+                self.kernel_running = true;
+                self.reconcile_system_proxy(proxy);
+                self.connected = self.takeover.system_proxy || self.takeover.tun;
+                self.append_logs(vec![diagnostics::failure_log(&format!(
+                    "内核异常退出（{exit_status}），已自动恢复运行"
+                ))]);
+                return Some(self.publish(kernel));
+            }
+        }
+        let repeated = self.crash_recoveries >= 1;
+        self.clear_startup_guard();
+        let detail = self
+            .logs
+            .iter()
+            .rev()
+            .find(|line| line.level == "error")
+            .map(|line| friendly_listen_error(&line.message));
+        let base = if repeated {
+            format!("内核连续异常退出（{exit_status}），已停止自动重启并关闭系统代理")
+        } else {
+            format!("内核异常退出（{exit_status}），已自动关闭系统代理以免断网")
+        };
+        let message = match detail {
+            Some(reason) if !reason.is_empty() && !base.contains(&reason) => format!("{base}：{reason}"),
+            _ => format!("{base}，请检查配置或查看日志"),
+        };
+        let mut model = self.link_model();
+        takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
+        self.apply_model(model);
+        self.remember_current_failure();
+        Some(self.publish(kernel))
     }
 
     pub fn set_system_proxy(
@@ -3107,6 +3263,14 @@ impl ProfileBook {
             self.auto_now = self.runtime_catalog.now.clone();
             self.kernel_memory = kernel.kernel_memory();
             self.kernel_uptime_secs = kernel.kernel_uptime_secs();
+            if self.startup_guard_active
+                && self.kernel_uptime_secs.is_some_and(|secs| secs >= STARTUP_STABLE_SECS)
+            {
+                self.clear_startup_guard();
+            }
+            if self.kernel_uptime_secs.is_some_and(|secs| secs >= 60) {
+                self.crash_recoveries = 0;
+            }
             if self.connected {
                 self.connections = diagnostics::accept_connections(kernel.connections());
                 if let Some(totals) = kernel.connection_totals() {
@@ -3479,6 +3643,12 @@ impl ProfileBook {
                 if !tags.contains(tag) { tags.push(tag.clone()); }
             }
         }
+        let dialer_proxy = self
+            .runtime_catalog
+            .dialers
+            .get(name)
+            .cloned()
+            .or_else(|| types.get(name).and_then(|info| info.dialer_proxy.clone()));
         nodes::NodeItemView {
             name: name.to_string(),
             delay_ms: mark.and_then(|item| item.delay_ms),
@@ -3487,6 +3657,7 @@ impl ProfileBook {
             node_type: self.runtime_catalog.types.get(name).cloned()
                 .or_else(|| types.get(name).map(|info| info.kind.clone())).unwrap_or_default(),
             tags,
+            dialer_proxy,
         }
     }
 
@@ -3584,9 +3755,10 @@ impl KernelSettings {
         self
     }
 
-    /// Everything except the delay probe and OS system-proxy settings, which never need a kernel restart.
+    /// Everything except UI/startup preferences, the delay probe and OS system-proxy settings, which never need a kernel restart.
     fn kernel_part(&self) -> Self {
         let mut copy = self.clone();
+        copy.auto_connect = false;
         copy.close_connections_on_switch = None;
         copy.subscription_user_agent.clear();
         copy.test_url.clear();
@@ -4123,21 +4295,40 @@ impl ProfileBook {
         self.publish(kernel)
     }
 
-    /// Fetches a subscription again without switching the active profile.
-    pub fn refresh_profile(
+    /// Reads the URL and User-Agent needed to fetch `id` without holding the session lock
+    /// across network I/O. Returns `Err(snapshot)` if `id` is missing, or `Ok(None)` for local files.
+    pub fn prepare_refresh(&mut self, id: &str) -> Result<Option<(String, String)>, ProfileSnapshot> {
+        let Some(index) = self.index_of(id) else {
+            self.input_error = Some(MISSING_PROFILE.to_string());
+            return Err(self.snapshot());
+        };
+        if self.profiles[index].kind != ProfileKind::Subscription {
+            return Ok(None);
+        }
+        Ok(Some((
+            self.profiles[index].source.clone(),
+            self.subscription_user_agent(index).to_string(),
+        )))
+    }
+
+    /// Applies a completed subscription fetch back into the book, ignoring stale results
+    /// if the profile was removed or pointed at a different URL while the download ran.
+    pub fn finish_refresh(
         &mut self,
         id: &str,
-        source: &dyn SubscriptionSource,
+        expected_source: &str,
+        fetched: Result<FetchedSubscription, String>,
         kernel: &mut dyn KernelLaunch,
     ) -> ProfileSnapshot {
         let Some(index) = self.index_of(id) else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
             return self.snapshot();
         };
-        if self.profiles[index].kind != ProfileKind::Subscription {
+        if self.profiles[index].kind != ProfileKind::Subscription
+            || self.profiles[index].source != expected_source
+        {
             return self.snapshot();
         }
-        let fetched = match source.fetch_with_user_agent(&self.profiles[index].source, self.subscription_user_agent(index)) {
+        let fetched = match fetched {
             Ok(fetched) => fetched,
             Err(_) => {
                 self.profiles[index].failure = Some(FETCH_ERROR.to_string());
@@ -4188,6 +4379,22 @@ impl ProfileBook {
             }
         }
         self.publish(kernel)
+    }
+
+    /// Fetches a subscription again without switching the active profile.
+    pub fn refresh_profile(
+        &mut self,
+        id: &str,
+        source: &dyn SubscriptionSource,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
+        let (url, ua) = match self.prepare_refresh(id) {
+            Err(snapshot) => return snapshot,
+            Ok(None) => return self.snapshot(),
+            Ok(Some(pair)) => pair,
+        };
+        let fetched = source.fetch_with_user_agent(&url, &ua);
+        self.finish_refresh(id, &url, fetched, kernel)
     }
 
     /// Subscriptions whose update interval has passed.
@@ -8453,5 +8660,205 @@ proxy-groups:
         runtime.stop();
         stop_server.store(true, Ordering::Relaxed);
         let _ = server.join();
+    }
+
+    #[test]
+    fn auto_connect_starts_once_clears_guard_when_stable_and_pauses_after_crashed_launch() {
+        struct GuardKernel {
+            alive: bool,
+            fail: bool,
+            uptime: u64,
+            starts: usize,
+        }
+        impl KernelLaunch for GuardKernel {
+            fn start_or_reload(&mut self, _yaml: &str) -> Result<(), String> {
+                self.starts += 1;
+                if self.fail {
+                    self.alive = false;
+                    return Err("端口占用".to_string());
+                }
+                self.alive = true;
+                Ok(())
+            }
+            fn running(&mut self) -> bool {
+                self.alive
+            }
+            fn kernel_uptime_secs(&mut self) -> Option<u64> {
+                self.alive.then_some(self.uptime)
+            }
+        }
+
+        let dir = temp_dir("auto-connect-guard");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local(
+            "chain.yaml",
+            "mixed-port: 7890\nmode: rule\nproxies:\n  - {name: front, type: ss}\n  - {name: landing, type: vless, dialer-proxy: front}\nproxy-groups:\n  - {name: manual, type: select, proxies: [landing, front]}\n",
+        );
+        let mut kernel = GuardKernel { alive: false, fail: false, uptime: 1, starts: 0 };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        let snap0 = book.snapshot();
+        assert_eq!(snap0.node_catalog[0].nodes[0].dialer_proxy.as_deref(), Some("front"));
+        assert!(snap0.node_catalog[0].nodes[0].tags.iter().any(|tag| tag == "链式"));
+
+        // Off by default: launch hook is a no-op.
+        assert!(book.auto_connect_on_launch(&mut kernel, &mut proxy, &mut tun, &mut vpn).is_none());
+
+        let mut settings = book.settings.clone();
+        settings.auto_connect = true;
+        let prev_starts = kernel.starts;
+        book.save_settings(settings, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(kernel.starts, prev_starts, "toggling auto_connect must not restart a running kernel");
+        book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        kernel.alive = false;
+
+        // Simulated launch 1: auto-connect succeeds, guard stays until uptime >= 8s.
+        let launched = book
+            .auto_connect_on_launch(&mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .expect("auto_connect should run");
+        assert!(launched.connected && launched.system_proxy);
+        assert!(book.startup_guard_path().exists());
+
+        // Simulated crash BEFORE 8s stabilization: next launch finds the guard, skips
+        // auto-connect, removes the guard and clears any lingering system proxy.
+        let mut after_crash = ProfileBook::open(&dir.0);
+        after_crash.set_platform(ClientPlatform::Desktop);
+        let mut fresh_kernel = GuardKernel { alive: false, fail: false, uptime: 0, starts: 0 };
+        let paused = after_crash
+            .auto_connect_on_launch(&mut fresh_kernel, &mut proxy, &mut tun, &mut vpn)
+            .expect("guard should report paused state");
+        assert!(!paused.connected);
+        assert_eq!(fresh_kernel.starts, 0, "must not spawn kernel after aborted startup");
+        assert!(!after_crash.startup_guard_path().exists(), "guard is consumed once");
+        assert!(paused.failure.as_deref().unwrap_or_default().contains("暂停自动连接"));
+        assert!(proxy.http.is_none());
+
+        // Subsequent normal launch succeeds and clears the guard once uptime >= 8s.
+        let recovered = after_crash
+            .auto_connect_on_launch(&mut fresh_kernel, &mut proxy, &mut tun, &mut vpn)
+            .expect("next launch resumes normally");
+        assert!(recovered.connected);
+        assert!(after_crash.startup_guard_path().exists());
+        fresh_kernel.uptime = STARTUP_STABLE_SECS;
+        after_crash.sync_runtime(&mut fresh_kernel);
+        assert!(!after_crash.startup_guard_path().exists(), "stable uptime clears guard");
+
+        // Cleanly handled start failure clears the guard immediately without looping.
+        after_crash.disconnect(&mut fresh_kernel, &mut proxy, &mut tun, &mut vpn);
+        fresh_kernel.alive = false;
+        fresh_kernel.fail = true;
+        let failed = after_crash
+            .auto_connect_on_launch(&mut fresh_kernel, &mut proxy, &mut tun, &mut vpn)
+            .expect("handled error still returns snapshot");
+        assert!(!failed.connected);
+        assert!(!after_crash.startup_guard_path().exists());
+    }
+
+    #[test]
+    fn runtime_crash_recovers_once_then_trips_circuit_breaker_and_releases_proxy() {
+        struct CrashKernel {
+            alive: bool,
+            fail_restart: bool,
+            exit: Option<String>,
+            starts: usize,
+        }
+        impl KernelLaunch for CrashKernel {
+            fn start_or_reload(&mut self, _yaml: &str) -> Result<(), String> {
+                self.starts += 1;
+                if self.fail_restart {
+                    self.alive = false;
+                    return Err("配置语法错误".to_string());
+                }
+                self.alive = true;
+                Ok(())
+            }
+            fn running(&mut self) -> bool {
+                self.alive
+            }
+            fn take_exit_detail(&mut self) -> Option<String> {
+                self.exit.take()
+            }
+        }
+
+        let dir = temp_dir("crash-breaker");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", &config(7890));
+        let mut kernel = CrashKernel { alive: false, fail_restart: false, exit: None, starts: 0 };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected && proxy.http.is_some());
+
+        // First unexpected crash: silent 1-shot restart keeps connection & proxy alive.
+        kernel.alive = false;
+        kernel.exit = Some("退出码 2".to_string());
+        let healed = book
+            .recover_crashed_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .expect("first crash should self-heal");
+        assert!(healed.connected && healed.kernel_running);
+        assert!(proxy.http.is_some());
+
+        // Second crash within 60s window: circuit breaker trips, stops restarting, and
+        // releases OS system proxy so user traffic is not blackholed.
+        let starts_before = kernel.starts;
+        kernel.alive = false;
+        kernel.exit = Some("退出码 2".to_string());
+        let tripped = book
+            .recover_crashed_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .expect("second crash trips circuit breaker");
+        assert_eq!(kernel.starts, starts_before, "circuit breaker must not restart again");
+        assert!(!tripped.connected);
+        assert!(!tripped.system_proxy);
+        assert!(proxy.http.is_none(), "system proxy must be cleared on repeated crash");
+        assert!(tripped.failure.as_deref().unwrap_or_default().contains("连续异常退出"));
+    }
+
+    #[test]
+    fn split_refresh_unlocks_network_fetch_and_drops_stale_url_results() {
+        let dir = temp_dir("split-refresh");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_subscription("https://a.example/sub");
+        book.add_subscription("https://b.example/sub");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+
+        let (url_a, ua_a) = book.prepare_refresh("p1").unwrap().unwrap();
+        let (url_b, _) = book.prepare_refresh("p2").unwrap().unwrap();
+        assert_eq!(url_a, "https://a.example/sub");
+        assert!(ua_a.is_empty());
+
+        // User edits p2's URL while the earlier fetch is in flight: stale response is ignored.
+        book.set_profile_source("p2", "https://new-b.example/sub");
+        let ignored = book.finish_refresh(
+            "p2",
+            &url_b,
+            Ok(FetchedSubscription { content: config(7891), userinfo: None }),
+            &mut kernel,
+        );
+        assert_eq!(ignored.profiles[1].proxy_count, 0);
+        assert!(ignored.profiles[1].last_success_ms.is_none());
+
+        // p1 completes normally, while a third failure records only on its own card.
+        let done_a = book.finish_refresh(
+            "p1",
+            &url_a,
+            Ok(FetchedSubscription {
+                content: "mixed-port: 7890\nproxies:\n  - {name: hk, type: ss}\n".to_string(),
+                userinfo: None,
+            }),
+            &mut kernel,
+        );
+        assert_eq!(done_a.profiles[0].proxy_count, 1);
+        assert!(done_a.profiles[0].failure.is_none());
+
+        let (url_b2, _) = book.prepare_refresh("p2").unwrap().unwrap();
+        let failed_b = book.finish_refresh("p2", &url_b2, Err("timeout".to_string()), &mut kernel);
+        assert!(failed_b.profiles[0].failure.is_none(), "p1 stays healthy");
+        assert!(failed_b.profiles[1].failure.is_some(), "only p2 records the error");
     }
 }

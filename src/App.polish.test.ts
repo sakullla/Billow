@@ -630,4 +630,441 @@ describe('UI/UX polish', () => {
       expect(pill.find('.chain-exit').text()).toBe(autoNow)
     })
   })
+
+  describe('workflow efficiency and boundary states', () => {
+    const body = () => new DOMWrapper(document.body)
+
+    it('switches nodes and profiles directly from the command palette search', async () => {
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      const store = storeOf(wrapper)
+
+      await wrapper.find('[data-testid="open-palette"]').trigger('click')
+      await flushPromises()
+      const input = body().find('.palette-search input')
+      await input.setValue('日本 02')
+      await flushPromises()
+      await input.trigger('keydown', { key: 'Enter' })
+      await settle(400)
+      expect(store.snapshot.value.node_catalog.find((g) => g.name === '节点选择')!.now).toBe('日本 02')
+
+      await wrapper.find('[data-testid="open-palette"]').trigger('click')
+      await flushPromises()
+      const input2 = body().find('.palette-search input')
+      await input2.setValue('备用机场')
+      await flushPromises()
+      await input2.trigger('keydown', { key: 'Enter' })
+      await settle(800)
+      expect(store.snapshot.value.active_id).toBe('p2')
+    })
+
+    it('warns on the proxy page when in direct mode and matches 3+ char protocol/tag prefixes without false positives', async () => {
+      const { wrapper } = await mountApp()
+      const store = storeOf(wrapper)
+      void store.setMode('direct')
+      await settle(300)
+      await openPage(wrapper, 'proxies')
+
+      const directBar = wrapper.find('[data-testid="proxies-direct-bar"]')
+      expect(directBar.exists()).toBe(true)
+      await directBar.find('[data-testid="proxies-switch-rule"]').trigger('click')
+      await settle(300)
+      expect(store.snapshot.value.mode).toBe('rule')
+      expect(wrapper.find('[data-testid="proxies-direct-bar"]').exists()).toBe(false)
+
+      // "real" matches Reality-tagged VLESS nodes; "ss" stays exact so VLESS is not matched.
+      await wrapper.find('[data-testid="node-search"]').setValue('real')
+      await flushPromises()
+      const realNodes = wrapper.findAll('[data-group-card="节点选择"] .node')
+      expect(realNodes.length).toBeGreaterThan(0)
+      expect(realNodes.every((n) => n.text().includes('Reality'))).toBe(true)
+
+      await wrapper.find('[data-testid="node-search"]').setValue('ss')
+      await flushPromises()
+      const ssNodes = wrapper.findAll('[data-group-card="节点选择"] .node')
+      expect(ssNodes.length).toBeGreaterThan(0)
+      expect(ssNodes.some((n) => n.text().includes('VLESS'))).toBe(false)
+    })
+
+    it('filters temporarily disabled rules and auto-resets when the last one is re-enabled, and sorts from column headers', async () => {
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      await openPage(wrapper, 'rules')
+      await settle(500)
+
+      expect(wrapper.find('[data-testid="rule-disabled-filter"]').exists()).toBe(false)
+      await wrapper.findAll('[data-testid="rule-row"]')[0]!.find('[data-testid="rule-toggle"]').trigger('click')
+      await settle(300)
+
+      const chip = wrapper.find('[data-testid="rule-disabled-filter"]')
+      expect(chip.text()).toBe('已禁用 1')
+      await chip.trigger('click')
+      await flushPromises()
+      expect(wrapper.findAll('[data-testid="rule-row"]')).toHaveLength(1)
+
+      // Re-enabling the sole disabled rule exits the filter instead of stranding on no-match.
+      await wrapper.find('[data-testid="rule-row"] [data-testid="rule-toggle"]').trigger('click')
+      await settle(300)
+      expect(wrapper.find('[data-testid="rule-disabled-filter"]').exists()).toBe(false)
+      expect(wrapper.findAll('[data-testid="rule-row"]').length).toBeGreaterThan(1)
+
+      // Column header sort toggles hits descending and back to order.
+      await wrapper.find('[data-testid="rule-sort-hits"]').trigger('click')
+      await flushPromises()
+      const firstHit = Number(wrapper.findAll('[data-testid="rule-row"]')[0]!.find('[data-rule-hit]').text().replace(/,/g, ''))
+      expect(firstHit).toBe(1204)
+      await wrapper.find('[data-testid="rule-sort-order"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.findAll('[data-testid="rule-row"]')[0]!.find('.rule-index').text()).toBe('1')
+    })
+
+    it('jumps from connection detail to its entry proxy group', async () => {
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      await openPage(wrapper, 'connections')
+      await settle(500)
+
+      const proxied = wrapper.findAll('[data-testid="connection-row"]').find((r) => !r.text().includes('DIRECT'))!
+      await proxied.trigger('click')
+      await flushPromises()
+      const jump = body().find('[data-testid="open-conn-group"]')
+      expect(jump.exists()).toBe(true)
+      await jump.trigger('click')
+      await flushPromises()
+      expect(storeOf(wrapper).page.value).toBe('proxies')
+      expect(body().find('.modal').exists()).toBe(false)
+    })
+
+    it('opens overrides in one click from profile cards or error banners, and saves dirty settings with Ctrl+S', async () => {
+      const { wrapper, backend } = await mountApp()
+      const saveSpy = vi.spyOn(backend, 'saveSettings')
+      const store = storeOf(wrapper)
+      void store.saveOverride('p1', '+rules:\n  - DOMAIN-SUFFIX,example.com,DIRECT\n')
+      await settle(300)
+
+      await openPage(wrapper, 'profiles')
+      const quickTag = wrapper.find('[data-profile="p1"] [data-testid="quick-override"]')
+      expect(quickTag.exists()).toBe(true)
+      await quickTag.trigger('click')
+      await settle(200)
+      expect(body().find('.modal').text()).toContain('覆写 · 星河云')
+      await body().find('[data-testid="cancel-editor"]').trigger('click')
+      await flushPromises()
+
+      // Settings: Ctrl+S commits dirty proxy changes and clear-bypass empties the list.
+      store.openSettings('proxy')
+      await flushPromises()
+      await wrapper.find('[data-testid="add-default-bypass"]').trigger('click')
+      expect(wrapper.findAll('[data-testid="bypass-list"] li').length).toBeGreaterThan(0)
+      await wrapper.find('[data-testid="clear-bypass"]').trigger('click')
+      expect(wrapper.find('[data-testid="bypass-list"]').exists()).toBe(false)
+
+      await wrapper.find('[data-testid="proxy-host-input"]').setValue('127.0.0.2')
+      expect(wrapper.find('[data-testid="save-proxy"]').exists()).toBe(true)
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }))
+      await settle(400)
+      expect(saveSpy).toHaveBeenCalled()
+      expect(store.snapshot.value.settings.system_proxy.host).toBe('127.0.0.2')
+    })
+
+    it('resolves nested group latency on Home & Proxies and uses full-width mobile group rows', async () => {
+      const { wrapper } = await mountApp({ longNames: true, platform: 'android' }, 390)
+      await connect(wrapper)
+      await wrapper.find('[data-testid="home-test-all"]').trigger('click')
+      await settle(3000)
+
+      // 漏网之鱼 → 节点选择 → 自动选择 → exit server: nested group inherits exit server delay instead of "—".
+      const primaryDelay = wrapper.find('[data-group="节点选择"] [data-testid="home-group-delay"]').text()
+      const nestedCard = wrapper.find('[data-group="漏网之鱼"]')
+      expect(primaryDelay).toMatch(/^\d+ ms$/)
+      expect(nestedCard.find('[data-testid="home-group-delay"]').text()).toBe(primaryDelay)
+      expect(nestedCard.find('.group-row-head').exists()).toBe(true)
+      expect(nestedCard.find('.group-row-side').exists()).toBe(true)
+    })
+
+    it('displays upstream transit hops for chained proxies across Home, Proxies and Connections', async () => {
+      const { wrapper } = await mountApp({ longNames: true })
+      await connect(wrapper)
+      const store = storeOf(wrapper)
+      const chainedName = DEMO_LONG_NAMES[2]!
+
+      void store.selectNode('节点选择', chainedName)
+      await settle(400)
+
+      // Home tile shows both the transit server (香港 01) and the landing exit server with 链式 badge.
+      const homeTile = wrapper.find('[data-group="漏网之鱼"] [data-testid="home-group-now"]')
+      expect(homeTile.find('[data-testid="chain-relay-badge"]').text()).toBe('链式')
+      expect(homeTile.find('[data-testid="chain-relay"]').text()).toBe('香港 01')
+      expect(homeTile.find('.chain-exit').text()).toBe(chainedName)
+
+      // Proxies card annotates the chained node with its dialer-proxy target.
+      await openPage(wrapper, 'proxies')
+      const nodeCard = wrapper.find(`[data-group-card="节点选择"] [data-node="${CSS.escape(chainedName)}"]`)
+      expect(nodeCard.find('.node-tag.chained').text()).toBe('链式 · 香港 01')
+
+      // Connections generated after switching resolve the transit hop and label roles in detail steps.
+      await settle(2500)
+      await openPage(wrapper, 'connections')
+      await settle(500)
+      const chainedRow = wrapper.findAll('[data-testid="connection-row"]').find((row) =>
+        row.find('[data-testid="chain-relay-badge"]').exists(),
+      )
+      expect(chainedRow).toBeTruthy()
+      await chainedRow!.trigger('click')
+      await flushPromises()
+      const steps = [...document.body.querySelectorAll('[data-testid="chain-steps"] li')]
+      expect(steps.some((li) => li.classList.contains('relay') && li.textContent?.includes('中转'))).toBe(true)
+      expect(steps.some((li) => li.textContent?.includes('策略组'))).toBe(true)
+      expect(steps.at(-1)?.textContent).toContain('出口')
+    })
+
+    it('records closed connections, inspects them, and copies or writes Mihomo rules while skipping Fake-IP', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText },
+        configurable: true,
+      })
+      const { wrapper, backend } = await mountApp()
+      await connect(wrapper)
+
+      // Inject deterministic Fake-IP and real-IP connections, then close one to populate history.
+      const origState = backend.state.bind(backend)
+      let phase: 'both' | 'one' = 'both'
+      backend.state = async () => {
+        const snap = await origState()
+        const fakeRow = {
+          id: 'c-fake',
+          host: 'api.openai.com',
+          outbound: '美国 01',
+          network: 'tcp',
+          conn_type: 'HTTPS',
+          destination: '198.18.0.42:443',
+          source: '127.0.0.1:52100',
+          process: '/Applications/Cursor.app/Contents/MacOS/Cursor',
+          rule: 'DomainSuffix',
+          rule_payload: 'openai.com',
+          chains: ['美国 01', 'OpenAI'],
+          upload: 2048,
+          download: 16384,
+          start: new Date(Date.now() - 8000).toISOString(),
+        }
+        const realRow = {
+          id: 'c-real',
+          host: 'cdn.example.co.uk',
+          outbound: '香港 01',
+          network: 'tcp',
+          conn_type: 'HTTPS',
+          destination: '104.21.8.9:443',
+          source: '127.0.0.1:52101',
+          process: 'curl',
+          rule: 'Match',
+          rule_payload: '',
+          chains: ['香港 01', '节点选择'],
+          upload: 512,
+          download: 4096,
+          start: new Date(Date.now() - 5000).toISOString(),
+        }
+        return {
+          ...snap,
+          connections: phase === 'both' ? [fakeRow, realRow] : [realRow],
+          connection_total: phase === 'both' ? 2 : 1,
+        }
+      }
+
+      await openPage(wrapper, 'connections')
+      await settle(1200)
+      storeOf(wrapper).clearClosedConnections()
+      phase = 'one'
+      await settle(1200)
+
+      // Switch to 已关闭 tab and inspect the ended Fake-IP connection.
+      const tabBar = wrapper.find('[data-testid="connection-tab"]')
+      expect(tabBar.text()).toContain('已关闭 1')
+      await tabBar.findAll('button')[1]!.trigger('click')
+      await flushPromises()
+
+      const closedRows = wrapper.findAll('[data-testid="connection-row"]')
+      expect(closedRows).toHaveLength(1)
+      expect(closedRows[0]!.text()).toContain('api.openai.com')
+
+      await closedRows[0]!.trigger('click')
+      await flushPromises()
+      expect(body().find('[data-testid="detail-disconnected"]').text()).toContain('关闭于')
+      expect(body().find('.modal').text()).toContain('Fake-IP')
+      // Fake-IP 198.18.0.42 must NOT produce a broken IP-CIDR rule.
+      expect(body().find('[data-testid="copy-rule-ip-cidr"]').exists()).toBe(false)
+      expect(body().find('[data-testid="copy-rule-domain-suffix"]').text()).toContain('DOMAIN-SUFFIX,openai.com,DIRECT')
+      expect(body().find('[data-testid="copy-rule-process"]').text()).toContain('PROCESS-NAME,Cursor,DIRECT')
+
+      // Switch target policy to OpenAI and copy the generated rule.
+      await body().find('[data-testid="rule-policy-OpenAI"]').trigger('click')
+      await flushPromises()
+      await body().find('[data-testid="copy-rule-domain-suffix"]').trigger('click')
+      await flushPromises()
+      expect(writeText).toHaveBeenLastCalledWith('DOMAIN-SUFFIX,openai.com,OpenAI')
+
+      // One-click write to active profile override opens the override editor with +rules.
+      await body().find('[data-testid="write-rule-domain"]').trigger('click')
+      await settle(250)
+      expect(storeOf(wrapper).page.value).toBe('profiles')
+      expect(body().find('.modal').text()).toContain('覆写 · 星河云')
+      await body().find('[data-testid="cancel-editor"]').trigger('click')
+      await flushPromises()
+      if (body().find('.modal').exists()) {
+        // Confirm discarding unsaved draft if prompted.
+        const buttons = body().findAll('.modal .btn')
+        await buttons.at(-1)!.trigger('click')
+        await flushPromises()
+      }
+    })
+
+    it('persists auto-connect kernel startup setting on desktop and phone', async () => {
+      const { wrapper, backend } = await mountApp()
+      const saveSpy = vi.spyOn(backend, 'saveSettings')
+      await openPage(wrapper, 'settings')
+      const toggle = wrapper.find('[data-testid="auto-connect-toggle"]')
+      expect(toggle.exists()).toBe(true)
+      expect(storeOf(wrapper).snapshot.value.settings.auto_connect).toBe(false)
+      await toggle.trigger('click')
+      await settle(300)
+      expect(saveSpy).toHaveBeenCalled()
+      expect(storeOf(wrapper).snapshot.value.settings.auto_connect).toBe(true)
+    })
+
+    it('renders custom desktop SelectField popover with search, keyboard navigation, and Escape dismissal', async () => {
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      await openPage(wrapper, 'rules')
+      await settle(500)
+
+      const trigger = wrapper.find('[data-testid="rule-proxy-filter"]')
+      expect(trigger.element.tagName).toBe('BUTTON')
+      await trigger.trigger('click')
+      await flushPromises()
+
+      const popover = body().find('[data-testid="select-popover"]')
+      expect(popover.exists()).toBe(true)
+
+      // Escape closes the popover without mutating the filter.
+      popover.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      await flushPromises()
+      expect(body().find('[data-testid="select-popover"]').exists()).toBe(false)
+
+      // Keyboard ArrowDown + Enter chooses an option cleanly.
+      await trigger.trigger('click')
+      await flushPromises()
+      const directOption = body().find('[data-testid="select-popover"] [data-option-value="DIRECT"]')
+      expect(directOption.exists()).toBe(true)
+      await directOption.trigger('click')
+      await flushPromises()
+      expect(trigger.classes()).toContain('filtered')
+      expect(wrapper.findAll('[data-testid="rule-row"]').every((row) => row.text().includes('DIRECT'))).toBe(true)
+    })
+
+    it('supports dragging column dividers to resize and double-clicking to reset in Connections and Rules', async () => {
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      await openPage(wrapper, 'connections')
+      await settle(1100)
+
+      const hostCol = () => wrapper.find('.conn-table colgroup col').attributes('style') ?? ''
+      expect(hostCol()).toContain('214px')
+
+      const resizer = wrapper.find('[data-testid="col-resize-host"]')
+      resizer.element.dispatchEvent(new MouseEvent('pointerdown', { clientX: 200, bubbles: true }))
+      expect(document.documentElement.getAttribute('data-col-resizing')).toBe('true')
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 340, bubbles: true }))
+      window.dispatchEvent(new MouseEvent('mouseup', { clientX: 340, bubbles: true }))
+      await flushPromises()
+
+      expect(document.documentElement.getAttribute('data-col-resizing')).toBeNull()
+      expect(hostCol()).toContain('354px')
+      expect(JSON.parse(localStorage.getItem('billow:cols:connections') ?? '{}').host).toBe(354)
+
+      // Double-click resets the column back to its default width.
+      await resizer.trigger('dblclick')
+      await flushPromises()
+      expect(hostCol()).toContain('214px')
+
+      // Rules table columns also resize and persist cleanly.
+      await openPage(wrapper, 'rules')
+      await settle(500)
+      const kindResizer = wrapper.find('[data-testid="col-resize-rule-kind"]')
+      kindResizer.element.dispatchEvent(new MouseEvent('pointerdown', { clientX: 160, bubbles: true }))
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 220, bubbles: true }))
+      window.dispatchEvent(new MouseEvent('mouseup', { clientX: 220, bubbles: true }))
+      await flushPromises()
+      expect(wrapper.find('[data-testid="rule-scroll"]').attributes('style')).toContain('--col-rule-kind: 184px')
+      expect(JSON.parse(localStorage.getItem('billow:cols:rules') ?? '{}').kind).toBe(184)
+    })
+
+    it('updates subscriptions and rule sets concurrently with load limits and retries only failed items', async () => {
+      const backend = createDemoBackend({ manyProviders: true })
+      let inFlight = 0
+      let maxInFlight = 0
+      let failTelegram = true
+      const origProviderAction = backend.providerAction.bind(backend)
+      backend.providerAction = async (kind, name, action) => {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 250))
+          if (kind === 'rule' && name === 'telegram' && failTelegram) {
+            throw new Error('上游节点限流 429')
+          }
+          return await origProviderAction(kind, name, action)
+        } finally {
+          inFlight -= 1
+        }
+      }
+
+      vi.useFakeTimers()
+      const wrapper = mount(App, { props: { backend, width: 1200 }, attachTo: document.body })
+      mounted.push(wrapper)
+      await settle(50)
+      await connect(wrapper)
+      await openPage(wrapper, 'resources')
+      await settle(500)
+
+      await wrapper.find('[data-testid="update-all-rule"]').trigger('click')
+      await settle(80)
+      // Bounded rule-provider concurrency (exact cap = 4 across 15 rule sets) instead of 1-by-1 serial or unbounded flood.
+      expect(maxInFlight).toBe(4)
+      // Pending row shows only one spinner (in the action button), never two.
+      expect(wrapper.find('[data-provider="Apple"]').findAll('.spinner')).toHaveLength(1)
+
+      await settle(6000)
+      expect(wrapper.find('[data-provider="telegram"] [data-provider-state="error"]').text()).toContain('上游节点限流 429')
+      const retryBtn = wrapper.find('[data-testid="retry-failed-rule"]')
+      expect(retryBtn.exists()).toBe(true)
+      expect(retryBtn.text()).toContain('重试失败 (1)')
+
+      // One-click retry only re-runs the failed rule set.
+      failTelegram = false
+      const spy = vi.spyOn(backend, 'providerAction')
+      await retryBtn.trigger('click')
+      await settle(2000)
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(spy).toHaveBeenCalledWith('rule', 'telegram', 'update')
+      expect(wrapper.find('[data-testid="retry-failed-rule"]').exists()).toBe(false)
+
+      // Subscription refreshAll also runs concurrently and surfaces 1-click 重试失败.
+      let failSub = true
+      const origRefresh = backend.refresh.bind(backend)
+      backend.refresh = async (id) => {
+        if (failSub) throw new Error('TLS 握手超时')
+        return origRefresh(id)
+      }
+      await openPage(wrapper, 'profiles')
+      await settle(200)
+      await wrapper.find('[data-testid="update-all-profiles"]').trigger('click')
+      await settle(2500)
+      const retrySub = wrapper.find('[data-testid="retry-failed-profiles"]')
+      expect(retrySub.exists()).toBe(true)
+      failSub = false
+      await retrySub.trigger('click')
+      await settle(2000)
+      expect(wrapper.find('[data-testid="retry-failed-profiles"]').exists()).toBe(false)
+    })
+  })
 })

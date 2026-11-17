@@ -129,6 +129,7 @@ function onSchemeChange(event: MediaQueryListEvent) {
 const addTab = ref<'url' | 'file'>('url')
 const url = ref('')
 const dragging = ref(false)
+const addErrorCleared = ref(true)
 const paletteOpen = ref(false)
 const helpOpen = ref(false)
 const paletteKey = shortcutKeyLabel(getShortcut('palette').combo)
@@ -137,9 +138,25 @@ provide('openShortcuts', () => {
   helpOpen.value = true
 })
 
+watch(
+  () => store.adding.value,
+  (open) => {
+    if (open) {
+      addErrorCleared.value = true
+      dragging.value = false
+    }
+  },
+)
+
+watch(addTab, () => {
+  addErrorCleared.value = true
+  dragging.value = false
+})
+
 async function submitUrl() {
   const value = url.value.trim()
   if (!value) return
+  addErrorCleared.value = false
   const before = snap.value.profiles.length
   await store.addSubscription(value)
   if (snap.value.profiles.length > before) {
@@ -154,7 +171,10 @@ async function submitUrl() {
 async function pasteUrl() {
   try {
     const text = await navigator.clipboard.readText()
-    if (text) url.value = text.trim()
+    if (text) {
+      url.value = text.trim()
+      addErrorCleared.value = true
+    }
   } catch {
     store.toast('无法读取剪贴板，请手动粘贴', 'error')
   }
@@ -162,6 +182,7 @@ async function pasteUrl() {
 
 async function addFile(file: File | undefined) {
   if (!file) return
+  addErrorCleared.value = false
   const before = snap.value.profiles.length
   await store.addLocal(file.name.replace(/\.(ya?ml|txt)$/i, ''), await file.text())
   if (snap.value.profiles.length > before) {
@@ -205,6 +226,34 @@ function onPaletteSettings(tab: string) {
   store.openSettings(tab as SettingsTab)
 }
 
+function onPaletteProfile(id: string) {
+  paletteOpen.value = false
+  const target = snap.value.profiles.find((item) => item.id === id)
+  if (!target) return
+  if (target.current) {
+    store.go('profiles')
+    return
+  }
+  if (!store.busy[`enable:${id}`]) void store.enable(id)
+}
+
+function onPaletteGroup(group: string) {
+  paletteOpen.value = false
+  store.go('proxies', group)
+}
+
+function onPaletteNode(group: string, node: string) {
+  paletteOpen.value = false
+  const targetGroup = snap.value.node_catalog.find((item) => item.name === group)
+  if (targetGroup?.now === node) {
+    store.go('proxies', group)
+    return
+  }
+  void store.selectNode(group, node).then((res) => {
+    if (res) store.toast(`已切换「${group}」至 ${node}`, 'success')
+  })
+}
+
 function onPaletteAction(id: string) {
   paletteOpen.value = false
   switch (id) {
@@ -231,6 +280,12 @@ function onPaletteAction(id: string) {
       break
     case 'mode-direct':
       void store.setMode('direct')
+      break
+    case 'toggle-system-proxy':
+      void store.setSystemProxy(!snap.value.system_proxy)
+      break
+    case 'toggle-tun':
+      void store.setTun(!snap.value.tun)
       break
     case 'toggle-sidebar':
       if (!compact.value) toggleSidebar()
@@ -590,7 +645,16 @@ defineExpose({ store })
           :title="sidebarCollapsed ? `${sideStatusWord}${snap.connected ? ` · ↓${formatSpeed(snap.download ?? 0)} ↑${formatSpeed(snap.upload ?? 0)}` : ''}` : undefined"
           data-testid="side-status"
         >
-          <div class="side-status-body" @click="store.page.value !== 'home' && store.go('home')">
+          <div
+            class="side-status-body"
+            :class="{ clickable: store.page.value !== 'home' }"
+            :role="store.page.value !== 'home' ? 'button' : undefined"
+            :tabindex="store.page.value !== 'home' ? 0 : undefined"
+            :aria-label="store.page.value !== 'home' ? '返回首页' : undefined"
+            @click="store.page.value !== 'home' && store.go('home')"
+            @keydown.enter.prevent="store.page.value !== 'home' && store.go('home')"
+            @keydown.space.prevent="store.page.value !== 'home' && store.go('home')"
+          >
             <div class="side-status-head">
               <span class="dot" />
               <span>{{ sideStatusWord }}</span>
@@ -661,12 +725,19 @@ defineExpose({ store })
       :platform="isAndroid ? 'android' : 'desktop'"
       :connected="snap.connected"
       :has-profiles="snap.profiles.length > 0"
+      :system-proxy="snap.system_proxy"
+      :tun="snap.tun"
+      :profiles="snap.profiles"
+      :node-catalog="snap.node_catalog"
       :current-page="store.page.value"
       :mode="snap.mode"
       :sidebar-collapsed="sidebarCollapsed"
       @navigate="onPaletteNavigate"
       @open-settings="onPaletteSettings"
       @action="onPaletteAction"
+      @select-profile="onPaletteProfile"
+      @open-group="onPaletteGroup"
+      @select-node="onPaletteNode"
       @close="paletteOpen = false"
     />
 
@@ -685,44 +756,62 @@ defineExpose({ store })
     </Modal>
 
     <Modal v-if="store.adding.value" title="添加配置" subtitle="订阅链接或 Clash / Mihomo YAML 文件" @close="store.adding.value = false">
-      <div class="tabs-inline" role="tablist">
-        <button type="button" role="tab" :class="{ active: addTab === 'url' }" :aria-selected="addTab === 'url'" @click="addTab = 'url'">
-          <Icon name="link" :size="16" /> 订阅链接
-        </button>
-        <button type="button" role="tab" :class="{ active: addTab === 'file' }" :aria-selected="addTab === 'file'" @click="addTab = 'file'">
-          <Icon name="file" :size="16" /> 本地文件
-        </button>
-      </div>
-      <form v-if="addTab === 'url'" class="stack" data-testid="add-url" @submit.prevent="submitUrl">
-        <label class="field">
-          <span>订阅地址</span>
-          <div class="input-group">
-            <!-- Phones open the sheet without the keyboard; paste or tap the field to type. -->
-            <input v-model="url" type="url" inputmode="url" enterkeyhint="go" placeholder="https://…" autocomplete="off" spellcheck="false" :autofocus="!compact" />
-            <button type="button" class="btn ghost" title="从剪贴板粘贴" data-testid="paste-url" @click="pasteUrl"><Icon name="clipboard" :size="16" />粘贴</button>
-          </div>
-        </label>
-        <p v-if="snap.input_error" class="field-error" role="alert">{{ snap.input_error }}</p>
-        <p class="muted small">添加后会下载订阅内容，并读取流量与到期信息。</p>
-        <button type="submit" class="btn primary block" :disabled="!url.trim() || store.busy.add">
-          <span v-if="store.busy.add" class="spinner sm" />
-          添加订阅
-        </button>
-      </form>
-      <div v-else class="stack">
-        <label
-          class="dropzone"
-          :class="{ over: dragging }"
-          @dragover.prevent="dragging = true"
-          @dragleave="dragging = false"
-          @drop.prevent="onDrop"
-        >
-          <Icon name="download" :size="28" />
-          <strong>拖入 YAML 配置文件</strong>
-          <span class="muted small">或点击选择文件</span>
-          <input type="file" accept=".yaml,.yml,.txt,text/yaml" hidden @change="onFile" />
-        </label>
-        <p v-if="snap.input_error" class="field-error" role="alert">{{ snap.input_error }}</p>
+      <div
+        class="add-modal-drop"
+        :class="{ 'drop-over': dragging && addTab === 'url' }"
+        @dragover.prevent="dragging = true"
+        @dragleave.self="dragging = false"
+        @drop.prevent="onDrop"
+      >
+        <div class="tabs-inline" role="tablist">
+          <button type="button" role="tab" :class="{ active: addTab === 'url' }" :aria-selected="addTab === 'url'" @click="addTab = 'url'">
+            <Icon name="link" :size="16" /> 订阅链接
+          </button>
+          <button type="button" role="tab" :class="{ active: addTab === 'file' }" :aria-selected="addTab === 'file'" @click="addTab = 'file'">
+            <Icon name="file" :size="16" /> 本地文件
+          </button>
+        </div>
+        <form v-if="addTab === 'url'" class="stack" data-testid="add-url" @submit.prevent="submitUrl">
+          <label class="field">
+            <span>订阅地址</span>
+            <div class="input-group">
+              <!-- Phones open the sheet without the keyboard; paste or tap the field to type. -->
+              <input
+                v-model="url"
+                type="url"
+                inputmode="url"
+                enterkeyhint="go"
+                placeholder="https://…"
+                autocomplete="off"
+                spellcheck="false"
+                :autofocus="!compact"
+                @input="addErrorCleared = true"
+              />
+              <button type="button" class="btn ghost" title="从剪贴板粘贴" data-testid="paste-url" @click="pasteUrl"><Icon name="clipboard" :size="16" />粘贴</button>
+            </div>
+          </label>
+          <p v-if="snap.input_error && !addErrorCleared" class="field-error" role="alert">{{ snap.input_error }}</p>
+          <p class="muted small">添加后会下载订阅内容，并读取流量与到期信息；也可直接拖入 YAML 文件。</p>
+          <button type="submit" class="btn primary block" :disabled="!url.trim() || store.busy.add">
+            <span v-if="store.busy.add" class="spinner sm" />
+            添加订阅
+          </button>
+        </form>
+        <div v-else class="stack">
+          <label
+            class="dropzone"
+            :class="{ over: dragging }"
+            @dragover.prevent="dragging = true"
+            @dragleave="dragging = false"
+            @drop.prevent="onDrop"
+          >
+            <Icon name="download" :size="28" />
+            <strong>拖入 YAML 配置文件</strong>
+            <span class="muted small">或点击选择文件</span>
+            <input type="file" accept=".yaml,.yml,.txt,text/yaml" hidden @change="onFile" />
+          </label>
+          <p v-if="snap.input_error && !addErrorCleared" class="field-error" role="alert">{{ snap.input_error }}</p>
+        </div>
       </div>
     </Modal>
 

@@ -6,6 +6,8 @@ import SelectField from '../components/SelectField.vue'
 import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import { useStore } from '../lib/store'
+import { layerDepth } from '../lib/ui/focus'
+import { useHotkeys } from '../lib/ui/hotkeys'
 import { subscriptionUserAgent } from '../lib/subscription'
 import { bypassOverride } from '../lib/bypass'
 import {
@@ -447,6 +449,12 @@ function removeBypassItem(index: number) {
   bypassBatchText.value = bypassItems.value.join('\n')
 }
 
+function clearBypass() {
+  bypassItems.value = []
+  bypassBatchText.value = ''
+  newBypassItem.value = ''
+}
+
 function addDefaultBypass() {
   const current = bypassBatchMode.value ? parseBypassText(bypassBatchText.value) : [...bypassItems.value]
   let added = 0
@@ -848,6 +856,30 @@ function resetDns() {
   applyDnsDraft(defaultDns())
 }
 
+function saveActiveTab() {
+  if (store.busy.settings) return
+  const tab = store.settingsTab.value
+  if (tab === 'proxy' && proxyDirty.value) saveProxy()
+  else if (tab === 'tun' && tunDirty.value) saveTun()
+  else if (tab === 'dns' && dnsDirty.value) saveDns()
+  else if (tab === 'kernel') {
+    if (lanDirty.value) saveLan()
+    if (portDirty.value) commitPort()
+    if (probeDirty.value) commitProbe()
+  } else if (tab === 'general') {
+    commitSubscriptionUa()
+  }
+}
+
+useHotkeys([
+  {
+    combo: 'mod+s',
+    allowInInput: true,
+    when: () => layerDepth() === 0,
+    handler: saveActiveTab,
+  },
+])
+
 const TABS = computed(() => [
   { id: 'general' as SettingsTab, label: '通用', icon: 'sliders' },
   ...(store.isAndroid.value ? [] : [{ id: 'proxy' as SettingsTab, label: proxyDirty.value ? '系统代理 •' : '系统代理', icon: 'monitor' }]),
@@ -951,12 +983,25 @@ const TABS = computed(() => [
           </button>
         </section>
 
-        <p class="settings-group-label">外观</p>
+        <p class="settings-group-label">外观与启动</p>
         <section class="card list-card settings-list">
           <div class="nav-row static">
             <span class="nav-row-icon slate"><Icon :name="THEMES.find((theme) => theme.id === store.theme.value)?.icon ?? 'laptop'" /></span>
             <span class="nav-row-title">主题</span>
             <Segmented :model-value="store.theme.value" :options="THEMES.map(({ id, label }) => ({ id, label: id === 'system' ? '自动' : label }))" size="sm" label="主题" @update:model-value="store.setTheme" />
+          </div>
+          <div class="nav-row static">
+            <span class="nav-row-icon green"><Icon name="power" /></span>
+            <div class="grow min0">
+              <span class="nav-row-title">打开时自动启动内核</span>
+              <p class="muted small">异常退出时自动暂停重试并回退代理</p>
+            </div>
+            <Toggle
+              :model-value="currentSettings.auto_connect"
+              label="打开时自动启动内核"
+              data-testid="auto-connect-toggle"
+              @update:model-value="(on) => save({ auto_connect: on })"
+            />
           </div>
         </section>
       </template>
@@ -981,29 +1026,43 @@ const TABS = computed(() => [
         </div>
       </section>
 
-      <section v-if="app && app.autostart != null" class="card">
+      <section v-if="!compact" class="card" data-testid="startup-settings">
         <header class="card-head"><h2>启动与窗口</h2></header>
         <div class="setting-row">
           <div class="grow">
-            <strong>开机自启</strong>
-            <p class="muted small">登录系统后自动运行 Billow</p>
+            <strong>打开时自动启动内核</strong>
+            <p class="muted small">启动 Billow 后自动恢复代理连接；若配置有误或内核连续异常退出，将自动停止重试并回退系统代理</p>
           </div>
-          <Toggle :model-value="Boolean(app.autostart)" label="开机自启" @update:model-value="store.setAutostart" />
+          <Toggle
+            :model-value="currentSettings.auto_connect"
+            label="打开时自动启动内核"
+            data-testid="auto-connect-toggle"
+            @update:model-value="(on) => save({ auto_connect: on })"
+          />
         </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>静默启动</strong>
-            <p class="muted small">开机自启时不弹出主窗口，只在托盘显示</p>
+        <template v-if="app && app.autostart != null">
+          <div class="setting-row">
+            <div class="grow">
+              <strong>开机自启</strong>
+              <p class="muted small">登录系统后自动运行 Billow</p>
+            </div>
+            <Toggle :model-value="Boolean(app.autostart)" label="开机自启" @update:model-value="store.setAutostart" />
           </div>
-          <Toggle :model-value="app.silent_start" label="静默启动" @update:model-value="(on) => store.setBehavior(app!.close_to_tray, on)" />
-        </div>
-        <div class="setting-row">
-          <div class="grow">
-            <strong>关闭时最小化到托盘</strong>
-            <p class="muted small">关闭窗口后继续在后台运行；从托盘菜单退出</p>
+          <div class="setting-row">
+            <div class="grow">
+              <strong>静默启动</strong>
+              <p class="muted small">开机自启时不弹出主窗口，只在托盘显示</p>
+            </div>
+            <Toggle :model-value="app.silent_start" label="静默启动" @update:model-value="(on) => store.setBehavior(app!.close_to_tray, on)" />
           </div>
-          <Toggle :model-value="app.close_to_tray" label="关闭时最小化到托盘" @update:model-value="(on) => store.setBehavior(on, app!.silent_start)" />
-        </div>
+          <div class="setting-row">
+            <div class="grow">
+              <strong>关闭时最小化到托盘</strong>
+              <p class="muted small">关闭窗口后继续在后台运行；从托盘菜单退出</p>
+            </div>
+            <Toggle :model-value="app.close_to_tray" label="关闭时最小化到托盘" @update:model-value="(on) => store.setBehavior(on, app!.silent_start)" />
+          </div>
+        </template>
       </section>
 
       <section class="card" data-testid="node-switch-settings">
@@ -1143,6 +1202,15 @@ const TABS = computed(() => [
           <div class="head-actions">
             <button type="button" class="btn ghost sm" data-testid="add-default-bypass" @click="addDefaultBypass">
               添加默认代理绕过
+            </button>
+            <button
+              v-if="bypassItems.length && !bypassBatchMode"
+              type="button"
+              class="btn ghost sm danger-text"
+              data-testid="clear-bypass"
+              @click="clearBypass"
+            >
+              清空
             </button>
             <button type="button" class="btn ghost sm" data-testid="toggle-bypass-batch" @click="toggleBypassBatch">
               {{ bypassBatchMode ? '列表视图' : '批量编辑' }}

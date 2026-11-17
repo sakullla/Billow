@@ -43,6 +43,15 @@ function rowWith(wrapper: Wrapper, title: string) {
   return wrapper.findAll('.setting-row').find((row) => row.find('strong').text().startsWith(title))!
 }
 
+async function pickSelect(wrapper: Wrapper, selector: string, value: string) {
+  await wrapper.find(selector).trigger('click')
+  await flushPromises()
+  const option = body().find(`[data-testid="select-popover"] [data-option-value="${value}"]`)
+  expect(option.exists()).toBe(true)
+  await option.trigger('click')
+  await flushPromises()
+}
+
 afterEach(() => {
   mounted.splice(0).forEach((wrapper) => wrapper.unmount())
   localStorage.clear()
@@ -182,17 +191,17 @@ describe('options aligned with mihomo v1.19.34', () => {
     expect(wrapper.text()).not.toContain('TLS 客户端指纹')
     expect(rowWith(wrapper, 'TCP 保活').text()).toContain('配置未设置，默认 15 秒')
 
-    await wrapper.find('[data-testid="keep-alive-select"]').setValue('0')
+    await pickSelect(wrapper, '[data-testid="keep-alive-select"]', '0')
     await settle(400)
     expect(saved[saved.length - 1]!.keep_alive_interval).toBe(0)
     expect(rowWith(wrapper, 'TCP 保活').find('.tag').text()).toBe('已覆盖')
 
-    await wrapper.find('[data-testid="keep-alive-select"]').setValue('')
+    await pickSelect(wrapper, '[data-testid="keep-alive-select"]', '')
     await settle(400)
     expect(saved[saved.length - 1]!.keep_alive_interval).toBeNull()
 
     // 全部跟随配置 clears the newer options too.
-    await wrapper.find('[data-testid="keep-alive-select"]').setValue('60')
+    await pickSelect(wrapper, '[data-testid="keep-alive-select"]', '60')
     await settle(400)
     const reset = wrapper.findAll('button').find((button) => button.text() === '全部跟随配置')!
     await reset.trigger('click')

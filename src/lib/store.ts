@@ -1,9 +1,13 @@
 import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey } from 'vue'
 import type { Backend, NodeTestEvent } from './backend'
 import { createAppUpdater, nativeUpdateDriver } from './appUpdate'
+import { hostOf } from './format'
+import { runPool } from './pool'
 import {
   emptySnapshot,
   type AppInfo,
+  type ClosedConnectionRow,
+  type ConnectionRow,
   type KernelChannel,
   type KernelSettings,
   type KernelStatus,
@@ -88,6 +92,7 @@ export interface ProfileRefreshProgress {
 }
 
 const HISTORY = 60
+const MAX_CLOSED_CONNECTIONS = 200
 
 export function applyTheme(preference: ThemePreference) {
   const root = document.documentElement
@@ -115,6 +120,13 @@ export function createStore(backend: Backend) {
   })
   /** Samples collected in the current connected session; the chart waits for a few before drawing (R2). */
   const trafficSamples = ref(0)
+  /** Recently closed connections observed during the current connected session, newest first. */
+  const closedConnections = shallowRef<ClosedConnectionRow[]>([])
+  let prevActiveConnections = new Map<string, ConnectionRow>()
+  const connectionKey = (row: ConnectionRow) => row.id || `${row.host}|${row.source}|${row.start}`
+  function clearClosedConnections() {
+    closedConnections.value = []
+  }
   const adding = ref(false)
   /** The effective-config viewer is app-wide so profiles, settings and the palette share one. */
   const configView = ref<ConfigViewTab | null>(null)
@@ -266,6 +278,7 @@ export function createStore(backend: Backend) {
         const other = b.nodes[index]!
         return node.name === other.name && node.node_type === other.node_type &&
           node.selected === other.selected && node.delay_ms === other.delay_ms && node.failed === other.failed &&
+          (node.dialer_proxy ?? null) === (other.dialer_proxy ?? null) &&
           node.tags.length === other.tags.length && node.tags.every((tag, i) => tag === other.tags[i])
       })
     const byName = new Map(previous.map((group) => [group.name, group]))
@@ -324,6 +337,28 @@ export function createStore(backend: Backend) {
     const prevConfigValues = snapshot.value.config_values
     if (prevConfigValues !== next.config_values && JSON.stringify(prevConfigValues) === JSON.stringify(next.config_values)) {
       next = { ...next, config_values: prevConfigValues }
+    }
+    if (!next.connected) {
+      prevActiveConnections.clear()
+      if (closedConnections.value.length > 0) closedConnections.value = []
+    } else if (!next.connections_error) {
+      const currentMap = new Map<string, ConnectionRow>()
+      for (const row of next.connections) {
+        currentMap.set(connectionKey(row), row)
+      }
+      if (snapshot.value.connected && prevActiveConnections.size > 0) {
+        const closedAt = Date.now()
+        const ended: ClosedConnectionRow[] = []
+        for (const [key, oldRow] of prevActiveConnections) {
+          if (!currentMap.has(key)) {
+            ended.push({ ...oldRow, closed_at_ms: closedAt })
+          }
+        }
+        if (ended.length > 0) {
+          closedConnections.value = [...ended, ...closedConnections.value].slice(0, MAX_CLOSED_CONNECTIONS)
+        }
+      }
+      prevActiveConnections = currentMap
     }
     snapshot.value = next
   }
@@ -467,30 +502,45 @@ export function createStore(backend: Backend) {
   }
 
   /**
-   * One subscription fetch with card feedback. A failed fetch is normal for a
-   * dead subscription URL, so it is recorded on the card instead of aborting
-   * the sequential update-all loop (R27).
+   * One subscription fetch with card feedback. Runs off the serial UI action queue
+   * so bounded multi-threaded batch refreshes execute in parallel without blocking
+   * unrelated navigation or state reads (R27).
    */
   async function trackUpdate(id: string, fetch: () => Promise<Snapshot>, quiet = false) {
     const before = snapshot.value
     profileUpdates[id] = { state: 'updating', reason: null }
+    busy[`update:${id}`] = true
     lastRunError.value = null
-    const result = await run(`update:${id}`, fetch)
+    let result: Snapshot | undefined
+    let thrownError: string | null = null
+    try {
+      result = await fetch()
+      if (result && typeof result === 'object' && 'profiles' in (result as object)) {
+        apply(result)
+      }
+    } catch (error) {
+      console.error(error)
+      thrownError = error instanceof Error ? error.message : String(error)
+      lastRunError.value = thrownError
+    } finally {
+      delete busy[`update:${id}`]
+    }
     let reason: string | null = null
-    if (!result) reason = lastRunError.value ?? '订阅没有更新'
-    else {
+    if (!result) {
+      reason = thrownError ?? '订阅没有更新'
+    } else {
       const profile = result.profiles.find((item) => item.id === id)
-      reason = profile?.failure ?? newFailure(before, result)
+      reason = profile?.failure ?? (quiet ? null : newFailure(before, result))
     }
     if (reason) {
       profileUpdates[id] = { state: 'failure', reason }
       if (!quiet) toast(reason, 'error')
-      if (backend.live) void backend.syncTray()
+      if (!quiet && backend.live) void backend.syncTray()
       return false
     }
     profileUpdates[id] = { state: 'success', reason: null }
     if (!quiet) toast('订阅已更新', 'success')
-    if (backend.live) void backend.syncTray()
+    if (!quiet && backend.live) void backend.syncTray()
     return true
   }
 
@@ -499,29 +549,43 @@ export function createStore(backend: Backend) {
     return snapshot.value.profiles.filter((item) => item.kind === 'subscription').map((item) => item.id)
   }
 
+  const SUBSCRIPTION_POOL_CONCURRENCY = 3
+  const SUBSCRIPTION_MAX_PER_HOST = 2
+
   /**
-   * Sequential update-all driven here rather than by one blocking backend call:
-   * each card paints 更新中/成功/失败, a failure leaves a retry, and the counters
-   * live in the store so leaving the page does not lose progress (R27, R29).
+   * Bounded concurrent subscription refresh (`concurrency = 3`, max 2 per upstream host):
+   * each card paints 更新中/成功/失败 independently, failures stay isolated with per-card
+   * and batch retry, and progress survives page switches (R27, R29).
    */
-  async function updateAll() {
+  async function updateAll(targetIds?: readonly string[]) {
     if (busy.refreshAll) return
-    const ids = subscribeIds()
+    const ids = targetIds ? [...targetIds] : subscribeIds()
+    if (!ids.length) return
     busy.refreshAll = true
     refreshProgress.value = { done: 0, total: ids.length, failed: 0 }
+    const urlById = new Map(snapshot.value.profiles.map((item) => [item.id, item.source]))
     try {
-      for (const id of ids) {
-        const ok = await trackUpdate(id, () => backend.refresh(id), true)
-        refreshProgress.value = {
-          done: refreshProgress.value.done + 1,
-          total: ids.length,
-          failed: refreshProgress.value.failed + (ok ? 0 : 1),
-        }
-      }
-      const { done, total, failed } = refreshProgress.value
-      if (total) {
+      const { done, failed } = await runPool(
+        ids,
+        {
+          concurrency: SUBSCRIPTION_POOL_CONCURRENCY,
+          maxPerGroup: SUBSCRIPTION_MAX_PER_HOST,
+          groupKey: (id) => hostOf(urlById.get(id) ?? ''),
+          shouldStop: () => stopped,
+          onProgress: (completed, failedCount) => {
+            refreshProgress.value = {
+              done: completed,
+              total: ids.length,
+              failed: failedCount,
+            }
+          },
+        },
+        (id) => trackUpdate(id, () => backend.refresh(id), true),
+      )
+      if (backend.live) void backend.syncTray()
+      if (ids.length) {
         toast(
-          failed ? `更新完成：${done}/${total}，${failed} 个订阅失败` : '全部订阅已更新',
+          failed ? `更新完成：${done}/${ids.length}，${failed} 个订阅失败` : '全部订阅已更新',
           failed ? 'error' : 'success',
         )
       }
@@ -799,6 +863,8 @@ export function createStore(backend: Backend) {
     toasts,
     traffic,
     trafficSamples,
+    closedConnections,
+    clearClosedConnections,
     adding,
     configView,
     openConfig,
@@ -867,7 +933,7 @@ export function createStore(backend: Backend) {
         snapshot.value.active_id === id ? backend.update(id) : backend.refresh(id),
       ),
     updateAll,
-    refreshAll: () => updateAll(),
+    refreshAll: (ids?: readonly string[]) => updateAll(ids),
     remove: (id: string) => act(`remove:${id}`, () => backend.remove(id)),
     rename: (id: string, name: string) => act(null, () => backend.rename(id, name)),
     setSource: (id: string, url: string) => act(null, () => backend.setSource(id, url)),

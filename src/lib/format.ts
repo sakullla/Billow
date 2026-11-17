@@ -1,3 +1,5 @@
+import type { ConnectionRow, NodeGroup, NodeItem } from './types'
+
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 
 /** 1536 → "1.5 KB". Whole bytes stay integers; larger units keep up to one or two decimals. */
@@ -162,11 +164,12 @@ export function groupStrategy(type: string): GroupStrategy | null {
 
 /**
  * Follow `now` through nested groups (节点选择 → 自动选择 → 香港 01) so the UI can
- * name the server that actually carries traffic. Stops on cycles and unknown names.
+ * name the server that actually carries traffic. When the resolved server itself
+ * declares a `dialer-proxy`, its upstream transit hop is placed right before it.
  */
 export function resolveChain(
   start: string,
-  groups: readonly { name: string; now: string }[],
+  groups: readonly { name: string; now: string; nodes?: readonly { name: string; dialer_proxy?: string | null }[] }[],
 ): string[] {
   const byName = new Map(groups.map((group) => [group.name, group]))
   const chain: string[] = []
@@ -175,7 +178,179 @@ export function resolveChain(
     chain.push(current)
     current = byName.get(current)?.now ?? ''
   }
+  const dialerByNode = new Map<string, string>()
+  for (const group of groups) {
+    for (const node of group.nodes ?? []) {
+      if (node.dialer_proxy && !dialerByNode.has(node.name)) {
+        dialerByNode.set(node.name, node.dialer_proxy)
+      }
+    }
+  }
+  if (chain.length > 0 && dialerByNode.size > 0) {
+    const pre: string[] = []
+    let cursor = dialerByNode.get(chain[chain.length - 1]!) ?? ''
+    const seen = new Set(chain)
+    while (cursor && !seen.has(cursor) && pre.length < 4) {
+      seen.add(cursor)
+      const resolvedGroup = byName.get(cursor)
+      if (resolvedGroup) {
+        const sub = resolveChain(cursor, groups)
+        const server = sub[sub.length - 1]
+        if (server && !seen.has(server)) {
+          seen.add(server)
+          pre.unshift(server)
+          cursor = dialerByNode.get(server) ?? ''
+          continue
+        }
+      }
+      pre.unshift(cursor)
+      cursor = dialerByNode.get(cursor) ?? ''
+    }
+    if (pre.length > 0) {
+      chain.splice(chain.length - 1, 0, ...pre)
+    }
+  }
   return chain
+}
+
+/**
+ * Resolves the delay of a group's active exit node, following nested groups so
+ * policy groups like `Telegram → Available → 香港 01` inherit `香港 01`'s latency.
+ */
+export function effectiveGroupDelay(
+  group: NodeGroup,
+  catalog: readonly NodeGroup[],
+  liveResults: Readonly<Record<string, { delay: number | null; failed: boolean }>> = {},
+): { delay: number | null; failed: boolean; target: string } {
+  const chain = resolveChain(group.name, catalog)
+  const target = chain[chain.length - 1] || group.now
+  if (!target || ['direct', 'reject', 'reject-drop'].includes(target.toLowerCase())) {
+    return { delay: null, failed: false, target: '' }
+  }
+  const live = liveResults[target]
+  if (live) return { delay: live.delay, failed: live.failed, target }
+  const direct: NodeItem | undefined = group.nodes.find((node) => node.name === target)
+  if (direct && (direct.delay_ms != null || direct.failed)) {
+    return { delay: direct.delay_ms, failed: direct.failed, target }
+  }
+  for (const item of catalog) {
+    const found = item.nodes.find((node) => node.name === target && (node.delay_ms != null || node.failed))
+    if (found) return { delay: found.delay_ms, failed: found.failed, target }
+  }
+  return { delay: direct?.delay_ms ?? null, failed: direct?.failed ?? false, target }
+}
+
+const MULTI_PART_TLDS = new Set([
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
+  'com.hk', 'edu.hk', 'gov.hk', 'org.hk', 'net.hk',
+  'com.tw', 'org.tw', 'net.tw', 'gov.tw', 'edu.tw',
+  'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'go.jp',
+  'co.kr', 'or.kr', 'ne.kr', 'go.kr',
+  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk',
+  'com.au', 'net.au', 'org.au', 'edu.au',
+  'com.sg', 'edu.sg', 'gov.sg',
+  'co.nz', 'com.br', 'co.in',
+])
+
+const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/
+
+/** Strip port from `host:443` or `[2001:db8::1]:443`. */
+export function stripEndpointPort(raw: string): string {
+  const text = raw.trim()
+  if (!text) return ''
+  if (text.startsWith('[')) {
+    const close = text.indexOf(']')
+    return close > 1 ? text.slice(1, close) : text
+  }
+  const firstColon = text.indexOf(':')
+  const lastColon = text.lastIndexOf(':')
+  if (firstColon > 0 && firstColon === lastColon) {
+    return text.slice(0, firstColon)
+  }
+  return text
+}
+
+/** True when `ip` falls inside Mihomo's standard Fake-IP pools (`198.18.0.0/15`, `fc00::/18`). */
+export function isFakeIp(ip: string): boolean {
+  const clean = stripEndpointPort(ip).toLowerCase()
+  if (!clean) return false
+  if (clean.startsWith('198.18.') || clean.startsWith('198.19.')) return true
+  if (clean.startsWith('fc00:')) return true
+  return false
+}
+
+export function extractEndpointIp(raw: string): { ip: string; v6: boolean } | null {
+  const host = stripEndpointPort(raw)
+  if (!host) return null
+  if (IPV4_RE.test(host)) return { ip: host, v6: false }
+  if (host.includes(':') && /^[0-9a-fA-F:.]+$/.test(host)) return { ip: host, v6: true }
+  return null
+}
+
+export function extractCleanDomain(raw: string): string {
+  const host = stripEndpointPort(raw).toLowerCase().replace(/\.+$/, '')
+  if (!host || IPV4_RE.test(host) || host.includes(':') || /[\s/]/.test(host)) return ''
+  return host
+}
+
+export function registrableDomain(domain: string): string {
+  const clean = extractCleanDomain(domain)
+  if (!clean) return ''
+  const parts = clean.split('.').filter(Boolean)
+  if (parts.length <= 2) return clean
+  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`
+  if (MULTI_PART_TLDS.has(tail2) && parts.length >= 3) {
+    return `${parts[parts.length - 3]}.${tail2}`
+  }
+  return tail2
+}
+
+export function processBasename(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
+  const parts = trimmed.split(/[\\/]/)
+  return parts[parts.length - 1]?.trim() || trimmed
+}
+
+export interface GeneratedRule {
+  id: string
+  label: string
+  rule: string
+}
+
+/** Ready-to-use Mihomo routing rules derived from a live or closed connection. */
+export function connectionRules(row: ConnectionRow, policy: string): GeneratedRule[] {
+  const target = policy.trim() || 'DIRECT'
+  const out: GeneratedRule[] = []
+  const seen = new Set<string>()
+  const push = (id: string, label: string, rule: string) => {
+    if (seen.has(rule)) return
+    seen.add(rule)
+    out.push({ id, label, rule })
+  }
+  const domain = extractCleanDomain(row.host)
+  if (domain) {
+    const root = registrableDomain(domain)
+    if (root && domain.includes('.')) {
+      push('domain-suffix', root === domain ? '域名后缀' : '根域名后缀', `DOMAIN-SUFFIX,${root},${target}`)
+    }
+    if (domain !== root || !domain.includes('.')) {
+      push('domain', '精确域名', `DOMAIN,${domain},${target}`)
+    } else {
+      push('domain', '精确域名', `DOMAIN,${domain},${target}`)
+    }
+  }
+  const ipInfo = extractEndpointIp(row.destination) ?? extractEndpointIp(row.host)
+  if (ipInfo && !isFakeIp(ipInfo.ip)) {
+    const kind = ipInfo.v6 ? 'IP-CIDR6' : 'IP-CIDR'
+    const mask = ipInfo.v6 ? '128' : '32'
+    push('ip-cidr', '目标 IP', `${kind},${ipInfo.ip}/${mask},${target},no-resolve`)
+  }
+  const proc = processBasename(row.process)
+  if (proc) {
+    push('process', '进程名', `PROCESS-NAME,${proc},${target}`)
+  }
+  return out
 }
 
 const INFO_NODE_PATTERNS = [

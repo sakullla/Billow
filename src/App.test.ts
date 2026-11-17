@@ -90,6 +90,21 @@ function paletteOption(key: string) {
   return document.body.querySelector<HTMLElement>(`[data-command="${key}"]`)
 }
 
+async function pickSelect(
+  wrapper: Awaited<ReturnType<typeof mountApp>>['wrapper'],
+  selector: string,
+  value: string,
+) {
+  await wrapper.find(selector).trigger('click')
+  await flushPromises()
+  const option = document.body.querySelector<HTMLElement>(
+    `[data-testid="select-popover"] [data-option-value="${value}"]`,
+  )
+  expect(option).not.toBeNull()
+  option!.click()
+  await flushPromises()
+}
+
 function paletteInput() {
   return document.body.querySelector<HTMLInputElement>('.palette-search input')
 }
@@ -1998,17 +2013,17 @@ describe('App', () => {
     await flushPromises()
     expect(wrapper.findAll('[data-rule-hit]')[0].text()).toBe('1,204')
 
-    await wrapper.find('[data-testid="rule-kind-filter"]').setValue('GeoIP')
+    await pickSelect(wrapper, '[data-testid="rule-kind-filter"]', 'GeoIP')
     await flushPromises()
     expect(wrapper.findAll('[data-testid="rule-row"]')).toHaveLength(2)
     expect(
       wrapper.findAll('[data-testid="rule-row"]').every((item) => item.text().includes('GeoIP')),
     ).toBe(true)
-    await wrapper.find('[data-testid="rule-proxy-filter"]').setValue('DIRECT')
+    await pickSelect(wrapper, '[data-testid="rule-proxy-filter"]', 'DIRECT')
     await flushPromises()
     expect(wrapper.findAll('[data-testid="rule-row"]')).toHaveLength(1)
-    await wrapper.find('[data-testid="rule-kind-filter"]').setValue('all')
-    await wrapper.find('[data-testid="rule-proxy-filter"]').setValue('all')
+    await pickSelect(wrapper, '[data-testid="rule-kind-filter"]', 'all')
+    await pickSelect(wrapper, '[data-testid="rule-proxy-filter"]', 'all')
     await flushPromises()
     expect(wrapper.findAll('[data-testid="rule-row"]').length).toBeGreaterThan(5)
 
@@ -2358,7 +2373,7 @@ describe('App', () => {
     expect(wrapper.find('[data-provider="机场订阅"] [data-testid="retry-provider"]').exists()).toBe(false)
   })
 
-  it('updates providers sequentially with a done/total counter', async () => {
+  it('updates providers concurrently with a bounded pool and done/total counter', async () => {
     const { wrapper } = await mountApp()
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
@@ -2366,13 +2381,14 @@ describe('App', () => {
     await settle(500)
 
     await wrapper.find('[data-testid="update-all-proxy"]').trigger('click')
-    await settle(950)
+    await settle(100)
     const button = wrapper.find('[data-testid="update-all-proxy"]')
-    expect(button.text()).toContain('更新中 1/2')
+    expect(button.text()).toContain('更新中 0/2')
     expect(button.attributes('aria-busy')).toBe('true')
+    expect(wrapper.find('[data-provider="机场订阅"] [data-provider-state="pending"]').exists()).toBe(true)
     expect(wrapper.find('[data-provider="自建节点"] [data-provider-state="pending"]').exists()).toBe(true)
 
-    await settle(2500)
+    await settle(1200)
     expect(wrapper.find('[data-testid="update-all-proxy"]').text()).toBe('全部更新')
     expect(wrapper.findAll('.toast').at(-1)?.text()).toContain('2/2')
   })
@@ -2594,7 +2610,7 @@ describe('App', () => {
       Number(wrapper.find('[data-testid="rule-row"]').attributes('data-row-index')),
     ).toBeGreaterThan(50)
 
-    await wrapper.find('[data-testid="rule-kind-filter"]').setValue('GeoIP')
+    await pickSelect(wrapper, '[data-testid="rule-kind-filter"]', 'GeoIP')
     await flushPromises()
     expect((ruleScroller().element as HTMLElement).scrollTop).toBe(0)
     expect(wrapper.find('[data-testid="rule-row"]').attributes('data-row-index')).toBe('0')

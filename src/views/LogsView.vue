@@ -226,7 +226,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
           <template v-if="paused"> · 暂停于 {{ formatClock(pausedAt ?? 0) }}</template>
         </p>
         <p v-if="paused" class="muted small log-status" role="status" aria-live="polite" data-testid="log-paused">
-          已暂停，新增 <strong data-testid="log-new">{{ newCount }}</strong> 条日志；继续后追平。
+          已暂停，新增 <strong data-testid="log-new">{{ newCount }}</strong> 条日志；<button type="button" class="link-btn" data-testid="log-resume-inline" @click="resume()">继续</button>后追平。
         </p>
       </div>
       <div class="head-actions">
@@ -279,6 +279,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索日志" data-page-search />
+        <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
         <button
           v-if="query"
           type="button"

@@ -7,6 +7,7 @@ import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
 import Skeleton from '../components/Skeleton.vue'
 import { delayText, delayTone, formatBytes, formatDate, formatRelative, protocolLabel, usagePercent } from '../lib/format'
+import { runPool } from '../lib/pool'
 import { useStore } from '../lib/store'
 import {
   defaultGeoUrls,
@@ -165,22 +166,36 @@ async function single(row: ProviderRow, action: Action) {
   if (action === 'healthcheck') void store.refresh()
 }
 
-/** Sequential on purpose: each row paints 更新中/成功/失败 and the counter follows along (R28, R29). */
-async function updateAll(rows: ProviderRow[], kind: 'proxy' | 'rule') {
+const failedRows = (rows: ProviderRow[]) =>
+  rows.filter((row) => !isInline(row) && stateOf(row)?.state === 'error')
+
+/**
+ * Bounded concurrent pool: updates up to 3 proxy providers or 4 rule providers in parallel
+ * while keeping per-row state isolated and updating the done/total counter live.
+ */
+async function updateAll(rows: ProviderRow[], kind: 'proxy' | 'rule', onlyFailed = false) {
   if (allRunning[kind]) return
-  const updatable = rows.filter((row) => !isInline(row))
+  const updatable = onlyFailed ? failedRows(rows) : rows.filter((row) => !isInline(row))
+  if (!updatable.length) return
   allRunning[kind] = true
   allProgress[kind] = { done: 0, total: updatable.length }
-  let failed = 0
   try {
-    for (const row of updatable) {
-      const ok = await act(row, 'update', true)
-      if (!ok) failed += 1
-      allProgress[kind] = { done: allProgress[kind].done + 1, total: updatable.length }
+    const { done, failed } = await runPool(
+      updatable,
+      {
+        concurrency: kind === 'rule' ? 4 : 3,
+        shouldStop: () => disposed || !snap.value.kernel_running,
+        onProgress: (completed) => {
+          allProgress[kind] = { done: completed, total: updatable.length }
+        },
+      },
+      (row) => act(row, 'update', true),
+    )
+    if (!disposed && snap.value.kernel_running) {
+      await load(true)
     }
-    await load(true)
-    const { done, total } = allProgress[kind]
-    if (total) {
+    const total = updatable.length
+    if (!disposed && total) {
       store.toast(
         failed
           ? `更新完成：${done}/${total}，${failed} 个失败`
@@ -447,6 +462,23 @@ function ruleParts(rule: string): { type: string; rest: string } {
   return /^[A-Z][A-Z0-9-]+$/.test(head) ? { type: head, rest: rule.slice(comma + 1) } : { type: '', rest: rule }
 }
 
+function highlightDetail(value: string): { text: string; hit: boolean }[] {
+  const q = detailNeedle.value
+  if (!q || !value) return [{ text: value, hit: false }]
+  const lower = value.toLowerCase()
+  const parts: { text: string; hit: boolean }[] = []
+  let idx = 0
+  let found = lower.indexOf(q)
+  while (found >= 0) {
+    if (found > idx) parts.push({ text: value.slice(idx, found), hit: false })
+    parts.push({ text: value.slice(found, found + q.length), hit: true })
+    idx = found + q.length
+    found = lower.indexOf(q, idx)
+  }
+  if (idx < value.length) parts.push({ text: value.slice(idx), hit: false })
+  return parts.length ? parts : [{ text: value, hit: false }]
+}
+
 const successText = (row: ProviderRow) => (stateOf(row)?.action === 'healthcheck' ? '检查通过' : '已更新')
 
 // A stopped kernel drops the rows instead of showing the previous session (R31),
@@ -494,6 +526,7 @@ onMounted(() => {
         <div v-if="showSearch && providers.length" class="search provider-search">
           <Icon name="search" :size="16" />
           <input v-model="query" type="search" placeholder="筛选代理集与规则集" data-page-search data-testid="provider-search" />
+          <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
           <span v-if="needle" class="small muted mono">{{ sections.reduce((sum, section) => sum + section.rows.length, 0) }}</span>
           <button v-if="query" type="button" class="icon-btn sm" aria-label="清空筛选" @click="query = ''">
             <Icon name="x" :size="14" />
@@ -561,18 +594,29 @@ onMounted(() => {
             <span class="count-pill">{{ needle ? `${section.rows.length}/${section.all.length}` : section.all.length }}</span>
             <span v-if="!isOpen(section.kind)" class="muted small ellipsis provider-fold-summary">{{ sectionSummary(section.all) }}</span>
           </button>
-          <button
-            type="button"
-            class="btn ghost sm"
-            :disabled="allRunning[section.kind]"
-            :aria-busy="allRunning[section.kind] || undefined"
-            :data-testid="`update-all-${section.kind}`"
-            @click="updateAll(section.all, section.kind)"
-          >
-            <span v-if="allRunning[section.kind]" class="spinner sm" aria-hidden="true" />
-            <Icon v-else name="refresh" :size="15" />
-            {{ allRunning[section.kind] ? `更新中 ${allProgress[section.kind].done}/${allProgress[section.kind].total}` : '全部更新' }}
-          </button>
+          <div class="card-head-actions">
+            <button
+              v-if="!allRunning[section.kind] && failedRows(section.all).length > 0"
+              type="button"
+              class="btn ghost sm danger-text"
+              :data-testid="`retry-failed-${section.kind}`"
+              @click="updateAll(section.all, section.kind, true)"
+            >
+              <Icon name="refresh" :size="14" />重试失败 ({{ failedRows(section.all).length }})
+            </button>
+            <button
+              type="button"
+              class="btn ghost sm"
+              :disabled="allRunning[section.kind]"
+              :aria-busy="allRunning[section.kind] || undefined"
+              :data-testid="`update-all-${section.kind}`"
+              @click="updateAll(section.all, section.kind)"
+            >
+              <span v-if="allRunning[section.kind]" class="spinner sm" aria-hidden="true" />
+              <Icon v-else name="refresh" :size="15" />
+              {{ allRunning[section.kind] ? `更新中 ${allProgress[section.kind].done}/${allProgress[section.kind].total}` : '全部更新' }}
+            </button>
+          </div>
         </header>
         <div v-if="isOpen(section.kind)" class="provider-list" :class="{ multi: section.rows.length >= 6 }">
         <div
@@ -601,6 +645,21 @@ onMounted(() => {
                   <span>{{ row.kind === 'proxy' ? `${row.count} 个节点` : `${row.count.toLocaleString()} 条规则` }}</span>
                   <span v-if="row.behavior">{{ row.behavior }}</span>
                   <span v-if="isInline(row)" data-provider-inline>内联 · 无需更新</span>
+                  <span
+                    v-else-if="stateOf(row)?.state === 'pending'"
+                    class="provider-state-inline pending"
+                    role="status"
+                    data-provider-state="pending"
+                  >
+                    {{ stateOf(row)?.action === 'healthcheck' ? '检查中' : '更新中' }}
+                  </span>
+                  <span
+                    v-else-if="stateOf(row)?.state === 'success'"
+                    class="provider-state-inline success"
+                    data-provider-state="success"
+                  >
+                    <Icon name="check" :size="12" />{{ successText(row) }}
+                  </span>
                   <span v-else>{{ formatRelative(updatedMs(row)) }}更新</span>
                   <span v-if="row.expire">{{ formatDate(row.expire) }} 到期</span>
                 </p>
@@ -610,13 +669,7 @@ onMounted(() => {
               <div class="usage-bar"><span :style="{ width: `${usagePercent(row.used, row.total)}%` }" /></div>
               <span class="small mono muted">{{ formatBytes(row.used) }} / {{ formatBytes(row.total) }}</span>
             </div>
-            <p v-if="stateOf(row)?.state === 'pending'" class="provider-note small muted" role="status" data-provider-state="pending">
-              <span class="spinner sm" aria-hidden="true" />{{ stateOf(row)?.action === 'healthcheck' ? '检查中' : '更新中' }}
-            </p>
-            <p v-else-if="stateOf(row)?.state === 'success'" class="provider-note small muted" data-provider-state="success">
-              <Icon name="check" :size="13" />{{ successText(row) }} · 刚刚
-            </p>
-            <p v-else-if="stateOf(row)?.state === 'error'" class="provider-note field-error small" role="alert" data-provider-state="error">
+            <p v-if="stateOf(row)?.state === 'error'" class="provider-note field-error small" role="alert" data-provider-state="error">
               <Icon name="alert" :size="13" />
               {{ stateOf(row)?.action === 'healthcheck' ? '健康检查失败' : '更新失败' }}：{{ stateOf(row)?.reason }}
               <button type="button" class="btn ghost sm" data-testid="retry-provider" @click="retry(row)">重试</button>
@@ -912,7 +965,11 @@ onMounted(() => {
           <ul v-if="detail.row.kind === 'proxy'" class="detail-list">
             <li v-for="proxy in detailProxies.slice(0, RULE_PAGE)" :key="proxy.name" class="detail-proxy">
               <span class="grow min0">
-                <strong class="ellipsis">{{ proxy.name }}</strong>
+                <strong class="ellipsis">
+                  <template v-for="(part, partIdx) in highlightDetail(proxy.name)" :key="partIdx">
+                    <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                  </template>
+                </strong>
                 <span class="node-meta">
                   <span class="node-type">{{ protocolLabel(proxy.node_type) || proxy.node_type }}</span>
                   <span v-for="tag in proxy.tags" :key="tag" class="node-tag" :class="{ udp: tag === 'UDP' }">{{ tag }}</span>
@@ -930,7 +987,11 @@ onMounted(() => {
           <ol v-else-if="detail.data.rules.length" class="detail-list detail-rules mono">
             <li v-for="(rule, index) in detailRules.slice(0, RULE_PAGE)" :key="index">
               <span v-if="ruleParts(rule).type" class="rule-type">{{ ruleParts(rule).type }}</span>
-              <span class="ellipsis">{{ ruleParts(rule).rest }}</span>
+              <span class="ellipsis">
+                <template v-for="(part, partIdx) in highlightDetail(ruleParts(rule).rest)" :key="partIdx">
+                  <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                </template>
+              </span>
             </li>
             <li v-if="!detailRules.length" class="muted small empty-line">{{ detailSearching ? `正在搜索全部 ${detail.data.total.toLocaleString()} 条…` : '没有匹配的规则' }}</li>
             <li v-else-if="detailRules.length > RULE_PAGE" class="muted small empty-line">

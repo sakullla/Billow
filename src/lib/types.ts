@@ -43,6 +43,8 @@ export interface NodeItem {
   node_type: string
   /** Capability tags from the config: UDP, Reality/TLS, transport, Vision, Mux, TFO, MPTCP, 链式. */
   tags: string[]
+  /** Upstream transit proxy or group when `dialer-proxy` is configured. */
+  dialer_proxy?: string | null
 }
 
 export interface NodeGroup {
@@ -71,6 +73,10 @@ export interface ConnectionRow {
   upload: number
   download: number
   start: string
+}
+
+export interface ClosedConnectionRow extends ConnectionRow {
+  closed_at_ms: number
 }
 
 export interface LogLine {
@@ -162,6 +168,7 @@ export interface ProvidersResult {
 }
 
 export interface KernelSettings {
+  auto_connect: boolean
   close_connections_on_switch: boolean
   subscription_user_agent: string
   mixed_port: number | null
@@ -471,6 +478,7 @@ export function defaultTun(): TunSettings {
 
 export function emptyKernelSettings(): KernelSettings {
   return {
+    auto_connect: false,
     close_connections_on_switch: true,
     subscription_user_agent: '',
     geodata_mode: null,
@@ -571,6 +579,7 @@ function normalizeLevel(value: unknown): LogLevel {
 function normalizeNode(raw: unknown): NodeItem {
   const node = obj(raw)
   const failed = Boolean(node.failed)
+  const dialer = optStr(node.dialer_proxy)
   return {
     name: str(node.name),
     delay_ms: failed ? null : num(node.delay_ms),
@@ -578,6 +587,7 @@ function normalizeNode(raw: unknown): NodeItem {
     selected: Boolean(node.selected),
     node_type: str(node.node_type),
     tags: Array.isArray(node.tags) ? node.tags.filter((tag): tag is string => typeof tag === 'string' && tag.length > 0) : [],
+    ...(dialer ? { dialer_proxy: dialer } : {}),
   }
 }
 
@@ -709,6 +719,7 @@ function normalizeSettings(raw: unknown): KernelSettings {
   const geoSource = str(value.geo_source)
   const geoLoader = str(value.geodata_loader)
   return {
+    auto_connect: Boolean(value.auto_connect),
     close_connections_on_switch: value.close_connections_on_switch !== false,
     subscription_user_agent: str(value.subscription_user_agent).trim(),
     geodata_mode: optBool(value.geodata_mode),

@@ -776,16 +776,32 @@ pub fn provider_action(
     let segment = encode_path(name);
     let base = if kind == "rule" { "rules" } else { "proxies" };
     let url = format!("http://{}:{}/providers/{base}/{segment}", endpoint.host, endpoint.port);
-    let agent = controller_agent(Duration::from_secs(60));
+    let agent = controller_agent(Duration::from_secs(25));
     let result = match action {
         "healthcheck" if kind != "rule" => authorize(agent.get(&format!("{url}/healthcheck")), endpoint).call(),
         _ => authorize(agent.put(&url), endpoint).send_string(""),
     };
-    result.map(|_| ()).map_err(|_| {
-        if action == "healthcheck" {
-            "健康检查失败".to_string()
-        } else {
-            "资源没有更新".to_string()
+    result.map(|_| ()).map_err(|err| {
+        let fallback = if action == "healthcheck" { "健康检查失败" } else { "资源没有更新" };
+        match err {
+            ureq::Error::Status(code, response) => {
+                let mut body = String::new();
+                let _ = response.into_reader().take(2048).read_to_string(&mut body);
+                let detail = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|json| json.get("message")?.as_str().map(str::trim).map(str::to_string))
+                    .filter(|msg| !msg.is_empty());
+                match detail {
+                    Some(msg) => format!("{fallback}：{msg}"),
+                    None => format!("{fallback}（HTTP {code}）"),
+                }
+            }
+            ureq::Error::Transport(transport)
+                if transport.to_string().to_ascii_lowercase().contains("timed out") =>
+            {
+                format!("{fallback}（请求超时）")
+            }
+            _ => fallback.to_string(),
         }
     })
 }

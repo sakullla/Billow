@@ -382,13 +382,16 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         icon: groupIcons[group.name] ?? null,
         nodes: group.proxies.map((name) => {
           const delay = delays.get(name)
+          const baseTags = DEMO_TAGS[types.get(name) ?? ''] ?? []
+          const isChained = name === DEMO_LONG_NAMES[2]
           return {
             name,
             delay_ms: delay ?? null,
             failed: delay === null,
             selected: name === now,
             node_type: types.get(name) ?? groupsDef().find((g) => g.name === name)?.type ?? (name === 'DIRECT' ? 'direct' : ''),
-            tags: DEMO_TAGS[types.get(name) ?? ''] ?? [],
+            tags: isChained ? [...baseTags, '链式'] : baseTags,
+            ...(isChained ? { dialer_proxy: '香港 01' } : {}),
           }
         }),
       }

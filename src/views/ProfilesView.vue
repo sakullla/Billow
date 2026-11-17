@@ -260,13 +260,14 @@ async function openYaml(profile: ProfileItem, mode: 'content' | 'override') {
   yaml.value = { profile, mode, text, dirty: false, language: overrideLanguage(text) }
 }
 
-/** Another page (system proxy bypass) hands over rules to review in the 覆写 editor. */
+/** Another page (system proxy bypass or Home error banner) opens or appends to the 覆写 editor. */
 onMounted(async () => {
   const request = store.overrideRequest.value
   store.overrideRequest.value = null
   const profile = request ? snap.value.profiles.find((item) => item.id === request.id) : undefined
   if (!request || !profile) return
   await openYaml(profile, 'override')
+  if (!request.append) return
   const draft = yaml.value
   if (!draft) return
   if (draft.language === 'javascript') {
@@ -445,6 +446,12 @@ const updateAllLabel = computed(() => {
   }
   return '全部更新'
 })
+
+const failedSubscriptionIds = computed(() =>
+  snap.value.profiles
+    .filter((item) => item.kind === 'subscription' && store.profileUpdates[item.id]?.state === 'failure')
+    .map((item) => item.id),
+)
 </script>
 
 <template>
@@ -461,6 +468,16 @@ const updateAllLabel = computed(() => {
         <p class="muted small">{{ snap.profiles.length }} 份配置 · 同一时间启用一份</p>
       </div>
       <div class="head-actions">
+        <button
+          v-if="failedSubscriptionIds.length && !store.busy.refreshAll"
+          type="button"
+          class="btn ghost sm danger-text"
+          data-testid="retry-failed-profiles"
+          @click="store.refreshAll(failedSubscriptionIds)"
+        >
+          <Icon name="refresh" :size="15" />
+          重试失败 ({{ failedSubscriptionIds.length }})
+        </button>
         <button
           v-if="subscriptions"
           type="button"
@@ -533,7 +550,7 @@ const updateAllLabel = computed(() => {
         v-for="profile in ordered"
         :key="profile.id"
         class="card profile"
-        :class="{ current: profile.current, failed: profile.failure, busy: store.busy[`enable:${profile.id}`] }"
+        :class="{ current: profile.current, failed: profile.failure || profile.override_error, busy: store.busy[`enable:${profile.id}`] }"
         :data-profile="profile.id"
         tabindex="-1"
         :aria-current="profile.current ? 'true' : undefined"
@@ -618,7 +635,16 @@ const updateAllLabel = computed(() => {
           <span><Icon name="clock" :size="13" />{{ formatRelative(profile.updated_ms ?? profile.last_success_ms) }}</span>
           <span v-if="profile.proxy_count"><Icon name="globe" :size="13" />{{ profile.proxy_count }} 节点</span>
           <span v-if="profile.interval_hours"><Icon name="refresh" :size="13" />{{ profile.interval_hours >= 24 && profile.interval_hours % 24 === 0 ? `${profile.interval_hours / 24} 天` : `${profile.interval_hours} 时` }}</span>
-          <span v-if="profile.override_text.trim()" class="tag">覆写</span>
+          <button
+            v-if="profile.override_text.trim()"
+            type="button"
+            class="tag tag-btn"
+            title="点击编辑覆写"
+            data-testid="quick-override"
+            @click.stop="openYaml(profile, 'override')"
+          >
+            覆写
+          </button>
           <span v-if="profile.age_recipients.length" class="tag" title="订阅内容使用 age 私钥解密"><Icon name="shield" :size="11" />age</span>
         </footer>
         <p v-if="profile.failure && store.profileUpdates[profile.id]?.state !== 'failure'" class="field-error small">
@@ -633,7 +659,17 @@ const updateAllLabel = computed(() => {
             {{ profile.age_recipients.length ? '更换私钥' : '填写私钥' }}
           </button>
         </p>
-        <p v-if="profile.override_error" class="field-error small"><Icon name="alert" :size="13" /> {{ profile.override_error }}</p>
+        <p v-if="profile.override_error" class="field-error small">
+          <Icon name="alert" :size="13" /> {{ profile.override_error }}
+          <button
+            type="button"
+            class="btn ghost sm"
+            data-testid="override-fix"
+            @click.stop="openYaml(profile, 'override')"
+          >
+            修改覆写
+          </button>
+        </p>
         <div
           v-if="store.profileUpdates[profile.id]"
           class="profile-update small"

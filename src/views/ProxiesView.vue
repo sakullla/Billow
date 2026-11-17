@@ -5,7 +5,7 @@ import GroupIcon from '../components/GroupIcon.vue'
 import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
-import { delayText, delayTone, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, protocolLabel, resolveChain } from '../lib/format'
+import { delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, protocolLabel, resolveChain } from '../lib/format'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
 
@@ -205,16 +205,29 @@ function toggle(name: string) {
   }
 }
 
-/** Search matches the name, or exactly a protocol/tag ("udp", "reality", "vless"). */
+/** Search matches the name, or a protocol/tag ("ss" exact, 3+ chars prefix like "real" → "reality"). */
 function matches(node: NodeItem): boolean {
   if (node.name.toLowerCase().includes(needle.value)) return true
   const labels = [node.node_type, protocolLabel(node.node_type), ...node.tags].map((label) => label.toLowerCase())
-  return labels.includes(needle.value)
+  return labels.some((label) => label === needle.value || (needle.value.length >= 3 && label.startsWith(needle.value)))
 }
 
 /** Full protocol and tag list for the tooltip; rows may clip the tail. */
 function metaTitle(node: NodeItem): string {
-  return [protocolLabel(node.node_type), ...node.tags].filter(Boolean).join(' · ')
+  const parts = [protocolLabel(node.node_type), ...node.tags.map((tag) => (tag === '链式' && node.dialer_proxy ? `链式（前置：${dialerTargetLabel(node)}）` : tag))]
+  return parts.filter(Boolean).join(' · ')
+}
+
+function dialerTargetLabel(node: NodeItem): string {
+  const dp = node.dialer_proxy
+  if (!dp) return ''
+  const group = catalogByName.value.get(dp)
+  if (group) {
+    const chain = resolveChain(dp, catalog.value)
+    const leaf = chain[chain.length - 1]
+    return leaf ? `${dp} › ${leaf}` : dp
+  }
+  return dp
 }
 
 function sorted(nodes: NodeItem[]): NodeItem[] {
@@ -284,21 +297,15 @@ function nodeTone(node: NodeItem): string {
   return delayTone(state.delay, state.failed)
 }
 
-function groupNowNode(group: NodeGroup): NodeItem | undefined {
-  return group.nodes.find((node) => node.name === group.now)
-}
-
 function groupNowDelay(group: NodeGroup): string {
-  const node = groupNowNode(group)
-  if (!node) return ''
-  const state = nodeState(node)
+  const state = effectiveGroupDelay(group, catalog.value, store.testResults.value)
+  if (!state.target) return ''
   return delayText(state.delay, state.failed)
 }
 
 function groupNowTone(group: NodeGroup): string {
-  const node = groupNowNode(group)
-  if (!node) return 'none'
-  const state = nodeState(node)
+  const state = effectiveGroupDelay(group, catalog.value, store.testResults.value)
+  if (!state.target) return 'none'
   return delayTone(state.delay, state.failed)
 }
 
@@ -592,10 +599,31 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       </button>
     </div>
 
+    <div
+      v-if="snap.mode === 'direct' && snap.node_catalog.length"
+      class="proxies-connect-bar direct-bar"
+      data-testid="proxies-direct-bar"
+    >
+      <span class="proxies-connect-text small">
+        <Icon name="zap" :size="15" />
+        当前为直连模式，选择的代理节点不会生效
+      </span>
+      <button
+        type="button"
+        class="btn ghost sm"
+        :disabled="Boolean(store.busy.mode)"
+        data-testid="proxies-switch-rule"
+        @click="store.setMode('rule')"
+      >
+        切回规则模式
+      </button>
+    </div>
+
     <div v-if="snap.node_catalog.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索节点、协议或 UDP 等标签" data-testid="node-search" data-page-search />
+        <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
         <button v-if="query" type="button" class="icon-btn sm" aria-label="清空搜索" data-testid="clear-search" @click="query = ''">
           <Icon name="x" :size="14" />
         </button>
@@ -726,7 +754,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             </span>
             <span class="group-now small">
               <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
-              <ChainPath v-if="group.now" class="group-now-name" :hops="groupHops(group)" />
+              <ChainPath v-if="group.now" class="group-now-name" :hops="groupHops(group)" :groups="groupNamesSet" />
               <span v-else class="group-now-name">{{ group.kind === 'auto' ? '连接后显示' : '—' }}</span>
               <span v-if="groupNowDelay(group)" class="group-delay mono" :class="groupNowTone(group)">{{ groupNowDelay(group) }}</span>
               <span v-if="store.activeTest.value?.group === group.name" class="small mono" data-testid="group-test-progress" aria-live="polite">已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
@@ -808,8 +836,9 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
                 <template v-for="(part, partIndex) in highlight(node.name)" :key="partIndex">
                   <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
                 </template>
-                <!-- 紧凑 has no meta line, so an auto entry keeps its target beside the name. -->
+                <!-- 紧凑 has no meta line, so an auto entry or chained node keeps its target beside the name. -->
                 <span v-if="dense && autoOf(node) && viaOf(node)" class="node-via-inline">→ {{ viaOf(node) }}</span>
+                <span v-else-if="dense && node.dialer_proxy" class="node-via-inline">经 {{ node.dialer_proxy }}</span>
               </span>
               <!-- An auto group entry says how it picks and where it currently points (R14). -->
               <span v-if="!dense && autoOf(node)" class="node-meta node-via" data-testid="node-via">
@@ -818,7 +847,12 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               </span>
               <span v-else-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
                 <span class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
-                <span v-for="tag in node.tags" :key="tag" class="node-tag" :class="{ udp: tag === 'UDP' }">{{ tag }}</span>
+                <span
+                  v-for="tag in node.tags"
+                  :key="tag"
+                  class="node-tag"
+                  :class="{ udp: tag === 'UDP', chained: tag === '链式' }"
+                >{{ tag === '链式' && node.dialer_proxy ? `链式 · ${node.dialer_proxy}` : tag }}</span>
               </span>
             </button>
             <button

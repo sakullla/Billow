@@ -7,6 +7,7 @@ import SelectField from '../components/SelectField.vue'
 import Skeleton from '../components/Skeleton.vue'
 import { formatRelative } from '../lib/format'
 import { useStore } from '../lib/store'
+import { useColumnResize } from '../lib/ui/columns'
 import { useVirtualList } from '../lib/ui/virtual'
 import type { RuleRow } from '../lib/types'
 
@@ -18,6 +19,28 @@ type SortKey = 'order' | 'hits'
 
 const ROW_HEIGHT = computed(() => (props.compact ? 88 : 52))
 const PAGE = 300
+
+const ruleCols = useColumnResize('rules', [
+  { id: 'index', defaultWidth: 44, minWidth: 34, maxWidth: 96 },
+  { id: 'kind', defaultWidth: 124, minWidth: 80, maxWidth: 260 },
+  { id: 'payload', defaultWidth: 280, minWidth: 140, maxWidth: 860 },
+  { id: 'proxy', defaultWidth: 164, minWidth: 96, maxWidth: 380 },
+  { id: 'hit', defaultWidth: 74, minWidth: 54, maxWidth: 180 },
+  { id: 'last', defaultWidth: 88, minWidth: 68, maxWidth: 220 },
+])
+
+const ruleScrollStyle = computed(() =>
+  props.compact
+    ? undefined
+    : {
+        '--col-rule-index': `${ruleCols.widths.index}px`,
+        '--col-rule-kind': `${ruleCols.widths.kind}px`,
+        '--col-rule-payload': `${ruleCols.widths.payload}px`,
+        '--col-rule-proxy': `${ruleCols.widths.proxy}px`,
+        '--col-rule-hit': `${ruleCols.widths.hit}px`,
+        '--col-rule-last': `${ruleCols.widths.last}px`,
+      },
+)
 
 const rules = shallowRef<RuleRow[]>([])
 const error = ref<string | null>(null)
@@ -92,7 +115,14 @@ const proxyOptions = computed(() => [
 ])
 
 const needle = computed(() => query.value.trim().toLowerCase())
-const isFiltered = computed(() => Boolean(needle.value) || kind.value !== 'all' || proxy.value !== 'all')
+const onlyDisabled = ref(false)
+const disabledCount = computed(() => rules.value.filter((rule) => rule.disabled).length)
+watch(disabledCount, (count) => {
+  if (count === 0) onlyDisabled.value = false
+})
+const isFiltered = computed(
+  () => Boolean(needle.value) || kind.value !== 'all' || proxy.value !== 'all' || onlyDisabled.value,
+)
 
 interface HighlightPart {
   text: string
@@ -120,6 +150,7 @@ const filtered = computed(() => {
   const q = needle.value
   const indexed = rules.value.map((rule, index) => ({ rule, index }))
   const list = indexed.filter(({ rule }) => {
+    if (onlyDisabled.value && !rule.disabled) return false
     if (kind.value !== 'all' && rule.kind !== kind.value) return false
     if (proxy.value !== 'all' && rule.proxy !== proxy.value) return false
     if (!q) return true
@@ -149,7 +180,7 @@ onMounted(() => {
 // A remounted list (empty state round trip) and a changed filter both start at the
 // first row instead of the previous offset (R31).
 watch(scroller, (el) => virtual.measure(el))
-watch([query, kind, proxy, sort], () => {
+watch([query, kind, proxy, sort, onlyDisabled], () => {
   limit.value = PAGE
   virtual.reset(scroller.value)
 })
@@ -158,6 +189,7 @@ function resetFilters() {
   query.value = ''
   kind.value = 'all'
   proxy.value = 'all'
+  onlyDisabled.value = false
 }
 
 const labelOf = (rule: RuleRow) => rule.payload || rule.kind
@@ -271,6 +303,7 @@ onBeforeUnmount(() => { ++loadId })
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索规则内容或策略" data-page-search />
+        <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
         <button
           v-if="query"
           type="button"
@@ -302,6 +335,17 @@ onBeforeUnmount(() => { ++loadId })
         :class="{ filtered: proxy !== 'all' }"
         data-testid="rule-proxy-filter"
       />
+      <button
+        v-if="disabledCount > 0"
+        type="button"
+        class="chip-btn"
+        :class="{ active: onlyDisabled }"
+        :aria-pressed="onlyDisabled"
+        data-testid="rule-disabled-filter"
+        @click="onlyDisabled = !onlyDisabled"
+      >
+        已禁用 {{ disabledCount }}
+      </button>
       <Segmented v-if="hasHits" v-model="sort" :options="SORTS" size="sm" label="排序" />
       <button v-if="isFiltered" type="button" class="btn ghost sm" data-testid="reset-rule-toolbar" @click="resetFilters">
         重置
@@ -340,15 +384,121 @@ onBeforeUnmount(() => { ++loadId })
       </template>
     </EmptyState>
 
-    <div v-if="filtered.length" ref="scroller" class="card list-card rule-scroll" data-testid="rule-scroll" @scroll="virtual.onScroll">
+    <div
+      v-if="filtered.length"
+      ref="scroller"
+      class="card list-card rule-scroll"
+      :style="ruleScrollStyle"
+      data-testid="rule-scroll"
+      @scroll="virtual.onScroll"
+    >
       <!-- Column captions: without them the hit count and last-hit time are bare numbers. -->
-      <div v-if="!compact" class="rule-head" aria-hidden="true" data-testid="rule-head">
-        <span class="rule-index">#</span>
-        <span class="rule-head-main">类型 · 内容</span>
-        <span class="rule-head-proxy">策略</span>
+      <div v-if="!compact" class="rule-head" :aria-hidden="hasHits ? undefined : 'true'" data-testid="rule-head">
+        <span class="rule-index rule-head-cell">
+          <button
+            v-if="hasHits"
+            type="button"
+            class="th-sort num"
+            :class="{ active: sort === 'order' }"
+            aria-label="按默认顺序排序"
+            data-testid="rule-sort-order"
+            @click="sort = 'order'"
+          >
+            #<Icon v-if="sort === 'order'" name="down" :size="10" />
+          </button>
+          <template v-else>#</template>
+          <span
+            class="col-resizer"
+            :class="{ active: ruleCols.resizingId.value === 'index' }"
+            role="separator"
+            aria-orientation="vertical"
+            title="拖拽调整列宽，双击恢复默认"
+            data-testid="col-resize-rule-index"
+            @pointerdown="ruleCols.startResize('index', $event)"
+            @dblclick="ruleCols.resetColumn('index', $event)"
+            @click.stop
+          />
+        </span>
+        <span class="rule-kind-cell rule-head-cell">
+          类型
+          <span
+            class="col-resizer"
+            :class="{ active: ruleCols.resizingId.value === 'kind' }"
+            role="separator"
+            aria-orientation="vertical"
+            title="拖拽调整列宽，双击恢复默认"
+            data-testid="col-resize-rule-kind"
+            @pointerdown="ruleCols.startResize('kind', $event)"
+            @dblclick="ruleCols.resetColumn('kind', $event)"
+            @click.stop
+          />
+        </span>
+        <span class="rule-head-main rule-head-cell">
+          内容
+          <span
+            class="col-resizer"
+            :class="{ active: ruleCols.resizingId.value === 'payload' }"
+            role="separator"
+            aria-orientation="vertical"
+            title="拖拽调整列宽，双击恢复默认"
+            data-testid="col-resize-rule-payload"
+            @pointerdown="ruleCols.startResize('payload', $event)"
+            @dblclick="ruleCols.resetColumn('payload', $event)"
+            @click.stop
+          />
+        </span>
+        <span class="rule-head-proxy rule-head-cell">
+          策略
+          <span
+            class="col-resizer"
+            :class="{ active: ruleCols.resizingId.value === 'proxy' }"
+            role="separator"
+            aria-orientation="vertical"
+            title="拖拽调整列宽，双击恢复默认"
+            data-testid="col-resize-rule-proxy"
+            @pointerdown="ruleCols.startResize('proxy', $event)"
+            @dblclick="ruleCols.resetColumn('proxy', $event)"
+            @click.stop
+          />
+        </span>
         <template v-if="hasHits">
-          <span class="rule-hit">命中</span>
-          <span class="rule-last-hit">最近命中</span>
+          <span class="rule-hit rule-head-cell">
+            <button
+              type="button"
+              class="th-sort num"
+              :class="{ active: sort === 'hits' }"
+              aria-label="按命中次数排序"
+              data-testid="rule-sort-hits"
+              @click="sort = sort === 'hits' ? 'order' : 'hits'"
+            >
+              命中<Icon v-if="sort === 'hits'" name="down" :size="11" />
+            </button>
+            <span
+              class="col-resizer"
+              :class="{ active: ruleCols.resizingId.value === 'hit' }"
+              role="separator"
+              aria-orientation="vertical"
+              title="拖拽调整列宽，双击恢复默认"
+              data-testid="col-resize-rule-hit"
+              @pointerdown="ruleCols.startResize('hit', $event)"
+              @dblclick="ruleCols.resetColumn('hit', $event)"
+              @click.stop
+            />
+          </span>
+          <span class="rule-last-hit rule-head-cell">
+            最近命中
+            <span
+              class="col-resizer"
+              :class="{ active: ruleCols.resizingId.value === 'last' }"
+              role="separator"
+              aria-orientation="vertical"
+              title="拖拽调整列宽，双击恢复默认"
+              data-testid="col-resize-rule-last"
+              @pointerdown="ruleCols.startResize('last', $event)"
+              @dblclick="ruleCols.resetColumn('last', $event)"
+              @click.stop
+            />
+          </span>
         </template>
         <span class="rule-toggle" />
       </div>
@@ -364,8 +514,10 @@ onBeforeUnmount(() => { ++loadId })
         data-testid="rule-row"
       >
         <span class="rule-index mono muted">{{ index + 1 }}</span>
-        <span class="tag">{{ rule.kind }}</span>
-        <span v-if="rule.disabled" class="tag warn rule-off-tag" data-testid="rule-off-tag">已禁用</span>
+        <span class="rule-kind-cell">
+          <span class="tag">{{ rule.kind }}</span>
+          <span v-if="rule.disabled" class="tag warn rule-off-tag" data-testid="rule-off-tag">已禁用</span>
+        </span>
         <span class="rule-payload mono ellipsis" :title="rule.payload">
           <template v-if="rule.payload">
             <template v-for="(part, partIdx) in highlight(rule.payload)" :key="partIdx">
