@@ -2597,6 +2597,15 @@ impl ProfileBook {
         let selected = self.profiles[index].selected.clone();
         let desktop = self.platform == ClientPlatform::Desktop;
         let (settled, settled_port) = match apply_settings(&prepared.yaml, &self.settings, desktop)
+            .and_then(|(yaml, port)| {
+                // Subscription TUN settings must not replace the authorized session.
+                // In particular, an omitted enable flag disables Mihomo's TUN on reload.
+                if desktop {
+                    force_tun(&yaml, self.takeover.tun, None).map(|yaml| (yaml, port))
+                } else {
+                    Ok((yaml, port))
+                }
+            })
             .and_then(|(yaml, port)| ensure_tun_dns(&yaml, &self.settings).map(|yaml| (yaml, port)))
         {
             Ok(result) => result,
@@ -2717,6 +2726,25 @@ impl ProfileBook {
             self.takeover.system_proxy = true;
         }
         self.persist();
+    }
+
+    /// A profile reload can change the listener port while system proxy stays on.
+    /// Follow the successfully loaded config, never an unapplied settings preview.
+    pub fn reconcile_system_proxy(&mut self, proxy: &mut dyn SystemProxy) {
+        if self.platform != ClientPlatform::Desktop || !self.kernel_running || !self.takeover.system_proxy {
+            return;
+        }
+        let port = self.runtime_base.as_deref()
+            .and_then(|yaml| serde_yaml::from_str::<Value>(yaml).ok())
+            .and_then(|value| read_i64(&value, "mixed-port"))
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port > 0);
+        let Some(port) = port else { return; };
+        let endpoint = ProxyEndpoint { host: self.settings.system_proxy.effective_host(), port };
+        if self.our_endpoint.as_ref() == Some(&endpoint) { return; }
+        let mut model = self.link_model();
+        takeover::set_system_proxy_with_settings(&mut model, true, Some(port), &self.settings.system_proxy, proxy);
+        self.apply_model(model);
     }
 
     fn reload(
@@ -2996,7 +3024,7 @@ impl ProfileBook {
                 .and_then(|yaml| serde_yaml::from_str::<Value>(yaml).ok())
                 .and_then(|value| read_i64(&value, "mixed-port"));
             self.mixed_port = running.or(configured);
-            self.mode = prepared.mode;
+            self.mode = self.chosen_mode.clone().or(prepared.mode);
         }
     }
 
@@ -3119,6 +3147,10 @@ impl ProfileBook {
             self.remember_current_failure();
             return self.snapshot();
         }
+        let runtime_base = match self.runtime_base.as_deref().map(|base| force_mode(base, next)).transpose() {
+            Ok(base) => base,
+            Err(message) => return self.report_failure(message),
+        };
         if kernel.running() {
             if let Err(message) = kernel.set_mode(next) {
                 self.home_failure = Some(if message.is_empty() {
@@ -3130,6 +3162,7 @@ impl ProfileBook {
                 return self.publish(kernel);
             }
         }
+        self.runtime_base = runtime_base;
         self.mode = Some(next.to_string());
         self.chosen_mode = Some(next.to_string());
         self.persist();
@@ -5226,6 +5259,125 @@ proxy-groups:
 
     fn config(port: i64) -> String {
         format!("mixed-port: {port}\nmode: rule\nproxies: []\n")
+    }
+
+    #[test]
+    fn activating_profiles_preserves_the_desktop_tun_session() {
+        for action in ["enable", "update", "refresh"] {
+            for enabled in [false, true] {
+                for incoming in ["", "tun:\n  enable: false\n", "tun:\n  enable: true\n  file-descriptor: 42\n"] {
+                    let dir = temp_dir("activate-tun");
+                    let mut book = ProfileBook::open(&dir.0);
+                    book.set_platform(ClientPlatform::Desktop);
+                    book.add_local("initial.yaml", &config(7890));
+                    book.add_subscription("https://example.com/sub");
+                    let source = MapSource { items: HashMap::from([(
+                        "https://example.com/sub".to_string(),
+                        Ok(FetchedSubscription { content: format!("{}{incoming}", config(7890)), userinfo: None }),
+                    )]) };
+                    let mut kernel = ModeKernel { alive: false, fail_mode: false, last: String::new(), up: 0, down: 0 };
+                    let mut proxy = MemoryProxy::default();
+                    let mut tun = MemoryTun::default();
+                    let mut vpn = MemoryVpn::default();
+                    book.enable("p1", &RejectSource, &mut kernel);
+                    if action == "refresh" {
+                        book.enable("p2", &source, &mut kernel);
+                    }
+                    if enabled {
+                        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+                    } else {
+                        // A remembered preference must not reconnect a disconnected session.
+                        book.tun_wanted = true;
+                    }
+                    let next = match action {
+                        "enable" => book.enable("p2", &source, &mut kernel),
+                        "update" => book.update("p2", &source, &mut kernel),
+                        _ => book.refresh_profile("p2", &source, &mut kernel),
+                    };
+                    let value: Value = serde_yaml::from_str(&kernel.last).unwrap();
+                    assert_eq!(value["tun"]["enable"].as_bool(), Some(enabled), "{action}, incoming: {incoming:?}");
+                    assert!(value["tun"].get("file-descriptor").is_none());
+                    assert_eq!(next.tun, enabled);
+                    assert_eq!(next.connected, enabled);
+                    assert!(!next.system_proxy);
+                    assert!(next.failure.is_none());
+                    assert_eq!(book.effective_config().unwrap(), kernel.last);
+                    if enabled {
+                        assert_eq!(value["dns"]["enable"].as_bool(), Some(true));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn profile_changes_keep_the_system_proxy_on_the_live_listener() {
+        for action in ["enable", "update", "refresh", "edit"] {
+            let dir = temp_dir("reload-proxy-port");
+            let mut book = ProfileBook::open(&dir.0);
+            book.set_platform(ClientPlatform::Desktop);
+            book.add_subscription("https://example.com/sub");
+            let mut source = MapSource { items: HashMap::from([(
+                "https://example.com/sub".to_string(),
+                Ok(FetchedSubscription { content: config(7890), userinfo: None }),
+            )]) };
+            let mut kernel = ModeKernel { alive: false, fail_mode: false, last: String::new(), up: 0, down: 0 };
+            let mut proxy = MemoryProxy::default();
+            let mut tun = MemoryTun::default();
+            let mut vpn = MemoryVpn::default();
+            book.enable("p1", &source, &mut kernel);
+            book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+            source.items.insert("https://example.com/sub".to_string(), Ok(FetchedSubscription { content: config(7891), userinfo: None }));
+            match action {
+                "enable" => {
+                    book.add_local("next.yaml", &config(7891));
+                    book.enable("p2", &source, &mut kernel);
+                }
+                "update" => { book.update("p1", &source, &mut kernel); }
+                "refresh" => { book.refresh_profile("p1", &source, &mut kernel); }
+                _ => { book.save_profile_content("p1", &config(7891), &mut kernel); }
+            }
+            book.reconcile_system_proxy(&mut proxy);
+            assert_eq!(proxy.http.as_ref().unwrap().port, 7891, "{action}");
+            assert_eq!(proxy.https.as_ref().unwrap().port, 7891);
+            let sets = proxy.sets;
+            book.reconcile_system_proxy(&mut proxy);
+            assert_eq!(proxy.sets, sets, "unchanged endpoints need no OS writes");
+            book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+            book.reconcile_system_proxy(&mut proxy);
+            assert!(proxy.http.is_none() && proxy.https.is_none());
+        }
+    }
+
+    #[test]
+    fn refresh_settings_and_rule_reload_preserve_the_selected_mode() {
+        let dir = temp_dir("reload-mode");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_subscription("https://example.com/sub");
+        let source = MapSource { items: HashMap::from([(
+            "https://example.com/sub".to_string(),
+            Ok(FetchedSubscription { content: format!("{}rules:\n  - MATCH,DIRECT\n", config(7890)), userinfo: None }),
+        )]) };
+        let mut kernel = ModeKernel { alive: false, fail_mode: false, last: String::new(), up: 0, down: 0 };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &source, &mut kernel);
+        book.set_outbound_mode("global", &mut kernel);
+        assert_eq!(yaml_mode(&book.effective_config().unwrap()).as_deref(), Some("global"));
+        book.set_rule_disabled(RuleToggle { key: diagnostics::rule_key("Match", "", "DIRECT", 0), disabled: true }, &mut kernel).unwrap();
+        assert_eq!(yaml_mode(&kernel.last).as_deref(), Some("global"));
+        book.refresh_profile("p1", &source, &mut kernel);
+        assert_eq!(yaml_mode(&kernel.last).as_deref(), Some("global"));
+        let mut settings = book.settings.clone();
+        settings.log_level = Some("debug".to_string());
+        let next = book.save_settings(settings, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(next.mode.as_deref(), Some("global"));
+        assert_eq!(yaml_mode(&kernel.last).as_deref(), Some("global"));
+        kernel.fail_mode = true;
+        book.set_outbound_mode("direct", &mut kernel);
+        assert_eq!(yaml_mode(&book.effective_config().unwrap()).as_deref(), Some("global"));
     }
 
     #[test]

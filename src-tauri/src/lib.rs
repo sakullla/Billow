@@ -427,6 +427,7 @@ fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot 
         book.enable(id, &client, runtime);
     }
     book.apply_release(proxy, tun, vpn);
+    book.reconcile_system_proxy(proxy);
     book.snapshot()
 }
 
@@ -707,8 +708,10 @@ fn lan_address() -> Option<String> {
 #[tauri::command(async)]
 fn save_profile_content(app: AppHandle, id: String, content: String) -> ProfileSnapshot {
     with_session(&app, |session| {
-        let ProfileSession { book, runtime, .. } = session;
-        book.save_profile_content(&id, &content, runtime)
+        let ProfileSession { book, runtime, proxy, .. } = session;
+        book.save_profile_content(&id, &content, runtime);
+        book.reconcile_system_proxy(proxy);
+        book.snapshot()
     })
 }
 
@@ -716,8 +719,10 @@ fn save_profile_content(app: AppHandle, id: String, content: String) -> ProfileS
 fn refresh_profile(app: AppHandle, id: String) -> ProfileSnapshot {
     let client = subscription_client(&app);
     with_session(&app, |session| {
-        let ProfileSession { book, runtime, .. } = session;
-        book.refresh_profile(&id, &client, runtime)
+        let ProfileSession { book, runtime, proxy, .. } = session;
+        book.refresh_profile(&id, &client, runtime);
+        book.reconcile_system_proxy(proxy);
+        book.snapshot()
     })
 }
 
@@ -733,8 +738,10 @@ fn refresh_ids(app: &AppHandle, ids: &[String]) -> ProfileSnapshot {
     // One lock per profile so a slow subscription does not freeze the whole UI.
     for id in ids {
         last = Some(with_session(app, |session| {
-            let ProfileSession { book, runtime, .. } = session;
-            book.refresh_profile(id, &client, runtime)
+            let ProfileSession { book, runtime, proxy, .. } = session;
+            book.refresh_profile(id, &client, runtime);
+            book.reconcile_system_proxy(proxy);
+            book.snapshot()
         }));
     }
     last.unwrap_or_else(|| profile_snapshot(app))
