@@ -139,48 +139,92 @@ pub fn proxy_detail(endpoint: &ControllerEndpoint, name: &str) -> Result<Provide
 }
 
 /// Keep only a preview while counting all entries, without a second full YAML tree.
+/// With a needle, only matching rules are counted and kept, so a search covers
+/// the whole set rather than the first rows that fit in a preview.
 #[derive(Default)]
 struct RulePreview {
     rows: Vec<String>,
     total: usize,
+    /// Lowercased search text; empty keeps every rule.
+    needle: String,
 }
 
 impl RulePreview {
+    fn new(query: &str) -> Self {
+        RulePreview { needle: query.trim().to_lowercase(), ..RulePreview::default() }
+    }
+
     fn push(&mut self, line: &str) {
         let line = line.trim();
         if line.is_empty() { return; }
+        if !self.needle.is_empty() && !line.to_lowercase().contains(&self.needle) { return; }
         self.total += 1;
         if self.rows.len() < MAX_RULE_ROWS { self.rows.push(line.to_string()); }
     }
 }
 
-impl<'de> serde::Deserialize<'de> for RulePreview {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct PreviewVisitor;
-        impl<'de> serde::de::Visitor<'de> for PreviewVisitor {
+/// Streams `payload:` into a preview, so a large YAML set never becomes a full tree.
+struct PayloadSeed(RulePreview);
+
+impl<'de> serde::de::DeserializeSeed<'de> for PayloadSeed {
+    type Value = RulePreview;
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        struct MapVisitor(RulePreview);
+        impl<'de> serde::de::Visitor<'de> for MapVisitor {
+            type Value = RulePreview;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a rule provider document with a payload")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut preview = Some(self.0);
+                let mut found = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match (key.as_str(), preview.take()) {
+                        ("payload", Some(current)) => found = Some(map.next_value_seed(SeqSeed(current))?),
+                        (_, current) => {
+                            preview = current;
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                found.ok_or_else(|| serde::de::Error::missing_field("payload"))
+            }
+        }
+        deserializer.deserialize_map(MapVisitor(self.0))
+    }
+}
+
+struct SeqSeed(RulePreview);
+
+impl<'de> serde::de::DeserializeSeed<'de> for SeqSeed {
+    type Value = RulePreview;
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        struct SeqVisitor(RulePreview);
+        impl<'de> serde::de::Visitor<'de> for SeqVisitor {
             type Value = RulePreview;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("a rule payload sequence")
             }
             fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut preview = RulePreview::default();
+                let mut preview = self.0;
                 while let Some(value) = seq.next_element::<Value>()? {
                     if let Some(line) = value.as_str() { preview.push(line); }
                 }
                 Ok(preview)
             }
         }
-        deserializer.deserialize_seq(PreviewVisitor)
+        deserializer.deserialize_seq(SeqVisitor(self.0))
     }
 }
 
-fn parse_rules(body: &str, format: &str) -> RulePreview {
+fn parse_rules(body: &str, format: &str, query: &str) -> RulePreview {
+    use serde::de::DeserializeSeed;
     if format.eq_ignore_ascii_case("yaml") || body.trim_start().starts_with("payload:") {
-        #[derive(serde::Deserialize)]
-        struct Payload { payload: RulePreview }
-        if let Ok(value) = serde_yaml::from_str::<Payload>(body) { return value.payload; }
+        if let Ok(preview) = PayloadSeed(RulePreview::new(query)).deserialize(serde_yaml::Deserializer::from_str(body)) {
+            return preview;
+        }
     }
-    let mut preview = RulePreview::default();
+    let mut preview = RulePreview::new(query);
     for line in body.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') || line.starts_with("//") || line == "payload:" { continue; }
         preview.push(line.trim_start_matches("- ").trim_matches(|c| c == '\'' || c == '"'));
@@ -189,7 +233,8 @@ fn parse_rules(body: &str, format: &str) -> RulePreview {
 }
 
 /// Locate a rule provider's content from the effective config (`config_yaml`).
-pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>) -> ProviderDetail {
+/// A non-empty `query` filters the whole set; the result then lists matches only.
+pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>, query: &str) -> ProviderDetail {
     let mut detail = ProviderDetail { kind: "rule".to_string(), name: name.to_string(), ..ProviderDetail::default() };
     let mut config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
     // Providers commonly share `<<: *anchor` defaults; `type` and `format` live there.
@@ -202,7 +247,7 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>) -> Provid
     let format = get_str(entry, "format").unwrap_or("yaml").to_ascii_lowercase();
     let rules = if kind == "inline" {
         detail.source = Some("inline".to_string());
-        let mut preview = RulePreview::default();
+        let mut preview = RulePreview::new(query);
         if let Some(list) = get(entry, "payload").and_then(Value::as_sequence) {
             for line in list.iter().filter_map(Value::as_str) { preview.push(line); }
         }
@@ -217,16 +262,12 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>) -> Provid
             _ => None,
         };
         detail.source = get_str(entry, "url").map(str::to_string).or_else(|| path.as_ref().map(|path| path.display().to_string()));
-        if format == "mrs" || path.as_ref().is_some_and(|path| path.extension().is_some_and(|ext| ext == "mrs")) {
-            detail.notice = Some("MRS 是二进制格式，无法逐条预览".to_string());
-            return detail;
-        }
         // A preview must never allocate an unbounded provider file in the app process.
         const MAX_PREVIEW_BYTES: u64 = 8 * 1024 * 1024;
         let body = path.as_ref().and_then(|path| {
             let file = fs::File::open(path).ok()?;
-            let mut body = String::new();
-            file.take(MAX_PREVIEW_BYTES + 1).read_to_string(&mut body).ok()?;
+            let mut body = Vec::new();
+            file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut body).ok()?;
             Some(body)
         });
         let Some(body) = body else {
@@ -241,11 +282,33 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>) -> Provid
             detail.notice = Some("规则文件超过 8 MiB，已跳过预览；不影响内核加载完整规则".to_string());
             return detail;
         }
-        parse_rules(&body, &format)
+        let binary = format == "mrs"
+            || path.as_ref().is_some_and(|path| path.extension().is_some_and(|ext| ext == "mrs"))
+            || body.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]);
+        if binary {
+            // MRS is zstd-compressed; decode it the way `mihomo convert-ruleset` dumps it.
+            match crate::mrs::decode(&body) {
+                Ok(decoded) => {
+                    let mut preview = RulePreview::new(query);
+                    for rule in &decoded.rules { preview.push(rule); }
+                    preview
+                }
+                Err(reason) => {
+                    detail.notice = Some(format!("{reason}；不影响内核加载这个规则集"));
+                    return detail;
+                }
+            }
+        } else {
+            parse_rules(&String::from_utf8_lossy(&body), &format, query)
+        }
     };
     detail.total = rules.total;
     if rules.total > MAX_RULE_ROWS {
-        detail.notice = Some(format!("只显示前 {MAX_RULE_ROWS} 条"));
+        detail.notice = Some(if rules.needle.is_empty() {
+            format!("共 {} 条，只列出前 {MAX_RULE_ROWS} 条；搜索会查找全部规则", rules.total)
+        } else {
+            format!("匹配 {} 条，只列出前 {MAX_RULE_ROWS} 条", rules.total)
+        });
     }
     detail.rules = rules.rows;
     detail
@@ -466,23 +529,33 @@ mod tests {
         let home = temp_home("rules");
         fs::write(home.join("rules").join(md5_hex("https://x/ads.yaml")), "payload:\n  - DOMAIN-SUFFIX,ads.com\n  - '+.track.io'\n").unwrap();
         fs::write(home.join("cn.txt"), "# comment\nIP-CIDR,1.0.0.0/8\n\n").unwrap();
+        fs::write(home.join("rules").join(md5_hex("https://x/a.mrs")), include_bytes!("../testdata/domain.mrs")).unwrap();
+        fs::write(home.join("cn.mrs"), include_bytes!("../testdata/ipcidr.mrs")).unwrap();
         let config = r#"
 rule-providers:
   ads: { type: http, url: "https://x/ads.yaml", behavior: domain }
   cn: { type: file, path: ./cn.txt, format: text }
   mine: { type: inline, behavior: classical, payload: [ "DOMAIN,a.com", "DOMAIN,b.com" ] }
-  bin: { type: http, url: "https://x/a.mrs", format: mrs }
+  bin: { type: http, url: "https://x/a.mrs", format: mrs, behavior: domain }
+  ip: { type: file, path: ./cn.mrs, behavior: ipcidr }
   missing: { type: http, url: "https://x/none.yaml" }
 "#;
-        let ads = rule_detail(config, "ads", Some(&home));
+        let ads = rule_detail(config, "ads", Some(&home), "");
         assert_eq!(ads.rules, ["DOMAIN-SUFFIX,ads.com", "+.track.io"]);
         assert_eq!(ads.source.as_deref(), Some("https://x/ads.yaml"));
-        assert_eq!(rule_detail(config, "cn", Some(&home)).rules, ["IP-CIDR,1.0.0.0/8"]);
-        let inline = rule_detail(config, "mine", Some(&home));
+        assert_eq!(rule_detail(config, "cn", Some(&home), "").rules, ["IP-CIDR,1.0.0.0/8"]);
+        let inline = rule_detail(config, "mine", Some(&home), "");
         assert_eq!((inline.total, inline.source.as_deref()), (2, Some("inline")));
-        assert!(rule_detail(config, "bin", Some(&home)).notice.unwrap().contains("MRS"));
-        assert!(rule_detail(config, "missing", Some(&home)).notice.unwrap().contains("还没有找到"));
-        assert!(rule_detail(config, "nope", Some(&home)).notice.is_some());
+        // Binary MRS sets decode like `mihomo convert-ruleset`, by format or file extension.
+        let bin = rule_detail(config, "bin", Some(&home), "");
+        assert_eq!(bin.rules, ["*.wild.io", "+.google.com", ".only-sub.net", "a.b.c.d.e", "example.org"]);
+        assert!(bin.notice.is_none());
+        assert_eq!(rule_detail(config, "ip", Some(&home), "").rules, ["1.0.0.0/23", "10.0.0.0/8", "192.168.1.0/30", "2001:db8::/32"]);
+        assert_eq!(rule_detail(config, "bin", Some(&home), "GOOGLE").rules, ["+.google.com"]);
+        fs::write(home.join("rules").join(md5_hex("https://x/a.mrs")), b"MRS but damaged").unwrap();
+        assert!(rule_detail(config, "bin", Some(&home), "").notice.unwrap().contains("不影响内核"));
+        assert!(rule_detail(config, "missing", Some(&home), "").notice.unwrap().contains("还没有找到"));
+        assert!(rule_detail(config, "nope", Some(&home), "").notice.is_some());
         let _ = fs::remove_dir_all(home);
     }
 
@@ -506,7 +579,7 @@ rule-providers:
     url: {url}
 ");
         for config in [anchored, literal] {
-            let detail = rule_detail(&config, "disney", Some(&home));
+            let detail = rule_detail(&config, "disney", Some(&home), "");
             assert_eq!(detail.rules, ["DOMAIN,disney.com"], "{config}");
             assert!(detail.notice.is_none());
         }
@@ -531,13 +604,21 @@ rule-providers:
     #[test]
     fn large_rule_previews_count_all_but_retain_only_the_limit() {
         let lines = (0..6000).map(|i| format!("DOMAIN,d{i}.example\n")).collect::<String>();
-        let text = parse_rules(&lines, "text");
+        let text = parse_rules(&lines, "text", "");
         assert_eq!(text.total, 6000);
         assert_eq!(text.rows.len(), MAX_RULE_ROWS);
         let yaml = format!("payload:\n{}", lines.lines().map(|line| format!("  - {line}\n")).collect::<String>());
-        let preview = parse_rules(&yaml, "yaml");
+        let preview = parse_rules(&yaml, "yaml", "");
         assert_eq!(preview.total, 6000);
         assert_eq!(preview.rows, text.rows);
+        // A search reaches rules past the preview limit, in both formats.
+        for (body, format) in [(&lines, "text"), (&yaml, "yaml")] {
+            let found = parse_rules(body, format, " D5999.Example ");
+            assert_eq!((found.total, found.rows.as_slice()), (1, ["DOMAIN,d5999.example".to_string()].as_slice()));
+        }
+        // Keys around the payload are skipped, wherever it sits.
+        let wrapped = parse_rules("name: x\npayload:\n  - DOMAIN,a.com\nextra: { k: [1, 2] }\n", "yaml", "");
+        assert_eq!(wrapped.rows, ["DOMAIN,a.com"]);
     }
 
     #[test]

@@ -3441,14 +3441,15 @@ button.delay:hover:not(:disabled) {
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
-.table th:nth-child(1) { width: 25%; }
-.table th:nth-child(2) { width: 10%; }
-.table th:nth-child(3) { width: 15%; }
-.table th:nth-child(4) { width: 13%; }
-.table th:nth-child(5) { width: 10%; }
+.table th:nth-child(1) { width: 23%; }
+.table th:nth-child(2) { width: 9%; }
+.table th:nth-child(3) { width: 14%; }
+/* 代理链 keeps the entry group and the real server side by side. */
+.table th:nth-child(4) { width: 19%; }
+.table th:nth-child(5) { width: 9%; }
 .table th:nth-child(6),
 .table th:nth-child(7),
-.table th:nth-child(8) { width: 8.5%; }
+.table th:nth-child(8) { width: 8%; }
 .table th:last-child { width: 42px; }
 
 .table td {
@@ -6298,4 +6299,203 @@ details.cfg-section[open] .cfg-fold-icon {
     animation: none !important;
     box-shadow: 0 0 0 2px var(--accent);
   }
+}
+
+/* ───────────── Proxy chains ─────────────
+   Entry group, folded middle hops, then the server that carries the traffic.
+   The server keeps the room; the entry gives way first. */
+.chain {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.chain-via {
+  flex: 0 1 auto;
+  min-width: 3.5em;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+  font-weight: 500;
+}
+.chain-more {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--sunken);
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+}
+.chain-sep {
+  flex: none;
+  color: var(--text-3);
+}
+.chain-exit {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Folding slots measure their own width; below it the entry group becomes "+N". */
+.chain-wrap {
+  display: contents;
+}
+.chain-box {
+  display: block;
+  min-width: 0;
+  container-type: inline-size;
+}
+.chain-count {
+  display: none;
+}
+@container (max-width: 240px) {
+  .chain-via,
+  .chain-more {
+    display: none;
+  }
+  .chain-count {
+    display: inline-block;
+    flex: none;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--sunken);
+    color: var(--text-3);
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 16px;
+  }
+}
+.home-groups .group-row-now .chain-box {
+  flex: 1 1 0;
+}
+.conn-meta .chain-box {
+  flex: 1 1 0;
+}
+.conn-meta .conn-process {
+  flex: 0 1 auto;
+  max-width: 30%;
+}
+.chain-steps {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chain-steps li {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-left: 16px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.chain-steps li::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0.55em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.chain-steps li + li::after {
+  content: '';
+  position: absolute;
+  left: 5.5px;
+  bottom: calc(100% - 0.55em - 2px);
+  height: calc(100% - 4px);
+  width: 1px;
+  background: var(--border-strong);
+}
+.chain-steps li.exit {
+  color: var(--text);
+  font-weight: 650;
+}
+.chain-steps li.exit::before {
+  background: var(--accent);
+}
+.chain-step-tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* 紧凑: an auto entry names its current target on the same line. */
+.node-via-inline {
+  margin-left: 6px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+/* 列表 (desktop): one node per row so long airport names read in full. */
+.nodes.list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 4px 0;
+  background: var(--surface);
+}
+.nodes.list .node {
+  min-height: 46px;
+  padding: 6px 12px 6px 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.nodes.list .node + .node::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 18px;
+  right: 12px;
+  height: 1px;
+  background: var(--border);
+}
+.nodes.list .node:hover:not(.locked) {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+.nodes.list .node.selected {
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+.nodes.list .node.selected::before {
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  border-radius: 0 3px 3px 0;
+}
+.nodes.list .node.selected + .node::after,
+.nodes.list .node.selected::after {
+  display: none;
+}
+.nodes.list .node-select {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-4);
+}
+.nodes.list .node-name {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.nodes.list .node-meta {
+  flex: 0 1 300px;
+  text-align: right;
+}
+.nodes.list .node-meta .node-type:empty {
+  display: none;
 }

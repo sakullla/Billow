@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ChainPath from '../components/ChainPath.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
@@ -208,11 +209,10 @@ function groupDelay(group: NodeGroup): { text: string; tone: string } {
   return { text: delayText(delay, failed), tone: delayTone(delay, failed) }
 }
 
-/** "自动选择 → 香港 01" when a group points at another group, so the real server is visible (R14). */
-function nowText(group: NodeGroup): string {
+/** 自动选择 › 香港 01 when a group points at another group, so the real server stays visible (R14). */
+function hopsOf(group: NodeGroup): string[] {
   const chain = resolveChain(group.name, snap.value.node_catalog)
-  if (!chain.length) return group.now || '—'
-  return chain.length === 1 ? chain[0]! : `${chain[0]} → ${chain[chain.length - 1]}`
+  return chain.length ? chain : group.now ? [group.now] : []
 }
 
 function onPrimary() {
@@ -327,7 +327,8 @@ function onPrimary() {
                 <Icon name="globe" :size="14" class="hero-node-icon" />
                 <span v-if="!compact" class="hero-node-group">{{ primaryGroup.name }}</span>
                 <span v-if="!compact" class="hero-node-sep" aria-hidden="true">·</span>
-                <span class="hero-node-name ellipsis" :title="nowText(primaryGroup)">{{ primaryGroup.now ? nowText(primaryGroup) : primaryGroup.name }}</span>
+                <!-- Phones drop the group label here, so they show only the server the traffic leaves through. -->
+                <ChainPath class="hero-node-name" :hops="primaryGroup.now ? (compact ? hopsOf(primaryGroup).slice(-1) : hopsOf(primaryGroup)) : [primaryGroup.name]" />
                 <span
                   v-if="primaryNode && (primaryNode.delay_ms != null || primaryNode.failed)"
                   class="hero-node-delay mono"
@@ -596,7 +597,7 @@ function onPrimary() {
                 <div class="group-row-text">
                   <span class="group-row-name">{{ group.name }}</span>
                   <span class="group-row-now">
-                    <span class="ellipsis" :title="nowText(group)" data-testid="home-group-now">{{ nowText(group) }}</span>
+                    <ChainPath :hops="hopsOf(group)" fold data-testid="home-group-now" />
                     <Icon name="chevron-right" :size="13" class="group-tile-arrow" />
                   </span>
                 </div>

@@ -372,7 +372,7 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "billow"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -382,6 +382,7 @@ dependencies = [
  "jni 0.21.1",
  "md-5",
  "ndk-context",
+ "ruzstd",
  "semver",
  "serde",
  "serde_json",
@@ -4154,6 +4155,12 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "ruzstd"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
 
 [[package]]
 name = "ryu"

@@ -1,10 +1,10 @@
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
-import { createDemoBackend } from './lib/demo'
+import { DEMO_LONG_NAMES, createDemoBackend } from './lib/demo'
 import type { Store } from './lib/store'
 
-// Regression coverage for docs/requirements/2026-11-08-ui-ux-polish.md (R1–R8, R10–R21).
+// Regression coverage for docs/requirements/2026-11-08-ui-ux-polish.md (R1–R8, R10–R24).
 
 async function settle(ms = 1000) {
   await vi.advanceTimersByTimeAsync(ms)
@@ -98,15 +98,20 @@ describe('UI/UX polish', () => {
   it('R3: desktop proxy view controls carry text and a pressed state', async () => {
     const { wrapper } = await mountApp()
     await openPage(wrapper, 'proxies')
-    expect(wrapper.find('[data-testid="toggle-dense"]').text()).toContain('紧凑')
     expect(wrapper.find('[data-testid="locate-active-node"]').text()).toContain('定位')
 
-    const dense = wrapper.find('[data-testid="toggle-dense"]')
-    expect(dense.attributes('aria-pressed')).toBe('false')
-    await dense.trigger('click')
-    expect(wrapper.find('[data-testid="toggle-dense"]').attributes('aria-pressed')).toBe('true')
-    expect(wrapper.find('[data-testid="toggle-dense"]').classes()).toContain('active')
-    expect(wrapper.find('[data-testid="toggle-dense"]').attributes('aria-label')).toBe('紧凑视图')
+    // One button names the current view and cycles 卡片 → 紧凑 → 列表.
+    const view = () => wrapper.find('[data-testid="node-view"]')
+    expect(view().text()).toBe('卡片')
+    expect(view().attributes('title')).toBe('切换为紧凑视图')
+    await view().trigger('click')
+    expect(view().text()).toBe('紧凑')
+    expect(view().classes()).toContain('active')
+    expect(wrapper.find('.nodes').classes()).toContain('dense')
+    await view().trigger('click')
+    expect(view().text()).toBe('列表')
+    await view().trigger('click')
+    expect(view().text()).toBe('卡片')
 
     const all = wrapper.find('[data-testid="toggle-all"]')
     if (all.text() === '展开全部') await all.trigger('click')
@@ -170,7 +175,10 @@ describe('UI/UX polish', () => {
     await settle(500)
     await openPage(wrapper, 'home')
     const autoNow = store.snapshot.value.node_catalog.find((group) => group.name === '自动选择')!.now
-    expect(wrapper.find('[data-group="节点选择"] [data-testid="home-group-now"]').text()).toBe(`自动选择 → ${autoNow}`)
+    const now = wrapper.find('[data-group="节点选择"] [data-testid="home-group-now"]')
+    expect(now.find('.chain-via').text()).toBe('自动选择')
+    expect(now.find('.chain-exit').text()).toBe(autoNow)
+    expect(now.find('.chain').attributes('title')).toBe(`自动选择 → ${autoNow}`)
   })
 
   it('R11: subscription quota nodes collapse into an info line', async () => {
@@ -542,6 +550,84 @@ describe('UI/UX polish', () => {
       expect(body().find('.modal [data-testid="age-input"]').exists()).toBe(true)
       expect(body().find('[data-testid="profile-advanced"]').attributes('open')).toBeDefined()
       expect(document.activeElement).toBe(body().find('[data-testid="age-input"]').element)
+    })
+  })
+
+  describe('R22–R24: long node names and proxy chains', () => {
+    it('R22: desktop switches between card, dense and list views, remembering the choice', async () => {
+      localStorage.setItem('billow:proxy-dense', 'true')
+      const { wrapper } = await mountApp({ longNames: true })
+      await openPage(wrapper, 'proxies')
+      // The old 紧凑 toggle carries over.
+      expect(wrapper.find('[data-testid="node-view"]').attributes('data-value')).toBe('dense')
+
+      await wrapper.find('[data-testid="node-view"]').trigger('click')
+      const grid = wrapper.find('[data-group-card="节点选择"] .nodes')
+      expect(grid.classes()).toContain('list')
+      expect(grid.classes()).not.toContain('dense')
+      const long = grid.find(`[data-node="${DEMO_LONG_NAMES[0]}"] .node-name`)
+      expect(long.text()).toBe(DEMO_LONG_NAMES[0])
+      expect(grid.find(`[data-node="${DEMO_LONG_NAMES[0]}"] [data-testid="node-meta"]`).exists()).toBe(true)
+      expect(localStorage.getItem('billow:proxy-view')).toBe('"list"')
+    })
+
+    it('R23: group headers and dense entries name the server a nested chain ends at', async () => {
+      const { wrapper } = await mountApp({ longNames: true })
+      await connect(wrapper)
+      await openPage(wrapper, 'proxies')
+      const store = storeOf(wrapper)
+      const autoNow = store.snapshot.value.node_catalog.find((group) => group.name === '自动选择')!.now
+      expect(autoNow).toBeTruthy()
+
+      const head = wrapper.find('[data-group-card="节点选择"] .group-now')
+      expect(head.find('.chain-via').text()).toBe('自动选择')
+      expect(head.find('.chain-exit').text()).toBe(autoNow)
+
+      await wrapper.find('[data-testid="node-view"]').trigger('click')
+      const entry = wrapper.find('[data-group-card="节点选择"] [data-node="自动选择"]')
+      expect(entry.find('.node-via-inline').text()).toBe(`→ ${autoNow}`)
+      expect(entry.find('.node-name').attributes('title')).toBe(`自动选择 → ${autoNow}`)
+
+      // Home tiles fold the middle hops but keep the server.
+      await openPage(wrapper, 'home')
+      const tile = wrapper.find('[data-group="漏网之鱼"] [data-testid="home-group-now"]')
+      expect(tile.find('.chain-via').text()).toBe('节点选择')
+      expect(tile.find('.chain-more').text()).toBe('+1')
+      expect(tile.find('.chain-exit').text()).toBe(autoNow)
+      expect(tile.find('.chain').attributes('title')).toBe(`节点选择 → 自动选择 → ${autoNow}`)
+    })
+
+    it('R24: connections show entry and exit, and the detail lists every hop', async () => {
+      const { wrapper } = await mountApp({ longNames: true })
+      await connect(wrapper)
+      await openPage(wrapper, 'connections')
+      await settle(100)
+      const store = storeOf(wrapper)
+      const autoNow = store.snapshot.value.node_catalog.find((group) => group.name === '自动选择')!.now
+      const row = wrapper.findAll('[data-testid="connection-row"]').find((item) => item.find('.chain-via').exists())!
+      expect(row).toBeTruthy()
+      const chain = row.find('[data-testid="chain-path"]')
+      expect(chain.find('.chain-via').text()).toBe('漏网之鱼')
+      expect(chain.find('.chain-exit').text()).toBe(autoNow)
+      expect(chain.find('.chain-exit').classes()).toContain('outbound-pill')
+      expect(chain.attributes('title')).toBe(`漏网之鱼 → 节点选择 → 自动选择 → ${autoNow}`)
+
+      await row.trigger('click')
+      await flushPromises()
+      const hops = [...document.body.querySelectorAll('[data-testid="chain-steps"] li')]
+      expect(hops.map((hop) => hop.querySelector('.chain-step-name')?.textContent)).toEqual(['漏网之鱼', '节点选择', '自动选择', autoNow])
+      expect(hops[3]?.classList.contains('exit')).toBe(true)
+      expect(hops[3]?.textContent).toContain('出口')
+    })
+
+    it('R24: the phone hero pill names only the server', async () => {
+      const { wrapper } = await mountApp({ longNames: true, platform: 'android' }, 390)
+      await connect(wrapper)
+      const store = storeOf(wrapper)
+      const autoNow = store.snapshot.value.node_catalog.find((group) => group.name === '自动选择')!.now
+      const pill = wrapper.find('[data-testid="hero-node-pill"]')
+      expect(pill.find('.chain-via').exists()).toBe(false)
+      expect(pill.find('.chain-exit').text()).toBe(autoNow)
     })
   })
 })

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import ChainPath from '../components/ChainPath.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
@@ -56,7 +57,25 @@ watch(optionsOpen, (value) => writePref('proxy-options-open', value))
 const toolbarHeight = ref(0)
 let toolbarObserver: ResizeObserver | null = null
 const sort = ref<Sort>(readPref('proxy-sort', 'default'))
-const dense = ref<boolean>(readPref('proxy-dense', false))
+type NodeView = 'card' | 'dense' | 'list'
+/** Cards show protocol tags, 紧凑 fits more nodes per screen, 列表 gives every name a full row. */
+const VIEWS: { id: NodeView; label: string; icon: string }[] = [
+  { id: 'card', label: '卡片', icon: 'grid' },
+  { id: 'dense', label: '紧凑', icon: 'grid-dense' },
+  { id: 'list', label: '列表', icon: 'list' },
+]
+function readView(): NodeView {
+  const stored = readPref<string>('proxy-view', '')
+  if (stored === 'card' || stored === 'dense' || stored === 'list') return stored
+  // Earlier versions only stored the 紧凑 toggle.
+  return readPref('proxy-dense', false) ? 'dense' : 'card'
+}
+const view = ref<NodeView>(readView())
+const currentView = computed(() => VIEWS.find((item) => item.id === view.value) ?? VIEWS[0]!)
+const nextView = computed(() => VIEWS[(VIEWS.indexOf(currentView.value) + 1) % VIEWS.length]!)
+const dense = computed(() => view.value === 'dense')
+/** Phones already list one node per row; there 列表 is simply their default view. */
+const listView = computed(() => !props.compact && view.value === 'list')
 /**
  * Auto groups (url-test, fallback, load-balance) are picked by the kernel and cannot be
  * switched by hand, so the page leaves them out by default; their current pick already
@@ -82,6 +101,12 @@ const catalogByName = computed(() => new Map(catalog.value.map((group) => [group
 function autoOf(node: NodeItem): NodeGroup | null {
   const group = catalogByName.value.get(node.name)
   return group && group.kind === 'auto' ? group : null
+}
+
+/** Where a group currently leads, ending at the server that carries the traffic. */
+function groupHops(group: NodeGroup): string[] {
+  const chain = resolveChain(group.name, catalog.value)
+  return chain.length ? chain : group.now ? [group.now] : []
 }
 
 /** The server an auto entry currently resolves to, following nested groups (R14). */
@@ -112,7 +137,7 @@ const open = ref<Set<string>>(storedOpen ?? defaultOpen())
 if (!storedOpen && open.value.size > 0) persistOpen()
 
 watch(sort, (value) => writePref('proxy-sort', value))
-watch(dense, (value) => writePref('proxy-dense', value))
+watch(view, (value) => writePref('proxy-view', value))
 
 const needle = computed(() => query.value.trim().toLowerCase())
 
@@ -485,12 +510,12 @@ onBeforeUnmount(() => {
   if (store.focusGroup.value) store.focusGroup.value = null
 })
 
-/** Phones list one node per row and offer a two-column grid as the dense view; desktop is the reverse. */
+/** Phones list one node per row and offer a two-column grid as their only other view. */
 /** A pressed toggle keeps one stable name; aria-pressed carries the on/off state (R3). */
-const denseLabel = computed(() => (props.compact ? '双列视图' : '紧凑视图'))
-const denseIcon = computed(() => (props.compact ? 'grid' : 'list'))
+const denseLabel = '双列视图'
+const denseIcon = 'grid'
 
-const optionsActive = computed(() => sort.value !== 'default' || dense.value)
+const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card')
 </script>
 
 <template>
@@ -607,7 +632,23 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
           <Icon name="locate" :size="15" />
           <span class="tool-btn-label">定位</span>
         </button>
+        <!-- One button names the current view and steps through the rest. -->
         <button
+          v-if="!compact"
+          type="button"
+          class="btn ghost sm tool-btn"
+          :class="{ active: view !== 'card' }"
+          :data-value="view"
+          :aria-label="`节点视图：${currentView.label}，点击切换为${nextView.label}`"
+          :title="`切换为${nextView.label}视图`"
+          data-testid="node-view"
+          @click="view = nextView.id"
+        >
+          <Icon :name="currentView.icon" :size="15" />
+          <span class="tool-btn-label">{{ currentView.label }}</span>
+        </button>
+        <button
+          v-else
           type="button"
           class="btn ghost sm tool-btn"
           :class="{ active: dense }"
@@ -615,10 +656,10 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
           :aria-label="denseLabel"
           :title="denseLabel"
           data-testid="toggle-dense"
-          @click="dense = !dense"
+          @click="view = dense ? 'card' : 'dense'"
         >
           <Icon :name="denseIcon" :size="15" />
-          <span class="tool-btn-label">{{ compact ? '双列' : '紧凑' }}</span>
+          <span class="tool-btn-label">双列</span>
         </button>
         <button type="button" class="btn ghost sm tool-btn" data-testid="toggle-all" @click="toggleAll">
           <Icon name="chevron-down" :size="15" :class="{ 'icon-flip': allExpanded }" />
@@ -661,7 +702,7 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
     <section
       v-for="(group, index) in groups"
       :key="group.name"
-      v-memo="[group, autoNowKey, isOpen(group.name), dense, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, store.activeTest.value, store.pendingTests.value.size, groupTestedAt(group), busyKeys]"
+      v-memo="[group, autoNowKey, isOpen(group.name), view, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, store.activeTest.value, store.pendingTests.value.size, groupTestedAt(group), busyKeys]"
       class="card group"
       :class="{ open: isOpen(group.name), located: store.focusGroup.value === group.name }"
       :data-group-card="group.name"
@@ -685,7 +726,8 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
             </span>
             <span class="group-now small">
               <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
-              <span class="group-now-name">{{ group.now || (group.kind === 'auto' ? '连接后显示' : '—') }}</span>
+              <ChainPath v-if="group.now" class="group-now-name" :hops="groupHops(group)" />
+              <span v-else class="group-now-name">{{ group.kind === 'auto' ? '连接后显示' : '—' }}</span>
               <span v-if="groupNowDelay(group)" class="group-delay mono" :class="groupNowTone(group)">{{ groupNowDelay(group) }}</span>
               <span v-if="store.activeTest.value?.group === group.name" class="small mono" data-testid="group-test-progress" aria-live="polite">已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
               <span v-else-if="groupTestedAt(group)" class="group-tested">测速 {{ formatRelative(groupTestedAt(group)!) }}</span>
@@ -715,6 +757,7 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
         :ref="(el) => { if (el) grids.set(group.name, el as InstanceType<typeof ProxyNodeGrid>); else grids.delete(group.name) }"
         :nodes="group.nodes"
         :dense="dense"
+        :list="listView"
         :compact="compact"
       >
         <template v-if="groupStrategy(group.group_type) || group.info?.length" #header>
@@ -755,7 +798,7 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
               @keydown.enter.prevent="pick(group, node)"
               @keydown.space.prevent="pick(group, node)"
             >
-              <span class="node-name" :title="node.name">
+              <span class="node-name" :title="dense && autoOf(node) && viaOf(node) ? `${node.name} → ${viaOf(node)}` : node.name">
                 <span
                   v-if="groupStrategy(group.group_type)?.ordered"
                   class="node-rank mono"
@@ -765,6 +808,8 @@ const optionsActive = computed(() => sort.value !== 'default' || dense.value)
                 <template v-for="(part, partIndex) in highlight(node.name)" :key="partIndex">
                   <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
                 </template>
+                <!-- 紧凑 has no meta line, so an auto entry keeps its target beside the name. -->
+                <span v-if="dense && autoOf(node) && viaOf(node)" class="node-via-inline">→ {{ viaOf(node) }}</span>
               </span>
               <!-- An auto group entry says how it picks and where it currently points (R14). -->
               <span v-if="!dense && autoOf(node)" class="node-meta node-via" data-testid="node-via">

@@ -2,14 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { NodeItem } from '../lib/types'
 
-const props = defineProps<{ nodes: NodeItem[]; dense: boolean; compact?: boolean }>()
+const props = defineProps<{ nodes: NodeItem[]; dense: boolean; list?: boolean; compact?: boolean }>()
 const root = ref<HTMLElement | null>(null)
 const header = ref<HTMLElement | null>(null)
 const columns = ref(1)
 const top = ref(0)
 const viewport = ref(600)
-const gap = computed(() => props.compact ? (props.dense ? 7 : 0) : props.dense ? 6 : 9)
-const height = computed(() => props.compact ? (props.dense ? 56 : 76) : props.dense ? 42 : 68)
+const gap = computed(() => props.compact ? (props.dense ? 7 : 0) : props.list ? 0 : props.dense ? 6 : 9)
+const height = computed(() => props.compact ? (props.dense ? 56 : 76) : props.list ? 46 : props.dense ? 42 : 68)
 const stride = computed(() => height.value + gap.value)
 // Small groups retain their natural wrapping and keyboard order.
 const virtual = computed(() => props.nodes.length > 80)
@@ -101,7 +101,7 @@ watch(virtual, (enabled) => {
   if (enabled) observe()
   else disconnect()
 }, { flush: 'post' })
-watch(() => [props.nodes, props.dense, props.compact], () => { void nextTick(schedule) })
+watch(() => [props.nodes, props.dense, props.list, props.compact], () => { void nextTick(schedule) })
 onBeforeUnmount(() => {
   disposed = true
   disconnect()
@@ -110,7 +110,7 @@ defineExpose({ reveal })
 </script>
 
 <template>
-  <div ref="root" class="nodes" :class="{ dense, 'windowed-nodes': virtual }" :style="virtual ? { '--node-height': `${height}px` } : undefined" @keydown="onKeydown">
+  <div ref="root" class="nodes" :class="{ dense, list, 'windowed-nodes': virtual }" :style="virtual ? { '--node-height': `${height}px` } : undefined" @keydown="onKeydown">
     <div v-if="$slots.header" ref="header" class="node-grid-header"><slot name="header" /></div>
     <div v-if="range.start > 0" class="node-spacer" :style="{ height: `${before}px` }" aria-hidden="true" />
     <slot :nodes="visible" />

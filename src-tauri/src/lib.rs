@@ -5,6 +5,7 @@ mod diagnostics;
 #[cfg(target_os = "windows")]
 mod elevation;
 mod kernel;
+mod mrs;
 mod nodes;
 mod packed;
 mod profile;
@@ -832,12 +833,17 @@ async fn provider_action(app: AppHandle, kind: String, name: String, action: Str
 
 /// Nodes of a proxy provider (live from the kernel) or rules of a rule provider (from its file).
 #[tauri::command]
-async fn provider_detail(app: AppHandle, kind: String, name: String) -> Result<resources::ProviderDetail, String> {
+async fn provider_detail(
+    app: AppHandle,
+    kind: String,
+    name: String,
+    query: Option<String>,
+) -> Result<resources::ProviderDetail, String> {
     if kind == "rule" {
         let config = with_profile(&app, |session| session.book.effective_config())?;
         let home = kernel_home(&app);
         return tauri::async_runtime::spawn_blocking(move || {
-            resources::rule_detail(&config, &name, home.as_deref())
+            resources::rule_detail(&config, &name, home.as_deref(), query.as_deref().unwrap_or(""))
         })
         .await
         .map_err(|err| err.to_string());

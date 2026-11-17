@@ -100,7 +100,8 @@ export interface Backend {
   /** Opens the Windows UWP loopback exemption tool. */
   openUwpTool(): Promise<void>
   /** Nodes of a proxy provider or rules of a rule provider. */
-  providerDetail(kind: 'proxy' | 'rule', name: string): Promise<ProviderDetail>
+  /** A query filters a rule set's full content, beyond the rows a plain preview carries. */
+  providerDetail(kind: 'proxy' | 'rule', name: string, query?: string): Promise<ProviderDetail>
   /** GEO database files the kernel loads, with size and modification time. */
   geoFiles(): Promise<GeoFile[]>
   flushCache(which: 'fakeip' | 'dns'): Promise<Snapshot>
@@ -225,7 +226,7 @@ function createTauriBackend(): Backend {
     providerAction: (kind, name, action) => call<void>('provider_action', { kind, name, action }),
     upgradeGeo: (key) => call<GeoFile[]>('upgrade_geo', key ? { key } : {}),
     openUwpTool: () => call<void>('open_uwp_tool'),
-    providerDetail: (kind, name) => call<ProviderDetail>('provider_detail', { kind, name }),
+    providerDetail: (kind, name, query) => call<ProviderDetail>('provider_detail', { kind, name, query: query ?? null }),
     geoFiles: () => call<GeoFile[]>('geo_files'),
     flushCache: (which) => snap('flush_cache', { which }),
     clearLogs: () => snap('clear_logs'),
@@ -250,7 +251,7 @@ function createTauriBackend(): Backend {
   }
 }
 
-/** Browser previews can pick the demo shape: `?demo=android`, `?demo=empty` and/or `?demo=many`. */
+/** Browser previews can pick the demo shape: `?demo=android|empty|many|long`, comma-separated. */
 function demoOptionsFromUrl() {
   if (typeof window === 'undefined') return {}
   const flags = new URLSearchParams(window.location.search).getAll('demo').join(',').split(',')
@@ -258,6 +259,7 @@ function demoOptionsFromUrl() {
     platform: flags.includes('android') ? ('android' as const) : ('desktop' as const),
     profiles: !flags.includes('empty'),
     manyProviders: flags.includes('many'),
+    longNames: flags.includes('long'),
   }
 }
 

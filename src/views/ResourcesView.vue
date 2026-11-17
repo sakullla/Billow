@@ -379,11 +379,54 @@ const detailProxies = computed(() => {
 })
 /** Rule lists can hold thousands of lines; the sheet renders a capped slice and says so. */
 const RULE_PAGE = 400
+/** The backend previews the first rows of a large set; searching it must ask for all of them. */
+const detailPartial = computed(() => {
+  const data = detail.value?.data
+  return !!data && data.kind === 'rule' && data.total > data.rules.length
+})
+const detailSearch = shallowRef<{ query: string; data: ProviderDetail | null; error: string | null; pending: boolean } | null>(null)
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+let searchVersion = 0
+watch([detailNeedle, detailPartial], ([needle, partial]) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = null
+  const version = ++searchVersion
+  if (!needle || !partial || !detail.value) {
+    detailSearch.value = null
+    return
+  }
+  const row = detail.value.row
+  // Earlier matches stay visible until the new ones arrive.
+  detailSearch.value = { query: needle, data: detailSearch.value?.data ?? null, error: null, pending: true }
+  searchTimer = setTimeout(async () => {
+    searchTimer = null
+    try {
+      const data = await store.backend.providerDetail(row.kind, row.name, needle)
+      if (!disposed && version === searchVersion) detailSearch.value = { query: needle, data, error: null, pending: false }
+    } catch (err) {
+      if (!disposed && version === searchVersion) detailSearch.value = { query: needle, data: null, error: err instanceof Error ? err.message : String(err), pending: false }
+    }
+  }, 250)
+})
+/** Still waiting for the full-set search of the current text. */
+const detailSearching = computed(() => !!detailSearch.value?.pending)
 const detailRules = computed(() => {
-  const rows = detail.value?.data?.rules ?? []
   const needle = detailNeedle.value
+  if (needle && detailPartial.value) return detailSearch.value?.data?.rules ?? []
+  const rows = detail.value?.data?.rules ?? []
   return needle ? rows.filter((rule) => rule.toLowerCase().includes(needle)) : rows
 })
+/** Matches across the whole set, which can exceed the rows sent back. */
+const detailRuleCount = computed(() =>
+  detailNeedle.value && detailPartial.value ? detailSearch.value?.data?.total ?? 0 : detailRules.value.length,
+)
+const detailNotice = computed(() =>
+  detailNeedle.value && detailPartial.value ? detailSearch.value?.error ?? detailSearch.value?.data?.notice ?? null : detail.value?.data?.notice ?? null,
+)
+/** MrsRule → MRS, YamlRule → YAML: the file format named the way configs write it. */
+function ruleFormat(row: ProviderRow): string {
+  return row.format.replace(/Rule$/, '').toUpperCase()
+}
 
 async function openDetail(row: ProviderRow) {
   const version = ++detailVersion
@@ -428,6 +471,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  if (searchTimer) clearTimeout(searchTimer)
   disposed = true
   loadVersion++
   detailVersion++
@@ -826,7 +870,7 @@ onMounted(() => {
       :title="detail.row.name"
       :subtitle="detail.row.kind === 'proxy'
         ? `代理集 · ${detail.data ? detail.data.total : detail.row.count} 个节点`
-        : `规则集 · ${(detail.data?.total || detail.row.count).toLocaleString()} 条规则${detail.row.behavior ? ` · ${detail.row.behavior}` : ''}`"
+        : `规则集 · ${(detail.data?.total || detail.row.count).toLocaleString()} 条规则${detail.row.behavior ? ` · ${detail.row.behavior}` : ''}${ruleFormat(detail.row) ? ` · ${ruleFormat(detail.row)}` : ''}`"
       @close="detail = null"
     >
       <div class="provider-detail" data-testid="provider-detail">
@@ -846,8 +890,9 @@ onMounted(() => {
         <div v-if="detail.data && (detail.data.proxies.length || detail.data.rules.length)" class="search">
           <Icon name="search" :size="16" />
           <input v-model="detailQuery" type="search" :placeholder="detail.row.kind === 'proxy' ? '搜索节点、协议或 UDP' : '搜索规则'" />
-          <span v-if="detailNeedle" class="small muted mono">
-            {{ detail.row.kind === 'proxy' ? detailProxies.length : detailRules.length }}
+          <span v-if="detailNeedle && detailSearching" class="spinner xs" aria-label="正在搜索全部规则" />
+          <span v-else-if="detailNeedle" class="small muted mono" data-testid="provider-match-count">
+            {{ (detail.row.kind === 'proxy' ? detailProxies.length : detailRuleCount).toLocaleString() }}
           </span>
           <button
             v-if="detailQuery"
@@ -863,7 +908,7 @@ onMounted(() => {
         <p v-if="detail.error" class="field-error" role="alert">{{ detail.error }}</p>
         <div v-else-if="!detail.data" class="detail-loading muted small"><span class="spinner xs" /> 正在读取…</div>
         <template v-else>
-          <p v-if="detail.data.notice" class="banner info small" data-testid="provider-notice"><Icon name="info" :size="15" />{{ detail.data.notice }}</p>
+          <p v-if="detailNotice" class="banner info small" data-testid="provider-notice"><Icon name="info" :size="15" />{{ detailNotice }}</p>
           <ul v-if="detail.row.kind === 'proxy'" class="detail-list">
             <li v-for="proxy in detailProxies.slice(0, RULE_PAGE)" :key="proxy.name" class="detail-proxy">
               <span class="grow min0">
@@ -887,7 +932,7 @@ onMounted(() => {
               <span v-if="ruleParts(rule).type" class="rule-type">{{ ruleParts(rule).type }}</span>
               <span class="ellipsis">{{ ruleParts(rule).rest }}</span>
             </li>
-            <li v-if="!detailRules.length" class="muted small empty-line">没有匹配的规则</li>
+            <li v-if="!detailRules.length" class="muted small empty-line">{{ detailSearching ? `正在搜索全部 ${detail.data.total.toLocaleString()} 条…` : '没有匹配的规则' }}</li>
             <li v-else-if="detailRules.length > RULE_PAGE" class="muted small empty-line">
               还有 {{ (detailRules.length - RULE_PAGE).toLocaleString() }} 条，输入关键词缩小范围
             </li>

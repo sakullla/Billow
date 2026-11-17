@@ -1633,7 +1633,7 @@ describe('App', () => {
     localStorage.removeItem('billow.resources.collapsed')
   })
 
-  it('opens provider details: nodes with tags, rules, and a notice for binary sets', async () => {
+  it('opens provider details: nodes with tags, rules, and decoded binary sets', async () => {
     const { wrapper } = await mountApp()
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
@@ -1665,9 +1665,24 @@ describe('App', () => {
     bodyClick('[data-testid="close-provider-detail"]')
     await flushPromises()
 
+    // MRS sets are decoded; large ones preview the first rows and search the whole set.
+    const backend = storeOf(wrapper).backend
+    const detailCall = vi.spyOn(backend, 'providerDetail')
     await wrapper.find('[data-testid="open-provider-cn-domains"]').trigger('click')
     await settle(300)
-    expect(document.body.querySelector('[data-testid="provider-notice"]')?.textContent).toContain('MRS')
+    expect(document.body.querySelector('.modal-head')?.textContent).toContain('MRS')
+    expect(sheet()?.querySelector('.detail-rules li')?.textContent).toBe('site000000.cn')
+    expect(document.body.querySelector('[data-testid="provider-notice"]')?.textContent).toContain('搜索会查找全部规则')
+    const ruleSearch = sheet()!.querySelector<HTMLInputElement>('input[type="search"]')!
+    ruleSearch.value = 'site112479'
+    ruleSearch.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(sheet()?.textContent).toContain('正在搜索全部 112,480 条')
+    await settle(600)
+    expect(detailCall).toHaveBeenLastCalledWith('rule', 'cn-domains', 'site112479')
+    expect([...sheet()!.querySelectorAll('.detail-rules li')].map((li) => li.textContent)).toEqual(['site112479.cn'])
+    expect(sheet()?.querySelector('[data-testid="provider-match-count"]')?.textContent?.trim()).toBe('1')
+    expect(document.body.querySelector('[data-testid="provider-notice"]')).toBeNull()
   })
 
   it('discards provider results and an open detail after the kernel stops', async () => {

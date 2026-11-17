@@ -70,7 +70,16 @@ interface DemoOptions {
   failRefreshId?: string
   /** Add a dozen more rule sets, the shape of a typical rule-heavy subscription. */
   manyProviders?: boolean
+  /** Airport-style long node names and a nested group chain (`?demo=long`). */
+  longNames?: boolean
 }
+
+/** Real subscriptions pack region, line, rate and unlocks into one name. */
+export const DEMO_LONG_NAMES = [
+  '🇭🇰 香港 HKT 家宽 01 丨 0.8x 倍率 丨 解锁 Netflix / Disney+ / ChatGPT 丨 IPLC 专线',
+  '🇺🇸 美国 洛杉矶 CN2 GIA 高速 02 [x1.5] Hysteria2 原生 IP 落地',
+  '🇯🇵 日本 东京 Oracle → 新加坡 中转 → 美国 落地（链式）',
+]
 
 const DUPLICATE_ERROR = '该订阅已存在'
 const AGE_KEY_ERROR = 'age 私钥格式不正确：每行一个以 AGE-SECRET-KEY-1 开头的私钥，# 开头的行视为注释'
@@ -82,7 +91,7 @@ const DEMO_GROUP_ICONS: Record<string, string> = {
 }
 
 export function createDemoBackend(options: DemoOptions = {}): Backend {
-  const names = nodeNames()
+  const names = options.longNames ? [...DEMO_LONG_NAMES, ...nodeNames()] : nodeNames()
   const groupIcons = options.groupIcons ?? DEMO_GROUP_ICONS
   const rulesExtra = options.rulesExtra !== false
   const failRefreshId = options.failRefreshId ?? null
@@ -104,6 +113,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   }
   const delays = new Map<string, number | null>()
   const selections = new Map<string, string>([['节点选择', '香港 01']])
+  if (options.longNames) {
+    selections.set('节点选择', '自动选择')
+    selections.set('漏网之鱼', '节点选择')
+  }
   const autoNow = new Map<string, string>()
   let connections: ConnectionRow[] = []
   let totals = { up: 0, down: 0 }
@@ -376,7 +389,15 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
 
   function makeConnection(): ConnectionRow {
     const host = HOSTS[Math.floor(Math.random() * HOSTS.length)]
-    const chain = host.includes('bilibili') ? 'DIRECT' : selections.get('节点选择') ?? '香港 01'
+    const target = host.includes('bilibili') ? 'DIRECT' : options.longNames ? '漏网之鱼' : '节点选择'
+    const hops: string[] = []
+    for (let at: string | undefined = target; at && !hops.includes(at); ) {
+      hops.unshift(at)
+      const group = catalog().find((item) => item.name === at)
+      at = group ? group.now || undefined : undefined
+    }
+    if (!options.longNames && hops.length > 2) hops.splice(1, hops.length - 2)
+    const chain = hops[0] ?? 'DIRECT'
     return {
       id: Math.random().toString(16).slice(2, 10) + '-' + Date.now().toString(16),
       host,
@@ -388,7 +409,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       process: PROCESSES[Math.floor(Math.random() * PROCESSES.length)],
       rule: host.includes('bilibili') ? 'DomainSuffix' : 'Match',
       rule_payload: host.includes('bilibili') ? 'bilibili.com' : '',
-      chains: chain === 'DIRECT' ? ['DIRECT'] : [chain, '节点选择'],
+      chains: hops,
       upload: Math.floor(Math.random() * 40_000),
       download: Math.floor(Math.random() * 4_000_000),
       start: new Date(Date.now() - Math.floor(Math.random() * 600_000)).toISOString(),
@@ -881,7 +902,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       await wait(60)
       log('info', '已打开 UWP 回环豁免工具')
     },
-    async providerDetail(kind, name) {
+    async providerDetail(kind, name, query) {
       await wait(200)
       const row = providerRows.find((item) => item.kind === kind && item.name === name)
       if (!row) throw new Error('没有这个资源')
@@ -895,13 +916,20 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         }))
         return { kind, name, proxies, rules: [], total: proxies.length, notice: null, source: null }
       }
-      if (row.format === 'MrsRule') {
-        return { kind, name, proxies: [], rules: [], total: 0, notice: 'MRS 是二进制格式，无法逐条预览', source: 'https://example.com/cn.mrs' }
-      }
-      const rules = row.vehicle === 'Inline'
+      // Mirrors the backend: MRS decodes to domains, previews stop at 5000 rows, a query searches all.
+      const all = row.vehicle === 'Inline'
         ? ['DOMAIN-SUFFIX,local', 'DOMAIN-SUFFIX,lan', 'IP-CIDR,10.0.0.0/8', 'IP-CIDR,172.16.0.0/12', 'IP-CIDR,192.168.0.0/16', 'IP-CIDR,127.0.0.0/8']
-        : Array.from({ length: row.count }, (_, index) => `91.108.${4 + index}.0/22`)
-      return { kind, name, proxies: [], rules, total: rules.length, notice: null, source: row.vehicle === 'Inline' ? 'inline' : 'https://example.com/telegram.yaml' }
+        : row.format === 'MrsRule'
+          ? Array.from({ length: row.count }, (_, index) => `${index % 3 ? '+.' : ''}site${String(index).padStart(6, '0')}.cn`)
+          : Array.from({ length: row.count }, (_, index) => `91.108.${4 + index}.0/22`)
+      const needle = (query ?? '').trim().toLowerCase()
+      const matched = needle ? all.filter((rule) => rule.toLowerCase().includes(needle)) : all
+      const limit = 5000
+      const notice = matched.length <= limit ? null
+        : needle ? `匹配 ${matched.length} 条，只列出前 ${limit} 条`
+        : `共 ${matched.length} 条，只列出前 ${limit} 条；搜索会查找全部规则`
+      const source = row.vehicle === 'Inline' ? 'inline' : row.format === 'MrsRule' ? 'https://example.com/cn.mrs' : 'https://example.com/telegram.yaml'
+      return { kind, name, proxies: [], rules: matched.slice(0, limit), total: matched.length, notice, source }
     },
     async geoFiles() {
       return [

@@ -4,7 +4,7 @@
 
 ## 一屏摘要
 
-- 目标：让用户看懂内核实际在用的配置，补上局域网共享、TCP 保活、GEO 低内存加载等常用设置，并与 mihomo v1.19.34 对齐（R22–R26）
+- 目标：让用户看懂内核实际在用的配置，补上局域网共享、TCP 保活、GEO 低内存加载等常用设置，并与 mihomo v1.19.34 对齐（R22–R27）
 - 使用者：需要核对配置、共享代理给其他设备，或在手机上调优耗电的 Billow 用户
 - 关键约束：不打扰普通用户。新内容只出现在已有的弹窗、"高级"折叠里，或在相关开关打开后才出现；默认界面不新增常驻元素
 - 成功标准：每项在 demo 后端下可按验收复现，并有前端与 Rust 回归测试
@@ -107,10 +107,23 @@
 - TUN 设置的协议栈默认选中"默认"，说明含 Mips；运行配置中不含 `tun.stack`。
 - DNS 覆写下选择"规则"并保存后，`fake-ip-filter-mode` 为 `rule`。
 
+### R27 查看 MRS 规则集与全量搜索
+
+行为：资源页规则集详情可以直接查看 `format: mrs` 的二进制规则集。按格式、`.mrs` 扩展名或 zstd 文件头识别，内容与 `mihomo convert-ruleset <behavior> mrs` 导出的结果一致：域名集合并 `x` 与 `.x` 为 `+.x` 并排序，IP 集还原为 CIDR。详情副标题标出文件格式（如"Domain · MRS"）。超过 5000 条的规则集只列出前 5000 条，并提示"搜索会查找全部规则"；输入关键词后由后端在整个规则集中查找。文件损坏时说明原因，并注明不影响内核加载。
+
+适用与失败边界：只读预览；解码使用纯 Rust 的 zstd 解码器（`ruzstd`），不引入 C 依赖。压缩文件上限 8 MiB，解压上限 128 MiB，条目上限 400 万。
+
+验收：
+
+- 用内置 v1.19.34 内核 `convert-ruleset` 生成的域名与 IP 规则集，解码结果与内核导出逐行一致（`src-tauri/testdata/`）。
+- MetaCubeX meta-rules-dat 的 geosite:cn（110,177 条）、geosite:google、geosite:category-ads-all、geoip:cn 与内核导出逐字节一致。
+- 在 11 万条的规则集中搜索第 5000 条以后的域名，可以找到。
+
 ## 来源
 
 - 用户要求"支持更多的 mihomo 配置跟查看，但是要不影响用户观感跟使用"。
 - 走查：原"查看生效配置"只有整段 YAML，看不出哪些值是 Billow 覆盖的；局域网连接打开后没有地址提示，也没有任何访问控制。
 - `src-tauri/src/profile.rs#apply_settings`：设置的叠加顺序为配置文件 → 覆写 → Billow 设置，概览按这三层判定来源。
 - mihomo 官方文档（MetaCubeX/Meta-Docs `docs/config/general.md`、`inbound/tun.md`、`dns/index.md`，2026-07 更新）：全局指纹弃用、Android 强制关闭保活、`geodata-loader` 默认 `memconservative`、TUN 默认 `mips`、`fake-ip-filter-mode: rule`。
+- mihomo v1.19.34 `rules/provider/mrs_reader.go`、`component/trie/domain_set.go`、`domain_set_bin.go`、`component/cidr/ipcidr_set_bin.go`：MRSv1 格式与导出规则（R27）
 - mihomo v1.19.34 源码（Billow 内置内核）：`config/config.go` 中 `DefaultRawConfig` 的默认值，以及配置含 `global-client-fingerprint` 时输出的移除提示；`constant/tun.go` 自 v1.19.31 起支持 `mips`，v1.19.32 起为默认。

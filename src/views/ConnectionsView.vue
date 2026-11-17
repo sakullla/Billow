@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
+import ChainPath from '../components/ChainPath.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
@@ -205,6 +206,11 @@ watch(
   },
 )
 
+/** Mihomo lists chains from the server back to the rule's target; people read them forwards. */
+function hopsOf(row: ConnectionRow): string[] {
+  return row.chains.length ? [...row.chains].reverse() : [row.outbound]
+}
+
 const detail = computed(() => {
   const row = detailSource.value
   if (!row) return []
@@ -216,7 +222,7 @@ const detail = computed(() => {
     ['进程', row.process],
     ['网络', `${row.network.toUpperCase()}${row.conn_type ? ` · ${row.conn_type}` : ''}`],
     ['规则', row.rule ? `${row.rule}${row.rule_payload ? ` (${row.rule_payload})` : ''}` : ''],
-    ['代理链', [...row.chains].reverse().join(' → ')],
+    ['代理链', hopsOf(row).join(' → ')],
     ['下载', formatBytes(row.download)],
     ['上传', formatBytes(row.upload)],
     ['持续', formatDuration(row.start, at)],
@@ -246,7 +252,7 @@ async function copySummary() {
     row.destination ? `目标地址: ${row.destination}` : '',
     row.process ? `进程: ${row.process}` : '',
     `规则: ${row.rule}${row.rule_payload ? ` (${row.rule_payload})` : ''}`,
-    `代理链: ${[...row.chains].reverse().join(' → ')}`,
+    `代理链: ${hopsOf(row).join(' → ')}`,
     `下载: ${formatBytes(row.download)}`,
     `上传: ${formatBytes(row.upload)}`,
     `持续: ${formatDuration(row.start, at)}`,
@@ -462,7 +468,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             </td>
             <td class="muted ellipsis">{{ row.process || '—' }}</td>
             <td class="ellipsis"><span class="muted">{{ row.rule }}</span><span v-if="row.rule_payload" class="rule-payload-inline">{{ row.rule_payload }}</span></td>
-            <td class="ellipsis"><span class="outbound-pill" :data-policy="row.outbound.toUpperCase()">{{ row.outbound }}</span></td>
+            <td><ChainPath :hops="hopsOf(row)" pill fold /></td>
             <td
               class="num mono"
               :class="{ muted: speedDisplay(row).idle, 'conn-rate-up': speedDisplay(row).upOnly }"
@@ -512,8 +518,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             </button>
           </div>
           <div class="conn-meta small muted">
-            <span class="outbound-pill" :data-policy="row.outbound.toUpperCase()">{{ row.outbound }}</span>
-            <span v-if="row.process" class="ellipsis">{{ row.process }}</span>
+            <ChainPath :hops="hopsOf(row)" pill fold />
+            <span v-if="row.process" class="ellipsis conn-process">{{ row.process }}</span>
           </div>
           <div class="conn-meta small muted" data-testid="connection-traffic">
             <span class="mono">↓{{ formatBytes(row.download) }}</span>
@@ -533,7 +539,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       <dl class="detail">
         <template v-for="[label, value] in detail" :key="label">
           <dt>{{ label }}</dt>
-          <dd class="mono">{{ value }}</dd>
+          <dd v-if="label === '代理链' && detailSource" data-testid="detail-chain"><ChainPath :hops="hopsOf(detailSource)" variant="steps" /></dd>
+          <dd v-else class="mono">{{ value }}</dd>
         </template>
       </dl>
       <div v-if="detailSource" class="chips conn-detail-chips">
