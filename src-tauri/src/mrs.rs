@@ -94,14 +94,25 @@ impl<'a> Cursor<'a> {
         }
         Ok(len as usize)
     }
-    fn words(&mut self) -> Result<Vec<u64>, String> {
+    fn words(&mut self) -> Result<Words<'a>, String> {
         let len = self.len(8)?;
-        let bytes = self.take(len * 8)?;
-        Ok(bytes.chunks_exact(8).map(|chunk| u64::from_be_bytes(chunk.try_into().expect("8 bytes"))).collect())
+        Ok(Words(self.take(len * 8)?))
     }
 }
 
-fn bit(words: &[u64], index: usize) -> Result<bool, String> {
+/// Borrow the decompressed bitmap instead of allocating a second copy.
+struct Words<'a>(&'a [u8]);
+
+impl Words<'_> {
+    fn len(&self) -> usize { self.0.len() / 8 }
+
+    fn get(&self, index: usize) -> Option<u64> {
+        self.0.chunks_exact(8).nth(index)
+            .map(|bytes| u64::from_be_bytes(bytes.try_into().expect("8 bytes")))
+    }
+}
+
+fn bit(words: &Words, index: usize) -> Result<bool, String> {
     words
         .get(index >> 6)
         .map(|word| word & (1 << (index & 63)) != 0)
@@ -120,17 +131,54 @@ fn domain_rules(input: &mut Cursor) -> Result<Vec<String>, String> {
     let corrupt = || "MRS 域名树已损坏".to_string();
 
     // select(i): position of the i-th set bit, the end of node i's label run.
-    let ones: Vec<usize> = (0..bitmap.len() * 64).filter(|&index| bitmap[index >> 6] & (1 << (index & 63)) != 0).collect();
+    // The decoded-byte cap keeps bit positions below u32::MAX. Visit set bits
+    // directly rather than testing every bit and storing pointer-sized indices.
+    let mut ones: Vec<u32> = Vec::new();
+    for (word_index, bytes) in bitmap.0.chunks_exact(8).enumerate() {
+        let mut word = u64::from_be_bytes(bytes.try_into().expect("8 bytes"));
+        while word != 0 {
+            ones.push((word_index * 64 + word.trailing_zeros() as usize) as u32);
+            word &= word - 1;
+        }
+    }
 
+    let child_of = |node: usize, wanted: u8| -> Result<Option<usize>, String> {
+        let mut index = if node == 0 { 0 } else { *ones.get(node - 1).ok_or_else(corrupt)? as usize + 1 };
+        while !bit(&bitmap, index)? {
+            let offset = index.checked_sub(node).ok_or_else(corrupt)?;
+            let label = *labels.get(offset).ok_or_else(corrupt)?;
+            if label == wanted { return Ok(Some(offset + 1)); }
+            index += 1;
+        }
+        Ok(None)
+    };
     let mut keys: Vec<String> = Vec::new();
-    let mut emit = |key: &[u8]| -> Result<(), String> {
-        if keys.len() >= MAX_ENTRIES {
+    let mut terminals = 0;
+    let mut emit = |key: &[u8], node: usize, ancestors: &[(usize, usize)]| -> Result<(), String> {
+        terminals += 1;
+        if terminals > MAX_ENTRIES {
             return Err("MRS 规则集条目过多，已跳过预览".to_string());
         }
-        // Keys are stored reversed rune by rune with a trailing '+' for suffix-only patterns.
+        if key.is_empty() { return Ok(()); }
+        // The suffix-only path for x is reverse(x) + ".+". Its exact-domain
+        // terminal is two ancestors up, so merge the pair directly in the trie.
+        // This avoids creating, sorting and then discarding a second rule for x.
+        if key.ends_with(b".+") && ancestors.len() >= 3
+            && bit(&leaves, ancestors[ancestors.len() - 3].0)? {
+            return Ok(());
+        }
+        let mut paired = false;
+        if let Some(dot) = child_of(node, b'.')? {
+            if let Some(suffix) = child_of(dot, b'+')? {
+                paired = bit(&leaves, suffix)?;
+            }
+        }
         let key = String::from_utf8_lossy(key);
         let key = key.strip_suffix('+').unwrap_or(&key);
-        keys.push(key.chars().rev().collect());
+        let mut rule = String::with_capacity(key.len() + if paired { 2 } else { 0 });
+        if paired { rule.push_str("+."); }
+        rule.extend(key.chars().rev());
+        keys.push(rule);
         Ok(())
     };
 
@@ -138,7 +186,7 @@ fn domain_rules(input: &mut Cursor) -> Result<Vec<String>, String> {
     // (node id, next label-bitmap index to look at)
     let mut stack: Vec<(usize, usize)> = vec![(0, 0)];
     if bit(&leaves, 0)? {
-        emit(&key)?;
+        emit(&key, 0, &stack)?;
     }
     let step_limit = bitmap.len() * 64 + labels.len() + 1;
     let mut steps = 0usize;
@@ -157,33 +205,16 @@ fn domain_rules(input: &mut Cursor) -> Result<Vec<String>, String> {
         }
         let label = *index.checked_sub(node).and_then(|offset| labels.get(offset)).ok_or_else(corrupt)?;
         let child = index - node + 1;
-        let child_at = ones.get(child - 1).ok_or_else(corrupt)? + 1;
+        let child_at = *ones.get(child - 1).ok_or_else(corrupt)? as usize + 1;
         key.push(label);
-        if bit(&leaves, child)? {
-            emit(&key)?;
-        }
         stack.push((child, child_at));
+        if bit(&leaves, child)? {
+            emit(&key, child, &stack)?;
+        }
     }
 
-    // Same presentation as mihomo's DumpMrs: pair `x` with `.x` into `+.x`, then sort.
-    keys.sort_by(|left, right| left.trim_start_matches('.').cmp(right.trim_start_matches('.')).then(left.cmp(right)));
-    let mut merged = Vec::with_capacity(keys.len());
-    let mut index = 0;
-    while index < keys.len() {
-        let domain = keys[index].strip_prefix('.').unwrap_or(&keys[index]);
-        if let Some(next) = keys.get(index + 1) {
-            if next.strip_prefix('.').unwrap_or(next) == domain && next != &keys[index] {
-                merged.push(format!("+.{domain}"));
-                index += 2;
-                continue;
-            }
-        }
-        merged.push(keys[index].clone());
-        index += 1;
-    }
-    merged.retain(|key| !key.is_empty());
-    merged.sort();
-    Ok(merged)
+    keys.sort_unstable();
+    Ok(keys)
 }
 
 fn ipcidr_rules(input: &mut Cursor) -> Result<Vec<String>, String> {
@@ -262,6 +293,17 @@ mod tests {
         let decoded = decode(IP_MRS).unwrap();
         assert_eq!(decoded.behavior, "ipcidr");
         assert_eq!(decoded.rules, ["1.0.0.0/23", "10.0.0.0/8", "192.168.1.0/30", "2001:db8::/32"]);
+    }
+
+    #[test]
+    fn trie_pairing_preserves_wildcards_nested_suffixes_and_unicode() {
+        // Exported by the bundled Mihomo v1.19.34 from the same MRS fixture.
+        let decoded = decode(include_bytes!("../testdata/domain-complex.mrs")).unwrap();
+        assert_eq!(decoded.rules, [
+            "*.nested.wild.example", "*.wild.example", "+.bücher.example", "+.exact.example",
+            "+.paired.example", "+.parent.example", ".deep.example", ".only.example",
+            "child.parent.example", "leaf.deep.example", "plain.example", "中文.example",
+        ]);
     }
 
     #[test]

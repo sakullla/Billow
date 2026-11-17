@@ -8,9 +8,10 @@
 //! `rules/<md5(url)>` for HTTP providers without one.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::{Digest, Md5};
 use serde::Serialize;
@@ -157,10 +158,66 @@ impl RulePreview {
     fn push(&mut self, line: &str) {
         let line = line.trim();
         if line.is_empty() { return; }
-        if !self.needle.is_empty() && !line.to_lowercase().contains(&self.needle) { return; }
+        if !self.needle.is_empty() && !contains_rule(line, &self.needle) { return; }
         self.total += 1;
         if self.rows.len() < MAX_RULE_ROWS { self.rows.push(line.to_string()); }
     }
+}
+
+fn contains_rule(line: &str, needle: &str) -> bool {
+    if line.is_ascii() && needle.is_ascii() {
+        line.as_bytes().windows(needle.len()).any(|part| part.eq_ignore_ascii_case(needle.as_bytes()))
+    } else {
+        line.to_lowercase().contains(needle)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RuleFileStamp {
+    path: PathBuf,
+    size: u64,
+    modified: SystemTime,
+}
+
+impl RuleFileStamp {
+    fn new(path: &Path, metadata: &fs::Metadata) -> Option<Self> {
+        Some(Self { path: path.to_path_buf(), size: metadata.len(), modified: metadata.modified().ok()? })
+    }
+}
+
+/// Retain at most one compact decoded set, not millions of allocated Strings.
+/// Serializing cache misses also prevents overlapping searches from multiplying
+/// the decompressor/decoder's peak memory. Query results are never cached.
+#[derive(Default)]
+struct MrsCache {
+    entry: Option<(RuleFileStamp, Arc<str>)>,
+}
+
+impl MrsCache {
+    fn decode(&mut self, body: &[u8], stamp: Option<RuleFileStamp>) -> Result<Arc<str>, String> {
+        if let Some((previous, text)) = &self.entry {
+            if stamp.as_ref() == Some(previous) { return Ok(Arc::clone(text)); }
+        }
+        self.entry = None;
+        let rules = crate::mrs::decode(body)?.rules;
+        let mut text = String::with_capacity(rules.iter().map(|line| line.len() + 1).sum());
+        for rule in rules {
+            text.push_str(&rule);
+            text.push('\n');
+        }
+        let text: Arc<str> = Arc::from(text);
+        if text.len() <= 8 * 1024 * 1024 {
+            if let Some(stamp) = stamp {
+                self.entry = Some((stamp, Arc::clone(&text)));
+            }
+        }
+        Ok(text)
+    }
+}
+
+fn mrs_cache() -> &'static Mutex<MrsCache> {
+    static CACHE: OnceLock<Mutex<MrsCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(MrsCache::default()))
 }
 
 /// Streams `payload:` into a preview, so a large YAML set never becomes a full tree.
@@ -266,11 +323,12 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>, query: &s
         const MAX_PREVIEW_BYTES: u64 = 8 * 1024 * 1024;
         let body = path.as_ref().and_then(|path| {
             let file = fs::File::open(path).ok()?;
+            let stamp = file.metadata().ok().and_then(|metadata| RuleFileStamp::new(path, &metadata));
             let mut body = Vec::new();
             file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut body).ok()?;
-            Some(body)
+            Some((body, stamp))
         });
-        let Some(body) = body else {
+        let Some((body, stamp)) = body else {
             // Name the path that was tried so a mismatch can be read off the sheet.
             detail.notice = Some(match path.as_ref() {
                 Some(path) => format!("还没有找到可读取的规则文件（{}）；连接并更新这个规则集后再查看", path.display()),
@@ -287,12 +345,9 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>, query: &s
             || body.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]);
         if binary {
             // MRS is zstd-compressed; decode it the way `mihomo convert-ruleset` dumps it.
-            match crate::mrs::decode(&body) {
-                Ok(decoded) => {
-                    let mut preview = RulePreview::new(query);
-                    for rule in &decoded.rules { preview.push(rule); }
-                    preview
-                }
+            let decoded = mrs_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).decode(&body, stamp);
+            match decoded {
+                Ok(text) => parse_rules(&text, "text", query),
                 Err(reason) => {
                     detail.notice = Some(format!("{reason}；不影响内核加载这个规则集"));
                     return detail;
@@ -390,9 +445,9 @@ fn target_geo_path(home: &Path, canonical: &str, candidates: &[&str]) -> PathBuf
     home.join(canonical)
 }
 
-fn fetch_geo_bytes(url: &str, local_proxy: Option<&str>) -> Result<Vec<u8>, String> {
-    const MAX_GEO_BYTES: usize = 128 * 1024 * 1024;
-    let try_with = |proxy_url: Option<&str>| -> Result<Vec<u8>, String> {
+fn fetch_geo_file(url: &str, local_proxy: Option<&str>, temp: &Path) -> Result<(), String> {
+    const MAX_GEO_BYTES: u64 = 128 * 1024 * 1024;
+    let try_with = |proxy_url: Option<&str>| -> Result<(), String> {
         let mut builder = ureq::AgentBuilder::new()
             .timeout_connect(std::time::Duration::from_secs(10))
             .timeout_read(std::time::Duration::from_secs(45));
@@ -401,37 +456,37 @@ fn fetch_geo_bytes(url: &str, local_proxy: Option<&str>) -> Result<Vec<u8>, Stri
                 builder = builder.proxy(proxy);
             }
         }
-        let response = builder
-            .build()
-            .get(url)
-            .set("User-Agent", "Billow")
-            .call()
+        let response = builder.build().get(url).set("User-Agent", "Billow").call()
             .map_err(|error| format!("请求失败：{error}"))?;
-        let mut bytes = Vec::new();
-        response
-            .into_reader()
-            .take((MAX_GEO_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
+        let mut reader = response.into_reader();
+        let mut head = Vec::with_capacity(64);
+        reader.by_ref().take(64).read_to_end(&mut head)
             .map_err(|error| format!("读取失败：{error}"))?;
-        if bytes.len() > MAX_GEO_BYTES {
-            return Err("GEO 数据库体积超过 128 MiB 上限".to_string());
-        }
-        if bytes.len() < 16 {
+        if head.len() < 16 {
             return Err("下载到的文件为空或已损坏".to_string());
         }
-        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).to_ascii_lowercase();
-        if head.trim_start().starts_with("<!doctype") || head.trim_start().starts_with("<html") {
+        let prefix = String::from_utf8_lossy(&head).to_ascii_lowercase();
+        if prefix.trim_start().starts_with("<!doctype") || prefix.trim_start().starts_with("<html") {
             return Err("下载源返回了网页而非数据库文件".to_string());
         }
-        Ok(bytes)
-    };
-
-    if let Some(proxy) = local_proxy {
-        if let Ok(bytes) = try_with(Some(proxy)) {
-            return Ok(bytes);
+        let file = fs::File::create(temp).map_err(|error| format!("写入临时文件失败：{error}"))?;
+        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file);
+        writer.write_all(&head).map_err(|error| format!("写入失败：{error}"))?;
+        let copied = std::io::copy(&mut reader.take(MAX_GEO_BYTES - head.len() as u64 + 1), &mut writer)
+            .map_err(|error| format!("下载写入失败：{error}"))?;
+        if copied + head.len() as u64 > MAX_GEO_BYTES {
+            return Err("GEO 数据库体积超过 128 MiB 上限".to_string());
         }
+        writer.flush().map_err(|error| format!("写入失败：{error}"))?;
+        Ok(())
+    };
+    if let Some(proxy) = local_proxy {
+        if try_with(Some(proxy)).is_ok() { return Ok(()); }
+        let _ = fs::remove_file(temp);
     }
-    try_with(None)
+    let result = try_with(None);
+    if result.is_err() { let _ = fs::remove_file(temp); }
+    result
 }
 
 /// Downloads one (`target = Some("geoip")`) or all (`target = None`) GEO databases
@@ -465,15 +520,18 @@ pub fn download_geo_files(
             .map(|(key, label, canonical, candidates, candidate_urls)| {
                 scope.spawn(move || {
                     let mut last_err = String::from("没有可用的下载地址");
-                    let mut downloaded = None;
+                    let dest = target_geo_path(home, canonical, candidates);
+                    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+                    let temp = home.join(format!(".{key}.{}.{nanos}.part", std::process::id()));
+                    let mut downloaded = false;
                     for url in candidate_urls {
                         let url = url.trim();
                         if url.is_empty() {
                             continue;
                         }
-                        match fetch_geo_bytes(url, local_proxy) {
-                            Ok(bytes) => {
-                                downloaded = Some(bytes);
+                        match fetch_geo_file(url, local_proxy, &temp) {
+                            Ok(()) => {
+                                downloaded = true;
                                 break;
                             }
                             Err(err) => {
@@ -481,17 +539,9 @@ pub fn download_geo_files(
                             }
                         }
                     }
-                    let Some(bytes) = downloaded else {
+                    if !downloaded {
                         return Err(last_err);
-                    };
-                    let dest = target_geo_path(home, canonical, candidates);
-                    let nanos = std::time::SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos();
-                    let temp = home.join(format!(".{key}.{}.{nanos}.part", std::process::id()));
-                    fs::write(&temp, &bytes)
-                        .map_err(|err| format!("写入 {label} 临时文件失败：{err}"))?;
+                    }
                     if let Err(err) = fs::rename(&temp, &dest) {
                         let _ = fs::remove_file(&temp);
                         return Err(format!("替换 {label} 数据库失败：{err}"));
@@ -516,6 +566,73 @@ pub fn download_geo_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mrs_cache_reuses_decoding_and_invalidates_replaced_files() {
+        let home = temp_home("mrs-cache");
+        let path = home.join("rules.mrs");
+        let domain = include_bytes!("../testdata/domain.mrs");
+        let ip = include_bytes!("../testdata/ipcidr.mrs");
+        let mut cache = MrsCache::default();
+        fs::write(&path, domain).unwrap();
+        let stamp = || RuleFileStamp::new(&path, &fs::metadata(&path).unwrap());
+        let first = cache.decode(domain, stamp()).unwrap();
+        let again = cache.decode(domain, stamp()).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(parse_rules(&again, "text", "GOOGLE").rows, ["+.google.com"]);
+        fs::write(&path, ip).unwrap();
+        let replaced = cache.decode(ip, stamp()).unwrap();
+        assert!(!Arc::ptr_eq(&first, &replaced));
+        assert_eq!(parse_rules(&replaced, "text", "2001:").rows, ["2001:db8::/32"]);
+        assert!(cache.decode(b"broken", None).is_err());
+        assert!(cache.entry.is_none(), "a failed replacement must not return old rules");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn rule_search_preserves_ascii_and_unicode_case_matching() {
+        assert!(contains_rule("DOMAIN,Example.COM", "example.com"));
+        assert!(contains_rule("BÜCHER.example", "bücher"));
+        assert!(!contains_rule("different.example", "example.com"));
+    }
+
+    #[test]
+    fn interrupted_geo_download_keeps_the_previous_file_and_removes_partial_data() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2048\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(&[0x33; 128]).unwrap();
+        });
+        let home = temp_home("geo-interrupted");
+        let path = home.join("GeoIP.dat");
+        fs::write(&path, b"previous database").unwrap();
+        let urls = vec![("geoip".to_string(), vec![format!("http://127.0.0.1:{port}/geoip")])];
+        assert!(download_geo_files(&home, &urls, Some("geoip"), None).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"previous database");
+        assert!(fs::read_dir(&home).unwrap().all(|entry| entry.unwrap().path().extension().is_none_or(|ext| ext != "part")));
+        server.join().unwrap();
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires BILLOW_TEST_MRS; benchmarks a local rule set without touching the live kernel"]
+    fn benchmark_large_mrs_preview_and_search() {
+        let path = PathBuf::from(std::env::var_os("BILLOW_TEST_MRS").expect("MRS fixture"));
+        let config = format!("rule-providers:\n  benchmark:\n    type: file\n    format: mrs\n    path: {}\n", serde_json::to_string(&path).unwrap());
+        for query in ["", "d199999", "missing-rule"] {
+            let start = std::time::Instant::now();
+            let result = rule_detail(&config, "benchmark", None, query);
+            assert!(result.notice.as_deref().is_none_or(|notice| notice.starts_with("共 ") || notice.starts_with("匹配 ")));
+            if query.is_empty() { assert!(result.total > 0); }
+            println!("query={query:?} total={} retained={} elapsed_ms={:.2}", result.total, result.rules.len(), start.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
 
     fn temp_home(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("billow-res-{name}-{}", std::process::id()));
