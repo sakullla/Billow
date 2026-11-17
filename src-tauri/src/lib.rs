@@ -740,35 +740,33 @@ fn save_profile_content(app: AppHandle, id: String, content: String) -> ProfileS
     })
 }
 
-fn refresh_one(app: &AppHandle, client: &HttpSubscriptionClient, id: &str) -> ProfileSnapshot {
-    use profile::SubscriptionSource;
-    let prepared = with_profile(app, |session| session.book.prepare_refresh(id));
-    let (url, user_agent) = match prepared {
-        Err(snapshot) => return snapshot,
-        Ok(None) => return profile_snapshot(app),
-        Ok(Some(pair)) => pair,
-    };
-    // Network download runs completely outside ProfileSession's mutex so concurrent
-    // refreshes execute in parallel and UI state polling never stalls on slow servers.
-    let fetched = client.fetch_with_user_agent(&url, &user_agent);
-    with_session(app, |session| {
-        let ProfileSession { book, runtime, proxy, .. } = session;
-        book.finish_refresh(id, &url, fetched, runtime);
-        book.reconcile_system_proxy(proxy);
-        book.snapshot()
-    })
+fn refresh_one(app: &AppHandle, client: &HttpSubscriptionClient, id: &str) {
+    let Some(request) = with_profile(app, |session| session.book.prepare_refresh(id)) else { return };
+    let fetched = request.fetch(client);
+    with_session_raw(app, |session| {
+        let ProfileSession { book, runtime, proxy, tun, vpn } = session;
+        let reloaded = book.finish_refresh(&request, fetched, runtime);
+        book.apply_release(proxy, tun, vpn);
+        if reloaded {
+            book.reconcile_system_proxy(proxy);
+        }
+    });
 }
 
-#[tauri::command(async)]
-fn refresh_profile(app: AppHandle, id: String) -> ProfileSnapshot {
-    let client = subscription_client(&app);
-    refresh_one(&app, &client, &id)
+#[tauri::command]
+async fn refresh_profile(app: AppHandle, id: String) -> Result<ProfileSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        refresh_one(&app, &subscription_client(&app), &id);
+        with_profile(&app, |session| session.book.snapshot())
+    }).await.map_err(|error| error.to_string())
 }
 
-#[tauri::command(async)]
-fn refresh_all_profiles(app: AppHandle) -> ProfileSnapshot {
-    let ids = with_profile(&app, |session| session.book.subscription_ids());
-    refresh_ids(&app, &ids)
+#[tauri::command]
+async fn refresh_all_profiles(app: AppHandle) -> Result<ProfileSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ids = with_profile(&app, |session| session.book.subscription_ids());
+        refresh_ids(&app, &ids)
+    }).await.map_err(|error| error.to_string())
 }
 
 const SUBSCRIPTION_REFRESH_CONCURRENCY: usize = 4;
@@ -787,7 +785,7 @@ fn refresh_ids(app: &AppHandle, ids: &[String]) -> ProfileSnapshot {
             scope.spawn(move || loop {
                 let index = cursor.fetch_add(1, Ordering::Relaxed);
                 let Some(id) = ids.get(index) else { break };
-                let _ = refresh_one(app, client, id);
+                refresh_one(app, client, id);
             });
         }
     });
@@ -1141,9 +1139,6 @@ fn spawn_kernel_guardian(app: &AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
         let auto = with_session_raw(&handle, |session| {
-            if !session.book.should_auto_connect() {
-                return None;
-            }
             let ProfileSession {
                 book,
                 runtime,
@@ -1159,21 +1154,23 @@ fn spawn_kernel_guardian(app: &AppHandle) {
         }
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3));
+            let exited = with_profile(&handle, |session| {
+                let ProfileSession { book, runtime, .. } = session;
+                if !(book.is_connected() || book.startup_guard_pending()) {
+                    return false;
+                }
+                if !runtime.running() {
+                    return true;
+                }
+                if book.startup_guard_pending() {
+                    book.check_startup_uptime(runtime.kernel_uptime_secs());
+                }
+                false
+            });
+            if !exited {
+                continue;
+            }
             let recovered = with_session_raw(&handle, |session| {
-                if session.book.startup_guard_pending()
-                    && session
-                        .runtime
-                        .kernel_uptime_secs()
-                        .is_some_and(|secs| secs >= 8)
-                {
-                    session.book.clear_startup_guard();
-                }
-                if !(session.book.is_connected() || session.book.startup_guard_pending()) {
-                    return None;
-                }
-                if session.runtime.running() {
-                    return None;
-                }
                 let ProfileSession {
                     book,
                     runtime,
@@ -1386,6 +1383,7 @@ fn release_proxy_on_exit(app: &AppHandle) {
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
     let ProfileSession { book, runtime, proxy, .. } = &mut *session;
+    book.prepare_exit();
     runtime.shutdown();
     book.release_lingering_proxy(proxy);
 }

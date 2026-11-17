@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -292,7 +292,7 @@ pub struct ReleaseIndex {
 
 pub trait ReleaseSource {
     fn fetch_release(&self, channel: Channel) -> Result<ReleaseIndex, String>;
-    fn download(&self, url: &str) -> Result<Vec<u8>, String>;
+    fn download(&self, url: &str) -> Result<Box<dyn Read>, String>;
 }
 
 pub struct GithubReleaseClient {
@@ -318,17 +318,18 @@ impl Default for GithubReleaseClient {
 impl ReleaseSource for GithubReleaseClient {
     fn fetch_release(&self, channel: Channel) -> Result<ReleaseIndex, String> {
         let url = release_api(channel);
-        let bytes = http_get(&self.agent, &url, "application/vnd.github+json")?;
-        let text = String::from_utf8(bytes).map_err(|_| "发布索引无法读取".to_string())?;
+        let mut text = String::new();
+        http_get(&self.agent, &url, "application/vnd.github+json")?
+            .read_to_string(&mut text).map_err(|_| "发布索引无法读取".to_string())?;
         parse_github_release(&text)
     }
 
-    fn download(&self, url: &str) -> Result<Vec<u8>, String> {
+    fn download(&self, url: &str) -> Result<Box<dyn Read>, String> {
         http_get(&self.agent, url, "application/octet-stream")
     }
 }
 
-fn http_get(agent: &ureq::Agent, url: &str, accept: &str) -> Result<Vec<u8>, String> {
+fn http_get(agent: &ureq::Agent, url: &str, accept: &str) -> Result<Box<dyn Read>, String> {
     if !url.starts_with("https://") {
         return Err("内核地址不可用".to_string());
     }
@@ -338,12 +339,7 @@ fn http_get(agent: &ureq::Agent, url: &str, accept: &str) -> Result<Vec<u8>, Str
         .set("Accept", accept)
         .call()
         .map_err(|_| "内核下载失败".to_string())?;
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(|_| "内核下载失败".to_string())?;
-    Ok(bytes)
+    Ok(response.into_reader())
 }
 
 fn parse_github_release(body: &str) -> Result<ReleaseIndex, String> {
@@ -480,24 +476,18 @@ fn lookup_checksum(checksums: &str, asset_name: &str) -> Result<String, String> 
     Err("校验和里没有这个文件".to_string())
 }
 
+#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    format!("{:x}", Sha256::digest(bytes))
 }
 
-fn decode_gzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let mut decoder = GzDecoder::new(bytes);
-    let mut plain = Vec::new();
-    decoder
-        .read_to_end(&mut plain)
-        .map_err(|_| "内核文件无法解压".to_string())?;
-    Ok(plain)
-}
-
-fn decode_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| "内核文件无法解压".to_string())?;
+fn extract_kernel(asset_name: &str, archive: fs::File, output: &mut fs::File) -> Result<u64, String> {
+    let decode_error = |_| "内核文件无法解压".to_string();
+    if asset_name.ends_with(".gz") {
+        return io::copy(&mut GzDecoder::new(archive), output).map_err(decode_error);
+    }
+    if !asset_name.ends_with(".zip") { return Err("内核文件无法解压".into()); }
+    let mut archive = ZipArchive::new(archive).map_err(|_| "内核文件无法解压".to_string())?;
     let count = archive.len();
     let mut chosen: Option<usize> = None;
     for index in 0..count {
@@ -524,63 +514,77 @@ fn decode_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut file = archive
         .by_index(index)
         .map_err(|_| "内核文件无法解压".to_string())?;
-    let mut plain = Vec::new();
-    file.read_to_end(&mut plain)
-        .map_err(|_| "内核文件无法解压".to_string())?;
-    Ok(plain)
+    io::copy(&mut file, output).map_err(decode_error)
 }
 
-fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    // A running Windows image cannot be replaced; on Unix replacing it would
-    // also discard the TUN authorization attached to its owner/mode.
-    if executable_matches(path, bytes) { return Ok(()); }
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
-    }
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let temporary = path.with_extension(format!("tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-    let result = (|| {
-        fs::write(&temporary, bytes).map_err(|err| err.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755)).map_err(|err| err.to_string())?;
-        }
-        // Never remove the old executable before a successful atomic rename.
-        fs::rename(&temporary, path).map_err(|err| err.to_string())
-    })();
-    if result.is_err() { let _ = fs::remove_file(&temporary); }
-    result
-}
-
-fn executable_matches(path: &Path, expected: &[u8]) -> bool {
-    let Ok(mut file) = fs::File::open(path) else { return false; };
-    if !file.metadata().is_ok_and(|meta| meta.is_file() && meta.len() == expected.len() as u64) { return false; }
+/// Hash as bytes arrive, then extract only a verified archive. Both temporary
+/// files are on the install volume and are removed on every error path.
+fn install_archive(
+    mut source: impl Read,
+    root: &Path,
+    asset: &str,
+    expected: &str,
+    binary_name: &str,
+) -> Result<String, String> {
+    let files = root.join("files");
+    let io_error = |error: io::Error| error.to_string();
+    fs::create_dir_all(&files).map_err(io_error)?;
+    let mut archive = tempfile::tempfile_in(&files).map_err(io_error)?;
+    let mut hash = Sha256::new();
     let mut buffer = [0; 32 * 1024];
-    for chunk in expected.chunks(buffer.len()) {
-        if file.read_exact(&mut buffer[..chunk.len()]).is_err() || buffer[..chunk.len()] != *chunk { return false; }
+    loop {
+        let count = match source.read(&mut buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result.map_err(|_| "内核下载失败".to_string())?,
+        };
+        if count == 0 { break; }
+        archive.write_all(&buffer[..count]).map_err(io_error)?;
+        hash.update(&buffer[..count]);
+    }
+    if format!("{:x}", hash.finalize()) != expected {
+        return Err("内核校验和不一致".into());
+    }
+    archive.rewind().map_err(io_error)?;
+    let mut image = tempfile::NamedTempFile::new_in(&files).map_err(io_error)?;
+    let size = extract_kernel(asset, archive, image.as_file_mut())?;
+    if size == 0 { return Err("内核文件无法解压".into()); }
+
+    let mut relative = format!("files/{expected}/{binary_name}");
+    let destination = root.join(&relative);
+    if destination.exists() {
+        // Preserve the mode and identity of a matching (possibly running) image.
+        if executable_matches(&destination, image.as_file_mut(), size) { return Ok(relative); }
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        relative = format!("files/{expected}-{}-{nonce}/{binary_name}", std::process::id());
+    }
+    let destination = root.join(&relative);
+    fs::create_dir_all(destination.parent().unwrap()).map_err(io_error)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        image.as_file().set_permissions(fs::Permissions::from_mode(0o755)).map_err(io_error)?;
+    }
+    image.persist_noclobber(destination).map_err(|error| error.to_string())?;
+    Ok(relative)
+}
+
+fn executable_matches(path: &Path, expected: &mut fs::File, size: u64) -> bool {
+    let Ok(mut file) = fs::File::open(path) else { return false };
+    if !file.metadata().is_ok_and(|meta| meta.is_file() && meta.len() == size) || expected.rewind().is_err() {
+        return false;
+    }
+    let mut actual = [0; 32 * 1024];
+    let mut reference = [0; 32 * 1024];
+    let mut left = size;
+    while left > 0 {
+        let count = left.min(actual.len() as u64) as usize;
+        if file.read_exact(&mut actual[..count]).is_err() || expected.read_exact(&mut reference[..count]).is_err()
+            || actual[..count] != reference[..count] {
+            return false;
+        }
+        left -= count as u64;
     }
     true
-}
-
-fn kernel_bytes(asset_name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let plain = if asset_name.ends_with(".gz") {
-        decode_gzip(bytes)?
-    } else if asset_name.ends_with(".zip") {
-        decode_zip(bytes)?
-    } else {
-        return Err("内核文件无法解压".to_string());
-    };
-    if plain.is_empty() {
-        return Err("内核文件无法解压".to_string());
-    }
-    Ok(plain)
-}
-
-fn extract_kernel(asset_name: &str, bytes: &[u8], destination: &Path) -> Result<(), String> {
-    write_executable(destination, &kernel_bytes(asset_name, bytes)?)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -771,7 +775,7 @@ impl KernelManager {
             if bundle.asset != expected_asset || bundle.sha256.len() != 64 || !bundle.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("安装包内核与当前平台不匹配".to_string());
             }
-            let relative_path = format!("files/{}/{}", bundle.sha256, self.target.binary_file_name());
+            let mut relative_path = format!("files/{}/{}", bundle.sha256, self.target.binary_file_name());
             let destination = self.root.join(&relative_path);
             if let Some(packed) = &bundle.packed {
                 if packed.file != "kernel.br" { return Err("安装包内核资源路径无效".into()); }
@@ -785,12 +789,9 @@ impl KernelManager {
                 }
             } else {
                 // Older runtime bundles remain readable.
-                let archive = fs::read(resources.join(format!("kernel.{}", self.target.archive_ext())))
+                let archive = fs::File::open(resources.join(format!("kernel.{}", self.target.archive_ext())))
                     .map_err(|error| error.to_string())?;
-                if sha256_hex(&archive) != bundle.sha256 {
-                    return Err("安装包内核校验和不一致".to_string());
-                }
-                extract_kernel(&bundle.asset, &archive, &destination)?;
+                relative_path = install_archive(archive, &self.root, &bundle.asset, &bundle.sha256, self.target.binary_file_name())?;
             }
             Ok(InstalledKernel {
                 channel: Channel::Stable,
@@ -946,20 +947,7 @@ impl KernelManager {
                 }
             }
         }
-        let bytes = source.download(&asset.url)?;
-        if sha256_hex(&bytes) != expected {
-            return Err("内核校验和不一致".to_string());
-        }
-        let plain = kernel_bytes(&asset.name, &bytes)?;
-        let mut relative = format!("files/{expected}/{}", self.target.binary_file_name());
-        let destination = self.root.join(&relative);
-        // A damaged or inaccessible cached image may still be mapped by a live
-        // process. Publish the verified replacement at a new path instead.
-        if destination.exists() && !executable_matches(&destination, &plain) {
-            let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
-            relative = format!("files/{expected}-{}-{nonce}/{}", std::process::id(), self.target.binary_file_name());
-        }
-        write_executable(&self.root.join(&relative), &plain)?;
+        let relative = install_archive(source.download(&asset.url)?, &self.root, &asset.name, &expected, self.target.binary_file_name())?;
         Ok(InstalledKernel {
             channel: requested,
             identity,
@@ -974,8 +962,9 @@ fn expected_checksum(
     source: &dyn ReleaseSource,
 ) -> Result<String, String> {
     if let Some(checksum_asset) = release.assets.iter().find(|item| item.name == "checksums.txt") {
-        let checksum_bytes = source.download(&checksum_asset.url)?;
-        let checksum_text = String::from_utf8(checksum_bytes).map_err(|_| "校验和无法读取".to_string())?;
+        let mut checksum_text = String::new();
+        source.download(&checksum_asset.url)?.read_to_string(&mut checksum_text)
+            .map_err(|_| "校验和无法读取".to_string())?;
         return lookup_checksum(&checksum_text, &asset.name);
     }
     sha256_from_digest(asset.digest.as_deref()).ok_or_else(|| "发布页没有校验和".to_string())
@@ -996,7 +985,7 @@ fn no_kernel() -> ConnectResult {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::io::Write;
+    use std::io::{Cursor, Write};
 
     struct TempDir(PathBuf);
 
@@ -1029,10 +1018,11 @@ mod tests {
                 .ok_or_else(|| "内核下载失败".to_string())
         }
 
-        fn download(&self, url: &str) -> Result<Vec<u8>, String> {
+        fn download(&self, url: &str) -> Result<Box<dyn Read>, String> {
             self.files
                 .get(url)
                 .cloned()
+                .map(|bytes| Box::new(Cursor::new(bytes)) as Box<dyn Read>)
                 .ok_or_else(|| "内核下载失败".to_string())
         }
     }
@@ -1567,6 +1557,23 @@ mod tests {
         assert_eq!(manager.installed_path().unwrap(), original);
         assert_eq!(fs::read(original).unwrap(), b"stable");
         assert_eq!(fs::read(dir.0.join("state.json")).unwrap(), state);
+    }
+
+    #[test]
+    fn interrupted_download_and_truncated_gzip_leave_no_staging_files() {
+        struct InterruptedDownload;
+        impl Read for InterruptedDownload {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::UnexpectedEof))
+            }
+        }
+        let dir = temp_dir("stage-interrupted");
+        let gz = gzip_bytes(&vec![42; 140_000]);
+        let truncated = &gz[..gz.len() - 4];
+        let interrupted = truncated.chain(InterruptedDownload);
+        assert!(install_archive(interrupted, &dir.0, "kernel.gz", &sha256_hex(&gz), "core").is_err());
+        assert!(install_archive(truncated, &dir.0, "kernel.gz", &sha256_hex(truncated), "core").is_err());
+        assert_eq!(fs::read_dir(dir.0.join("files")).unwrap().count(), 0);
     }
 
     #[test]

@@ -1,6 +1,7 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -77,6 +78,7 @@ struct Profile {
     age_key: String,
     updated_ms: Option<u64>,
     proxy_count: usize,
+    refresh_revision: u64,
     node_metadata: OnceLock<Option<NodeMetadata>>,
 }
 
@@ -754,6 +756,40 @@ pub struct FetchedSubscription {
     pub userinfo: Option<String>,
 }
 
+pub struct RefreshRequest {
+    id: String,
+    source: String,
+    user_agent: String,
+    age_key: String,
+    revision: u64,
+}
+
+pub struct DownloadedProfile {
+    content: String,
+    proxy_count: usize,
+    usage: Option<Usage>,
+}
+
+impl FetchedSubscription {
+    fn into_profile(self, age_key: &str) -> Result<DownloadedProfile, String> {
+        let plain = if age_key::is_encrypted_text(&self.content) {
+            age_key::decrypt_if_needed(&self.content, age_key)?
+        } else {
+            self.content
+        };
+        let (content, proxy_count) = parse_subscription_content(plain)?;
+        Ok(DownloadedProfile { content, proxy_count, usage: parse_userinfo(self.userinfo.as_deref()) })
+    }
+}
+
+impl RefreshRequest {
+    pub fn fetch(&self, source: &dyn SubscriptionSource) -> Result<DownloadedProfile, String> {
+        source.fetch_with_user_agent(&self.source, &self.user_agent)
+            .map_err(|_| FETCH_ERROR.to_string())?
+            .into_profile(&self.age_key)
+    }
+}
+
 pub const DEFAULT_SUBSCRIPTION_USER_AGENT: &str = "clash.meta";
 
 fn default_subscription_user_agent(version: Option<&str>) -> String {
@@ -886,10 +922,11 @@ impl HttpSubscriptionClient {
     pub fn new() -> Self { Self::with_kernel_version(None) }
 
     pub fn with_kernel_version(version: Option<&str>) -> Self {
-        let agent = ureq::AgentBuilder::new()
+        static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+        let agent = AGENT.get_or_init(|| ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
             .timeout_read(Duration::from_secs(30))
-            .build();
+            .build()).clone();
         Self { agent, default_user_agent: default_subscription_user_agent(version) }
     }
 }
@@ -934,7 +971,7 @@ impl SubscriptionSource for HttpSubscriptionClient {
             String::from_utf8(body).map_err(|_| FETCH_ERROR.to_string())?
         };
         Ok(FetchedSubscription {
-            content: if age_key::is_encrypted_text(&text) { text } else { normalize_subscription_content(&text) },
+            content: text,
             userinfo,
         })
     }
@@ -1805,7 +1842,7 @@ impl KernelLaunch for ProcessRuntime {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct DiskState {
+struct DiskState<'a> {
     #[serde(default)]
     next_id: u64,
     #[serde(default)]
@@ -1826,7 +1863,7 @@ struct DiskState {
     #[serde(default)]
     proxy_port: Option<u16>,
     #[serde(default)]
-    profiles: Vec<DiskProfile>,
+    profiles: Vec<DiskProfile<'a>>,
     #[serde(default)]
     chosen_mode: Option<String>,
     #[serde(default)]
@@ -1834,7 +1871,7 @@ struct DiskState {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct DiskProfile {
+struct DiskProfile<'a> {
     id: String,
     name: String,
     kind: ProfileKind,
@@ -1842,11 +1879,13 @@ struct DiskProfile {
     #[serde(default)]
     user_agent: String,
     #[serde(default)]
-    content: String,
+    content: Cow<'a, str>,
     #[serde(default)]
-    override_text: String,
+    proxy_count: Option<usize>,
     #[serde(default)]
-    applied_override: String,
+    override_text: Cow<'a, str>,
+    #[serde(default)]
+    applied_override: Cow<'a, str>,
     #[serde(default)]
     override_error: Option<String>,
     #[serde(default)]
@@ -1917,6 +1956,7 @@ pub struct ProfileBook {
     settings: KernelSettings,
     notice: Option<String>,
     startup_guard_active: bool,
+    shutting_down: bool,
     crash_recoveries: u8,
     last_crash_ms: Option<u64>,
 }
@@ -1979,6 +2019,7 @@ impl ProfileBook {
             settings: KernelSettings::default(),
             notice: None,
             startup_guard_active: false,
+            shutting_down: false,
             crash_recoveries: 0,
             last_crash_ms: None,
         };
@@ -2274,7 +2315,7 @@ impl ProfileBook {
         self.path.with_file_name(STARTUP_GUARD_FILE)
     }
 
-    pub fn clear_startup_guard(&mut self) {
+    fn clear_startup_guard(&mut self) {
         self.startup_guard_active = false;
         let _ = fs::remove_file(self.startup_guard_path());
     }
@@ -2287,8 +2328,21 @@ impl ProfileBook {
         self.startup_guard_active
     }
 
-    pub fn should_auto_connect(&self) -> bool {
-        self.settings.auto_connect && !self.connected && self.active_id.is_some()
+    pub fn prepare_exit(&mut self) {
+        self.shutting_down = true;
+        if self.startup_guard_active {
+            self.clear_startup_guard();
+        }
+    }
+
+    pub fn check_startup_uptime(&mut self, uptime: Option<u64>) {
+        if self.startup_guard_active && uptime.is_some_and(|secs| secs >= STARTUP_STABLE_SECS) {
+            self.clear_startup_guard();
+        }
+    }
+
+    fn should_auto_connect(&self) -> bool {
+        !self.shutting_down && self.settings.auto_connect && !self.connected && self.active_id.is_some()
     }
 
     /// Runs at most once on app launch when `settings.auto_connect` is enabled.
@@ -2305,22 +2359,26 @@ impl ProfileBook {
             return None;
         }
         let guard = self.startup_guard_path();
-        if guard.exists() {
-            self.clear_startup_guard();
+        let create_guard = || -> std::io::Result<()> {
+            if let Some(parent) = guard.parent().filter(|p| !p.as_os_str().is_empty()) {
+                fs::create_dir_all(parent)?;
+            }
+            fs::File::create_new(&guard)?;
+            Ok(())
+        };
+        if let Err(error) = create_guard() {
+            let message = if error.kind() == std::io::ErrorKind::AlreadyExists {
+                self.clear_startup_guard();
+                "上次自动启动内核时异常退出，本次已暂停自动连接；请检查配置后手动连接".to_string()
+            } else {
+                format!("无法创建自动启动保护文件，已暂停自动连接：{error}")
+            };
             self.release_lingering_proxy(proxy);
-            self.home_failure = Some(
-                "上次自动启动内核时异常退出，本次已暂停自动连接；请检查配置后手动连接".to_string(),
-            );
+            self.home_failure = Some(message);
             self.remember_current_failure();
             self.persist();
             return Some(self.snapshot());
         }
-        if let Some(parent) = guard.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(&guard, format!("{}\n", now_ms()));
         self.startup_guard_active = true;
         let snapshot = self.connect(kernel, proxy, tun, vpn);
         if !self.connected {
@@ -2341,6 +2399,7 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> Option<ProfileSnapshot> {
+        if self.shutting_down { return None; }
         let exit_status = kernel.take_exit_detail()?;
         self.append_logs(kernel.pull_logs());
         if !self.connected && !self.takeover.system_proxy && !self.takeover.tun && !self.takeover.vpn {
@@ -2726,19 +2785,14 @@ impl ProfileBook {
         let needs_fetch = self.profiles[index].kind == ProfileKind::Subscription
             && (refresh || self.profiles[index].content.trim().is_empty());
         let fetched = if needs_fetch {
-            match source.fetch_with_user_agent(&self.profiles[index].source, self.subscription_user_agent(index)) {
-                Ok(fetched) => match age_key::decrypt_if_needed(&fetched.content, &self.profiles[index].age_key) {
-                    Ok(plain) => Some(FetchedSubscription {
-                        content: normalize_subscription_content(&plain),
-                        userinfo: fetched.userinfo,
-                    }),
-                    Err(message) => {
-                        self.fail_activation(index, message);
-                        return self.publish(kernel);
-                    }
-                },
-                Err(_) => {
-                    self.fail_activation(index, FETCH_ERROR.to_string());
+            self.profiles[index].refresh_revision += 1;
+            match source.fetch_with_user_agent(&self.profiles[index].source, self.subscription_user_agent(index))
+                .map_err(|_| FETCH_ERROR.to_string())
+                .and_then(|fetched| fetched.into_profile(&self.profiles[index].age_key))
+            {
+                Ok(profile) => Some(profile),
+                Err(message) => {
+                    self.fail_activation(index, message);
                     return self.publish(kernel);
                 }
             }
@@ -2809,9 +2863,9 @@ impl ProfileBook {
             if let Some(fetched) = fetched {
                 profile.node_metadata.take();
                 profile.content = fetched.content;
-                profile.usage = parse_userinfo(fetched.userinfo.as_deref());
+                profile.usage = fetched.usage;
                 profile.updated_ms = Some(now);
-                profile.proxy_count = count_proxies(&profile.content);
+                profile.proxy_count = fetched.proxy_count;
             }
             if profile.applied_override != profile.override_text {
                 profile.node_metadata.take();
@@ -2827,8 +2881,6 @@ impl ProfileBook {
         self.chosen_mode = prepared.mode;
         self.home_failure = None;
         self.input_error = None;
-        self.runtime_catalog = kernel.node_catalog();
-        self.auto_now = self.runtime_catalog.now.clone();
         self.apply_live_selections(kernel);
         self.persist();
         self.publish(kernel)
@@ -2923,15 +2975,17 @@ impl ProfileBook {
         fd: Option<i32>,
     ) -> Result<u16, StartError> {
         let (base, port) = self.kernel_yaml(tun_enable, fd)?;
+        let filtered;
         let yaml = if self.disabled_rules.is_empty() {
-            base.clone()
+            &base
         } else {
-            diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
-                .map_err(StartError::Failed)?
+            filtered = diagnostics::filter_disabled_rules(&base, &self.disabled_rules)
+                .map_err(StartError::Failed)?;
+            &filtered
         };
         self.runtime_catalog = nodes::RuntimeCatalog::default();
         self.auto_now.clear();
-        kernel.start_or_reload(&yaml).map_err(|message| {
+        kernel.start_or_reload(yaml).map_err(|message| {
             StartError::Failed(if message.is_empty() {
                 KERNEL_ERROR.to_string()
             } else {
@@ -2943,8 +2997,6 @@ impl ProfileBook {
         }
         self.runtime_base = Some(base);
         self.mixed_port = Some(i64::from(port));
-        self.runtime_catalog = kernel.node_catalog();
-        self.auto_now = self.runtime_catalog.now.clone();
         self.apply_live_selections(kernel);
         Ok(port)
     }
@@ -3084,6 +3136,7 @@ impl ProfileBook {
             age_key: String::new(),
             updated_ms: None,
             proxy_count: 0,
+            refresh_revision: 0,
             node_metadata: OnceLock::new(),
         });
         if let Some(profile) = self.profiles.last_mut() {
@@ -3109,20 +3162,22 @@ impl ProfileBook {
             .filter(|profile| !profile.id.is_empty())
             .map(|profile| {
                 let usage = usage_from_parts(profile.used, profile.total, profile.expire);
+                let proxy_count = profile.proxy_count.unwrap_or_else(|| count_proxies(&profile.content));
                 Profile {
                     id: profile.id,
                     name: profile.name,
                     kind: profile.kind,
                     source: profile.source,
                     user_agent: normalize_subscription_user_agent(&profile.user_agent).unwrap_or_default(),
-                    content: profile.content,
-                    override_text: profile.override_text,
-                    applied_override: profile.applied_override,
+                    content: profile.content.into_owned(),
+                    override_text: profile.override_text.into_owned(),
+                    applied_override: profile.applied_override.into_owned(),
                     override_error: profile.override_error,
                     failure: profile.failure,
                     last_success_ms: profile.last_success_ms,
                     usage,
-                    proxy_count: 0,
+                    proxy_count,
+                    refresh_revision: 0,
                     node_metadata: OnceLock::new(),
                     selected: profile.selected,
                     interval_hours: profile.interval_hours,
@@ -3131,9 +3186,6 @@ impl ProfileBook {
                 }
             })
             .collect();
-        for profile in &mut self.profiles {
-            profile.proxy_count = count_proxies(&profile.content);
-        }
         self.settings = disk.settings;
         nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
         let known = self
@@ -3229,9 +3281,10 @@ impl ProfileBook {
                     kind: profile.kind,
                     source: profile.source.clone(),
                     user_agent: profile.user_agent.clone(),
-                    content: profile.content.clone(),
-                    override_text: profile.override_text.clone(),
-                    applied_override: profile.applied_override.clone(),
+                    content: Cow::Borrowed(&profile.content),
+                    proxy_count: Some(profile.proxy_count),
+                    override_text: Cow::Borrowed(&profile.override_text),
+                    applied_override: Cow::Borrowed(&profile.applied_override),
                     override_error: profile.override_error.clone(),
                     failure: profile.failure.clone(),
                     last_success_ms: profile.last_success_ms,
@@ -3245,12 +3298,14 @@ impl ProfileBook {
                 })
                 .collect(),
         };
-        let Ok(data) = serde_json::to_vec_pretty(&disk) else {
-            return;
-        };
         let temporary = self.path.with_extension("json.tmp");
-        if fs::write(&temporary, data).is_ok() {
-            let _ = fs::rename(&temporary, &self.path);
+        let write = || -> std::io::Result<()> {
+            let mut writer = BufWriter::new(fs::File::create(&temporary)?);
+            serde_json::to_writer_pretty(&mut writer, &disk)?;
+            writer.flush()
+        };
+        if write().and_then(|()| fs::rename(&temporary, &self.path)).is_err() {
+            let _ = fs::remove_file(&temporary);
         }
     }
 
@@ -3263,11 +3318,7 @@ impl ProfileBook {
             self.auto_now = self.runtime_catalog.now.clone();
             self.kernel_memory = kernel.kernel_memory();
             self.kernel_uptime_secs = kernel.kernel_uptime_secs();
-            if self.startup_guard_active
-                && self.kernel_uptime_secs.is_some_and(|secs| secs >= STARTUP_STABLE_SECS)
-            {
-                self.clear_startup_guard();
-            }
+            self.check_startup_uptime(self.kernel_uptime_secs);
             if self.kernel_uptime_secs.is_some_and(|secs| secs >= 60) {
                 self.crash_recoveries = 0;
             }
@@ -3671,7 +3722,7 @@ impl ProfileBook {
         .to_string()
     }
 
-    fn apply_live_selections(&self, kernel: &mut dyn KernelLaunch) {
+    fn apply_live_selections(&mut self, kernel: &mut dyn KernelLaunch) {
         if !kernel.running() {
             return;
         }
@@ -3681,6 +3732,11 @@ impl ProfileBook {
         let Some(profile) = self.profiles.iter().find(|profile| profile.id == id) else {
             return;
         };
+        if profile.selected.is_empty() {
+            return;
+        }
+        self.runtime_catalog = kernel.node_catalog();
+        self.auto_now = self.runtime_catalog.now.clone();
         let Some(document) = document_value(profile) else {
             return;
         };
@@ -4097,17 +4153,13 @@ fn ensure_tun_dns(yaml: &str, settings: &KernelSettings) -> Result<String, Strin
     serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
 }
 
+fn subscription_proxy_count(text: &str) -> Option<usize> {
+    let value = parse_config(text).ok()?;
+    Some(mapping_get(&value, "proxies").and_then(Value::as_sequence).map_or(0, Vec::len))
+}
+
 fn count_proxies(content: &str) -> usize {
-    if content.trim().is_empty() {
-        return 0;
-    }
-    let Ok(value) = serde_yaml::from_str::<Value>(content) else {
-        return 0;
-    };
-    mapping_get(&value, "proxies")
-        .and_then(Value::as_sequence)
-        .map(|list| list.len())
-        .unwrap_or(0)
+    subscription_proxy_count(content).unwrap_or(0)
 }
 
 const REFRESH_SLACK_MS: u64 = 60_000;
@@ -4266,15 +4318,16 @@ impl ProfileBook {
             self.input_error = Some(MISSING_PROFILE.to_string());
             return self.snapshot();
         };
-        if parse_config(content).is_err() {
+        let Some(proxy_count) = subscription_proxy_count(content) else {
             self.profiles[index].failure = Some(CONTENT_ERROR.to_string());
             self.input_error = Some(CONTENT_ERROR.to_string());
             return self.snapshot();
-        }
+        };
         let profile = &mut self.profiles[index];
         profile.node_metadata.take();
+        profile.refresh_revision += 1;
         profile.content = content.to_string();
-        profile.proxy_count = count_proxies(content);
+        profile.proxy_count = proxy_count;
         profile.updated_ms = Some(now_ms());
         profile.failure = None;
         self.input_error = None;
@@ -4295,106 +4348,108 @@ impl ProfileBook {
         self.publish(kernel)
     }
 
-    /// Reads the URL and User-Agent needed to fetch `id` without holding the session lock
-    /// across network I/O. Returns `Err(snapshot)` if `id` is missing, or `Ok(None)` for local files.
-    pub fn prepare_refresh(&mut self, id: &str) -> Result<Option<(String, String)>, ProfileSnapshot> {
+    pub fn prepare_refresh(&mut self, id: &str) -> Option<RefreshRequest> {
         let Some(index) = self.index_of(id) else {
             self.input_error = Some(MISSING_PROFILE.to_string());
-            return Err(self.snapshot());
+            return None;
         };
-        if self.profiles[index].kind != ProfileKind::Subscription {
-            return Ok(None);
+        let user_agent = self.subscription_user_agent(index).to_string();
+        let profile = &mut self.profiles[index];
+        if profile.kind != ProfileKind::Subscription {
+            return None;
         }
-        Ok(Some((
-            self.profiles[index].source.clone(),
-            self.subscription_user_agent(index).to_string(),
-        )))
+        profile.refresh_revision += 1;
+        Some(RefreshRequest {
+            id: profile.id.clone(),
+            source: profile.source.clone(),
+            user_agent,
+            age_key: profile.age_key.clone(),
+            revision: profile.refresh_revision,
+        })
     }
 
-    /// Applies a completed subscription fetch back into the book, ignoring stale results
-    /// if the profile was removed or pointed at a different URL while the download ran.
+    /// Commit only the latest request made with the current download settings.
+    /// Returns true when a live config was reloaded and its proxy port needs checking.
     pub fn finish_refresh(
         &mut self,
-        id: &str,
-        expected_source: &str,
-        fetched: Result<FetchedSubscription, String>,
+        request: &RefreshRequest,
+        fetched: Result<DownloadedProfile, String>,
         kernel: &mut dyn KernelLaunch,
-    ) -> ProfileSnapshot {
-        let Some(index) = self.index_of(id) else {
-            return self.snapshot();
-        };
-        if self.profiles[index].kind != ProfileKind::Subscription
-            || self.profiles[index].source != expected_source
-        {
-            return self.snapshot();
+    ) -> bool {
+        let Some(index) = self.index_of(&request.id) else { return false };
+        if self.subscription_user_agent(index) != request.user_agent {
+            return false;
         }
-        let fetched = match fetched {
-            Ok(fetched) => fetched,
-            Err(_) => {
-                self.profiles[index].failure = Some(FETCH_ERROR.to_string());
-                // A failed attempt still counts as a try so the timer does not spin.
-                self.profiles[index].updated_ms = Some(now_ms());
-                self.persist();
-                return self.snapshot();
-            }
-        };
-        let plain = match age_key::decrypt_if_needed(&fetched.content, &self.profiles[index].age_key) {
-            Ok(plain) => plain,
-            Err(message) => {
-                self.profiles[index].failure = Some(message);
-                self.profiles[index].updated_ms = Some(now_ms());
-                self.persist();
-                return self.snapshot();
-            }
-        };
-        let content = normalize_subscription_content(&plain);
-        if parse_config(&content).is_err() {
-            self.profiles[index].failure = Some(CONTENT_ERROR.to_string());
-            self.profiles[index].updated_ms = Some(now_ms());
-            self.persist();
-            return self.snapshot();
+        let profile = &mut self.profiles[index];
+        if profile.refresh_revision != request.revision || profile.source != request.source
+            || profile.age_key != request.age_key
+        {
+            return false;
         }
         let now = now_ms();
-        {
-            let profile = &mut self.profiles[index];
+        profile.updated_ms = Some(now);
+        let fetched = match fetched {
+            Ok(fetched) => fetched,
+            Err(message) => {
+                profile.failure = Some(message);
+                self.persist();
+                return false;
+            }
+        };
+        let previous_content = if profile.content == fetched.content {
+            None
+        } else {
             profile.node_metadata.take();
-            profile.content = content;
-            profile.usage = parse_userinfo(fetched.userinfo.as_deref());
-            profile.proxy_count = count_proxies(&profile.content);
-            profile.updated_ms = Some(now);
-            profile.last_success_ms = Some(now);
-            profile.failure = None;
-        }
-        self.persist();
-        if self.active_id.as_deref() == Some(id) {
-            self.disabled_rules.clear();
+            Some(std::mem::replace(&mut profile.content, fetched.content))
+        };
+        let active = self.active_id.as_deref() == Some(&request.id);
+        let live = active && self.platform == ClientPlatform::Desktop && kernel.running();
+        if active {
+            let disabled = std::mem::take(&mut self.disabled_rules);
             self.recompute_effective();
-            if kernel.running() && self.platform == ClientPlatform::Desktop {
-                let tun = self.takeover.tun;
-                if let Err(StartError::Failed(message)) | Err(StartError::Idle(message)) =
-                    self.reload(kernel, tun, None)
-                {
-                    self.notice = Some(message);
+            if live {
+                let result = self.reload(kernel, self.takeover.tun, None);
+                if let Err(StartError::Failed(message) | StartError::Idle(message)) = result {
+                    if let Some(previous) = previous_content {
+                        self.profiles[index].content = previous;
+                        self.profiles[index].node_metadata.take();
+                    }
+                    self.disabled_rules = disabled;
+                    self.notice = Some(message.clone());
+                    self.recompute_effective();
+                    if kernel.running() {
+                        self.profiles[index].failure = Some(message);
+                        self.persist();
+                    } else {
+                        self.fail_activation(index, message);
+                    }
+                    self.sync_runtime(kernel);
+                    return false;
                 }
+                self.sync_runtime(kernel);
             }
         }
-        self.publish(kernel)
+        let profile = &mut self.profiles[index];
+        profile.usage = fetched.usage;
+        profile.proxy_count = fetched.proxy_count;
+        profile.last_success_ms = Some(now);
+        profile.failure = None;
+        self.persist();
+        live
     }
 
-    /// Fetches a subscription again without switching the active profile.
-    pub fn refresh_profile(
+    #[cfg(test)]
+    fn refresh_profile(
         &mut self,
         id: &str,
         source: &dyn SubscriptionSource,
         kernel: &mut dyn KernelLaunch,
     ) -> ProfileSnapshot {
-        let (url, ua) = match self.prepare_refresh(id) {
-            Err(snapshot) => return snapshot,
-            Ok(None) => return self.snapshot(),
-            Ok(Some(pair)) => pair,
-        };
-        let fetched = source.fetch_with_user_agent(&url, &ua);
-        self.finish_refresh(id, &url, fetched, kernel)
+        if let Some(request) = self.prepare_refresh(id) {
+            let result = request.fetch(source);
+            self.finish_refresh(&request, result, kernel);
+        }
+        self.snapshot()
     }
 
     /// Subscriptions whose update interval has passed.
@@ -4880,9 +4935,8 @@ pub fn preview_override(content: &str, override_text: &str, name: &str) -> Resul
 fn parse_yaml(text: &str) -> Result<Value, serde_yaml::Error> {
     let mut value = serde_yaml::from_str::<Value>(text)?;
     // A malformed merge is left for the kernel to report; the app keeps the raw value.
-    let raw = value.clone();
     if value.apply_merge().is_err() {
-        value = raw;
+        return serde_yaml::from_str(text);
     }
     Ok(value)
 }
@@ -5089,36 +5143,29 @@ fn clean_name(name: &str, fallback: &str) -> String {
     }
 }
 
-fn normalize_subscription_content(raw: &str) -> String {
-    let trimmed = raw.trim().trim_start_matches('\u{feff}');
-    if parse_config(trimmed).is_ok() {
-        return trimmed.to_string();
+fn parse_subscription_content(mut content: String) -> Result<(String, usize), String> {
+    fn trim_body(text: &mut String) {
+        text.truncate(text.trim_end().len());
+        let start = text.len() - text.trim_start().trim_start_matches('\u{feff}').len();
+        text.drain(..start);
     }
-    let compact: String = trimmed.chars().filter(|ch| !ch.is_whitespace()).collect();
-    if let Some(text) = decode_base64_text(&compact) {
-        let text = text.trim().trim_start_matches('\u{feff}').to_string();
-        if parse_config(&text).is_ok() {
-            return text;
+    trim_body(&mut content);
+    if let Some(count) = subscription_proxy_count(&content) {
+        return Ok((content, count));
+    }
+    content.retain(|ch| !ch.is_whitespace());
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    for engine in [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD] {
+        if let Ok(bytes) = engine.decode(&content) {
+            let mut decoded = String::from_utf8(bytes).map_err(|_| CONTENT_ERROR.to_string())?;
+            trim_body(&mut decoded);
+            if let Some(count) = subscription_proxy_count(&decoded) {
+                return Ok((decoded, count));
+            }
+            break;
         }
     }
-    trimmed.to_string()
-}
-
-fn decode_base64_text(text: &str) -> Option<String> {
-    let attempts = [
-        base64::engine::general_purpose::STANDARD.decode(text),
-        base64::engine::general_purpose::STANDARD_NO_PAD.decode(text),
-        base64::engine::general_purpose::URL_SAFE.decode(text),
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text),
-    ];
-    for result in attempts {
-        if let Ok(bytes) = result
-            && let Ok(text) = String::from_utf8(bytes)
-        {
-            return Some(text);
-        }
-    }
-    None
+    Err(CONTENT_ERROR.to_string())
 }
 
 fn now_ms() -> u64 {
@@ -5708,6 +5755,35 @@ proxy-groups:
         apps.fail = false;
         book.refresh_installed(&mut apps);
         assert_eq!(apps.reads, 3);
+    }
+
+    #[test]
+    #[ignore = "manual subscription refresh and reopen benchmark"]
+    fn benchmark_subscription_refresh_and_reopen() {
+        let dir = temp_dir("refresh-bench");
+        let mut book = ProfileBook::open(&dir.0);
+        let mut content = String::from("mixed-port: 7890\nproxies:\n");
+        for i in 0..3000 {
+            content.push_str(&format!("  - {{name: node-{i}, type: ss, server: node-{i}.example, port: 443}}\n"));
+        }
+        let mut source = MapSource { items: HashMap::new() };
+        for i in 0..8 {
+            let url = format!("https://s{i}.example/sub");
+            book.add_subscription(&url);
+            source.items.insert(url, Ok(FetchedSubscription { content: content.clone(), userinfo: None }));
+        }
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        let start = Instant::now();
+        for i in 1..=8 {
+            let result = book.refresh_profile(&format!("p{i}"), &source, &mut kernel);
+            assert_eq!(result.profiles[i - 1].proxy_count, 3000);
+        }
+        let refresh_ms = start.elapsed().as_millis();
+        drop(book);
+        let start = Instant::now();
+        let opened = ProfileBook::open(&dir.0);
+        assert_eq!(opened.profiles.iter().map(|p| p.proxy_count).sum::<usize>(), 24000);
+        eprintln!("refresh_ms={refresh_ms} open_ms={}", start.elapsed().as_millis());
     }
 
     #[test]
@@ -8746,6 +8822,16 @@ proxy-groups:
         after_crash.sync_runtime(&mut fresh_kernel);
         assert!(!after_crash.startup_guard_path().exists(), "stable uptime clears guard");
 
+        after_crash.disconnect(&mut fresh_kernel, &mut proxy, &mut tun, &mut vpn);
+        fresh_kernel.uptime = 0;
+        after_crash.auto_connect_on_launch(&mut fresh_kernel, &mut proxy, &mut tun, &mut vpn).unwrap();
+        assert!(after_crash.startup_guard_path().exists());
+        after_crash.prepare_exit();
+        assert!(!after_crash.startup_guard_path().exists());
+        after_crash.release_lingering_proxy(&mut proxy);
+        assert!(!after_crash.should_auto_connect(), "a queued launch cannot start during exit");
+        let mut after_crash = ProfileBook::open(&dir.0);
+
         // Cleanly handled start failure clears the guard immediately without looping.
         after_crash.disconnect(&mut fresh_kernel, &mut proxy, &mut tun, &mut vpn);
         fresh_kernel.alive = false;
@@ -8820,45 +8906,95 @@ proxy-groups:
     }
 
     #[test]
-    fn split_refresh_unlocks_network_fetch_and_drops_stale_url_results() {
+    fn stored_proxy_counts_survive_refresh_and_load_from_legacy_files() {
+        let dir = temp_dir("proxy-count");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_subscription("https://example.com/test");
+        let request = book.prepare_refresh("p1").unwrap();
+        let content = "mixed-port: 7890\nproxies: [{name: n1}, {name: n2}]";
+        let data = FetchedSubscription { content: content.into(), userinfo: None }.into_profile("").unwrap();
+        book.finish_refresh(&request, Ok(data), &mut FakeKernel { running: None, fail: false, calls: 0 });
+        let path = dir.0.join("profiles.json");
+        let mut disk: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk["profiles"][0]["proxy_count"], 2);
+        assert_eq!(ProfileBook::open(&dir.0).profiles[0].proxy_count, 2);
+        disk["profiles"][0].as_object_mut().unwrap().remove("proxy_count");
+        fs::write(path, serde_json::to_vec(&disk).unwrap()).unwrap();
+        assert_eq!(ProfileBook::open(&dir.0).profiles[0].proxy_count, 2);
+    }
+
+    #[test]
+    fn rejected_live_refresh_preserves_the_last_working_subscription_on_disk() {
+        let dir = temp_dir("refresh-rejected");
+        let mut book = ProfileBook::open(&dir.0);
+        let url = "https://example.com/sub";
+        book.add_subscription(url);
+        let mut source = MapSource { items: HashMap::new() };
+        source.items.insert(url.into(), Ok(FetchedSubscription { content: config(7890), userinfo: None }));
+        let mut kernel = node_kernel();
+        book.enable("p1", &source, &mut kernel);
+        let original = book.profile_content("p1").unwrap();
+        let last_success = book.profiles[0].last_success_ms;
+        source.items.insert(url.into(), Ok(FetchedSubscription { content: config(7891), userinfo: None }));
+        struct RejectReload { alive: bool, stop_on_reload: bool }
+        impl KernelLaunch for RejectReload {
+            fn running(&mut self) -> bool { self.alive }
+            fn start_or_reload(&mut self, _: &str) -> Result<(), String> {
+                self.alive = !self.stop_on_reload;
+                Err("kernel rejected reload".into())
+            }
+        }
+        let mut reject = RejectReload { alive: true, stop_on_reload: false };
+        let failed = book.refresh_profile("p1", &source, &mut reject);
+        assert!(failed.profiles[0].failure.is_some());
+        assert_eq!(failed.profiles[0].last_success_ms, last_success);
+        assert_eq!(ProfileBook::open(&dir.0).profile_content("p1"), Some(original));
+        assert!(book.pending_release.is_none());
+
+        reject.stop_on_reload = true;
+        book.refresh_profile("p1", &source, &mut reject);
+        assert!(book.pending_release.is_some(), "a dead listener must release its traffic takeover");
+    }
+
+    #[test]
+    fn concurrent_refreshes_discard_results_after_edits_or_newer_requests() {
         let dir = temp_dir("split-refresh");
         let mut book = ProfileBook::open(&dir.0);
         book.add_subscription("https://a.example/sub");
         book.add_subscription("https://b.example/sub");
         let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
 
-        let (url_a, ua_a) = book.prepare_refresh("p1").unwrap().unwrap();
-        let (url_b, _) = book.prepare_refresh("p2").unwrap().unwrap();
-        assert_eq!(url_a, "https://a.example/sub");
-        assert!(ua_a.is_empty());
+        let first = book.prepare_refresh("p1").unwrap();
+        let old_url = book.prepare_refresh("p2").unwrap();
+        assert_eq!(first.source, "https://a.example/sub");
+        assert!(first.user_agent.is_empty());
 
-        // User edits p2's URL while the earlier fetch is in flight: stale response is ignored.
         book.set_profile_source("p2", "https://new-b.example/sub");
-        let ignored = book.finish_refresh(
-            "p2",
-            &url_b,
-            Ok(FetchedSubscription { content: config(7891), userinfo: None }),
-            &mut kernel,
-        );
-        assert_eq!(ignored.profiles[1].proxy_count, 0);
-        assert!(ignored.profiles[1].last_success_ms.is_none());
+        book.finish_refresh(&old_url, Err("obsolete".into()), &mut kernel);
+        assert!(book.profiles[1].updated_ms.is_none());
 
-        // p1 completes normally, while a third failure records only on its own card.
-        let done_a = book.finish_refresh(
-            "p1",
-            &url_a,
-            Ok(FetchedSubscription {
-                content: "mixed-port: 7890\nproxies:\n  - {name: hk, type: ss}\n".to_string(),
-                userinfo: None,
-            }),
-            &mut kernel,
-        );
-        assert_eq!(done_a.profiles[0].proxy_count, 1);
-        assert!(done_a.profiles[0].failure.is_none());
+        let current = book.prepare_refresh("p1").unwrap();
+        let data = FetchedSubscription {
+            content: "mixed-port: 7890\nproxies:\n  - {name: hk, type: ss}\n".into(),
+            userinfo: None,
+        }.into_profile("").unwrap();
+        book.finish_refresh(&current, Ok(data), &mut kernel);
+        book.finish_refresh(&first, Err("late response".into()), &mut kernel);
+        assert_eq!(book.profiles[0].proxy_count, 1);
+        assert!(book.profiles[0].failure.is_none());
 
-        let (url_b2, _) = book.prepare_refresh("p2").unwrap().unwrap();
-        let failed_b = book.finish_refresh("p2", &url_b2, Err("timeout".to_string()), &mut kernel);
-        assert!(failed_b.profiles[0].failure.is_none(), "p1 stays healthy");
-        assert!(failed_b.profiles[1].failure.is_some(), "only p2 records the error");
+        let changed = book.prepare_refresh("p1").unwrap();
+        book.settings.subscription_user_agent = "new-client".into();
+        book.finish_refresh(&changed, Err("obsolete UA".into()), &mut kernel);
+        assert!(book.profiles[0].failure.is_none());
+
+        let edited = book.prepare_refresh("p1").unwrap();
+        book.save_profile_content("p1", &config(7899), &mut kernel);
+        book.finish_refresh(&edited, Err("obsolete content".into()), &mut kernel);
+        assert!(book.profiles[0].failure.is_none());
+
+        let current_b = book.prepare_refresh("p2").unwrap();
+        book.finish_refresh(&current_b, Err("timeout".into()), &mut kernel);
+        assert_eq!(book.profiles[1].failure.as_deref(), Some("timeout"));
     }
 }

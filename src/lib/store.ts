@@ -352,10 +352,11 @@ export function createStore(backend: Backend) {
         for (const [key, oldRow] of prevActiveConnections) {
           if (!currentMap.has(key)) {
             ended.push({ ...oldRow, closed_at_ms: closedAt })
+            if (ended.length === MAX_CLOSED_CONNECTIONS) break
           }
         }
         if (ended.length > 0) {
-          closedConnections.value = [...ended, ...closedConnections.value].slice(0, MAX_CLOSED_CONNECTIONS)
+          closedConnections.value = ended.concat(closedConnections.value.slice(0, MAX_CLOSED_CONNECTIONS - ended.length))
         }
       }
       prevActiveConnections = currentMap
@@ -501,36 +502,47 @@ export function createStore(backend: Backend) {
     return result
   }
 
-  /**
-   * One subscription fetch with card feedback. Runs off the serial UI action queue
-   * so bounded multi-threaded batch refreshes execute in parallel without blocking
-   * unrelated navigation or state reads (R27).
-   */
-  async function trackUpdate(id: string, fetch: () => Promise<Snapshot>, quiet = false) {
-    const before = snapshot.value
-    profileUpdates[id] = { state: 'updating', reason: null }
+  const pendingUpdates = new Map<string, { settings: string; result: Promise<boolean> }>()
+
+  function trackUpdate(id: string, quiet = false): Promise<boolean> {
+    const profile = snapshot.value.profiles.find((item) => item.id === id)
+    const settings = JSON.stringify([profile?.source, profile?.user_agent || snapshot.value.settings.subscription_user_agent, profile?.age_recipients])
+    const pending = pendingUpdates.get(id)
+    if (pending?.settings === settings) return pending.result
+
+    const current = () => pendingUpdates.get(id)?.result === result
+    const result: Promise<boolean> = Promise.resolve().then(() => fetchUpdate(id, quiet, current)).finally(() => {
+      if (current()) {
+        pendingUpdates.delete(id)
+        delete busy[`update:${id}`]
+      }
+    })
+    pendingUpdates.set(id, { settings, result })
     busy[`update:${id}`] = true
+    return result
+  }
+
+  async function fetchUpdate(id: string, quiet: boolean, current: () => boolean) {
+    profileUpdates[id] = { state: 'updating', reason: null }
     lastRunError.value = null
     let result: Snapshot | undefined
     let thrownError: string | null = null
     try {
-      result = await fetch()
-      if (result && typeof result === 'object' && 'profiles' in (result as object)) {
-        apply(result)
-      }
+      result = await backend.refresh(id)
+      if (!current()) return false
+      apply(result)
     } catch (error) {
+      if (!current()) return false
       console.error(error)
       thrownError = error instanceof Error ? error.message : String(error)
       lastRunError.value = thrownError
-    } finally {
-      delete busy[`update:${id}`]
     }
     let reason: string | null = null
     if (!result) {
       reason = thrownError ?? '订阅没有更新'
     } else {
       const profile = result.profiles.find((item) => item.id === id)
-      reason = profile?.failure ?? (quiet ? null : newFailure(before, result))
+      reason = profile ? profile.failure : '没有这份配置'
     }
     if (reason) {
       profileUpdates[id] = { state: 'failure', reason }
@@ -559,7 +571,7 @@ export function createStore(backend: Backend) {
    */
   async function updateAll(targetIds?: readonly string[]) {
     if (busy.refreshAll) return
-    const ids = targetIds ? [...targetIds] : subscribeIds()
+    const ids = targetIds ? [...new Set(targetIds)] : subscribeIds()
     if (!ids.length) return
     busy.refreshAll = true
     refreshProgress.value = { done: 0, total: ids.length, failed: 0 }
@@ -580,7 +592,7 @@ export function createStore(backend: Backend) {
             }
           },
         },
-        (id) => trackUpdate(id, () => backend.refresh(id), true),
+        (id) => trackUpdate(id, true),
       )
       if (backend.live) void backend.syncTray()
       if (ids.length) {
@@ -928,10 +940,7 @@ export function createStore(backend: Backend) {
     confirmInstall: () => act(null, () => backend.confirmInstall(), '已添加订阅'),
     cancelInstall: () => act(null, () => backend.cancelInstall()),
     enable: (id: string) => act(`enable:${id}`, () => backend.enable(id), '已切换配置'),
-    update: (id: string) =>
-      trackUpdate(id, () =>
-        snapshot.value.active_id === id ? backend.update(id) : backend.refresh(id),
-      ),
+    update: (id: string) => trackUpdate(id),
     updateAll,
     refreshAll: (ids?: readonly string[]) => updateAll(ids),
     remove: (id: string) => act(`remove:${id}`, () => backend.remove(id)),

@@ -53,6 +53,30 @@ describe('store lifecycle', () => {
     expect(save.mock.calls).toEqual([['proxies'], ['logs']])
   })
 
+  it('shares an active subscription download between a manual update and a batch', async () => {
+    const { backend, state, store } = setup()
+    const adding = backend.addSubscription('https://example.org/sub')
+    await vi.runAllTimersAsync()
+    const initial = await adding
+    const id = initial.profiles.find((profile) => profile.source === 'https://example.org/sub')!.id
+    initial.active_id = id
+    state.mockResolvedValue(initial)
+    await store.start()
+    const download = deferred<Snapshot>()
+    const refresh = vi.spyOn(backend, 'refresh').mockReturnValue(download.promise)
+    const activate = vi.spyOn(backend, 'update')
+    const manual = store.update(id)
+    const batch = store.updateAll([id, id])
+    await Promise.resolve()
+    expect(refresh.mock.calls).toEqual([[id]])
+    expect(activate).not.toHaveBeenCalled()
+    expect(store.busy[`update:${id}`]).toBe(true)
+    download.resolve(initial)
+    await Promise.all([manual, batch])
+    expect(store.busy[`update:${id}`]).toBeUndefined()
+    expect(store.refreshProgress.value).toEqual({ done: 1, total: 1, failed: 0 })
+  })
+
   it('preserves unaffected groups and log rows when one group changes', async () => {
     const { store, state } = setup()
     const catalog: Snapshot['node_catalog'] = ['a', 'b'].map((name) => ({ name, kind: 'manual', now: '',
