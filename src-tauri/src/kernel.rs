@@ -531,24 +531,41 @@ fn decode_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    // A running Windows image cannot be replaced; on Unix replacing it would
+    // also discard the TUN authorization attached to its owner/mode.
+    if executable_matches(path, bytes) { return Ok(()); }
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
     }
-    let temporary = path.with_extension("tmp");
-    fs::write(&temporary, bytes).map_err(|err| err.to_string())?;
-    let _ = fs::remove_file(path);
-    fs::rename(&temporary, path).map_err(|err| err.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|err| err.to_string())?;
-    }
-    Ok(())
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let temporary = path.with_extension(format!("tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let result = (|| {
+        fs::write(&temporary, bytes).map_err(|err| err.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755)).map_err(|err| err.to_string())?;
+        }
+        // Never remove the old executable before a successful atomic rename.
+        fs::rename(&temporary, path).map_err(|err| err.to_string())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temporary); }
+    result
 }
 
-fn extract_kernel(asset_name: &str, bytes: &[u8], destination: &Path) -> Result<(), String> {
+fn executable_matches(path: &Path, expected: &[u8]) -> bool {
+    let Ok(mut file) = fs::File::open(path) else { return false; };
+    if !file.metadata().is_ok_and(|meta| meta.is_file() && meta.len() == expected.len() as u64) { return false; }
+    let mut buffer = [0; 32 * 1024];
+    for chunk in expected.chunks(buffer.len()) {
+        if file.read_exact(&mut buffer[..chunk.len()]).is_err() || buffer[..chunk.len()] != *chunk { return false; }
+    }
+    true
+}
+
+fn kernel_bytes(asset_name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
     let plain = if asset_name.ends_with(".gz") {
         decode_gzip(bytes)?
     } else if asset_name.ends_with(".zip") {
@@ -559,7 +576,11 @@ fn extract_kernel(asset_name: &str, bytes: &[u8], destination: &Path) -> Result<
     if plain.is_empty() {
         return Err("内核文件无法解压".to_string());
     }
-    write_executable(destination, &plain)
+    Ok(plain)
+}
+
+fn extract_kernel(asset_name: &str, bytes: &[u8], destination: &Path) -> Result<(), String> {
+    write_executable(destination, &kernel_bytes(asset_name, bytes)?)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -698,6 +719,7 @@ pub struct KernelManager {
     target: PlatformTarget,
     state: KernelState,
     running: Option<InstalledKernel>,
+    protected_path: Option<PathBuf>,
     bundled: Option<(PathBuf, String)>,
 }
 
@@ -711,6 +733,7 @@ impl KernelManager {
             target,
             state,
             running: None,
+            protected_path: None,
             #[cfg(target_os = "android")]
             bundled: bundled_android_kernel(),
             #[cfg(not(target_os = "android"))]
@@ -720,6 +743,12 @@ impl KernelManager {
 
     pub fn channel(&self) -> Channel {
         self.state.channel
+    }
+
+    /// The profile runtime owns the real process; staging must preserve its file
+    /// even when the legacy `connect_kernel` command was never called.
+    pub fn protect_running_path(&mut self, path: Option<PathBuf>) {
+        self.protected_path = path;
     }
 
     /// Bootstrap desktop installations offline, preserving independently updated kernels.
@@ -858,7 +887,8 @@ impl KernelManager {
                         .as_ref()
                         .map(|item| item.relative_path == old.relative_path)
                         .unwrap_or(false);
-                    if replaced && !running_old {
+                    let protected = self.protected_path.as_ref() == Some(&self.root.join(&old.relative_path));
+                    if replaced && !running_old && !protected {
                         let _ = fs::remove_file(self.root.join(&old.relative_path));
                     }
                 }
@@ -911,7 +941,7 @@ impl KernelManager {
         if let Some(current) = &self.state.installed {
             if current.channel == requested && current.identity == identity {
                 let path = self.root.join(&current.relative_path);
-                if path.is_file() {
+                if fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() > 0) {
                     return Ok(current.clone());
                 }
             }
@@ -920,8 +950,16 @@ impl KernelManager {
         if sha256_hex(&bytes) != expected {
             return Err("内核校验和不一致".to_string());
         }
-        let relative = format!("files/{expected}/{}", self.target.binary_file_name());
-        extract_kernel(&asset.name, &bytes, &self.root.join(&relative))?;
+        let plain = kernel_bytes(&asset.name, &bytes)?;
+        let mut relative = format!("files/{expected}/{}", self.target.binary_file_name());
+        let destination = self.root.join(&relative);
+        // A damaged or inaccessible cached image may still be mapped by a live
+        // process. Publish the verified replacement at a new path instead.
+        if destination.exists() && !executable_matches(&destination, &plain) {
+            let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+            relative = format!("files/{expected}-{}-{nonce}/{}", std::process::id(), self.target.binary_file_name());
+        }
+        write_executable(&self.root.join(&relative), &plain)?;
         Ok(InstalledKernel {
             channel: requested,
             identity,
@@ -1446,6 +1484,89 @@ mod tests {
         assert!(!launched.failed);
         assert_eq!(fs::read(launched.kernel_path.unwrap()).unwrap(), b"preview-kernel");
         assert_eq!(reopened.channel(), Channel::Preview);
+    }
+
+    #[test]
+    fn switching_channels_back_reuses_the_running_executable_without_rewriting_it() {
+        let dir = temp_dir("channel-roundtrip");
+        let target = PlatformTarget::Desktop { os: DesktopOs::Windows, arch: CpuArch::Amd64 };
+        let stable_name = "mihomo-windows-amd64-v1.19.34.zip";
+        let preview_name = "mihomo-windows-amd64-alpha-abc123.zip";
+        let stable = source_with(Channel::Stable, "v1.19.34", &[(stable_name, archive_for(stable_name, b"stable-core"))]);
+        let preview = source_with(Channel::Preview, PREVIEW_TAG, &[(preview_name, archive_for(preview_name, b"preview-core"))]);
+        let mut manager = KernelManager::open(&dir.0, target);
+        assert!(manager.sync(Channel::Stable, &stable).failure.is_none());
+        let path = manager.installed_path().unwrap();
+        // Model the actual profile runtime, which does not call manager.connect().
+        manager.protect_running_path(Some(path.clone()));
+        let saved_time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        fs::File::options().write(true).open(&path).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(saved_time)).unwrap();
+        let saved_time = fs::metadata(&path).unwrap().modified().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o4755)).unwrap();
+        }
+        #[cfg(windows)]
+        let _locked = {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Allow reads but deny writes/deletion, like a running Windows image.
+            fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap()
+        };
+        for _ in 0..3 {
+            assert!(manager.sync(Channel::Preview, &preview).failure.is_none());
+            assert_eq!(fs::read(&path).unwrap(), b"stable-core");
+            let status = manager.sync(Channel::Stable, &stable);
+            assert!(status.failure.is_none(), "{:?}", status.failure);
+            assert_eq!(status.channel, "stable");
+            assert_eq!(manager.installed_path().unwrap(), path);
+            assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), saved_time);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o7777, 0o4755);
+        }
+    }
+
+    #[test]
+    fn a_different_cached_image_is_repaired_at_a_new_path() {
+        let dir = temp_dir("kernel-repair");
+        let name = "mihomo-linux-amd64-v1.19.34.gz";
+        let archive = archive_for(name, b"verified-kernel");
+        let source = source_with(Channel::Stable, "v1.19.34", &[(name, archive.clone())]);
+        let old_path = dir.0.join(format!("files/{}/core", sha256_hex(&archive)));
+        fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+        fs::write(&old_path, b"existing-image").unwrap();
+        let mut manager = KernelManager::open(&dir.0, linux_amd64());
+        manager.protect_running_path(Some(old_path.clone()));
+        assert!(manager.sync(Channel::Stable, &source).failure.is_none());
+        let next = manager.installed_path().unwrap();
+        assert_ne!(next, old_path);
+        assert_eq!(fs::read(&old_path).unwrap(), b"existing-image");
+        assert_eq!(fs::read(&next).unwrap(), b"verified-kernel");
+        assert_eq!(manager.connect().kernel_path.as_ref(), Some(&next));
+    }
+
+    #[test]
+    fn failed_kernel_state_save_keeps_the_previous_selection_and_image() {
+        let dir = temp_dir("kernel-state-failure");
+        let name = "mihomo-linux-amd64-v1.19.34.gz";
+        let stable = source_with(Channel::Stable, "v1.19.34", &[(name, archive_for(name, b"stable"))]);
+        let next = "mihomo-linux-amd64-alpha-abc123.gz";
+        let preview = source_with(Channel::Preview, PREVIEW_TAG, &[(next, archive_for(next, b"preview"))]);
+        let mut manager = KernelManager::open(&dir.0, linux_amd64());
+        manager.sync(Channel::Stable, &stable);
+        let original = manager.installed_path().unwrap();
+        let state = fs::read(dir.0.join("state.json")).unwrap();
+        fs::create_dir(dir.0.join("state.json.tmp")).unwrap();
+        let failed = manager.sync(Channel::Preview, &preview);
+        assert!(failed.failure.is_some());
+        assert_eq!(failed.channel, "stable");
+        assert_eq!(manager.installed_path().unwrap(), original);
+        assert_eq!(fs::read(original).unwrap(), b"stable");
+        assert_eq!(fs::read(dir.0.join("state.json")).unwrap(), state);
     }
 
     #[test]

@@ -1215,6 +1215,10 @@ impl ProcessRuntime {
         self.stop();
     }
 
+    pub fn running_kernel_path(&mut self) -> Option<PathBuf> {
+        if self.running() { self.launched_kernel.clone() } else { None }
+    }
+
     fn stop(&mut self) {
         self.halt_metrics();
         if self.tun_active {

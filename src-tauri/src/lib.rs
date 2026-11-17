@@ -346,8 +346,10 @@ fn kernel_state(app: AppHandle) -> KernelStatus {
 
 #[tauri::command(async)]
 fn set_kernel_channel(app: AppHandle, channel: String) -> KernelStatus {
+    let running = with_profile(&app, |session| session.runtime.running_kernel_path());
     let store = app.state::<KernelStore>();
     let mut manager = lock_kernel(&store.manager);
+    manager.protect_running_path(running);
     match parse_channel(&channel) {
         Ok(channel) => manager.sync(channel, &GithubReleaseClient::new()),
         Err(message) => manager.fail_without_change(message),
@@ -950,8 +952,10 @@ fn clear_notice(app: AppHandle) -> ProfileSnapshot {
 
 #[tauri::command(async)]
 fn refresh_kernel(app: AppHandle) -> KernelStatus {
+    let running = with_profile(&app, |session| session.runtime.running_kernel_path());
     let store = app.state::<KernelStore>();
     let mut manager = lock_kernel(&store.manager);
+    manager.protect_running_path(running);
     let channel = manager.channel();
     manager.sync(channel, &GithubReleaseClient::new())
 }
