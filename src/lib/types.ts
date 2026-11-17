@@ -236,6 +236,12 @@ export interface ConfigValues {
   disable_keep_alive: boolean | null
 }
 
+/** A 覆写 applied to its profile without saving. */
+export interface OverridePreview {
+  yaml: string
+  logs: string[]
+}
+
 /**
  * Read-only summary of the running config. Each layer holds top-level options
  * only; list sections are counted and credentials arrive masked.

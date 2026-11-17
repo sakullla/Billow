@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
+import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
 import YamlEditor from '../components/YamlEditor.vue'
 import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent } from '../lib/format'
 import { useStore } from '../lib/store'
 import { subscriptionUserAgent } from '../lib/subscription'
-import type { ProfileItem } from '../lib/types'
+import type { OverridePreview, ProfileItem } from '../lib/types'
+import { overrideLanguage, SCRIPT_TEMPLATE, YAML_TEMPLATE, type OverrideLanguage } from '../lib/yaml/script'
 
 defineProps<{ compact?: boolean }>()
 const store = useStore()
@@ -229,9 +231,21 @@ interface YamlDraft {
   mode: 'content' | 'override'
   text: string
   dirty: boolean
+  /** Override only: YAML merge or a `main(config)` script. */
+  language: OverrideLanguage
 }
 
+const OVERRIDE_LANGUAGES: { id: OverrideLanguage; label: string }[] = [
+  { id: 'yaml', label: 'YAML' },
+  { id: 'javascript', label: 'JavaScript' },
+]
+const TEMPLATES: Record<OverrideLanguage, string> = { yaml: YAML_TEMPLATE, javascript: SCRIPT_TEMPLATE }
+
 const yaml = ref<YamlDraft | null>(null)
+const syntaxOpen = ref(false)
+const languageSwitch = ref<OverrideLanguage | null>(null)
+const preview = ref<(OverridePreview & { error: string | null }) | null>(null)
+const previewing = ref(false)
 const yamlError = ref<string | null>(null)
 const discardOpen = ref(false)
 const editorRef = ref<InstanceType<typeof YamlEditor> | null>(null)
@@ -241,7 +255,73 @@ async function openYaml(profile: ProfileItem, mode: 'content' | 'override') {
   yamlError.value = null
   discardOpen.value = false
   const text = mode === 'content' ? await store.backend.content(profile.id) : profile.override_text
-  yaml.value = { profile, mode, text, dirty: false }
+  preview.value = null
+  syntaxOpen.value = false
+  yaml.value = { profile, mode, text, dirty: false, language: overrideLanguage(text) }
+}
+
+/** Another page (system proxy bypass) hands over rules to review in the 覆写 editor. */
+onMounted(async () => {
+  const request = store.overrideRequest.value
+  store.overrideRequest.value = null
+  const profile = request ? snap.value.profiles.find((item) => item.id === request.id) : undefined
+  if (!request || !profile) return
+  await openYaml(profile, 'override')
+  const draft = yaml.value
+  if (!draft) return
+  if (draft.language === 'javascript') {
+    yamlError.value = '当前覆写是脚本，请在 main 中用 config.rules.unshift(...) 加入这些规则：\n' + request.append
+    return
+  }
+  draft.text = `${draft.text.replace(/\s*$/, '')}${draft.text.trim() ? '\n\n' : ''}${request.append}`
+  draft.dirty = true
+})
+
+/** Switching form keeps work: an empty or untouched template is swapped silently, anything else asks first. */
+function chooseLanguage(next: OverrideLanguage) {
+  const draft = yaml.value
+  if (!draft || draft.language === next) return
+  const text = draft.text.trim()
+  if (!text || text === TEMPLATES[draft.language].trim()) {
+    applyLanguage(next)
+    return
+  }
+  languageSwitch.value = next
+}
+
+function applyLanguage(next: OverrideLanguage) {
+  const draft = yaml.value
+  languageSwitch.value = null
+  if (!draft) return
+  draft.language = next
+  draft.text = TEMPLATES[next]
+  draft.dirty = true
+  preview.value = null
+  void nextTick(() => editorRef.value?.focus())
+}
+
+function insertTemplate() {
+  const draft = yaml.value
+  if (!draft) return
+  draft.text = TEMPLATES[draft.language]
+  draft.dirty = true
+  void nextTick(() => editorRef.value?.focus())
+}
+
+/** Run the unsaved 覆写 against the profile and show the merged result (and script logs). */
+async function runPreview() {
+  const draft = yaml.value
+  if (!draft || previewing.value) return
+  previewing.value = true
+  try {
+    const result = await store.backend.previewOverride(draft.profile.id, draft.text)
+    if (yaml.value === draft) preview.value = { ...result, error: null }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (yaml.value === draft) preview.value = { yaml: '', logs: [], error: message }
+  } finally {
+    previewing.value = false
+  }
 }
 
 const yamlLines = computed(() => (yaml.value ? yaml.value.text.split('\n').length : 0))
@@ -250,6 +330,8 @@ function onYamlInput(text: string) {
   if (!yaml.value) return
   yaml.value.text = text
   yaml.value.dirty = true
+  // Pasting or typing `function main(` turns the draft into a script without a mode click.
+  if (yaml.value.mode === 'override' && overrideLanguage(text) === 'javascript') yaml.value.language = 'javascript'
 }
 
 /** Names the override can point at: the groups and nodes of the profile it applies to. */
@@ -318,7 +400,16 @@ async function saveYaml() {
     return
   }
   yaml.value = null
-  store.toast(profile.current ? '覆写已保存，重新启用该配置后生效' : '覆写已保存', 'success')
+  if (!after?.current) {
+    store.toast('覆写已保存，启用该配置时生效', 'success')
+    return
+  }
+  // The active profile picks the override up right away (hot reload, connections stay).
+  const applied = await store.applyOverride(profile.id)
+  const failure = applied?.profiles.find((item) => item.id === profile.id)
+  if (!applied) return
+  if (failure?.override_error) store.toast(failure.override_error, 'error')
+  else if (!failure?.failure) store.toast('覆写已保存并生效', 'success')
 }
 
 // Delete
@@ -671,26 +762,100 @@ const updateAllLabel = computed(() => {
       :title="yaml.mode === 'content' ? `编辑 · ${yaml.profile.name}` : `覆写 · ${yaml.profile.name}`"
       :subtitle="yaml.mode === 'content'
         ? (yaml.profile.kind === 'subscription' ? '订阅更新时会覆盖这里的修改；长期修改请使用覆写' : '保存后立即替换这份配置')
-        : '以 YAML 深度合并到配置之上，例如修改 dns、rules 或端口；启用该配置时生效'"
+        : yaml.language === 'yaml'
+          ? '以 YAML 深度合并到配置之上，订阅更新后依然保留'
+          : '用 JavaScript 的 main(config) 修改配置并返回，订阅更新后依然保留'"
       :before-close="beforeYamlClose"
       @close="yaml = null"
     >
+      <div v-if="yaml.mode === 'override'" class="override-bar">
+        <Segmented
+          :model-value="yaml.language"
+          :options="OVERRIDE_LANGUAGES"
+          size="sm"
+          label="覆写类型"
+          data-testid="override-language"
+          @update:model-value="chooseLanguage"
+        />
+        <button
+          type="button"
+          class="btn ghost sm"
+          :aria-expanded="syntaxOpen"
+          data-testid="override-syntax"
+          @click="syntaxOpen = !syntaxOpen"
+        >
+          <Icon name="info" :size="14" />语法
+        </button>
+        <button v-if="!yaml.text.trim()" type="button" class="btn ghost sm" data-testid="override-template" @click="insertTemplate">
+          <Icon name="plus" :size="14" />插入示例
+        </button>
+        <span class="grow" />
+        <button
+          type="button"
+          class="btn sm"
+          :disabled="previewing || !yaml.text.trim()"
+          data-testid="override-preview"
+          @click="runPreview"
+        >
+          <span v-if="previewing" class="spinner xs" /><Icon v-else name="play" :size="14" />预览结果
+        </button>
+      </div>
+      <div v-if="yaml.mode === 'override' && syntaxOpen" class="override-syntax small" data-testid="override-syntax-help">
+        <template v-if="yaml.language === 'yaml'">
+          <dl>
+            <div><dt><code>key: 值</code></dt><dd>深度合并：对象逐层合并，列表与其他值直接替换</dd></div>
+            <div><dt><code>+rules:</code></dt><dd>插入到原列表最前面（规则优先匹配）</dd></div>
+            <div><dt><code>rules+:</code></dt><dd>追加到原列表末尾</dd></div>
+            <div><dt><code>dns!:</code></dt><dd>整体替换该对象，不与原配置合并</dd></div>
+            <div><dt><code>&lt;+.a.com&gt;:</code></dt><dd>键名本身以 + 开头或结尾时用尖括号包裹，也可写 <code>+&lt;+.a.com&gt;</code></dd></div>
+            <div><dt><code>prepend-rules:</code></dt><dd>兼容 Clash Verge 写法（rules / proxies / proxy-groups 的 prepend- 与 append-）</dd></div>
+          </dl>
+        </template>
+        <template v-else>
+          <dl>
+            <div><dt><code>main(config, profileName)</code></dt><dd>入口函数，修改 config 后返回；未返回时沿用修改后的 config</dd></div>
+            <div><dt><code>console.log()</code></dt><dd>输出显示在“预览结果”中</dd></div>
+            <div><dt>运行环境</dt><dd>独立沙箱，没有网络、文件与定时器；超过 10 秒自动中止</dd></div>
+            <div><dt>补全</dt><dd>输入 <code>config.</code> 列出配置项，Ctrl+Space 列出常用片段，Tab 接受并跳到下一处</dd></div>
+          </dl>
+        </template>
+      </div>
       <YamlEditor
         ref="editorRef"
         class="editor"
+        :class="{ 'with-preview': preview }"
         :model-value="yaml.text"
         :names="knownNames"
+        :override="yaml.mode === 'override'"
+        :language="yaml.mode === 'override' ? yaml.language : 'yaml'"
         :label="yaml.mode === 'content' ? '配置文件' : '覆写'"
-        :placeholder="yaml.mode === 'override' ? '# 只写需要改的部分，例如：\nmixed-port: 7890\ndns:\n  enable: true' : ''"
+        :placeholder="yaml.mode === 'override'
+          ? (yaml.language === 'yaml' ? '# 只写需要改的部分，例如：\n+rules:\n  - DOMAIN-SUFFIX,corp.example,DIRECT' : '// function main(config) { … return config }')
+          : ''"
         :aria-invalid="yamlError ? 'true' : undefined"
         @update:model-value="onYamlInput"
         @save="saveYaml"
       />
+      <section v-if="preview" class="override-preview" data-testid="override-preview-panel" aria-live="polite">
+        <header>
+          <strong class="small">{{ preview.error ? '无法应用' : '合并结果' }}</strong>
+          <span v-if="!preview.error" class="muted small">保存前的预览，不影响当前连接</span>
+          <span class="grow" />
+          <button type="button" class="icon-btn sm" title="关闭预览" aria-label="关闭预览" @click="preview = null">
+            <Icon name="x" :size="14" />
+          </button>
+        </header>
+        <p v-if="preview.error" class="field-error small" role="alert"><Icon name="alert" :size="13" /> {{ preview.error }}</p>
+        <ol v-if="preview.logs.length" class="override-logs mono small" aria-label="脚本输出">
+          <li v-for="(line, index) in preview.logs" :key="index">{{ line }}</li>
+        </ol>
+        <YamlEditor v-if="!preview.error" class="editor preview-editor readonly" :model-value="preview.yaml" readonly label="合并结果" />
+      </section>
       <p v-if="yamlError" class="field-error editor-error" role="alert">{{ yamlError }}</p>
       <template #footer>
         <span class="muted small grow editor-meta">
           {{ yamlLines }} 行{{ yaml.dirty ? ' · 未保存' : '' }}
-          <span class="editor-hint">· Ctrl+Space 补全 · Ctrl+F 查找</span>
+          <span class="editor-hint">· Ctrl+Space 补全 · Tab 接受 · Ctrl+F 查找 · Ctrl+S 保存</span>
           <button
             v-if="yaml.profile.current"
             type="button"
@@ -700,7 +865,17 @@ const updateAllLabel = computed(() => {
           >查看生效配置</button>
         </span>
         <button type="button" class="btn ghost" data-testid="cancel-editor" @click="requestYamlClose">取消</button>
-        <button type="button" class="btn primary" :disabled="store.busy.content || store.busy.override" @click="saveYaml">保存</button>
+        <button type="button" class="btn primary" :disabled="store.busy.content || store.busy.override" @click="saveYaml">
+          {{ yaml.mode === 'override' && yaml.profile.current ? '保存并生效' : '保存' }}
+        </button>
+      </template>
+    </Modal>
+
+    <Modal v-if="languageSwitch" :title="`切换为 ${languageSwitch === 'javascript' ? 'JavaScript' : 'YAML'} 覆写？`" @close="languageSwitch = null">
+      <p>两种写法不能混用，切换后当前内容会被示例替换。需要保留的话，可以先复制出来。</p>
+      <template #footer>
+        <button type="button" class="btn ghost" @click="languageSwitch = null">取消</button>
+        <button type="button" class="btn danger" data-testid="confirm-language" @click="applyLanguage(languageSwitch)">替换内容</button>
       </template>
     </Modal>
 

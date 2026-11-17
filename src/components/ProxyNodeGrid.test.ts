@@ -67,6 +67,8 @@ describe('proxy grid windowing', () => {
 
   it('tabs into the next window and back instead of skipping unmounted nodes', async () => {
     const { wrapper } = setup(2000)
+    // Grids decide on mount whether they are on screen; the cards follow in the same tick.
+    await nextTick()
     const buttons = wrapper.findAll('button')
     const nextIndex = buttons.length
     await buttons[buttons.length - 1]!.trigger('keydown', { key: 'Tab' })
@@ -92,5 +94,36 @@ describe('proxy grid windowing', () => {
     const request = vi.spyOn(window, 'requestAnimationFrame')
     host.dispatchEvent(new Event('scroll'))
     expect(request).not.toHaveBeenCalled()
+  })
+})
+
+describe('off-screen grids', () => {
+  it('waits as a placeholder below the viewport and renders once it scrolls near', async () => {
+    let notify: ((entries: { isIntersecting: boolean }[]) => void) | null = null
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: (entries: { isIntersecting: boolean }[]) => void) { notify = callback }
+      observe() {}
+      disconnect() {}
+    })
+    const host = document.createElement('main')
+    host.className = 'main'
+    document.body.append(host)
+    Object.defineProperty(host, 'clientHeight', { value: 600 })
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return (this === host ? { top: 0, bottom: 600, height: 600 } : { top: 3000, bottom: 3400, height: 400 }) as DOMRect
+    })
+    const nodes = Array.from({ length: 40 }, (_, i) => ({ name: `n${i}`, node_type: 'ss', tags: [], selected: false, delay_ms: null, failed: false }))
+    const wrapper = mount(ProxyNodeGrid, {
+      attachTo: host,
+      props: { nodes, dense: false },
+      slots: { default: ({ nodes }: { nodes: NodeItem[] }) => nodes.map((node) => h('div', { class: 'node', 'data-node': node.name })) },
+    })
+    cleanups.push(() => { wrapper.unmount(); host.remove() })
+    await nextTick()
+    expect(wrapper.find('[data-testid="node-grid-parked"]').exists()).toBe(true)
+    expect(wrapper.findAll('.node')).toHaveLength(0)
+    notify!([{ isIntersecting: true }])
+    await nextTick()
+    expect(wrapper.findAll('.node')).toHaveLength(40)
   })
 })

@@ -5,7 +5,7 @@ describe('shortcut registry', () => {
   it('exports one entry per in-app shortcut without duplicates', () => {
     const ids = SHORTCUTS.map((shortcut) => shortcut.id)
     expect(new Set(ids).size).toBe(ids.length)
-    expect(ids).toEqual(['palette', 'sidebar', 'pages', 'settings', 'search', 'escape', 'zoom-in', 'zoom-out', 'zoom-reset', 'help'])
+    expect(ids).toEqual(['palette', 'sidebar', 'pages', 'settings', 'search', 'escape', 'help'])
     expect(getShortcut('palette').combo).toBe('mod+k')
     expect(getShortcut('sidebar').combo).toBe('mod+b')
     expect(getShortcut('palette').allowInInput).toBe(true)

@@ -5,6 +5,7 @@ import {
   normalizeSnapshot,
   type AppInfo,
   type ConfigOverview,
+  type OverridePreview,
   type KernelChannel,
   type KernelSettings,
   type KernelStatus,
@@ -73,6 +74,8 @@ export interface Backend {
   /** This machine's private LAN address, or null when it cannot be told reliably. */
   lanAddress(): Promise<string | null>
   saveOverride(id: string, text: string): Promise<Snapshot>
+  /** Apply an unsaved 覆写 to the profile: merged YAML plus script `console` output. Rejects with the reason. */
+  previewOverride(id: string, text: string): Promise<OverridePreview>
 
   connect(): Promise<Snapshot>
   disconnect(): Promise<Snapshot>
@@ -196,6 +199,7 @@ function createTauriBackend(): Backend {
     configOverview: async () => normalizeConfigOverview(await call<unknown>('config_overview')),
     lanAddress: async () => (await call<string | null>('lan_address')) ?? null,
     saveOverride: (id, text) => snap('save_profile_override', { id, text }),
+    previewOverride: (id, text) => call<OverridePreview>('preview_profile_override', { id, text }),
 
     connect: () => snap('connect_session'),
     disconnect: () => snap('disconnect_session'),
@@ -260,6 +264,7 @@ function demoOptionsFromUrl() {
     profiles: !flags.includes('empty'),
     manyProviders: flags.includes('many'),
     longNames: flags.includes('long'),
+    big: flags.includes('big'),
   }
 }
 

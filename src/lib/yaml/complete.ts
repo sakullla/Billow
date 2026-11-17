@@ -78,8 +78,22 @@ function step(stack: Frame[], info: LineShape) {
   }
 }
 
+/**
+ * The config key behind a 覆写 key: `key!` (replace), `+key` / `key+` (prepend /
+ * append a list) and `<key>` (quoted key) all address `key`.
+ */
+export function overrideBaseKey(key: string): string {
+  let name = key.endsWith('!') ? key.slice(0, -1) : key
+  if (name.startsWith('+') && !name.startsWith('+.')) name = name.slice(1)
+  else if (name.startsWith('+<')) name = name.slice(1)
+  if (name.endsWith('+')) name = name.slice(0, -1)
+  if (name.length >= 2 && name.startsWith('<') && name.endsWith('>')) name = name.slice(1, -1)
+  const verge = /^(?:prepend|append)-(rules|proxies|proxy-groups)$/.exec(name)
+  return verge ? verge[1] : name
+}
+
 function pathOf(stack: Frame[]): string[] {
-  return stack.map((frame) => frame.seg)
+  return stack.map((frame) => (frame.seg === '[]' ? frame.seg : overrideBaseKey(frame.seg)))
 }
 
 /** Proxy, group and rule-provider names declared in the document itself. */
@@ -120,16 +134,25 @@ function quoteName(name: string): string {
   return /^[\w一-龥 .-]+$/.test(name) && !/^\s|\s$/.test(name) ? name : JSON.stringify(name)
 }
 
-function keyOptions(node: SchemaNode, indent: number, prefix: string, siblings: Set<string>): CompletionOption[] {
+function keyOptions(node: SchemaNode, indent: number, prefix: string, siblings: Set<string>, override: boolean): CompletionOption[] {
   const pad = ' '.repeat(indent + 2)
-  return Object.entries(node.keys ?? {})
-    .filter(([key]) => !siblings.has(key) && startsWith(key, prefix))
-    .map(([key, child]) => {
-      let apply = `${key}: `
-      if (child.keys && Object.keys(child.keys).length) apply = `${key}:\n${pad}`
-      else if (child.item) apply = `${key}:\n${pad}- `
-      return { label: key, apply, detail: child.doc, type: 'property' as const }
-    })
+  const options: CompletionOption[] = []
+  for (const [key, child] of Object.entries(node.keys ?? {})) {
+    // `keys: {}` plus `item` describes a map of named entries (rule-providers).
+    const mapping = Boolean(child.keys)
+    const list = !child.keys && Boolean(child.item || child.rules)
+    const body = mapping ? `\n${pad}` : list ? `\n${pad}- ` : ' '
+    const variants: { label: string; detail?: string }[] = [{ label: key, detail: child.doc }]
+    if (override && list) {
+      variants.push({ label: `+${key}`, detail: '插入到原列表前面' }, { label: `${key}+`, detail: '追加到原列表后面' })
+    }
+    if (override && mapping) variants.push({ label: `${key}!`, detail: '整体替换，不与原配置合并' })
+    for (const variant of variants) {
+      if (siblings.has(variant.label) || !startsWith(variant.label, prefix)) continue
+      options.push({ label: variant.label, apply: `${variant.label}:${body}`, detail: variant.detail, type: 'property' })
+    }
+  }
+  return options
 }
 
 function valueOptions(node: SchemaNode, names: Required<KnownNames>, prefix: string): CompletionOption[] {
@@ -194,8 +217,8 @@ function ruleOptions(body: string, bodyFrom: number, names: Required<KnownNames>
  * Completions at `pos`. `known` adds names from outside the document (e.g. the
  * profile an override applies to); names declared in the text are always used.
  */
-export function complete(text: string, pos: number, known: KnownNames = {}): CompletionResult | null {
-  const result = completeRaw(text, pos, known)
+export function complete(text: string, pos: number, known: KnownNames = {}, override = false): CompletionResult | null {
+  const result = completeRaw(text, pos, known, override)
   if (!result) return null
   const typed = text.slice(result.from, pos).toLowerCase()
   // Prefix matches first, then substring matches, each in schema order.
@@ -205,7 +228,7 @@ export function complete(text: string, pos: number, known: KnownNames = {}): Com
   return { from: result.from, options: options.map((item) => item.option) }
 }
 
-function completeRaw(text: string, pos: number, known: KnownNames): CompletionResult | null {
+function completeRaw(text: string, pos: number, known: KnownNames, override: boolean): CompletionResult | null {
   const lineStart = text.lastIndexOf('\n', pos - 1) + 1
   const before = text.slice(lineStart, pos)
   if (before.trimStart().startsWith('#')) return null
@@ -230,9 +253,9 @@ function completeRaw(text: string, pos: number, known: KnownNames): CompletionRe
   if (!node) return null
 
   const typed = before.slice(info.col)
-  const keyMatch = /^([\w.-]+):\s*(.*)$/.exec(typed)
+  const keyMatch = /^([+<]*[\w.-]+>?[+!]?):\s*(.*)$/.exec(typed)
   if (keyMatch) {
-    const valueNode = resolve([...path, keyMatch[1]])
+    const valueNode = resolve([...path, overrideBaseKey(keyMatch[1])])
     if (!valueNode) return null
     const prefix = keyMatch[2]
     if (/^\{|^\[/.test(prefix)) return null
@@ -245,7 +268,7 @@ function completeRaw(text: string, pos: number, known: KnownNames): CompletionRe
 
   if (node.keys && Object.keys(node.keys).length) {
     const siblings = siblingKeys(text, lineStart, pos, info.col)
-    const options = keyOptions(node, info.col, typed, siblings)
+    const options = keyOptions(node, info.col, typed, siblings, override)
     return options.length ? { from: pos - typed.length, options } : null
   }
   const options = valueOptions(node, names, typed)

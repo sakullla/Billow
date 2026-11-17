@@ -262,3 +262,49 @@ describe('options aligned with mihomo v1.19.34', () => {
     expect(saved[saved.length - 1]!.dns.fake_ip_filter_mode).toBe('rule')
   })
 })
+
+describe('batch editors', () => {
+  async function openDns(wrapper: Wrapper) {
+    storeOf(wrapper).openSettings('dns')
+    await flushPromises()
+  }
+
+  it('keeps batch-edited DNS policies when switching back to the list, including YAML and #suffix servers', async () => {
+    const { wrapper, saved } = await mountApp()
+    await openDns(wrapper)
+    await wrapper.find('[data-testid="toggle-policy-batch"]').trigger('click')
+    await wrapper.find('[data-testid="policy-batch-textarea"]').setValue(
+      "+.corp.example = 180.76.76.76, 223.5.5.5\n'+.e6yun.com': [180.76.76.76]\ngeosite:cn = https://doh.pub/dns-query#DIRECT # note",
+    )
+    await wrapper.find('[data-testid="toggle-policy-batch"]').trigger('click')
+    const values = wrapper.findAll('[data-testid="policy-list"] input').map((input) => (input.element as HTMLInputElement).value)
+    expect(values).toEqual([
+      '+.corp.example', '180.76.76.76, 223.5.5.5',
+      '+.e6yun.com', '180.76.76.76',
+      'geosite:cn', 'https://doh.pub/dns-query#DIRECT',
+    ])
+    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)?.dns.nameserver_policy['+.e6yun.com']).toEqual(['180.76.76.76'])
+  })
+
+  it('refuses to leave batch mode while a line cannot be read', async () => {
+    const { wrapper } = await mountApp()
+    await openDns(wrapper)
+    await wrapper.find('[data-testid="toggle-policy-batch"]').trigger('click')
+    await wrapper.find('[data-testid="policy-batch-textarea"]').setValue('+.ok.com = 1.1.1.1\n+.missing.com')
+    expect(wrapper.find('[data-testid="policy-batch-invalid"]').text()).toContain('第 2 行')
+    await wrapper.find('[data-testid="toggle-policy-batch"]').trigger('click')
+    expect(wrapper.find('[data-testid="policy-batch-textarea"]').exists()).toBe(true)
+  })
+
+  it('keeps batch-edited bypass entries when switching back to the list', async () => {
+    const { wrapper } = await mountApp()
+    storeOf(wrapper).openSettings('proxy')
+    await flushPromises()
+    await wrapper.find('[data-testid="toggle-bypass-batch"]').trigger('click')
+    await wrapper.find('[data-testid="bypass-batch-textarea"]').setValue('localhost\ng7e6ai.com;*.corp.local')
+    await wrapper.find('[data-testid="toggle-bypass-batch"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="bypass-list"] li').map((item) => item.text())).toEqual(['localhost', 'g7e6ai.com', '*.corp.local'])
+  })
+})

@@ -206,6 +206,8 @@ jobs:
           echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+          # rquickjs generates its Android bindings with bindgen against the NDK sysroot.
+          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> "$GITHUB_ENV"
           printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/billow.p12"
           {
             printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"

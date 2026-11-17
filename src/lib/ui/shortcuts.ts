@@ -8,9 +8,6 @@ export type ShortcutId =
   | 'search'
   | 'escape'
   | 'help'
-  | 'zoom-in'
-  | 'zoom-out'
-  | 'zoom-reset'
 
 /** `mod+1` … `mod+N` follow the sidebar order; the registry lists them as one row. */
 export const PAGE_SHORTCUT_COUNT = 7
@@ -82,30 +79,6 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     description: '关闭最上层弹层，或清空当前搜索',
     combo: 'Escape',
     scope: 'overlay',
-  },
-  {
-    id: 'zoom-in',
-    label: '放大界面',
-    description: '2K/4K 屏幕上把界面调大一档（桌面端）',
-    combo: 'mod+=',
-    scope: 'global',
-    allowInInput: true,
-  },
-  {
-    id: 'zoom-out',
-    label: '缩小界面',
-    description: '把界面调小一档（桌面端）',
-    combo: 'mod+-',
-    scope: 'global',
-    allowInInput: true,
-  },
-  {
-    id: 'zoom-reset',
-    label: '恢复自动缩放',
-    description: '按屏幕分辨率自动选择界面大小',
-    combo: 'mod+0',
-    scope: 'global',
-    allowInInput: true,
   },
   {
     id: 'help',

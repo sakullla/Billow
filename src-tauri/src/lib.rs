@@ -7,6 +7,7 @@ mod elevation;
 mod kernel;
 mod mrs;
 mod nodes;
+mod override_engine;
 mod packed;
 mod profile;
 mod shell;
@@ -486,6 +487,11 @@ fn enable_profile(app: AppHandle, id: String) -> ProfileSnapshot {
 #[tauri::command(async)]
 fn update_profile(app: AppHandle, id: String) -> ProfileSnapshot {
     activate_profile(&app, &id, true)
+}
+
+#[tauri::command(async)]
+fn preview_profile_override(app: AppHandle, id: String, text: String) -> Result<profile::OverridePreview, String> {
+    with_profile(&app, |session| session.book.preview_override(&id, &text))
 }
 
 #[tauri::command(async)]
@@ -1320,6 +1326,7 @@ pub fn run() {
             enable_profile,
             update_profile,
             save_profile_override,
+            preview_profile_override,
             connect_session,
             disconnect_session,
             set_system_proxy,

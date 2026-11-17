@@ -11,8 +11,11 @@ const uid = useId()
 const chartEl = ref<HTMLElement | null>(null)
 const hoverIndex = ref<number | null>(null)
 
+/** Highest rate in the window, shown as 峰值; `peak` below is only the rounded axis scale. */
+const highest = computed(() => Math.max(0, ...props.up, ...props.down))
+
 const peak = computed(() => {
-  const max = Math.max(1, ...props.up, ...props.down)
+  const max = Math.max(1, highest.value)
   // Round the scale up to a tidy step so the grid label does not jitter every second.
   const steps = [1, 2, 5]
   let unit = 1024
@@ -146,7 +149,7 @@ function onPointerLeave() {
 const label = computed(() =>
   props.collecting
     ? '正在采集流量数据'
-    : `最近一分钟流量，峰值 ${formatSpeed(peak.value)}，当前下载 ${formatSpeed(last(props.down))}，上传 ${formatSpeed(last(props.up))}`,
+    : `最近一分钟流量，峰值 ${formatSpeed(highest.value)}，当前下载 ${formatSpeed(last(props.down))}，上传 ${formatSpeed(last(props.up))}`,
 )
 </script>
 
@@ -164,7 +167,9 @@ const label = computed(() =>
         <span class="legend-item down">下载</span>
         <span class="legend-item up">上传</span>
       </div>
-      <span v-if="!collecting" class="chart-peak">{{ formatSpeed(peak) }}</span>
+      <span v-if="!collecting && highest > 0" class="chart-peak" title="最近一分钟内的最高速率（下载或上传）" data-testid="chart-peak">
+        峰值 {{ formatSpeed(highest) }}
+      </span>
     </div>
     <div
       ref="chartEl"

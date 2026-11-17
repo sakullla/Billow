@@ -2169,6 +2169,15 @@ impl ProfileBook {
     pub fn save_override(&mut self, id: &str, text: &str) -> ProfileSnapshot {
         if let Some(profile) = self.profiles.iter_mut().find(|profile| profile.id == id) {
             profile.override_text = text.to_string();
+            // Judge the draft right away so the editor can show why it would not apply.
+            profile.override_error = if text.trim().is_empty() || profile.content.trim().is_empty() {
+                None
+            } else {
+                match prepare_named(&profile.content, text, &profile.name) {
+                    Err(PrepareError::Override(reason)) => Some(format!("{OVERRIDE_ERROR}：{reason}")),
+                    _ => None,
+                }
+            };
             self.input_error = None;
             self.persist();
         } else {
@@ -2585,15 +2594,15 @@ impl ProfileBook {
             .map(|item| item.content.as_str())
             .unwrap_or(self.profiles[index].content.as_str());
         let override_text = self.profiles[index].override_text.clone();
-        let prepared = match prepare(content, &override_text) {
+        let prepared = match prepare_named(content, &override_text, &self.profiles[index].name) {
             Ok(prepared) => prepared,
             Err(PrepareError::Content) => {
                 self.fail_activation(index, CONTENT_ERROR.to_string());
                 return self.publish(kernel);
             }
-            Err(PrepareError::Override) => {
+            Err(PrepareError::Override(reason)) => {
                 // Judged before the running config changes, so takeover and the active id stay.
-                self.profiles[index].override_error = Some(OVERRIDE_ERROR.to_string());
+                self.profiles[index].override_error = Some(format!("{OVERRIDE_ERROR}：{reason}"));
                 self.persist();
                 return self.snapshot();
             }
@@ -2835,9 +2844,10 @@ impl ProfileBook {
         let Some(profile) = self.profiles.iter().find(|profile| profile.id == active) else {
             return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
         };
-        let prepared = match prepare(&profile.content, &profile.applied_override) {
+        let prepared = match prepare_named(&profile.content, &profile.applied_override, &profile.name) {
             Ok(prepared) => prepared,
-            Err(_) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
+            Err(PrepareError::Override(reason)) => return Err(StartError::Failed(format!("{OVERRIDE_ERROR}：{reason}"))),
+            Err(PrepareError::Content) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
         };
         let (settled, settled_port) =
             apply_settings(&prepared.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
@@ -4055,6 +4065,17 @@ impl ProfileBook {
         self.snapshot()
     }
 
+    /// Apply an unsaved 覆写 to a profile, returning the merged YAML and script logs.
+    pub fn preview_override(&self, id: &str, text: &str) -> Result<OverridePreview, String> {
+        let profile = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .ok_or_else(|| MISSING_PROFILE.to_string())?;
+        let (yaml, logs) = preview_override(&profile.content, text, &profile.name)?;
+        Ok(OverridePreview { yaml, logs })
+    }
+
     pub fn profile_content(&self, id: &str) -> Option<String> {
         self.profiles
             .iter()
@@ -4548,9 +4569,15 @@ enum StartError {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct OverridePreview {
+    pub yaml: String,
+    pub logs: Vec<String>,
+}
+
 enum PrepareError {
     Content,
-    Override,
+    Override(String),
 }
 
 fn normalize_outbound(mode: &str) -> Option<&'static str> {
@@ -4608,14 +4635,17 @@ fn document_value(profile: &Profile) -> Option<Value> {
 }
 
 fn prepare(content: &str, override_text: &str) -> Result<Prepared, PrepareError> {
+    prepare_named(content, override_text, "")
+}
+
+/// Profile content with its 覆写 applied (YAML merge or `main(config, name)` script).
+fn prepare_named(content: &str, override_text: &str, name: &str) -> Result<Prepared, PrepareError> {
     let mut base = parse_config(content).map_err(|_| PrepareError::Content)?;
     if !override_text.trim().is_empty() {
-        let overlay = parse_yaml(override_text).map_err(|_| PrepareError::Override)?;
-        if !overlay.is_null() {
-            merge(&mut base, &overlay);
-        }
+        crate::override_engine::apply(&mut base, override_text, name, parse_yaml)
+            .map_err(PrepareError::Override)?;
         if !is_config(&base) {
-            return Err(PrepareError::Override);
+            return Err(PrepareError::Override("覆写后配置为空".to_string()));
         }
     }
     let yaml = serde_yaml::to_string(&base).map_err(|_| PrepareError::Content)?;
@@ -4624,6 +4654,17 @@ fn prepare(content: &str, override_text: &str) -> Result<Prepared, PrepareError>
         mode: read_string(&base, "mode"),
         yaml,
     })
+}
+
+/// Apply `override_text` to `content` without saving, for the editor's preview.
+pub fn preview_override(content: &str, override_text: &str, name: &str) -> Result<(String, Vec<String>), String> {
+    let mut base = parse_config(content).map_err(|_| CONTENT_ERROR.to_string())?;
+    let applied = crate::override_engine::apply(&mut base, override_text, name, parse_yaml)?;
+    if !is_config(&base) {
+        return Err("覆写后配置为空".to_string());
+    }
+    let yaml = serde_yaml::to_string(&base).map_err(|_| CONTENT_ERROR.to_string())?;
+    Ok((yaml, applied.logs))
 }
 
 /// Parse YAML the way the kernel reads it: `<<` merge keys (usually `<<: *anchor`)
@@ -4652,27 +4693,6 @@ fn is_config(value: &Value) -> bool {
     match value.as_mapping() {
         Some(map) => !map.is_empty(),
         None => false,
-    }
-}
-
-fn merge(base: &mut Value, overlay: &Value) {
-    let Some(over_map) = overlay.as_mapping() else {
-        *base = overlay.clone();
-        return;
-    };
-    if base.as_mapping().is_none() {
-        *base = overlay.clone();
-        return;
-    }
-    for (key, value) in over_map {
-        let Some(base_map) = base.as_mapping_mut() else {
-            return;
-        };
-        if let Some(existing) = base_map.get_mut(key) {
-            merge(existing, value);
-        } else {
-            base_map.insert(key.clone(), value.clone());
-        }
     }
 }
 
@@ -6113,6 +6133,30 @@ rules:\n  - MATCH,pick\n",
     }
 
     #[test]
+    fn prefixed_override_rules_reach_the_kernel_and_bad_drafts_report_why() {
+        let dir = temp_dir("override-plus");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let saved = book.save_override("p1", "+rules:\n  - DOMAIN-SUFFIX,corp.example,DIRECT\n");
+        assert!(saved.profiles[0].override_error.is_none());
+        book.enable("p1", &RejectSource, &mut kernel);
+        let running: Value = serde_yaml::from_str(kernel.running.as_deref().unwrap()).unwrap();
+        let rules: Vec<&str> = running["rules"].as_sequence().unwrap().iter().filter_map(Value::as_str).collect();
+        assert_eq!(rules, ["DOMAIN-SUFFIX,corp.example,DIRECT", "MATCH,DIRECT"]);
+        assert!(running.get("+rules").is_none());
+
+        let script = book.save_override("p1", "function main(config) {\n  config.mode = 'global'\n  return config\n}\n");
+        assert!(script.profiles[0].override_error.is_none());
+        let preview = book.preview_override("p1", "function main(config) { console.log(config.mode); return config }").unwrap();
+        assert_eq!(preview.logs, ["rule"]);
+        let broken = book.save_override("p1", "function main(config) {\n  return config.a.b\n}\n");
+        let error = broken.profiles[0].override_error.clone().unwrap();
+        assert!(error.starts_with(OVERRIDE_ERROR) && error.contains("第 2 行"), "{error}");
+    }
+
+    #[test]
     fn unusable_override_does_not_replace_the_active_config() {
         let dir = temp_dir("override");
         let mut book = ProfileBook::open(&dir.0);
@@ -6136,10 +6180,7 @@ rules:\n  - MATCH,pick\n",
         assert_eq!(rejected.mixed_port, Some(7890));
         assert_eq!(rejected.mode.as_deref(), Some("rule"));
         assert!(rejected.system_proxy && !rejected.tun && rejected.vpn);
-        assert_eq!(
-            rejected.profiles[0].override_error.as_deref(),
-            Some(OVERRIDE_ERROR)
-        );
+        assert!(rejected.profiles[0].override_error.as_deref().is_some_and(|error| error.starts_with(OVERRIDE_ERROR)));
         assert!(rejected.profiles[0].failure.is_none());
         assert_eq!(kernel.calls, calls_before);
         assert_eq!(port_of(kernel.running.as_deref().unwrap()), 7890);
@@ -6150,16 +6191,14 @@ rules:\n  - MATCH,pick\n",
         assert_eq!(switched.mixed_port, Some(7890));
         assert!(switched.system_proxy && switched.vpn && !switched.tun);
         assert_eq!(kernel.calls, calls_before);
-        assert_eq!(
-            switched
-                .profiles
-                .iter()
-                .find(|profile| profile.id == "p2")
-                .unwrap()
-                .override_error
-                .as_deref(),
-            Some(OVERRIDE_ERROR)
-        );
+        assert!(switched
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "p2")
+            .unwrap()
+            .override_error
+            .as_deref()
+            .is_some_and(|error| error.starts_with(OVERRIDE_ERROR)));
 
         book.save_override("p1", "mixed-port: 8000\ndns:\n  enable: false\n");
         let applied = book.enable("p1", &RejectSource, &mut kernel);

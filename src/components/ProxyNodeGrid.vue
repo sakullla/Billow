@@ -13,6 +13,17 @@ const height = computed(() => props.compact ? (props.dense ? 56 : 76) : props.li
 const stride = computed(() => height.value + gap.value)
 // Small groups retain their natural wrapping and keyboard order.
 const virtual = computed(() => props.nodes.length > 80)
+/**
+ * Off-screen grids wait as a sized placeholder until they scroll near the viewport, so
+ * opening the page with many expanded groups only builds the cards that are visible.
+ */
+const PARK_MIN = 24
+/** First paint only builds what is on screen; scrolling prepares grids a little ahead. */
+const PARK_MOUNT_MARGIN = 120
+const PARK_MARGIN = 600
+const parked = ref(props.nodes.length > PARK_MIN && typeof IntersectionObserver !== 'undefined')
+const parkedHeight = ref(0)
+let parkObserver: IntersectionObserver | null = null
 const rows = computed(() => Math.ceil(props.nodes.length / columns.value))
 const range = computed(() => {
   if (!virtual.value) return { start: 0, end: rows.value }
@@ -46,7 +57,40 @@ function schedule() {
   frame = requestAnimationFrame(() => { frame = null; measure() })
 }
 
+function unpark() {
+  parkObserver?.disconnect()
+  parkObserver = null
+  parked.value = false
+}
+
+/** Sized like the real grid (tracks resolve without items), or rendered now when already in view. */
+function park() {
+  const el = root.value
+  if (!parked.value || !el) return
+  const area = el.closest<HTMLElement>('.main')
+  const view = area?.getBoundingClientRect()
+  const rect = el.getBoundingClientRect()
+  const viewTop = view?.top ?? 0
+  const viewBottom = view ? view.top + (area!.clientHeight || view.height) : window.innerHeight
+  const bottom = Number.isFinite(rect.bottom) ? rect.bottom : rect.top
+  if (rect.top < viewBottom + PARK_MOUNT_MARGIN && bottom > viewTop - PARK_MOUNT_MARGIN) {
+    unpark()
+    return
+  }
+  const tracks = getComputedStyle(el).gridTemplateColumns.split(' ').filter(Boolean).length
+  const perRow = Math.max(1, tracks)
+  parkedHeight.value = Math.max(0, Math.ceil(props.nodes.length / perRow) * stride.value - gap.value)
+  parkObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) unpark()
+  }, { root: area ?? null, rootMargin: `${PARK_MARGIN}px 0px` })
+  parkObserver.observe(el)
+}
+
 async function reveal(name: string) {
+  if (parked.value) {
+    unpark()
+    await nextTick()
+  }
   const index = props.nodes.findIndex((node) => node.name === name)
   if (!virtual.value || index < 0 || !root.value || !scroller) return
   measure()
@@ -95,7 +139,7 @@ function disconnect() {
   if (frame !== null) cancelAnimationFrame(frame)
   frame = null
 }
-onMounted(() => { mounted = true; observe() })
+onMounted(() => { mounted = true; park(); observe() })
 watch(virtual, (enabled) => {
   if (!mounted) return
   if (enabled) observe()
@@ -105,6 +149,7 @@ watch(() => [props.nodes, props.dense, props.list, props.compact], () => { void 
 onBeforeUnmount(() => {
   disposed = true
   disconnect()
+  parkObserver?.disconnect()
 })
 defineExpose({ reveal })
 </script>
@@ -112,9 +157,12 @@ defineExpose({ reveal })
 <template>
   <div ref="root" class="nodes" :class="{ dense, list, 'windowed-nodes': virtual }" :style="virtual ? { '--node-height': `${height}px` } : undefined" @keydown="onKeydown">
     <div v-if="$slots.header" ref="header" class="node-grid-header"><slot name="header" /></div>
-    <div v-if="range.start > 0" class="node-spacer" :style="{ height: `${before}px` }" aria-hidden="true" />
-    <slot :nodes="visible" />
-    <div v-if="range.end < rows" class="node-spacer" :style="{ height: `${after}px` }" aria-hidden="true" />
+    <div v-if="parked" class="node-spacer" :style="{ height: `${parkedHeight}px` }" aria-hidden="true" data-testid="node-grid-parked" />
+    <template v-else>
+      <div v-if="range.start > 0" class="node-spacer" :style="{ height: `${before}px` }" aria-hidden="true" />
+      <slot :nodes="visible" />
+      <div v-if="range.end < rows" class="node-spacer" :style="{ height: `${after}px` }" aria-hidden="true" />
+    </template>
   </div>
 </template>
 

@@ -415,7 +415,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
                 <Icon v-if="sortKey === 'host'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
               </button>
             </th>
-            <th>进程</th>
+            <th class="col-process">进程</th>
             <th>规则</th>
             <th>代理链</th>
             <th class="num" :aria-sort="ariaSortOf('speed')">
@@ -424,13 +424,13 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
                 <Icon v-if="sortKey === 'speed'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
               </button>
             </th>
-            <th class="num" :aria-sort="ariaSortOf('download')">
+            <th class="num col-down" :aria-sort="ariaSortOf('download')">
               <button type="button" class="th-sort num" :class="{ active: sortKey === 'download' }" @click="toggleColumnSort('download')">
                 下载
                 <Icon v-if="sortKey === 'download'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
               </button>
             </th>
-            <th class="num" :aria-sort="ariaSortOf('upload')">
+            <th class="num col-up" :aria-sort="ariaSortOf('upload')">
               <button type="button" class="th-sort num" :class="{ active: sortKey === 'upload' }" @click="toggleColumnSort('upload')">
                 上传
                 <Icon v-if="sortKey === 'upload'" :name="sortDir === 'asc' ? 'up' : 'down'" :size="11" />
@@ -466,8 +466,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
                 <span class="ellipsis" :title="row.host">{{ row.host }}</span>
               </div>
             </td>
-            <td class="muted ellipsis">{{ row.process || '—' }}</td>
-            <td class="ellipsis"><span class="muted">{{ row.rule }}</span><span v-if="row.rule_payload" class="rule-payload-inline">{{ row.rule_payload }}</span></td>
+            <td class="muted ellipsis col-process" :title="row.process || undefined">{{ row.process || '—' }}</td>
+            <td class="ellipsis" :title="row.rule_payload ? `${row.rule} ${row.rule_payload}` : row.rule"><span class="muted">{{ row.rule }}</span><span v-if="row.rule_payload" class="rule-payload-inline">{{ row.rule_payload }}</span></td>
             <td><ChainPath :hops="hopsOf(row)" pill fold /></td>
             <td
               class="num mono"
@@ -476,8 +476,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             >
               {{ speedDisplay(row).text }}
             </td>
-            <td class="num mono">{{ formatBytes(row.download) }}</td>
-            <td class="num mono muted">{{ formatBytes(row.upload) }}</td>
+            <td class="num mono col-down">{{ formatBytes(row.download) }}</td>
+            <td class="num mono muted col-up">{{ formatBytes(row.upload) }}</td>
             <td class="num muted">{{ formatDuration(row.start) }}</td>
             <td class="num">
               <button type="button" class="icon-btn sm conn-close" :aria-label="`断开 ${row.host}`" title="断开" @click.stop="closeOne(row)">

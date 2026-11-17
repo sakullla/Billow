@@ -72,6 +72,8 @@ interface DemoOptions {
   manyProviders?: boolean
   /** Airport-style long node names and a nested group chain (`?demo=long`). */
   longNames?: boolean
+  /** A heavy subscription: ~60 nodes and ~30 policy groups (`?demo=big`), for performance checks. */
+  big?: boolean
 }
 
 /** Real subscriptions pack region, line, rate and unlocks into one name. */
@@ -91,7 +93,10 @@ const DEMO_GROUP_ICONS: Record<string, string> = {
 }
 
 export function createDemoBackend(options: DemoOptions = {}): Backend {
-  const names = options.longNames ? [...DEMO_LONG_NAMES, ...nodeNames()] : nodeNames()
+  const baseNames = options.longNames ? [...DEMO_LONG_NAMES, ...nodeNames()] : nodeNames()
+  const names = options.big
+    ? [...baseNames, ...Array.from({ length: 48 }, (_, index) => `【KLM】Hong Kong ${String(index + 1).padStart(2, '0')}`)]
+    : baseNames
   const groupIcons = options.groupIcons ?? DEMO_GROUP_ICONS
   const rulesExtra = options.rulesExtra !== false
   const failRefreshId = options.failRefreshId ?? null
@@ -133,6 +138,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { name: 'OpenAI', type: 'select', proxies: ['美国 01', '美国 02', '日本 01', '新加坡 01'] },
     { name: '国内网站', type: 'select', proxies: ['DIRECT', '节点选择'] },
     { name: '漏网之鱼', type: 'select', proxies: ['节点选择', 'DIRECT'] },
+    ...(options.big
+      ? Array.from({ length: 24 }, (_, index) => ({ name: `策略组 ${index + 1}`, type: 'select', proxies: ['节点选择', '自动选择', ...names] }))
+      : []),
   ]
 
   /** Top-level options of the demo profile file, as the backend would summarize them. */
@@ -747,6 +755,14 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async lanAddress() {
       return state.platform === 'android' ? '192.168.1.42' : '192.168.1.23'
+    },
+    async previewOverride(id, text) {
+      await wait(250)
+      const item = profile(id)
+      if (!item) throw new Error('配置不存在')
+      if (/^\s*-/.test(text)) throw new Error('YAML 覆写需要是键值对，例如 mixed-port: 7890')
+      const logs = [...text.matchAll(/console\.log\((['"])(.*?)\1\)/g)].map((match) => match[2])
+      return { yaml: `# 预览环境：仅示意合并结果\n${text.trim()}\n`, logs }
     },
     async saveOverride(id, text) {
       const item = profile(id)

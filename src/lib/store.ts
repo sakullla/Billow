@@ -1,7 +1,6 @@
 import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey } from 'vue'
 import type { Backend, NodeTestEvent } from './backend'
 import { createAppUpdater, nativeUpdateDriver } from './appUpdate'
-import { createUiScale, tauriScaleDriver } from './ui/scale'
 import {
   emptySnapshot,
   type AppInfo,
@@ -105,6 +104,8 @@ export function createStore(backend: Backend) {
   const page = ref<PageId>('home')
   const focusGroup = ref<string | null>(null)
   const settingsTab = ref<SettingsTab>('general')
+  /** Text another page asks the profiles page to append to a profile's 覆写 editor (unsaved). */
+  const overrideRequest = ref<{ id: string; append: string } | null>(null)
   const loaded = ref(false)
   const busy = reactive<Record<string, boolean>>({})
   const toasts = ref<Toast[]>([])
@@ -155,8 +156,6 @@ export function createStore(backend: Backend) {
   const connecting = computed(() => Boolean(busy.connect))
   const connectStage = ref('')
   const appUpdate = createAppUpdater(nativeUpdateDriver(() => isAndroid.value))
-  /** Desktop webview zoom for 2K/4K screens; preview and Android keep 100 %. */
-  const uiScale = createUiScale(backend.live ? tauriScaleDriver() : null)
 
   function dismissToast(id: number) {
     const timer = toastTimers.get(id)
@@ -611,7 +610,6 @@ export function createStore(backend: Backend) {
     if (!isCurrent(session)) return
     loaded.value = true
     if (backend.live) void appUpdate.check(true)
-    if (backend.live && !isAndroid.value) void uiScale.install()
     void backend.kernel().then((value) => {
       if (isCurrent(session)) kernel.value = value
     }).catch(console.error)
@@ -659,7 +657,6 @@ export function createStore(backend: Backend) {
     activeTest.value = null
     pendingTests.value = new Set()
     appUpdate.stop()
-    uiScale.uninstall()
     stopped = true
     generation += 1
     starting = null
@@ -788,7 +785,6 @@ export function createStore(backend: Backend) {
   return {
     backend,
     appUpdate,
-    uiScale,
     snapshot,
     kernel,
     app,
@@ -796,6 +792,7 @@ export function createStore(backend: Backend) {
     page,
     focusGroup,
     settingsTab,
+    overrideRequest,
     openSettings,
     loaded,
     busy,
@@ -879,6 +876,8 @@ export function createStore(backend: Backend) {
     setAgeKey: (id: string, key: string) => act(null, () => backend.setAgeKey(id, key)),
     saveContent: (id: string, content: string) => act('content', () => backend.saveContent(id, content), '配置已保存'),
     saveOverride: (id: string, text: string) => act('override', () => backend.saveOverride(id, text)),
+    /** Re-apply the active profile so a saved 覆写 takes effect without a manual re-enable. */
+    applyOverride: (id: string) => act('override', () => backend.enable(id)),
 
     selectNode: (group: string, node: string) => act(`select:${group}`, () => backend.selectNode(group, node)),
 

@@ -7,8 +7,7 @@ import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import { useStore } from '../lib/store'
 import { subscriptionUserAgent } from '../lib/subscription'
-import { scaleLabel, UI_SCALE_STEPS } from '../lib/ui/scale'
-import { shortcutKeyLabel } from '../lib/ui/shortcuts'
+import { bypassOverride } from '../lib/bypass'
 import {
   DEFAULT_PAC_SCRIPT,
   DEFAULT_PROXY_BYPASS,
@@ -31,18 +30,6 @@ const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const app = computed(() => store.app.value)
 const kernel = computed(() => store.kernel.value)
-
-const uiScale = store.uiScale
-const scaleOptions = computed(() => [
-  { value: 'auto', label: `自动（${scaleLabel(uiScale.autoFactor.value)}）` },
-  ...UI_SCALE_STEPS.map((step) => ({ value: String(step), label: scaleLabel(step) })),
-])
-/** Explain a fitted value instead of silently showing a different number than chosen. */
-const scaleNote = computed(() => {
-  const { target, applied } = uiScale
-  if (applied.value + 0.001 < target.value) return `窗口较小，当前按 ${scaleLabel(applied.value)} 显示；放大窗口后自动生效`
-  return `2K / 4K 屏幕可调大；${shortcutKeyLabel('mod+=')} / ${shortcutKeyLabel('mod+-')} 快速调整，${shortcutKeyLabel('mod+0')} 恢复自动`
-})
 
 const THEMES: { id: ThemePreference; label: string; icon: string }[] = [
   { id: 'system', label: '跟随系统', icon: 'laptop' },
@@ -431,6 +418,10 @@ const proxyDraft = computed<SystemProxySettings>(() => {
 })
 const proxyDirty = computed(() => JSON.stringify(proxyDraft.value) !== JSON.stringify(snap.value.settings.system_proxy))
 
+watch(bypassBatchText, (text) => {
+  if (bypassBatchMode.value) bypassItems.value = parseBypassText(text)
+})
+
 function toggleBypassBatch() {
   if (bypassBatchMode.value) {
     bypassItems.value = parseBypassText(bypassBatchText.value)
@@ -468,6 +459,22 @@ function addDefaultBypass() {
   bypassItems.value = current
   bypassBatchText.value = current.join('\n')
   if (!added) store.toast('默认代理绕过规则已全部包含')
+}
+
+/** TUN sends every app to the kernel; bypass entries need DIRECT rules there. */
+function bypassToOverride() {
+  const append = bypassOverride(proxyDraft.value.bypass)
+  const id = snap.value.active_id
+  if (!append) {
+    store.toast('列表中没有可以转换的地址', 'info')
+    return
+  }
+  if (!id) {
+    store.toast('请先启用一个配置', 'info')
+    return
+  }
+  store.overrideRequest.value = { id, append }
+  store.go('profiles')
 }
 
 function undoProxy() {
@@ -601,17 +608,34 @@ function formatMapText(rows: { key: string; val: string }[]): string {
   return rows.map((row) => `${row.key} = ${row.val}`).join('\n')
 }
 
+/** `#` starts a comment only at the line start or after a space; DNS URLs may carry `#proxy` / `#h3=true`. */
+const stripComment = (line: string) => line.replace(/(^|\s)#.*$/, '').trim()
+
+/** 1-based numbers of non-empty lines a batch parser could not read. */
+function invalidLines(text: string, parse: (line: string) => Record<string, string[]>): number[] {
+  const out: number[] = []
+  text.split(/\r?\n/).forEach((line, index) => {
+    if (stripComment(line) && !Object.keys(parse(line)).length) out.push(index + 1)
+  })
+  return out
+}
+
 function parsePolicyBatchText(text: string): Record<string, string[]> {
   const out: Record<string, string[]> = {}
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.replace(/#.*$/, '').trim()
+    const line = stripComment(rawLine)
     if (!line) continue
     const eq = line.indexOf('=')
     let pattern = ''
     let rest = ''
+    // Also read YAML pasted from a config: `'+.a.com': [1.1.1.1, 2.2.2.2]`.
+    const yamlPair = /^(['"]?)(.+?)\1:\s+(.+)$/.exec(line)
     if (eq > 0) {
       pattern = line.slice(0, eq).trim()
       rest = line.slice(eq + 1).trim()
+    } else if (yamlPair) {
+      pattern = yamlPair[2]
+      rest = yamlPair[3]
     } else {
       const ws = line.search(/\s+/)
       if (ws > 0) {
@@ -619,7 +643,8 @@ function parsePolicyBatchText(text: string): Record<string, string[]> {
         rest = line.slice(ws + 1).trim()
       }
     }
-    const servers = splitTargets(rest)
+    pattern = pattern.replace(/^(['"])(.*)\1$/, '$2').trim()
+    const servers = splitTargets(rest.replace(/^\[(.*)\]$/, '$1')).map((item) => item.replace(/^(['"])(.*)\1$/, '$2'))
     if (pattern && servers.length) out[pattern] = servers
   }
   return out
@@ -629,7 +654,7 @@ function parseHostsBatchText(text: string): Record<string, string[]> {
   const out: Record<string, string[]> = {}
   const ipLiteral = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]+:[0-9a-fA-F:]*)$/
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.replace(/#.*$/, '').trim()
+    const line = stripComment(rawLine)
     if (!line) continue
     const eq = line.indexOf('=')
     if (eq > 0) {
@@ -744,10 +769,21 @@ function addCnPolicyPreset() {
   else policyRows.value.push({ pattern: presetKey, servers: presetVal })
 }
 
+// Batch text is the source of truth while it is shown: rows follow every edit, so
+// switching back never depends on a one-shot conversion.
+const policyInvalid = computed(() => (policyBatchMode.value ? invalidLines(policyBatchText.value, parsePolicyBatchText) : []))
+watch(policyBatchText, (text) => {
+  if (!policyBatchMode.value) return
+  policyRows.value = mapToRows(parsePolicyBatchText(text)).map(({ key, val }) => ({ pattern: key, servers: val }))
+})
+
 function togglePolicyBatch() {
   if (policyBatchMode.value) {
-    const map = parsePolicyBatchText(policyBatchText.value)
-    policyRows.value = mapToRows(map).map(({ key, val }) => ({ pattern: key, servers: val }))
+    if (policyInvalid.value.length) {
+      store.toast(`第 ${policyInvalid.value.join('、')} 行格式不对，修正或删除后再切换`, 'error')
+      return
+    }
+    policyRows.value = mapToRows(parsePolicyBatchText(policyBatchText.value)).map(({ key, val }) => ({ pattern: key, servers: val }))
     policyBatchMode.value = false
   } else {
     addPolicyRow()
@@ -767,10 +803,19 @@ function addHostRow() {
   newHostTargets.value = ''
 }
 
+const hostInvalid = computed(() => (hostBatchMode.value ? invalidLines(hostBatchText.value, parseHostsBatchText) : []))
+watch(hostBatchText, (text) => {
+  if (!hostBatchMode.value) return
+  hostRows.value = mapToRows(parseHostsBatchText(text)).map(({ key, val }) => ({ domain: key, targets: val }))
+})
+
 function toggleHostBatch() {
   if (hostBatchMode.value) {
-    const map = parseHostsBatchText(hostBatchText.value)
-    hostRows.value = mapToRows(map).map(({ key, val }) => ({ domain: key, targets: val }))
+    if (hostInvalid.value.length) {
+      store.toast(`第 ${hostInvalid.value.join('、')} 行格式不对，修正或删除后再切换`, 'error')
+      return
+    }
+    hostRows.value = mapToRows(parseHostsBatchText(hostBatchText.value)).map(({ key, val }) => ({ domain: key, targets: val }))
     hostBatchMode.value = false
   } else {
     addHostRow()
@@ -924,20 +969,6 @@ const TABS = computed(() => [
             <p class="muted small">浅色、深色或跟随系统</p>
           </div>
           <Segmented :model-value="store.theme.value" :options="THEMES" size="sm" label="主题" @update:model-value="store.setTheme" />
-        </div>
-        <div v-if="uiScale.supported.value" class="setting-row" data-testid="ui-scale-row">
-          <div class="grow">
-            <strong>界面缩放</strong>
-            <p class="muted small">{{ scaleNote }}</p>
-          </div>
-          <SelectField
-            :model-value="String(uiScale.preference.value)"
-            :options="scaleOptions"
-            size="sm"
-            label="界面缩放"
-            data-testid="ui-scale"
-            @update:model-value="(value) => uiScale.set(value === 'auto' ? 'auto' : Number(value))"
-          />
         </div>
         <div v-if="openShortcuts" class="setting-row">
           <div class="grow">
@@ -1107,7 +1138,7 @@ const TABS = computed(() => [
         <header class="card-head wrap-head">
           <div>
             <h2>代理绕过列表 <span class="muted">{{ proxyDraft.bypass.length }}</span></h2>
-            <p class="muted small">手动代理模式下，命中以下地址或网段的请求将直接连接，不经过内核</p>
+            <p class="muted small">遵循系统代理的应用访问这些地址时直接连接，不经过内核</p>
           </div>
           <div class="head-actions">
             <button type="button" class="btn ghost sm" data-testid="add-default-bypass" @click="addDefaultBypass">
@@ -1118,6 +1149,13 @@ const TABS = computed(() => [
             </button>
           </div>
         </header>
+        <div v-if="snap.tun || snap.tun_wanted" class="hint-box small bypass-tun-note" data-testid="bypass-tun-note">
+          <Icon name="info" :size="15" />
+          <p class="grow">
+            TUN 已开启：所有应用的流量都会进入内核，命令行工具等不读系统代理的程序不受绕过列表影响。需要直连请在当前配置的覆写里添加 DIRECT 规则。
+          </p>
+          <button type="button" class="btn sm" data-testid="bypass-to-override" @click="bypassToOverride">生成直连规则</button>
+        </div>
         <template v-if="!bypassBatchMode">
           <div class="bypass-add-row">
             <input
@@ -1723,7 +1761,11 @@ const TABS = computed(() => [
             spellcheck="false"
             aria-label="域名解析策略批量编辑"
             data-testid="policy-batch-textarea"
+            :aria-invalid="policyInvalid.length ? 'true' : undefined"
           />
+          <p v-if="policyInvalid.length" class="field-error small" role="alert" data-testid="policy-batch-invalid">
+            <Icon name="alert" :size="13" /> 第 {{ policyInvalid.join('、') }} 行缺少“=”或 DNS 服务器，保存时会被忽略
+          </p>
         </div>
       </section>
 
@@ -1799,7 +1841,11 @@ const TABS = computed(() => [
             spellcheck="false"
             aria-label="Hosts 批量编辑"
             data-testid="host-batch-textarea"
+            :aria-invalid="hostInvalid.length ? 'true' : undefined"
           />
+          <p v-if="hostInvalid.length" class="field-error small" role="alert" data-testid="host-batch-invalid">
+            <Icon name="alert" :size="13" /> 第 {{ hostInvalid.join('、') }} 行缺少目标地址，保存时会被忽略
+          </p>
         </div>
       </section>
 

@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { collectNames, complete } from './complete'
 
 /** `|` marks the cursor. */
-function at(source: string, known = {}) {
+function at(source: string, known = {}, override = false) {
   const pos = source.indexOf('|')
-  return complete(source.replace('|', ''), pos, known)
+  return complete(source.replace('|', ''), pos, known, override)
 }
 
 const labels = (source: string, known = {}) => at(source, known)?.options.map((option) => option.label) ?? []
@@ -79,5 +79,18 @@ describe('mihomo yaml completion', () => {
   it('quotes names that YAML would misread', () => {
     const option = at('rules:\n  - MATCH,|', { groups: ['🚀 Proxy: main'] })?.options[0]
     expect(option?.apply).toBe('"🚀 Proxy: main"')
+  })
+
+  it('understands override modifiers in paths and offers them as keys', () => {
+    expect(labels('+rules:\n  - DOMAIN-SUF|')).toContain('DOMAIN-SUFFIX')
+    expect(labels('rules+:\n  - MATCH,|')).toContain('DIRECT')
+    expect(labels('dns!:\n  enh|')).toEqual(['enhanced-mode'])
+    expect(labels('<dns>:\n  enhanced-mode: |')).toEqual(['fake-ip', 'redir-host', 'normal'])
+    expect(labels('ru|').some((label) => /[+!]/.test(label))).toBe(false)
+    const override = at('ru|', {}, true)?.options.map((option) => option.label) ?? []
+    expect(override).toEqual(expect.arrayContaining(['rules', '+rules', 'rules+']))
+    const bang = complete('dn', 2, {}, true)?.options.map((option) => option.label)
+    expect(bang).toEqual(expect.arrayContaining(['dns', 'dns!']))
+    expect(complete('+ru', 3, {}, true)?.options.find((option) => option.label === '+rules')?.apply).toBe('+rules:\n  - ')
   })
 })

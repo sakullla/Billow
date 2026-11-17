@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { KnownNames } from '../lib/yaml/complete'
 import type { YamlEditorHandle } from '../lib/yaml/editor'
+import type { OverrideLanguage } from '../lib/yaml/script'
 
 const props = defineProps<{
   modelValue: string
@@ -10,6 +11,9 @@ const props = defineProps<{
   label?: string
   /** Proxy/group names from outside the text (e.g. the profile an override applies to). */
   names?: KnownNames
+  /** Editing a 覆写: complete `+key` / `key+` / `key!` modifiers. */
+  override?: boolean
+  language?: OverrideLanguage
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string]; save: [] }>()
 
@@ -29,6 +33,8 @@ onMounted(async () => {
       placeholder: props.placeholder,
       label: props.label,
       names: () => props.names ?? {},
+      override: props.override,
+      language: props.language,
       onChange: (value) => emit('update:modelValue', value),
       onSave: () => emit('save'),
     })
@@ -41,6 +47,10 @@ onMounted(async () => {
 watch(
   () => props.modelValue,
   (value) => handle.value?.setValue(value),
+)
+watch(
+  () => props.language,
+  (value) => handle.value?.setLanguage(value ?? 'yaml'),
 )
 watch(
   () => props.readonly,
