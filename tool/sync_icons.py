@@ -2,8 +2,10 @@
 from pathlib import Path
 import shutil
 from PIL import Image
+from build_tray_icon import build_tray_icon
 
 root = Path(__file__).resolve().parents[1]
+build_tray_icon(root)
 public = root / "public"
 public.mkdir(exist_ok=True)
 with Image.open(root / "assets/icon.png") as image:
