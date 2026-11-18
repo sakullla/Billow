@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
 import ChainPath from '../components/ChainPath.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
+import type { MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
 import {
@@ -13,6 +15,7 @@ import {
   formatDuration,
   formatSpeed,
   isFakeIp,
+  processBasename,
   resolveChain,
 } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
@@ -21,11 +24,12 @@ import { useColumnResize } from '../lib/ui/columns'
 import { useVirtualList } from '../lib/ui/virtual'
 import type { ClosedConnectionRow, ConnectionRow } from '../lib/types'
 
-defineProps<{ compact?: boolean }>()
+const props = defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 
 type ConnTab = 'active' | 'closed'
+type RouteFilter = 'all' | 'proxy' | 'direct'
 type SortKey = 'time' | 'speed' | 'download' | 'upload' | 'host'
 const SORTS: { id: SortKey; label: string }[] = [
   { id: 'time', label: '时间' },
@@ -56,6 +60,7 @@ const connCols = useColumnResize('connections', [
 ])
 
 const connTableStyle = computed(() => {
+  if (!connCols.customized.value) return undefined
   const total =
     connCols.widths.host +
     connCols.widths.process +
@@ -70,6 +75,7 @@ const connTableStyle = computed(() => {
 })
 
 const tab = ref<ConnTab>('active')
+const routeFilter = ref<RouteFilter>('all')
 const query = ref('')
 const sortKey = ref<SortKey>('time')
 const sortDir = ref<'asc' | 'desc'>('desc')
@@ -222,16 +228,48 @@ function highlight(value: string) {
   return highlightTokens(value, query.value)
 }
 
+function isDirectRow(row: ConnectionRow): boolean {
+  const hops = hopsOf(row)
+  const exit = (hops[hops.length - 1] ?? row.outbound ?? '').toUpperCase()
+  return exit === 'DIRECT'
+}
+
+function isProxyRow(row: ConnectionRow): boolean {
+  const hops = hopsOf(row)
+  const exit = (hops[hops.length - 1] ?? row.outbound ?? '').toUpperCase()
+  return !['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'].includes(exit)
+}
+
+const routeCounts = computed(() => {
+  let proxy = 0
+  let direct = 0
+  for (const row of sourceRows.value) {
+    if (isDirectRow(row)) direct += 1
+    else if (isProxyRow(row)) proxy += 1
+  }
+  return { proxy, direct }
+})
+
+const routeOptions = computed<{ id: RouteFilter; label: string }[]>(() => [
+  { id: 'all', label: '全部' },
+  { id: 'proxy', label: routeCounts.value.proxy ? `代理 ${routeCounts.value.proxy}` : '代理' },
+  { id: 'direct', label: routeCounts.value.direct ? `直连 ${routeCounts.value.direct}` : '直连' },
+])
+
+const isFiltered = computed(() => Boolean(query.value.trim()) || routeFilter.value !== 'all')
+
 const rows = computed(() => {
   const tokens = queryTokens.value
-  const list = tokens.length
-    ? sourceRows.value.filter((row) =>
-        matchesTokens(
-          `${row.host} ${row.destination} ${row.process} ${row.rule} ${row.rule_payload} ${hopsOf(row).join(' ')} ${row.network} ${row.conn_type}`,
-          tokens,
-        ),
-      )
-    : [...sourceRows.value]
+  const route = routeFilter.value
+  const list = sourceRows.value.filter((row) => {
+    if (route === 'proxy' && !isProxyRow(row)) return false
+    if (route === 'direct' && !isDirectRow(row)) return false
+    if (!tokens.length) return true
+    return matchesTokens(
+      `${row.host} ${row.destination} ${row.process} ${row.rule} ${row.rule_payload} ${hopsOf(row).join(' ')} ${row.network} ${row.conn_type}`,
+      tokens,
+    )
+  })
   const dir = sortDir.value === 'asc' ? -1 : 1
   switch (sortKey.value) {
     case 'speed':
@@ -278,7 +316,7 @@ onMounted(() => {
 // or window index; a filter, sort or tab change returns to the first row (R31).
 watch(tableScroll, (el) => table.measure(el))
 watch(cardScroll, (el) => cards.measure(el))
-watch([query, sortKey, sortDir, tab], () => {
+watch([query, routeFilter, sortKey, sortDir, tab], () => {
   table.reset(tableScroll.value)
   cards.reset(cardScroll.value)
 })
@@ -301,7 +339,11 @@ const tabOptions = computed<{ id: ConnTab; label: string }[]>(() => [
 const showToolbar = computed(
   () =>
     snap.value.connected &&
-    (snap.value.connections.length > 0 || closedRows.value.length > 0 || tab.value === 'closed' || Boolean(query.value)),
+    (snap.value.connections.length > 0 ||
+      closedRows.value.length > 0 ||
+      tab.value === 'closed' ||
+      Boolean(query.value) ||
+      routeFilter.value !== 'all'),
 )
 
 const detailRow = computed(() => {
@@ -322,12 +364,16 @@ watch(detailRow, (row) => {
   selectedAt.value = Date.now()
 })
 
+const ctxMenu = ref<{ x: number; y: number; items: MenuItem[]; row?: ConnectionRow & { closed_at_ms?: number } } | null>(null)
+
 // A dropped session or a restarted kernel invalidates the frozen rows and the open detail (R31).
 watch(
   () => [snap.value.connected, snap.value.kernel_running] as const,
   ([connected]) => {
     if (connected) return
     tab.value = 'active'
+    routeFilter.value = 'all'
+    ctxMenu.value = null
     resume()
     frozenRows.value = []
     frozenIds.value = new Set()
@@ -340,11 +386,12 @@ watch(
   },
 )
 
-const detailEntryGroup = computed(() => {
-  if (!detailSource.value) return null
-  const entry = hopsOf(detailSource.value)[0]
+function entryGroupOf(row: ConnectionRow): string | null {
+  const entry = hopsOf(row)[0]
   return entry && groupNames.value.has(entry) ? entry : null
-})
+}
+
+const detailEntryGroup = computed(() => (detailSource.value ? entryGroupOf(detailSource.value) : null))
 
 const manualGroupNames = computed(() =>
   snap.value.node_catalog
@@ -366,11 +413,12 @@ const rulePolicies = computed(() => {
   return [...set]
 })
 
-const detailRuleSet = computed(() => {
-  const row = detailSource.value
-  if (!row || !row.rule_payload) return null
+function ruleSetOf(row: ConnectionRow): string | null {
+  if (!row.rule_payload) return null
   return /^rule-?set$/i.test(row.rule.trim()) ? row.rule_payload.trim() : null
-})
+}
+
+const detailRuleSet = computed(() => (detailSource.value ? ruleSetOf(detailSource.value) : null))
 
 function openConnectionRuleSet(name: string) {
   closeDetail()
@@ -397,6 +445,33 @@ function openConnectionGroup(group: string) {
   store.go('proxies', group)
 }
 
+interface DetailStat {
+  label: string
+  value: string
+  sub?: string
+}
+
+const detailStats = computed<DetailStat[]>(() => {
+  const row = detailSource.value
+  if (!row) return []
+  const endAt = detailRow.value ? Date.now() : (selectedLast.value?.closed_at_ms ?? selectedAt.value)
+  const liveRate = detailRow.value ? rateOf(detailRow.value) : null
+  return [
+    {
+      label: '下载',
+      value: formatBytes(row.download),
+      sub: liveRate && liveRate.down >= 1 ? formatSpeed(liveRate.down) : undefined,
+    },
+    {
+      label: '上传',
+      value: formatBytes(row.upload),
+      sub: liveRate && liveRate.up >= 1 ? formatSpeed(liveRate.up) : undefined,
+    },
+    { label: '持续', value: formatDuration(row.start, endAt) || '0 秒' },
+    { label: '网络', value: `${row.network.toUpperCase() || 'TCP'}${row.conn_type ? ` · ${row.conn_type}` : ''}` },
+  ]
+})
+
 interface DetailEntry {
   label: string
   value: string
@@ -408,12 +483,6 @@ interface DetailEntry {
 const detail = computed<DetailEntry[]>(() => {
   const row = detailSource.value
   if (!row) return []
-  const endAt = detailRow.value ? Date.now() : (selectedLast.value?.closed_at_ms ?? selectedAt.value)
-  const liveRate = detailRow.value ? rateOf(detailRow.value) : null
-  const rateText =
-    liveRate && liveRate.down + liveRate.up >= 1
-      ? `↓ ${formatSpeed(liveRate.down)} · ↑ ${formatSpeed(liveRate.up)}`
-      : ''
   const entries: DetailEntry[] = [
     { label: '主机', value: row.host, copyValue: row.host, copyToast: '已复制主机' },
     {
@@ -425,13 +494,8 @@ const detail = computed<DetailEntry[]>(() => {
     },
     { label: '来源', value: row.source, copyValue: row.source, copyToast: '已复制来源地址' },
     { label: '进程', value: row.process, copyValue: row.process, copyToast: '已复制进程名' },
-    { label: '网络', value: `${row.network.toUpperCase()}${row.conn_type ? ` · ${row.conn_type}` : ''}` },
     { label: '规则', value: row.rule ? `${row.rule}${row.rule_payload ? ` (${row.rule_payload})` : ''}` : '' },
     { label: '代理链', value: hopsOf(row).join(' → ') },
-    { label: '当前速率', value: rateText },
-    { label: '下载', value: formatBytes(row.download) },
-    { label: '上传', value: formatBytes(row.upload) },
-    { label: '持续', value: formatDuration(row.start, endAt) },
   ]
   return entries.filter((item) => Boolean(item.value))
 })
@@ -499,12 +563,79 @@ async function disconnectAll() {
 
 function resetFilters() {
   query.value = ''
+  routeFilter.value = 'all'
 }
 
 function filterBy(value: string) {
   if (!value) return
   query.value = value
   closeDetail()
+}
+
+function openHeadMenu(event: MouseEvent) {
+  if (props.compact || !connCols.customized.value) return
+  event.preventDefault()
+  ctxMenu.value = {
+    x: event.clientX,
+    y: event.clientY,
+    items: [{ id: 'reset-cols', label: '恢复默认列宽', icon: 'refresh' }],
+  }
+}
+
+function openRowMenu(row: ConnectionRow & { closed_at_ms?: number }, event: MouseEvent) {
+  if (props.compact) return
+  event.preventDefault()
+  const entry = entryGroupOf(row)
+  const rset = ruleSetOf(row)
+  const directRule = connectionRules(row, 'DIRECT')[0]
+  const items: MenuItem[] = [
+    { id: 'detail', label: '查看连接详情', icon: 'info' },
+    { id: 'copy-host', label: '复制目标主机', icon: 'copy' },
+  ]
+  if (row.host) items.push({ id: 'filter-host', label: '筛选此主机', icon: 'filter' })
+  if (row.process) {
+    items.push({
+      id: 'filter-process',
+      label: `筛选进程「${processBasename(row.process)}」`,
+      icon: 'filter',
+    })
+  }
+  if (entry) items.push({ id: 'open-group', label: `前往「${entry}」`, icon: 'globe' })
+  if (rset) items.push({ id: 'open-ruleset', label: `查看规则集「${rset}」`, icon: 'database' })
+  if (directRule) {
+    items.push({ id: 'copy-direct', label: `复制直连规则 (${directRule.label})`, icon: 'route' })
+    if (snap.value.active_id) {
+      items.push({ id: 'write-direct', label: '添加直连覆写', icon: 'layers' })
+    }
+  }
+  if (tab.value === 'active' && !row.closed_at_ms) {
+    items.push({ id: 'close', label: '断开此连接', icon: 'x', danger: true })
+  }
+  ctxMenu.value = { x: event.clientX, y: event.clientY, items, row }
+}
+
+function onContextSelect(item: MenuItem) {
+  const row = ctxMenu.value?.row
+  ctxMenu.value = null
+  if (item.id === 'reset-cols') {
+    connCols.resetAll()
+    return
+  }
+  if (!row) return
+  const directRule = connectionRules(row, 'DIRECT')[0]
+  if (item.id === 'detail') openDetail(row)
+  else if (item.id === 'copy-host') void store.copyText(row.host || row.destination, '已复制目标主机')
+  else if (item.id === 'filter-host') filterBy(row.host)
+  else if (item.id === 'filter-process') filterBy(row.process)
+  else if (item.id === 'open-group') {
+    const entry = entryGroupOf(row)
+    if (entry) store.go('proxies', entry)
+  } else if (item.id === 'open-ruleset') {
+    const rset = ruleSetOf(row)
+    if (rset) store.openProvider('rule', rset)
+  } else if (item.id === 'copy-direct' && directRule) void copyRule(directRule.rule)
+  else if (item.id === 'write-direct' && directRule) writeRuleToOverride(directRule.rule)
+  else if (item.id === 'close') void closeOne(row)
 }
 
 function rowDuration(row: ConnectionRow & { closed_at_ms?: number }): string {
@@ -519,7 +650,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
   const r = rateOf(row)
   const total = r.down + r.up
   if (total < 1) {
-    return { text: formatSpeed(0), idle: true, upOnly: false, title: '当前无活动传输' }
+    return { text: '—', idle: true, upOnly: false, title: '当前无活动传输' }
   }
   if (r.down < 1 && r.up >= 1) {
     return {
@@ -547,11 +678,11 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           <template v-if="!snap.connected">未连接</template>
           <template v-else-if="tab === 'closed'">
             已记录 {{ closedRows.length }} 条已关闭连接
-            <template v-if="query.trim()"> · 匹配 {{ rows.length }} 条</template>
+            <template v-if="isFiltered"> · 匹配 {{ rows.length }} 条</template>
           </template>
           <template v-else>
             {{ displayTotal }} 个活动连接
-            <template v-if="query.trim()"> · 匹配 {{ rows.length }} 条</template>
+            <template v-if="isFiltered"> · 匹配 {{ rows.length }} 条</template>
             <template v-if="hiddenRows"> · 显示前 {{ activeSourceRows.length }} 条</template>
             <template v-if="paused"> · 暂停于 {{ formatClock(pausedAt ?? 0) }}</template>
             <template v-if="paused && newCount"> · <span data-testid="new-connections">{{ newCount }} 条新连接</span></template>
@@ -562,6 +693,16 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </div>
       <!-- Nothing to pause or close while disconnected; the empty state owns the next step. -->
       <div v-if="snap.connected" class="head-actions">
+        <button
+          v-if="!compact && connCols.customized.value"
+          type="button"
+          class="btn ghost sm"
+          title="恢复默认列宽"
+          data-testid="reset-conn-cols"
+          @click="connCols.resetAll()"
+        >
+          恢复列宽
+        </button>
         <template v-if="tab === 'closed'">
           <button
             type="button"
@@ -622,6 +763,13 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           <Icon name="x" :size="14" />
         </button>
       </div>
+      <Segmented
+        v-model="routeFilter"
+        :options="routeOptions"
+        size="sm"
+        label="出站分流筛选"
+        data-testid="connection-route-filter"
+      />
       <!-- The desktop table sorts from its column headers; phone cards have none, so they keep the switch. -->
       <Segmented
         v-if="compact"
@@ -671,7 +819,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         <button type="button" class="btn ghost sm" data-testid="retry-connections" @click="store.refresh()">重试</button>
       </template>
     </EmptyState>
-    <EmptyState v-else-if="!rows.length && query" variant="no-match" title="没有匹配的连接" description="换一个关键词，或清空当前筛选。">
+    <EmptyState v-else-if="!rows.length && isFiltered" variant="no-match" title="没有匹配的连接" description="换一个关键词或切换出站范围，或清空当前筛选。">
       <template #action>
         <button type="button" class="btn ghost sm" data-testid="clear-connection-filter" @click="resetFilters">清空筛选</button>
       </template>
@@ -690,7 +838,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
     </EmptyState>
 
     <div v-else-if="!compact" ref="tableScroll" class="card table-card conn-table" :class="{ paused: paused && tab === 'active' }" data-testid="connection-scroll" @scroll="table.onScroll">
-      <table class="table virtual resizable-table" :style="connTableStyle">
+      <table class="table virtual resizable-table" :class="{ 'custom-cols': connCols.customized.value }" :style="connTableStyle">
         <colgroup>
           <col :style="{ width: `${connCols.widths.host}px` }" />
           <col class="col-process" :style="{ width: `${connCols.widths.process}px` }" />
@@ -702,7 +850,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           <col :style="{ width: `${connCols.widths.time}px` }" />
           <col style="width: 36px" />
         </colgroup>
-        <thead>
+        <thead @contextmenu="openHeadMenu">
           <tr>
             <th :aria-sort="ariaSortOf('host')">
               <button type="button" class="th-sort" :class="{ active: sortKey === 'host' }" @click="toggleColumnSort('host')">
@@ -852,6 +1000,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             tabindex="0"
             data-testid="connection-row"
             @click="openDetail(row)"
+            @contextmenu="openRowMenu(row, $event)"
             @keydown.enter.prevent="openDetail(row)"
             @keydown.space.prevent="openDetail(row)"
           >
@@ -982,6 +1131,16 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         <Icon :name="detailFromClosed ? 'clock' : 'x'" :size="14" />
         <span>{{ detailClosedClock ? `已断开 · 关闭于 ${detailClosedClock}` : '已断开' }}</span>
       </p>
+
+      <dl v-if="detailStats.length" class="detail conn-detail-stats" data-testid="detail-stats">
+        <div v-for="stat in detailStats" :key="stat.label" class="conn-stat-item">
+          <dt class="conn-stat-label muted">{{ stat.label }}</dt>
+          <dd class="conn-stat-body">
+            <strong class="conn-stat-val mono">{{ stat.value }}</strong>
+            <span v-if="stat.sub" class="conn-stat-sub mono">{{ stat.sub }}</span>
+          </dd>
+        </div>
+      </dl>
 
       <dl class="detail conn-detail-grid">
         <template v-for="entry in detail" :key="entry.label">
@@ -1131,5 +1290,15 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         <button type="button" class="btn danger" data-testid="confirm-disconnect-all" @click="disconnectAll">断开全部</button>
       </template>
     </Modal>
+
+    <ContextMenu
+      v-if="ctxMenu"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :items="ctxMenu.items"
+      label="连接操作"
+      @select="onContextSelect"
+      @close="ctxMenu = null"
+    />
   </div>
 </template>

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
+import type { MenuItem } from '../components/Menu.vue'
 import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
 import Skeleton from '../components/Skeleton.vue'
@@ -22,19 +24,17 @@ const ROW_HEIGHT = computed(() => (props.compact ? 88 : 52))
 const PAGE = 300
 
 const ruleCols = useColumnResize('rules', [
-  { id: 'index', defaultWidth: 44, minWidth: 34, maxWidth: 96 },
   { id: 'kind', defaultWidth: 124, minWidth: 80, maxWidth: 260 },
-  { id: 'payload', defaultWidth: 280, minWidth: 140, maxWidth: 860 },
-  { id: 'proxy', defaultWidth: 164, minWidth: 96, maxWidth: 380 },
-  { id: 'hit', defaultWidth: 74, minWidth: 54, maxWidth: 180 },
-  { id: 'last', defaultWidth: 88, minWidth: 68, maxWidth: 220 },
+  { id: 'payload', defaultWidth: 180, minWidth: 110, maxWidth: 860 },
+  { id: 'proxy', defaultWidth: 136, minWidth: 88, maxWidth: 380 },
+  { id: 'hit', defaultWidth: 60, minWidth: 48, maxWidth: 180 },
+  { id: 'last', defaultWidth: 74, minWidth: 62, maxWidth: 220 },
 ])
 
 const ruleScrollStyle = computed(() =>
   props.compact
     ? undefined
     : {
-        '--col-rule-index': `${ruleCols.widths.index}px`,
         '--col-rule-kind': `${ruleCols.widths.kind}px`,
         '--col-rule-payload': `${ruleCols.widths.payload}px`,
         '--col-rule-proxy': `${ruleCols.widths.proxy}px`,
@@ -192,6 +192,74 @@ async function copyRuleRow(rule: RuleRow) {
 const groupNames = computed(() => new Set(snap.value.node_catalog.map((group) => group.name)))
 const isGroup = (name: string) => groupNames.value.has(name)
 
+function onPolicyClick(policyName: string) {
+  if (isGroup(policyName)) {
+    store.go('proxies', policyName)
+    return
+  }
+  proxy.value = proxy.value === policyName ? 'all' : policyName
+}
+
+const ctxMenu = ref<{ x: number; y: number; items: MenuItem[]; rule?: RuleRow } | null>(null)
+
+function openHeadMenu(event: MouseEvent) {
+  if (props.compact || !ruleCols.customized.value) return
+  event.preventDefault()
+  ctxMenu.value = {
+    x: event.clientX,
+    y: event.clientY,
+    items: [{ id: 'reset-cols', label: '恢复默认列宽', icon: 'refresh' }],
+  }
+}
+
+function openRowMenu(rule: RuleRow, event: MouseEvent) {
+  if (props.compact) return
+  event.preventDefault()
+  const items: MenuItem[] = [
+    { id: 'copy', label: '复制规则', icon: 'copy' },
+    {
+      id: 'filter-kind',
+      label: kind.value === rule.kind ? '取消类型筛选' : `仅看 ${rule.kind}`,
+      icon: 'filter',
+    },
+    {
+      id: 'filter-proxy',
+      label: proxy.value === rule.proxy ? '取消策略筛选' : `仅看策略「${rule.proxy}」`,
+      icon: 'filter',
+    },
+  ]
+  if (isRuleSet(rule)) {
+    items.push({ id: 'open-ruleset', label: `查看规则集「${rule.payload}」`, icon: 'database' })
+  }
+  if (isGroup(rule.proxy)) {
+    items.push({ id: 'open-group', label: `前往代理组「${rule.proxy}」`, icon: 'globe' })
+  }
+  if (rule.key) {
+    items.push({
+      id: 'toggle',
+      label: rule.disabled ? '恢复启用此规则' : '临时禁用此规则',
+      icon: rule.disabled ? 'play' : 'pause',
+    })
+  }
+  ctxMenu.value = { x: event.clientX, y: event.clientY, items, rule }
+}
+
+function onContextSelect(item: MenuItem) {
+  const target = ctxMenu.value?.rule
+  ctxMenu.value = null
+  if (item.id === 'reset-cols') {
+    ruleCols.resetAll()
+    return
+  }
+  if (!target) return
+  if (item.id === 'copy') void copyRuleRow(target)
+  else if (item.id === 'filter-kind') kind.value = kind.value === target.kind ? 'all' : target.kind
+  else if (item.id === 'filter-proxy') proxy.value = proxy.value === target.proxy ? 'all' : target.proxy
+  else if (item.id === 'open-ruleset') store.openProvider('rule', target.payload)
+  else if (item.id === 'open-group') store.go('proxies', target.proxy)
+  else if (item.id === 'toggle') void toggle(target)
+}
+
 function lastHitText(rule: RuleRow): string {
   if (!rule.last_hit) return ''
   const ms = Date.parse(rule.last_hit)
@@ -276,6 +344,16 @@ onBeforeUnmount(() => { ++loadId })
         </p>
       </div>
       <div class="head-actions">
+        <button
+          v-if="!compact && ruleCols.customized.value"
+          type="button"
+          class="btn ghost sm"
+          title="恢复默认列宽"
+          data-testid="reset-rule-cols"
+          @click="ruleCols.resetAll()"
+        >
+          恢复列宽
+        </button>
         <button
           type="button"
           class="btn ghost sm"
@@ -382,37 +460,19 @@ onBeforeUnmount(() => { ++loadId })
       v-if="filtered.length"
       ref="scroller"
       class="card list-card rule-scroll"
+      :class="{ 'custom-cols': !compact && ruleCols.customized.value }"
       :style="ruleScrollStyle"
       data-testid="rule-scroll"
       @scroll="virtual.onScroll"
     >
       <!-- Column captions: without them the hit count and last-hit time are bare numbers. -->
-      <div v-if="!compact" class="rule-head" :aria-hidden="hasHits ? undefined : 'true'" data-testid="rule-head">
-        <span class="rule-index rule-head-cell">
-          <button
-            v-if="hasHits"
-            type="button"
-            class="th-sort num"
-            :class="{ active: sort === 'order' }"
-            aria-label="按默认顺序排序"
-            data-testid="rule-sort-order"
-            @click="sort = 'order'"
-          >
-            #<Icon v-if="sort === 'order'" name="down" :size="10" />
-          </button>
-          <template v-else>#</template>
-          <span
-            class="col-resizer"
-            :class="{ active: ruleCols.resizingId.value === 'index' }"
-            role="separator"
-            aria-orientation="vertical"
-            title="拖拽调整列宽，双击恢复默认"
-            data-testid="col-resize-rule-index"
-            @pointerdown="ruleCols.startResize('index', $event)"
-            @dblclick="ruleCols.resetColumn('index', $event)"
-            @click.stop
-          />
-        </span>
+      <div
+        v-if="!compact"
+        class="rule-head"
+        :aria-hidden="hasHits ? undefined : 'true'"
+        data-testid="rule-head"
+        @contextmenu="openHeadMenu"
+      >
         <span class="rule-kind-cell rule-head-cell">
           类型
           <span
@@ -462,6 +522,7 @@ onBeforeUnmount(() => { ++loadId })
               class="th-sort num"
               :class="{ active: sort === 'hits' }"
               aria-label="按命中次数排序"
+              :title="sort === 'hits' ? '点击恢复默认顺序' : '点击按命中次数降序排列'"
               data-testid="rule-sort-hits"
               @click="sort = sort === 'hits' ? 'order' : 'hits'"
             >
@@ -506,8 +567,8 @@ onBeforeUnmount(() => { ++loadId })
         :data-rule-key="rule.key ?? undefined"
         :data-rule-disabled="rule.disabled ? 'true' : undefined"
         data-testid="rule-row"
+        @contextmenu="openRowMenu(rule, $event)"
       >
-        <span class="rule-index mono muted">{{ index + 1 }}</span>
         <span class="rule-kind-cell">
           <button
             type="button"
@@ -545,19 +606,18 @@ onBeforeUnmount(() => { ++loadId })
           <template v-else>—</template>
         </span>
         <span class="rule-proxy" :data-policy="rule.proxy.toUpperCase()">
-          <component
-            :is="isGroup(rule.proxy) ? 'button' : 'span'"
-            class="rule-proxy-badge"
-            :class="{ link: isGroup(rule.proxy) }"
-            :type="isGroup(rule.proxy) ? 'button' : undefined"
-            :title="isGroup(rule.proxy) ? `前往代理组「${rule.proxy}」` : undefined"
-            :data-testid="isGroup(rule.proxy) ? 'rule-proxy-link' : undefined"
-            @click="isGroup(rule.proxy) && store.go('proxies', rule.proxy)"
+          <button
+            type="button"
+            class="rule-proxy-badge link"
+            :class="{ filtered: !isGroup(rule.proxy) && proxy === rule.proxy }"
+            :title="isGroup(rule.proxy) ? `前往代理组「${rule.proxy}」` : proxy === rule.proxy ? '取消策略筛选' : `仅看策略「${rule.proxy}」`"
+            :data-testid="isGroup(rule.proxy) ? 'rule-proxy-link' : 'rule-proxy-filter-tag'"
+            @click="onPolicyClick(rule.proxy)"
           >
             <template v-for="(part, partIdx) in highlight(rule.proxy)" :key="partIdx">
               <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
             </template>
-          </component>
+          </button>
           <span v-if="rule.disabled" class="rule-flag small" data-rule-flag>临时，重启后恢复</span>
           <span v-else-if="!rule.key" class="rule-flag small muted">内核注入，无法临时禁用</span>
         </span>
@@ -619,5 +679,15 @@ onBeforeUnmount(() => { ++loadId })
         显示更多（还有 {{ filtered.length - limit }} 条）
       </button>
     </div>
+
+    <ContextMenu
+      v-if="ctxMenu"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :items="ctxMenu.items"
+      label="规则操作"
+      @select="onContextSelect"
+      @close="ctxMenu = null"
+    />
   </div>
 </template>

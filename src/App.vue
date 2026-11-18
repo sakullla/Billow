@@ -533,6 +533,21 @@ function initHistory() {
   if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
 }
 
+/**
+ * Suppress WebView browser chrome menus (`Back / Reload`) on non-editable surfaces
+ * while preserving native Cut/Copy/Paste inside inputs, CodeMirror, or selected text.
+ */
+function onGlobalContextMenu(event: MouseEvent) {
+  if (event.defaultPrevented) return
+  const target = event.target
+  if (target instanceof Element) {
+    if (target.closest('input, textarea, [contenteditable="true"], .cm-editor')) return
+  }
+  const selected = typeof window !== 'undefined' ? window.getSelection?.()?.toString().trim() : ''
+  if (selected) return
+  event.preventDefault()
+}
+
 onMounted(async () => {
   releaseInsets = installInsets()
   void store.backend.onTrayNavigate?.(onTrayNavigate).then((stop) => {
@@ -543,6 +558,7 @@ onMounted(async () => {
   darkQuery?.addEventListener?.('change', onSchemeChange)
   window.addEventListener('resize', onResize)
   window.addEventListener('popstate', onPopState)
+  document.addEventListener('contextmenu', onGlobalContextMenu)
   releaseLayerWatch = onLayerChange(handleLayerDepth)
   await store.start()
   initHistory()
@@ -550,6 +566,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
   window.removeEventListener('popstate', onPopState)
+  document.removeEventListener('contextmenu', onGlobalContextMenu)
   releaseLayerWatch?.()
   releaseLayerWatch = null
   releaseInsets?.()
@@ -666,8 +683,8 @@ defineExpose({ store })
               <span>{{ sideStatusWord }}</span>
             </div>
             <div v-if="snap.connected" class="side-rates mono">
-              <span class="down" :title="`下载 ${formatSpeed(snap.download ?? 0)}`"><Icon name="down" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.download ?? 0) }}</em></span>
-              <span class="up" :title="`上传 ${formatSpeed(snap.upload ?? 0)}`"><Icon name="up" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.upload ?? 0) }}</em></span>
+              <span class="down" :title="`下载 ${formatSpeed(snap.download ?? 0)}`"><Icon name="down" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.download ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
+              <span class="up" :title="`上传 ${formatSpeed(snap.upload ?? 0)}`"><Icon name="up" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.upload ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
             </div>
             <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? '还没有配置' }}</div>
           </div>

@@ -44,6 +44,16 @@ description = "Enables the save_profile_override command without any pre-configu
 commands.allow = ["save_profile_override"]
 
 [[permission]]
+identifier = "allow-preview-profile-override"
+description = "Enables the preview_profile_override command without any pre-configured scope."
+commands.allow = ["preview_profile_override"]
+
+[[permission]]
+identifier = "allow-set-profile-age-key"
+description = "Enables the set_profile_age_key command without any pre-configured scope."
+commands.allow = ["set_profile_age_key"]
+
+[[permission]]
 identifier = "allow-connect-session"
 description = "Enables the connect_session command without any pre-configured scope."
 commands.allow = ["connect_session"]

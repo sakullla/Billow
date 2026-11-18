@@ -10,7 +10,12 @@ import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent
 import { useStore } from '../lib/store'
 import { subscriptionUserAgent } from '../lib/subscription'
 import type { OverridePreview, ProfileItem } from '../lib/types'
+import { shortcutKeyLabel } from '../lib/ui/shortcuts'
+import { mergeOverrideAppend } from '../lib/yaml/mergeOverride'
 import { overrideLanguage, SCRIPT_TEMPLATE, YAML_TEMPLATE, type OverrideLanguage } from '../lib/yaml/script'
+
+const findShortcut = shortcutKeyLabel('mod+f').replace(/\s+/g, '')
+const saveShortcut = shortcutKeyLabel('mod+s').replace(/\s+/g, '')
 
 defineProps<{ compact?: boolean }>()
 const store = useStore()
@@ -282,7 +287,12 @@ onMounted(async () => {
     yamlError.value = '当前覆写是脚本，请在 main 中用 config.rules.unshift(...) 加入这些规则：\n' + request.append
     return
   }
-  draft.text = `${draft.text.replace(/\s*$/, '')}${draft.text.trim() ? '\n\n' : ''}${request.append}`
+  const merged = mergeOverrideAppend(draft.text, request.append)
+  if (!merged.changed) {
+    store.toast('该规则已在覆写列表中', 'info')
+    return
+  }
+  draft.text = merged.text
   draft.dirty = true
 })
 
@@ -910,15 +920,17 @@ const failedSubscriptionIds = computed(() =>
       <p v-if="yamlError" class="field-error editor-error" role="alert">{{ yamlError }}</p>
       <template #footer>
         <span class="muted small grow editor-meta">
-          {{ yamlLines }} 行{{ yaml.dirty ? ' · 未保存' : '' }}
-          <span class="editor-hint">· Ctrl+Space 补全 · Tab 接受 · Ctrl+F 查找 · Ctrl+S 保存</span>
-          <button
-            v-if="yaml.profile.current"
-            type="button"
-            class="link-btn"
-            data-testid="open-effective"
-            @click="openEffective('yaml')"
-          >查看生效配置</button>
+          <span>{{ yamlLines }} 行{{ yaml.dirty ? ' · 未保存' : '' }}</span>
+          <span class="editor-hint">· Ctrl+Space 补全 · Tab 接受 · {{ findShortcut }} 查找 · {{ saveShortcut }} 保存</span>
+          <template v-if="yaml.profile.current">
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              class="link-btn"
+              data-testid="open-effective"
+              @click="openEffective('yaml')"
+            >查看生效配置</button>
+          </template>
         </span>
         <button type="button" class="btn ghost" data-testid="cancel-editor" @click="requestYamlClose">取消</button>
         <button type="button" class="btn primary" :disabled="store.busy.content || store.busy.override" @click="saveYaml">

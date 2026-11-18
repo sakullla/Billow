@@ -6773,6 +6773,9 @@ rules:\n  - MATCH,pick\n",
             "allow-enable-profile",
             "allow-update-profile",
             "allow-save-profile-override",
+            "allow-preview-profile-override",
+            "allow-set-profile-age-key",
+            "allow-export-logs",
         ] {
             assert!(permissions.contains(&permission), "{permission}");
         }

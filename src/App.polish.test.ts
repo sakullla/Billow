@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
@@ -708,14 +710,17 @@ describe('UI/UX polish', () => {
       expect(wrapper.find('[data-testid="rule-disabled-filter"]').exists()).toBe(false)
       expect(wrapper.findAll('[data-testid="rule-row"]').length).toBeGreaterThan(1)
 
-      // Column header sort toggles hits descending and back to order.
+      // Sequence numbers (#) are omitted; column header sort toggles hits descending and back to default order.
+      expect(wrapper.find('.rule-index').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="rule-sort-order"]').exists()).toBe(false)
+      const defaultFirst = wrapper.findAll('[data-testid="rule-row"]')[0]!.find('.rule-payload').text()
       await wrapper.find('[data-testid="rule-sort-hits"]').trigger('click')
       await flushPromises()
       const firstHit = Number(wrapper.findAll('[data-testid="rule-row"]')[0]!.find('[data-rule-hit]').text().replace(/,/g, ''))
       expect(firstHit).toBe(1204)
-      await wrapper.find('[data-testid="rule-sort-order"]').trigger('click')
+      await wrapper.find('[data-testid="rule-sort-hits"]').trigger('click')
       await flushPromises()
-      expect(wrapper.findAll('[data-testid="rule-row"]')[0]!.find('.rule-index').text()).toBe('1')
+      expect(wrapper.findAll('[data-testid="rule-row"]')[0]!.find('.rule-payload').text()).toBe(defaultFirst)
     })
 
     it('jumps from connection detail to its entry proxy group', async () => {
@@ -1285,6 +1290,149 @@ describe('UI/UX polish', () => {
       await sheetSearch.setValue('RuleSet')
       await flushPromises()
       expect(body().findAll('.modal .option-row')).toHaveLength(1)
+    })
+
+    it('grants Tauri ACL permissions and main-window capabilities for every registered command', () => {
+      const root = resolve(process.cwd(), 'src-tauri')
+      const libRs = readFileSync(resolve(root, 'src/lib.rs'), 'utf8')
+      const handlerMatch = /tauri::generate_handler!\[([\s\S]*?)\]/.exec(libRs)
+      expect(handlerMatch).toBeTruthy()
+      const commands = handlerMatch![1]!
+        .split(',')
+        .map((entry) => entry.replace(/\/\/.*$/, '').trim())
+        .filter(Boolean)
+        .map((entry) => entry.split('::').pop()!)
+      expect(commands).toContain('preview_profile_override')
+      expect(commands).toContain('set_profile_age_key')
+      expect(commands).toContain('export_logs')
+
+      const permDir = resolve(root, 'permissions')
+      const permByCommand = new Map<string, string>()
+      for (const file of readdirSync(permDir).filter((name) => name.endsWith('.toml'))) {
+        const text = readFileSync(resolve(permDir, file), 'utf8')
+        for (const block of text.split('[[permission]]').slice(1)) {
+          const id = /identifier\s*=\s*"([^"]+)"/.exec(block)?.[1]
+          const allow = /commands\.allow\s*=\s*\[([^\]]+)\]/.exec(block)?.[1]
+          if (!id || !allow) continue
+          for (const raw of allow.split(',')) {
+            const cmd = raw.replace(/["'\s]/g, '')
+            if (cmd) permByCommand.set(cmd, id)
+          }
+        }
+      }
+
+      const capDir = resolve(root, 'capabilities')
+      const granted = new Set<string>()
+      for (const file of readdirSync(capDir).filter((name) => name.endsWith('.json'))) {
+        const cap = JSON.parse(readFileSync(resolve(capDir, file), 'utf8')) as {
+          windows?: string[]
+          permissions?: (string | { identifier: string })[]
+        }
+        if (!cap.windows?.includes('main')) continue
+        for (const perm of cap.permissions ?? []) {
+          granted.add(typeof perm === 'string' ? perm : perm.identifier)
+        }
+      }
+
+      for (const cmd of commands) {
+        const permId = permByCommand.get(cmd)
+        expect(permId, `Command "${cmd}" is missing from src-tauri/permissions/*.toml`).toBeTruthy()
+        expect(granted.has(permId!), `Permission "${permId}" for "${cmd}" is missing from capabilities`).toBe(true)
+      }
+    })
+
+    it('filters connections by outbound route, opens row context menus, and blocks WebView chrome menus', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText },
+        configurable: true,
+      })
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      await openPage(wrapper, 'connections')
+      await settle(1100)
+
+      // Global contextmenu guard blocks browser Back/Reload on non-editable elements, but spares inputs.
+      const blocked = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+      wrapper.find('.page-head h1').element.dispatchEvent(blocked)
+      expect(blocked.defaultPrevented).toBe(true)
+
+      const allowed = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+      wrapper.find('[data-testid="connection-search"]').element.dispatchEvent(allowed)
+      expect(allowed.defaultPrevented).toBe(false)
+
+      // Route filter segments cleanly isolate proxied vs DIRECT connections.
+      const routeBar = wrapper.find('[data-testid="connection-route-filter"]')
+      expect(routeBar.exists()).toBe(true)
+      const buttons = routeBar.findAll('button')
+      await buttons[2]!.trigger('click') // 直连
+      await flushPromises()
+      const directRows = wrapper.findAll('[data-testid="connection-row"]')
+      expect(directRows.length).toBeGreaterThan(0)
+      expect(directRows.every((row) => row.text().includes('DIRECT'))).toBe(true)
+
+      await buttons[1]!.trigger('click') // 代理
+      await flushPromises()
+      const proxyRows = wrapper.findAll('[data-testid="connection-row"]')
+      expect(proxyRows.length).toBeGreaterThan(0)
+      expect(proxyRows.every((row) => !row.text().includes('DIRECT'))).toBe(true)
+
+      // Right-clicking a connection row opens the custom context menu and copies host.
+      await proxyRows[0]!.trigger('contextmenu', { clientX: 240, clientY: 180 })
+      await flushPromises()
+      const ctx = body().find('[data-testid="context-menu"]')
+      expect(ctx.exists()).toBe(true)
+      await ctx.find('[data-menu-item="copy-host"]').trigger('click')
+      await flushPromises()
+      expect(writeText).toHaveBeenCalled()
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(false)
+
+      // Rules page policy tags (DIRECT) also toggle policy filtering and support row context menu.
+      await openPage(wrapper, 'rules')
+      await settle(500)
+      const directTag = wrapper.find('[data-testid="rule-proxy-filter-tag"]')
+      expect(directTag.exists()).toBe(true)
+      await directTag.trigger('click')
+      await flushPromises()
+      expect(wrapper.findAll('[data-testid="rule-row"]').every((row) => row.text().includes('DIRECT'))).toBe(true)
+      await wrapper.findAll('[data-testid="rule-row"]')[0]!.trigger('contextmenu', { clientX: 200, clientY: 200 })
+      await flushPromises()
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(true)
+      await body().find('[data-menu-item="copy"]').trigger('click')
+      await flushPromises()
+      expect(writeText).toHaveBeenCalledTimes(2)
+    })
+
+    it('merges connection rules into an existing +rules override without duplicating YAML keys', async () => {
+      const { wrapper } = await mountApp()
+      const store = storeOf(wrapper)
+      void store.saveOverride(
+        'p1',
+        ['+rules:', '  - DOMAIN-SUFFIX,e6gpshk.com,DIRECT', '  - DOMAIN,g7e6ai.com,DIRECT', ''].join('\n'),
+      )
+      await settle(300)
+      await connect(wrapper)
+      await openPage(wrapper, 'connections')
+      await settle(1100)
+
+      await wrapper.find('[data-testid="connection-row"]').trigger('click')
+      await flushPromises()
+      expect(body().find('[data-testid="detail-stats"]').exists()).toBe(true)
+
+      const writeBtn = body().find('[data-testid^="write-rule-"]')
+      expect(writeBtn.exists()).toBe(true)
+      await writeBtn.trigger('click')
+      await settle(300)
+
+      expect(store.page.value).toBe('profiles')
+      const modalText = body().find('.modal').text()
+      expect(modalText).toContain('覆写 · 星河云')
+      // Preview works cleanly without duplicate +rules keys.
+      await body().find('[data-testid="override-preview"]').trigger('click')
+      await settle(300)
+      const previewPanel = body().find('[data-testid="override-preview-panel"]')
+      expect(previewPanel.exists()).toBe(true)
+      expect(previewPanel.text()).toContain('合并结果')
     })
   })
 })

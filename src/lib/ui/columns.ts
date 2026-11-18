@@ -1,4 +1,4 @@
-import { onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 
 export interface ColumnSpec {
   id: string
@@ -24,6 +24,9 @@ export function useColumnResize(storageKey: string, specs: readonly ColumnSpec[]
     Object.fromEntries(specs.map((spec) => [spec.id, spec.defaultWidth])),
   )
   const resizingId = ref<string | null>(null)
+  const customized = computed(() =>
+    specs.some((spec) => widths[spec.id] !== spec.defaultWidth),
+  )
   let cleanupDrag: (() => void) | null = null
 
   try {
@@ -117,6 +120,7 @@ export function useColumnResize(storageKey: string, specs: readonly ColumnSpec[]
   return {
     widths,
     resizingId,
+    customized,
     startResize,
     resetColumn,
     resetAll,
