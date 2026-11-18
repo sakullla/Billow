@@ -1,5 +1,6 @@
 import type { PageId, SettingsTab } from './store'
 import { groupTypeLabel } from './format'
+import { matchesTokens, splitQueryTokens } from './search'
 import type { ConfigOverview } from './types'
 
 /**
@@ -337,14 +338,14 @@ export function buildOverview(data: ConfigOverview, options: { android?: boolean
 
 /** Rows matching a search needle by label, value or YAML key. */
 export function filterOverview(sections: OverviewSection[], needle: string, source: OverviewSource | 'all' = 'all'): OverviewSection[] {
-  const q = needle.trim().toLowerCase()
+  const tokens = splitQueryTokens(needle)
   return sections
     .map((section) => ({
       ...section,
       rows: section.rows.filter(
         (row) =>
           (source === 'all' || row.source === source) &&
-          (!q || `${row.label} ${row.value} ${row.path}`.toLowerCase().includes(q)),
+          matchesTokens(`${row.label} ${row.value} ${row.path}`, tokens),
       ),
     }))
     .filter((section) => section.rows.length)

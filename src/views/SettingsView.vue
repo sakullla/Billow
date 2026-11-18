@@ -8,6 +8,7 @@ import AppUpdateCard from '../components/AppUpdateCard.vue'
 import { useStore } from '../lib/store'
 import { layerDepth } from '../lib/ui/focus'
 import { useHotkeys } from '../lib/ui/hotkeys'
+import { shortcutKeyLabel } from '../lib/ui/shortcuts'
 import { subscriptionUserAgent } from '../lib/subscription'
 import { bypassOverride } from '../lib/bypass'
 import {
@@ -595,11 +596,13 @@ const policyBatchMode = ref(false)
 const policyBatchText = ref('')
 const newPolicyPattern = ref('')
 const newPolicyServers = ref('')
+const policyServersInput = ref<HTMLInputElement | null>(null)
 const hostRows = ref<{ domain: string; targets: string }[]>([])
 const hostBatchMode = ref(false)
 const hostBatchText = ref('')
 const newHostDomain = ref('')
 const newHostTargets = ref('')
+const hostTargetInput = ref<HTMLInputElement | null>(null)
 let lastSyncedDns = ''
 
 const splitTargets = (text: string) =>
@@ -880,10 +883,31 @@ useHotkeys([
   },
 ])
 
+const saveKey = shortcutKeyLabel('mod+s')
+const kernelDirty = computed(() => lanDirty.value || portDirty.value || probeDirty.value)
+
+function onPolicyPatternEnter() {
+  if (!newPolicyPattern.value.trim()) return
+  if (!newPolicyServers.value.trim()) {
+    policyServersInput.value?.focus()
+    return
+  }
+  addPolicyRow()
+}
+
+function onHostDomainEnter() {
+  if (!newHostDomain.value.trim()) return
+  if (!newHostTargets.value.trim()) {
+    hostTargetInput.value?.focus()
+    return
+  }
+  addHostRow()
+}
+
 const TABS = computed(() => [
   { id: 'general' as SettingsTab, label: '通用', icon: 'sliders' },
   ...(store.isAndroid.value ? [] : [{ id: 'proxy' as SettingsTab, label: proxyDirty.value ? '系统代理 •' : '系统代理', icon: 'monitor' }]),
-  { id: 'kernel' as SettingsTab, label: '内核', icon: 'cpu' },
+  { id: 'kernel' as SettingsTab, label: kernelDirty.value ? '内核 •' : '内核', icon: 'cpu' },
   ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: tunDirty.value ? 'TUN •' : 'TUN', icon: 'shield' }]),
   { id: 'dns' as SettingsTab, label: dnsDirty.value ? 'DNS •' : 'DNS', icon: 'globe' },
 ])
@@ -1269,6 +1293,7 @@ const TABS = computed(() => [
 
       <div v-if="proxyDirty" class="save-bar floating-save-bar">
         <span class="muted small grow">有未保存的系统代理修改（保存后立即生效，不会中断连接）</span>
+        <kbd v-if="!compact" class="palette-kbd save-kbd" aria-hidden="true">{{ saveKey }}</kbd>
         <button type="button" class="btn ghost sm" @click="undoProxy">撤销</button>
         <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-proxy" @click="saveProxy">保存</button>
       </div>
@@ -1615,12 +1640,14 @@ const TABS = computed(() => [
             </div>
           </div>
         </details>
-        <div v-if="tunDirty" class="save-bar">
-          <span class="muted small grow">有未保存的修改{{ snap.kernel_running ? '，保存后将平滑热重载生效' : '' }}</span>
-          <button type="button" class="btn ghost sm" @click="undoTun">撤销</button>
-          <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-tun" @click="saveTun">保存</button>
-        </div>
       </section>
+
+      <div v-if="tunDirty" class="save-bar floating-save-bar">
+        <span class="muted small grow">有未保存的修改{{ snap.kernel_running ? '，保存后将平滑热重载生效' : '' }}</span>
+        <kbd v-if="!compact" class="palette-kbd save-kbd" aria-hidden="true">{{ saveKey }}</kbd>
+        <button type="button" class="btn ghost sm" @click="undoTun">撤销</button>
+        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-tun" @click="saveTun">保存</button>
+      </div>
     </template>
 
     <!-- ───────── DNS ───────── -->
@@ -1789,9 +1816,10 @@ const TABS = computed(() => [
               placeholder="规则，如 geosite:cn 或 +.corp.local"
               aria-label="解析策略匹配规则"
               data-testid="policy-pattern-input"
-              @keydown.enter.prevent="addPolicyRow"
+              @keydown.enter.prevent="onPolicyPatternEnter"
             />
             <input
+              ref="policyServersInput"
               v-model="newPolicyServers"
               class="input sm mono grow"
               placeholder="DNS 服务器，多个用逗号分隔"
@@ -1869,9 +1897,10 @@ const TABS = computed(() => [
               placeholder="域名，如 router.local 或 *.dev.test"
               aria-label="Hosts 域名"
               data-testid="host-domain-input"
-              @keydown.enter.prevent="addHostRow"
+              @keydown.enter.prevent="onHostDomainEnter"
             />
             <input
+              ref="hostTargetInput"
               v-model="newHostTargets"
               class="input sm mono grow"
               placeholder="IP 或目标域名，多个用逗号分隔"
@@ -1919,6 +1948,7 @@ const TABS = computed(() => [
 
       <div v-if="dnsDirty" class="save-bar floating-save-bar">
         <span class="muted small grow">有未保存的 DNS 修改{{ snap.kernel_running && snap.settings.dns_override ? '，保存后将平滑热重载生效' : '' }}</span>
+        <kbd v-if="!compact" class="palette-kbd save-kbd" aria-hidden="true">{{ saveKey }}</kbd>
         <button type="button" class="btn ghost sm" @click="loadDns(snap.settings.dns)">撤销</button>
         <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-dns" @click="saveDns">保存</button>
       </div>

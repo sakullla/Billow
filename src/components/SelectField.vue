@@ -41,7 +41,7 @@ const searchRef = ref<HTMLInputElement | null>(null)
 let releaseLayer: (() => void) | null = null
 
 const current = computed(() => props.options.find((option) => option.value === props.modelValue) ?? null)
-const searchable = computed(() => !props.sheet && props.options.length > SEARCH_THRESHOLD)
+const searchable = computed(() => props.options.length > SEARCH_THRESHOLD)
 const visibleOptions = computed(() => {
   const needle = filterQuery.value.trim().toLowerCase()
   if (!needle) return props.options
@@ -227,16 +227,35 @@ onBeforeUnmount(detachDesktopListeners)
       :aria-expanded="open"
       :aria-label="`${label}：${current?.label ?? '未选择'}`"
       v-bind="$attrs"
-      @click="open = true"
+      @click="openPopover"
     >
       <span class="select-trigger-text">{{ current?.label ?? '未选择' }}</span>
       <span v-if="current?.hint" class="select-trigger-hint mono">{{ current.hint }}</span>
       <Icon name="chevron-down" :size="14" class="select-chevron" />
     </button>
-    <Modal v-if="open" :title="label" @close="open = false">
+    <Modal v-if="open" :title="label" @close="closePopover(false)">
+      <div v-if="searchable" class="search">
+        <Icon name="search" :size="15" />
+        <input
+          v-model="filterQuery"
+          type="search"
+          placeholder="搜索选项…"
+          aria-label="筛选选项"
+          data-testid="select-sheet-search"
+        />
+        <button
+          v-if="filterQuery"
+          type="button"
+          class="icon-btn sm"
+          aria-label="清空"
+          @click="filterQuery = ''"
+        >
+          <Icon name="x" :size="13" />
+        </button>
+      </div>
       <div class="option-list" role="listbox" :aria-label="label">
         <button
-          v-for="option in options"
+          v-for="option in visibleOptions"
           :key="String(option.value)"
           type="button"
           role="option"
@@ -250,6 +269,7 @@ onBeforeUnmount(detachDesktopListeners)
           <span v-if="option.hint" class="option-hint">{{ option.hint }}</span>
           <Icon v-if="option.value === modelValue" name="check" :size="18" :stroke="2.4" class="option-check" />
         </button>
+        <p v-if="!visibleOptions.length" class="select-empty muted small">无匹配项</p>
       </div>
     </Modal>
   </template>

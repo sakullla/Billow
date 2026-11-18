@@ -29,6 +29,7 @@ const emit = defineEmits<{ select: [item: MenuItem]; close: [] }>()
 
 const root = ref<HTMLElement | null>(null)
 const active = ref(0)
+const above = ref(false)
 let trigger: HTMLElement | null = null
 let releaseLayer: (() => void) | null = null
 
@@ -120,7 +121,18 @@ onMounted(() => {
     null
   document.addEventListener('mousedown', onOutside)
   releaseLayer = registerLayer(() => close(true))
-  void nextTick(() => focusItem(active.value))
+  void nextTick(() => {
+    const el = root.value
+    if (el && typeof window !== 'undefined') {
+      const rect = el.getBoundingClientRect()
+      const anchorRect = (trigger ?? anchorEl)?.getBoundingClientRect()
+      const vh = window.innerHeight || 768
+      if (rect.height > 0 && rect.bottom > vh - 10 && anchorRect && anchorRect.top > rect.height + 16) {
+        above.value = true
+      }
+    }
+    focusItem(active.value)
+  })
 })
 
 onBeforeUnmount(() => {
@@ -134,7 +146,7 @@ onBeforeUnmount(() => {
   <div
     ref="root"
     class="menu"
-    :class="align"
+    :class="[align, { above }]"
     role="menu"
     :aria-label="label"
     @keydown="onKeydown"

@@ -302,6 +302,12 @@ function onPaletteAction(id: string) {
     case 'open-config':
       store.openConfig()
       break
+    case 'flush-fakeip':
+      void store.flushCache('fakeip')
+      break
+    case 'flush-dns':
+      void store.flushCache('dns')
+      break
     case 'open-shortcuts':
       void nextTick(() => {
         helpOpen.value = true

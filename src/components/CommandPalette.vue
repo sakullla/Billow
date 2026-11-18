@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
 import { delayText, groupTypeLabel, isInfoNode, protocolLabel } from '../lib/format'
+import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { getFocusable, useFocusTrap } from '../lib/ui/focus'
-import { getShortcut, shortcutKeyLabel } from '../lib/ui/shortcuts'
+import { getShortcut, pageShortcutCombo, shortcutKeyLabel } from '../lib/ui/shortcuts'
 import { PAGES } from '../lib/store'
 import type { NodeGroup, ProfileItem } from '../lib/types'
 import Icon from './Icon.vue'
@@ -186,18 +187,42 @@ const defaultActions = computed<PaletteAction[]>(() => [
     disabled: !props.hasProfiles,
     reason: !props.hasProfiles ? '先添加配置' : undefined,
   },
+  {
+    id: 'flush-fakeip',
+    label: '刷新 FakeIP 缓存',
+    icon: 'refresh',
+    disabled: !props.connected,
+    reason: !props.connected ? '连接后可用' : undefined,
+  },
+  {
+    id: 'flush-dns',
+    label: '刷新 DNS 缓存',
+    icon: 'refresh',
+    disabled: !props.connected,
+    reason: !props.connected ? '连接后可用' : undefined,
+  },
   { id: 'toggle-theme', label: '切换主题', icon: 'moon' },
   { id: 'open-logs', label: '打开日志', icon: 'terminal' },
 ])
 
 const normalized = computed(() => query.value.trim().toLowerCase())
+const queryTokens = computed(() => splitQueryTokens(query.value))
+
+const sidebarPageIds = PAGES.filter((page) => page.group === 'core' || page.group === 'tools').map((page) => page.id)
+function pageKeyHint(id: string): string | undefined {
+  if (props.platform === 'android') return undefined
+  if (id === 'settings') return shortcutKeyLabel(getShortcut('settings').combo)
+  const idx = sidebarPageIds.indexOf(id as (typeof sidebarPageIds)[number])
+  const combo = pageShortcutCombo(idx)
+  return combo ? shortcutKeyLabel(combo) : undefined
+}
 
 // The palette never offers irreversible actions, whatever a caller passes in (R25).
 const DESTRUCTIVE_ACTION = /(^|:)(delete|remove|clear|reset)(:|$)|删除|清空|重置/
 
 function matches(label: string, hint?: string): boolean {
-  if (!normalized.value) return true
-  return `${label} ${hint ?? ''}`.toLowerCase().includes(normalized.value)
+  if (!queryTokens.value.length) return true
+  return matchesTokens(`${label} ${hint ?? ''}`, queryTokens.value)
 }
 
 const primaryManualGroup = computed(() => {
@@ -277,15 +302,20 @@ const groups = computed(() => {
       })
     }
 
-    const targetGroup = primaryManualGroup.value
-    if (targetGroup && targetGroup.kind === 'manual') {
-      const groupNames = new Set(props.nodeCatalog.map((group) => group.name))
-      let added = 0
+    const primary = primaryManualGroup.value
+    const manualGroups = [
+      ...(primary && primary.kind === 'manual' ? [primary] : []),
+      ...visibleGroups.filter((group) => group.kind === 'manual' && group.name !== primary?.name),
+    ]
+    const groupNames = new Set(props.nodeCatalog.map((group) => group.name))
+    let added = 0
+    for (const targetGroup of manualGroups) {
+      if (added >= 12) break
       for (const node of targetGroup.nodes) {
-        if (added >= 8) break
+        if (added >= 12) break
         if (groupNames.has(node.name) || isInfoNode(node.name)) continue
         const proto = protocolLabel(node.node_type)
-        const tagText = [proto, ...node.tags].filter(Boolean).join(' ')
+        const tagText = [targetGroup.name, proto, ...node.tags].filter(Boolean).join(' ')
         if (!matches(node.name, tagText)) continue
         const delay = props.connected ? delayText(node.delay_ms, node.failed) : ''
         proxyEntries.push({
@@ -309,7 +339,7 @@ const groups = computed(() => {
       '页面',
       props.pages,
       (item) => item.icon,
-      (item) => (props.currentPage && item.id === props.currentPage ? '当前' : undefined),
+      (item) => (props.currentPage && item.id === props.currentPage ? '当前' : pageKeyHint(item.id)),
       () => false,
       () => undefined,
     ),
@@ -480,11 +510,15 @@ useFocusTrap(() => panel.value, {
               @click="choose(entry)"
             >
               <Icon v-if="entry.icon" :name="entry.icon" :size="16" />
-              <span class="palette-label">{{ entry.label }}</span>
+              <span class="palette-label">
+                <template v-for="(part, idx) in highlightTokens(entry.label, query)" :key="idx">
+                  <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                </template>
+              </span>
               <span v-if="entry.disabled && entry.reason" :id="reasonId(entry)" class="palette-reason">
                 {{ entry.reason }}
               </span>
-              <span v-else-if="entry.hint" class="palette-hint">{{ entry.hint }}</span>
+              <span v-else-if="entry.hint" class="palette-hint" :class="{ current: entry.hint === '当前' || entry.hint.endsWith('· 当前') }">{{ entry.hint }}</span>
             </div>
           </div>
           <p v-if="!groups.length" class="palette-empty">没有匹配的命令</p>

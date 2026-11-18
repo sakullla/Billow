@@ -44,6 +44,14 @@ function onQuickFile(event: Event) {
   input.value = ''
 }
 
+function onPageDragLeave(event: DragEvent) {
+  const current = event.currentTarget as HTMLElement | null
+  const next = event.relatedTarget as Node | null
+  if (!next || !current?.contains(next)) {
+    pageDragging.value = false
+  }
+}
+
 function onPageDrop(event: DragEvent) {
   pageDragging.value = false
   void importLocalFile(event.dataTransfer?.files?.[0])
@@ -459,9 +467,13 @@ const failedSubscriptionIds = computed(() =>
     class="page profiles"
     :class="{ 'drop-active': pageDragging }"
     @dragover.prevent="pageDragging = true"
-    @dragleave.self="pageDragging = false"
+    @dragleave="onPageDragLeave"
     @drop.prevent="onPageDrop"
   >
+    <div v-if="pageDragging" class="drop-banner" aria-hidden="true">
+      <Icon name="download" :size="16" />
+      <span>释放即可导入 YAML 配置文件</span>
+    </div>
     <header class="page-head">
       <div>
         <h1>配置</h1>
@@ -487,7 +499,8 @@ const failedSubscriptionIds = computed(() =>
           :aria-busy="store.busy.refreshAll || undefined"
           @click="store.refreshAll()"
         >
-          <Icon name="refresh" :size="15" />
+          <span v-if="store.busy.refreshAll" class="spinner sm" aria-hidden="true" />
+          <Icon v-else name="refresh" :size="15" />
           {{ updateAllLabel }}
         </button>
         <button type="button" class="btn primary sm" data-testid="add-profile" @click="store.adding.value = true">
@@ -580,7 +593,8 @@ const failedSubscriptionIds = computed(() =>
             :disabled="store.busy[`update:${profile.id}`]"
             @click.stop="store.update(profile.id)"
           >
-            <Icon name="refresh" />
+            <span v-if="store.busy[`update:${profile.id}`]" class="spinner sm" aria-hidden="true" />
+            <Icon v-else name="refresh" />
           </button>
           <div class="menu-anchor" @click.stop @keydown.esc.stop.prevent="closeProfileMenu(true)">
             <button
@@ -604,15 +618,21 @@ const failedSubscriptionIds = computed(() =>
           </div>
         </header>
 
-        <div v-if="usagePercent(profile.used, profile.total) != null" class="usage">
-          <div class="usage-bar"><span :style="{ width: `${usagePercent(profile.used, profile.total)}%` }" :class="{ warn: (usagePercent(profile.used, profile.total) ?? 0) > 85 }" /></div>
+        <div v-if="usagePercent(profile.used, profile.total) != null || profile.expire" class="usage">
+          <div v-if="usagePercent(profile.used, profile.total) != null" class="usage-bar">
+            <span
+              :style="{ width: `${(usagePercent(profile.used, profile.total) ?? 0) > 0 ? Math.max(usagePercent(profile.used, profile.total) ?? 0, 1.5) : 0}%` }"
+              :class="{ warn: (usagePercent(profile.used, profile.total) ?? 0) > 85 }"
+            />
+          </div>
           <div class="usage-text small">
-            <span class="mono">
+            <span v-if="usagePercent(profile.used, profile.total) != null" class="mono">
               {{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}
               <span v-if="profile.total != null && profile.used != null && profile.total > 0" class="muted">
                 · 剩 {{ formatBytes(Math.max(0, profile.total - profile.used)) }}
               </span>
             </span>
+            <span v-else class="muted">不限流量</span>
             <span
               v-if="profile.expire"
               :class="{

@@ -1066,5 +1066,225 @@ describe('UI/UX polish', () => {
       await settle(2000)
       expect(wrapper.find('[data-testid="retry-failed-profiles"]').exists()).toBe(false)
     })
+
+    it('matches multi-keyword queries across Proxies, CommandPalette, Rules and Logs, hides timed-out nodes, and copies node/rule text', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText },
+        configurable: true,
+      })
+      const { wrapper, backend } = await mountApp({ longNames: true })
+      const flushSpy = vi.spyOn(backend, 'flushCache')
+      await connect(wrapper)
+      const store = storeOf(wrapper)
+
+      // Multi-keyword proxy search ("香港 iplc") matches non-contiguous tokens and highlights both.
+      await openPage(wrapper, 'proxies')
+      await wrapper.find('[data-testid="node-search"]').setValue('香港 iplc')
+      await flushPromises()
+      const matchedNodes = wrapper.findAll('[data-group-card="节点选择"] .node')
+      expect(matchedNodes).toHaveLength(1)
+      expect(matchedNodes[0]!.findAll('.node-name mark').map((m) => m.text())).toEqual(['香港', 'IPLC'])
+
+      // Right-click on a node card copies its full name.
+      await matchedNodes[0]!.trigger('contextmenu')
+      await flushPromises()
+      expect(writeText).toHaveBeenLastCalledWith(DEMO_LONG_NAMES[0])
+      await wrapper.find('[data-testid="clear-search"]').trigger('click')
+
+      // Speed test surfaces 隐藏超时 chip and hides timed-out nodes while keeping active selection visible.
+      void store.testAll()
+      await settle(4000)
+      const hideChip = wrapper.find('[data-testid="hide-failed-nodes"]')
+      expect(hideChip.exists()).toBe(true)
+      await hideChip.trigger('click')
+      await flushPromises()
+      expect(hideChip.attributes('aria-pressed')).toBe('true')
+      const unselectedFailed = wrapper
+        .findAll('[data-group-card="节点选择"] .node')
+        .filter((n) => n.classes().includes('failed-node') && !n.classes().includes('selected'))
+      expect(unselectedFailed).toHaveLength(0)
+
+      // Command palette switches nodes in non-primary manual groups ("OpenAI 美国 02") and flushes DNS/FakeIP cache.
+      await wrapper.find('[data-testid="open-palette"]').trigger('click')
+      await flushPromises()
+      const paletteInput = body().find('.palette-search input')
+      await paletteInput.setValue('OpenAI 美国 02')
+      await flushPromises()
+      await paletteInput.trigger('keydown', { key: 'Enter' })
+      await settle(400)
+      expect(store.snapshot.value.node_catalog.find((g) => g.name === 'OpenAI')!.now).toBe('美国 02')
+
+      await wrapper.find('[data-testid="open-palette"]').trigger('click')
+      await flushPromises()
+      await body().find('[data-command="action:flush-dns"]').trigger('click')
+      await settle(300)
+      expect(flushSpy).toHaveBeenCalledWith('dns')
+
+      // Logs level badge filters in 1 click and toggles back to all.
+      await openPage(wrapper, 'logs')
+      await settle(300)
+      const badge = wrapper.find('[data-testid="log-level-badge"]')
+      expect(badge.exists()).toBe(true)
+      await badge.trigger('click')
+      await flushPromises()
+      await badge.trigger('click')
+      await flushPromises()
+    })
+
+    it('jumps from RuleSet rules and connections straight into the rule-set detail modal in Resources, and shows pause bar', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText },
+        configurable: true,
+      })
+      const { wrapper, backend } = await mountApp()
+      await connect(wrapper)
+      const store = storeOf(wrapper)
+
+      // Rules page: copy rule expression, click rule kind badge to filter, and jump from RuleSet to Resources detail.
+      await openPage(wrapper, 'rules')
+      await settle(500)
+      await wrapper.findAll('[data-testid="rule-copy"]')[0]!.trigger('click')
+      await flushPromises()
+      expect(writeText).toHaveBeenCalledWith(expect.stringContaining(','))
+
+      const kindTag = wrapper.findAll('[data-testid="rule-kind-tag"]').find((b) => b.text() === 'RuleSet')!
+      await kindTag.trigger('click')
+      await flushPromises()
+      expect(wrapper.findAll('[data-testid="rule-row"]').every((r) => r.text().includes('RuleSet'))).toBe(true)
+
+      const jumpProvider = wrapper.find('[data-testid="rule-open-provider"]')
+      expect(jumpProvider.exists()).toBe(true)
+      await jumpProvider.trigger('click')
+      await settle(500)
+      expect(store.page.value).toBe('resources')
+      expect(body().find('[data-testid="provider-detail"]').exists()).toBe(true)
+      expect(body().find('.modal').text()).toContain('telegram')
+      await body().find('[data-testid="close-provider-detail"]').trigger('click')
+      await flushPromises()
+
+      // Connections page: pause banner with 1-click resume, plus RuleSet connection jump & expanded manual group policies.
+      const origState = backend.state.bind(backend)
+      backend.state = async () => {
+        const snap = await origState()
+        return {
+          ...snap,
+          connections: [
+            {
+              id: 'c-rs',
+              host: 'web.telegram.org',
+              outbound: '香港 01',
+              network: 'tcp',
+              conn_type: 'HTTPS',
+              destination: '149.154.167.99:443',
+              source: '127.0.0.1:53000',
+              process: 'Telegram',
+              rule: 'RuleSet',
+              rule_payload: 'telegram',
+              chains: ['香港 01', '漏网之鱼'],
+              upload: 1024,
+              download: 8192,
+              start: new Date(Date.now() - 4000).toISOString(),
+            },
+          ],
+          connection_total: 1,
+        }
+      }
+
+      await openPage(wrapper, 'connections')
+      await settle(1200)
+      await wrapper.find('[data-testid="pause-connections"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="connections-paused-bar"]').exists()).toBe(true)
+      await wrapper.find('[data-testid="resume-connections-bar"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="connections-paused-bar"]').exists()).toBe(false)
+
+      await wrapper.find('[data-testid="connection-row"]').trigger('click')
+      await flushPromises()
+      // Even when matched via 漏网之鱼, primary manual groups (节点选择, OpenAI) are offered for rule generation.
+      expect(body().find('[data-testid="rule-policy-节点选择"]').exists()).toBe(true)
+      expect(body().find('[data-testid="rule-policy-OpenAI"]').exists()).toBe(true)
+      const rulesetChip = body().find('[data-testid="open-conn-ruleset"]')
+      expect(rulesetChip.exists()).toBe(true)
+      await rulesetChip.trigger('click')
+      await settle(500)
+      expect(store.page.value).toBe('resources')
+      expect(body().find('[data-testid="provider-detail"]').exists()).toBe(true)
+    })
+
+    it('renders unlimited-bandwidth subscription expiry, Home takeover/direct cues, expandable groups, and mobile SelectField search', async () => {
+      const { wrapper, backend } = await mountApp({ big: true })
+      const origState = backend.state.bind(backend)
+      const soonExpire = Math.floor(Date.now() / 1000) + 3 * 86400
+      backend.state = async () => {
+        const snap = await origState()
+        return {
+          ...snap,
+          profiles: snap.profiles.map((p) =>
+            p.id === 'p1' ? { ...p, used: null, total: null, expire: soonExpire } : p,
+          ),
+        }
+      }
+      const store = storeOf(wrapper)
+      await store.refresh()
+      await flushPromises()
+
+      // Unlimited-bandwidth subscription still displays expiry date and 不限流量 on Home and Profiles.
+      expect(wrapper.find('[data-testid="profile-card"]').text()).toContain('不限流量')
+      expect(wrapper.find('[data-testid="profile-card"]').text()).toContain('到期')
+      await openPage(wrapper, 'profiles')
+      expect(wrapper.find('[data-profile="p1"]').text()).toContain('不限流量')
+      expect(wrapper.find('[data-profile="p1"]').text()).toContain('到期')
+      await openPage(wrapper, 'home')
+
+      // Expandable groups on Home when >8 manual groups exist.
+      expect(wrapper.findAll('[data-testid="groups-card"] .group-row')).toHaveLength(8)
+      const expandBtn = wrapper.find('[data-testid="home-groups-expand"]')
+      expect(expandBtn.exists()).toBe(true)
+      await expandBtn.trigger('click')
+      await flushPromises()
+      expect(wrapper.findAll('[data-testid="groups-card"] .group-row').length).toBeGreaterThan(8)
+
+      // Direct mode hero offers 1-click return to rule mode.
+      void store.setMode('direct')
+      await settle(300)
+      const switchRule = wrapper.find('[data-testid="home-switch-rule"]')
+      expect(switchRule.exists()).toBe(true)
+      await switchRule.trigger('click')
+      await settle(300)
+      expect(store.snapshot.value.mode).toBe('rule')
+
+      // Mobile SelectField sheet renders a search input when options > 8.
+      const phone = await mountApp({ platform: 'android' }, 390)
+      const origRules = phone.backend.rules.bind(phone.backend)
+      phone.backend.rules = async () => {
+        const res = await origRules()
+        return {
+          ...res,
+          rules: Array.from({ length: 10 }, (_, idx) => ({
+            kind: idx === 0 ? 'RuleSet' : `DomainType${idx}`,
+            payload: `p${idx}`,
+            proxy: 'DIRECT',
+            hit_count: idx,
+            last_hit: null,
+            key: `k${idx}`,
+            disabled: false,
+          })),
+        }
+      }
+      void storeOf(phone.wrapper).connect()
+      await settle(1500)
+      storeOf(phone.wrapper).go('rules')
+      await settle(500)
+      await phone.wrapper.find('[data-testid="rule-kind-filter"]').trigger('click')
+      await flushPromises()
+      const sheetSearch = body().find('[data-testid="select-sheet-search"]')
+      expect(sheetSearch.exists()).toBe(true)
+      await sheetSearch.setValue('RuleSet')
+      await flushPromises()
+      expect(body().findAll('.modal .option-row')).toHaveLength(1)
+    })
   })
 })

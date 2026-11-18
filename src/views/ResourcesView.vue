@@ -8,6 +8,7 @@ import Toggle from '../components/Toggle.vue'
 import Skeleton from '../components/Skeleton.vue'
 import { delayText, delayTone, formatBytes, formatDate, formatRelative, protocolLabel, usagePercent } from '../lib/format'
 import { runPool } from '../lib/pool'
+import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import {
   defaultGeoUrls,
@@ -54,9 +55,10 @@ const ruleSets = computed(() => providers.value.filter((item) => item.kind === '
 const SEARCH_THRESHOLD = 8
 const query = ref('')
 const needle = computed(() => query.value.trim().toLowerCase())
+const queryTokens = computed(() => splitQueryTokens(query.value))
 const showSearch = computed(() => providers.value.length > SEARCH_THRESHOLD || Boolean(query.value))
 const matches = (row: ProviderRow) =>
-  !needle.value || row.name.toLowerCase().includes(needle.value) || row.behavior.toLowerCase() === needle.value
+  !queryTokens.value.length || matchesTokens(`${row.name} ${row.behavior} ${row.format}`, queryTokens.value)
 const sections = computed(() => [
   { kind: 'proxy' as const, title: '代理集', all: proxySets.value, rows: proxySets.value.filter(matches) },
   { kind: 'rule' as const, title: '规则集', all: ruleSets.value, rows: ruleSets.value.filter(matches) },
@@ -127,6 +129,7 @@ async function load(quiet = false) {
     } else {
       providers.value = result.providers
       error.value = null
+      consumeFocusProvider()
     }
   } catch (err) {
     if (disposed || version !== loadVersion) return
@@ -386,11 +389,13 @@ async function switchJsdelivrAndUpgrade() {
 const detail = shallowRef<{ row: ProviderRow; data: ProviderDetail | null; error: string | null } | null>(null)
 const detailQuery = ref('')
 const detailNeedle = computed(() => detailQuery.value.trim().toLowerCase())
+const detailTokens = computed(() => splitQueryTokens(detailQuery.value))
 const detailProxies = computed(() => {
   const rows = detail.value?.data?.proxies ?? []
-  const needle = detailNeedle.value
-  if (!needle) return rows
-  return rows.filter((row) => row.name.toLowerCase().includes(needle) || [row.node_type, ...row.tags].some((tag) => tag.toLowerCase() === needle))
+  if (!detailTokens.value.length) return rows
+  return rows.filter((row) =>
+    matchesTokens(`${row.name} ${row.node_type} ${protocolLabel(row.node_type)} ${row.tags.join(' ')}`, detailTokens.value),
+  )
 })
 /** Rule lists can hold thousands of lines; the sheet renders a capped slice and says so. */
 const RULE_PAGE = 400
@@ -429,7 +434,7 @@ const detailRules = computed(() => {
   const needle = detailNeedle.value
   if (needle && detailPartial.value) return detailSearch.value?.data?.rules ?? []
   const rows = detail.value?.data?.rules ?? []
-  return needle ? rows.filter((rule) => rule.toLowerCase().includes(needle)) : rows
+  return detailTokens.value.length ? rows.filter((rule) => matchesTokens(rule, detailTokens.value)) : rows
 })
 /** Matches across the whole set, which can exceed the rows sent back. */
 const detailRuleCount = computed(() =>
@@ -462,22 +467,29 @@ function ruleParts(rule: string): { type: string; rest: string } {
   return /^[A-Z][A-Z0-9-]+$/.test(head) ? { type: head, rest: rule.slice(comma + 1) } : { type: '', rest: rule }
 }
 
-function highlightDetail(value: string): { text: string; hit: boolean }[] {
-  const q = detailNeedle.value
-  if (!q || !value) return [{ text: value, hit: false }]
-  const lower = value.toLowerCase()
-  const parts: { text: string; hit: boolean }[] = []
-  let idx = 0
-  let found = lower.indexOf(q)
-  while (found >= 0) {
-    if (found > idx) parts.push({ text: value.slice(idx, found), hit: false })
-    parts.push({ text: value.slice(found, found + q.length), hit: true })
-    idx = found + q.length
-    found = lower.indexOf(q, idx)
-  }
-  if (idx < value.length) parts.push({ text: value.slice(idx), hit: false })
-  return parts.length ? parts : [{ text: value, hit: false }]
+function highlightDetail(value: string) {
+  return highlightTokens(value, detailQuery.value)
 }
+
+function consumeFocusProvider() {
+  const req = store.focusProvider.value
+  if (!req || !providers.value.length) return
+  const lower = req.name.toLowerCase()
+  const target =
+    providers.value.find((row) => row.kind === req.kind && row.name === req.name) ??
+    providers.value.find((row) => row.kind === req.kind && row.name.toLowerCase() === lower) ??
+    providers.value.find((row) => row.name.toLowerCase() === lower)
+  store.focusProvider.value = null
+  if (!target) {
+    store.toast(`未找到资源「${req.name}」`, 'info')
+    return
+  }
+  if (collapsed[target.kind]) collapsed[target.kind] = false
+  if (query.value && !matches(target)) query.value = ''
+  void openDetail(target)
+}
+
+watch(() => store.focusProvider.value, () => consumeFocusProvider())
 
 const successText = (row: ProviderRow) => (stateOf(row)?.action === 'healthcheck' ? '检查通过' : '已更新')
 
@@ -507,6 +519,7 @@ onBeforeUnmount(() => {
   disposed = true
   loadVersion++
   detailVersion++
+  if (store.focusProvider.value) store.focusProvider.value = null
 })
 
 onMounted(() => {
@@ -640,7 +653,11 @@ onMounted(() => {
                 <Icon :name="row.kind === 'proxy' ? 'globe' : isInline(row) ? 'code' : 'route'" :size="16" />
               </span>
               <div class="min0 grow">
-                <strong class="ellipsis">{{ row.name }}</strong>
+                <strong class="ellipsis">
+                  <template v-for="(part, partIdx) in highlightTokens(row.name, query)" :key="partIdx">
+                    <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                  </template>
+                </strong>
                 <p class="muted small provider-meta">
                   <span>{{ row.kind === 'proxy' ? `${row.count} 个节点` : `${row.count.toLocaleString()} 条规则` }}</span>
                   <span v-if="row.behavior">{{ row.behavior }}</span>

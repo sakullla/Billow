@@ -6,6 +6,7 @@ import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
 import { formatClock } from '../lib/format'
+import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import type { LogLevel, LogLine } from '../lib/types'
 
@@ -39,28 +40,11 @@ const lineKey = (line: LogLine) => `${line.time_ms}|${line.level}|${line.message
 const source = computed(() => (paused.value ? frozen.value : snap.value.logs))
 
 const needle = computed(() => query.value.trim().toLowerCase())
+const queryTokens = computed(() => splitQueryTokens(query.value))
 const isFiltered = computed(() => Boolean(needle.value) || filter.value !== 'all')
 
-interface HighlightPart {
-  text: string
-  hit: boolean
-}
-
-function highlight(value: string): HighlightPart[] {
-  const q = needle.value
-  if (!q || !value) return [{ text: value, hit: false }]
-  const lower = value.toLowerCase()
-  const parts: HighlightPart[] = []
-  let idx = 0
-  let found = lower.indexOf(q)
-  while (found >= 0) {
-    if (found > idx) parts.push({ text: value.slice(idx, found), hit: false })
-    parts.push({ text: value.slice(found, found + q.length), hit: true })
-    idx = found + q.length
-    found = lower.indexOf(q, idx)
-  }
-  if (idx < value.length) parts.push({ text: value.slice(idx), hit: false })
-  return parts.length ? parts : [{ text: value, hit: false }]
+function highlight(value: string) {
+  return highlightTokens(value, query.value)
 }
 
 /**
@@ -70,7 +54,7 @@ function highlight(value: string): HighlightPart[] {
  * lines instead of rebuilding the table (R31).
  */
 const entries = computed(() => {
-  const q = needle.value
+  const tokens = queryTokens.value
   const seen = new Map<string, number>()
   const result: { line: LogLine; key: string }[] = []
   for (const line of source.value) {
@@ -78,7 +62,7 @@ const entries = computed(() => {
     const occurrence = seen.get(base) ?? 0
     seen.set(base, occurrence + 1)
     if (filter.value !== 'all' && line.level !== filter.value) continue
-    if (q && !line.message.toLowerCase().includes(q)) continue
+    if (tokens.length && !matchesTokens(`${line.level} ${LABEL[line.level]} ${line.message}`, tokens)) continue
     result.push({ line, key: `${base}#${occurrence}` })
   }
   return result
@@ -333,14 +317,20 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
         <div
           v-for="entry in entries"
           :key="entry.key"
-          v-memo="[entry.line.time_ms, entry.line.level, entry.line.message, needle]"
+          v-memo="[entry.line.time_ms, entry.line.level, entry.line.message, needle, filter]"
           class="log-line"
           :class="entry.line.level"
           :data-log-line="lineKey(entry.line)"
           :data-log-key="entry.key"
         >
           <span class="log-time mono">{{ formatClock(entry.line.time_ms) }}</span>
-          <span class="log-level mono">{{ LABEL[entry.line.level] }}</span>
+          <button
+            type="button"
+            class="log-level mono"
+            :title="filter === entry.line.level ? '点击恢复全部级别' : `仅看 ${LABEL[entry.line.level]} 级别日志`"
+            data-testid="log-level-badge"
+            @click="filter = filter === entry.line.level ? 'all' : entry.line.level"
+          >{{ LABEL[entry.line.level] }}</button>
           <span class="log-msg mono">
             <template v-for="(part, partIdx) in highlight(entry.line.message)" :key="partIdx">
               <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>

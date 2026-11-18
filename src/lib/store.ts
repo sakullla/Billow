@@ -108,6 +108,7 @@ export function createStore(backend: Backend) {
   const theme = ref<ThemePreference>('system')
   const page = ref<PageId>('home')
   const focusGroup = ref<string | null>(null)
+  const focusProvider = ref<{ kind: 'proxy' | 'rule'; name: string } | null>(null)
   const settingsTab = ref<SettingsTab>('general')
   /** Text another page asks the profiles page to append to a profile's 覆写 editor (unsaved). */
   const overrideRequest = ref<{ id: string; append: string } | null>(null)
@@ -758,6 +759,14 @@ export function createStore(backend: Backend) {
     configView.value = tab ?? readConfigTab()
   }
 
+  /** Jump to Resources and open a specific rule-set or proxy-provider sheet. */
+  function openProvider(kind: 'proxy' | 'rule', name: string) {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    focusProvider.value = { kind, name: trimmed }
+    go('resources')
+  }
+
   async function saveEntry(next: PageId) {
     pendingEntry = next
     if (savingEntry) return
@@ -867,6 +876,8 @@ export function createStore(backend: Backend) {
     theme,
     page,
     focusGroup,
+    focusProvider,
+    openProvider,
     settingsTab,
     overrideRequest,
     openSettings,

@@ -15,6 +15,7 @@ import {
   isFakeIp,
   resolveChain,
 } from '../lib/format'
+import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import { useColumnResize } from '../lib/ui/columns'
 import { useVirtualList } from '../lib/ui/virtual'
@@ -215,12 +216,20 @@ const newCount = computed(() => {
   return snap.value.connections.filter((row) => !frozenIds.value.has(idOf(row))).length
 })
 
+const queryTokens = computed(() => splitQueryTokens(query.value))
+
+function highlight(value: string) {
+  return highlightTokens(value, query.value)
+}
+
 const rows = computed(() => {
-  const needle = query.value.trim().toLowerCase()
-  const list = needle
+  const tokens = queryTokens.value
+  const list = tokens.length
     ? sourceRows.value.filter((row) =>
-        [row.host, row.destination, row.process, row.rule, row.rule_payload, hopsOf(row).join(' '), row.network]
-          .some((text) => text.toLowerCase().includes(needle)),
+        matchesTokens(
+          `${row.host} ${row.destination} ${row.process} ${row.rule} ${row.rule_payload} ${hopsOf(row).join(' ')} ${row.network} ${row.conn_type}`,
+          tokens,
+        ),
       )
     : [...sourceRows.value]
   const dir = sortDir.value === 'asc' ? -1 : 1
@@ -337,17 +346,36 @@ const detailEntryGroup = computed(() => {
   return entry && groupNames.value.has(entry) ? entry : null
 })
 
-const primaryManualGroup = computed(
-  () => snap.value.node_catalog.find((group) => group.kind === 'manual')?.name ?? null,
+const manualGroupNames = computed(() =>
+  snap.value.node_catalog
+    .filter((group) => group.kind === 'manual' && (snap.value.mode === 'global' || group.name !== 'GLOBAL'))
+    .map((group) => group.name),
 )
+
+const primaryManualGroup = computed(() => manualGroupNames.value[0] ?? null)
 
 const rulePolicies = computed(() => {
   const set = new Set<string>(['DIRECT'])
   if (detailEntryGroup.value) set.add(detailEntryGroup.value)
-  else if (primaryManualGroup.value) set.add(primaryManualGroup.value)
+  if (primaryManualGroup.value) set.add(primaryManualGroup.value)
+  for (const name of manualGroupNames.value) {
+    if (set.size >= 6) break
+    set.add(name)
+  }
   set.add('REJECT')
   return [...set]
 })
+
+const detailRuleSet = computed(() => {
+  const row = detailSource.value
+  if (!row || !row.rule_payload) return null
+  return /^rule-?set$/i.test(row.rule.trim()) ? row.rule_payload.trim() : null
+})
+
+function openConnectionRuleSet(name: string) {
+  closeDetail()
+  store.openProvider('rule', name)
+}
 
 const generatedRules = computed(() =>
   detailSource.value ? connectionRules(detailSource.value, rulePolicy.value) : [],
@@ -381,6 +409,11 @@ const detail = computed<DetailEntry[]>(() => {
   const row = detailSource.value
   if (!row) return []
   const endAt = detailRow.value ? Date.now() : (selectedLast.value?.closed_at_ms ?? selectedAt.value)
+  const liveRate = detailRow.value ? rateOf(detailRow.value) : null
+  const rateText =
+    liveRate && liveRate.down + liveRate.up >= 1
+      ? `↓ ${formatSpeed(liveRate.down)} · ↑ ${formatSpeed(liveRate.up)}`
+      : ''
   const entries: DetailEntry[] = [
     { label: '主机', value: row.host, copyValue: row.host, copyToast: '已复制主机' },
     {
@@ -395,6 +428,7 @@ const detail = computed<DetailEntry[]>(() => {
     { label: '网络', value: `${row.network.toUpperCase()}${row.conn_type ? ` · ${row.conn_type}` : ''}` },
     { label: '规则', value: row.rule ? `${row.rule}${row.rule_payload ? ` (${row.rule_payload})` : ''}` : '' },
     { label: '代理链', value: hopsOf(row).join(' → ') },
+    { label: '当前速率', value: rateText },
     { label: '下载', value: formatBytes(row.download) },
     { label: '上传', value: formatBytes(row.upload) },
     { label: '持续', value: formatDuration(row.start, endAt) },
@@ -598,6 +632,22 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         data-testid="connection-sort"
         @update:model-value="setSort"
       />
+    </div>
+
+    <div
+      v-if="snap.connected && paused && tab === 'active'"
+      class="banner paused-bar small"
+      role="status"
+      aria-live="polite"
+      data-testid="connections-paused-bar"
+    >
+      <Icon name="pause" :size="14" />
+      <span class="grow">
+        列表已暂停于 {{ formatClock(pausedAt ?? 0) }}<template v-if="newCount"> · 已缓存 {{ newCount }} 条新连接</template>
+      </span>
+      <button type="button" class="btn ghost sm" data-testid="resume-connections-bar" @click="resume()">
+        <Icon name="play" :size="13" />继续刷新
+      </button>
     </div>
 
     <EmptyState v-if="!snap.connected" variant="unavailable" icon="activity" title="未连接" description="连接后这里会实时显示经过 Billow 的连接。">
@@ -808,11 +858,28 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             <td>
               <div class="cell-host">
                 <span class="net" :class="row.network">{{ row.network.toUpperCase() || 'TCP' }}</span>
-                <span class="ellipsis" :title="row.host || row.destination">{{ row.host || row.destination }}</span>
+                <span class="ellipsis" :title="row.host || row.destination">
+                  <template v-for="(part, partIdx) in highlight(row.host || row.destination)" :key="partIdx">
+                    <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                  </template>
+                </span>
               </div>
             </td>
-            <td class="muted ellipsis col-process" :title="row.process || undefined">{{ row.process || '—' }}</td>
-            <td class="ellipsis" :title="row.rule_payload ? `${row.rule} ${row.rule_payload}` : row.rule"><span class="muted">{{ row.rule }}</span><span v-if="row.rule_payload" class="rule-payload-inline">{{ row.rule_payload }}</span></td>
+            <td class="muted ellipsis col-process" :title="row.process || undefined">
+              <template v-if="row.process">
+                <template v-for="(part, partIdx) in highlight(row.process)" :key="partIdx">
+                  <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                </template>
+              </template>
+              <template v-else>—</template>
+            </td>
+            <td class="ellipsis" :title="row.rule_payload ? `${row.rule} ${row.rule_payload}` : row.rule">
+              <span class="muted">
+                <template v-for="(part, partIdx) in highlight(row.rule)" :key="partIdx">
+                  <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                </template>
+              </span><span v-if="row.rule_payload" class="rule-payload-inline"><template v-for="(part, partIdx) in highlight(row.rule_payload)" :key="partIdx"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
+            </td>
             <td><ChainPath :hops="hopsOf(row)" :groups="groupNames" pill fold /></td>
             <td v-if="tab === 'closed'" class="num mono muted">{{ closedTimeText(row) }}</td>
             <td
@@ -867,7 +934,11 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         >
           <div class="conn-top">
             <span class="net" :class="row.network">{{ row.network.toUpperCase() || 'TCP' }}</span>
-            <strong class="ellipsis grow">{{ row.host || row.destination }}</strong>
+            <strong class="ellipsis grow">
+              <template v-for="(part, partIdx) in highlight(row.host || row.destination)" :key="partIdx">
+                <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+              </template>
+            </strong>
             <span v-if="tab === 'closed'" class="mono small muted">{{ closedTimeText(row) }}</span>
             <template v-else>
               <span
@@ -944,6 +1015,15 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           @click="openConnectionGroup(detailEntryGroup)"
         >
           <Icon name="globe" :size="13" />前往「{{ detailEntryGroup }}」
+        </button>
+        <button
+          v-if="detailRuleSet"
+          type="button"
+          class="chip"
+          data-testid="open-conn-ruleset"
+          @click="openConnectionRuleSet(detailRuleSet)"
+        >
+          <Icon name="database" :size="13" />查看规则集「{{ detailRuleSet }}」
         </button>
         <button
           type="button"

@@ -6,6 +6,7 @@ import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
 import Skeleton from '../components/Skeleton.vue'
 import { formatRelative } from '../lib/format'
+import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import { useColumnResize } from '../lib/ui/columns'
 import { useVirtualList } from '../lib/ui/virtual'
@@ -115,6 +116,7 @@ const proxyOptions = computed(() => [
 ])
 
 const needle = computed(() => query.value.trim().toLowerCase())
+const queryTokens = computed(() => splitQueryTokens(query.value))
 const onlyDisabled = ref(false)
 const disabledCount = computed(() => rules.value.filter((rule) => rule.disabled).length)
 watch(disabledCount, (count) => {
@@ -124,37 +126,19 @@ const isFiltered = computed(
   () => Boolean(needle.value) || kind.value !== 'all' || proxy.value !== 'all' || onlyDisabled.value,
 )
 
-interface HighlightPart {
-  text: string
-  hit: boolean
-}
-
-function highlight(value: string): HighlightPart[] {
-  const q = needle.value
-  if (!q || !value) return [{ text: value, hit: false }]
-  const lower = value.toLowerCase()
-  const parts: HighlightPart[] = []
-  let idx = 0
-  let found = lower.indexOf(q)
-  while (found >= 0) {
-    if (found > idx) parts.push({ text: value.slice(idx, found), hit: false })
-    parts.push({ text: value.slice(found, found + q.length), hit: true })
-    idx = found + q.length
-    found = lower.indexOf(q, idx)
-  }
-  if (idx < value.length) parts.push({ text: value.slice(idx), hit: false })
-  return parts.length ? parts : [{ text: value, hit: false }]
+function highlight(value: string) {
+  return highlightTokens(value, query.value)
 }
 
 const filtered = computed(() => {
-  const q = needle.value
+  const tokens = queryTokens.value
   const indexed = rules.value.map((rule, index) => ({ rule, index }))
   const list = indexed.filter(({ rule }) => {
     if (onlyDisabled.value && !rule.disabled) return false
     if (kind.value !== 'all' && rule.kind !== kind.value) return false
     if (proxy.value !== 'all' && rule.proxy !== proxy.value) return false
-    if (!q) return true
-    return [rule.kind, rule.payload, rule.proxy].some((text) => text.toLowerCase().includes(q))
+    if (!tokens.length) return true
+    return matchesTokens(`${rule.kind} ${rule.payload} ${rule.proxy}`, tokens)
   })
   if (sort.value === 'hits') {
     list.sort((a, b) => (b.rule.hit_count ?? -1) - (a.rule.hit_count ?? -1) || a.index - b.index)
@@ -193,6 +177,16 @@ function resetFilters() {
 }
 
 const labelOf = (rule: RuleRow) => rule.payload || rule.kind
+const isRuleSet = (rule: RuleRow) => /^rule-?set$/i.test(rule.kind.trim()) && Boolean(rule.payload.trim())
+
+function ruleExpression(rule: RuleRow): string {
+  return rule.payload ? `${rule.kind},${rule.payload},${rule.proxy}` : `${rule.kind},${rule.proxy}`
+}
+
+async function copyRuleRow(rule: RuleRow) {
+  const expr = ruleExpression(rule)
+  await store.copyText(expr, `已复制规则：${expr}`)
+}
 
 /** Policies that name a proxy group can be opened; DIRECT/REJECT and plain nodes stay labels. */
 const groupNames = computed(() => new Set(snap.value.node_catalog.map((group) => group.name)))
@@ -500,7 +494,7 @@ onBeforeUnmount(() => { ++loadId })
             />
           </span>
         </template>
-        <span class="rule-toggle" />
+        <span class="rule-actions" />
       </div>
       <div v-if="virtual.offset.value" class="rule-spacer" aria-hidden="true" :style="{ height: `${virtual.offset.value}px` }" />
       <div
@@ -515,14 +509,38 @@ onBeforeUnmount(() => { ++loadId })
       >
         <span class="rule-index mono muted">{{ index + 1 }}</span>
         <span class="rule-kind-cell">
-          <span class="tag">{{ rule.kind }}</span>
+          <button
+            type="button"
+            class="tag tag-btn"
+            :class="{ accent: kind === rule.kind }"
+            :title="kind === rule.kind ? '取消类型筛选' : `仅看 ${rule.kind} 规则`"
+            data-testid="rule-kind-tag"
+            @click="kind = kind === rule.kind ? 'all' : rule.kind"
+          >
+            <template v-for="(part, partIdx) in highlight(rule.kind)" :key="partIdx">
+              <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+            </template>
+          </button>
           <span v-if="rule.disabled" class="tag warn rule-off-tag" data-testid="rule-off-tag">已禁用</span>
         </span>
         <span class="rule-payload mono ellipsis" :title="rule.payload">
           <template v-if="rule.payload">
-            <template v-for="(part, partIdx) in highlight(rule.payload)" :key="partIdx">
-              <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
-            </template>
+            <span class="rule-payload-text ellipsis">
+              <template v-for="(part, partIdx) in highlight(rule.payload)" :key="partIdx">
+                <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+              </template>
+            </span>
+            <button
+              v-if="isRuleSet(rule)"
+              type="button"
+              class="icon-btn xs rule-open-provider"
+              :title="`查看规则集「${rule.payload}」详情`"
+              :aria-label="`查看规则集 ${rule.payload}`"
+              data-testid="rule-open-provider"
+              @click="store.openProvider('rule', rule.payload)"
+            >
+              <Icon name="external" :size="12" />
+            </button>
           </template>
           <template v-else>—</template>
         </span>
@@ -547,36 +565,48 @@ onBeforeUnmount(() => { ++loadId })
           <span class="rule-hit mono" :title="`命中 ${hitText(rule)} 次`" data-rule-hit>{{ hitText(rule) }}</span>
           <span class="rule-last-hit small muted">{{ lastHitText(rule) }}</span>
         </template>
-        <!-- Desktop reveals the action on hover/focus; disabled rows keep 「启用」 visible (R4). Phones use a compact icon. -->
-        <button
-          v-if="rule.key && compact"
-          type="button"
-          class="icon-btn sm rule-toggle"
-          :class="{ active: rule.disabled }"
-          :disabled="toggling[rule.key]"
-          :aria-busy="toggling[rule.key] || undefined"
-          :aria-label="rule.disabled ? `启用规则 ${labelOf(rule)}` : `临时禁用规则 ${labelOf(rule)}`"
-          :title="rule.disabled ? '启用' : '临时禁用'"
-          data-testid="rule-toggle"
-          @click="toggle(rule)"
-        >
-          <span v-if="toggling[rule.key]" class="spinner xs" aria-hidden="true" />
-          <Icon v-else :name="rule.disabled ? 'play' : 'pause'" :size="14" />
-        </button>
-        <button
-          v-else-if="rule.key"
-          type="button"
-          class="btn ghost sm rule-toggle"
-          :class="{ pinned: rule.disabled || toggling[rule.key] }"
-          :disabled="toggling[rule.key]"
-          :aria-busy="toggling[rule.key] || undefined"
-          :aria-label="rule.disabled ? `启用规则 ${labelOf(rule)}` : `临时禁用规则 ${labelOf(rule)}`"
-          data-testid="rule-toggle"
-          @click="toggle(rule)"
-        >
-          {{ toggling[rule.key] ? (rule.disabled ? '恢复中' : '禁用中') : rule.disabled ? '启用' : '禁用' }}
-        </button>
-        <span v-else class="rule-toggle muted small">—</span>
+        <span class="rule-actions">
+          <button
+            type="button"
+            class="icon-btn sm rule-copy"
+            :aria-label="`复制规则 ${labelOf(rule)}`"
+            title="复制规则"
+            data-testid="rule-copy"
+            @click="copyRuleRow(rule)"
+          >
+            <Icon name="copy" :size="13" />
+          </button>
+          <!-- Desktop reveals the action on hover/focus; disabled rows keep 「启用」 visible (R4). Phones use a compact icon. -->
+          <button
+            v-if="rule.key && compact"
+            type="button"
+            class="icon-btn sm rule-toggle"
+            :class="{ active: rule.disabled }"
+            :disabled="toggling[rule.key]"
+            :aria-busy="toggling[rule.key] || undefined"
+            :aria-label="rule.disabled ? `启用规则 ${labelOf(rule)}` : `临时禁用规则 ${labelOf(rule)}`"
+            :title="rule.disabled ? '启用' : '临时禁用'"
+            data-testid="rule-toggle"
+            @click="toggle(rule)"
+          >
+            <span v-if="toggling[rule.key]" class="spinner xs" aria-hidden="true" />
+            <Icon v-else :name="rule.disabled ? 'play' : 'pause'" :size="14" />
+          </button>
+          <button
+            v-else-if="rule.key"
+            type="button"
+            class="btn ghost sm rule-toggle"
+            :class="{ pinned: rule.disabled || toggling[rule.key] }"
+            :disabled="toggling[rule.key]"
+            :aria-busy="toggling[rule.key] || undefined"
+            :aria-label="rule.disabled ? `启用规则 ${labelOf(rule)}` : `临时禁用规则 ${labelOf(rule)}`"
+            data-testid="rule-toggle"
+            @click="toggle(rule)"
+          >
+            {{ toggling[rule.key] ? (rule.disabled ? '恢复中' : '禁用中') : rule.disabled ? '启用' : '禁用' }}
+          </button>
+          <span v-else class="rule-toggle muted small">—</span>
+        </span>
       </div>
       <div v-if="virtual.tail.value" class="rule-spacer" aria-hidden="true" :style="{ height: `${virtual.tail.value}px` }" />
       <button

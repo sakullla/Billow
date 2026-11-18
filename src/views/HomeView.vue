@@ -67,8 +67,10 @@ const homeTestTitle = computed(() => {
 })
 const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${profile.value.id}`]) : false))
 
+const showAllGroups = ref(false)
 const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual'))
-const manualGroups = computed(() => allManualGroups.value.slice(0, 8))
+const manualGroups = computed(() => (showAllGroups.value ? allManualGroups.value : allManualGroups.value.slice(0, 8)))
+const hiddenGroupCount = computed(() => Math.max(0, allManualGroups.value.length - 8))
 const primaryGroup = computed(() => {
   if (snap.value.mode === 'global') {
     return snap.value.node_catalog.find((group) => group.name === 'GLOBAL') ?? allManualGroups.value[0] ?? null
@@ -350,7 +352,16 @@ function onPrimary() {
                 >{{ primaryDelay.text }}</span>
                 <Icon name="chevron-right" :size="13" class="muted" />
               </button>
-              <p v-else-if="snap.mode === 'direct'" class="hero-sub muted">当前直连出站 · 不经过代理节点</p>
+              <p v-else-if="snap.mode === 'direct'" class="hero-sub muted">
+                <span>当前直连出站 · 不经过代理节点</span>
+                <button
+                  type="button"
+                  class="link-btn"
+                  :disabled="modeBusy"
+                  data-testid="home-switch-rule"
+                  @click="store.setMode('rule')"
+                >切回规则模式</button>
+              </p>
               <p v-else-if="!profile" class="hero-sub muted">选择一份配置后即可开启代理</p>
               <p v-else class="hero-sub muted">
                 <span>{{ activeMode ? `${activeMode.label}模式` : '就绪' }}</span>
@@ -436,6 +447,14 @@ function onPrimary() {
             </div>
 
             <div v-if="!store.isAndroid.value" class="control-block takeover" data-testid="takeover-card">
+              <header class="control-head">
+                <h2>流量接管</h2>
+                <p
+                  class="mode-hint"
+                  :class="{ 'text-warn': snap.kernel_running && !takeoverOn }"
+                  data-testid="takeover-hint"
+                >{{ takeoverSummary }}</p>
+              </header>
               <div class="takeover-grid">
                 <div
                   class="takeover-tile"
@@ -535,13 +554,16 @@ function onPrimary() {
                   {{ updateBusy ? '更新中' : '更新' }}
                 </button>
               </div>
-              <div v-if="usage != null" class="usage">
-                <div class="usage-bar"><span :style="{ width: `${usage}%` }" :class="{ warn: usage > 85 }" /></div>
+              <div v-if="usage != null || profile.expire" class="usage">
+                <div v-if="usage != null" class="usage-bar">
+                  <span :style="{ width: `${usage > 0 ? Math.max(usage, 1.5) : 0}%` }" :class="{ warn: usage > 85 }" />
+                </div>
                 <div class="usage-text small">
-                  <span class="mono">
+                  <span v-if="usage != null" class="mono">
                     {{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}
                     <span v-if="remainingBytes != null" class="muted">· 剩 {{ formatBytes(remainingBytes) }}</span>
                   </span>
+                  <span v-else class="muted">不限流量</span>
                   <span
                     v-if="profile.expire"
                     :class="{
@@ -643,6 +665,16 @@ function onPrimary() {
                 </template>
               </button>
             </div>
+            <button
+              v-if="hiddenGroupCount > 0"
+              type="button"
+              class="btn ghost sm block home-groups-more"
+              data-testid="home-groups-expand"
+              @click="showAllGroups = !showAllGroups"
+            >
+              <Icon :name="showAllGroups ? 'up' : 'chevron-down'" :size="14" />
+              {{ showAllGroups ? '收起其余代理组' : `展开其余 ${hiddenGroupCount} 个代理组` }}
+            </button>
           </section>
         </div>
       </div>
@@ -668,6 +700,7 @@ function onPrimary() {
                 · 已用 {{ Math.round(usagePercent(item.used, item.total)!) }}%
               </template>
               <span v-if="item.expire && daysLeft(item.expire) < 0" class="text-error">· 已过期</span>
+              <span v-else-if="item.expire && daysLeft(item.expire) <= 7" class="text-warn">· 剩 {{ daysLeft(item.expire) }} 天</span>
               <span v-else-if="item.failure || item.override_error" class="text-error">· 有异常</span>
             </span>
           </span>

@@ -6,6 +6,7 @@ import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
 import { delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, protocolLabel, resolveChain } from '../lib/format'
+import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
 
@@ -140,6 +141,8 @@ watch(sort, (value) => writePref('proxy-sort', value))
 watch(view, (value) => writePref('proxy-view', value))
 
 const needle = computed(() => query.value.trim().toLowerCase())
+const queryTokens = computed(() => splitQueryTokens(query.value))
+const hideFailed = ref(false)
 
 type ViewGroup = NodeGroup & { info?: NodeItem[] }
 
@@ -205,11 +208,19 @@ function toggle(name: string) {
   }
 }
 
-/** Search matches the name, or a protocol/tag ("ss" exact, 3+ chars prefix like "real" → "reality"). */
+/** Search matches multi-word tokens across node name, dialer-proxy, and protocol/tags ("ss" exact, 3+ chars prefix like "real" → "reality"). */
 function matches(node: NodeItem): boolean {
-  if (node.name.toLowerCase().includes(needle.value)) return true
+  if (!queryTokens.value.length) return true
+  const nameLower = node.name.toLowerCase()
+  if (nameLower.includes(needle.value)) return true
+  const dialerLower = node.dialer_proxy?.toLowerCase() ?? ''
   const labels = [node.node_type, protocolLabel(node.node_type), ...node.tags].map((label) => label.toLowerCase())
-  return labels.some((label) => label === needle.value || (needle.value.length >= 3 && label.startsWith(needle.value)))
+  return queryTokens.value.every(
+    (token) =>
+      nameLower.includes(token) ||
+      (dialerLower.length > 0 && dialerLower.includes(token)) ||
+      labels.some((label) => label === token || (token.length >= 3 && label.startsWith(token))),
+  )
 }
 
 /** Full protocol and tag list for the tooltip; rows may clip the tail. */
@@ -248,14 +259,18 @@ const groups = computed(() => {
   return source
     .filter((group) => !autoHidden(group))
     .map((group): ViewGroup => {
-      let nodes = sorted(needle.value ? group.nodes.filter(matches) : group.nodes)
+      let nodes = needle.value ? group.nodes.filter(matches) : group.nodes
+      if (hideFailed.value) {
+        nodes = nodes.filter((node) => node.selected || !nodeState(node).failed)
+      }
+      nodes = sorted(nodes)
       // Quota/expiry pseudo-nodes leave the grid unless selected or searched for (R11).
       const info = needle.value ? [] : nodes.filter((node) => !node.selected && isInfoNode(node.name))
       if (info.length) nodes = nodes.filter((node) => !info.includes(node))
       if (nodes === group.nodes) return group
       return info.length ? { ...group, nodes, info } : { ...group, nodes }
     })
-    .filter((group) => !needle.value || group.nodes.length > 0 || group.name.toLowerCase().includes(needle.value))
+    .filter((group) => !needle.value || group.nodes.length > 0 || matchesTokens(group.name, queryTokens.value))
 })
 
 const matchCount = computed(() =>
@@ -321,6 +336,24 @@ function groupTestedAt(group: NodeGroup): number | null {
 
 const groupNamesSet = computed(() => new Set(catalog.value.map((group) => group.name)))
 
+const failedNodeCount = computed(() => {
+  const seen = new Set<string>()
+  let count = 0
+  for (const group of catalog.value) {
+    if (autoHidden(group)) continue
+    for (const node of group.nodes) {
+      if (groupNamesSet.value.has(node.name) || seen.has(node.name)) continue
+      seen.add(node.name)
+      if (nodeState(node).failed) count += 1
+    }
+  }
+  return count
+})
+
+watch(failedNodeCount, (count) => {
+  if (count === 0) hideFailed.value = false
+})
+
 function groupHealthText(group: NodeGroup): string {
   let tested = 0
   let ok = 0
@@ -338,26 +371,12 @@ function groupHealthText(group: NodeGroup): string {
   return `可用 ${ok}/${tested}`
 }
 
-interface HighlightPart {
-  text: string
-  hit: boolean
+function highlight(name: string) {
+  return highlightTokens(name, query.value)
 }
 
-function highlight(name: string): HighlightPart[] {
-  const text = needle.value
-  if (!text) return [{ text: name, hit: false }]
-  const lower = name.toLowerCase()
-  const parts: HighlightPart[] = []
-  let index = 0
-  let found = lower.indexOf(text)
-  while (found >= 0) {
-    if (found > index) parts.push({ text: name.slice(index, found), hit: false })
-    parts.push({ text: name.slice(found, found + text.length), hit: true })
-    index = found + text.length
-    found = lower.indexOf(text, index)
-  }
-  if (index < name.length) parts.push({ text: name.slice(index), hit: false })
-  return parts.length ? parts : [{ text: name, hit: false }]
+function copyNodeName(node: NodeItem) {
+  void store.copyText(node.name, `已复制节点名称：${node.name}`)
 }
 
 function pick(group: NodeGroup, node: NodeItem) {
@@ -522,7 +541,7 @@ onBeforeUnmount(() => {
 const denseLabel = '双列视图'
 const denseIcon = 'grid'
 
-const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card')
+const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card' || hideFailed.value)
 </script>
 
 <template>
@@ -645,6 +664,17 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       <span v-if="needle && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite">
         匹配 {{ matchCount }} 个节点
       </span>
+      <button
+        v-if="failedNodeCount > 0"
+        type="button"
+        class="chip-btn hide-failed-chip"
+        :class="{ active: hideFailed }"
+        :aria-pressed="hideFailed"
+        data-testid="hide-failed-nodes"
+        @click="hideFailed = !hideFailed"
+      >
+        隐藏超时 {{ failedNodeCount }}
+      </button>
       <div v-if="showOptions" id="proxy-options" class="toolbar-options">
         <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
         <!-- Every view control carries a short text label; phones lay them out as equal chips (R3, R12). Auto groups need no toggle (R13). -->
@@ -724,7 +754,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
     </div>
     <div v-else-if="!groups.length" class="empty small" data-testid="no-match">
       <h3>没有匹配的节点</h3>
-      <button type="button" class="btn ghost" @click="query = ''">清空搜索</button>
+      <button type="button" class="btn ghost" @click="query = ''; hideFailed = false">清空搜索</button>
     </div>
 
     <section
@@ -813,6 +843,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               'failed-node': nodeState(node).failed,
             }"
             :data-node="node.name"
+            @contextmenu.prevent="copyNodeName(node)"
           >
             <button
               type="button"

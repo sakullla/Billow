@@ -11,6 +11,7 @@ import {
   type OverviewSource,
   type OverviewTarget,
 } from '../lib/configOverview'
+import { highlightTokens } from '../lib/search'
 import { rememberConfigTab, useStore, type ConfigViewTab } from '../lib/store'
 import type { ConfigOverview } from '../lib/types'
 
@@ -168,10 +169,14 @@ const yamlLines = computed(() => (yamlText.value ? yamlText.value.split('\n').le
                 :data-source="row.source"
                 @click="row.to && follow(row.to)"
               >
-                <dt :title="row.path">{{ row.label }}</dt>
+                <dt :title="row.path">
+                  <template v-for="(part, idx) in highlightTokens(row.label, query)" :key="idx">
+                    <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                  </template>
+                </dt>
                 <dd>
                   <span class="cfg-value" :class="{ muted: row.source === 'default' }" :title="row.title">
-                    <template v-if="row.source === 'default'">默认 · </template>{{ row.value }}
+                    <template v-if="row.source === 'default'">默认 · </template><template v-for="(part, idx) in highlightTokens(row.value, query)" :key="idx"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template>
                   </span>
                   <span v-if="row.source === 'billow'" class="tag accent sm" :title="sourceTitle(row)">Billow</span>
                   <span v-else-if="row.source === 'override'" class="tag sm" :title="sourceTitle(row)">覆写</span>
