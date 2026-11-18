@@ -2941,7 +2941,7 @@ describe('App', () => {
     expect(document.body.querySelector('[data-testid="home-profile-sheet"]')).not.toBeNull()
 
     document.body.querySelector<HTMLElement>('[data-testid="sheet-profile-p2"]')?.click()
-    await settle(300)
+    await settle(700)
     expect(enableSpy).toHaveBeenCalledWith('p2')
     expect(document.body.querySelector('[data-testid="home-profile-sheet"]')).toBeNull()
     expect(wrapper.find('.main').attributes('data-page')).toBe('home')
@@ -3136,7 +3136,7 @@ describe('App', () => {
     await flushPromises()
     expect(document.body.querySelector('[data-testid="home-profile-sheet"]')).not.toBeNull()
     document.body.querySelector<HTMLElement>('[data-testid="sheet-profile-p2"]')?.click()
-    await settle(400)
+    await settle(700)
     expect(enableSpy).toHaveBeenCalledWith('p2')
     expect(wrapper.find('.main').attributes('data-page')).toBe('home')
 

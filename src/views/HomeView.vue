@@ -85,22 +85,83 @@ function openProfileOverride(id: string) {
 }
 
 const profileSheetOpen = ref(false)
+const switchingProfileId = ref<string | null>(null)
+const sheetFailure = ref<{ id: string; reason: string } | null>(null)
 const welcomeDragging = ref(false)
 const orderedProfiles = computed(() =>
   [...snap.value.profiles].sort((a, b) => Number(b.current) - Number(a.current)),
 )
 
-function switchFromSheet(target: ProfileItem) {
+function isEnablingProfile(id: string): boolean {
+  return switchingProfileId.value === id || Boolean(store.busy[`enable:${id}`])
+}
+
+const isSheetSwitching = computed(
+  () => switchingProfileId.value !== null || snap.value.profiles.some((item) => Boolean(store.busy[`enable:${item.id}`])),
+)
+
+function sheetFailureFor(id: string): string | null {
+  return sheetFailure.value?.id === id ? sheetFailure.value.reason : null
+}
+
+function openProfileSheet() {
+  sheetFailure.value = null
+  profileSheetOpen.value = true
+}
+
+function closeProfileSheet() {
+  if (isSheetSwitching.value) return
   profileSheetOpen.value = false
-  if (!target.current && !store.busy[`enable:${target.id}`]) {
-    void store.enable(target.id)
+}
+
+function sheetInitialFocus(): HTMLElement | null | undefined {
+  if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true) {
+    return undefined
+  }
+  const currentId = profile.value?.id ?? orderedProfiles.value[0]?.id
+  if (!currentId) return undefined
+  return document.querySelector<HTMLElement>(`[data-testid="sheet-profile-${CSS.escape(currentId)}"]`)
+}
+
+async function switchFromSheet(target: ProfileItem) {
+  if (isSheetSwitching.value) return
+  if (target.current) {
+    sheetFailure.value = null
+    profileSheetOpen.value = false
+    return
+  }
+  switchingProfileId.value = target.id
+  sheetFailure.value = null
+  try {
+    const result = await store.enable(target.id)
+    const after = result?.profiles.find((item) => item.id === target.id)
+    const succeeded = Boolean(
+      result && result.active_id === target.id && after?.current && !after.failure && !after.override_error,
+    )
+    if (succeeded) {
+      sheetFailure.value = null
+      profileSheetOpen.value = false
+      return
+    }
+    const reason =
+      after?.failure ||
+      after?.override_error ||
+      (result ? result.failure || result.notice || result.input_error : null) ||
+      store.lastRunError.value ||
+      '配置未能启用'
+    sheetFailure.value = { id: target.id, reason }
+  } finally {
+    switchingProfileId.value = null
   }
 }
+
 function addFromSheet() {
+  if (isSheetSwitching.value) return
   profileSheetOpen.value = false
   store.adding.value = true
 }
 function manageFromSheet() {
+  if (isSheetSwitching.value) return
   profileSheetOpen.value = false
   store.go('profiles')
 }
@@ -161,7 +222,7 @@ const takeoverSummary = computed(() => {
   const on: string[] = []
   if (snap.value.system_proxy) on.push('系统代理')
   if (snap.value.tun) on.push('TUN')
-  return on.length ? `${on.join(' · ')} 已开启` : '未接管任何流量'
+  return on.length ? `${on.join(' · ')} 已开启` : '未接管系统流量'
 })
 
 const takeoverOn = computed(() => (store.isAndroid.value ? snap.value.vpn : snap.value.system_proxy || snap.value.tun))
@@ -188,9 +249,12 @@ const tunSubtitle = computed(() => {
 const heroEyebrow = computed(() => {
   if (store.connecting.value) return '请稍候'
   if (!snap.value.kernel_running) return '代理未运行'
+  if (store.isAndroid.value) {
+    return snap.value.vpn ? 'VPN 已接管设备流量' : 'VPN 未开启 · 未接管设备流量'
+  }
   if (takeoverOn.value) return takeoverSummary.value
   const port = snap.value.mixed_port
-  return port ? `未接管系统流量 · 仅端口 ${port} 可用` : '未接管系统流量'
+  return port ? `内核运行中 · 未接管系统流量 · 仅端口 ${port} 可用` : '内核运行中 · 未接管系统流量'
 })
 
 function uptimeText(seconds: number): string {
@@ -297,7 +361,9 @@ function onPrimary() {
       <section class="card hero" :class="[status.tone, { bare: snap.kernel_running && !takeoverOn }]" data-testid="home-status">
         <div class="hero-topbar">
           <span class="hero-status-pill">
-            <span class="hero-dot" aria-hidden="true" />
+            <Icon v-if="snap.kernel_running && !takeoverOn && !store.connecting.value" name="alert" :size="13" aria-hidden="true" />
+            <Icon v-else-if="takeoverOn && !store.connecting.value" name="check" :size="13" aria-hidden="true" />
+            <span v-else class="hero-dot" aria-hidden="true" />
             <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
           </span>
           <div class="hero-pills-right">
@@ -317,8 +383,9 @@ function onPrimary() {
               type="button"
               class="hero-profile-pill"
               data-testid="mobile-profile-trigger"
-              title="快速切换配置"
-              @click="profileSheetOpen = true"
+              :aria-label="`当前配置：${profile.name}，点击切换配置`"
+              :title="`当前配置：${profile.name}（点击切换配置）`"
+              @click="openProfileSheet"
             >
               <Icon :name="profile.kind === 'local' ? 'file' : 'link'" :size="13" />
               <span class="hero-profile ellipsis">{{ profile.name }}</span>
@@ -450,10 +517,13 @@ function onPrimary() {
               <header class="control-head">
                 <h2>流量接管</h2>
                 <p
-                  class="mode-hint"
+                  class="mode-hint takeover-hint-text"
                   :class="{ 'text-warn': snap.kernel_running && !takeoverOn }"
                   data-testid="takeover-hint"
-                >{{ takeoverSummary }}</p>
+                >
+                  <Icon v-if="snap.kernel_running && !takeoverOn" name="alert" :size="13" aria-hidden="true" />
+                  <span>{{ takeoverSummary }}</span>
+                </p>
               </header>
               <div class="takeover-grid">
                 <div
@@ -680,36 +750,88 @@ function onPrimary() {
       </div>
     </div>
 
-    <Modal v-if="profileSheetOpen" title="切换配置" subtitle="点击立即启用，无需离开首页" @close="profileSheetOpen = false">
-      <div class="option-list" data-testid="home-profile-sheet">
-        <button
+    <Modal
+      v-if="profileSheetOpen"
+      title="切换配置"
+      subtitle="选择后立即启用，无需离开首页"
+      :before-close="() => !isSheetSwitching"
+      :initial-focus="sheetInitialFocus"
+      @close="closeProfileSheet"
+    >
+      <div class="option-list profile-sheet-list" data-testid="home-profile-sheet">
+        <div
           v-for="item in orderedProfiles"
           :key="item.id"
-          type="button"
-          class="option-row profile-sheet-row"
-          :class="{ active: item.current }"
-          :data-testid="`sheet-profile-${item.id}`"
-          @click="switchFromSheet(item)"
+          class="profile-sheet-item"
+          :class="{
+            active: item.current,
+            enabling: isEnablingProfile(item.id),
+            failed: sheetFailureFor(item.id) !== null,
+          }"
+          :data-testid="`sheet-item-${item.id}`"
         >
-          <span class="sub-icon sm"><Icon :name="item.kind === 'local' ? 'file' : 'link'" :size="16" /></span>
-          <span class="profile-sheet-body">
-            <span class="option-label">{{ item.name }}</span>
-            <span class="muted small">
-              {{ item.proxy_count ? `${item.proxy_count} 个节点` : item.kind === 'local' ? '本地配置' : '远程订阅' }}
-              <template v-if="usagePercent(item.used, item.total) != null">
-                · 已用 {{ Math.round(usagePercent(item.used, item.total)!) }}%
-              </template>
-              <span v-if="item.expire && daysLeft(item.expire) < 0" class="text-error">· 已过期</span>
-              <span v-else-if="item.expire && daysLeft(item.expire) <= 7" class="text-warn">· 剩 {{ daysLeft(item.expire) }} 天</span>
-              <span v-else-if="item.failure || item.override_error" class="text-error">· 有异常</span>
+          <button
+            type="button"
+            class="option-row profile-sheet-row"
+            :class="{ active: item.current, enabling: isEnablingProfile(item.id) }"
+            :aria-current="item.current ? 'true' : undefined"
+            :aria-busy="isEnablingProfile(item.id) || undefined"
+            :aria-disabled="isSheetSwitching || undefined"
+            :aria-describedby="sheetFailureFor(item.id) ? `sheet-error-${item.id}` : undefined"
+            :data-testid="`sheet-profile-${item.id}`"
+            @click="switchFromSheet(item)"
+          >
+            <span class="sub-icon sm"><Icon :name="item.kind === 'local' ? 'file' : 'link'" :size="16" /></span>
+            <span class="profile-sheet-body">
+              <span class="profile-sheet-title-row">
+                <span class="option-label profile-sheet-name" :title="item.name">{{ item.name }}</span>
+                <span v-if="item.current" class="tag accent sm" data-testid="sheet-current-tag">使用中</span>
+              </span>
+              <span class="muted small">
+                {{ item.proxy_count ? `${item.proxy_count} 个节点` : item.kind === 'local' ? '本地配置' : '远程订阅' }}
+                <template v-if="usagePercent(item.used, item.total) != null">
+                  · 已用 {{ Math.round(usagePercent(item.used, item.total)!) }}%
+                </template>
+                <span v-if="item.expire && daysLeft(item.expire) < 0" class="text-error">· 已过期</span>
+                <span v-else-if="item.expire && daysLeft(item.expire) <= 7" class="text-warn">· 剩 {{ daysLeft(item.expire) }} 天</span>
+                <span v-else-if="item.failure || item.override_error" class="text-error">· 有异常</span>
+              </span>
             </span>
-          </span>
-          <Icon v-if="item.current" name="check" :size="18" class="option-check" />
-        </button>
+            <span
+              v-if="isEnablingProfile(item.id)"
+              class="profile-sheet-state pending"
+              role="status"
+              data-testid="sheet-enabling"
+            >
+              <span class="spinner xs" aria-hidden="true" />
+              <span>正在启用</span>
+            </span>
+            <Icon v-else-if="item.current" name="check" :size="18" class="option-check" aria-hidden="true" />
+          </button>
+          <div
+            v-if="sheetFailureFor(item.id)"
+            :id="`sheet-error-${item.id}`"
+            class="profile-sheet-error field-error small"
+            role="alert"
+            :data-testid="`sheet-error-${item.id}`"
+          >
+            <Icon name="alert" :size="14" />
+            <span class="grow">{{ sheetFailureFor(item.id) }}</span>
+            <button
+              type="button"
+              class="btn ghost sm"
+              :disabled="isSheetSwitching"
+              :data-testid="`sheet-retry-${item.id}`"
+              @click="switchFromSheet(item)"
+            >
+              重试
+            </button>
+          </div>
+        </div>
       </div>
       <template #footer>
-        <button type="button" class="btn ghost" @click="manageFromSheet">管理配置</button>
-        <button type="button" class="btn primary" @click="addFromSheet"><Icon name="plus" :size="15" />添加新配置</button>
+        <button type="button" class="btn ghost" :disabled="isSheetSwitching" @click="manageFromSheet">管理配置</button>
+        <button type="button" class="btn primary" :disabled="isSheetSwitching" @click="addFromSheet"><Icon name="plus" :size="15" />添加新配置</button>
       </template>
     </Modal>
   </div>

@@ -2125,7 +2125,7 @@ button.delay:hover:not(:disabled) {
   background-image: var(--hero-stage-on);
   border-color: color-mix(in srgb, var(--good) 32%, var(--border));
 }
-.hero.on.bare,
+.hero.bare,
 .hero.pending {
   background-image: var(--hero-stage-bare);
   border-color: color-mix(in srgb, var(--fair) 34%, var(--border));
@@ -2133,6 +2133,7 @@ button.delay:hover:not(:disabled) {
 
 .hero-topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
@@ -2143,7 +2144,7 @@ button.delay:hover:not(:disabled) {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 54%;
+  max-width: 100%;
 }
 
 .hero-status-pill {
@@ -2151,7 +2152,7 @@ button.delay:hover:not(:disabled) {
   align-items: center;
   gap: 7px;
   min-height: 28px;
-  max-width: 58%;
+  max-width: 100%;
   min-width: 0;
   padding: 0 11px;
   border-radius: var(--radius-pill);
@@ -2182,13 +2183,13 @@ button.delay:hover:not(:disabled) {
   background: var(--good);
   box-shadow: 0 0 0 3px var(--good-soft);
 }
-.hero.on.bare .hero-status-pill,
+.hero.bare .hero-status-pill,
 .hero.pending .hero-status-pill {
   background: var(--fair-soft);
   border-color: color-mix(in srgb, var(--fair) 28%, transparent);
   color: var(--fair-ink);
 }
-.hero.on.bare .hero-dot,
+.hero.bare .hero-dot,
 .hero.pending .hero-dot {
   background: var(--fair);
   box-shadow: 0 0 0 3px var(--fair-soft);
@@ -7421,5 +7422,224 @@ details.cfg-section[open] .cfg-fold-icon {
 }
 .compact .page.logs .head-actions .btn.sm {
   padding: 0 9px;
+}
+
+/* ───────────── Daily Workflows Polish (docs/requirements/2026-11-18-ui-ux-daily-workflows.md) ───────────── */
+
+/* R1 & R5: Home profile switcher sheet states, long names, and aligned failure/retry */
+.profile-sheet-list {
+  gap: 6px;
+}
+.profile-sheet-item {
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.profile-sheet-item.failed {
+  border-color: color-mix(in srgb, var(--poor) 35%, var(--border));
+  background: color-mix(in srgb, var(--poor-soft) 35%, var(--surface));
+}
+.profile-sheet-item.enabling {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+}
+.profile-sheet-row {
+  width: 100%;
+}
+.profile-sheet-row[aria-disabled='true']:not(.enabling) {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+.profile-sheet-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.profile-sheet-title-row .tag.sm {
+  margin-left: 0;
+}
+.profile-sheet-name {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.profile-sheet-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+.profile-sheet-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px var(--space-3) 10px 44px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.profile-sheet-error .icon {
+  flex: none;
+}
+.compact .profile-sheet-error {
+  padding-left: var(--space-3);
+}
+.compact .profile-sheet-error .btn.sm {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.takeover-hint-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.compact .hero-status-pill [data-testid='hero-eyebrow'] {
+  white-space: normal;
+  line-height: 1.35;
+  padding: 3px 0;
+}
+
+/* R2, R3 & R5: Field-level errors, partial-save indicators, and mixed-port inline validation */
+.tag {
+  gap: 3px;
+}
+.tag.danger {
+  background: var(--poor-soft);
+  color: var(--poor-ink);
+}
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+.field-label-row .tag.sm {
+  margin-left: 0;
+}
+.field input[aria-invalid='true'],
+.input[aria-invalid='true'],
+.age-input[aria-invalid='true'],
+.quick-import input[aria-invalid='true'] {
+  border-color: var(--poor);
+}
+.field input[aria-invalid='true']:focus,
+.input[aria-invalid='true']:focus,
+.age-input[aria-invalid='true']:focus,
+.quick-import input[aria-invalid='true']:focus {
+  border-color: var(--poor);
+  box-shadow: 0 0 0 3px var(--poor-soft);
+}
+.field-error {
+  align-items: flex-start;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.field-error > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.edit-save-summary {
+  align-items: flex-start;
+}
+.edit-save-summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.45;
+}
+.port-field-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+.port-field-wrap .field-error {
+  max-width: 280px;
+  text-align: right;
+  justify-content: flex-end;
+}
+.compact .port-setting-row {
+  align-items: stretch;
+}
+.compact .port-field-wrap {
+  width: 100%;
+  align-items: stretch;
+}
+.compact .port-field-wrap .inline-field {
+  width: 100%;
+}
+.compact .port-field-wrap .inline-field .input {
+  flex: 1;
+  width: auto;
+}
+.compact .port-field-wrap .inline-field .btn.sm {
+  min-height: 36px;
+}
+.compact .port-field-wrap .field-error {
+  max-width: none;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+/* R4 & R5: Contextual return bar, keyboard focus rings, and soft-keyboard modal scroll */
+.context-return-bar {
+  padding: var(--space-3) var(--space-6) 0;
+}
+.context-return-bar + .page {
+  padding-top: var(--space-2);
+}
+.back-btn:hover {
+  background: var(--hover);
+}
+.conn-table tbody tr:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+.form-fold > summary:focus-visible,
+.settings-fold > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+.modal-head,
+.modal-foot {
+  flex: none;
+}
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+@media (max-width: 560px) {
+  html[data-keyboard] .modal,
+  html[data-keyboard] .modal.wide {
+    max-height: calc(100dvh - var(--safe-top) - var(--space-1));
+    padding-bottom: 0;
+  }
+  html[data-keyboard] .modal-head {
+    padding-top: var(--space-1);
+    padding-bottom: 6px;
+  }
+  html[data-keyboard] .modal-foot {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
 }
 

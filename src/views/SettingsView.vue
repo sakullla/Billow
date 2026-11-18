@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
@@ -96,13 +96,15 @@ function commitSubscriptionUa() {
 
 const port = ref('')
 const portFocused = ref(false)
+const portError = ref<string | null>(null)
+const portInputEl = ref<HTMLInputElement | null>(null)
 let lastSyncedPort: number | null | undefined = undefined
 watch(
   () => snap.value.settings.mixed_port,
   (mixedPort) => {
     if (mixedPort === lastSyncedPort) return
     lastSyncedPort = mixedPort
-    if (!portFocused.value) {
+    if (!portFocused.value && !portError.value) {
       port.value = mixedPort ? String(mixedPort) : ''
     }
   },
@@ -134,6 +136,9 @@ const savedPortText = computed(() => {
   return mixed ? String(mixed) : ''
 })
 const portDirty = computed(() => port.value.trim() !== savedPortText.value)
+const effectiveMixedPort = computed(
+  () => snap.value.mixed_port ?? snap.value.settings.mixed_port ?? snap.value.config_values.mixed_port ?? 7890,
+)
 
 const probeDirty = computed(() => {
   const base = currentSettings.value
@@ -250,24 +255,59 @@ function effective(key: Flag): boolean {
 function save(patch: Partial<KernelSettings>) {
   const next: KernelSettings = { ...currentSettings.value, ...patch }
   pendingSettings.value = next
-  void store.saveSettings(next).finally(() => {
+  return store.saveSettings(next).finally(() => {
     if (pendingSettings.value === next) pendingSettings.value = null
   })
 }
 
-function commitPort(silentInvalid = false) {
+const PORT_RANGE_ERROR = '混合端口必须是 1–65535 之间的整数'
+
+function validateMixedPort(raw: string): { valid: true; value: number | null } | { valid: false; message: string } {
+  const text = raw.trim()
+  if (!text) return { valid: true, value: null }
+  if (!/^\d+$/.test(text)) return { valid: false, message: PORT_RANGE_ERROR }
+  const num = Number(text)
+  if (!Number.isSafeInteger(num) || num < 1 || num > 65535) {
+    return { valid: false, message: PORT_RANGE_ERROR }
+  }
+  return { valid: true, value: num }
+}
+
+function onPortInput() {
+  if (portError.value && port.value.trim() === savedPortText.value) {
+    portError.value = null
+  }
+}
+
+async function commitPort(silentInvalid = false, focusOnInvalid = false) {
   const base = currentSettings.value
-  const text = port.value.trim()
-  const value = text ? Number(text) : null
-  if (value != null && (!Number.isInteger(value) || value < 1 || value > 65535)) {
+  const checked = validateMixedPort(port.value)
+  if (!checked.valid) {
     if (!silentInvalid) {
-      store.toast('端口需要是 1–65535 之间的整数', 'error')
-      port.value = base.mixed_port ? String(base.mixed_port) : ''
+      portError.value = checked.message
+      if (focusOnInvalid) {
+        await nextTick()
+        portInputEl.value?.scrollIntoView?.({ block: 'nearest' })
+        portInputEl.value?.focus({ preventScroll: true })
+      }
     }
     return
   }
+  portError.value = null
+  const value = checked.value
+  if (value === base.mixed_port) {
+    port.value = value ? String(value) : ''
+    return
+  }
+  const previousPort = base.mixed_port
   lastSyncedPort = value
-  if (value !== base.mixed_port) save({ mixed_port: value })
+  const result = await save({ mixed_port: value })
+  if (!result) {
+    lastSyncedPort = previousPort
+    portError.value = store.lastRunError.value ?? '混合端口未能保存'
+    return
+  }
+  port.value = value ? String(value) : ''
 }
 
 function commitProbe(silentInvalid = false) {
@@ -285,11 +325,15 @@ function commitProbe(silentInvalid = false) {
   const ms = Number.isFinite(parsed) ? parsed : 0
   lastSyncedProbe = `${trimmedUrl}\n${ms}`
   if (trimmedUrl === base.test_url && ms === base.test_timeout_ms) return
-  save({ test_url: trimmedUrl, test_timeout_ms: ms })
+  void save({ test_url: trimmedUrl, test_timeout_ms: ms })
 }
 
 function flushKernelInputs() {
-  if (portDirty.value) commitPort(true)
+  if (portDirty.value) void commitPort(true)
+  if (portError.value) {
+    portError.value = null
+    port.value = snap.value.settings.mixed_port ? String(snap.value.settings.mixed_port) : ''
+  }
   if (probeDirty.value) commitProbe(true)
 }
 
@@ -306,6 +350,7 @@ onBeforeUnmount(() => {
 
 function reset() {
   portFocused.value = false
+  portError.value = null
   testUrlFocused.value = false
   timeoutFocused.value = false
   port.value = ''
@@ -313,7 +358,7 @@ function reset() {
   timeout.value = ''
   lastSyncedPort = null
   lastSyncedProbe = '\n0'
-  save({
+  void save({
     sniffer: null,
     keep_alive_interval: null,
     lan_auth: [],
@@ -1352,34 +1397,52 @@ const TABS = computed(() => [
           <button v-if="overridden" type="button" class="btn ghost sm" @click="reset">全部跟随配置</button>
         </header>
         <p class="muted small card-note">这些设置覆盖每份配置中的同名项；留空或选择“跟随配置”则使用配置文件的值。修改后运行中的内核会自动重启。</p>
-        <div class="setting-row">
+        <div class="setting-row wrap port-setting-row" :class="{ 'has-error': Boolean(portError) }">
           <div class="grow">
             <strong>混合代理端口<span v-if="snap.settings.mixed_port" class="tag accent sm">已覆盖</span></strong>
-            <p class="muted small">HTTP 与 SOCKS5 共用，系统代理指向它</p>
+            <p class="muted small" data-testid="mixed-port-effective">
+              HTTP 与 SOCKS5 共用，系统代理指向它 · 当前生效 {{ effectiveMixedPort }}
+            </p>
           </div>
-          <div class="inline-field">
-            <input
-              v-model="port"
-              class="input sm mono"
-              inputmode="numeric"
-              :placeholder="String(snap.config_values.mixed_port ?? 7890)"
-              aria-label="混合代理端口"
-              data-testid="mixed-port-input"
-              @focus="portFocused = true"
-              @blur="portFocused = false; commitPort()"
-              @keydown.enter="($event.target as HTMLInputElement).blur()"
-            />
-            <button
-              v-if="portDirty"
-              type="button"
-              class="btn primary sm"
-              :disabled="store.busy.settings"
-              data-testid="save-port"
-              @mousedown.prevent
-              @click="commitPort()"
+          <div class="port-field-wrap">
+            <div class="inline-field">
+              <input
+                ref="portInputEl"
+                v-model="port"
+                class="input sm mono"
+                inputmode="numeric"
+                :placeholder="String(snap.config_values.mixed_port ?? 7890)"
+                aria-label="混合代理端口"
+                :aria-invalid="portError ? 'true' : undefined"
+                :aria-describedby="portError ? 'mixed-port-error' : undefined"
+                data-testid="mixed-port-input"
+                @focus="portFocused = true"
+                @input="onPortInput"
+                @blur="portFocused = false; commitPort()"
+                @keydown.enter.prevent="commitPort(false, true)"
+              />
+              <button
+                v-if="portDirty || portError"
+                type="button"
+                class="btn primary sm"
+                :disabled="store.busy.settings"
+                data-testid="save-port"
+                @mousedown.prevent
+                @click="commitPort(false, true)"
+              >
+                保存
+              </button>
+            </div>
+            <p
+              v-if="portError"
+              id="mixed-port-error"
+              class="field-error small"
+              role="alert"
+              data-testid="mixed-port-error"
             >
-              保存
-            </button>
+              <Icon name="alert" :size="13" />
+              <span>{{ portError }}</span>
+            </p>
           </div>
         </div>
         <template v-for="flag in FLAGS" :key="flag.key">

@@ -121,10 +121,12 @@ const selectedAt = ref(Date.now())
 const detailFromClosed = ref(false)
 const rulePolicy = ref('DIRECT')
 const confirmAll = ref(false)
+const returnNotice = ref<string | null>(null)
+let restoringContext = false
 const rates = shallowRef(new Map<string, { up: number; down: number }>())
 let previous = new Map<string, { upload: number; download: number; at: number }>()
 
-const idOf = (row: ConnectionRow) => row.id || `${row.host}|${row.source}`
+const idOf = (row: ConnectionRow) => row.id || `${row.host}|${row.source}|${row.start}`
 const closedRows = computed(() => store.closedConnections.value)
 
 const groupNames = computed(() => new Set(snap.value.node_catalog.map((group) => group.name)))
@@ -305,11 +307,151 @@ const cards = useVirtualList(computed(() => rows.value.length), CARD_ROW, 4)
 const tableRows = computed(() => rows.value.slice(table.window.value.start, table.window.value.end))
 const cardRows = computed(() => rows.value.slice(cards.window.value.start, cards.window.value.end))
 
-onMounted(() => {
-  void nextTick(() => {
+function coarsePointer(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true
+}
+
+function saveReturnContext(targetPage: 'proxies' | 'resources', includeDetail = true) {
+  const listEl = props.compact ? cardScroll.value : tableScroll.value
+  const fallbackScroll = props.compact ? cards.scrollTop.value : table.scrollTop.value
+  store.connectionReturn.value = {
+    sessionId: store.connectionSessionId.value,
+    targetPage,
+    tab: tab.value,
+    query: query.value,
+    routeFilter: routeFilter.value,
+    sortKey: sortKey.value,
+    sortDir: sortDir.value,
+    listScrollTop: listEl ? listEl.scrollTop : fallbackScroll,
+    paused: paused.value,
+    pausedAt: pausedAt.value,
+    frozenRows: [...frozenRows.value],
+    frozenIds: [...frozenIds.value],
+    frozenTotal: frozenTotal.value,
+    frozenUp: frozenUp.value,
+    frozenDown: frozenDown.value,
+    connectionKey: includeDetail ? selecting.value : null,
+    detailFromClosed: includeDetail ? detailFromClosed.value : false,
+    rulePolicy: rulePolicy.value,
+  }
+}
+
+async function restoreReturnContext() {
+  const saved = store.connectionReturn.value
+  if (!saved) {
     table.measure(tableScroll.value)
     cards.measure(cardScroll.value)
-  })
+    return
+  }
+  store.connectionReturn.value = null
+
+  // Disconnected session: keep the current disconnected empty state and never reopen stale details (R4).
+  if (!snap.value.connected) {
+    return
+  }
+
+  // Reconnected new session: restore filter/sort context, explain unavailability, never match by host (R4).
+  if (saved.sessionId !== store.connectionSessionId.value) {
+    restoringContext = true
+    tab.value = 'active'
+    query.value = saved.query
+    routeFilter.value = saved.routeFilter
+    sortKey.value = saved.sortKey
+    sortDir.value = saved.sortDir
+    await nextTick()
+    restoringContext = false
+    table.measure(tableScroll.value)
+    cards.measure(cardScroll.value)
+    if (saved.connectionKey !== null) {
+      returnNotice.value = '连接会话已重新建立，原连接记录已不可用'
+    }
+    if (!coarsePointer() && document.activeElement === document.body) {
+      await nextTick()
+      const target =
+        document.querySelector<HTMLElement>('[data-testid="dismiss-return-notice"]') ??
+        document.querySelector<HTMLElement>('[data-testid="connection-search"]')
+      target?.focus({ preventScroll: true })
+    }
+    return
+  }
+
+  restoringContext = true
+  tab.value = saved.tab
+  query.value = saved.query
+  routeFilter.value = saved.routeFilter
+  sortKey.value = saved.sortKey
+  sortDir.value = saved.sortDir
+  rulePolicy.value = saved.rulePolicy
+  if (saved.paused) {
+    paused.value = true
+    pausedAt.value = saved.pausedAt
+    frozenRows.value = saved.frozenRows
+    frozenIds.value = new Set(saved.frozenIds)
+    frozenTotal.value = saved.frozenTotal
+    frozenUp.value = saved.frozenUp
+    frozenDown.value = saved.frozenDown
+  }
+  table.scrollTop.value = saved.listScrollTop
+  cards.scrollTop.value = saved.listScrollTop
+
+  await nextTick()
+  restoringContext = false
+
+  const scroller = props.compact ? cardScroll.value : tableScroll.value
+  if (scroller) {
+    scroller.scrollTop = saved.listScrollTop
+  }
+  table.measure(tableScroll.value)
+  cards.measure(cardScroll.value)
+
+  if (saved.connectionKey !== null) {
+    const liveMatch = !saved.detailFromClosed
+      ? snap.value.connections.find((row) => idOf(row) === saved.connectionKey) ?? null
+      : null
+    if (liveMatch) {
+      openDetail(liveMatch)
+      if (rulePolicies.value.includes(saved.rulePolicy)) rulePolicy.value = saved.rulePolicy
+      return
+    }
+
+    const closedMatch = closedRows.value.find((row) => idOf(row) === saved.connectionKey) ?? null
+    if (closedMatch) {
+      detailFromClosed.value = saved.detailFromClosed
+      selecting.value = saved.connectionKey
+      selectedHost.value = closedMatch.host || closedMatch.destination
+      selectedLast.value = closedMatch
+      selectedAt.value = closedMatch.closed_at_ms
+      if (rulePolicies.value.includes(saved.rulePolicy)) rulePolicy.value = saved.rulePolicy
+      return
+    }
+
+    const frozenMatch = saved.paused
+      ? saved.frozenRows.find((row) => idOf(row) === saved.connectionKey) ?? null
+      : null
+    if (frozenMatch) {
+      detailFromClosed.value = false
+      selecting.value = saved.connectionKey
+      selectedHost.value = frozenMatch.host || frozenMatch.destination
+      selectedLast.value = frozenMatch
+      selectedAt.value = saved.pausedAt ?? Date.now()
+      if (rulePolicies.value.includes(saved.rulePolicy)) rulePolicy.value = saved.rulePolicy
+      return
+    }
+
+    returnNotice.value = '原连接已结束且记录已不可用，已恢复筛选列表'
+  }
+
+  if (!coarsePointer() && document.activeElement === document.body) {
+    await nextTick()
+    const target =
+      document.querySelector<HTMLElement>('[data-testid="dismiss-return-notice"]') ??
+      document.querySelector<HTMLElement>('[data-testid="connection-search"]')
+    target?.focus({ preventScroll: true })
+  }
+}
+
+onMounted(() => {
+  void nextTick(() => restoreReturnContext())
 })
 
 // Empty/error states unmount the list, so a remount must not reuse the old offset
@@ -317,6 +459,8 @@ onMounted(() => {
 watch(tableScroll, (el) => table.measure(el))
 watch(cardScroll, (el) => cards.measure(el))
 watch([query, routeFilter, sortKey, sortDir, tab], () => {
+  if (restoringContext) return
+  returnNotice.value = null
   table.reset(tableScroll.value)
   cards.reset(cardScroll.value)
 })
@@ -341,6 +485,8 @@ const showToolbar = computed(
     snap.value.connected &&
     (snap.value.connections.length > 0 ||
       closedRows.value.length > 0 ||
+      paused.value ||
+      Boolean(returnNotice.value) ||
       tab.value === 'closed' ||
       Boolean(query.value) ||
       routeFilter.value !== 'all'),
@@ -357,9 +503,24 @@ const detailClosedClock = computed(() => {
   if (closedMs) return formatClock(closedMs)
   return detailFromClosed.value ? formatClock(selectedAt.value) : ''
 })
+const detailDisconnectedText = computed(() => {
+  if (detailFromClosed.value) {
+    return detailClosedClock.value ? `已关闭 · 关闭于 ${detailClosedClock.value}` : '已关闭'
+  }
+  return detailClosedClock.value ? `已关闭 · 已断开 · 关闭于 ${detailClosedClock.value}` : '已关闭 · 已断开'
+})
 
 watch(detailRow, (row) => {
-  if (!row) return
+  if (!row) {
+    if (selecting.value !== null && !detailFromClosed.value) {
+      const closed = closedRows.value.find((item) => idOf(item) === selecting.value)
+      if (closed) {
+        selectedLast.value = closed
+        selectedAt.value = closed.closed_at_ms
+      }
+    }
+    return
+  }
   selectedLast.value = row
   selectedAt.value = Date.now()
 })
@@ -373,6 +534,7 @@ watch(
     if (connected) return
     tab.value = 'active'
     routeFilter.value = 'all'
+    returnNotice.value = null
     ctxMenu.value = null
     resume()
     frozenRows.value = []
@@ -421,7 +583,8 @@ function ruleSetOf(row: ConnectionRow): string | null {
 const detailRuleSet = computed(() => (detailSource.value ? ruleSetOf(detailSource.value) : null))
 
 function openConnectionRuleSet(name: string) {
-  closeDetail()
+  saveReturnContext('resources', true)
+  closeDetail(false)
   store.openProvider('rule', name)
 }
 
@@ -441,7 +604,8 @@ const detailIsFakeIp = computed(() => {
 })
 
 function openConnectionGroup(group: string) {
-  closeDetail()
+  saveReturnContext('proxies', true)
+  closeDetail(false)
   store.go('proxies', group)
 }
 
@@ -512,11 +676,22 @@ function openDetail(row: ConnectionRow & { closed_at_ms?: number }) {
   }
 }
 
-function closeDetail() {
+function closeDetail(restoreFocus = true) {
+  const closedKey = selecting.value
   selecting.value = null
   selectedHost.value = ''
   selectedLast.value = null
   detailFromClosed.value = false
+  if (restoreFocus && closedKey && !coarsePointer()) {
+    void nextTick(() => {
+      if (document.activeElement && document.activeElement !== document.body) return
+      const target =
+        document.querySelector<HTMLElement>(`[data-connection-id="${CSS.escape(closedKey)}"]`) ??
+        document.querySelector<HTMLElement>('[data-testid="connection-search"]') ??
+        document.querySelector<HTMLElement>('[data-testid="pause-connections"]')
+      target?.focus({ preventScroll: true })
+    })
+  }
 }
 
 async function copySummary() {
@@ -629,10 +804,16 @@ function onContextSelect(item: MenuItem) {
   else if (item.id === 'filter-process') filterBy(row.process)
   else if (item.id === 'open-group') {
     const entry = entryGroupOf(row)
-    if (entry) store.go('proxies', entry)
+    if (entry) {
+      saveReturnContext('proxies', false)
+      store.go('proxies', entry)
+    }
   } else if (item.id === 'open-ruleset') {
     const rset = ruleSetOf(row)
-    if (rset) store.openProvider('rule', rset)
+    if (rset) {
+      saveReturnContext('resources', false)
+      store.openProvider('rule', rset)
+    }
   } else if (item.id === 'copy-direct' && directRule) void copyRule(directRule.rule)
   else if (item.id === 'write-direct' && directRule) writeRuleToOverride(directRule.rule)
   else if (item.id === 'close') void closeOne(row)
@@ -795,6 +976,26 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </span>
       <button type="button" class="btn ghost sm" data-testid="resume-connections-bar" @click="resume()">
         <Icon name="play" :size="13" />继续刷新
+      </button>
+    </div>
+
+    <div
+      v-if="snap.connected && returnNotice"
+      class="banner info small"
+      role="status"
+      aria-live="polite"
+      data-testid="connection-return-notice"
+    >
+      <Icon name="info" :size="14" />
+      <span class="grow">{{ returnNotice }}</span>
+      <button
+        type="button"
+        class="icon-btn sm"
+        aria-label="关闭提示"
+        data-testid="dismiss-return-notice"
+        @click="returnNotice = null"
+      >
+        <Icon name="x" :size="14" />
       </button>
     </div>
 
@@ -1120,7 +1321,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </ul>
     </div>
 
-    <Modal v-if="selecting !== null" title="连接详情" :subtitle="selectedHost" @close="closeDetail">
+    <Modal v-if="selecting !== null" title="连接详情" :subtitle="selectedHost" @close="closeDetail()">
       <p
         v-if="detailGone"
         class="detail-status"
@@ -1129,7 +1330,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         data-testid="detail-disconnected"
       >
         <Icon :name="detailFromClosed ? 'clock' : 'x'" :size="14" />
-        <span>{{ detailClosedClock ? `已断开 · 关闭于 ${detailClosedClock}` : '已断开' }}</span>
+        <span>{{ detailDisconnectedText }}</span>
       </p>
 
       <dl v-if="detailStats.length" class="detail conn-detail-stats" data-testid="detail-stats">
@@ -1266,7 +1467,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </section>
 
       <template #footer>
-        <button type="button" class="btn ghost" @click="closeDetail">关闭</button>
+        <button type="button" class="btn ghost" @click="closeDetail()">关闭</button>
         <button type="button" class="btn ghost" data-testid="copy-connection" :disabled="!detailSource" @click="copySummary">
           <Icon name="copy" :size="15" />复制摘要
         </button>

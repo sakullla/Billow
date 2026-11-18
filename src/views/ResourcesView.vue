@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
@@ -24,6 +24,32 @@ import {
 defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
+const connectionBack = inject<(() => void) | null>('connectionBack', null)
+
+function closeProviderDetail() {
+  const closedName = detail.value?.row.name ?? null
+  detail.value = null
+  if (
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(pointer: coarse)').matches !== true
+  ) {
+    void nextTick(() => {
+      if (document.activeElement && document.activeElement !== document.body) return
+      const target =
+        document.querySelector<HTMLElement>('[data-testid="connection-return"]') ??
+        document.querySelector<HTMLElement>('[data-testid="page-back"]') ??
+        (closedName ? document.querySelector<HTMLElement>(`[data-testid="open-provider-${CSS.escape(closedName)}"]`) : null)
+      target?.focus({ preventScroll: true })
+    })
+  }
+}
+
+async function returnToConnection() {
+  detail.value = null
+  await nextTick()
+  if (connectionBack) connectionBack()
+  else store.go('connections')
+}
 
 type Action = 'update' | 'healthcheck'
 type RowState = 'pending' | 'error' | 'success'
@@ -941,7 +967,7 @@ onMounted(() => {
       :subtitle="detail.row.kind === 'proxy'
         ? `代理集 · ${detail.data ? detail.data.total : detail.row.count} 个节点`
         : `规则集 · ${(detail.data?.total || detail.row.count).toLocaleString()} 条规则${detail.row.behavior ? ` · ${detail.row.behavior}` : ''}${ruleFormat(detail.row) ? ` · ${ruleFormat(detail.row)}` : ''}`"
-      @close="detail = null"
+      @close="closeProviderDetail"
     >
       <div class="provider-detail" data-testid="provider-detail">
         <div v-if="detail.data?.source && detail.data.source !== 'inline'" class="detail-source-row">
@@ -1019,7 +1045,16 @@ onMounted(() => {
       </div>
       <!-- The sheet's work action is primary; closing is the quiet way out. -->
       <template #footer>
-        <button type="button" class="btn ghost" data-testid="close-provider-detail" @click="detail = null">关闭</button>
+        <button
+          v-if="store.connectionReturn.value"
+          type="button"
+          class="btn ghost"
+          data-testid="provider-return-connection"
+          @click="returnToConnection"
+        >
+          <Icon name="chevron-left" :size="15" />返回连接
+        </button>
+        <button type="button" class="btn ghost" data-testid="close-provider-detail" @click="closeProviderDetail">关闭</button>
         <button
           v-if="detail.row.kind === 'proxy'"
           type="button"

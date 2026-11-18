@@ -91,6 +91,28 @@ export interface ProfileRefreshProgress {
   failed: number
 }
 
+/** Saved ConnectionsView state when drilling into a proxy group or rule-set (R4). */
+export interface ConnectionReturnState {
+  sessionId: number
+  targetPage: 'proxies' | 'resources'
+  tab: 'active' | 'closed'
+  query: string
+  routeFilter: 'all' | 'proxy' | 'direct'
+  sortKey: 'time' | 'speed' | 'download' | 'upload' | 'host'
+  sortDir: 'asc' | 'desc'
+  listScrollTop: number
+  paused: boolean
+  pausedAt: number | null
+  frozenRows: ConnectionRow[]
+  frozenIds: string[]
+  frozenTotal: number
+  frozenUp: number | null
+  frozenDown: number | null
+  connectionKey: string | null
+  detailFromClosed: boolean
+  rulePolicy: string
+}
+
 const HISTORY = 60
 const MAX_CLOSED_CONNECTIONS = 200
 
@@ -109,6 +131,8 @@ export function createStore(backend: Backend) {
   const page = ref<PageId>('home')
   const focusGroup = ref<string | null>(null)
   const focusProvider = ref<{ kind: 'proxy' | 'rule'; name: string } | null>(null)
+  const connectionReturn = ref<ConnectionReturnState | null>(null)
+  const connectionSessionId = ref(0)
   const settingsTab = ref<SettingsTab>('general')
   /** Text another page asks the profiles page to append to a profile's 覆写 editor (unsaved). */
   const overrideRequest = ref<{ id: string; append: string } | null>(null)
@@ -338,6 +362,9 @@ export function createStore(backend: Backend) {
     const prevConfigValues = snapshot.value.config_values
     if (prevConfigValues !== next.config_values && JSON.stringify(prevConfigValues) === JSON.stringify(next.config_values)) {
       next = { ...next, config_values: prevConfigValues }
+    }
+    if (Boolean(next.connected) !== Boolean(snapshot.value.connected)) {
+      connectionSessionId.value += 1
     }
     if (!next.connected) {
       prevActiveConnections.clear()
@@ -784,6 +811,13 @@ export function createStore(backend: Backend) {
 
   function go(next: PageId, group?: string) {
     const changed = page.value !== next
+    if (
+      connectionReturn.value &&
+      next !== 'connections' &&
+      next !== connectionReturn.value.targetPage
+    ) {
+      connectionReturn.value = null
+    }
     page.value = next
     focusGroup.value = group ?? null
     // Native writes run off the UI thread. Serialize/coalesce them so rapid
@@ -878,6 +912,8 @@ export function createStore(backend: Backend) {
     focusGroup,
     focusProvider,
     openProvider,
+    connectionReturn,
+    connectionSessionId,
     settingsTab,
     overrideRequest,
     openSettings,
@@ -950,7 +986,22 @@ export function createStore(backend: Backend) {
     addLocal: (name: string, content: string) => act('add', () => backend.addLocal(name, content)),
     confirmInstall: () => act(null, () => backend.confirmInstall(), '已添加订阅'),
     cancelInstall: () => act(null, () => backend.cancelInstall()),
-    enable: (id: string) => act(`enable:${id}`, () => backend.enable(id), '已切换配置'),
+    async enable(id: string) {
+      const before = snapshot.value
+      lastRunError.value = null
+      const result = await run(`enable:${id}`, () => backend.enable(id))
+      if (!result) return undefined
+      const target = result.profiles.find((item) => item.id === id)
+      const switched = result.active_id === id && Boolean(target?.current) && !target?.failure && !target?.override_error
+      const changed = newFailure(before, result)
+      const targetError = !switched
+        ? (target?.failure || target?.override_error || changed || result.failure || '配置未能启用')
+        : null
+      if (changed || targetError) toast(changed ?? targetError!, 'error')
+      else toast('已切换配置', 'success')
+      if (backend.live) void backend.syncTray()
+      return result
+    },
     update: (id: string) => trackUpdate(id),
     updateAll,
     refreshAll: (ids?: readonly string[]) => updateAll(ids),

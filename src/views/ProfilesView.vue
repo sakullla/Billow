@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
@@ -148,9 +148,28 @@ function selectMenuItem(profile: ProfileItem, item: MenuItem) {
 }
 
 // Edit info
-const editing = ref<ProfileItem | null>(null)
+type EditFieldKey = 'name' | 'url' | 'interval' | 'age' | 'userAgent'
+const EDIT_FIELD_ORDER: readonly EditFieldKey[] = ['name', 'url', 'interval', 'age', 'userAgent']
+const EDIT_FIELD_LABELS: Record<EditFieldKey, string> = {
+  name: '名称',
+  url: '订阅链接',
+  interval: '自动更新',
+  age: 'age 私钥',
+  userAgent: 'User-Agent',
+}
+const AGE_KEY_FORMAT_ERROR = 'age 私钥格式不正确：每行一个以 AGE-SECRET-KEY-1 开头的私钥，# 开头的行视为注释'
+
+const editingId = ref<string | null>(null)
+const editingFallback = ref<ProfileItem | null>(null)
+const editing = computed<ProfileItem | null>(() => {
+  if (!editingId.value) return null
+  return snap.value.profiles.find((item) => item.id === editingId.value) ?? editingFallback.value
+})
 const inheritedUserAgent = computed(() => subscriptionUserAgent(store.kernel.value.version, snap.value.settings.subscription_user_agent))
 const form = ref({ name: '', url: '', userAgent: '', interval: 0 })
+const nameInput = ref<HTMLInputElement | null>(null)
+const urlInput = ref<HTMLInputElement | null>(null)
+const uaInput = ref<HTMLInputElement | null>(null)
 /**
  * age identities for encrypted subscriptions (age 私钥). The backend only returns
  * public keys, so the field starts empty: typing replaces the key, 「清除」 removes it,
@@ -164,6 +183,12 @@ const ageInput = ref<HTMLTextAreaElement | null>(null)
 const ageFocus = ref(false)
 /** age key and User-Agent are rarely touched; they fold away unless set or needed right now. */
 const advancedOpen = ref(false)
+const savingEdit = ref(false)
+const saveAttemptFailed = ref(false)
+const fieldErrors = reactive<Partial<Record<EditFieldKey, string>>>({})
+const savedFields = reactive<Partial<Record<EditFieldKey, boolean>>>({})
+const sessionAgeSecretSaved = ref(false)
+const initialNeedsAgeRefresh = ref(false)
 const AGE_FAILURE = /age/i
 
 /** Obvious paste mistakes are named before the backend's strict check. */
@@ -176,6 +201,53 @@ const ageHint = computed(() => {
   if (/-----BEGIN AGE ENCRYPTED FILE-----/.test(text)) return '这是加密后的内容，请填写解密用的私钥'
   return null
 })
+
+const ageErrorMessage = computed(() => fieldErrors.age ?? ageHint.value)
+
+function cleanProfileName(raw: string): string {
+  return raw.trim().replace(/[/\\\r\n]/g, '').slice(0, 80)
+}
+
+function validateSubscriptionUrl(raw: string): string | null {
+  const url = raw.trim()
+  if (!url) return '请填写订阅链接'
+  if (!/^https?:\/\//i.test(url) || /[\s\x00-\x1f\x7f]/.test(url)) {
+    return '请输入以 http:// 或 https:// 开头的有效订阅链接'
+  }
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '请输入以 http:// 或 https:// 开头的有效订阅链接'
+    }
+    const host = parsed.hostname
+    if (!host || (!host.includes('.') && host !== 'localhost' && !host.startsWith('['))) {
+      return '请输入有效的订阅链接域名或地址'
+    }
+    return null
+  } catch {
+    return '请输入以 http:// 或 https:// 开头的有效订阅链接'
+  }
+}
+
+function validateAgeInput(raw: string): string | null {
+  if (ageHint.value) return ageHint.value
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+  if (!lines.length) return null
+  if (lines.some((line) => !/^AGE-SECRET-KEY-1[0-9A-Z]{58}$/.test(line))) {
+    return AGE_KEY_FORMAT_ERROR
+  }
+  return null
+}
+
+function validateUserAgentInput(raw: string): string | null {
+  if (raw.length > 256 || /[^\x20-\x7e]/.test(raw)) {
+    return 'User-Agent 只能包含可打印的 ASCII 字符，长度不能超过 256，不能含换行'
+  }
+  return null
+}
 
 function shortKey(key: string): string {
   return key.length > 22 ? `${key.slice(0, 12)}…${key.slice(-8)}` : key
@@ -192,50 +264,235 @@ const INTERVALS = [
   { hours: 72, label: '每 3 天' },
   { hours: 168, label: '每周' },
 ]
+
+function clearEditTracking() {
+  for (const key of EDIT_FIELD_ORDER) {
+    delete fieldErrors[key]
+    delete savedFields[key]
+  }
+  saveAttemptFailed.value = false
+}
+
+function isFieldDirty(key: EditFieldKey, base: ProfileItem | null = editing.value): boolean {
+  if (!base) return false
+  if (key === 'name') return cleanProfileName(form.value.name) !== base.name
+  if (base.kind !== 'subscription') return false
+  if (key === 'url') return form.value.url.trim() !== base.source
+  if (key === 'interval') return form.value.interval !== base.interval_hours
+  if (key === 'age') return Boolean(ageKey.value.trim()) || (ageClear.value && base.age_recipients.length > 0)
+  if (key === 'userAgent') return form.value.userAgent.trim() !== base.user_agent
+  return false
+}
+
+function editFieldStatus(key: EditFieldKey): 'saved' | 'failed' | 'pending' | null {
+  if (!saveAttemptFailed.value) return null
+  if (fieldErrors[key]) return 'failed'
+  if (isFieldDirty(key)) return 'pending'
+  if (savedFields[key]) return 'saved'
+  return null
+}
+
+const partialSaveGroups = computed(() => {
+  if (!saveAttemptFailed.value) return { saved: [] as string[], failed: [] as string[], pending: [] as string[] }
+  const saved: string[] = []
+  const failed: string[] = []
+  const pending: string[] = []
+  for (const key of EDIT_FIELD_ORDER) {
+    const status = editFieldStatus(key)
+    const label = EDIT_FIELD_LABELS[key]
+    if (status === 'saved') saved.push(label)
+    else if (status === 'failed') failed.push(label)
+    else if (status === 'pending') pending.push(label)
+  }
+  return { saved, failed, pending }
+})
+
+function onEditFieldChange(key: EditFieldKey) {
+  delete fieldErrors[key]
+}
+
+async function focusEditField(key: EditFieldKey) {
+  if (key === 'age' || key === 'userAgent') {
+    advancedOpen.value = true
+    if (key === 'age' && !ageClear.value) ageEditing.value = true
+  }
+  await nextTick()
+  let target: HTMLElement | null = null
+  if (key === 'name') target = nameInput.value
+  else if (key === 'url') target = urlInput.value
+  else if (key === 'interval') {
+    target = document.querySelector<HTMLElement>('[data-testid="profile-interval-field"] button')
+  } else if (key === 'age') target = ageInput.value
+  else if (key === 'userAgent') target = uaInput.value
+  target?.scrollIntoView?.({ block: 'nearest' })
+  target?.focus({ preventScroll: true })
+}
+
 function openEdit(profile: ProfileItem, focusAge = false) {
   menuFor.value = null
-  editing.value = profile
+  clearEditTracking()
+  editingFallback.value = profile
+  editingId.value = profile.id
   form.value = { name: profile.name, url: profile.source, userAgent: profile.user_agent, interval: profile.interval_hours }
   ageKey.value = ''
   ageClear.value = false
   ageEditing.value = focusAge || profile.age_recipients.length === 0
   ageFocus.value = focusAge
   advancedOpen.value = focusAge || Boolean(profile.user_agent)
+  sessionAgeSecretSaved.value = false
+  initialNeedsAgeRefresh.value = ageFailure(profile) || !profile.last_success_ms
+}
+
+function closeEdit() {
+  if (savingEdit.value) return
+  editingId.value = null
+  editingFallback.value = null
+  clearEditTracking()
 }
 
 function changeAgeKey() {
   ageEditing.value = true
   ageClear.value = false
+  delete fieldErrors.age
   void nextTick(() => ageInput.value?.focus())
 }
+
 async function saveEdit() {
+  if (savingEdit.value) return
   const profile = editing.value
   if (!profile) return
-  if (form.value.name.trim() && form.value.name.trim() !== profile.name) await store.rename(profile.id, form.value.name)
-  if (profile.kind === 'subscription' && form.value.url.trim() !== profile.source) {
-    await store.setSource(profile.id, form.value.url)
-    if (snap.value.input_error) return
+
+  // Validate the whole form before submitting anything, including modified advanced options (R2).
+  const preErrors: Partial<Record<EditFieldKey, string>> = {}
+  if (!cleanProfileName(form.value.name)) {
+    preErrors.name = '请填写配置名称'
   }
-  if (profile.kind === 'subscription' && form.value.userAgent !== profile.user_agent) {
-    const result = await store.setUserAgent(profile.id, form.value.userAgent)
-    if (!result || snap.value.input_error) return
+  if (profile.kind === 'subscription') {
+    if (isFieldDirty('url', profile) || !form.value.url.trim()) {
+      const urlErr = validateSubscriptionUrl(form.value.url)
+      if (urlErr) preErrors.url = urlErr
+    }
+    if (isFieldDirty('age', profile) && !ageClear.value) {
+      const ageErr = validateAgeInput(ageKey.value)
+      if (ageErr) preErrors.age = ageErr
+    }
+    if (isFieldDirty('userAgent', profile)) {
+      const uaErr = validateUserAgentInput(form.value.userAgent)
+      if (uaErr) preErrors.userAgent = uaErr
+    }
   }
-  if (form.value.interval !== profile.interval_hours) await store.setInterval(profile.id, form.value.interval)
-  let ageChanged = false
-  if (profile.kind === 'subscription' && (ageKey.value.trim() || ageClear.value)) {
-    if (ageHint.value) return
-    await store.setAgeKey(profile.id, ageClear.value ? '' : ageKey.value)
-    if (snap.value.input_error) return
-    ageChanged = true
-  }
-  editing.value = null
-  // A new key is only useful once the subscription is fetched again with it.
-  if (ageChanged && !ageClear.value && (ageFailure(profile) || !profile.last_success_ms)) {
-    store.toast('已保存，正在用新私钥更新订阅', 'success')
-    void store.update(profile.id)
+
+  for (const key of EDIT_FIELD_ORDER) delete fieldErrors[key]
+  const firstInvalid = EDIT_FIELD_ORDER.find((key) => Boolean(preErrors[key]))
+  if (firstInvalid) {
+    Object.assign(fieldErrors, preErrors)
+    if (preErrors.age || preErrors.userAgent) advancedOpen.value = true
+    await focusEditField(firstInvalid)
     return
   }
-  store.toast('已保存', 'success')
+
+  const id = profile.id
+  savingEdit.value = true
+  try {
+    if (isFieldDirty('name')) {
+      const expectedName = cleanProfileName(form.value.name)
+      const result = await store.rename(id, form.value.name)
+      const after = result?.profiles.find((item) => item.id === id)
+      if (!result || result.input_error || after?.name !== expectedName) {
+        fieldErrors.name = result?.input_error || store.lastRunError.value || '名称未能保存'
+        saveAttemptFailed.value = true
+        await focusEditField('name')
+        return
+      }
+      savedFields.name = true
+    }
+
+    if (profile.kind === 'subscription' && isFieldDirty('url')) {
+      const expectedUrl = form.value.url.trim()
+      const result = await store.setSource(id, form.value.url)
+      const after = result?.profiles.find((item) => item.id === id)
+      if (!result || result.input_error || after?.source !== expectedUrl) {
+        fieldErrors.url = result?.input_error || store.lastRunError.value || '订阅链接未能保存'
+        saveAttemptFailed.value = true
+        await focusEditField('url')
+        return
+      }
+      savedFields.url = true
+    }
+
+    if (profile.kind === 'subscription' && isFieldDirty('interval')) {
+      const expectedHours = Math.min(form.value.interval, 24 * 30)
+      const result = await store.setInterval(id, form.value.interval)
+      const after = result?.profiles.find((item) => item.id === id)
+      if (!result || result.input_error || after?.interval_hours !== expectedHours) {
+        fieldErrors.interval = result?.input_error || store.lastRunError.value || '自动更新间隔未能保存'
+        saveAttemptFailed.value = true
+        await focusEditField('interval')
+        return
+      }
+      savedFields.interval = true
+    }
+
+    if (profile.kind === 'subscription' && isFieldDirty('age')) {
+      const clearing = ageClear.value
+      const result = await store.setAgeKey(id, clearing ? '' : ageKey.value)
+      if (!result || result.input_error) {
+        fieldErrors.age = result?.input_error || store.lastRunError.value || 'age 私钥未能保存'
+        saveAttemptFailed.value = true
+        advancedOpen.value = true
+        await focusEditField('age')
+        return
+      }
+      savedFields.age = true
+      if (clearing) {
+        ageClear.value = false
+        ageKey.value = ''
+        ageEditing.value = true
+      } else {
+        sessionAgeSecretSaved.value = true
+        ageKey.value = ''
+        ageClear.value = false
+        ageEditing.value = false
+      }
+    }
+
+    if (profile.kind === 'subscription' && isFieldDirty('userAgent')) {
+      const expectedUa = form.value.userAgent.trim()
+      const result = await store.setUserAgent(id, form.value.userAgent)
+      const after = result?.profiles.find((item) => item.id === id)
+      if (!result || result.input_error || after?.user_agent !== expectedUa) {
+        fieldErrors.userAgent = result?.input_error || store.lastRunError.value || 'User-Agent 未能保存'
+        saveAttemptFailed.value = true
+        advancedOpen.value = true
+        await focusEditField('userAgent')
+        return
+      }
+      savedFields.userAgent = true
+    }
+
+    const needAgeRefresh = sessionAgeSecretSaved.value && initialNeedsAgeRefresh.value
+    editingId.value = null
+    editingFallback.value = null
+    clearEditTracking()
+    // A new key is only useful once the subscription is fetched again with it.
+    if (needAgeRefresh) {
+      store.toast('已保存，正在用新私钥更新订阅', 'success')
+      void store.update(id)
+      return
+    }
+    store.toast('已保存', 'success')
+  } finally {
+    savingEdit.value = false
+    if (
+      saveAttemptFailed.value &&
+      (editFieldStatus('age') === 'failed' ||
+        editFieldStatus('age') === 'pending' ||
+        editFieldStatus('userAgent') === 'failed' ||
+        editFieldStatus('userAgent') === 'pending')
+    ) {
+      advancedOpen.value = true
+    }
+  }
 }
 
 // YAML editors
@@ -732,30 +989,92 @@ const failedSubscriptionIds = computed(() =>
     <Modal
       v-if="editing"
       title="编辑配置信息"
+      :before-close="() => !savingEdit"
       :initial-focus="ageFocus ? () => ageInput : undefined"
-      @close="editing = null"
+      @close="closeEdit"
     >
-      <form class="stack" @submit.prevent="saveEdit">
+      <form class="stack" novalidate @submit.prevent="saveEdit">
+        <div
+          v-if="saveAttemptFailed && (partialSaveGroups.saved.length || partialSaveGroups.pending.length)"
+          class="banner warn small edit-save-summary"
+          role="status"
+          aria-live="polite"
+          data-testid="edit-save-summary"
+        >
+          <Icon name="alert" :size="15" />
+          <div class="grow edit-save-summary-body">
+            <span v-if="partialSaveGroups.saved.length">已保存：{{ partialSaveGroups.saved.join('、') }}</span>
+            <span v-if="partialSaveGroups.failed.length">保存失败：{{ partialSaveGroups.failed.join('、') }}</span>
+            <span v-if="partialSaveGroups.pending.length">待保存：{{ partialSaveGroups.pending.join('、') }}</span>
+            <span class="muted">修正后再次点击保存，将仅提交尚未保存的修改。</span>
+          </div>
+        </div>
+
         <label class="field">
-          <span>名称</span>
-          <input v-model="form.name" type="text" maxlength="80" />
+          <span class="field-label-row">
+            <span>名称</span>
+            <span v-if="editFieldStatus('name') === 'saved'" class="tag ok sm" data-testid="field-state-name"><Icon name="check" :size="11" />已保存</span>
+            <span v-else-if="editFieldStatus('name') === 'failed'" class="tag danger sm" data-testid="field-state-name"><Icon name="alert" :size="11" />保存失败</span>
+            <span v-else-if="editFieldStatus('name') === 'pending'" class="tag warn sm" data-testid="field-state-name"><Icon name="clock" :size="11" />待保存</span>
+          </span>
+          <input
+            ref="nameInput"
+            v-model="form.name"
+            type="text"
+            maxlength="80"
+            data-testid="profile-edit-name"
+            :aria-invalid="fieldErrors.name ? 'true' : undefined"
+            :aria-describedby="fieldErrors.name ? 'edit-name-error' : undefined"
+            @input="onEditFieldChange('name')"
+          />
+          <p v-if="fieldErrors.name" id="edit-name-error" class="field-error small" role="alert" data-testid="field-error-name">
+            <Icon name="alert" :size="13" />
+            <span>{{ fieldErrors.name }}</span>
+          </p>
         </label>
         <template v-if="editing.kind === 'subscription'">
           <label class="field">
-            <span>订阅链接</span>
-            <input v-model="form.url" type="url" spellcheck="false" />
+            <span class="field-label-row">
+              <span>订阅链接</span>
+              <span v-if="editFieldStatus('url') === 'saved'" class="tag ok sm" data-testid="field-state-url"><Icon name="check" :size="11" />已保存</span>
+              <span v-else-if="editFieldStatus('url') === 'failed'" class="tag danger sm" data-testid="field-state-url"><Icon name="alert" :size="11" />保存失败</span>
+              <span v-else-if="editFieldStatus('url') === 'pending'" class="tag warn sm" data-testid="field-state-url"><Icon name="clock" :size="11" />待保存</span>
+            </span>
+            <input
+              ref="urlInput"
+              v-model="form.url"
+              type="url"
+              spellcheck="false"
+              data-testid="profile-edit-url"
+              :aria-invalid="fieldErrors.url ? 'true' : undefined"
+              :aria-describedby="fieldErrors.url ? 'edit-url-error' : undefined"
+              @input="onEditFieldChange('url')"
+            />
+            <p v-if="fieldErrors.url" id="edit-url-error" class="field-error small" role="alert" data-testid="field-error-url">
+              <Icon name="alert" :size="13" />
+              <span>{{ fieldErrors.url }}</span>
+            </p>
           </label>
-          <label class="field">
-            <span>自动更新</span>
+          <div class="field" data-testid="profile-interval-field">
+            <span class="field-label-row">
+              <span>自动更新</span>
+              <span v-if="editFieldStatus('interval') === 'saved'" class="tag ok sm" data-testid="field-state-interval"><Icon name="check" :size="11" />已保存</span>
+              <span v-else-if="editFieldStatus('interval') === 'failed'" class="tag danger sm" data-testid="field-state-interval"><Icon name="alert" :size="11" />保存失败</span>
+              <span v-else-if="editFieldStatus('interval') === 'pending'" class="tag warn sm" data-testid="field-state-interval"><Icon name="clock" :size="11" />待保存</span>
+            </span>
             <SelectField
               :model-value="form.interval"
               :options="INTERVALS.map((option) => ({ value: option.hours, label: option.label }))"
               :sheet="compact"
               label="自动更新"
               class="field-select"
-              @update:model-value="(value) => (form.interval = Number(value))"
+              @update:model-value="(value) => { form.interval = Number(value); onEditFieldChange('interval') }"
             />
-          </label>
+            <p v-if="fieldErrors.interval" id="edit-interval-error" class="field-error small" role="alert" data-testid="field-error-interval">
+              <Icon name="alert" :size="13" />
+              <span>{{ fieldErrors.interval }}</span>
+            </p>
+          </div>
           <details class="form-fold" data-testid="profile-advanced" :open="advancedOpen || undefined" @toggle="advancedOpen = ($event.target as HTMLDetailsElement).open">
             <summary>
               <Icon name="chevron-right" :size="14" />
@@ -764,7 +1083,12 @@ const failedSubscriptionIds = computed(() =>
               <span v-if="form.userAgent.trim()" class="tag accent sm">已自定义 UA</span>
             </summary>
             <div class="field age-field" data-testid="age-field">
-              <span class="age-field-label">age 私钥</span>
+              <span class="age-field-label field-label-row">
+                <span>age 私钥</span>
+                <span v-if="editFieldStatus('age') === 'saved'" class="tag ok sm" data-testid="field-state-age"><Icon name="check" :size="11" />已保存</span>
+                <span v-else-if="editFieldStatus('age') === 'failed'" class="tag danger sm" data-testid="field-state-age"><Icon name="alert" :size="11" />保存失败</span>
+                <span v-else-if="editFieldStatus('age') === 'pending'" class="tag warn sm" data-testid="field-state-age"><Icon name="clock" :size="11" />待保存</span>
+              </span>
               <div v-if="editing.age_recipients.length && !ageEditing" class="age-status" :class="{ clearing: ageClear }" data-testid="age-status">
                 <Icon :name="ageClear ? 'trash' : 'shield'" :size="15" />
                 <span class="grow min0">
@@ -775,11 +1099,11 @@ const failedSubscriptionIds = computed(() =>
                   </template>
                 </span>
                 <template v-if="ageClear">
-                  <button type="button" class="btn ghost sm" data-testid="age-undo-clear" @click="ageClear = false">撤销</button>
+                  <button type="button" class="btn ghost sm" data-testid="age-undo-clear" @click="ageClear = false; onEditFieldChange('age')">撤销</button>
                 </template>
                 <template v-else>
                   <button type="button" class="btn ghost sm" data-testid="age-change" @click="changeAgeKey">更换</button>
-                  <button type="button" class="btn ghost sm danger-text" data-testid="age-clear" @click="ageClear = true">清除</button>
+                  <button type="button" class="btn ghost sm danger-text" data-testid="age-clear" @click="ageClear = true; onEditFieldChange('age')">清除</button>
                 </template>
               </div>
               <template v-else>
@@ -792,33 +1116,74 @@ const failedSubscriptionIds = computed(() =>
                   autocomplete="off"
                   autocapitalize="off"
                   placeholder="AGE-SECRET-KEY-1…  订阅内容经 age 加密时填写，可多行"
-                  aria-describedby="age-help"
+                  :aria-invalid="ageErrorMessage ? 'true' : undefined"
+                  :aria-describedby="ageErrorMessage ? 'edit-age-error age-help' : 'age-help'"
                   data-testid="age-input"
+                  @input="onEditFieldChange('age')"
                 />
                 <button
                   v-if="editing.age_recipients.length"
                   type="button"
                   class="btn ghost sm age-cancel"
-                  @click="ageEditing = false; ageKey = ''"
+                  @click="ageEditing = false; ageKey = ''; onEditFieldChange('age')"
                 >
                   保留原私钥
                 </button>
               </template>
-              <p v-if="ageHint" class="field-error small" role="alert" data-testid="age-hint">{{ ageHint }}</p>
+              <p
+                v-if="ageErrorMessage"
+                id="edit-age-error"
+                class="field-error small"
+                role="alert"
+                :data-testid="ageHint ? 'age-hint' : 'field-error-age'"
+              >
+                <Icon name="alert" :size="13" />
+                <span>{{ ageErrorMessage }}</span>
+              </p>
               <p id="age-help" class="muted small">私钥只保存在本机，用于在更新时解密订阅；界面只显示对应的公钥。</p>
             </div>
             <label class="field">
-              <span>User-Agent</span>
-              <input v-model="form.userAgent" type="text" maxlength="256" :placeholder="inheritedUserAgent" spellcheck="false" autocomplete="off" data-testid="profile-user-agent" aria-describedby="profile-user-agent-help" />
+              <span class="field-label-row">
+                <span>User-Agent</span>
+                <span v-if="editFieldStatus('userAgent') === 'saved'" class="tag ok sm" data-testid="field-state-userAgent"><Icon name="check" :size="11" />已保存</span>
+                <span v-else-if="editFieldStatus('userAgent') === 'failed'" class="tag danger sm" data-testid="field-state-userAgent"><Icon name="alert" :size="11" />保存失败</span>
+                <span v-else-if="editFieldStatus('userAgent') === 'pending'" class="tag warn sm" data-testid="field-state-userAgent"><Icon name="clock" :size="11" />待保存</span>
+              </span>
+              <input
+                ref="uaInput"
+                v-model="form.userAgent"
+                type="text"
+                maxlength="256"
+                :placeholder="inheritedUserAgent"
+                spellcheck="false"
+                autocomplete="off"
+                data-testid="profile-user-agent"
+                :aria-invalid="fieldErrors.userAgent ? 'true' : undefined"
+                :aria-describedby="fieldErrors.userAgent ? 'edit-ua-error profile-user-agent-help' : 'profile-user-agent-help'"
+                @input="onEditFieldChange('userAgent')"
+              />
+              <p v-if="fieldErrors.userAgent" id="edit-ua-error" class="field-error small" role="alert" data-testid="field-error-userAgent">
+                <Icon name="alert" :size="13" />
+                <span>{{ fieldErrors.userAgent }}</span>
+              </p>
               <span id="profile-user-agent-help" class="muted small">留空使用默认值，下次更新订阅时生效。</span>
             </label>
           </details>
         </template>
-        <p v-if="snap.input_error" class="field-error">{{ snap.input_error }}</p>
       </form>
       <template #footer>
-        <button type="button" class="btn ghost" @click="editing = null">取消</button>
-        <button type="button" class="btn primary" @click="saveEdit">保存</button>
+        <button type="button" class="btn ghost" :disabled="savingEdit" @click="closeEdit">取消</button>
+        <button
+          type="button"
+          class="btn primary"
+          :aria-disabled="savingEdit || undefined"
+          :aria-busy="savingEdit || undefined"
+          data-testid="save-profile-edit"
+          @click="saveEdit"
+        >
+          <span v-if="savingEdit" class="spinner xs" aria-hidden="true" />
+          {{ savingEdit ? '保存中' : '保存' }}
+        </button>
       </template>
     </Modal>
 

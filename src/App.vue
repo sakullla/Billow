@@ -101,20 +101,36 @@ function isTabCurrent(id: PageId): boolean {
   return store.page.value === id || (id === 'settings' && TOOL_PAGES.includes(store.page.value))
 }
 
+const hasConnectionReturn = computed(
+  () => Boolean(store.connectionReturn.value && store.page.value === store.connectionReturn.value.targetPage),
+)
 /** Phones reach tool pages from Settings, so they get a visible way back besides the system gesture. */
-const showBack = computed(() => compact.value && TOOL_PAGES.includes(store.page.value))
+const showBack = computed(
+  () => compact.value && (TOOL_PAGES.includes(store.page.value) || hasConnectionReturn.value),
+)
+/** Desktop shows a contextual return bar only when drilling from connection detail into a group or rule-set (R4). */
+const showDesktopConnectionReturn = computed(() => !compact.value && hasConnectionReturn.value)
 /** The page a back press returns to; mirrors the top of the non-reactive page stack. */
 const backTo = ref<PageId | null>(null)
-const backLabel = computed(() => PAGES.find((page) => page.id === backTo.value)?.label ?? '设置')
+const backLabel = computed(() => {
+  if (hasConnectionReturn.value) return '返回连接'
+  return PAGES.find((page) => page.id === backTo.value)?.label ?? '设置'
+})
 
 function goBack() {
-  const previous = backTo.value
-  if (historyReady && previous != null && guardActive) {
+  const previous = backTo.value ?? (hasConnectionReturn.value ? 'connections' : null)
+  if (historyReady && previous != null && guardActive && layerDepth() === 0) {
     window.history.back()
     return
   }
+  if (previous != null && pageStack[pageStack.length - 1] === previous) {
+    pageStack.pop()
+    backTo.value = pageStack[pageStack.length - 1] ?? null
+  }
+  ignorePageHistory = true
   store.go(previous ?? 'settings')
 }
+provide('connectionBack', goBack)
 
 // ── System bars follow the effective theme (Android edge-to-edge) ──
 const prefersDark = ref(typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true)
@@ -510,6 +526,7 @@ function onPopState() {
     return
   }
   const previous = pageStack.pop()
+  backTo.value = pageStack[pageStack.length - 1] ?? null
   if (previous === 'settings' && store.page.value === 'settings' && store.settingsTab.value !== 'general') {
     store.settingsTab.value = 'general'
     if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
@@ -710,9 +727,21 @@ defineExpose({ store })
 
     <main ref="mainEl" class="main" :data-page="store.page.value">
       <div v-if="showBack" class="back-bar">
-        <button type="button" class="back-btn" data-testid="page-back" @click="goBack">
+        <button
+          type="button"
+          class="back-btn"
+          data-testid="page-back"
+          :data-connection-return="hasConnectionReturn ? 'true' : undefined"
+          @click="goBack"
+        >
           <Icon name="chevron-left" :size="18" />
           <span>{{ backLabel }}</span>
+        </button>
+      </div>
+      <div v-else-if="showDesktopConnectionReturn" class="back-bar context-return-bar">
+        <button type="button" class="back-btn" data-testid="connection-return" @click="goBack">
+          <Icon name="chevron-left" :size="18" />
+          <span>返回连接</span>
         </button>
       </div>
       <component :is="view" v-if="store.loaded.value" :compact="compact" />

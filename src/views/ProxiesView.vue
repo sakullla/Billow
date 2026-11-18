@@ -496,6 +496,17 @@ onMounted(() => {
     const target = store.focusGroup.value
     if (target) {
       await locate(target)
+      if (
+        typeof window !== 'undefined' &&
+        window.matchMedia?.('(pointer: coarse)').matches !== true &&
+        document.activeElement === document.body
+      ) {
+        const groupBtn = document.querySelector<HTMLElement>(
+          `[data-group-card="${CSS.escape(target)}"] [data-testid^="group-toggle-"]`,
+        )
+        const returnBtn = document.querySelector<HTMLElement>('[data-testid="connection-return"]')
+        ;(groupBtn ?? returnBtn)?.focus({ preventScroll: true })
+      }
       return
     }
     // Only a first visit scrolls to the default group; a saved state stays where the user left it.

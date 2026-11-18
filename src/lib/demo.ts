@@ -635,9 +635,14 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       const item = profile(id)
       if (item) {
         await wait(500)
+        if (/^\s*-/.test(item.override_text)) {
+          item.override_error = '覆写无法应用'
+          return done()
+        }
         state.active_id = id
         item.last_success_ms = Date.now()
         item.failure = null
+        item.override_error = null
         delays.clear()
         if (state.kernel_running) log('info', `配置已切换为 ${item.name}`)
       }
@@ -677,12 +682,28 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async rename(id, name) {
       const item = profile(id)
-      if (item && name.trim()) item.name = name.trim()
+      const cleaned = name.trim().replace(/[/\\\r\n]/g, '').slice(0, 80)
+      if (item && cleaned) {
+        item.name = cleaned
+        state.input_error = null
+      }
       return done()
     },
     async setSource(id, url) {
       const item = profile(id)
-      if (item) item.source = url.trim()
+      if (!item || item.kind !== 'subscription') return done()
+      const trimmed = url.trim()
+      try {
+        if (!/^https?:\/\//i.test(trimmed) || /[\s\x00-\x1f\x7f]/.test(trimmed)) throw new Error('scheme')
+        const parsed = new URL(trimmed)
+        if (!/^https?:$/.test(parsed.protocol)) throw new Error('scheme')
+        const host = parsed.hostname
+        if (!host || (!host.includes('.') && host !== 'localhost' && !host.startsWith('['))) throw new Error('host')
+        item.source = trimmed
+        state.input_error = null
+      } catch {
+        state.input_error = '订阅链接不可用'
+      }
       return done()
     },
     async setUserAgent(id, userAgent) {
