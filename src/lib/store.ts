@@ -2,7 +2,7 @@ import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey }
 import type { Backend, NodeTestEvent } from './backend'
 import { createAppUpdater, nativeUpdateDriver } from './appUpdate'
 import { hostOf } from './format'
-import { applyLocale, normalizeLanguage, normalizeLocale } from './i18n'
+import { applyLocale, normalizeLanguage, normalizeLocale, t } from './i18n'
 import { runPool } from './pool'
 import {
   emptySnapshot,
@@ -22,7 +22,7 @@ import {
 } from './types'
 
 export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings' | 'apps'
-export type SettingsTab = 'general' | 'proxy' | 'kernel' | 'tun' | 'dns'
+export type SettingsTab = 'general' | 'proxy' | 'kernel' | 'tun' | 'dns' | 'backup'
 export type ConfigViewTab = 'overview' | 'yaml'
 
 const CONFIG_TAB_KEY = 'billow.configTab'
@@ -859,6 +859,47 @@ export function createStore(backend: Backend) {
     }
   }
 
+  /** Re-read the app-level settings a restore may have replaced (R38). */
+  async function refreshShell() {
+    try {
+      const shell = await backend.shell()
+      theme.value = shell.theme
+      language.value = normalizeLanguage(shell.language)
+      applyLocale(normalizeLocale(shell.locale))
+      applyTheme(theme.value)
+    } catch (error) {
+      console.error(error)
+    }
+    try {
+      app.value = await backend.appInfo()
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  /** Write a backup file; the returned path is shown to the user. */
+  function exportBackup() {
+    return run('backup', () => backend.exportBackup())
+  }
+
+  /** Restore the whole state from a file. The confirmation happens in the UI. */
+  async function restoreBackup(text: string) {
+    const result = await run('backup', () => backend.restoreBackup(text))
+    if (!result) return undefined
+    await refreshShell()
+    toast(t('backup.restored'), 'success')
+    return result
+  }
+
+  /** Restore a cloud backup; the upload/restore choice is always the user's (R45). */
+  async function restoreRemoteBackup(name: string) {
+    const result = await run('backup', () => backend.restoreRemoteBackup(name))
+    if (!result) return undefined
+    await refreshShell()
+    toast(t('backup.restored'), 'success')
+    return result
+  }
+
   /** Explicit connect used by the command palette; no implicit add-profile dialog. */
   function connect() {
     if (connecting.value || snapshot.value.connected) return Promise.resolve(undefined)
@@ -1021,6 +1062,10 @@ export function createStore(backend: Backend) {
     go,
     setTheme,
     setLanguage,
+    refreshShell,
+    exportBackup,
+    restoreBackup,
+    restoreRemoteBackup,
     connect,
     disconnect,
     retryLastAction,

@@ -179,6 +179,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   let theme: ThemePreference = 'system'
   let entry = 'home'
   let language: LanguagePreference = 'system'
+  /** WebDAV account, the last connection test and the backups in the cloud (R38). */
+  let webdav = { url: '', username: '', password: '' }
+  let webdavVerified = false
+  let remoteBackups: { name: string; device: string; modified: string | null; size: number | null; text: string }[] = []
   /** Pretend the OS reports this language; tests pin the default to Chinese. */
   const systemLocale: Locale = options.systemLocale ?? 'zh-CN'
   let kernel: KernelStatus = { channel: 'stable', failure: null, ready: true, version: 'v1.19.17' }
@@ -627,6 +631,148 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     return snap
   }
   const profile = (id: string) => state.profiles.find((item) => item.id === id)
+
+  // ── 备份与恢复 (R38): the same versioned shape and refusal reasons as Rust ──
+  const UNKNOWN_BACKUP = '无法识别这个备份文件，请选择 Billow 导出的备份文件'
+  const DAMAGED_BACKUP = '备份文件已损坏，无法恢复'
+
+  function backupText(): string {
+    return JSON.stringify(
+      {
+        format: 'billow-backup',
+        version: 1,
+        app_version: app.version,
+        platform: state.platform,
+        device: 'demo',
+        created_ms: Date.now(),
+        profiles: {
+          next_id: state.profiles.length + 1,
+          active_id: state.active_id,
+          profiles: state.profiles.map((item) => ({
+            id: item.id,
+            name: item.name,
+            kind: item.kind,
+            source: item.source,
+            user_agent: item.user_agent,
+            content: '',
+            override_text: item.override_text,
+            applied_override: '',
+            selected: Object.fromEntries(selections),
+            fixed: Object.fromEntries(fixed),
+            interval_hours: item.interval_hours,
+            age_key: '',
+            updated_ms: item.updated_ms,
+          })),
+          settings: state.settings,
+          tun_wanted: state.tun_wanted,
+          excluded_packages: state.excluded,
+          included_packages: state.included,
+          app_mode: state.app_mode,
+          chosen_mode: state.mode,
+        },
+        shell: {
+          theme,
+          close_to_tray: app.close_to_tray,
+          silent_start: app.silent_start,
+          language,
+        },
+      },
+      null,
+      2,
+    )
+  }
+
+  function newerVersion(candidate: string, current: string): boolean {
+    const parse = (raw: string) =>
+      raw.trim().replace(/^v/, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0)
+    const left = parse(candidate)
+    const right = parse(current)
+    for (let index = 0; index < 3; index += 1) {
+      const a = left[index] ?? 0
+      const b = right[index] ?? 0
+      if (a !== b) return a > b
+    }
+    return false
+  }
+
+  function readBackup(text: string) {
+    let raw: unknown
+    try {
+      raw = JSON.parse(text)
+    } catch {
+      throw new Error(UNKNOWN_BACKUP)
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(UNKNOWN_BACKUP)
+    const file = raw as Record<string, unknown>
+    if (file.format !== 'billow-backup') throw new Error(UNKNOWN_BACKUP)
+    const version = typeof file.version === 'number' ? file.version : 0
+    const versionText = typeof file.app_version === 'string' ? file.app_version : String(version)
+    if (version > 1 || newerVersion(versionText, app.version)) {
+      throw new Error(`备份来自更新的版本（${versionText}），请先更新 Billow`)
+    }
+    const part = file.profiles
+    if (!part || typeof part !== 'object' || Array.isArray(part)) throw new Error(DAMAGED_BACKUP)
+    const profiles = part as Record<string, unknown>
+    if (!Array.isArray(profiles.profiles) || !profiles.settings || typeof profiles.settings !== 'object') {
+      throw new Error(DAMAGED_BACKUP)
+    }
+    const shell = file.shell && typeof file.shell === 'object' ? (file.shell as Record<string, unknown>) : {}
+    return { profiles, shell }
+  }
+
+  function applyBackup(profiles: Record<string, unknown>, shell: Record<string, unknown>) {
+    const list = (profiles.profiles as unknown[]).map((raw, index): ProfileItem => {
+      const entry = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      return {
+        id: typeof entry.id === 'string' && entry.id ? entry.id : `p${index + 1}`,
+        name: typeof entry.name === 'string' && entry.name ? entry.name : '配置',
+        kind: entry.kind === 'subscription' ? 'subscription' : 'local',
+        source: typeof entry.source === 'string' ? entry.source : '',
+        user_agent: typeof entry.user_agent === 'string' ? entry.user_agent : '',
+        current: false,
+        failure: null,
+        override_text: typeof entry.override_text === 'string' ? entry.override_text : '',
+        override_error: null,
+        used: null,
+        total: null,
+        expire: null,
+        last_success_ms: null,
+        interval_hours: typeof entry.interval_hours === 'number' ? entry.interval_hours : 0,
+        updated_ms: typeof entry.updated_ms === 'number' ? entry.updated_ms : null,
+        proxy_count: 0,
+        age_recipients: [],
+      }
+    })
+    const active = typeof profiles.active_id === 'string' ? profiles.active_id : null
+    state.profiles = list
+    state.active_id = list.some((item) => item.id === active) ? active : null
+    state.settings = { ...emptyKernelSettings(), ...(profiles.settings as KernelSettings) }
+    state.tun_wanted = Boolean(profiles.tun_wanted)
+    state.excluded = Array.isArray(profiles.excluded_packages)
+      ? profiles.excluded_packages.filter((item): item is string => typeof item === 'string')
+      : []
+    state.included = Array.isArray(profiles.included_packages)
+      ? profiles.included_packages.filter((item): item is string => typeof item === 'string')
+      : []
+    state.app_mode = profiles.app_mode === 'include' ? 'include' : 'exclude'
+    const mode = profiles.chosen_mode
+    if (mode === 'rule' || mode === 'global' || mode === 'direct') state.mode = mode
+    // App settings travel too; platform-only ones (WebDAV credentials, window
+    // size, the current page) are not in the file at all.
+    if (shell.theme === 'light' || shell.theme === 'dark' || shell.theme === 'system') theme = shell.theme
+    if (shell.language === 'en' || shell.language === 'zh-CN') language = shell.language
+    if (typeof shell.close_to_tray === 'boolean' || typeof shell.silent_start === 'boolean') {
+      app = {
+        ...app,
+        close_to_tray: typeof shell.close_to_tray === 'boolean' ? shell.close_to_tray : app.close_to_tray,
+        silent_start: typeof shell.silent_start === 'boolean' ? shell.silent_start : app.silent_start,
+      }
+    }
+  }
+
+  function backupStamp(): string {
+    return new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+  }
 
   function startKernel(): boolean {
     if (!state.active_id) {
@@ -1227,6 +1373,73 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async clearNotice() {
       state.notice = null
+      return done(0)
+    },
+    async exportBackup() {
+      await wait(120)
+      const directory =
+        state.platform === 'android'
+          ? '/storage/emulated/0/Android/data/app.billow/files/Documents'
+          : 'C:\\Users\\demo\\Downloads'
+      return `${directory}/billow-backup-${backupStamp()}.json`
+    },
+    async restoreBackup(text) {
+      await wait(150)
+      const { profiles, shell } = readBackup(text)
+      applyBackup(profiles, shell)
+      log('info', `已从备份恢复 ${state.profiles.length} 份配置`)
+      return done(0)
+    },
+    async webdavSettings() {
+      return { ...webdav, available: webdavVerified }
+    },
+    async setWebdav(url, username, password) {
+      const changed = webdav.url !== url || webdav.username !== username || webdav.password !== password
+      webdav = { url, username, password }
+      // Saving the same account again keeps a successful test; a change drops it.
+      if (changed) webdavVerified = false
+      return { ...webdav, available: webdavVerified }
+    },
+    async testWebdav() {
+      await wait(150)
+      if (!webdav.url.trim()) return { available: false, error: '请填写 WebDAV 服务器地址' }
+      if (!/^https?:\/\//i.test(webdav.url.trim())) {
+        return { available: false, error: 'WebDAV 地址需要以 http:// 或 https:// 开头' }
+      }
+      if (webdav.password === 'bad') {
+        webdavVerified = false
+        return { available: false, error: 'WebDAV 认证失败（401）' }
+      }
+      webdavVerified = true
+      return { available: true, error: null }
+    },
+    async uploadBackup() {
+      if (!webdavVerified) throw new Error('请先测试连接，WebDAV 还不可用')
+      await wait(200)
+      const text = backupText()
+      const name = `billow-backup-demo-${backupStamp()}.json`
+      remoteBackups = [
+        { name, device: 'demo', modified: new Date().toUTCString(), size: text.length, text },
+        ...remoteBackups,
+      ]
+      return name
+    },
+    async listRemoteBackups() {
+      await wait(120)
+      return remoteBackups.map((item) => ({
+        name: item.name,
+        device: item.device,
+        modified: item.modified,
+        size: item.size,
+      }))
+    },
+    async restoreRemoteBackup(name) {
+      await wait(150)
+      const item = remoteBackups.find((entry) => entry.name === name)
+      if (!item) throw new Error('云端没有这份备份，请刷新列表')
+      const { profiles, shell } = readBackup(item.text)
+      applyBackup(profiles, shell)
+      log('info', `已从云端备份恢复 ${state.profiles.length} 份配置`)
       return done(0)
     },
     async saveSettings(settings) {

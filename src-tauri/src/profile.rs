@@ -33,10 +33,12 @@ const ONE_LINK_ERROR: &str = "需要一条订阅链接";
 const URL_ERROR: &str = "订阅链接不可用";
 const DUPLICATE_ERROR: &str = "该订阅已存在";
 const MISSING_PROFILE: &str = "没有这份配置";
+#[cfg_attr(not(test), allow(dead_code))]
+const PERSIST_ERROR: &str = "本地数据没有写入";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum ProfileKind {
+pub enum ProfileKind {
     Subscription,
     Local,
 }
@@ -2065,6 +2067,49 @@ struct DiskProfile<'a> {
     updated_ms: Option<u64>,
 }
 
+/// The profile state a backup file carries (R38). Runtime and session fields
+/// stay out: a backup describes what the user configured, not what the kernel
+/// is doing right now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileBackup {
+    pub next_id: u64,
+    pub active_id: Option<String>,
+    pub profiles: Vec<ProfileBackupEntry>,
+    pub settings: KernelSettings,
+    pub tun_wanted: bool,
+    pub excluded_packages: Vec<String>,
+    pub included_packages: Vec<String>,
+    pub app_mode: String,
+    pub chosen_mode: Option<String>,
+}
+
+/// One configuration entry in a backup: subscription URL, YAML, 覆写 and the age
+/// identities, but no failure banner or provider usage from another machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileBackupEntry {
+    pub id: String,
+    pub name: String,
+    pub kind: ProfileKind,
+    pub source: String,
+    #[serde(default)]
+    pub user_agent: String,
+    pub content: String,
+    #[serde(default)]
+    pub override_text: String,
+    #[serde(default)]
+    pub applied_override: String,
+    #[serde(default)]
+    pub selected: BTreeMap<String, String>,
+    #[serde(default)]
+    pub fixed: BTreeMap<String, String>,
+    #[serde(default)]
+    pub interval_hours: u32,
+    #[serde(default)]
+    pub age_key: String,
+    #[serde(default)]
+    pub updated_ms: Option<u64>,
+}
+
 pub struct ProfileBook {
     path: PathBuf,
     next_id: u64,
@@ -2119,6 +2164,9 @@ pub struct ProfileBook {
     /// Set only while [`ProfileBook::restart_kernel`] runs: the next launch stops
     /// and respawns the process even for an unchanged YAML.
     force_launch: bool,
+    /// Test-only write-failure injection for the restore rollback path (R38).
+    #[cfg(test)]
+    persist_failures: AtomicUsize,
 }
 
 pub const RESTART_NEEDS_CONNECTION: &str = "请先连接，再重启内核";
@@ -2130,6 +2178,26 @@ const CRASH_WINDOW_MS: u64 = 60_000;
 struct DelayMark {
     delay_ms: Option<u64>,
     failed: bool,
+}
+
+/// Exact in-memory state a failed restore puts back (R38).
+#[derive(Clone)]
+struct BookRestorePoint {
+    profiles: Vec<Profile>,
+    settings: KernelSettings,
+    active_id: Option<String>,
+    tun_wanted: bool,
+    excluded: Vec<String>,
+    included: Vec<String>,
+    app_mode: String,
+    chosen_mode: Option<String>,
+    next_id: u64,
+    home_failure: Option<String>,
+    input_error: Option<String>,
+    pending_url: Option<String>,
+    mixed_port: Option<i64>,
+    mode: Option<String>,
+    connected: bool,
 }
 
 impl ProfileBook {
@@ -2185,6 +2253,8 @@ impl ProfileBook {
             crash_recoveries: 0,
             last_crash_ms: None,
             force_launch: false,
+            #[cfg(test)]
+            persist_failures: AtomicUsize::new(0),
         };
         book.load();
         book
@@ -3507,13 +3577,38 @@ impl ProfileBook {
     }
 
     fn persist(&self) {
+        let _ = self.persist_checked();
+    }
+
+    /// Writes the persisted state and reports the reason. The restore path needs
+    /// the error so it can roll back; every other caller ignores it.
+    fn persist_checked(&self) -> Result<(), String> {
+        #[cfg(test)]
+        if self.persist_failures.load(Ordering::SeqCst) > 0 {
+            self.persist_failures.fetch_sub(1, Ordering::SeqCst);
+            return Err(PERSIST_ERROR.to_string());
+        }
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
-            && fs::create_dir_all(parent).is_err()
         {
-            return;
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        let disk = DiskState {
+        let disk = self.disk_state();
+        let temporary = self.path.with_extension("json.tmp");
+        let write = || -> std::io::Result<()> {
+            let mut writer = BufWriter::new(fs::File::create(&temporary)?);
+            serde_json::to_writer_pretty(&mut writer, &disk)?;
+            writer.flush()
+        };
+        if let Err(err) = write().and_then(|()| fs::rename(&temporary, &self.path)) {
+            let _ = fs::remove_file(&temporary);
+            return Err(err.to_string());
+        }
+        Ok(())
+    }
+
+    fn disk_state(&self) -> DiskState<'_> {
+        DiskState {
             next_id: self.next_id,
             active_id: self.active_id.clone(),
             home_failure: self.home_failure.clone(),
@@ -3554,16 +3649,231 @@ impl ProfileBook {
                     updated_ms: profile.updated_ms,
                 })
                 .collect(),
-        };
-        let temporary = self.path.with_extension("json.tmp");
-        let write = || -> std::io::Result<()> {
-            let mut writer = BufWriter::new(fs::File::create(&temporary)?);
-            serde_json::to_writer_pretty(&mut writer, &disk)?;
-            writer.flush()
-        };
-        if write().and_then(|()| fs::rename(&temporary, &self.path)).is_err() {
-            let _ = fs::remove_file(&temporary);
         }
+    }
+
+    /// The profile state worth keeping in a backup (R38): configurations with
+    /// their subscription URL, YAML, 覆写 and age identities, plus the kernel
+    /// and app settings. Provider usage and failure banners are left out.
+    pub fn backup_state(&self) -> ProfileBackup {
+        ProfileBackup {
+            next_id: self.next_id,
+            active_id: self.active_id.clone(),
+            profiles: self
+                .profiles
+                .iter()
+                .map(|profile| ProfileBackupEntry {
+                    id: profile.id.clone(),
+                    name: profile.name.clone(),
+                    kind: profile.kind,
+                    source: profile.source.clone(),
+                    user_agent: profile.user_agent.clone(),
+                    content: profile.content.clone(),
+                    override_text: profile.override_text.clone(),
+                    applied_override: profile.applied_override.clone(),
+                    selected: profile.selected.clone(),
+                    fixed: profile.fixed.clone(),
+                    interval_hours: profile.interval_hours,
+                    age_key: profile.age_key.clone(),
+                    updated_ms: profile.updated_ms,
+                })
+                .collect(),
+            settings: self.settings.clone(),
+            tun_wanted: self.tun_wanted,
+            excluded_packages: self.excluded.clone(),
+            included_packages: self.included.clone(),
+            app_mode: self.app_mode.clone(),
+            chosen_mode: self.chosen_mode.clone(),
+        }
+    }
+
+    /// Replace the whole state with a backup (R38). The restore point captured
+    /// first is written back and, when this session was connected, the previous
+    /// profile is reloaded, so a failure partway leaves nothing changed.
+    pub fn restore_backup(
+        &mut self,
+        next: ProfileBackup,
+        source: &dyn SubscriptionSource,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<ProfileSnapshot, String> {
+        let point = self.restore_point();
+        let was_connected = point.connected;
+        let previous_active = self.active_id.clone();
+        let takeover_before = self.takeover;
+        let endpoint_before = self.our_endpoint.clone();
+        let release_before = self.pending_release.clone();
+        self.apply_backup_state(next);
+        if let Err(error) = self.persist_checked() {
+            self.rollback_backup(point, was_connected, &previous_active, source, kernel);
+            self.restore_session(takeover_before, endpoint_before, release_before, was_connected);
+            return Err(error);
+        }
+        if was_connected
+            && let Some(id) = self.active_id.clone()
+        {
+            let snapshot = self.activate(&id, source, kernel, false);
+            if let Some(reason) = activation_failure(&snapshot, &id) {
+                self.rollback_backup(point, was_connected, &previous_active, source, kernel);
+                self.restore_session(takeover_before, endpoint_before, release_before, was_connected);
+                return Err(reason);
+            }
+        }
+        Ok(self.publish(kernel))
+    }
+
+    /// Put back the connection flags a failed reload cleared.
+    fn restore_session(
+        &mut self,
+        takeover: Takeover,
+        endpoint: Option<ProxyEndpoint>,
+        release: Option<PlatformRelease>,
+        was_connected: bool,
+    ) {
+        self.takeover = takeover;
+        self.our_endpoint = endpoint;
+        self.pending_release = release;
+        self.connected = was_connected;
+    }
+
+    /// Everything [`Self::apply_backup_state`] overwrites, captured exactly. A
+    /// [`ProfileBackup`] is portable state for another machine, so it cannot
+    /// serve as a rollback snapshot of this one.
+    fn restore_point(&self) -> BookRestorePoint {
+        BookRestorePoint {
+            profiles: self.profiles.clone(),
+            settings: self.settings.clone(),
+            active_id: self.active_id.clone(),
+            tun_wanted: self.tun_wanted,
+            excluded: self.excluded.clone(),
+            included: self.included.clone(),
+            app_mode: self.app_mode.clone(),
+            chosen_mode: self.chosen_mode.clone(),
+            next_id: self.next_id,
+            home_failure: self.home_failure.clone(),
+            input_error: self.input_error.clone(),
+            pending_url: self.pending_url.clone(),
+            mixed_port: self.mixed_port,
+            mode: self.mode.clone(),
+            connected: self.connected,
+        }
+    }
+
+    fn apply_restore_point(&mut self, point: BookRestorePoint) {
+        self.profiles = point.profiles;
+        self.settings = point.settings;
+        self.active_id = point.active_id;
+        self.tun_wanted = point.tun_wanted;
+        self.excluded = point.excluded;
+        self.included = point.included;
+        self.app_mode = point.app_mode;
+        self.chosen_mode = point.chosen_mode;
+        self.next_id = point.next_id;
+        self.home_failure = point.home_failure;
+        self.input_error = point.input_error;
+        self.pending_url = point.pending_url;
+        self.mixed_port = point.mixed_port;
+        self.mode = point.mode;
+        self.connected = point.connected;
+        nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
+    }
+
+    fn rollback_backup(
+        &mut self,
+        point: BookRestorePoint,
+        was_connected: bool,
+        previous_active: &Option<String>,
+        source: &dyn SubscriptionSource,
+        kernel: &mut dyn KernelLaunch,
+    ) {
+        self.apply_restore_point(point.clone());
+        // Nothing better to do if the rollback write fails, but the in-memory
+        // state and the running kernel are restored either way.
+        let _ = self.persist_checked();
+        if was_connected {
+            if let Some(id) = previous_active.clone() {
+                // Reloading reports through the snapshot; the persisted restore
+                // point is the truth, so put it back after the reload.
+                self.activate(&id, source, kernel, false);
+                self.apply_restore_point(point);
+                let _ = self.persist_checked();
+            }
+        }
+    }
+
+    /// Replace the in-memory state from a validated backup. Session fields
+    /// (takeover flags, the live endpoint, logs) describe the running kernel and
+    /// stay untouched.
+    fn apply_backup_state(&mut self, state: ProfileBackup) {
+        self.profiles = state
+            .profiles
+            .into_iter()
+            .filter(|entry| !entry.id.trim().is_empty())
+            .map(|entry| {
+                let proxy_count = count_proxies(&entry.content);
+                Profile {
+                    id: entry.id,
+                    name: clean_name(&entry.name, "配置"),
+                    kind: entry.kind,
+                    source: entry.source,
+                    user_agent: normalize_subscription_user_agent(&entry.user_agent)
+                        .unwrap_or_default(),
+                    content: entry.content,
+                    override_text: entry.override_text,
+                    applied_override: entry.applied_override,
+                    override_error: None,
+                    failure: None,
+                    last_success_ms: None,
+                    usage: None,
+                    selected: entry.selected,
+                    fixed: entry.fixed,
+                    interval_hours: entry.interval_hours,
+                    age_key: entry.age_key,
+                    updated_ms: entry.updated_ms,
+                    proxy_count,
+                    refresh_revision: 0,
+                    node_metadata: OnceLock::new(),
+                }
+            })
+            .collect();
+        self.settings = state.settings.normalized();
+        nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
+        let known = state
+            .active_id
+            .as_deref()
+            .is_some_and(|id| self.profiles.iter().any(|profile| profile.id == id));
+        self.active_id = if known { state.active_id } else { None };
+        self.tun_wanted = state.tun_wanted;
+        self.excluded = state
+            .excluded_packages
+            .into_iter()
+            .map(|package| package.trim().to_string())
+            .filter(|package| !package.is_empty())
+            .collect();
+        self.included = takeover::clean_packages(&state.included_packages);
+        self.app_mode = takeover::normalize_app_mode(&state.app_mode).to_string();
+        self.chosen_mode = state
+            .chosen_mode
+            .and_then(|mode| normalize_outbound(&mode).map(|mode| mode.to_string()));
+        self.next_id = state.next_id.max(
+            self.profiles
+                .iter()
+                .filter_map(|profile| profile.id.strip_prefix('p')?.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        self.home_failure = None;
+        self.input_error = None;
+        self.pending_url = None;
+        self.recompute_effective();
+        if let Some(mode) = self.chosen_mode.clone() {
+            self.mode = Some(mode);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_save(&self, times: usize) {
+        self.persist_failures.store(times, Ordering::SeqCst);
     }
 
     pub fn sync_runtime(&mut self, kernel: &mut dyn KernelLaunch) {
@@ -5445,6 +5755,32 @@ struct Prepared {
     mode: Option<String>,
 }
 
+/// Why a restore could not bring the restored profile back up, if it could not.
+fn activation_failure(snapshot: &ProfileSnapshot, id: &str) -> Option<String> {
+    let reason = snapshot
+        .failure
+        .clone()
+        .or_else(|| snapshot.input_error.clone())
+        .or_else(|| {
+            snapshot
+                .profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .and_then(|profile| {
+                    profile
+                        .failure
+                        .clone()
+                        .or_else(|| profile.override_error.clone())
+                })
+        });
+    if snapshot.active_id.as_deref() != Some(id) || !snapshot.connected {
+        return Some(reason.unwrap_or_else(|| {
+            crate::i18n::tr(crate::i18n::Key::BackupReactivationFailed).to_string()
+        }));
+    }
+    reason
+}
+
 enum StartError {
     Idle(String),
     Failed(String),
@@ -6174,6 +6510,156 @@ proxy-groups:
 
     fn config(port: i64) -> String {
         format!("mixed-port: {port}\nmode: rule\nproxies: []\n")
+    }
+
+    #[test]
+    fn a_backup_carries_profiles_overrides_settings_and_age_keys() {
+        let dir = temp_dir("backup-round-trip");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("home.yaml", &config(7890));
+        book.add_subscription("https://example.com/sub");
+        book.profiles[1].age_key = "AGE-SECRET-KEY-1EXAMPLE".to_string();
+        book.profiles[1].interval_hours = 6;
+        book.settings = KernelSettings {
+            mixed_port: Some(7891),
+            test_url: "https://test.example".to_string(),
+            ..KernelSettings::default()
+        };
+        book.excluded = vec!["com.example.app".to_string()];
+        book.tun_wanted = true;
+        book.chosen_mode = Some("global".to_string());
+        let backup = book.backup_state();
+        assert_eq!(backup.profiles.len(), 2);
+        assert_eq!(backup.profiles[1].age_key, "AGE-SECRET-KEY-1EXAMPLE");
+        assert_eq!(backup.profiles[1].interval_hours, 6);
+        assert_eq!(backup.settings.mixed_port, Some(7891));
+        assert_eq!(backup.active_id, None);
+
+        // Another machine, or this one after clearing: the state is replaced whole.
+        let other = temp_dir("backup-target");
+        let mut target = ProfileBook::open(&other.0);
+        target.set_platform(ClientPlatform::Desktop);
+        target.add_local("unrelated.yaml", &config(7890));
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        target.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(target.active_id.as_deref(), Some("p1"));
+
+        let snapshot = target.restore_backup(backup.clone(), &RejectSource, &mut kernel).unwrap();
+        assert_eq!(snapshot.profiles.len(), 2);
+        assert_eq!(snapshot.profiles[0].name, "home.yaml");
+        assert_eq!(snapshot.active_id, None, "the backup had nothing active");
+        assert_eq!(snapshot.settings.mixed_port, Some(7891));
+        assert!(snapshot.tun_wanted);
+        assert_eq!(snapshot.excluded, ["com.example.app"]);
+        assert_eq!(target.chosen_mode.as_deref(), Some("global"));
+        assert!(target.next_id > 2, "ids keep counting after the restored ones");
+        // Written through: a restart reads exactly the restored state.
+        assert_eq!(ProfileBook::open(&other.0).backup_state(), backup);
+    }
+
+    #[test]
+    fn a_restore_that_cannot_write_leaves_every_profile_and_setting_unchanged() {
+        let dir = temp_dir("backup-write-failure");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("keep.yaml", &config(7890));
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.settings = KernelSettings {
+            mixed_port: Some(7895),
+            ..KernelSettings::default()
+        };
+        book.persist();
+        let before = book.backup_state();
+        let on_disk = fs::read_to_string(dir.0.join("profiles.json")).unwrap();
+
+        let mut incoming = before.clone();
+        incoming.profiles[0].name = "另一个配置".to_string();
+        incoming.profiles[0].content = config(7999);
+        incoming.active_id = None;
+        incoming.settings.mixed_port = Some(7999);
+
+        book.fail_next_save(1);
+        let error = book.restore_backup(incoming, &RejectSource, &mut kernel).unwrap_err();
+        assert!(error.contains("没有写入"), "{error}");
+        assert_eq!(book.backup_state(), before);
+        assert_eq!(book.active_id.as_deref(), Some("p1"));
+        assert_eq!(book.snapshot().profiles[0].name, "keep.yaml");
+        assert_eq!(fs::read_to_string(dir.0.join("profiles.json")).unwrap(), on_disk);
+        assert_eq!(ProfileBook::open(&dir.0).backup_state(), before);
+    }
+
+    #[test]
+    fn a_restore_that_cannot_reactivate_rolls_back_the_profile_and_the_session() {
+        let dir = temp_dir("backup-activate-failure");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("keep.yaml", &config(7890));
+        let mut kernel = ModeKernel { alive: false, fail_mode: false, last: String::new(), up: 0, down: 0 };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected, "the test starts from a connected session");
+        let before = book.backup_state();
+        let endpoint = book.our_endpoint.clone();
+        let on_disk = fs::read_to_string(dir.0.join("profiles.json")).unwrap();
+
+        // The restored profile cannot be loaded, so the whole restore is undone.
+        let mut incoming = before.clone();
+        incoming.profiles[0].content = "not: [yaml".to_string();
+        let error = book.restore_backup(incoming, &RejectSource, &mut kernel).unwrap_err();
+        assert!(!error.is_empty());
+        assert_eq!(book.backup_state(), before);
+        assert_eq!(book.snapshot().profiles[0].name, "keep.yaml");
+        assert!(book.connected, "the session that was up stays up");
+        assert!(book.takeover.system_proxy, "takeover is not released by a failed restore");
+        assert_eq!(book.our_endpoint, endpoint);
+        assert!(book.pending_release.is_none());
+        assert!(book.home_failure.is_none(), "{:?}", book.home_failure);
+        assert_eq!(fs::read_to_string(dir.0.join("profiles.json")).unwrap(), on_disk);
+    }
+
+    #[test]
+    fn a_restore_reconnects_only_when_the_session_was_connected() {
+        let source_dir = temp_dir("backup-reconnect-source");
+        let mut source = ProfileBook::open(&source_dir.0);
+        source.set_platform(ClientPlatform::Desktop);
+        source.add_local("a.yaml", &config(7890));
+        source.add_local("b.yaml", &config(7891));
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        source.enable("p2", &RejectSource, &mut kernel);
+        let backup = source.backup_state();
+
+        // Not connected: the restored active profile only becomes current.
+        let idle_dir = temp_dir("backup-reconnect-idle");
+        let mut idle = ProfileBook::open(&idle_dir.0);
+        idle.set_platform(ClientPlatform::Desktop);
+        idle.add_local("old.yaml", &config(7890));
+        let mut idle_kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        idle.enable("p1", &RejectSource, &mut idle_kernel);
+        let result = idle.restore_backup(backup.clone(), &RejectSource, &mut idle_kernel).unwrap();
+        assert_eq!(result.active_id.as_deref(), Some("p2"));
+        assert!(!result.connected, "a disconnected session stays disconnected");
+        assert_eq!(idle_kernel.calls, 1, "no reconnect happened");
+
+        // Connected: the restored current profile is loaded into the kernel.
+        let live_dir = temp_dir("backup-reconnect-live");
+        let mut live = ProfileBook::open(&live_dir.0);
+        live.set_platform(ClientPlatform::Desktop);
+        live.add_local("old.yaml", &config(7890));
+        let mut live_kernel = ModeKernel { alive: false, fail_mode: false, last: String::new(), up: 0, down: 0 };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        live.enable("p1", &RejectSource, &mut live_kernel);
+        assert!(live.connect(&mut live_kernel, &mut proxy, &mut tun, &mut vpn).connected);
+        let result = live.restore_backup(backup, &RejectSource, &mut live_kernel).unwrap();
+        assert_eq!(result.active_id.as_deref(), Some("p2"));
+        assert!(result.connected);
+        assert!(live_kernel.last.contains("mixed-port: 7891"), "{}", live_kernel.last);
     }
 
     #[test]

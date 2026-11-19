@@ -119,6 +119,20 @@ pub enum Key {
     TrayTun,
     TraySettings,
     TrayQuit,
+    BackupUnknown,
+    BackupNewer,
+    BackupDamaged,
+    BackupRestoreFailed,
+    BackupExportFailed,
+    BackupReactivationFailed,
+    WebdavNoServer,
+    WebdavInvalidServer,
+    WebdavAuthFailed,
+    WebdavRequestFailed,
+    WebdavUnreachable,
+    WebdavDirectoryFailed,
+    WebdavUnknownBackup,
+    WebdavNotTested,
 }
 
 impl Key {
@@ -149,6 +163,59 @@ impl Key {
             Self::TrayTun => ("TUN 模式", Some("TUN mode")),
             Self::TraySettings => ("设置…", Some("Settings…")),
             Self::TrayQuit => ("退出 Billow", Some("Quit Billow")),
+            Self::BackupUnknown => (
+                "无法识别这个备份文件，请选择 Billow 导出的备份文件",
+                Some("Unrecognised backup file; choose a file exported by Billow"),
+            ),
+            Self::BackupNewer => (
+                "备份来自更新的版本（{version}），请先更新 Billow",
+                Some("The backup comes from a newer version ({version}); update Billow first"),
+            ),
+            Self::BackupDamaged => (
+                "备份文件已损坏，无法恢复",
+                Some("The backup file is damaged and cannot be restored"),
+            ),
+            Self::BackupRestoreFailed => (
+                "恢复没有完成：{reason}",
+                Some("The restore did not complete: {reason}"),
+            ),
+            Self::BackupExportFailed => (
+                "备份没有导出，请检查存储空间",
+                Some("The backup was not saved; check the available storage"),
+            ),
+            Self::BackupReactivationFailed => (
+                "恢复后配置没有启用",
+                Some("The restored profile did not start"),
+            ),
+            Self::WebdavNoServer => ("请填写 WebDAV 服务器地址", Some("Enter the WebDAV server address")),
+            Self::WebdavInvalidServer => (
+                "WebDAV 地址需要以 http:// 或 https:// 开头",
+                Some("The WebDAV address must start with http:// or https://"),
+            ),
+            Self::WebdavAuthFailed => (
+                "WebDAV 认证失败（{status}）",
+                Some("WebDAV authentication failed ({status})"),
+            ),
+            Self::WebdavRequestFailed => (
+                "WebDAV 请求失败（{status}）",
+                Some("WebDAV request failed ({status})"),
+            ),
+            Self::WebdavUnreachable => (
+                "连不上 WebDAV 服务器：{reason}",
+                Some("Cannot reach the WebDAV server: {reason}"),
+            ),
+            Self::WebdavDirectoryFailed => (
+                "无法创建 WebDAV 目录（{status}）",
+                Some("Cannot create the WebDAV folder ({status})"),
+            ),
+            Self::WebdavUnknownBackup => (
+                "云端没有这份备份，请刷新列表",
+                Some("That backup is no longer in the cloud; refresh the list"),
+            ),
+            Self::WebdavNotTested => (
+                "请先测试连接，WebDAV 还不可用",
+                Some("Test the connection first; WebDAV is not usable yet"),
+            ),
         }
     }
 }
@@ -238,6 +305,20 @@ mod tests {
             Key::TrayTun,
             Key::TraySettings,
             Key::TrayQuit,
+            Key::BackupUnknown,
+            Key::BackupNewer,
+            Key::BackupDamaged,
+            Key::BackupRestoreFailed,
+            Key::BackupExportFailed,
+            Key::BackupReactivationFailed,
+            Key::WebdavNoServer,
+            Key::WebdavInvalidServer,
+            Key::WebdavAuthFailed,
+            Key::WebdavRequestFailed,
+            Key::WebdavUnreachable,
+            Key::WebdavDirectoryFailed,
+            Key::WebdavUnknownBackup,
+            Key::WebdavNotTested,
         ] {
             assert!(!tr_at(Locale::ZhCn, key).trim().is_empty(), "{key:?} has no Chinese text");
             assert!(!tr_at(Locale::En, key).trim().is_empty(), "{key:?} has no English text");

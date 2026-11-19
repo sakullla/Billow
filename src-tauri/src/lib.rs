@@ -1,5 +1,6 @@
 mod age_key;
 mod app_update;
+mod backup;
 mod bundled_geo;
 mod diagnostics;
 #[cfg(target_os = "windows")]
@@ -36,6 +37,9 @@ struct Store {
     state: Mutex<ShellState>,
     /// Ignore the initial default-size event until the restored size is seen.
     accept_resize: AtomicBool,
+    /// Set only by a successful WebDAV connection test in this session (R38), so
+    /// a restart never shows a stale "usable" state.
+    webdav_ok: AtomicBool,
 }
 
 struct KernelStore {
@@ -185,6 +189,7 @@ fn prepare_shell(app: &tauri::App) {
     app.manage(Store {
         state: Mutex::new(state),
         accept_resize: AtomicBool::new(false),
+        webdav_ok: AtomicBool::new(false),
     });
 }
 
@@ -1143,6 +1148,214 @@ fn refresh_kernel(app: AppHandle) -> KernelStatus {
     manager.sync(channel, &GithubReleaseClient::new())
 }
 
+// ─────────────────────── 备份与恢复 (R38) ───────────────────────
+
+fn backup_platform() -> String {
+    takeover::ClientPlatform::current().as_str().to_string()
+}
+
+/// Build the live state as a backup document.
+fn current_backup(app: &AppHandle) -> Result<backup::BackupFile, String> {
+    let profiles = with_profile(app, |session| session.book.backup_state());
+    let shell = {
+        let store = app.state::<Store>();
+        lock(&store.state).clone()
+    };
+    Ok(backup::compose(
+        profiles,
+        &shell,
+        &app.package_info().version.to_string(),
+        &backup_platform(),
+        &backup::device_name(),
+        diagnostics::now_ms(),
+    ))
+}
+
+fn backup_directory(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    export_directory(app).map_err(|_| i18n::tr(i18n::Key::BackupExportFailed).to_string())
+}
+
+/// Write a backup with profiles, 覆写, age keys, kernel settings and app
+/// settings. WebDAV credentials, window size, traffic history and kernel/GEO
+/// files are deliberately left out.
+#[tauri::command(async)]
+fn export_backup(app: AppHandle) -> Result<String, String> {
+    let directory = backup_directory(&app)?;
+    let file = current_backup(&app)?;
+    backup::export(&directory, &file, diagnostics::now_ms())
+        .map(|path| path.display().to_string())
+}
+
+/// Restore a whole backup. Validation happens first; a failure partway restores
+/// the state captured before the attempt, so nothing is half applied.
+#[tauri::command(async)]
+fn restore_backup_text(app: AppHandle, text: String) -> Result<ProfileSnapshot, String> {
+    let version = app.package_info().version.to_string();
+    let mut file = backup::parse(&text, &version)?;
+    let shell_before = {
+        let store = app.state::<Store>();
+        lock(&store.state).clone()
+    };
+    let profiles_before = with_profile(&app, |session| session.book.backup_state());
+    backup::merge_platform(&mut file, &backup_platform(), &profiles_before, &shell_before);
+    let shell_after = file.shell.apply(&shell_before);
+
+    let kernel_path = {
+        let store = app.state::<KernelStore>();
+        lock_kernel(&store.manager).installed_path()
+    };
+    let client = subscription_client(&app);
+    let outcome = {
+        let store = app.state::<ProfileStore>();
+        let mut session = lock_profiles(&store.session);
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = &mut *session;
+        runtime.set_kernel_path(kernel_path.clone());
+        tun.set_kernel_path(kernel_path);
+        match book.restore_backup(file.profiles, &client, runtime) {
+            Ok(snapshot) => {
+                // Restored settings can defer a takeover release or move the
+                // listener port; follow the new state instead of the old one.
+                book.apply_release(proxy, tun, vpn);
+                book.reconcile_system_proxy(proxy);
+                Ok(snapshot)
+            }
+            Err(reason) => Err(reason),
+        }
+    };
+    let restored = match outcome {
+        Ok(snapshot) => snapshot,
+        Err(reason) => {
+            return Err(i18n::tr_args(i18n::Key::BackupRestoreFailed, &[("reason", &reason)]))
+        }
+    };
+
+    let path = shell_path(&app)?;
+    if let Err(error) = write_shell_state(&path, &shell_after) {
+        // The profile half is already written, so undo it too.
+        let _ = with_profile(&app, |session| {
+            let ProfileSession { book, runtime, proxy, .. } = session;
+            let undone = book.restore_backup(profiles_before, &client, runtime);
+            book.reconcile_system_proxy(proxy);
+            undone
+        });
+        return Err(i18n::tr_args(i18n::Key::BackupRestoreFailed, &[("reason", &error)]));
+    }
+    {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        *state = shell_after.clone();
+    }
+    i18n::apply_preference(&shell_after.language);
+    apply_native_theme(&app, &shell_after.theme);
+    refresh_tray(&app, &restored);
+    Ok(restored)
+}
+
+#[derive(serde::Serialize)]
+struct WebdavInfo {
+    url: String,
+    username: String,
+    password: String,
+    /// A connection test succeeded in this session; any change resets it.
+    available: bool,
+}
+
+fn webdav_info(app: &AppHandle) -> WebdavInfo {
+    let store = app.state::<Store>();
+    let state = lock(&store.state);
+    WebdavInfo {
+        url: state.webdav_url.clone(),
+        username: state.webdav_user.clone(),
+        password: state.webdav_password.clone(),
+        available: store.webdav_ok.load(Ordering::SeqCst),
+    }
+}
+
+fn webdav_account(app: &AppHandle) -> backup::WebDavAccount {
+    let store = app.state::<Store>();
+    backup::WebDavAccount::from_state(&lock(&store.state))
+}
+
+#[tauri::command]
+fn webdav_settings(app: AppHandle) -> WebdavInfo {
+    webdav_info(&app)
+}
+
+/// Save the WebDAV account. Changing it makes a previous test result stale;
+/// saving the same values again (as the button flows do) keeps it.
+#[tauri::command(async)]
+fn set_webdav_settings(
+    app: AppHandle,
+    url: String,
+    username: String,
+    password: String,
+) -> WebdavInfo {
+    let changed = {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        let changed = state.webdav_url != url
+            || state.webdav_user != username
+            || state.webdav_password != password;
+        state.webdav_url = url;
+        state.webdav_user = username;
+        state.webdav_password = password;
+        persist(&app, &state);
+        changed
+    };
+    if changed {
+        app.state::<Store>().webdav_ok.store(false, Ordering::SeqCst);
+    }
+    webdav_info(&app)
+}
+
+#[derive(serde::Serialize)]
+struct WebdavTest {
+    available: bool,
+    error: Option<String>,
+}
+
+/// "Test connection": create the folder when needed, then read it. Only a
+/// success marks WebDAV as usable.
+#[tauri::command(async)]
+fn test_webdav(app: AppHandle) -> WebdavTest {
+    let result = backup::test_connection(&webdav_account(&app));
+    let available = result.is_ok();
+    app.state::<Store>().webdav_ok.store(available, Ordering::SeqCst);
+    WebdavTest {
+        available,
+        error: result.err(),
+    }
+}
+
+/// Upload the current state. Only a user action starts an upload; nothing is
+/// uploaded automatically (R45).
+#[tauri::command(async)]
+fn upload_backup(app: AppHandle) -> Result<String, String> {
+    if !app.state::<Store>().webdav_ok.load(Ordering::SeqCst) {
+        return Err(i18n::tr(i18n::Key::WebdavNotTested).to_string());
+    }
+    let file = current_backup(&app)?;
+    let text = backup::to_text(&file)?;
+    backup::upload(&webdav_account(&app), &text, diagnostics::now_ms())
+}
+
+#[tauri::command(async)]
+fn list_remote_backups(app: AppHandle) -> Result<Vec<backup::RemoteBackup>, String> {
+    backup::list(&webdav_account(&app))
+}
+
+#[tauri::command(async)]
+fn restore_remote_backup(app: AppHandle, name: String) -> Result<ProfileSnapshot, String> {
+    let text = backup::download(&webdav_account(&app), &name)?;
+    restore_backup_text(app, text)
+}
+
 #[derive(serde::Serialize)]
 struct AppInfo {
     version: String,
@@ -1601,6 +1814,14 @@ pub fn run() {
             set_rule_disabled,
             clear_logs,
             export_logs,
+            export_backup,
+            restore_backup_text,
+            webdav_settings,
+            set_webdav_settings,
+            test_webdav,
+            upload_backup,
+            list_remote_backups,
+            restore_remote_backup,
             clear_notice,
             refresh_kernel,
             app_info,

@@ -6,6 +6,7 @@ import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
 import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
+import BackupSection from '../components/BackupSection.vue'
 import UwpLoopbackDialog from '../components/UwpLoopbackDialog.vue'
 import { useStore } from '../lib/store'
 import { t } from '../lib/i18n'
@@ -677,13 +678,14 @@ const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 /** Phone sub-pages go back through the app history when possible (App provides it). */
 const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab.value = 'general'))
 const openShortcuts = inject<(() => void) | null>('openShortcuts', null)
-const SUB_TITLES: Record<SettingsTab, string> = {
+const SUB_TITLES = computed<Record<SettingsTab, string>>(() => ({
   general: '设置',
   proxy: '系统代理',
   kernel: '内核',
   tun: 'TUN 模式',
   dns: 'DNS',
-}
+  backup: t('settings.backup.title'),
+}))
 
 const isWindows = computed(
   () => app.value?.platform === 'windows' || (typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)),
@@ -1281,6 +1283,7 @@ const TABS = computed(() => [
   { id: 'kernel' as SettingsTab, label: kernelDirty.value ? '内核 •' : '内核', icon: 'cpu' },
   ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: tunDirty.value ? 'TUN •' : 'TUN', icon: 'shield' }]),
   { id: 'dns' as SettingsTab, label: dnsDirty.value ? 'DNS •' : 'DNS', icon: 'globe' },
+  { id: 'backup' as SettingsTab, label: t('settings.backup.title'), icon: 'database' },
 ])
 </script>
 
@@ -1514,6 +1517,15 @@ const TABS = computed(() => [
               <p class="muted small">更新订阅时使用；留空用内核默认值，单个订阅可在「编辑信息」中覆盖。</p>
             </label>
           </details>
+        </section>
+
+        <p class="settings-group-label">{{ t('settings.backup.group') }}</p>
+        <section class="card list-card settings-list" data-testid="backup-entry">
+          <button type="button" class="nav-row" data-testid="open-backup" @click="store.settingsTab.value = 'backup'">
+            <span class="nav-row-icon slate"><Icon name="database" /></span>
+            <span class="nav-row-title">{{ t('settings.backup.title') }}</span>
+            <Icon name="chevron-right" :size="16" class="muted" />
+          </button>
         </section>
 
         <p class="settings-group-label">关于</p>
@@ -2297,7 +2309,7 @@ const TABS = computed(() => [
     </template>
 
     <!-- ───────── DNS ───────── -->
-    <template v-else>
+    <template v-else-if="store.settingsTab.value === 'dns'">
       <section class="card" data-testid="dns-settings">
         <header class="card-head">
           <h2>DNS</h2>
@@ -2623,6 +2635,11 @@ const TABS = computed(() => [
           <button type="button" class="btn sm" data-testid="open-dns-query" @click="store.dnsQueryOpen.value = true">查询</button>
         </div>
       </section>
+    </template>
+
+    <!-- ───────── 备份与恢复 ───────── -->
+    <template v-else>
+      <BackupSection :compact="compact" />
     </template>
 
     <Modal v-if="confirmRestart" title="重启内核" @close="confirmRestart = false">

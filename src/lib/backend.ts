@@ -18,11 +18,14 @@ import {
   type AppMode,
   type ProviderDetail,
   type GeoFile,
+  type RemoteBackup,
   type RulesResult,
   type ShellState,
   type Snapshot,
   type ThemePreference,
   type UwpApp,
+  type WebdavSettings,
+  type WebdavTestResult,
 } from './types'
 import { normalizeLanguage, normalizeLocale } from './i18n'
 import { createDemoBackend } from './demo'
@@ -136,6 +139,19 @@ export interface Backend {
   saveSettings(settings: KernelSettings): Promise<Snapshot>
   syncTray(): Promise<void>
 
+  /** Write a versioned backup file and return its full path (R38). */
+  exportBackup(): Promise<string>
+  /** Replace the whole state from backup text; rejects with the reason (R38). */
+  restoreBackup(text: string): Promise<Snapshot>
+  webdavSettings(): Promise<WebdavSettings>
+  setWebdav(url: string, username: string, password: string): Promise<WebdavSettings>
+  /** Test the WebDAV folder; only a success marks it usable. */
+  testWebdav(): Promise<WebdavTestResult>
+  /** Upload the current state by hand; returns the remote file name. */
+  uploadBackup(): Promise<string>
+  listRemoteBackups(): Promise<RemoteBackup[]>
+  restoreRemoteBackup(name: string): Promise<Snapshot>
+
   onChange(handler: (snapshot: Snapshot) => void): Promise<() => void>
   /** Desktop tray asks the window to open a page or the add-profile dialog. */
   onTrayNavigate?(handler: (target: string) => void): Promise<() => void>
@@ -156,6 +172,26 @@ export function normalizeNodeTest(raw: unknown): NodeTestEvent {
 
 export function inTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+}
+
+export function normalizeWebdav(raw: unknown): WebdavSettings {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    url: typeof value.url === 'string' ? value.url : '',
+    username: typeof value.username === 'string' ? value.username : '',
+    password: typeof value.password === 'string' ? value.password : '',
+    available: Boolean(value.available),
+  }
+}
+
+export function normalizeRemoteBackup(raw: unknown): RemoteBackup {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    name: typeof value.name === 'string' ? value.name : '',
+    device: typeof value.device === 'string' ? value.device : '',
+    modified: typeof value.modified === 'string' ? value.modified : null,
+    size: typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : null,
+  }
 }
 
 function createTauriBackend(): Backend {
@@ -281,6 +317,25 @@ function createTauriBackend(): Backend {
     async syncTray() {
       await call('sync_tray').catch(() => undefined)
     },
+
+    exportBackup: () => call<string>('export_backup'),
+    restoreBackup: (text) => snap('restore_backup_text', { text }),
+    webdavSettings: async () => normalizeWebdav(await call<unknown>('webdav_settings')),
+    setWebdav: async (url, username, password) =>
+      normalizeWebdav(await call<unknown>('set_webdav_settings', { url, username, password })),
+    testWebdav: async () => {
+      const raw = await call<{ available?: unknown; error?: unknown }>('test_webdav')
+      return {
+        available: Boolean(raw?.available),
+        error: typeof raw?.error === 'string' ? raw.error : null,
+      }
+    },
+    uploadBackup: () => call<string>('upload_backup'),
+    listRemoteBackups: async () => {
+      const raw = await call<unknown>('list_remote_backups')
+      return Array.isArray(raw) ? raw.map(normalizeRemoteBackup) : []
+    },
+    restoreRemoteBackup: (name) => snap('restore_remote_backup', { name }),
 
     async onChange(handler) {
       const { listen } = await import('@tauri-apps/api/event')

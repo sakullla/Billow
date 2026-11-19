@@ -388,6 +388,7 @@ dependencies = [
  "jni 0.21.1",
  "md-5",
  "ndk-context",
+ "quick-xml",
  "rquickjs",
  "ruzstd",
  "semver",

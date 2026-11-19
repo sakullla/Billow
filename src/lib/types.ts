@@ -452,6 +452,30 @@ export interface ShellState {
   locale: Locale
 }
 
+/** A backup file the WebDAV listing reports (R38). */
+export interface RemoteBackup {
+  /** File name inside the configured folder, used to fetch it again. */
+  name: string
+  /** Device that uploaded it, recovered from the file name. */
+  device: string
+  /** Server `getlastmodified` text, shown as is. */
+  modified: string | null
+  size: number | null
+}
+
+/** WebDAV account and whether this session's connection test succeeded (R38). */
+export interface WebdavSettings {
+  url: string
+  username: string
+  password: string
+  available: boolean
+}
+
+export interface WebdavTestResult {
+  available: boolean
+  error: string | null
+}
+
 export interface RulesResult {
   rules: RuleRow[]
   error: string | null
