@@ -333,7 +333,7 @@ pub fn log_file_name(now_ms: u64) -> String {
     )
 }
 
-fn civil_from_days(days: i64) -> (i64, u64, u64) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, u64, u64) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let day_of_era = (z - era * 146_097) as u64;
@@ -552,6 +552,79 @@ pub fn read_connections(text: &str) -> ConnectionsReading {
         total,
         error: None,
     }
+}
+
+/// One connection's counters for the traffic history (R43). Unlike the
+/// `/connections` view this keeps every row and does not drop entries by host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionTraffic {
+    pub id: String,
+    pub chains: Vec<String>,
+    pub upload: u64,
+    pub download: u64,
+}
+
+/// Parse the counters the history accumulates. `None` means the body was not a
+/// controller response, so the caller must not treat it as "no connections".
+pub fn connection_traffic_from_body(text: &str) -> Option<Vec<ConnectionTraffic>> {
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    if !value.is_object() {
+        return None;
+    }
+    let list = value.get("connections").and_then(serde_json::Value::as_array);
+    let Some(list) = list else {
+        // A valid response for an empty kernel writes `"connections": []`; an
+        // object without the key is not something the kernel does.
+        return None;
+    };
+    let mut rows = Vec::with_capacity(list.len());
+    for item in list {
+        // Without an id two connections cannot be told apart, and the delta would
+        // be attributed to the wrong row.
+        let id = clean_token(item.get("id").and_then(serde_json::Value::as_str).unwrap_or(""), 80);
+        if id.is_empty() {
+            continue;
+        }
+        let chains: Vec<String> = item
+            .get("chains")
+            .and_then(serde_json::Value::as_array)
+            .map(|chains| {
+                chains
+                    .iter()
+                    .filter_map(|chain| chain.as_str())
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        rows.push(ConnectionTraffic {
+            id,
+            chains,
+            upload: json_u64(item.get("upload")).unwrap_or(0),
+            download: json_u64(item.get("download")).unwrap_or(0),
+        });
+    }
+    Some(rows)
+}
+
+/// Read every connection's counters for one history sample.
+pub fn fetch_connection_traffic(endpoint: &ControllerEndpoint) -> Result<Vec<ConnectionTraffic>, String> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return Err(CONNECTIONS_ERROR.to_string());
+    }
+    let url = format!("http://{}:{}/connections", endpoint.host, endpoint.port);
+    let agent = controller_agent(Duration::from_millis(900));
+    let response = authorize(agent.get(&url), endpoint)
+        .call()
+        .map_err(|_| CONNECTIONS_ERROR.to_string())?;
+    let mut body = String::new();
+    // The history needs every row, so the cap only protects against a runaway body.
+    response
+        .into_reader()
+        .take(8_000_000)
+        .read_to_string(&mut body)
+        .map_err(|_| CONNECTIONS_ERROR.to_string())?;
+    connection_traffic_from_body(&body).ok_or_else(|| CONNECTIONS_ERROR.to_string())
 }
 
 fn controller_agent(read: Duration) -> ureq::Agent {
@@ -1604,6 +1677,44 @@ fn loopback(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn traffic_history_samples_keep_every_connection_including_empty_hosts() {
+        let mut connections = Vec::new();
+        for index in 0..600 {
+            connections.push(serde_json::json!({
+                "id": format!("id-{index}"),
+                "upload": index,
+                "download": index * 10,
+                "chains": ["香港 01", "节点选择"],
+                "metadata": { "host": "" }
+            }));
+        }
+        let body = serde_json::json!({ "connections": connections }).to_string();
+        let rows = connection_traffic_from_body(&body).expect("a controller body");
+        // No 500-row view cap: a sample must see every connection.
+        assert_eq!(rows.len(), 600);
+        assert_eq!(rows[599].id, "id-599");
+        assert_eq!(rows[0].upload, 0);
+        assert_eq!(rows[599].download, 5_990);
+        assert_eq!(rows[0].chains, vec!["香港 01".to_string(), "节点选择".to_string()]);
+
+        // Rows without an id cannot be told apart; an empty body is a valid sample.
+        let odd = serde_json::json!({
+            "connections": [
+                { "id": "", "upload": 1, "download": 2 },
+                { "id": "keep", "upload": 3, "download": 4, "chains": ["DIRECT"] }
+            ]
+        })
+        .to_string();
+        let rows = connection_traffic_from_body(&odd).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "keep");
+        assert_eq!(connection_traffic_from_body(r#"{"connections":[]}"#), Some(Vec::new()));
+        // A failed or truncated read must not look like "no traffic".
+        assert_eq!(connection_traffic_from_body("{not json"), None);
+        assert_eq!(connection_traffic_from_body(r#"{"uploadTotal":1}"#), None);
+    }
 
     /// Reads one proxied HTTP request head and returns its request line.
     fn read_proxy_request(stream: &mut std::net::TcpStream) -> String {

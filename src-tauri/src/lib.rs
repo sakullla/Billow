@@ -16,6 +16,7 @@ mod profile;
 mod shell;
 mod takeover;
 mod tray;
+mod traffic_history;
 mod resources;
 #[cfg(target_os = "windows")]
 mod win_process;
@@ -59,6 +60,12 @@ struct ProfileStore {
     session: Mutex<ProfileSession>,
 }
 
+/// The traffic aggregate and the file it lives in (R43). The recorder thread
+/// and the stats dialog share it; nothing here depends on a window existing.
+struct TrafficStore {
+    history: Mutex<traffic_history::TrafficHistory>,
+}
+
 fn lock(state: &Mutex<ShellState>) -> std::sync::MutexGuard<'_, ShellState> {
     state
         .lock()
@@ -72,6 +79,14 @@ fn lock_kernel(state: &Mutex<KernelManager>) -> std::sync::MutexGuard<'_, Kernel
 }
 
 fn lock_profiles(state: &Mutex<ProfileSession>) -> std::sync::MutexGuard<'_, ProfileSession> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_traffic(
+    state: &Mutex<traffic_history::TrafficHistory>,
+) -> std::sync::MutexGuard<'_, traffic_history::TrafficHistory> {
     state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -254,6 +269,116 @@ fn prepare_profiles(app: &tauri::App) {
         }),
     });
     bind_install_links(app.handle());
+}
+
+/// `<app_data_dir>/traffic-history.json`, next to the kernels, never in a backup.
+fn traffic_history_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| err.to_string())?;
+    std::fs::create_dir_all(&directory).map_err(|err| err.to_string())?;
+    Ok(directory.join("traffic-history.json"))
+}
+
+/// Load the aggregate and mirror the stored switch before any sample arrives.
+///
+/// The recorder samples from a Rust thread (see [`spawn_traffic_recorder`]), so
+/// it keeps running while the window is hidden, closed or released (R43, R44).
+fn prepare_traffic_history(app: &tauri::App) {
+    let enabled = {
+        let store = app.state::<Store>();
+        lock(&store.state).traffic_history
+    };
+    let path = match traffic_history_path(app.handle()) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("Billow traffic history path unavailable: {err}");
+            std::env::temp_dir()
+                .join(format!("billow-traffic-{}", std::process::id()))
+                .join("traffic-history.json")
+        }
+    };
+    let mut history = traffic_history::TrafficHistory::open(path);
+    // Drop expired days even if the user never opens the dialog this session.
+    history.prune(&traffic_history::today());
+    history.set_enabled(enabled);
+    history.save_if_dirty();
+    app.manage(TrafficStore {
+        history: Mutex::new(history),
+    });
+}
+
+fn reset_traffic_baselines(app: &AppHandle) {
+    let store = app.state::<TrafficStore>();
+    let mut history = lock_traffic(&store.history);
+    history.reset_baselines();
+    history.save_if_dirty();
+}
+
+fn flush_traffic_history(app: &AppHandle) {
+    let Some(store) = app.try_state::<TrafficStore>() else {
+        return;
+    };
+    lock_traffic(&store.history).save_if_dirty();
+}
+
+/// One sample a second while recording is on and a profile is running. The id
+/// table is dropped on disconnect and on a profile switch, so counters from an
+/// earlier kernel session are never subtracted from the new one.
+fn spawn_traffic_recorder(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let mut profile: Option<String> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let enabled = {
+                let store = handle.state::<Store>();
+                lock(&store.state).traffic_history
+            };
+            // Mirror the stored switch before sampling, so a sample that races a
+            // switch-off is dropped by `record` itself instead of adding bytes.
+            {
+                let store = handle.state::<TrafficStore>();
+                lock_traffic(&store.history).set_enabled(enabled);
+            }
+            if !enabled {
+                profile = None;
+                continue;
+            }
+            let context = with_profile(&handle, |session| {
+                (
+                    session.book.is_connected(),
+                    session.book.active_profile(),
+                    ProfileBook::controller_of(&mut session.runtime),
+                )
+            });
+            let (connected, active, endpoint) = context;
+            let Some((id, name)) = active.filter(|_| connected) else {
+                reset_traffic_baselines(&handle);
+                profile = None;
+                continue;
+            };
+            if profile.as_deref() != Some(id.as_str()) {
+                // A profile switch starts a new kernel; its connections restart
+                // their counters, so the old ids must not contribute.
+                reset_traffic_baselines(&handle);
+                profile = Some(id);
+            }
+            let Some(endpoint) = endpoint else {
+                // The kernel is between restarts; keep the table for the next read.
+                continue;
+            };
+            let Ok(connections) = diagnostics::fetch_connection_traffic(&endpoint) else {
+                // A failed read is not "no connections": keeping the baselines
+                // avoids counting the same bytes twice when it recovers.
+                continue;
+            };
+            let date = traffic_history::today();
+            let store = handle.state::<TrafficStore>();
+            lock_traffic(&store.history).record(&date, &name, &connections);
+        }
+    });
 }
 
 fn accept_install_link(app: &AppHandle, link: &str) {
@@ -1390,15 +1515,23 @@ struct AppInfo {
     release_ui_on_close: bool,
     /// Query the exit IP automatically; off by default (R40).
     auto_exit_ip: bool,
+    /// Keep a traffic history; off by default (R43).
+    traffic_history: bool,
     data_dir: Option<String>,
 }
 
 #[tauri::command]
 fn app_info(app: AppHandle) -> AppInfo {
-    let (close_to_tray, silent_start, release_ui_on_close, auto_exit_ip) = {
+    let (close_to_tray, silent_start, release_ui_on_close, auto_exit_ip, traffic_history) = {
         let store = app.state::<Store>();
         let state = lock(&store.state);
-        (state.close_to_tray, state.silent_start, state.release_ui_on_close, state.auto_exit_ip)
+        (
+            state.close_to_tray,
+            state.silent_start,
+            state.release_ui_on_close,
+            state.auto_exit_ip,
+            state.traffic_history,
+        )
     };
     AppInfo {
         version: app.package_info().version.to_string(),
@@ -1408,6 +1541,7 @@ fn app_info(app: AppHandle) -> AppInfo {
         silent_start,
         release_ui_on_close,
         auto_exit_ip,
+        traffic_history,
         data_dir: app
             .path()
             .app_config_dir()
@@ -1475,6 +1609,78 @@ fn set_exit_ip_auto(app: AppHandle, enabled: bool) -> AppInfo {
         }
     }
     app_info(app)
+}
+
+/// One stats read: the switch, the retained window and the aggregated rows.
+#[derive(serde::Serialize)]
+struct TrafficHistoryView {
+    enabled: bool,
+    retention_days: i64,
+    today: String,
+    from: String,
+    to: String,
+    entries: Vec<traffic_history::DatedTrafficEntry>,
+}
+
+/// Rows for the selected range. The dialog groups them by profile, group or node;
+/// the daily bars use the same rows so the totals always agree.
+#[tauri::command]
+fn traffic_history(
+    app: AppHandle,
+    range: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> TrafficHistoryView {
+    let enabled = {
+        let store = app.state::<Store>();
+        lock(&store.state).traffic_history
+    };
+    let today = traffic_history::today();
+    let (start, end) = traffic_history::range_bounds(&range, from.as_deref(), to.as_deref(), &today);
+    let entries = {
+        let store = app.state::<TrafficStore>();
+        let mut history = lock_traffic(&store.history);
+        // The stats view is the one place that always sees the clock, so expired
+        // days are dropped here even while recording is off.
+        history.prune(&today);
+        history.save_if_dirty();
+        history.entries(&start, &end)
+    };
+    TrafficHistoryView {
+        enabled,
+        retention_days: traffic_history::RETENTION_DAYS,
+        today,
+        from: start,
+        to: end,
+        entries,
+    }
+}
+
+/// Turn recording on or off (R43). Off keeps every existing row and stops the
+/// sampler on the next tick; the recorder mirrors this flag as well.
+#[tauri::command]
+fn set_traffic_history(app: AppHandle, enabled: bool) -> AppInfo {
+    let changed = {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        let changed = state.traffic_history != enabled;
+        if changed {
+            state.traffic_history = enabled;
+            persist(&app, &state);
+        }
+        changed
+    };
+    if changed {
+        let store = app.state::<TrafficStore>();
+        lock_traffic(&store.history).set_enabled(enabled);
+    }
+    app_info(app)
+}
+
+#[tauri::command]
+fn clear_traffic_history(app: AppHandle) {
+    let store = app.state::<TrafficStore>();
+    lock_traffic(&store.history).clear();
 }
 
 fn with_session_raw<T>(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> T) -> T {
@@ -2119,6 +2325,9 @@ pub fn run() {
             set_autostart,
             set_app_behavior,
             set_exit_ip_auto,
+            traffic_history,
+            set_traffic_history,
+            clear_traffic_history,
             sync_tray,
             hotkey_settings,
             set_hotkey,
@@ -2138,6 +2347,9 @@ pub fn run() {
             prepare_shell(app);
             prepare_kernel(app);
             prepare_profiles(app);
+            // The history loads before the recorder starts, so the first sample
+            // already lands in the file the stats dialog reads (R43).
+            prepare_traffic_history(app);
             spawn_auto_update(app.handle());
             #[cfg(desktop)]
             {
@@ -2156,6 +2368,7 @@ pub fn run() {
                 }
             }
             spawn_kernel_guardian(app.handle());
+            spawn_traffic_recorder(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -2180,7 +2393,10 @@ pub fn run() {
             }
             // Dock "Quit", Cmd+Q and system logout skip the window close path;
             // never leave the OS proxy pointing at a kernel that is gone.
-            tauri::RunEvent::Exit => release_proxy_on_exit(app),
+            tauri::RunEvent::Exit => {
+                release_proxy_on_exit(app);
+                flush_traffic_history(app);
+            }
             _ => {}
         });
 }

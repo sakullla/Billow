@@ -7,6 +7,7 @@ import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
 import TrafficChart from '../components/TrafficChart.vue'
+import TrafficStatsDialog from '../components/TrafficStatsDialog.vue'
 import {
   daysLeft,
   delayText,
@@ -509,6 +510,12 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="snap.connected" class="hero-chart" data-testid="traffic-card">
+          <!-- The stats dialog opens from the traffic area and the settings section (R43). -->
+          <div class="hero-chart-head">
+            <button type="button" class="btn ghost sm" data-testid="open-traffic-stats" @click="store.openTrafficStats">
+              <Icon name="activity" :size="13" />{{ t('settings.traffic.open') }}
+            </button>
+          </div>
           <TrafficChart
             :up="store.traffic.value.up"
             :down="store.traffic.value.down"
@@ -947,5 +954,15 @@ onBeforeUnmount(() => {
         <button type="button" class="btn primary" :disabled="isSheetSwitching" @click="addFromSheet"><Icon name="plus" :size="15" />添加新配置</button>
       </template>
     </Modal>
+    <TrafficStatsDialog v-if="store.trafficStatsOpen.value" @close="store.trafficStatsOpen.value = false" />
   </div>
 </template>
+
+<style scoped>
+/* The stats entry sits above the live chart so it does not compete with the rates. */
+.hero-chart-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+</style>

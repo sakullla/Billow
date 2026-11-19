@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
 import { autoTypeLabel, delayText, groupTypeLabel, isInfoNode, listedGroups, protocolLabel } from '../lib/format'
+import { t } from '../lib/i18n'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { getFocusable, useFocusTrap } from '../lib/ui/focus'
 import { getShortcut, pageShortcutCombo, shortcutKeyLabel } from '../lib/ui/shortcuts'
@@ -104,11 +105,19 @@ const listId = useId()
 const query = ref('')
 const active = ref(0)
 const paletteKey = shortcutKeyLabel(getShortcut('palette').combo)
-const settings = computed(() =>
-  props.settings.filter(
+const settings = computed(() => [
+  ...props.settings.filter(
     (item) => !(props.platform === 'android' && (item.id === 'tun' || item.id === 'proxy')),
   ),
-)
+  // Traffic stats live on the general settings page, where the switch and the
+  // stats button are; the palette jumps there so the entry always has a target (R43).
+  {
+    id: 'traffic-stats',
+    label: t('settings.traffic.title'),
+    description: t('traffic.subtitle'),
+    icon: 'activity',
+  },
+])
 
 const defaultActions = computed<PaletteAction[]>(() => [
   {
@@ -429,7 +438,8 @@ function onKeydown(event: KeyboardEvent) {
 function choose(entry: PaletteEntry) {
   if (entry.disabled) return
   if (entry.kind === 'page') emit('navigate', entry.id)
-  else if (entry.kind === 'setting') emit('open-settings', entry.id)
+  // Traffic stats are a dialog opened from the general settings section (R43).
+  else if (entry.kind === 'setting') emit('open-settings', entry.id === 'traffic-stats' ? 'general' : entry.id)
   else if (entry.kind === 'profile') emit('select-profile', entry.id)
   else if (entry.kind === 'group') emit('open-group', entry.id)
   else if (entry.kind === 'node' && entry.groupName) emit('select-node', entry.groupName, entry.id)

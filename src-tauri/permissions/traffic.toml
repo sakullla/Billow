@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-traffic-history"
+description = "Enables the traffic_history command without any pre-configured scope."
+commands.allow = ["traffic_history"]
+
+[[permission]]
+identifier = "allow-set-traffic-history"
+description = "Enables the set_traffic_history command without any pre-configured scope."
+commands.allow = ["set_traffic_history"]
+
+[[permission]]
+identifier = "allow-clear-traffic-history"
+description = "Enables the clear_traffic_history command without any pre-configured scope."
+commands.allow = ["clear_traffic_history"]

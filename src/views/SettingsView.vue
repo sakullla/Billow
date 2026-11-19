@@ -8,6 +8,7 @@ import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import BackupSection from '../components/BackupSection.vue'
 import HotkeySection from '../components/HotkeySection.vue'
+import TrafficStatsDialog from '../components/TrafficStatsDialog.vue'
 import UwpLoopbackDialog from '../components/UwpLoopbackDialog.vue'
 import { useStore } from '../lib/store'
 import { t } from '../lib/i18n'
@@ -1533,6 +1534,22 @@ const TABS = computed(() => [
               @update:model-value="store.setAutoExitIp"
             />
           </div>
+          <div v-if="app" class="nav-row static" data-testid="traffic-history-setting">
+            <span class="nav-row-icon slate"><Icon name="activity" /></span>
+            <div class="grow min0">
+              <span class="nav-row-title">{{ t('settings.traffic.title') }}</span>
+              <p class="muted small">{{ t('settings.traffic.retention', { days: store.trafficStats.value?.retention_days ?? 90 }) }}</p>
+              <button type="button" class="btn ghost sm" data-testid="open-traffic-stats" @click="store.openTrafficStats">
+                <Icon name="activity" :size="14" />{{ t('settings.traffic.open') }}
+              </button>
+            </div>
+            <Toggle
+              :model-value="app.traffic_history"
+              :label="t('settings.traffic.record')"
+              data-testid="traffic-history-toggle"
+              @update:model-value="store.setTrafficRecording"
+            />
+          </div>
           <details class="nav-fold" data-testid="subscription-settings" :open="Boolean(snap.settings.subscription_user_agent) || undefined">
             <summary class="nav-row">
               <span class="nav-row-icon violet"><Icon name="link" /></span>
@@ -1594,6 +1611,22 @@ const TABS = computed(() => [
             :label="t('settings.exitIp.auto')"
             data-testid="auto-exit-ip-toggle"
             @update:model-value="store.setAutoExitIp"
+          />
+        </div>
+        <!-- Traffic history is opt-in; the same switch is in the stats dialog (R43). -->
+        <div v-if="app" class="setting-row" data-testid="traffic-history-setting">
+          <div class="grow">
+            <strong>{{ t('settings.traffic.title') }}</strong>
+            <p class="muted small">{{ t('settings.traffic.detail', { days: store.trafficStats.value?.retention_days ?? 90 }) }}</p>
+          </div>
+          <button type="button" class="btn ghost sm" data-testid="open-traffic-stats" @click="store.openTrafficStats">
+            <Icon name="activity" :size="14" />{{ t('settings.traffic.open') }}
+          </button>
+          <Toggle
+            :model-value="app.traffic_history"
+            :label="t('settings.traffic.record')"
+            data-testid="traffic-history-toggle"
+            @update:model-value="store.setTrafficRecording"
           />
         </div>
       </section>
@@ -2695,6 +2728,8 @@ const TABS = computed(() => [
       </template>
     </Modal>
     <UwpLoopbackDialog v-if="uwpOpen" @close="uwpOpen = false" />
+    <!-- Traffic stats stay a dialog, reachable from here and the home traffic card (R43). -->
+    <TrafficStatsDialog v-if="store.trafficStatsOpen.value" @close="store.trafficStatsOpen.value = false" />
   </div>
 </template>
 

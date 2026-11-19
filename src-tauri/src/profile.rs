@@ -2557,6 +2557,16 @@ impl ProfileBook {
         self.connected
     }
 
+    /// The running profile's id and name, captured when a traffic sample lands
+    /// (R43): the history stores the name, so a later rename keeps old rows.
+    pub fn active_profile(&self) -> Option<(String, String)> {
+        let id = self.active_id.as_deref()?;
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .map(|profile| (profile.id.clone(), profile.name.clone()))
+    }
+
     pub fn startup_guard_pending(&self) -> bool {
         self.startup_guard_active
     }

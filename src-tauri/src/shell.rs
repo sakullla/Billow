@@ -48,6 +48,10 @@ pub struct ShellState {
     /// Off by default; the tray and background tasks never query.
     #[serde(default)]
     pub auto_exit_ip: bool,
+    /// Keep a daily traffic history per profile, group and node (R43). Off by
+    /// default; turning it off leaves the existing history in place.
+    #[serde(default)]
+    pub traffic_history: bool,
 }
 
 fn default_true() -> bool {
@@ -90,6 +94,7 @@ impl Default for ShellState {
             webdav_password: String::new(),
             hotkeys: BTreeMap::new(),
             auto_exit_ip: false,
+            traffic_history: false,
         }
     }
 }
@@ -109,6 +114,8 @@ pub struct ShellBackup {
     /// Automatic exit IP queries are a behaviour preference, not a machine
     /// detail, so they travel with the theme and language (R40).
     pub auto_exit_ip: bool,
+    // Traffic history is deliberately absent: importing a file must never start
+    // background recording, and its rows are excluded outright (R38, R43).
 }
 
 impl Default for ShellBackup {
@@ -291,6 +298,8 @@ mod tests {
         assert!(!state.release_ui_on_close);
         // Automatic exit IP queries are off until the user turns them on (R40).
         assert!(!state.auto_exit_ip);
+        // Traffic history is recorded only after the user opts in (R43).
+        assert!(!state.traffic_history);
     }
 
     #[test]
@@ -354,6 +363,7 @@ mod tests {
             webdav_password: "p a s s".to_string(),
             hotkeys: [("proxy".to_string(), "Ctrl+Alt+P".to_string())].into_iter().collect(),
             auto_exit_ip: true,
+            traffic_history: true,
         };
         write_shell_state(&path, &state).unwrap();
         let loaded = read_shell_state(&path);
@@ -364,6 +374,7 @@ mod tests {
         assert_eq!(loaded.silent_start, true);
         assert!(loaded.release_ui_on_close);
         assert!(loaded.auto_exit_ip);
+        assert!(loaded.traffic_history);
         assert_eq!(loaded.language, "en");
         assert_eq!(loaded.hotkeys.get("proxy").map(String::as_str), Some("Ctrl+Alt+P"));
         // Saved as typed, trimmed, with spaces inside the password kept.
@@ -428,6 +439,13 @@ mod tests {
         };
         assert!(!odd.apply(&switched).release_ui_on_close);
         assert!(!odd.apply(&switched).auto_exit_ip);
+        // Traffic recording is never turned on by importing a file (R38, R43).
+        let recording = ShellState {
+            traffic_history: true,
+            ..current.clone()
+        };
+        assert!(odd.apply(&recording).traffic_history);
+        assert!(!backup.apply(&ShellState::default()).traffic_history);
         assert_eq!(ShellBackup::of(&current).theme, "system");
     }
 
@@ -459,11 +477,18 @@ mod tests {
         // Exit IP lookup and its opt-in (R40) must stay reachable from the window.
         assert!(permissions.contains(&"allow-exit-ip"));
         assert!(permissions.contains(&"allow-set-exit-ip-auto"));
+        // Traffic history and its switch (R43) are reachable from the window too.
+        assert!(permissions.contains(&"allow-traffic-history"));
+        assert!(permissions.contains(&"allow-set-traffic-history"));
+        assert!(permissions.contains(&"allow-clear-traffic-history"));
         // Each capability entry also needs its permission definition, or the
         // command silently drops out of the window.
         assert!(include_str!("../permissions/app.toml").contains("identifier = \"allow-exit-ip\""));
         assert!(
             include_str!("../permissions/shell.toml").contains("identifier = \"allow-set-exit-ip-auto\"")
+        );
+        assert!(
+            include_str!("../permissions/traffic.toml").contains("identifier = \"allow-traffic-history\"")
         );
     }
 }

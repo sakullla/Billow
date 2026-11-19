@@ -20,6 +20,8 @@ import {
   type ThemePreference,
   type LanguagePreference,
   type AppMode,
+  type TrafficHistoryView,
+  type TrafficRange,
 } from './types'
 
 export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings' | 'apps'
@@ -149,6 +151,17 @@ export function createStore(backend: Backend) {
   const exitIpStale = ref(false)
   const exitIpBusy = ref(false)
   const exitIpError = ref<string | null>(null)
+  /** Traffic stats dialog and its last read (R43). */
+  const trafficStatsOpen = ref(false)
+  const trafficStats = shallowRef<TrafficHistoryView | null>(null)
+  const trafficStatsBusy = ref(false)
+  const trafficStatsError = ref<string | null>(null)
+  /** The range the dialog is showing, so enabling or clearing keeps it. */
+  const trafficStatsRange = ref<{ range: TrafficRange; from: string | null; to: string | null }>({
+    range: 'today',
+    from: null,
+    to: null,
+  })
   const loaded = ref(false)
   const busy = reactive<Record<string, boolean>>({})
   const toasts = ref<Toast[]>([])
@@ -355,6 +368,55 @@ export function createStore(backend: Backend) {
   async function setAutoExitIp(enabled: boolean) {
     try {
       app.value = await backend.setExitIpAuto(enabled)
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
+  /**
+   * Read the aggregated traffic history (R43). A failed read keeps the previous
+   * rows on screen and only reports the reason.
+   */
+  async function loadTrafficStats(
+    range: TrafficRange = trafficStatsRange.value.range,
+    from: string | null = trafficStatsRange.value.from,
+    to: string | null = trafficStatsRange.value.to,
+  ) {
+    trafficStatsRange.value = { range, from, to }
+    trafficStatsBusy.value = true
+    trafficStatsError.value = null
+    try {
+      trafficStats.value = await backend.trafficHistory(range, from, to)
+      return trafficStats.value
+    } catch (error) {
+      trafficStatsError.value = error instanceof Error ? error.message : String(error)
+      return undefined
+    } finally {
+      trafficStatsBusy.value = false
+    }
+  }
+
+  /** Open the dialog; it reads the rows itself on mount (R43). */
+  function openTrafficStats() {
+    trafficStatsOpen.value = true
+  }
+
+  /** The switch is stored with the other app settings; turning it off keeps rows (R43). */
+  async function setTrafficRecording(enabled: boolean) {
+    try {
+      app.value = await backend.setTrafficRecording(enabled)
+      await loadTrafficStats()
+      toast(enabled ? t('traffic.recordStarted') : t('traffic.recordStopped'), 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
+  async function clearTrafficHistory() {
+    try {
+      await backend.clearTrafficHistory()
+      await loadTrafficStats()
+      toast(t('traffic.cleared'), 'success')
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), 'error')
     }
@@ -1265,6 +1327,16 @@ export function createStore(backend: Backend) {
     autoExitIp,
     queryExitIp,
     setAutoExitIp,
+    /** Traffic stats dialog, recording switch and clear-all (R43). */
+    trafficStatsOpen,
+    trafficStats,
+    trafficStatsBusy,
+    trafficStatsError,
+    trafficStatsRange,
+    loadTrafficStats,
+    openTrafficStats,
+    setTrafficRecording,
+    clearTrafficHistory,
     clearLogs: () => act(null, () => backend.clearLogs()),
     flushCache: (which: 'fakeip' | 'dns') =>
       act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除'),

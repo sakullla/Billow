@@ -5,6 +5,7 @@ import {
   normalizeKernel,
   normalizeRuleRow,
   normalizeSnapshot,
+  normalizeTrafficHistory,
   HOTKEY_ACTIONS,
   type AppInfo,
   type ConfigOverview,
@@ -29,6 +30,8 @@ import {
   type ShellState,
   type Snapshot,
   type ThemePreference,
+  type TrafficHistoryView,
+  type TrafficRange,
   type UwpApp,
   type WebdavSettings,
   type WebdavTestResult,
@@ -126,6 +129,12 @@ export interface Backend {
   exitIp(): Promise<ExitIpInfo>
   /** Turn the optional automatic exit IP query on or off (R40); off by default. */
   setExitIpAuto(enabled: boolean): Promise<AppInfo>
+  /** Aggregated traffic history for a range (R43); the switch and rows come back together. */
+  trafficHistory(range: TrafficRange, from?: string | null, to?: string | null): Promise<TrafficHistoryView>
+  /** Turn traffic recording on or off (R43); off keeps the existing rows. */
+  setTrafficRecording(enabled: boolean): Promise<AppInfo>
+  /** Delete every recorded row; recording may continue afterwards. */
+  clearTrafficHistory(): Promise<void>
   rules(): Promise<RulesSnapshot>
   setRuleDisabled(key: string, disabled: boolean): Promise<RulesSnapshot>
   providers(): Promise<ProvidersResult>
@@ -342,6 +351,12 @@ function createTauriBackend(): Backend {
       return result
     },
     setExitIpAuto: (enabled) => call<AppInfo>('set_exit_ip_auto', { enabled }),
+    trafficHistory: async (range, from, to) =>
+      normalizeTrafficHistory(
+        await call<unknown>('traffic_history', { range, from: from ?? null, to: to ?? null }),
+      ),
+    setTrafficRecording: (enabled) => call<AppInfo>('set_traffic_history', { enabled }),
+    clearTrafficHistory: () => call<void>('clear_traffic_history'),
     rules: () => rules('kernel_rules'),
     setRuleDisabled: (key, disabled) =>
       rules('set_rule_disabled', { command: { key, disabled } }),

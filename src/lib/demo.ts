@@ -9,6 +9,8 @@ import {
   isPortEntry,
   isValidDnsName,
   emptySnapshot,
+  localDateKey,
+  shiftDateKey,
   type AppInfo,
   type KernelSettings,
   type ConfigOverview,
@@ -27,6 +29,9 @@ import {
   type RuleRow,
   type Snapshot,
   type ThemePreference,
+  type TrafficHistoryEntry,
+  type TrafficHistoryView,
+  type TrafficRange,
   type UwpApp,
 } from './types'
 
@@ -198,6 +203,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     silent_start: false,
     release_ui_on_close: false,
     auto_exit_ip: false,
+    traffic_history: false,
     data_dir: null,
   }
   /** Desktop global shortcuts (R39): nothing is bound until the user records one. */
@@ -239,6 +245,16 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   let nextId = 1
   const listeners = new Set<(snapshot: Snapshot) => void>()
   const contents = new Map<string, string>()
+  /**
+   * Traffic history (R43) in the demo: the same date × profile × group × node
+   * buckets as Rust, fed from the simulated connections on every poll while the
+   * switch is on. Off until the user turns it on.
+   */
+  let trafficRecording = false
+  let trafficPendingClear = false
+  const trafficDays = new Map<string, Map<string, TrafficHistoryEntry>>()
+  const trafficBaselines = new Map<string, { upload: number; download: number }>()
+  const DIRECT_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
 
   const groupsDef = (): { name: string; type: string; proxies: string[] }[] => [
     { name: '节点选择', type: 'select', proxies: ['自动选择', '故障转移', ...names, 'DIRECT'] },
@@ -582,6 +598,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       state.download_total = null
       connections = []
       stableSeeded = false
+      trafficBaselines.clear()
+      trafficPendingClear = false
       return
     }
     const wave = Math.sin(Date.now() / 4000)
@@ -620,6 +638,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   function snapshot(): Snapshot {
     state.connected = state.kernel_running && (state.system_proxy || state.tun || state.vpn)
     tick()
+    recordTrafficHistory()
     state.profiles.forEach((profile) => (profile.current = profile.id === state.active_id))
     const failure = Boolean(options.connectionsFailure) && state.connected
     state.connections = failure ? [] : [...connections]
@@ -646,6 +665,105 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     }
     state.mixed_port = state.settings.mixed_port ?? (state.active_id ? 7890 : null)
     return structuredClone(state)
+  }
+
+  /** Fold one simulated sample into today's buckets, with the same deltas as Rust. */
+  function recordTrafficHistory() {
+    if (!trafficRecording || !state.connected) return
+    const profile = state.profiles.find((item) => item.id === state.active_id)?.name ?? ''
+    const date = localDateKey()
+    const seen = new Set<string>()
+    for (const row of connections) {
+      const node = (row.chains[0] ?? '').trim()
+      const group = (row.chains[row.chains.length - 1] ?? '').trim()
+      if (!node && !group) continue
+      seen.add(row.id)
+      const last = trafficBaselines.get(row.id)
+      trafficBaselines.set(row.id, { upload: row.upload, download: row.download })
+      let upload = 0
+      let download = 0
+      if (!last) {
+        // A new connection counts from zero unless the user just cleared the view.
+        if (!trafficPendingClear) {
+          upload = row.upload
+          download = row.download
+        }
+      } else {
+        upload = Math.max(0, row.upload - last.upload)
+        download = Math.max(0, row.download - last.download)
+      }
+      if (!upload && !download) continue
+      const direct = DIRECT_POLICIES.has(node.toUpperCase()) || DIRECT_POLICIES.has(group.toUpperCase())
+      const rowGroup = direct ? '' : group || node
+      const rowNode = direct ? '' : node
+      const key = `${profile}\u001f${rowGroup}\u001f${rowNode}\u001f${direct ? 1 : 0}`
+      let day = trafficDays.get(date)
+      if (!day) {
+        day = new Map()
+        trafficDays.set(date, day)
+      }
+      const entry = day.get(key) ?? {
+        date,
+        profile,
+        group: rowGroup,
+        node: rowNode,
+        direct,
+        upload: 0,
+        download: 0,
+      }
+      entry.upload += upload
+      entry.download += download
+      day.set(key, entry)
+    }
+    trafficPendingClear = false
+    for (const id of [...trafficBaselines.keys()]) {
+      if (!seen.has(id)) trafficBaselines.delete(id)
+    }
+  }
+
+  const TRAFFIC_RETENTION_DAYS = 90
+
+  function trafficBounds(range: TrafficRange, from?: string | null, to?: string | null) {
+    const today = localDateKey()
+    const oldest = shiftDateKey(today, -(TRAFFIC_RETENTION_DAYS - 1))
+    const isDate = (value: string | null | undefined): value is string =>
+      Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value))
+    const clamp = (value: string) => (value < oldest ? oldest : value > today ? today : value)
+    if (range === '7d') return { today, from: shiftDateKey(today, -6), to: today }
+    if (range === '30d') return { today, from: shiftDateKey(today, -29), to: today }
+    if (range === 'custom') {
+      let start = isDate(from) ? clamp(from) : today
+      let end = isDate(to) ? clamp(to) : today
+      if (start > end) [start, end] = [end, start]
+      return { today, from: start, to: end }
+    }
+    return { today, from: today, to: today }
+  }
+
+  function trafficHistoryView(
+    range: TrafficRange,
+    from?: string | null,
+    to?: string | null,
+  ): TrafficHistoryView {
+    const bounds = trafficBounds(range, from, to)
+    const entries: TrafficHistoryEntry[] = []
+    for (const [date, day] of trafficDays) {
+      if (date < bounds.from || date > bounds.to) continue
+      for (const entry of day.values()) entries.push({ ...entry })
+    }
+    entries.sort(
+      (left, right) =>
+        right.date.localeCompare(left.date) ||
+        right.upload + right.download - (left.upload + left.download),
+    )
+    return {
+      enabled: trafficRecording,
+      retention_days: TRAFFIC_RETENTION_DAYS,
+      today: bounds.today,
+      from: bounds.from,
+      to: bounds.to,
+      entries,
+    }
   }
 
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -912,6 +1030,25 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async setExitIpAuto(enabled) {
       app = { ...app, auto_exit_ip: enabled }
       return app
+    },
+    async trafficHistory(range, from, to) {
+      return trafficHistoryView(range, from, to)
+    },
+    async setTrafficRecording(enabled) {
+      if (trafficRecording !== enabled) {
+        trafficRecording = enabled
+        trafficBaselines.clear()
+        trafficPendingClear = false
+      }
+      app = { ...app, traffic_history: enabled }
+      return app
+    },
+    async clearTrafficHistory() {
+      trafficDays.clear()
+      trafficBaselines.clear()
+      // A running sample would otherwise count every open connection's totals
+      // again; the next poll only seeds the id table.
+      trafficPendingClear = trafficRecording
     },
     async hotkeySettings() {
       return hotkeySettings()

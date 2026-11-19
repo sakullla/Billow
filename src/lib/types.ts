@@ -473,7 +473,82 @@ export interface AppInfo {
   release_ui_on_close: boolean
   /** Query the exit IP automatically; off by default (R40). */
   auto_exit_ip: boolean
+  /** Keep a daily traffic history; off by default (R43). */
+  traffic_history: boolean
   data_dir: string | null
+}
+
+/** The stats dialog's time range (R43); custom stays inside the retention window. */
+export type TrafficRange = 'today' | '7d' | '30d' | 'custom'
+
+/** How the stats table groups the same rows. */
+export type TrafficGrouping = 'profile' | 'group' | 'node'
+
+/** One aggregated row: a date, a profile, a group and an exit node (R43). */
+export interface TrafficHistoryEntry {
+  date: string
+  profile: string
+  group: string
+  node: string
+  /** DIRECT / REJECT traffic, shown as one "Direct" row. */
+  direct: boolean
+  upload: number
+  download: number
+}
+
+/** Everything the stats dialog needs: the switch, the window and the rows. */
+export interface TrafficHistoryView {
+  enabled: boolean
+  retention_days: number
+  today: string
+  from: string
+  to: string
+  entries: TrafficHistoryEntry[]
+}
+
+/** Local `YYYY-MM-DD`; a traffic day is the user's calendar day. */
+export function localDateKey(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/** Shift a `YYYY-MM-DD` key by whole days, staying in local time. */
+export function shiftDateKey(key: string, days: number): string {
+  const [year, month, day] = key.split('-').map(Number)
+  if (!year || !month || !day) return key
+  return localDateKey(new Date(year, month - 1, day + days))
+}
+
+export function normalizeTrafficHistory(raw: unknown): TrafficHistoryView {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const text = (item: unknown, fallback = '') => (typeof item === 'string' ? item : fallback)
+  const count = (item: unknown) => (typeof item === 'number' && Number.isFinite(item) && item > 0 ? item : 0)
+  const today = text(value.today) || localDateKey()
+  const rows = Array.isArray(value.entries) ? value.entries : []
+  const entries: TrafficHistoryEntry[] = []
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const item = row as Record<string, unknown>
+    const date = text(item.date)
+    if (!date) continue
+    entries.push({
+      date,
+      profile: text(item.profile),
+      group: text(item.group),
+      node: text(item.node),
+      direct: Boolean(item.direct),
+      upload: count(item.upload),
+      download: count(item.download),
+    })
+  }
+  return {
+    enabled: Boolean(value.enabled),
+    retention_days: count(value.retention_days) || 90,
+    today,
+    from: text(value.from) || today,
+    to: text(value.to) || today,
+    entries,
+  }
 }
 
 export interface ShellState {
