@@ -251,7 +251,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
    * switch is on. Off until the user turns it on.
    */
   let trafficRecording = false
-  let trafficPendingClear = false
+  // Set when recording is switched on or the view is cleared: the next poll only
+  // adopts the open connections so bytes from before add nothing.
+  let trafficSeed = false
   const trafficDays = new Map<string, Map<string, TrafficHistoryEntry>>()
   const trafficBaselines = new Map<string, { upload: number; download: number }>()
   const DIRECT_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
@@ -599,7 +601,6 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       connections = []
       stableSeeded = false
       trafficBaselines.clear()
-      trafficPendingClear = false
       return
     }
     const wave = Math.sin(Date.now() / 4000)
@@ -670,6 +671,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   /** Fold one simulated sample into today's buckets, with the same deltas as Rust. */
   function recordTrafficHistory() {
     if (!trafficRecording || !state.connected) return
+    // The first poll after the switch went on only adopts the open connections,
+    // so bytes from before recording (or from while it was off) add nothing.
+    const seeding = trafficSeed
+    trafficSeed = false
     const profile = state.profiles.find((item) => item.id === state.active_id)?.name ?? ''
     const date = localDateKey()
     const seen = new Set<string>()
@@ -678,16 +683,15 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       const group = (row.chains[row.chains.length - 1] ?? '').trim()
       if (!node && !group) continue
       seen.add(row.id)
-      const last = trafficBaselines.get(row.id)
+      const last = seeding ? undefined : trafficBaselines.get(row.id)
       trafficBaselines.set(row.id, { upload: row.upload, download: row.download })
+      if (seeding) continue
       let upload = 0
       let download = 0
       if (!last) {
-        // A new connection counts from zero unless the user just cleared the view.
-        if (!trafficPendingClear) {
-          upload = row.upload
-          download = row.download
-        }
+        // A connection opened after the switch counts from its own zero.
+        upload = row.upload
+        download = row.download
       } else {
         upload = Math.max(0, row.upload - last.upload)
         download = Math.max(0, row.download - last.download)
@@ -715,7 +719,6 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       entry.download += download
       day.set(key, entry)
     }
-    trafficPendingClear = false
     for (const id of [...trafficBaselines.keys()]) {
       if (!seen.has(id)) trafficBaselines.delete(id)
     }
@@ -1038,7 +1041,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       if (trafficRecording !== enabled) {
         trafficRecording = enabled
         trafficBaselines.clear()
-        trafficPendingClear = false
+        // Enabling adopts the open counters on the next poll, so pre-enable
+        // traffic is not added and re-enabling never re-counts recorded bytes.
+        trafficSeed = enabled
       }
       app = { ...app, traffic_history: enabled }
       return app
@@ -1046,9 +1051,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async clearTrafficHistory() {
       trafficDays.clear()
       trafficBaselines.clear()
-      // A running sample would otherwise count every open connection's totals
+      // A running poll would otherwise count every open connection's totals
       // again; the next poll only seeds the id table.
-      trafficPendingClear = trafficRecording
+      trafficSeed = trafficRecording
     },
     async hotkeySettings() {
       return hotkeySettings()

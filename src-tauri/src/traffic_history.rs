@@ -79,23 +79,25 @@ pub struct TrafficHistory {
     /// Last upload/download counter per connection id. Never persisted: a new
     /// process cannot see the counters of connections the old one sampled.
     baselines: HashMap<String, (u64, u64)>,
-    /// Right after "clear all" the next sample only re-seeds the baselines, so
-    /// the bytes already counted before the clear do not come back.
-    pending_clear: bool,
+    /// Set when recording is switched on or the view is cleared. The next
+    /// successful sample only adopts the open connections' counters, so bytes
+    /// from before the switch (or before the clear) are never added.
+    seed_next: bool,
     samples_since_write: u32,
     dirty: bool,
 }
 
 impl TrafficHistory {
-    /// Read the file next to the other app data. A missing, damaged or newer file
-    /// starts empty instead of failing the app.
+    /// Read the file next to the other app data. A missing file starts empty; a
+    /// damaged or newer file is kept aside and also starts empty instead of
+    /// failing the app.
     pub fn open(path: PathBuf) -> Self {
         let mut history = Self {
             path,
             enabled: false,
             days: BTreeMap::new(),
             baselines: HashMap::new(),
-            pending_clear: false,
+            seed_next: false,
             samples_since_write: 0,
             dirty: false,
         };
@@ -107,14 +109,17 @@ impl TrafficHistory {
         let Ok(text) = fs::read_to_string(&self.path) else {
             return;
         };
-        let Ok(file) = serde_json::from_str::<HistoryFile>(&text) else {
+        let file = serde_json::from_str::<HistoryFile>(&text)
+            .ok()
+            .filter(|file| file.version == VERSION);
+        // A newer file may use another layout; either way the app keeps running
+        // with an empty history.
+        let Some(file) = file else {
+            // Keep the unreadable file as a sibling instead of letting the next
+            // save overwrite it: damage or a downgrade must not erase the rows.
+            self.preserve_damaged();
             return;
         };
-        if file.version != VERSION {
-            // A newer file may use another layout; keep the app running with an
-            // empty history instead of guessing at its rows.
-            return;
-        }
         for (date, rows) in file.days {
             if parse_date(&date).is_none() {
                 continue;
@@ -133,28 +138,51 @@ impl TrafficHistory {
         self.dirty = false;
     }
 
+    /// Move a file that could not be read out of the way, under a
+    /// `.damaged-<timestamp>` name next to it. Best effort: a failed rename only
+    /// means the user keeps the original layout and the app still starts empty.
+    fn preserve_damaged(&self) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or(0);
+        let mut preserved = self.path.with_extension(format!("damaged-{stamp}.json"));
+        let mut suffix = 1;
+        while preserved.exists() {
+            preserved = self
+                .path
+                .with_extension(format!("damaged-{stamp}-{suffix}.json"));
+            suffix += 1;
+        }
+        let _ = fs::rename(&self.path, preserved);
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Reflect the stored switch. Turning it off drops the id table at once, so
-    /// re-enabling starts from fresh counters and no traffic is counted twice.
+    /// Reflect the stored switch. Turning it on drops the old id table and marks
+    /// the next sample as a seed: the open connections' counters predate
+    /// recording, so they are only adopted as a baseline and add nothing.
     pub fn set_enabled(&mut self, enabled: bool) {
         if self.enabled == enabled {
             return;
         }
         self.enabled = enabled;
         self.baselines.clear();
+        self.seed_next = enabled;
         if !enabled {
-            self.pending_clear = false;
             self.save_if_dirty();
         }
     }
 
+    /// Forget every counter so a restarted kernel's connections count from zero.
+    /// A pending seed is kept: turning recording on while the kernel is already
+    /// running must still adopt those connections instead of counting their
+    /// pre-enable bytes.
     pub fn reset_baselines(&mut self) {
         self.baselines.clear();
-        self.pending_clear = false;
     }
 
     /// Fold one `/connections` sample into today's buckets. Returns whether any
@@ -168,6 +196,9 @@ impl TrafficHistory {
         if !self.enabled || parse_date(date).is_none() {
             return false;
         }
+        // The first successful sample after the switch went on only adopts the
+        // open connections (a closer included), so pre-enable bytes add nothing.
+        let seeding = std::mem::replace(&mut self.seed_next, false);
         let profile = profile.trim();
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut changed = false;
@@ -176,15 +207,14 @@ impl TrafficHistory {
                 continue;
             };
             seen.insert(connection.id.as_str());
-            let last = self.baselines.get(&connection.id).copied();
-            self.baselines.insert(
+            let last = self.baselines.insert(
                 connection.id.clone(),
                 (connection.upload, connection.download),
             );
+            if seeding {
+                continue;
+            }
             let (upload, download) = match last {
-                // After clear-all the first sight of a connection only seeds the
-                // baseline: those bytes were already on screen before the clear.
-                None if self.pending_clear => (0, 0),
                 None => (connection.upload, connection.download),
                 Some((up, down)) => (
                     connection.upload.saturating_sub(up),
@@ -211,7 +241,6 @@ impl TrafficHistory {
             entry.download = entry.download.saturating_add(download);
             changed = true;
         }
-        self.pending_clear = false;
         // Closed connections keep no counter of their own; a stale id would only
         // grow the table while the app runs.
         self.baselines.retain(|id, _| seen.contains(id.as_str()));
@@ -251,7 +280,7 @@ impl TrafficHistory {
     pub fn clear(&mut self) {
         self.days.clear();
         self.baselines.clear();
-        self.pending_clear = self.enabled;
+        self.seed_next = self.enabled;
         self.dirty = true;
         self.samples_since_write = 0;
         self.save_if_dirty();
@@ -605,6 +634,8 @@ mod tests {
         let date = "2026-11-20";
         let chain = ["香港 01", "节点选择"];
 
+        // The first sample after switching on only adopts the open connection.
+        assert!(!history.record(date, "星河云", &[connection("c1", &chain, 0, 0)]));
         assert!(history.record(date, "星河云", &[connection("c1", &chain, 1_000, 4_000)]));
         // Same counters: nothing new.
         assert!(!history.record(date, "星河云", &[connection("c1", &chain, 1_000, 4_000)]));
@@ -626,6 +657,12 @@ mod tests {
         let mut history = temporary_history("grouping");
         history.set_enabled(true);
         let date = "2026-11-20";
+        // The first sample after switching on only adopts the open connection.
+        history.record(
+            date,
+            "配置 A",
+            &[connection("a1", &["香港 01", "节点选择"], 0, 0)],
+        );
         history.record(
             date,
             "配置 A",
@@ -671,11 +708,17 @@ mod tests {
         let mut history = temporary_history("restart");
         history.set_enabled(true);
         let date = "2026-11-20";
-        history.record(
+        // A connection opened after switching on is adopted, then its growth counts.
+        assert!(!history.record(
             date,
             "星河云",
-            &[connection("c1", &["香港 01"], 900, 9_000)],
-        );
+            &[connection("c1", &["香港 01"], 0, 0)]
+        ));
+        assert!(history.record(
+            date,
+            "星河云",
+            &[connection("c1", &["香港 01"], 900, 9_000)]
+        ));
         history.reset_baselines();
         // The same id after a restart is a different connection: its counters are
         // counted from zero rather than as a negative delta.
@@ -684,13 +727,13 @@ mod tests {
         assert_eq!(rows[0].entry.upload, 1_000);
         assert_eq!(rows[0].entry.download, 9_200);
 
-        // A fresh process loads the buckets but no ids: the first sample of an id
-        // counts from zero and the next sample of the same id only its growth.
+        // A fresh process loads the buckets but no ids: its first sample only
+        // adopts the open connections, so a restart cannot re-count their totals.
         let path = history.path().to_path_buf();
         history.save().unwrap();
         let mut reopened = TrafficHistory::open(path.clone());
         reopened.set_enabled(true);
-        assert!(reopened.record(
+        assert!(!reopened.record(
             date,
             "星河云",
             &[connection("c1", &["香港 01"], 900, 9_000)]
@@ -700,8 +743,14 @@ mod tests {
             "星河云",
             &[connection("c1", &["香港 01"], 900, 9_000)]
         ));
+        assert!(reopened.record(
+            date,
+            "星河云",
+            &[connection("c1", &["香港 01"], 1_100, 9_500)]
+        ));
         let reopened_rows = reopened.entries(date, date);
-        assert_eq!(reopened_rows[0].entry.upload, 1_900);
+        assert_eq!(reopened_rows[0].entry.upload, 1_200);
+        assert_eq!(reopened_rows[0].entry.download, 9_700);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -724,6 +773,7 @@ mod tests {
         let today = "2026-11-20";
         let oldest = date_from_days(parse_date(today).unwrap() - (RETENTION_DAYS - 1));
         let too_old = date_from_days(parse_date(today).unwrap() - RETENTION_DAYS);
+        history.record(&oldest, "A", &[connection("c1", &["X"], 0, 0)]);
         history.record(&oldest, "A", &[connection("c1", &["X"], 1, 1)]);
         history.record(&too_old, "A", &[connection("c2", &["X"], 1, 1)]);
         history.prune(today);
@@ -736,6 +786,7 @@ mod tests {
         let mut history = temporary_history("rename");
         history.set_enabled(true);
         let date = "2026-11-20";
+        history.record(date, "旧名字", &[connection("c1", &["香港 01"], 0, 0)]);
         history.record(date, "旧名字", &[connection("c1", &["香港 01"], 10, 100)]);
         history.record(date, "新名字", &[connection("c2", &["香港 01"], 1, 10)]);
         let rows = history.entries(date, date);
@@ -760,20 +811,88 @@ mod tests {
         assert!(history.entries(date, date).is_empty());
 
         history.set_enabled(true);
-        history.record(date, "A", &[connection("c1", &["香港 01"], 1_000, 1_000)]);
+        // The first sample after switching on only adopts the open connection.
+        assert!(!history.record(date, "A", &[connection("c1", &["香港 01"], 1_000, 1_000)]));
+        assert!(history.record(date, "A", &[connection("c1", &["香港 01"], 1_500, 1_400)]));
         history.set_enabled(false);
         assert!(!history.record(date, "A", &[connection("c1", &["香港 01"], 9_000, 9_000)]));
         let rows = history.entries(date, date);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].entry.upload, 1_000);
+        assert_eq!(rows[0].entry.upload, 500);
 
         // The switch is stored, so a restart keeps the data and the off state.
         let path = history.path().to_path_buf();
         history.save().unwrap();
         let reopened = TrafficHistory::open(path.clone());
         assert!(!reopened.enabled());
-        assert_eq!(reopened.entries(date, date)[0].entry.upload, 1_000);
+        assert_eq!(reopened.entries(date, date)[0].entry.upload, 500);
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn turning_recording_back_on_adopts_open_counters_instead_of_recounting() {
+        let mut history = temporary_history("reenable");
+        history.set_enabled(true);
+        let date = "2026-11-20";
+        history.record(date, "A", &[connection("c1", &["香港 01"], 0, 0)]);
+        history.record(date, "A", &[connection("c1", &["香港 01"], 1_000, 4_000)]);
+        let recorded = total(&history.entries(date, date)[0].entry);
+        assert_eq!(recorded, 5_000);
+
+        // While off the connection keeps sending, and those bytes are not recorded.
+        history.set_enabled(false);
+        assert!(!history.record(date, "A", &[connection("c1", &["香港 01"], 9_000, 40_000)]));
+        // Turning it back on adopts the open counters: no already-recorded bytes
+        // come back and the traffic from while it was off is not counted either.
+        history.set_enabled(true);
+        assert!(!history.record(date, "A", &[connection("c1", &["香港 01"], 9_000, 40_000)]));
+        assert_eq!(total(&history.entries(date, date)[0].entry), recorded);
+        // Growth after the seed is counted once.
+        assert!(history.record(date, "A", &[connection("c1", &["香港 01"], 9_100, 40_500)]));
+        let rows = history.entries(date, date);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry.upload, 1_100);
+        assert_eq!(rows[0].entry.download, 4_500);
+    }
+
+    #[test]
+    fn enabling_while_a_connection_is_open_adds_nothing_for_its_earlier_bytes() {
+        let mut history = temporary_history("enable-connected");
+        let date = "2026-11-20";
+        history.set_enabled(true);
+        // The connection was already open and had sent bytes before the switch.
+        assert!(!history.record(date, "A", &[connection("c1", &["香港 01"], 50_000, 8_000_000)]));
+        assert!(history.entries(date, date).is_empty());
+        assert!(history.record(date, "A", &[connection("c1", &["香港 01"], 50_300, 8_000_900)]));
+        let rows = history.entries(date, date);
+        assert_eq!(rows[0].entry.upload, 300);
+        assert_eq!(rows[0].entry.download, 900);
+    }
+
+    #[test]
+    fn connections_opened_after_re_enabling_count_from_zero() {
+        let mut history = temporary_history("reenable-new");
+        history.set_enabled(true);
+        let date = "2026-11-20";
+        history.record(date, "A", &[connection("c1", &["香港 01"], 1_000, 2_000)]);
+        history.set_enabled(false);
+        history.set_enabled(true);
+        // The open connection only seeds the table.
+        assert!(!history.record(date, "A", &[connection("c1", &["香港 01"], 5_000, 9_000)]));
+        // A connection opened after the switch is new traffic from its own zero,
+        // while the old connection's lifetime counters stay out.
+        assert!(history.record(
+            date,
+            "A",
+            &[
+                connection("c1", &["香港 01"], 5_000, 9_000),
+                connection("c2", &["日本 02"], 100, 400),
+            ],
+        ));
+        let rows = history.entries(date, date);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry.node, "日本 02");
+        assert_eq!(total(&rows[0].entry), 500);
     }
 
     #[test]
@@ -781,6 +900,7 @@ mod tests {
         let mut history = temporary_history("clear");
         history.set_enabled(true);
         let date = "2026-11-20";
+        history.record(date, "A", &[connection("c1", &["香港 01"], 0, 0)]);
         history.record(date, "A", &[connection("c1", &["香港 01"], 500, 800)]);
         history.clear();
         assert!(history.entries(date, date).is_empty());
@@ -791,6 +911,27 @@ mod tests {
         history.record(date, "A", &[connection("c1", &["香港 01"], 600, 1_000)]);
         let rows = history.entries(date, date);
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry.upload, 50);
+        assert_eq!(rows[0].entry.download, 100);
+    }
+
+    #[test]
+    fn clear_all_does_not_resurrect_bytes_across_a_switch_cycle() {
+        let mut history = temporary_history("clear-reenable");
+        history.set_enabled(true);
+        let date = "2026-11-20";
+        history.record(date, "A", &[connection("c1", &["香港 01"], 0, 0)]);
+        history.record(date, "A", &[connection("c1", &["香港 01"], 500, 800)]);
+        history.clear();
+        assert!(history.entries(date, date).is_empty());
+        // Off and on again seeds the open connection, so the cleared bytes and the
+        // traffic from while it was off both stay out.
+        history.set_enabled(false);
+        history.set_enabled(true);
+        assert!(!history.record(date, "A", &[connection("c1", &["香港 01"], 500, 800)]));
+        assert!(history.entries(date, date).is_empty());
+        assert!(history.record(date, "A", &[connection("c1", &["香港 01"], 550, 900)]));
+        let rows = history.entries(date, date);
         assert_eq!(rows[0].entry.upload, 50);
         assert_eq!(rows[0].entry.download, 100);
     }
@@ -837,6 +978,7 @@ mod tests {
     fn daily_totals_fill_empty_days_for_the_chart() {
         let mut history = temporary_history("daily");
         history.set_enabled(true);
+        history.record("2026-11-19", "A", &[connection("c1", &["X"], 0, 0)]);
         history.record("2026-11-19", "A", &[connection("c1", &["X"], 10, 20)]);
         history.record("2026-11-20", "A", &[connection("c2", &["X"], 30, 40)]);
         let daily = history.daily("2026-11-18", "2026-11-20");
@@ -851,7 +993,7 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_or_newer_file_starts_empty() {
+    fn a_damaged_or_newer_file_is_kept_aside_and_starts_empty() {
         let date = "2026-11-20";
         for text in [
             "{not json".to_string(),
@@ -859,14 +1001,33 @@ mod tests {
                 .to_string(),
         ] {
             let history = temporary_history("damaged");
-            if let Some(parent) = history.path().parent() {
+            let path = history.path().to_path_buf();
+            if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).unwrap();
             }
-            fs::write(history.path(), text).unwrap();
-            let mut reopened = TrafficHistory::open(history.path().to_path_buf());
+            fs::write(&path, &text).unwrap();
+            let mut reopened = TrafficHistory::open(path.clone());
             reopened.set_enabled(true);
             assert!(reopened.entries(date, date).is_empty());
-            let _ = fs::remove_dir_all(history.path().parent().unwrap());
+
+            // The unreadable file is preserved instead of being overwritten by the
+            // next save, so damage or a downgrade cannot erase the rows.
+            let preserved: Vec<_> = fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().contains(".damaged-"))
+                })
+                .collect();
+            assert_eq!(preserved.len(), 1, "the unreadable file is kept aside");
+            assert_eq!(fs::read_to_string(&preserved[0]).unwrap(), text);
+
+            // Saving starts a fresh file and leaves the preserved copy untouched.
+            reopened.save().unwrap();
+            assert_eq!(fs::read_to_string(&preserved[0]).unwrap(), text);
+            let _ = fs::remove_dir_all(path.parent().unwrap());
         }
     }
 }

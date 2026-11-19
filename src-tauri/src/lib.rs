@@ -309,6 +309,12 @@ fn prepare_traffic_history(app: &tauri::App) {
     });
 }
 
+/// Forget every sampled counter so a restarted kernel's connections count from
+/// zero instead of subtracting the old session's values.
+///
+/// This does not consume the seed set when recording is switched on: enabling
+/// while the kernel is already running must still adopt the open connections,
+/// otherwise their pre-enable counters would be added in full.
 fn reset_traffic_baselines(app: &AppHandle) {
     let store = app.state::<TrafficStore>();
     let mut history = lock_traffic(&store.history);

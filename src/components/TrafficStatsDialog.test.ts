@@ -100,7 +100,7 @@ describe('TrafficStatsDialog (R43)', () => {
     const { cleared } = await setup(view({ enabled: false }))
     // The off banner names the switch, but the rows are still there (R43).
     expect(find('[data-testid="traffic-off"]').textContent).toContain('未开启流量记录')
-    expect(document.querySelectorAll('[data-testid="traffic-row"]').length).toBe(2)
+    expect(document.querySelectorAll('[data-testid="traffic-row"]').length).toBe(3)
     expect(find('[data-testid="traffic-total-download"]').textContent).toContain('350 B')
     expect(find('[data-testid="traffic-daily-bars"]')).toBeTruthy()
 
@@ -115,12 +115,18 @@ describe('TrafficStatsDialog (R43)', () => {
 
   it('groups the same rows by profile, group or node and keeps the totals', async () => {
     await setup(view())
-    // Default grouping: by profile; A also owns the DIRECT bytes.
+    // Default grouping: by profile, with DIRECT bytes on their own 直连 row.
     const profileRows = () => [...document.querySelectorAll<HTMLElement>('[data-testid="traffic-row"]')]
-    expect(profileRows().map((row) => row.dataset.key)).toEqual(['profile:配置 B', 'profile:配置 A'])
+    expect(profileRows().map((row) => row.dataset.key)).toEqual([
+      'profile:配置 B',
+      'profile:配置 A',
+      'profile:direct',
+    ])
     expect(profileRows()[0]!.textContent).toContain('200 B')
-    // 100 download + 50 DIRECT download under profile A.
-    expect(profileRows()[1]!.textContent).toContain('150 B')
+    expect(profileRows()[1]!.textContent).toContain('100 B')
+    expect(profileRows()[2]!.textContent).toContain('直连')
+    expect(profileRows()[2]!.textContent).toContain('55 B')
+    // Splitting the Direct row out does not change the totals.
     expect(find('[data-testid="traffic-total-download"]').textContent).toContain('350 B')
     expect(find('[data-testid="traffic-total-upload"]').textContent).toContain('35 B')
     expect(find('[data-testid="traffic-total-all"]').textContent).toContain('385 B')
@@ -141,6 +147,7 @@ describe('TrafficStatsDialog (R43)', () => {
     find('[data-testid="traffic-grouping"] [data-value="group"]').click()
     await flushPromises()
     expect(profileRows().map((row) => row.dataset.key)).toContain('group:节点选择')
+    expect(profileRows().map((row) => row.dataset.key)).toContain('group:direct')
   })
 
   it('switches ranges, keeps custom inside the retention window and clears everything', async () => {
@@ -179,6 +186,9 @@ describe('TrafficStatsDialog (R43)', () => {
 })
 
 describe('demo traffic history (R43)', () => {
+  const sum = (recorded: TrafficHistoryView) =>
+    recorded.entries.reduce((total, entry) => total + entry.upload + entry.download, 0)
+
   it('records only while the switch is on and keeps the rows after it is turned off', async () => {
     const backend = createDemoBackend()
     await backend.connect()
@@ -188,19 +198,42 @@ describe('demo traffic history (R43)', () => {
     expect((await backend.appInfo()).traffic_history).toBe(false)
 
     await backend.setTrafficRecording(true)
+    // The first poll after enabling only adopts the open connections.
+    await backend.state()
+    const seeded = await backend.trafficHistory('today')
+    expect(seeded.enabled).toBe(true)
+    expect(seeded.entries).toHaveLength(0)
     await backend.state()
     const recorded = await backend.trafficHistory('today')
-    expect(recorded.enabled).toBe(true)
     expect(recorded.entries.length).toBeGreaterThan(0)
-    const before = recorded.entries.reduce((sum, entry) => sum + entry.upload + entry.download, 0)
+    const before = sum(recorded)
 
     await backend.setTrafficRecording(false)
     await backend.state()
     await backend.state()
-    const after = (await backend.trafficHistory('today')).entries.reduce(
-      (sum, entry) => sum + entry.upload + entry.download,
-      0,
-    )
-    expect(after).toBe(before)
+    expect(sum(await backend.trafficHistory('today'))).toBe(before)
+  })
+
+  it('does not re-count recorded bytes when recording is turned off and on', async () => {
+    const backend = createDemoBackend()
+    await backend.connect()
+    await backend.setTrafficRecording(true)
+    await backend.state() // adopts the open connections
+    await backend.state() // records their growth
+    const before = sum(await backend.trafficHistory('today'))
+    expect(before).toBeGreaterThan(0)
+
+    await backend.setTrafficRecording(false)
+    await backend.state()
+    await backend.state()
+    expect(sum(await backend.trafficHistory('today'))).toBe(before)
+
+    // Enabling again adopts the still-open connections: no bytes come back.
+    await backend.setTrafficRecording(true)
+    await backend.state()
+    expect(sum(await backend.trafficHistory('today'))).toBe(before)
+    // Only traffic after the switch is added.
+    await backend.state()
+    expect(sum(await backend.trafficHistory('today'))).toBeGreaterThan(before)
   })
 })

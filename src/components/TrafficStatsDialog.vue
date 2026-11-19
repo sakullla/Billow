@@ -51,20 +51,20 @@ interface GroupRow {
 }
 
 /**
- * One row per label. Grouping by profile keeps DIRECT traffic under its profile;
- * grouping by group or node folds every built-in policy into "Direct".
+ * One row per label. DIRECT/REJECT always stays its own "直连" row, so R43's
+ * separate Direct line is visible in every grouping; the totals still match.
  */
 const rows = computed<GroupRow[]>(() => {
   const groups = new Map<string, GroupRow>()
   for (const entry of view.value?.entries ?? []) {
     let label: string
     let key: string
-    if (grouping.value === 'profile') {
-      label = entry.profile || t('traffic.unknown')
-      key = `profile:${entry.profile}`
-    } else if (entry.direct) {
+    if (entry.direct) {
       label = t('traffic.direct')
       key = `${grouping.value}:direct`
+    } else if (grouping.value === 'profile') {
+      label = entry.profile || t('traffic.unknown')
+      key = `profile:${entry.profile}`
     } else {
       label = (grouping.value === 'group' ? entry.group : entry.node) || t('traffic.unknown')
       key = `${grouping.value}:${label}`
