@@ -73,3 +73,28 @@ describe('R42 language setting', () => {
     expect(chinese.find('[data-testid="language-setting"]').text()).toContain('界面语言')
   })
 })
+
+describe('R42 compact language row', () => {
+  it('keeps the three full English labels in the phone settings row', async () => {
+    const backend = createDemoBackend({ systemLocale: 'en' })
+    vi.useFakeTimers()
+    const wrapper = mount(App, { props: { backend, width: 360 }, attachTo: document.body })
+    mounted.push(wrapper)
+    await settle(50)
+    await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
+    await flushPromises()
+
+    const row = wrapper.find('[data-testid="language-row"]')
+    expect(row.exists()).toBe(true)
+    expect(row.find('.nav-row-title').text()).toBe('Language')
+
+    // Labels are never shortened to fit; the control moves to its own line instead.
+    const labels = row.findAll('[data-testid="language-select"] .segment').map((segment) => segment.text())
+    expect(labels).toEqual(['Follow system', '简体中文', 'English'])
+
+    // Contract for the scoped phone-row CSS (stacked control line). happy-dom has no layout,
+    // so the measured 360-412px rendering itself is verified in the browser.
+    expect(row.classes()).toContain('language-row')
+    expect(row.find('[data-testid="language-select"]').classes()).toContain('language-row-control')
+  })
+})

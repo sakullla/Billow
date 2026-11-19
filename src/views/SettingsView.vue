@@ -1385,10 +1385,11 @@ const TABS = computed(() => [
             <span class="nav-row-title">主题</span>
             <Segmented :model-value="store.theme.value" :options="THEMES.map(({ id, label }) => ({ id, label: id === 'system' ? '自动' : label }))" size="sm" label="主题" @update:model-value="store.setTheme" />
           </div>
-          <div class="nav-row static" data-testid="language-row">
+          <div class="nav-row static language-row" data-testid="language-row">
             <span class="nav-row-icon slate"><Icon name="globe" /></span>
             <span class="nav-row-title">{{ t('settings.language.title') }}</span>
             <Segmented
+              class="language-row-control"
               :model-value="store.language.value"
               :options="LANGUAGES"
               size="sm"
@@ -2636,3 +2637,21 @@ const TABS = computed(() => [
     <UwpLoopbackDialog v-if="uwpOpen" @close="uwpOpen = false" />
   </div>
 </template>
+
+<style scoped>
+/* Phone language row: three full labels ("Follow system / 简体中文 / English") need a line of
+   their own, otherwise the control takes the row's width and squeezes the title out. Row-specific
+   so the theme row and other static rows keep the value on the title line. */
+.nav-row.language-row {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.nav-row.language-row > .language-row-control {
+  flex: 1 1 100%;
+  width: 100%;
+}
+.nav-row.language-row :deep(.segment) {
+  flex: 1;
+  justify-content: center;
+}
+</style>
