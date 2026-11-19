@@ -4225,6 +4225,10 @@ impl KernelSettings {
         Ok(())
     }
 
+    fn listener_ports(&self) -> [Option<u16>; 5] {
+        [self.mixed_port, self.socks_port, self.http_port, self.redir_port, self.tproxy_port]
+    }
+
     fn sniff_details_set(&self) -> bool {
         self.sniff_ports != SniffPorts::default()
             || self.sniff_force_domain.is_some()
@@ -5061,14 +5065,23 @@ impl ProfileBook {
             Ok(value) => value,
             Err(message) => { self.input_error = Some(message); return self.snapshot(); }
         };
-        let config = self.config_values();
-        let mixed = settings
-            .mixed_port
-            .filter(|port| *port > 0)
-            .map(i64::from)
-            .or(config.mixed_port)
-            .unwrap_or(FALLBACK_MIXED_PORT);
-        if let Err(message) = settings.validate(Some(mixed)) {
+        // The mixed-port clash is only checked when a listener port changes, so a port that
+        // collides after a profile switch never blocks unrelated saves (the kernel still reports the bind).
+        let ports_changed = settings.listener_ports() != self.settings.listener_ports();
+        let mixed = if ports_changed {
+            let config = self.config_values();
+            Some(
+                settings
+                    .mixed_port
+                    .filter(|port| *port > 0)
+                    .map(i64::from)
+                    .or(config.mixed_port)
+                    .unwrap_or(FALLBACK_MIXED_PORT),
+            )
+        } else {
+            None
+        };
+        if let Err(message) = settings.validate(mixed) {
             self.input_error = Some(message);
             return self.snapshot();
         }
@@ -6701,6 +6714,14 @@ proxy-groups:
         let message = clash.input_error.clone().unwrap();
         assert!(message.contains("HTTP 端口 7890") && message.contains("混合端口"), "{message}");
         assert_eq!(clash.settings.socks_port, Some(7891), "previous settings kept");
+
+        // A saved port that later clashes (e.g. after a profile switch) does not block unrelated saves.
+        let saved_ports = KernelSettings { socks_port: Some(7890), ..Default::default() };
+        book.settings = saved_ports.clone();
+        let unrelated = save_with(&mut book, &mut kernel, KernelSettings { log_level: Some("debug".into()), ..saved_ports });
+        assert_eq!(unrelated.input_error, None, "unchanged ports are not re-checked against the mixed port");
+        let touched = save_with(&mut book, &mut kernel, KernelSettings { socks_port: Some(7890), http_port: Some(8080), ..Default::default() });
+        assert!(touched.input_error.unwrap().contains("混合端口"), "changing a port re-checks the clash");
         let pair = KernelSettings { socks_port: Some(1080), tproxy_port: Some(1080), ..Default::default() };
         let message = pair.validate(Some(7890)).unwrap_err();
         assert!(message.contains("tproxy 端口 1080") && message.contains("SOCKS 端口"), "{message}");
