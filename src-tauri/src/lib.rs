@@ -1593,6 +1593,30 @@ fn toggle_main_window(app: &AppHandle) {
     }
 }
 
+/// The reason a shortcut-triggered action should announce (R39).
+///
+/// Most takeover failures are not an `Err`: a denied TUN authorization, a
+/// refused system proxy or a kernel that will not start all come back as
+/// `Ok(snapshot)` with `snapshot.failure` set, so a shortcut compares the
+/// reason before and after its action. Only a reason this action raised or
+/// changed is announced; an unchanged banner left over from an earlier attempt
+/// is not repeated, and the tray path never notifies.
+#[cfg_attr(not(desktop), allow(dead_code))]
+fn shortcut_failure(
+    notify_failure: bool,
+    previous: Option<&str>,
+    snapshot: &ProfileSnapshot,
+) -> Option<String> {
+    if !notify_failure {
+        return None;
+    }
+    let current = snapshot.failure.as_deref()?;
+    if previous == Some(current) {
+        return None;
+    }
+    Some(current.to_string())
+}
+
 /// The one place a tray click and a global shortcut meet (R39): run the action,
 /// refresh the tray, then tell the window what changed.
 #[cfg(desktop)]
@@ -1611,8 +1635,25 @@ fn dispatch(app: &AppHandle, action: BackendAction, notify_failure: bool) {
             // tray never freezes.
             let app = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
+                // Only a shortcut pays for the "before" reading; the tray never
+                // notifies, so it skips it and keeps its previous behaviour.
+                let previous = if notify_failure {
+                    with_profile(&app, |session| session.book.snapshot().failure)
+                } else {
+                    None
+                };
                 let snapshot = match apply_action(&app, action) {
-                    Ok(snapshot) => snapshot,
+                    Ok(snapshot) => {
+                        // A shortcut can fire while the window is hidden, so a
+                        // failure the action raised also goes to a system
+                        // notification (R39).
+                        if let Some(message) =
+                            shortcut_failure(notify_failure, previous.as_deref(), &snapshot)
+                        {
+                            hotkeys::notify_failure(&app, &message);
+                        }
+                        snapshot
+                    }
                     Err(message) => {
                         // A shortcut can fire while the window is hidden, so the
                         // reason also goes to a system notification (R39).
@@ -1987,4 +2028,35 @@ pub fn run() {
             tauri::RunEvent::Exit => release_proxy_on_exit(app),
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed(reason: &str) -> ProfileSnapshot {
+        ProfileSnapshot {
+            failure: Some(reason.to_string()),
+            ..ProfileSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn a_shortcut_announces_only_a_reason_its_own_action_raised() {
+        let clean = ProfileSnapshot::default();
+        // Nothing failed: nothing to announce.
+        assert_eq!(shortcut_failure(true, None, &clean), None);
+        // A failure that was not there before is announced.
+        assert_eq!(shortcut_failure(true, None, &failed("授权被拒绝")), Some("授权被拒绝".to_string()));
+        // A different reason replaces the old one, so it is announced again.
+        assert_eq!(
+            shortcut_failure(true, Some("授权被拒绝"), &failed("内核没有启动")),
+            Some("内核没有启动".to_string())
+        );
+        // The same stale banner is not repeated on the next press.
+        assert_eq!(shortcut_failure(true, Some("授权被拒绝"), &failed("授权被拒绝")), None);
+        // The tray path never sends a notification, even when the action failed.
+        assert_eq!(shortcut_failure(false, None, &failed("授权被拒绝")), None);
+        assert_eq!(shortcut_failure(false, Some("授权被拒绝"), &failed("内核没有启动")), None);
+    }
 }

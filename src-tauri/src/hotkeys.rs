@@ -302,6 +302,16 @@ pub fn settings(app: &AppHandle) -> Settings {
     }
 }
 
+/// Whether `set` can keep everything as it is: the stored combination is the
+/// requested one and the system still has it registered. A binding the system
+/// refused at startup (`active == false`) is not "unchanged", so recording the
+/// same combination again retries the registration instead of silently
+/// returning an inactive binding (R39).
+#[cfg_attr(not(desktop), allow(dead_code))]
+fn keep_binding(previous: &str, combo: &str, active: bool) -> bool {
+    previous == combo && (combo.is_empty() || active)
+}
+
 /// Bind one action to `combo`, or clear it with an empty combo.
 ///
 /// A clash with another action, an unreadable combination and a registration
@@ -328,13 +338,16 @@ pub fn set(app: &AppHandle, action_id: &str, combo: &str) -> Result<Settings, St
         }
     }
     let previous = current.get(action.id()).cloned().unwrap_or_default();
-    if previous == combo {
+    let active = !previous.is_empty() && registered(app, &previous);
+    if keep_binding(&previous, &combo, active) {
         return Ok(settings(app));
     }
     if !combo.is_empty() && !register(app, action, &combo) {
         return Err(i18n::tr_args(Key::HotkeyFailed, &[("combo", &display_combo(&combo))]));
     }
-    if !previous.is_empty() {
+    // An inactive binding is registered again above, so only a different
+    // previous combination is dropped here.
+    if !previous.is_empty() && previous != combo {
         unregister(app, &previous);
     }
     {
@@ -476,5 +489,19 @@ mod tests {
         );
         assert!(message.contains("Ctrl + Alt + P"));
         assert!(message.contains("系统代理"));
+    }
+
+    #[test]
+    fn an_inactive_binding_is_registered_again_instead_of_being_kept() {
+        // The system still has the stored combination: nothing to do.
+        assert!(keep_binding("Ctrl+Alt+P", "Ctrl+Alt+P", true));
+        // The combination the system refused at startup is retried, not skipped.
+        assert!(!keep_binding("Ctrl+Alt+P", "Ctrl+Alt+P", false));
+        // Another combination, a new one or a clear always goes through.
+        assert!(!keep_binding("Ctrl+Alt+P", "Ctrl+Alt+Q", false));
+        assert!(!keep_binding("", "Ctrl+Alt+P", false));
+        assert!(!keep_binding("Ctrl+Alt+P", "", false));
+        // Clearing an action that was never bound stays a no-op.
+        assert!(keep_binding("", "", false));
     }
 }

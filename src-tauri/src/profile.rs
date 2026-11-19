@@ -9237,6 +9237,36 @@ proxy-groups:
     }
 
     #[test]
+    fn a_denied_tun_authorization_becomes_the_shortcut_notification() {
+        let dir = temp_dir("shortcut-tun-denied");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("home.yaml", &config(7890));
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let mut proxy = MemoryProxy::default();
+        // The authorization prompt the user denies on the desktop harness.
+        let mut tun = MemoryTun { grant: false, ..MemoryTun::default() };
+        let mut vpn = MemoryVpn::default();
+        let before = book.snapshot().failure;
+        assert!(before.is_none());
+
+        let denied = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(denied.failure.as_deref(), Some(takeover::TUN_DENIED));
+        assert!(!denied.tun);
+        // A shortcut announces the reason its own action raised (R39), even
+        // though the action itself returned Ok.
+        assert_eq!(
+            crate::shortcut_failure(true, before.as_deref(), &denied),
+            Some(takeover::TUN_DENIED.to_string())
+        );
+        // Pressing it again while the same banner is still there stays silent.
+        assert_eq!(crate::shortcut_failure(true, denied.failure.as_deref(), &denied), None);
+        // The tray path never notifies.
+        assert_eq!(crate::shortcut_failure(false, before.as_deref(), &denied), None);
+    }
+
+    #[test]
     fn closing_tun_drops_the_replaced_kernels_connections_and_a_later_sample_sees_new_traffic() {
         let dir = temp_dir("tun-replace");
         let mut book = ProfileBook::open(&dir.0);
