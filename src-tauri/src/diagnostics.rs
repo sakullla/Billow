@@ -816,14 +816,29 @@ fn dns_query_error(err: ureq::Error) -> String {
             }
         }
         ureq::Error::Transport(transport) => {
-            let text = transport.to_string().to_ascii_lowercase();
-            if text.contains("timed out") || text.contains("timeout") {
+            if transport_timed_out(&transport) {
                 "DNS 查询超时".to_string()
             } else {
                 "内核没有响应".to_string()
             }
         }
     }
+}
+
+/// A read timeout surfaces as `WouldBlock` on Unix but `TimedOut` (WSAETIMEDOUT, whose
+/// message never says "timed out") on Windows, so check the io error kind, not the text.
+fn transport_timed_out(transport: &ureq::Transport) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(transport);
+    while let Some(err) = source {
+        if let Some(io) = err.downcast_ref::<std::io::Error>() {
+            if matches!(io.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) {
+                return true;
+            }
+        }
+        source = err.source();
+    }
+    let text = transport.to_string().to_ascii_lowercase();
+    text.contains("timed out") || text.contains("timeout") || text.contains("os error 10060")
 }
 
 /// Resolves `name` through the kernel's live DNS config with `GET /dns/query`.
@@ -2234,5 +2249,17 @@ rules:
         let slow = dns_query(Some(&endpoint), "example.com", "A", Duration::from_millis(150));
         server.join().unwrap();
         assert_eq!(slow.error.as_deref(), Some("DNS 查询超时"));
+    }
+
+    #[test]
+    fn dns_query_reads_a_windows_socket_timeout_as_a_timeout() {
+        // WSAETIMEDOUT's message never contains "timed out".
+        let windows = std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "A connection attempt failed because the connected party did not properly respond after a period of time",
+        );
+        assert_eq!(dns_query_error(windows.into()), "DNS 查询超时");
+        let refused = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        assert_eq!(dns_query_error(refused.into()), "内核没有响应");
     }
 }
