@@ -46,6 +46,39 @@ const snap = computed(() => store.snapshot.value)
 const app = computed(() => store.app.value)
 const kernel = computed(() => store.kernel.value)
 
+const kernelUpdateBusy = computed(() =>
+  store.isAndroid.value ? store.appUpdate.busy.value : Boolean(store.busy.kernel),
+)
+const kernelUpdateSubtitle = computed(() => {
+  if (kernel.value.failure) return kernel.value.failure
+  if (!store.isAndroid.value) return '已安装的内核直接使用；可手动检查新版本'
+  const status = store.appUpdate.status.value
+  if (status === 'checking') return '正在检查 Billow 与内核更新…'
+  if (store.appUpdate.offer.value) return `发现新版本 v${store.appUpdate.offer.value.version}，内核随应用一并更新`
+  if (status === 'current') return '当前 Billow 与内核均已是最新版本'
+  if (status === 'error' && store.appUpdate.error.value) return `检查失败：${store.appUpdate.error.value}`
+  return '内核随 Billow 更新，安装后即可使用'
+})
+async function onCheckKernelUpdate() {
+  if (!store.isAndroid.value) {
+    await store.refreshKernel()
+    return
+  }
+  if (store.appUpdate.offer.value) {
+    await store.appUpdate.install()
+    return
+  }
+  await store.appUpdate.check(false)
+  const { offer, error, status } = store.appUpdate
+  if (offer.value) {
+    store.toast(`发现新版本 v${offer.value.version}，可点击下载更新`, 'success')
+  } else if (error.value) {
+    store.toast(`检查更新失败：${error.value}`, 'error')
+  } else if (status.value === 'current') {
+    store.toast('当前 Billow 与内核已是最新版本', 'success')
+  }
+}
+
 const THEMES: { id: ThemePreference; label: string; icon: string }[] = [
   { id: 'system', label: '跟随系统', icon: 'laptop' },
   { id: 'light', label: '浅色', icon: 'sun' },
@@ -1691,10 +1724,23 @@ const TABS = computed(() => [
         <div class="setting-row">
           <div class="grow">
             <strong>检查更新</strong>
-            <p class="muted small">{{ kernel.failure ?? (store.isAndroid.value ? '内核随 Billow 更新，安装后即可使用' : '已安装的内核直接使用；可手动检查新版本') }}</p>
+            <p class="muted small" data-testid="kernel-update-subtitle">{{ kernelUpdateSubtitle }}</p>
           </div>
-          <button type="button" class="btn ghost sm" :disabled="store.busy.kernel" @click="store.isAndroid.value ? store.appUpdate.check() : store.refreshKernel()">
-            <Icon name="refresh" :size="15" :class="{ spin: store.busy.kernel }" />检查
+          <button
+            type="button"
+            class="btn sm"
+            :class="store.isAndroid.value && store.appUpdate.offer.value ? 'primary' : 'ghost'"
+            :disabled="kernelUpdateBusy"
+            :aria-busy="kernelUpdateBusy || undefined"
+            data-testid="kernel-check-update"
+            @click="onCheckKernelUpdate"
+          >
+            <Icon
+              :name="store.isAndroid.value && store.appUpdate.offer.value ? 'download' : 'refresh'"
+              :size="15"
+              :class="{ spin: kernelUpdateBusy }"
+            />
+            {{ kernelUpdateBusy ? '检查中' : store.isAndroid.value && store.appUpdate.offer.value ? '下载' : '检查' }}
           </button>
         </div>
         <div class="setting-row">

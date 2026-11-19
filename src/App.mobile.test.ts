@@ -117,4 +117,23 @@ describe('phone layout', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="connection-sort"]').text()).toContain('按下载')
   })
+
+  it('gives immediate feedback and updates status when checking kernel updates on Android', async () => {
+    const { wrapper } = await mountPhone({ platform: 'android' })
+    const store = storeOf(wrapper)
+    const checkSpy = vi.spyOn(store.appUpdate, 'check').mockImplementation(async () => {
+      store.appUpdate.status.value = 'current'
+    })
+    store.openSettings('kernel')
+    await flushPromises()
+
+    const checkBtn = wrapper.find('[data-testid="kernel-check-update"]')
+    expect(checkBtn.exists()).toBe(true)
+    await checkBtn.trigger('click')
+    await flushPromises()
+
+    expect(checkSpy).toHaveBeenCalledWith(false)
+    expect(wrapper.find('[data-testid="kernel-update-subtitle"]').text()).toContain('最新版本')
+    expect(wrapper.find('.toasts').text()).toContain('最新版本')
+  })
 })

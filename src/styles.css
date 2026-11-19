@@ -7925,7 +7925,7 @@ details.cfg-section[open] .cfg-fold-icon {
   color: var(--text-3);
   border-radius: 0;
 }
-.group-info-item + .group-info-item::before {
+.group-info-item:not(:last-child)::after {
   content: '·';
   margin: 0 8px;
   color: var(--border-strong);
@@ -8201,4 +8201,64 @@ details.cfg-section[open] .cfg-fold-icon {
 .log-card .jump:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
+}
+
+/* ───────────── Mobile Polish & Edge-to-Edge Locate Cue ───────────── */
+@keyframes locate-row-cue {
+  0%, 45% {
+    background: color-mix(in srgb, var(--accent) 20%, var(--surface));
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  100% {
+    box-shadow: inset 3px 0 0 transparent;
+  }
+}
+
+.compact .page.proxies .nodes:not(.dense) .node.located,
+.shell:not(.compact) .page.proxies .nodes.list .node.located {
+  animation: locate-row-cue 1.6s var(--ease) both;
+}
+
+.compact .page.proxies .nodes:not(.dense) .node.selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.compact .page.proxies .nodes:not(.dense) .node:active:not(.locked) {
+  background: var(--hover);
+}
+
+.compact .page {
+  padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 38px);
+}
+
+.compact .proxies-toolbar {
+  padding: 8px var(--page-pad-x);
+  row-gap: 6px;
+}
+.compact .proxies-toolbar .search {
+  height: 38px;
+}
+.compact .options-btn {
+  width: 38px;
+  height: 38px;
+}
+.compact .toolbar-options {
+  gap: 6px;
+}
+.compact .group-pills {
+  margin-top: 0;
+}
+.compact .group-pill {
+  height: 30px;
+  padding: 0 11px;
+  font-size: var(--text-xs);
+}
+.compact .group.open .group-head {
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: saturate(1.5) blur(14px);
+  -webkit-backdrop-filter: saturate(1.5) blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+.compact .page.settings .setting-row .btn.sm {
+  min-height: 34px;
+  padding: 0 12px;
 }
