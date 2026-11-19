@@ -783,6 +783,7 @@ defineExpose({ store })
       v-if="paletteOpen"
       :platform="isAndroid ? 'android' : 'desktop'"
       :connected="snap.connected"
+      :kernel-running="snap.kernel_running"
       :has-profiles="snap.profiles.length > 0"
       :system-proxy="snap.system_proxy"
       :tun="snap.tun"

@@ -944,6 +944,39 @@ describe('App', () => {
     expect(document.activeElement).toBe(trigger)
   })
 
+  it('pins a url-test node from the palette only while the kernel is running (R28)', async () => {
+    const { wrapper, backend } = await mountApp()
+    const select = vi.spyOn(backend, 'selectNode')
+    const option = () => paletteOption('node:自动选择:日本 01')
+
+    // Kernel down: the pinnable node is listed but disabled with the reason.
+    await openPalette()
+    await searchPalette('日本 01')
+    expect(option()?.getAttribute('aria-disabled')).toBe('true')
+    expect(option()?.textContent).toContain('内核没有运行')
+    press(document.activeElement ?? document, 'Escape')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    expect(storeOf(wrapper).snapshot.value.kernel_running).toBe(true)
+
+    await openPalette()
+    await searchPalette('日本 01')
+    expect(option()?.getAttribute('aria-disabled')).toBeNull()
+    expect(option()?.textContent).not.toContain('内核没有运行')
+    option()!.click()
+    await settle(200)
+    expect(select).toHaveBeenCalledWith('自动选择', '日本 01')
+    const group = storeOf(wrapper).snapshot.value.node_catalog.find((item) => item.name === '自动选择')
+    expect(group?.fixed).toBe('日本 01')
+    expect(group?.now).toBe('日本 01')
+
+    await openPalette()
+    await searchPalette('日本 01')
+    expect(option()?.textContent).toContain('已固定')
+  })
+
   it('focuses the page search with / but leaves the key alone inside inputs', async () => {
     const { wrapper } = await mountApp()
     await wrapper.find('.sidebar [data-page="logs"]').trigger('click')
