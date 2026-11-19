@@ -1134,6 +1134,59 @@ const TABS = computed(() => [
         </template>
       </section>
 
+      <!-- Phone: the rest of the general page keeps the grouped-list rhythm instead of loose cards. -->
+      <template v-if="compact">
+        <p class="settings-group-label">代理行为</p>
+        <section class="card list-card settings-list" data-testid="node-switch-settings">
+          <div class="nav-row static">
+            <span class="nav-row-icon blue"><Icon name="refresh" /></span>
+            <div class="grow min0">
+              <span class="nav-row-title">切换节点后重连</span>
+              <p class="muted small">让旧连接立即改走新节点，下载或通话可能中断</p>
+            </div>
+            <Toggle :model-value="currentSettings.close_connections_on_switch" label="切换节点后重连" data-testid="close-on-node-switch"
+              @update:model-value="(on) => save({ close_connections_on_switch: on })" />
+          </div>
+          <details class="nav-fold" data-testid="subscription-settings" :open="Boolean(snap.settings.subscription_user_agent) || undefined">
+            <summary class="nav-row">
+              <span class="nav-row-icon violet"><Icon name="link" /></span>
+              <span class="nav-row-title">订阅 User-Agent</span>
+              <span class="nav-row-value">{{ snap.settings.subscription_user_agent ? '已自定义' : '默认' }}</span>
+              <Icon name="chevron-right" :size="16" class="muted nav-fold-chevron" />
+            </summary>
+            <label class="field nav-fold-body">
+              <span class="sr-only">默认 User-Agent</span>
+              <input v-model="subscriptionUa" type="text" maxlength="256" :placeholder="defaultSubscriptionUa" spellcheck="false" autocomplete="off" autocapitalize="off" enterkeyhint="done" data-testid="global-subscription-user-agent"
+                @focus="subscriptionUaFocused = true" @blur="subscriptionUaFocused = false; commitSubscriptionUa()" @keydown.enter.prevent="($event.target as HTMLInputElement).blur()" />
+              <p class="muted small">更新订阅时使用；留空用内核默认值，单个订阅可在「编辑信息」中覆盖。</p>
+            </label>
+          </details>
+        </section>
+
+        <p class="settings-group-label">关于</p>
+        <section class="card list-card settings-list" data-testid="settings-about">
+          <AppUpdateCard variant="row" />
+          <div v-if="app?.data_dir" class="nav-row static">
+            <span class="nav-row-icon slate"><Icon name="database" /></span>
+            <div class="grow min0">
+              <span class="nav-row-title">数据目录</span>
+              <p class="muted small mono ellipsis" :title="app.data_dir">{{ app.data_dir }}</p>
+            </div>
+            <button
+              type="button"
+              class="icon-btn"
+              aria-label="复制数据目录路径"
+              data-testid="copy-data-dir"
+              @click="store.copyText(app.data_dir, '已复制数据目录路径')"
+            >
+              <Icon name="copy" :size="16" />
+            </button>
+          </div>
+        </section>
+        <p class="settings-foot">基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0</p>
+      </template>
+
+      <template v-else>
       <section class="card" data-testid="node-switch-settings">
         <div class="setting-row">
           <div class="grow">
@@ -1190,6 +1243,7 @@ const TABS = computed(() => [
           <span class="muted small mono">v{{ app?.version ?? '—' }}</span>
         </div>
       </section>
+      </template>
     </template>
 
     <!-- ───────── 系统代理 ───────── -->

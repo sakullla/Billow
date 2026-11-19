@@ -1896,12 +1896,14 @@ describe('App', () => {
     await wrapper.find('[data-testid="pause-connections"]').trigger('click')
     await flushPromises()
     // The new-connection badge is the one field that is expected to grow while frozen.
-    const frozen = summary.text().replace(/ · \d+ 条新连接/, '')
+    const factsOf = () =>
+      summary.findAll('span').filter((item) => item.attributes('data-testid') !== 'new-connections').map((item) => item.text()).join(' · ')
+    const frozen = factsOf()
     expect(frozen).toContain('暂停于')
     expect(wrapper.find('[data-testid="pause-connections"]').attributes('aria-pressed')).toBe('true')
 
     await settle(3000)
-    expect(summary.text().replace(/ · \d+ 条新连接/, '')).toBe(frozen)
+    expect(factsOf()).toBe(frozen)
     expect(wrapper.find('[data-testid="new-connections"]').text()).toMatch(/^\d+ 条新连接$/)
 
     await wrapper.find('[data-testid="pause-connections"]').trigger('click')

@@ -744,7 +744,7 @@ const failedSubscriptionIds = computed(() =>
     <header class="page-head">
       <div>
         <h1>配置</h1>
-        <p class="muted small">{{ snap.profiles.length }} 份配置 · 同一时间启用一份</p>
+        <p class="muted small meta-line"><span>{{ snap.profiles.length }} 份配置</span><span>同一时间启用一份</span></p>
       </div>
       <div class="head-actions">
         <button

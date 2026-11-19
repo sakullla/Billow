@@ -398,8 +398,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     })
   }
 
-  function makeConnection(): ConnectionRow {
-    const host = HOSTS[Math.floor(Math.random() * HOSTS.length)]
+  function makeConnection(pick?: string): ConnectionRow {
+    const host = pick ?? HOSTS[Math.floor(Math.random() * HOSTS.length)]
     const target = host.includes('bilibili') ? 'DIRECT' : options.longNames ? '漏网之鱼' : '节点选择'
     const hops: string[] = []
     for (let at: string | undefined = target; at && !hops.includes(at); ) {
@@ -448,6 +448,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       .filter(() => Math.random() > 0.06)
       .map((row) => ({ ...row, upload: row.upload + Math.floor(Math.random() * 3000), download: row.download + Math.floor(Math.random() * 90_000) }))
     while (connections.length < 14) connections.push(makeConnection())
+    // Keep one DIRECT row alive so the route filter always has both sides to show.
+    if (!connections.some((row) => row.chains[0] === 'DIRECT')) {
+      connections[connections.length - 1] = makeConnection(HOSTS.find((host) => host.includes('bilibili')))
+    }
     if (Math.random() > 0.6) {
       const row = connections[Math.floor(Math.random() * connections.length)]
       log('info', `[TCP] ${row.source} --> ${row.host}:443 match ${row.rule}(${row.rule_payload}) using ${row.chains.join('[')}${row.chains.length > 1 ? ']' : ''}`)

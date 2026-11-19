@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
+import Menu, { type MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
@@ -10,7 +11,7 @@ import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import type { LogLevel, LogLine } from '../lib/types'
 
-defineProps<{ compact?: boolean }>()
+const props = defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 
@@ -33,6 +34,22 @@ const wrap = ref(true)
 const follow = ref(true)
 const confirmClear = ref(false)
 const scroller = ref<HTMLElement | null>(null)
+
+/** Phones keep pause in reach and fold the rarer actions into one menu so the head stays one row. */
+const moreOpen = ref(false)
+const moreItems = computed<MenuItem[]>(() => [
+  { id: 'wrap', label: wrap.value ? '关闭自动换行' : '开启自动换行', icon: 'list' },
+  { id: 'copy', label: `复制 ${lines.value.length} 行`, icon: 'copy', disabled: !lines.value.length, reason: '没有日志' },
+  { id: 'export', label: '导出日志', icon: 'download', disabled: !lines.value.length, reason: '没有日志' },
+  { id: 'clear', label: '清空日志', icon: 'trash', danger: true, disabled: !snap.value.logs.length, reason: '没有日志' },
+])
+function onMore(item: MenuItem) {
+  moreOpen.value = false
+  if (item.id === 'wrap') wrap.value = !wrap.value
+  else if (item.id === 'copy') void copyFiltered()
+  else if (item.id === 'export') void exportLogs()
+  else if (item.id === 'clear') confirmClear.value = true
+}
 
 const lineKey = (line: LogLine) => `${line.time_ms}|${line.level}|${line.message}`
 
@@ -224,38 +241,54 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
         >
           <Icon :name="paused ? 'play' : 'pause'" :size="14" />{{ paused ? '继续' : '暂停' }}
         </button>
-        <label class="wrap-field small muted" data-testid="wrap-field">
-          <Toggle v-model="wrap" label="自动换行" />
-          自动换行
-        </label>
-        <button
-          type="button"
-          class="btn ghost sm"
-          :disabled="!lines.length"
-          :title="`复制当前 ${lines.length} 行日志`"
-          data-testid="copy-logs"
-          @click="copyFiltered"
-        >
-          <Icon name="copy" :size="15" />复制
-        </button>
-        <button
-          type="button"
-          class="btn ghost sm"
-          :disabled="!lines.length"
-          data-testid="export-logs"
-          @click="exportLogs"
-        >
-          <Icon name="download" :size="15" />导出
-        </button>
-        <button
-          type="button"
-          class="btn ghost sm danger-text"
-          :disabled="!snap.logs.length"
-          data-testid="clear-logs"
-          @click="confirmClear = true"
-        >
-          <Icon name="trash" :size="15" />清空
-        </button>
+        <div v-if="props.compact" class="menu-anchor">
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="更多日志操作"
+            aria-haspopup="menu"
+            :aria-expanded="moreOpen"
+            data-testid="log-more"
+            @click="moreOpen = !moreOpen"
+          >
+            <Icon name="more" />
+          </button>
+          <Menu v-if="moreOpen" :items="moreItems" label="日志操作" @select="onMore" @close="moreOpen = false" />
+        </div>
+        <template v-else>
+          <label class="wrap-field small muted" data-testid="wrap-field">
+            <Toggle v-model="wrap" label="自动换行" />
+            自动换行
+          </label>
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="!lines.length"
+            :title="`复制当前 ${lines.length} 行日志`"
+            data-testid="copy-logs"
+            @click="copyFiltered"
+          >
+            <Icon name="copy" :size="15" />复制
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="!lines.length"
+            data-testid="export-logs"
+            @click="exportLogs"
+          >
+            <Icon name="download" :size="15" />导出
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm danger-text"
+            :disabled="!snap.logs.length"
+            data-testid="clear-logs"
+            @click="confirmClear = true"
+          >
+            <Icon name="trash" :size="15" />清空
+          </button>
+        </template>
       </div>
     </header>
 

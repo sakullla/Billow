@@ -3506,10 +3506,6 @@ button.delay:hover:not(:disabled) {
     opacity: 1;
   }
 }
-.profile-touch-cue {
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-}
 .profile-head {
   display: flex;
   align-items: center;
@@ -4055,6 +4051,10 @@ html[data-col-resizing] * {
   max-width: none;
   height: 38px;
 }
+/* Two filters and the sort share one phone row: the label wins, counts stay in the sheet. */
+.compact .rule-toolbar .rule-filter .select-trigger-hint {
+  display: none;
+}
 .rule-scroll {
   overflow: auto;
   padding: 4px 0;
@@ -4303,8 +4303,9 @@ button.log-level:hover {
 .log-line.error .log-msg {
   color: var(--poor-ink);
 }
+/* Break at spaces first so hosts and rule names stay readable; split a token only when it cannot fit. */
 .log-msg {
-  word-break: break-all;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 .compact .log-line {
@@ -4924,9 +4925,10 @@ textarea.input {
   gap: 0 6px;
   margin-top: 2px;
 }
-.provider-meta > span + span::before {
+/* Trailing separators: a wrapped line never starts with a stray dot. */
+.provider-meta > span:not(:last-child)::after {
   content: '·';
-  margin-right: 6px;
+  margin-left: 6px;
   color: var(--text-3);
 }
 .provider-state-inline.pending {
@@ -5520,8 +5522,7 @@ textarea.input {
   margin-left: auto;
   flex: none;
 }
-.compact .page.settings .head-actions,
-.compact .page.logs .head-actions {
+.compact .page.settings .head-actions {
   width: 100%;
 }
 .compact .group,
@@ -5932,6 +5933,54 @@ button.nav-row:active {
 }
 .nav-row.static .segmented {
   flex: none;
+}
+/* Rows wrapped in <details> or a component root still get the inset hairline. */
+.nav-fold,
+.update-row {
+  position: relative;
+}
+.settings-list > :is(.nav-row, .nav-fold, .update-row) + :is(.nav-fold, .update-row)::before,
+.settings-list > :is(.nav-fold, .update-row) + .nav-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 60px;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+}
+.nav-fold > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.nav-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.nav-fold > summary:active {
+  background: var(--hover);
+}
+.nav-fold-chevron {
+  flex: none;
+  transition: transform var(--dur-base) var(--ease);
+}
+.nav-fold[open] .nav-fold-chevron {
+  transform: rotate(90deg);
+}
+.nav-fold-body {
+  display: grid;
+  gap: 6px;
+  padding: 0 var(--space-4) var(--space-3) 60px;
+}
+.nav-row-brand {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  box-shadow: none;
+}
+.settings-foot {
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--text-3);
 }
 .settings-subhead {
   display: flex;
@@ -6865,10 +6914,11 @@ details.cfg-section[open] .cfg-fold-icon {
   vertical-align: middle;
   white-space: nowrap;
 }
+/* Shrink weights (not percentage caps) decide who gives way: a percentage max-width
+   resolves against the shrink-to-fit chain itself and clipped the entry even with room to spare. */
 .chain-via {
-  flex: 0 1 auto;
+  flex: 0 6 auto;
   min-width: 2.5em;
-  max-width: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-3);
@@ -6905,9 +6955,8 @@ details.cfg-section[open] .cfg-fold-icon {
   line-height: 16px;
 }
 .chain-relay {
-  flex: 0 1 auto;
+  flex: 0 3 auto;
   min-width: 2.5em;
-  max-width: 42%;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-2);
@@ -7643,3 +7692,59 @@ details.cfg-section[open] .cfg-fold-icon {
   }
 }
 
+
+/* ───────────── Mobile polish ───────────── */
+
+/* Fact lists ("14 个活动连接 · ↓20 MB · ↑747 KB"): each fact keeps its trailing dot and wraps as one unit. */
+.meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.meta-line > * {
+  white-space: nowrap;
+}
+.meta-line > :not(:last-child)::after {
+  content: '·';
+  margin: 0 0.4em;
+  color: var(--text-3);
+}
+
+/* Phone connections: scope + sort share the first row, search and route filter follow. */
+.compact .conn-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2);
+}
+.compact .conn-toolbar > .search,
+.compact .conn-toolbar > [data-testid='connection-route-filter'] {
+  grid-column: 1 / -1;
+}
+.compact .conn-toolbar > .search {
+  order: 2;
+}
+.compact .conn-toolbar > [data-testid='connection-route-filter'] {
+  order: 3;
+}
+.compact .conn-toolbar > .conn-sort {
+  order: 1;
+  justify-self: end;
+  width: auto;
+  max-width: 100%;
+  height: 36px;
+}
+
+/* Resources: refresh only takes the whole row when a search field shares it. */
+.compact .page.resources .head-actions:not(:has(.provider-search)) {
+  width: auto;
+}
+.compact .geo-strip p.ellipsis {
+  white-space: normal;
+}
+
+/* Profiles: the phone "启用" cue is an affordance, not a status, so it must not look like "使用中". */
+.profile-touch-cue {
+  background: transparent;
+  color: var(--text-2);
+  box-shadow: inset 0 0 0 1px var(--border-input);
+}

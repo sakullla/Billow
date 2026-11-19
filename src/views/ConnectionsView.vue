@@ -7,6 +7,7 @@ import Icon from '../components/Icon.vue'
 import type { MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
+import SelectField from '../components/SelectField.vue'
 import {
   connectionRules,
   extractEndpointIp,
@@ -475,6 +476,11 @@ const hiddenRows = computed(() =>
   tab.value === 'active' ? Math.max(0, displayTotal.value - activeSourceRows.value.length) : 0,
 )
 
+/** Phone sort lives in a sheet next to the scope switch; the "按" prefix keeps the trigger self-explaining. */
+const sortOptions = computed(() =>
+  (tab.value === 'closed' ? CLOSED_SORTS : SORTS).map((item) => ({ value: item.id, label: `按${item.label}` })),
+)
+
 const tabOptions = computed<{ id: ConnTab; label: string }[]>(() => [
   { id: 'active', label: `活动 ${displayTotal.value}` },
   { id: 'closed', label: closedRows.value.length ? `已关闭 ${closedRows.value.length}` : '已关闭' },
@@ -855,20 +861,21 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
     <header class="page-head">
       <div>
         <h1>连接</h1>
-        <p class="muted small mono" data-testid="connection-summary">
-          <template v-if="!snap.connected">未连接</template>
+        <!-- Each fact wraps as a unit with its trailing separator, so no line starts with a stray dot. -->
+        <p class="muted small mono meta-line" data-testid="connection-summary">
+          <span v-if="!snap.connected">未连接</span>
           <template v-else-if="tab === 'closed'">
-            已记录 {{ closedRows.length }} 条已关闭连接
-            <template v-if="isFiltered"> · 匹配 {{ rows.length }} 条</template>
+            <span>已记录 {{ closedRows.length }} 条已关闭连接</span>
+            <span v-if="isFiltered">匹配 {{ rows.length }} 条</span>
           </template>
           <template v-else>
-            {{ displayTotal }} 个活动连接
-            <template v-if="isFiltered"> · 匹配 {{ rows.length }} 条</template>
-            <template v-if="hiddenRows"> · 显示前 {{ activeSourceRows.length }} 条</template>
-            <template v-if="paused"> · 暂停于 {{ formatClock(pausedAt ?? 0) }}</template>
-            <template v-if="paused && newCount"> · <span data-testid="new-connections">{{ newCount }} 条新连接</span></template>
-            · <span title="本次累计下载"><Icon name="down" :size="11" />{{ formatBytes(displayDown) }}</span>
-            · <span title="本次累计上传"><Icon name="up" :size="11" />{{ formatBytes(displayUp) }}</span>
+            <span>{{ displayTotal }} 个活动连接</span>
+            <span v-if="isFiltered">匹配 {{ rows.length }} 条</span>
+            <span v-if="hiddenRows">显示前 {{ activeSourceRows.length }} 条</span>
+            <span v-if="paused">暂停于 {{ formatClock(pausedAt ?? 0) }}</span>
+            <span v-if="paused && newCount" data-testid="new-connections">{{ newCount }} 条新连接</span>
+            <span title="本次累计下载"><Icon name="down" :size="11" />{{ formatBytes(displayDown) }}</span>
+            <span title="本次累计上传"><Icon name="up" :size="11" />{{ formatBytes(displayUp) }}</span>
           </template>
         </p>
       </div>
@@ -920,7 +927,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </div>
     </header>
 
-    <div v-if="showToolbar" class="toolbar">
+    <div v-if="showToolbar" class="toolbar conn-toolbar">
       <Segmented
         :model-value="tab"
         :options="tabOptions"
@@ -952,14 +959,16 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         data-testid="connection-route-filter"
       />
       <!-- The desktop table sorts from its column headers; phone cards have none, so they keep the switch. -->
-      <Segmented
+      <SelectField
         v-if="compact"
         :model-value="sortKey"
-        :options="tab === 'closed' ? CLOSED_SORTS : SORTS"
+        :options="sortOptions"
+        sheet
         size="sm"
-        label="排序"
+        label="排序方式"
+        class="conn-sort"
         data-testid="connection-sort"
-        @update:model-value="setSort"
+        @update:model-value="(key) => setSort(key as SortKey)"
       />
     </div>
 
