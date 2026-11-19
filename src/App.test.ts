@@ -2107,6 +2107,52 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="disconnect-all"]').exists()).toBe(false)
   })
 
+  it('reports each bulk close outcome even after an earlier partial failure', async () => {
+    const { wrapper, backend } = await mountApp({ stableConnections: 12 })
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'connections')
+    await settle(1100)
+
+    const real = backend.closeConnections.bind(backend)
+    const partial = async (ids: string[] | null) => ({ ...(await real(ids)), notice: '1 条连接没有关闭' })
+    const close = vi.spyOn(backend, 'closeConnections')
+      .mockImplementationOnce(partial)
+      .mockImplementationOnce(real)
+      .mockImplementationOnce(partial)
+      .mockImplementationOnce(partial)
+    const closeFiltered = async (query: string) => {
+      await wrapper.find('[data-testid="connection-search"]').setValue(query)
+      await flushPromises()
+      await wrapper.find('[data-testid="disconnect-all"]').trigger('click')
+      await flushPromises()
+      bodyClick('[data-testid="confirm-disconnect-all"]')
+      await settle(200)
+    }
+    const toasts = () => wrapper.findAll('.toast').map((item) => item.text())
+
+    await closeFiltered('www.')
+    expect(wrapper.findAll('.toast.error').at(-1)?.text()).toContain('1 条连接没有关闭')
+    const afterFirst = toasts().length
+
+    await closeFiltered('')
+    expect(close).toHaveBeenLastCalledWith(null)
+    expect(toasts().length).toBeGreaterThan(afterFirst)
+    expect(wrapper.findAll('.toast.success').at(-1)?.text()).toContain('已关闭全部连接')
+    expect(storeOf(wrapper).snapshot.value.notice).toBeNull()
+
+    // Two identical failure counts in a row still each surface a prompt.
+    const errors = () => wrapper.findAll('.toast.error').length
+    const errorsBefore = errors()
+    void storeOf(wrapper).closeConnections(['gone-a'])
+    await settle(200)
+    expect(errors()).toBe(errorsBefore + 1)
+    void storeOf(wrapper).closeConnections(['gone-b'])
+    await settle(200)
+    expect(errors()).toBe(errorsBefore + 2)
+    expect(close).toHaveBeenCalledTimes(4)
+  })
+
   it('distinguishes unconnected, empty and failed connection reads', async () => {
     const first = await mountApp()
     await openPage(first.wrapper, 'connections')

@@ -1062,10 +1062,12 @@ export function createStore(backend: Backend) {
     closeConnection: (id: string | null) => act(null, () => backend.closeConnection(id)),
     /** `null` closes every connection; a list closes exactly those rows (R30). */
     async closeConnections(ids: string[] | null) {
-      const result = await act('close-connections', () => backend.closeConnections(ids))
-      if (result && !/没有关闭|没有运行/.test(result.notice ?? '')) {
-        toast(ids ? `已关闭 ${ids.length} 条连接` : '已关闭全部连接', 'success')
-      }
+      lastRunError.value = null
+      const result = await run('close-connections', () => backend.closeConnections(ids))
+      if (!result) return undefined
+      // The backend sets `notice` for this call alone, so a repeated failure count still toasts.
+      if (result.notice) toast(result.notice, 'error')
+      else toast(ids ? `已关闭 ${ids.length} 条连接` : '已关闭全部连接', 'success')
       return result
     },
     /** Runs outside the action queue: a slow resolver must not hold up other controls. */

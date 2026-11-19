@@ -988,6 +988,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       }
       const targets = ids ? new Set(ids) : null
       connections = targets ? connections.filter((row) => !targets.has(row.id)) : []
+      state.notice = null
       return done(60)
     },
     async dnsQuery(name, qtype) {

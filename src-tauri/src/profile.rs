@@ -4861,9 +4861,8 @@ impl ProfileBook {
                 failed => Err(format!("{failed} 条连接没有关闭")),
             }),
         };
-        if let Err(message) = outcome {
-            self.notice = Some(message);
-        }
+        // Each call reports its own outcome, so a later success clears an earlier failure count.
+        self.notice = outcome.err();
         self.publish(kernel)
     }
 
@@ -9315,7 +9314,7 @@ proxy-groups:
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let mut lines = Vec::new();
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut reader = Lines::new(stream.try_clone().unwrap());
                 let mut first = String::new();
@@ -9334,7 +9333,11 @@ proxy-groups:
         let mut kernel = ControllerKernel(Some(ControllerEndpoint { host: "127.0.0.1".into(), port, secret: String::new() }));
         let partial = book.close_connection_set(Some(&["closed".to_string(), "kept".to_string()]), &mut kernel);
         assert_eq!(partial.notice.as_deref(), Some("1 条连接没有关闭"));
+        // A later successful close clears the earlier failure count.
+        let cleared = book.close_connection_set(Some(&["closed".to_string()]), &mut kernel);
+        assert_eq!(cleared.notice, None);
         let lines = server.join().unwrap();
+        assert_eq!(lines.len(), 3);
         assert!(lines.iter().all(|line| line.starts_with("DELETE /connections/")));
 
         let capability: serde_json::Value =

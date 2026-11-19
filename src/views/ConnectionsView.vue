@@ -742,8 +742,11 @@ async function closeOne(row: ConnectionRow) {
 /** Without a search or route filter this closes everything; otherwise only the listed rows. */
 function askCloseAll() {
   if (!rows.value.length) return
-  confirmIds.value = isFiltered.value ? rows.value.map((row) => row.id) : null
-  confirmCount.value = isFiltered.value ? rows.value.length : Math.max(displayTotal.value, rows.value.length)
+  // Only rows with a kernel id can be closed one by one; the count matches what is sent.
+  const ids = isFiltered.value ? rows.value.map((row) => row.id).filter(Boolean) : null
+  if (ids && !ids.length) return
+  confirmIds.value = ids
+  confirmCount.value = ids ? ids.length : Math.max(displayTotal.value, rows.value.length)
   confirmAll.value = true
 }
 
