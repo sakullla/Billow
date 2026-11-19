@@ -547,15 +547,15 @@ function save(patch: Partial<KernelSettings>) {
   })
 }
 
-const PORT_RANGE_ERROR = tr('混合端口必须是 1–65535 之间的整数')
+const PORT_RANGE_ERROR = computed(() => tr('混合端口必须是 1–65535 之间的整数'))
 
 function validateMixedPort(raw: string): { valid: true; value: number | null } | { valid: false; message: string } {
   const text = raw.trim()
   if (!text) return { valid: true, value: null }
-  if (!/^\d+$/.test(text)) return { valid: false, message: PORT_RANGE_ERROR }
+  if (!/^\d+$/.test(text)) return { valid: false, message: PORT_RANGE_ERROR.value }
   const num = Number(text)
   if (!Number.isSafeInteger(num) || num < 1 || num > 65535) {
-    return { valid: false, message: PORT_RANGE_ERROR }
+    return { valid: false, message: PORT_RANGE_ERROR.value }
   }
   return { valid: true, value: num }
 }

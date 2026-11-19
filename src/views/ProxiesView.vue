@@ -618,7 +618,7 @@ onBeforeUnmount(() => {
 
 /** Phones list one node per row and offer a two-column grid as their only other view. */
 /** A pressed toggle keeps one stable name; aria-pressed carries the on/off state (R3). */
-const denseLabel = tr('双列视图')
+const denseLabel = computed(() => tr('双列视图'))
 const denseIcon = 'grid'
 
 const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card' || hideFailed.value)

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { locale, applyLocale, normalizeLanguage, normalizeLocale, resolveLanguage, t, translate } from './index'
+import { locale, applyLocale, normalizeLanguage, normalizeLocale, resolveLanguage, t, tr, translate } from './index'
 import { EN } from './en'
 import { ZH_CN } from './zh-CN'
 
@@ -8,6 +8,21 @@ afterEach(() => {
 })
 
 describe('frontend dictionary', () => {
+  it('renders interpolated backend messages in the selected language', () => {
+    applyLocale('en')
+    expect(tr('共 112480 条，只列出前 5000 条；搜索会查找全部规则')).toBe(
+      'Showing the first 5000 of 112480 rules; search looks through all of them',
+    )
+    expect(tr('YAML 第 3 行有误：unexpected token')).toBe('YAML error on line 3: unexpected token')
+    expect(tr('无法检查更新：network down')).toBe('Could not check for updates: network down')
+    expect(tr('The override could not be applied: YAML 第 3 行有误：unexpected token')).toBe(
+      'The override could not be applied: YAML error on line 3: unexpected token',
+    )
+    applyLocale('zh-CN')
+    expect(tr('共 112480 条，只列出前 5000 条；搜索会查找全部规则')).toBe(
+      '共 112480 条，只列出前 5000 条；搜索会查找全部规则',
+    )
+  })
   it('falls back to Chinese when a key has no English text', () => {
     // An empty dictionary is how an untranslated key behaves: never a key or a blank.
     expect(translate('en', 'settings.language.title', {}, {})).toBe('界面语言')

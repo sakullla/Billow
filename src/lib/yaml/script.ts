@@ -4,7 +4,7 @@
  * Clash Verge compatible); the backend runs it in QuickJS.
  */
 import { resolve } from './schema'
-import { tr } from '../i18n'
+import { locale, tr } from '../i18n'
 
 export type OverrideLanguage = 'yaml' | 'javascript'
 
@@ -27,7 +27,7 @@ function main(config, profileName) {
 
 export function yamlTemplate(): string {
   return `# ${tr('只写需要改的部分，其余沿用原配置')}
-# key: 值        ${tr('深度合并（对象递归合并，其余直接替换）')}
+# key: ${tr('值')}        ${tr('深度合并（对象递归合并，其余直接替换）')}
 # +rules:        ${tr('插入到原列表前面；rules+: 追加到后面')}
 # dns!:          ${tr('整体替换，不与原配置合并')}
 # <+.a.com>:     ${tr('键名本身以 + 开头或结尾时用尖括号包裹')}
@@ -79,7 +79,9 @@ export function completeConfigAccess(before: string): { from: number; options: S
   for (const [key, child] of Object.entries(node.keys)) {
     if (typed && !key.toLowerCase().startsWith(typed.toLowerCase())) continue
     const apply = bracket ? `${match[4]}${key}${match[4]}]` : IDENT.test(key) ? `.${key}` : `['${key}']`
-    options.push({ label: key, apply, detail: child.doc, type: 'property' })
+    const doc = child.doc ? tr(child.doc) : key
+    const detail = locale.value === 'en' && doc === child.doc ? key : doc
+    options.push({ label: key, apply, detail, type: 'property' })
   }
   return { from: bracket ? before.length - match[2].length + match[2].indexOf(match[4]) : dotFrom, options }
 }

@@ -28,7 +28,7 @@ const ordered = computed(() =>
 )
 const subscriptions = computed(() => snap.value.profiles.filter((item) => item.kind === 'subscription').length)
 
-const DUPLICATE_HINT = tr('该订阅已存在')
+const DUPLICATE_HINT = computed(() => tr('该订阅已存在'))
 const quickUrl = ref('')
 const quickError = ref<string | null>(null)
 const quickInputEl = ref<HTMLInputElement | null>(null)
@@ -97,7 +97,7 @@ async function quickImport() {
     (item) => item.kind === 'subscription' && item.source.trim() === value,
   )
   if (existing) {
-    quickError.value = DUPLICATE_HINT
+    quickError.value = DUPLICATE_HINT.value
     await focusProfileCard(existing.id)
     return
   }
@@ -152,14 +152,14 @@ function selectMenuItem(profile: ProfileItem, item: MenuItem) {
 // Edit info
 type EditFieldKey = 'name' | 'url' | 'interval' | 'age' | 'userAgent'
 const EDIT_FIELD_ORDER: readonly EditFieldKey[] = ['name', 'url', 'interval', 'age', 'userAgent']
-const EDIT_FIELD_LABELS: Record<EditFieldKey, string> = {
+const EDIT_FIELD_LABELS = computed<Record<EditFieldKey, string>>(() => ({
   name: tr('名称'),
   url: tr('订阅链接'),
   interval: tr('自动更新'),
   age: tr('age 私钥'),
   userAgent: 'User-Agent',
-}
-const AGE_KEY_FORMAT_ERROR = tr('age 私钥格式不正确：每行一个以 AGE-SECRET-KEY-1 开头的私钥，# 开头的行视为注释')
+}))
+const AGE_KEY_FORMAT_ERROR = computed(() => tr('age 私钥格式不正确：每行一个以 AGE-SECRET-KEY-1 开头的私钥，# 开头的行视为注释'))
 
 const editingId = ref<string | null>(null)
 const editingFallback = ref<ProfileItem | null>(null)
@@ -239,7 +239,7 @@ function validateAgeInput(raw: string): string | null {
     .filter((line) => line && !line.startsWith('#'))
   if (!lines.length) return null
   if (lines.some((line) => !/^AGE-SECRET-KEY-1[0-9A-Z]{58}$/.test(line))) {
-    return AGE_KEY_FORMAT_ERROR
+    return AGE_KEY_FORMAT_ERROR.value
   }
   return null
 }
@@ -301,7 +301,7 @@ const partialSaveGroups = computed(() => {
   const pending: string[] = []
   for (const key of EDIT_FIELD_ORDER) {
     const status = editFieldStatus(key)
-    const label = EDIT_FIELD_LABELS[key]
+    const label = EDIT_FIELD_LABELS.value[key]
     if (status === 'saved') saved.push(label)
     else if (status === 'failed') failed.push(label)
     else if (status === 'pending') pending.push(label)
