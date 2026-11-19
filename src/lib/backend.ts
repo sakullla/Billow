@@ -12,6 +12,7 @@ import {
   type KernelChannel,
   type KernelSettings,
   type KernelStatus,
+  type LanguagePreference,
   type Mode,
   type ProvidersResult,
   type AppMode,
@@ -23,6 +24,7 @@ import {
   type ThemePreference,
   type UwpApp,
 } from './types'
+import { normalizeLanguage, normalizeLocale } from './i18n'
 import { createDemoBackend } from './demo'
 
 /** Rule rows plus the runtime-disabled keys; the keys are never persisted. */
@@ -44,6 +46,8 @@ export interface Backend {
   readonly live: boolean
   shell(): Promise<ShellState>
   setTheme(theme: ThemePreference): Promise<void>
+  /** Store the language preference and return the effective locale (R42). */
+  setLanguage(language: LanguagePreference): Promise<ShellState>
   setEntry(entry: string): Promise<void>
   appInfo(): Promise<AppInfo>
   setAutostart(enabled: boolean): Promise<AppInfo>
@@ -173,16 +177,28 @@ function createTauriBackend(): Backend {
         : [],
     }
   }
+  const shellInfo = (raw: {
+    theme?: unknown
+    last_entry?: unknown
+    language?: unknown
+    locale?: unknown
+  }): ShellState => ({
+    theme: raw.theme === 'light' || raw.theme === 'dark' ? raw.theme : 'system',
+    last_entry: typeof raw.last_entry === 'string' ? raw.last_entry : 'home',
+    language: normalizeLanguage(raw.language),
+    locale: normalizeLocale(raw.locale),
+  })
 
   return {
     live: true,
     async shell() {
-      const raw = await call<{ theme: string; last_entry: string }>('shell_state')
-      const theme = raw.theme === 'light' || raw.theme === 'dark' ? raw.theme : 'system'
-      return { theme, last_entry: raw.last_entry }
+      return shellInfo(await call<Record<string, unknown>>('shell_state'))
     },
     async setTheme(theme) {
       await call('set_theme', { theme })
+    },
+    async setLanguage(language) {
+      return shellInfo(await call<Record<string, unknown>>('set_language', { language }))
     },
     async setEntry(entry) {
       await call('set_last_entry', { entry })

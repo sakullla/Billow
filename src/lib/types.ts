@@ -1,5 +1,9 @@
 export type Mode = 'rule' | 'global' | 'direct'
 export type ThemePreference = 'system' | 'light' | 'dark'
+/** Interface language: Simplified Chinese and English only (R42, R46). */
+export type Locale = 'zh-CN' | 'en'
+/** `system` follows the operating system language. */
+export type LanguagePreference = 'system' | Locale
 export type KernelChannel = 'stable' | 'preview'
 export type LogLevel = 'debug' | 'info' | 'warning' | 'error'
 export type Platform = 'desktop' | 'android'
@@ -442,6 +446,10 @@ export interface AppInfo {
 export interface ShellState {
   theme: ThemePreference
   last_entry: string
+  /** Stored preference: `system`, `zh-CN` or `en` (R42). */
+  language: LanguagePreference
+  /** Effective locale after `system` is resolved by the backend. */
+  locale: Locale
 }
 
 export interface RulesResult {

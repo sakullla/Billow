@@ -1,4 +1,5 @@
 import type { Backend, NodeTestEvent } from './backend'
+import { resolveLanguage } from './i18n'
 import { ruleKeys } from './rule-keys'
 import {
   DNS_QUERY_TYPES,
@@ -14,6 +15,8 @@ import {
   type ConnectionRow,
   type DnsQueryResult,
   type KernelStatus,
+  type LanguagePreference,
+  type Locale,
   type LogLine,
   type NodeGroup,
   type ProviderRow,
@@ -88,6 +91,8 @@ interface DemoOptions {
   hiddenGroups?: readonly string[]
   /** Add a `load-balance` group, which stays automatic (R28). */
   loadBalance?: boolean
+  /** OS language the demo reports: `system` resolves to this locale (R42). */
+  systemLocale?: Locale
   /**
    * A fixed set of this many connections, one per demo host in order, that
    * never churn or refill, so close-by-filter can be checked row for row (R30).
@@ -173,6 +178,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   state.mode = 'rule'
   let theme: ThemePreference = 'system'
   let entry = 'home'
+  let language: LanguagePreference = 'system'
+  /** Pretend the OS reports this language; tests pin the default to Chinese. */
+  const systemLocale: Locale = options.systemLocale ?? 'zh-CN'
   let kernel: KernelStatus = { channel: 'stable', failure: null, ready: true, version: 'v1.19.17' }
   let app: AppInfo = {
     version: '0.2.0',
@@ -687,10 +695,14 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   return {
     live: false,
     async shell() {
-      return { theme, last_entry: entry }
+      return { theme, last_entry: entry, language, locale: resolveLanguage(language, systemLocale) }
     },
     async setTheme(next) {
       theme = next
+    },
+    async setLanguage(next) {
+      language = next
+      return { theme, last_entry: entry, language, locale: resolveLanguage(language, systemLocale) }
     },
     async setEntry(next) {
       entry = next

@@ -4,6 +4,7 @@ mod bundled_geo;
 mod diagnostics;
 #[cfg(target_os = "windows")]
 mod elevation;
+mod i18n;
 mod kernel;
 mod mrs;
 mod nodes;
@@ -29,7 +30,7 @@ use profile::{
     HttpSubscriptionClient, KernelLaunch, KernelSettings, ProcessRuntime, ProfileBook,
     ProfileSnapshot, ProvidersSnapshot, RuleToggle, RulesSnapshot,
 };
-use shell::{ShellState, read_shell_state, resolve_entry, resolve_theme, write_shell_state};
+use shell::{ShellState, read_shell_state, resolve_entry, resolve_language, resolve_theme, write_shell_state};
 
 struct Store {
     state: Mutex<ShellState>,
@@ -178,6 +179,8 @@ fn remember_window_size(_app: &AppHandle) {}
 
 fn prepare_shell(app: &tauri::App) {
     let state = load_state(app.handle());
+    // The tray, the guardian and background actions read the process locale.
+    i18n::apply_preference(&state.language);
     restore_window(app.handle(), &state);
     app.manage(Store {
         state: Mutex::new(state),
@@ -307,28 +310,68 @@ fn prepare_kernel(app: &tauri::App) {
     });
 }
 
-#[tauri::command]
-fn shell_state(app: AppHandle) -> ShellState {
-    let store = app.state::<Store>();
-    lock(&store.state).clone()
+/// Window chrome state plus the language the UI should render in.
+#[derive(serde::Serialize)]
+struct ShellInfo {
+    theme: String,
+    last_entry: String,
+    language: String,
+    /// Effective locale after resolving "follow system" (R42).
+    locale: &'static str,
+}
+
+impl ShellInfo {
+    fn of(state: &ShellState) -> Self {
+        Self {
+            theme: state.theme.clone(),
+            last_entry: state.last_entry.clone(),
+            language: state.language.clone(),
+            locale: i18n::locale().tag(),
+        }
+    }
 }
 
 #[tauri::command]
-fn set_theme(app: AppHandle, theme: String) -> ShellState {
+fn shell_state(app: AppHandle) -> ShellInfo {
+    let store = app.state::<Store>();
+    let state = lock(&store.state).clone();
+    ShellInfo::of(&state)
+}
+
+#[tauri::command]
+fn set_theme(app: AppHandle, theme: String) -> ShellInfo {
     let resolved = resolve_theme(&theme).to_string();
     let store = app.state::<Store>();
-    let snapshot = {
+    let state = {
         let mut state = lock(&store.state);
         state.theme = resolved.clone();
         persist(&app, &state);
         state.clone()
     };
     apply_native_theme(&app, &resolved);
-    snapshot
+    ShellInfo::of(&state)
+}
+
+/// Switch the UI language now: the webview, the tray and later background text
+/// all read the locale, so no restart is needed (R42).
+#[tauri::command(async)]
+fn set_language(app: AppHandle, language: String) -> ShellInfo {
+    let resolved = resolve_language(&language).to_string();
+    let state = {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        state.language = resolved.clone();
+        persist(&app, &state);
+        state.clone()
+    };
+    i18n::apply_preference(&resolved);
+    let snapshot = with_profile(&app, |session| session.book.snapshot());
+    refresh_tray(&app, &snapshot);
+    ShellInfo::of(&state)
 }
 
 #[tauri::command(async)]
-fn set_last_entry(app: AppHandle, entry: String) -> ShellState {
+fn set_last_entry(app: AppHandle, entry: String) -> ShellInfo {
     let store = app.state::<Store>();
     let mut state = lock(&store.state);
     let entry = resolve_entry(&entry);
@@ -336,7 +379,7 @@ fn set_last_entry(app: AppHandle, entry: String) -> ShellState {
         state.last_entry = entry.to_string();
         persist(&app, &state);
     }
-    state.clone()
+    ShellInfo::of(&state)
 }
 
 #[tauri::command(async)]
@@ -1360,7 +1403,7 @@ fn build_menu_items(
 
 #[cfg(desktop)]
 fn tray_menu(app: &AppHandle, snapshot: &ProfileSnapshot) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let items = build_menu_items(app, &tray::model(snapshot))?;
+    let items = build_menu_items(app, &tray::model(snapshot, i18n::locale()))?;
     let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|item| item.as_ref()).collect();
     tauri::menu::Menu::with_items(app, &refs)
 }
@@ -1373,7 +1416,7 @@ fn refresh_tray(app: &AppHandle, snapshot: &ProfileSnapshot) {
     if let Ok(menu) = tray_menu(app, snapshot) {
         let _ = tray.set_menu(Some(menu));
     }
-    let _ = tray.set_tooltip(Some(tray::tooltip(snapshot)));
+    let _ = tray.set_tooltip(Some(tray::tooltip(snapshot, i18n::locale())));
 }
 
 #[cfg(not(desktop))]
@@ -1410,7 +1453,7 @@ fn prepare_tray(app: &tauri::App) {
         return;
     };
     let mut builder = TrayIconBuilder::with_id("billow")
-        .tooltip(tray::tooltip(&snapshot))
+        .tooltip(tray::tooltip(&snapshot, i18n::locale()))
         .menu(&menu)
         // Left click opens the window on Windows/Linux; macOS menu bar items
         // conventionally open their menu on any click.
@@ -1505,6 +1548,7 @@ pub fn run() {
             prepare_app_update,
             shell_state,
             set_theme,
+            set_language,
             set_last_entry,
             kernel_state,
             set_kernel_channel,

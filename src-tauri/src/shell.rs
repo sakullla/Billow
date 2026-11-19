@@ -23,6 +23,9 @@ pub struct ShellState {
     pub close_to_tray: bool,
     #[serde(default)]
     pub silent_start: bool,
+    /// UI language preference: `system`, `zh-CN` or `en` (R42).
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 fn default_true() -> bool {
@@ -30,6 +33,10 @@ fn default_true() -> bool {
 }
 
 fn default_theme() -> String {
+    "system".to_string()
+}
+
+fn default_language() -> String {
     "system".to_string()
 }
 
@@ -54,6 +61,7 @@ impl Default for ShellState {
             height: DEFAULT_HEIGHT,
             close_to_tray: true,
             silent_start: false,
+            language: default_language(),
         }
     }
 }
@@ -80,6 +88,15 @@ pub fn resolve_theme(value: &str) -> &'static str {
     }
 }
 
+/// Only two languages exist (R46): anything unknown follows the system again.
+pub fn resolve_language(value: &str) -> &'static str {
+    match value {
+        "zh-CN" => "zh-CN",
+        "en" => "en",
+        _ => "system",
+    }
+}
+
 pub fn usable_window_size(width: f64, height: f64) -> Option<(f64, f64)> {
     if !width.is_finite() || !height.is_finite() {
         return None;
@@ -93,6 +110,7 @@ pub fn usable_window_size(width: f64, height: f64) -> Option<(f64, f64)> {
 pub fn normalize(mut state: ShellState) -> ShellState {
     state.theme = resolve_theme(&state.theme).to_string();
     state.last_entry = resolve_entry(&state.last_entry).to_string();
+    state.language = resolve_language(&state.language).to_string();
     if usable_window_size(state.width, state.height).is_none() {
         state.width = DEFAULT_WIDTH;
         state.height = DEFAULT_HEIGHT;
@@ -147,6 +165,18 @@ mod tests {
         assert_eq!(resolve_theme("dark"), "dark");
         assert_eq!(resolve_theme("light"), "light");
         assert_eq!(resolve_theme("blue"), "system");
+        assert_eq!(resolve_language("zh-CN"), "zh-CN");
+        assert_eq!(resolve_language("en"), "en");
+        assert_eq!(resolve_language("zh-TW"), "system");
+        assert_eq!(resolve_language("en-US"), "system");
+    }
+
+    #[test]
+    fn an_older_state_without_a_language_follows_the_system() {
+        let state: ShellState = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(state.language, "system");
+        assert_eq!(state.last_entry, "home");
+        assert!(state.close_to_tray);
     }
 
     #[test]
@@ -167,12 +197,14 @@ mod tests {
         let mut state = ShellState::default();
         state.theme = "nope".to_string();
         state.last_entry = "diagnostics".to_string();
+        state.language = "fr".to_string();
         state.width = 12.0;
         state.height = 12.0;
         write_shell_state(&path, &state).unwrap();
         let loaded = read_shell_state(&path);
         assert_eq!(loaded.theme, "system");
         assert_eq!(loaded.last_entry, "home");
+        assert_eq!(loaded.language, "system");
         assert_eq!(loaded.width, DEFAULT_WIDTH);
         assert_eq!(loaded.height, DEFAULT_HEIGHT);
         let _ = fs::remove_dir_all(dir);
@@ -188,6 +220,7 @@ mod tests {
             height: 700.0,
             close_to_tray: false,
             silent_start: true,
+            language: "en".to_string(),
         };
         write_shell_state(&path, &state).unwrap();
         assert_eq!(read_shell_state(&path), state);
@@ -218,6 +251,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(permissions.contains(&"allow-shell-state"));
         assert!(permissions.contains(&"allow-set-theme"));
+        assert!(permissions.contains(&"allow-set-language"));
         assert!(permissions.contains(&"allow-set-last-entry"));
     }
 }

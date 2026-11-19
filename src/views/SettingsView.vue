@@ -8,6 +8,7 @@ import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import UwpLoopbackDialog from '../components/UwpLoopbackDialog.vue'
 import { useStore } from '../lib/store'
+import { t } from '../lib/i18n'
 import { layerDepth } from '../lib/ui/focus'
 import { useHotkeys } from '../lib/ui/hotkeys'
 import { shortcutKeyLabel } from '../lib/ui/shortcuts'
@@ -31,6 +32,7 @@ import {
   type SystemProxySettings,
   type ThemePreference,
   type TunSettings,
+  type LanguagePreference,
 } from '../lib/types'
 import type { SettingsTab } from '../lib/store'
 
@@ -84,6 +86,11 @@ const THEMES: { id: ThemePreference; label: string; icon: string }[] = [
   { id: 'light', label: '浅色', icon: 'sun' },
   { id: 'dark', label: '深色', icon: 'moon' },
 ]
+const LANGUAGES = computed<{ id: LanguagePreference; label: string }[]>(() => [
+  { id: 'system', label: t('language.system') },
+  { id: 'zh-CN', label: '简体中文' },
+  { id: 'en', label: 'English' },
+])
 const CHANNELS: { id: KernelChannel; label: string }[] = [
   { id: 'stable', label: '稳定版' },
   { id: 'preview', label: '预览版' },
@@ -1378,6 +1385,18 @@ const TABS = computed(() => [
             <span class="nav-row-title">主题</span>
             <Segmented :model-value="store.theme.value" :options="THEMES.map(({ id, label }) => ({ id, label: id === 'system' ? '自动' : label }))" size="sm" label="主题" @update:model-value="store.setTheme" />
           </div>
+          <div class="nav-row static" data-testid="language-row">
+            <span class="nav-row-icon slate"><Icon name="globe" /></span>
+            <span class="nav-row-title">{{ t('settings.language.title') }}</span>
+            <Segmented
+              :model-value="store.language.value"
+              :options="LANGUAGES"
+              size="sm"
+              :label="t('settings.language.title')"
+              data-testid="language-select"
+              @update:model-value="store.setLanguage"
+            />
+          </div>
           <div class="nav-row static">
             <span class="nav-row-icon green"><Icon name="power" /></span>
             <div class="grow min0">
@@ -1402,6 +1421,20 @@ const TABS = computed(() => [
             <p class="muted small">浅色、深色或跟随系统</p>
           </div>
           <Segmented :model-value="store.theme.value" :options="THEMES" size="sm" label="主题" @update:model-value="store.setTheme" />
+        </div>
+        <div class="setting-row" data-testid="language-setting">
+          <div class="grow">
+            <strong>{{ t('settings.language.title') }}</strong>
+            <p class="muted small">{{ t('settings.language.detail') }}</p>
+          </div>
+          <Segmented
+            :model-value="store.language.value"
+            :options="LANGUAGES"
+            size="sm"
+            :label="t('settings.language.title')"
+            data-testid="language-select"
+            @update:model-value="store.setLanguage"
+          />
         </div>
         <div v-if="openShortcuts" class="setting-row">
           <div class="grow">

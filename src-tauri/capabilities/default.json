@@ -9,6 +9,7 @@
     "core:default",
     "allow-shell-state",
     "allow-set-theme",
+    "allow-set-language",
     "allow-set-last-entry",
     "allow-kernel-state",
     "allow-set-kernel-channel",

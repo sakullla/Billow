@@ -2,6 +2,7 @@ import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey }
 import type { Backend, NodeTestEvent } from './backend'
 import { createAppUpdater, nativeUpdateDriver } from './appUpdate'
 import { hostOf } from './format'
+import { applyLocale, normalizeLanguage, normalizeLocale } from './i18n'
 import { runPool } from './pool'
 import {
   emptySnapshot,
@@ -16,6 +17,7 @@ import {
   type NodeGroup,
   type Snapshot,
   type ThemePreference,
+  type LanguagePreference,
   type AppMode,
 } from './types'
 
@@ -129,6 +131,8 @@ export function createStore(backend: Backend) {
   const kernel = ref<KernelStatus>({ channel: 'stable', failure: null, ready: false, version: null })
   const app = ref<AppInfo | null>(null)
   const theme = ref<ThemePreference>('system')
+  /** Stored language preference; the dictionary locale comes from the backend (R42). */
+  const language = ref<LanguagePreference>('system')
   const page = ref<PageId>('home')
   const focusGroup = ref<string | null>(null)
   const focusProvider = ref<{ kind: 'proxy' | 'rule'; name: string } | null>(null)
@@ -706,6 +710,8 @@ export function createStore(backend: Backend) {
       const shell = await backend.shell()
       if (!isCurrent(session)) return
       theme.value = shell.theme
+      language.value = normalizeLanguage(shell.language)
+      applyLocale(normalizeLocale(shell.locale))
       page.value = resolvePage(shell.last_entry)
     } catch (error) {
       console.error(error)
@@ -839,6 +845,20 @@ export function createStore(backend: Backend) {
     void backend.setTheme(next).catch(console.error)
   }
 
+  /** Switching takes effect at once; the backend answers with the effective locale (R42). */
+  async function setLanguage(next: LanguagePreference) {
+    const preference = normalizeLanguage(next)
+    language.value = preference
+    if (preference !== 'system') applyLocale(preference)
+    try {
+      const shell = await backend.setLanguage(preference)
+      language.value = normalizeLanguage(shell.language)
+      applyLocale(normalizeLocale(shell.locale))
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
   /** Explicit connect used by the command palette; no implicit add-profile dialog. */
   function connect() {
     if (connecting.value || snapshot.value.connected) return Promise.resolve(undefined)
@@ -945,6 +965,7 @@ export function createStore(backend: Backend) {
     kernel,
     app,
     theme,
+    language,
     page,
     focusGroup,
     focusProvider,
@@ -999,6 +1020,7 @@ export function createStore(backend: Backend) {
     stop,
     go,
     setTheme,
+    setLanguage,
     connect,
     disconnect,
     retryLastAction,

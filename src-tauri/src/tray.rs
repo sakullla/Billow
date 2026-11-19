@@ -4,6 +4,7 @@
 //! be tested without a running Tauri app; `lib.rs` turns the entries into native
 //! menu items and routes clicks back through [`parse`].
 
+use crate::i18n::{self, Key, Locale};
 use crate::profile::ProfileSnapshot;
 
 /// Separates the parts of a structured menu id. Group, node and profile names
@@ -46,11 +47,11 @@ fn check(id: impl Into<String>, text: impl Into<String>, checked: bool, enabled:
     TrayEntry::Check { id: id.into(), text: text.into(), checked, enabled }
 }
 
-pub fn mode_label(mode: &str) -> Option<&'static str> {
+pub fn mode_label(mode: &str, locale: Locale) -> Option<&'static str> {
     match mode {
-        "rule" => Some("规则"),
-        "global" => Some("全局"),
-        "direct" => Some("直连"),
+        "rule" => Some(i18n::tr_at(locale, Key::TrayModeRule)),
+        "global" => Some(i18n::tr_at(locale, Key::TrayModeGlobal)),
+        "direct" => Some(i18n::tr_at(locale, Key::TrayModeDirect)),
         _ => None,
     }
 }
@@ -59,37 +60,46 @@ fn current_profile(snapshot: &ProfileSnapshot) -> Option<&str> {
     snapshot.profiles.iter().find(|profile| profile.current).map(|profile| profile.name.as_str())
 }
 
+fn message(locale: Locale, key: Key, args: &[(&str, &str)]) -> String {
+    i18n::tr_args_at(locale, key, args)
+}
+
 /// One line that answers "is Billow on, with what?".
-pub fn status_line(snapshot: &ProfileSnapshot) -> String {
+pub fn status_line(snapshot: &ProfileSnapshot, locale: Locale) -> String {
     if snapshot.profiles.is_empty() {
-        return "Billow · 还没有配置".to_string();
+        return i18n::tr_at(locale, Key::TrayEmpty).to_string();
     }
-    let profile = current_profile(snapshot).unwrap_or("未选择配置");
-    if snapshot.connected {
-        format!("● 已连接 · {profile}")
-    } else {
-        format!("○ 未连接 · {profile}")
-    }
+    let profile = current_profile(snapshot).unwrap_or(i18n::tr_at(locale, Key::TrayNoProfile));
+    let key = if snapshot.connected { Key::TrayConnected } else { Key::TrayDisconnected };
+    message(locale, key, &[("profile", profile)])
 }
 
 /// Hover text: state, profile and mode, kept short for the Windows 127-char limit.
-pub fn tooltip(snapshot: &ProfileSnapshot) -> String {
-    let mut parts = vec!["Billow".to_string(), if snapshot.connected { "已连接" } else { "未连接" }.to_string()];
+pub fn tooltip(snapshot: &ProfileSnapshot, locale: Locale) -> String {
+    let mut parts = vec!["Billow".to_string()];
+    parts.push(
+        if snapshot.connected {
+            i18n::tr_at(locale, Key::TrayStateConnected)
+        } else {
+            i18n::tr_at(locale, Key::TrayStateDisconnected)
+        }
+        .to_string(),
+    );
     if let Some(profile) = current_profile(snapshot) {
         parts.push(profile.to_string());
     }
     if snapshot.connected {
-        if let Some(mode) = snapshot.mode.as_deref().and_then(mode_label) {
-            parts.push(format!("{mode}模式"));
+        if let Some(mode) = snapshot.mode.as_deref().and_then(|mode| mode_label(mode, locale)) {
+            parts.push(message(locale, Key::TrayModeSuffix, &[("mode", mode)]));
         }
     }
     let text = parts.join(" · ");
     text.chars().take(120).collect()
 }
 
-fn delay_suffix(delay: Option<u64>, failed: bool) -> String {
+fn delay_suffix(delay: Option<u64>, failed: bool, locale: Locale) -> String {
     if failed {
-        "  ·  超时".to_string()
+        i18n::tr_at(locale, Key::TrayTimeout).to_string()
     } else if let Some(ms) = delay {
         format!("  ·  {ms} ms")
     } else {
@@ -97,7 +107,7 @@ fn delay_suffix(delay: Option<u64>, failed: bool) -> String {
     }
 }
 
-fn groups_menu(snapshot: &ProfileSnapshot) -> Option<TrayEntry> {
+fn groups_menu(snapshot: &ProfileSnapshot, locale: Locale) -> Option<TrayEntry> {
     let manual: Vec<_> = snapshot
         .node_catalog
         .iter()
@@ -118,7 +128,7 @@ fn groups_menu(snapshot: &ProfileSnapshot) -> Option<TrayEntry> {
                 .map(|node| {
                     check(
                         format!("node{SEP}{}{SEP}{}", group.name, node.name),
-                        format!("{}{}", node.name, delay_suffix(node.delay_ms, node.failed)),
+                        format!("{}{}", node.name, delay_suffix(node.delay_ms, node.failed, locale)),
                         node.name == group.now,
                         true,
                     )
@@ -128,7 +138,7 @@ fn groups_menu(snapshot: &ProfileSnapshot) -> Option<TrayEntry> {
                 nodes.push(TrayEntry::Separator);
                 nodes.push(action(
                     format!("nav{SEP}proxies"),
-                    format!("其余 {} 个节点…", group.nodes.len() - MAX_NODES),
+                    message(locale, Key::TrayMoreNodes, &[("count", &(group.nodes.len() - MAX_NODES).to_string())]),
                     true,
                 ));
             }
@@ -138,12 +148,12 @@ fn groups_menu(snapshot: &ProfileSnapshot) -> Option<TrayEntry> {
         .collect();
     if manual.len() > MAX_GROUPS {
         items.push(TrayEntry::Separator);
-        items.push(action(format!("nav{SEP}proxies"), "全部代理组…", true));
+        items.push(action(format!("nav{SEP}proxies"), i18n::tr_at(locale, Key::TrayAllGroups), true));
     }
-    Some(TrayEntry::Submenu { text: "代理组".to_string(), enabled: true, items })
+    Some(TrayEntry::Submenu { text: i18n::tr_at(locale, Key::TrayGroups).to_string(), enabled: true, items })
 }
 
-fn profiles_menu(snapshot: &ProfileSnapshot) -> Option<TrayEntry> {
+fn profiles_menu(snapshot: &ProfileSnapshot, locale: Locale) -> Option<TrayEntry> {
     if snapshot.profiles.is_empty() {
         return None;
     }
@@ -153,57 +163,61 @@ fn profiles_menu(snapshot: &ProfileSnapshot) -> Option<TrayEntry> {
         .map(|profile| check(format!("profile{SEP}{}", profile.id), profile.name.clone(), profile.current, true))
         .collect();
     items.push(TrayEntry::Separator);
-    items.push(action(format!("nav{SEP}profiles"), "管理配置…", true));
+    items.push(action(format!("nav{SEP}profiles"), i18n::tr_at(locale, Key::TrayManageProfiles), true));
     let text = match current_profile(snapshot) {
-        Some(name) => format!("配置  ·  {name}"),
-        None => "配置".to_string(),
+        Some(name) => format!("{}  ·  {name}", i18n::tr_at(locale, Key::TrayProfile)),
+        None => i18n::tr_at(locale, Key::TrayProfile).to_string(),
     };
     Some(TrayEntry::Submenu { text, enabled: true, items })
 }
 
 /// The whole tray menu, top to bottom: state, the one primary action, quick
 /// switches (mode, nodes, profile), traffic takeover, then window and quit.
-pub fn model(snapshot: &ProfileSnapshot) -> Vec<TrayEntry> {
-    let mut entries = vec![TrayEntry::Label(status_line(snapshot)), action("show", "显示主界面", true), TrayEntry::Separator];
+pub fn model(snapshot: &ProfileSnapshot, locale: Locale) -> Vec<TrayEntry> {
+    let mut entries = vec![
+        TrayEntry::Label(status_line(snapshot, locale)),
+        action("show", i18n::tr_at(locale, Key::TrayShow), true),
+        TrayEntry::Separator,
+    ];
 
     if snapshot.profiles.is_empty() {
-        entries.push(action(format!("nav{SEP}add-profile"), "添加配置…", true));
+        entries.push(action(format!("nav{SEP}add-profile"), i18n::tr_at(locale, Key::TrayAddProfile), true));
     } else {
-        let label = if snapshot.connected { "断开连接" } else { "连接" };
-        entries.push(action("connect", label, snapshot.active_id.is_some()));
+        let label = if snapshot.connected { Key::TrayDisconnect } else { Key::TrayConnect };
+        entries.push(action("connect", i18n::tr_at(locale, label), snapshot.active_id.is_some()));
     }
     entries.push(TrayEntry::Separator);
 
     if snapshot.active_id.is_some() {
         let mode = snapshot.mode.as_deref().unwrap_or("");
-        let text = match mode_label(mode) {
-            Some(label) => format!("出站模式  ·  {label}"),
-            None => "出站模式".to_string(),
+        let text = match mode_label(mode, locale) {
+            Some(label) => format!("{}  ·  {label}", i18n::tr_at(locale, Key::TrayMode)),
+            None => i18n::tr_at(locale, Key::TrayMode).to_string(),
         };
         entries.push(TrayEntry::Submenu {
             text,
             enabled: true,
             items: ["rule", "global", "direct"]
                 .iter()
-                .map(|id| check(format!("mode{SEP}{id}"), mode_label(id).unwrap_or(id), mode == *id, true))
+                .map(|id| check(format!("mode{SEP}{id}"), mode_label(id, locale).unwrap_or(id), mode == *id, true))
                 .collect(),
         });
-        if let Some(groups) = groups_menu(snapshot) {
+        if let Some(groups) = groups_menu(snapshot, locale) {
             entries.push(groups);
         }
     }
-    if let Some(profiles) = profiles_menu(snapshot) {
+    if let Some(profiles) = profiles_menu(snapshot, locale) {
         entries.push(profiles);
     }
     if !snapshot.profiles.is_empty() {
         entries.push(TrayEntry::Separator);
-        entries.push(check("proxy", "系统代理", snapshot.system_proxy, true));
-        entries.push(check("tun", "TUN 模式", snapshot.tun, true));
+        entries.push(check("proxy", i18n::tr_at(locale, Key::TraySystemProxy), snapshot.system_proxy, true));
+        entries.push(check("tun", i18n::tr_at(locale, Key::TrayTun), snapshot.tun, true));
     }
 
     entries.push(TrayEntry::Separator);
-    entries.push(action(format!("nav{SEP}settings"), "设置…", true));
-    entries.push(action("quit", "退出 Billow", true));
+    entries.push(action(format!("nav{SEP}settings"), i18n::tr_at(locale, Key::TraySettings), true));
+    entries.push(action("quit", i18n::tr_at(locale, Key::TrayQuit), true));
     entries
 }
 
@@ -220,7 +234,7 @@ pub fn parse(id: &str) -> Option<TrayCommand> {
     let kind = parts.next()?;
     let first = parts.next()?.to_string();
     match kind {
-        "mode" if mode_label(&first).is_some() => Some(TrayCommand::Mode(first)),
+        "mode" if matches!(first.as_str(), "rule" | "global" | "direct") => Some(TrayCommand::Mode(first)),
         "profile" => Some(TrayCommand::Profile(first)),
         "nav" => Some(TrayCommand::Navigate(first)),
         "node" => Some(TrayCommand::Node { group: first, node: parts.next()?.to_string() }),
@@ -277,7 +291,7 @@ mod tests {
 
     #[test]
     fn empty_install_offers_add_profile_instead_of_a_dead_connect() {
-        let entries = model(&ProfileSnapshot::default());
+        let entries = model(&ProfileSnapshot::default(), Locale::ZhCn);
         assert_eq!(entries[0], TrayEntry::Label("Billow · 还没有配置".to_string()));
         assert!(matches!(find(&entries, "添加配置"), Some(TrayEntry::Action { enabled: true, .. })));
         assert!(find(&entries, "连接").is_none());
@@ -289,7 +303,7 @@ mod tests {
     #[test]
     fn connected_menu_shows_state_mode_groups_and_profiles() {
         let snapshot = connected();
-        let entries = model(&snapshot);
+        let entries = model(&snapshot, Locale::ZhCn);
         assert_eq!(entries[0], TrayEntry::Label("● 已连接 · 星河云".to_string()));
         assert!(matches!(find(&entries, "断开连接"), Some(TrayEntry::Action { enabled: true, .. })));
         let Some(TrayEntry::Submenu { text, items, .. }) = find(&entries, "出站模式") else { panic!("mode menu") };
@@ -307,7 +321,47 @@ mod tests {
         assert_eq!(text, "配置  ·  星河云");
         assert!(matches!(&items[1], TrayEntry::Check { checked: false, text, .. } if text == "备用"));
         assert!(matches!(find(&entries, "系统代理"), Some(TrayEntry::Check { checked: true, .. })));
-        assert_eq!(tooltip(&snapshot), "Billow · 已连接 · 星河云 · 规则模式");
+        assert_eq!(tooltip(&snapshot, Locale::ZhCn), "Billow · 已连接 · 星河云 · 规则模式");
+    }
+
+    #[test]
+    fn english_menu_translates_billow_text_but_not_user_names() {
+        let snapshot = connected();
+        let entries = model(&snapshot, Locale::En);
+        // Profile and node names are user data: they stay exactly as configured.
+        assert_eq!(entries[0], TrayEntry::Label("● Connected · 星河云".to_string()));
+        assert!(matches!(find(&entries, "Disconnect"), Some(TrayEntry::Action { enabled: true, .. })));
+        let Some(TrayEntry::Submenu { text, items, .. }) = find(&entries, "Mode") else { panic!("mode menu") };
+        assert_eq!(text, "Mode  ·  Rule");
+        assert!(matches!(&items[1], TrayEntry::Check { checked: false, text, .. } if text == "Global"));
+
+        let Some(TrayEntry::Submenu { text, items: groups, .. }) = find(&entries, "Proxy groups") else { panic!("groups") };
+        assert_eq!(text, "Proxy groups");
+        let TrayEntry::Submenu { text: group_text, items: nodes, .. } = &groups[0] else { panic!("group") };
+        assert_eq!(group_text, "节点选择  ·  香港 01");
+        assert!(matches!(&nodes[0], TrayEntry::Check { text, .. } if text == "香港 01  ·  120 ms"));
+
+        let Some(TrayEntry::Submenu { text, .. }) = find(&entries, "Profile") else { panic!("profiles") };
+        assert_eq!(text, "Profile  ·  星河云");
+        assert!(matches!(find(&entries, "System proxy"), Some(TrayEntry::Check { .. })));
+        assert!(matches!(find(&entries, "TUN mode"), Some(TrayEntry::Check { .. })));
+        assert!(matches!(find(&entries, "Settings"), Some(TrayEntry::Action { .. })));
+        assert!(matches!(find(&entries, "Quit Billow"), Some(TrayEntry::Action { .. })));
+        assert_eq!(tooltip(&snapshot, Locale::En), "Billow · Connected · 星河云 · Rule mode");
+
+        // No Chinese-only interface string is left in the English menu.
+        let english = format!("{entries:?}");
+        for word in ["已连接", "未连接", "代理组", "系统代理", "设置", "退出", "断开连接", "出站模式"] {
+            assert!(!english.contains(word), "{word} should be translated");
+        }
+    }
+
+    #[test]
+    fn english_empty_install_offers_add_profile() {
+        let entries = model(&ProfileSnapshot::default(), Locale::En);
+        assert_eq!(entries[0], TrayEntry::Label("Billow · No profiles yet".to_string()));
+        assert!(matches!(find(&entries, "Add profile"), Some(TrayEntry::Action { enabled: true, .. })));
+        assert!(find(&entries, "Connect").is_none());
     }
 
     #[test]
@@ -316,7 +370,7 @@ mod tests {
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let mut snapshot = connected();
         snapshot.node_catalog = vec![group("节点选择", "manual", "节点 0", &refs)];
-        let entries = model(&snapshot);
+        let entries = model(&snapshot, Locale::ZhCn);
         let Some(TrayEntry::Submenu { items: groups, .. }) = find(&entries, "代理组") else { panic!("groups") };
         let TrayEntry::Submenu { items: nodes, .. } = &groups[0] else { panic!("group") };
         assert_eq!(nodes.len(), MAX_NODES + 2);
@@ -325,7 +379,7 @@ mod tests {
 
     #[test]
     fn menu_ids_round_trip_names_with_separators_and_spaces() {
-        let entries = model(&connected());
+        let entries = model(&connected(), Locale::ZhCn);
         let Some(TrayEntry::Submenu { items: groups, .. }) = find(&entries, "代理组") else { panic!("groups") };
         let TrayEntry::Submenu { items: nodes, .. } = &groups[0] else { panic!("group") };
         let TrayEntry::Check { id, .. } = &nodes[1] else { panic!("node") };
