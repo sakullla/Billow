@@ -74,6 +74,10 @@ interface DemoOptions {
   longNames?: boolean
   /** A heavy subscription: ~60 nodes and ~30 policy groups (`?demo=big`), for performance checks. */
   big?: boolean
+  /** Groups the config marks `hidden: true` (R29). */
+  hiddenGroups?: readonly string[]
+  /** Add a `load-balance` group, which stays automatic (R28). */
+  loadBalance?: boolean
 }
 
 /** Real subscriptions pack region, line, rate and unlocks into one name. */
@@ -123,6 +127,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     selections.set('漏网之鱼', '节点选择')
   }
   const autoNow = new Map<string, string>()
+  /** Nodes fixed on url-test / fallback groups; replayed whenever the demo kernel starts (R28). */
+  const fixed = new Map<string, string>()
+  const hiddenGroups = new Set(options.hiddenGroups ?? [])
+  const pinnable = (type: string) => type === 'url-test' || type === 'fallback'
   let connections: ConnectionRow[] = []
   let totals = { up: 0, down: 0 }
   let startedAt: number | null = null
@@ -138,6 +146,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     { name: 'OpenAI', type: 'select', proxies: ['美国 01', '美国 02', '日本 01', '新加坡 01'] },
     { name: '国内网站', type: 'select', proxies: ['DIRECT', '节点选择'] },
     { name: '漏网之鱼', type: 'select', proxies: ['节点选择', 'DIRECT'] },
+    ...(options.loadBalance ? [{ name: '负载均衡', type: 'load-balance', proxies: names.slice(0, 4) }] : []),
     ...(options.big
       ? Array.from({ length: 24 }, (_, index) => ({ name: `策略组 ${index + 1}`, type: 'select', proxies: ['节点选择', '自动选择', ...names] }))
       : []),
@@ -370,9 +379,11 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     if (!state.active_id) return []
     return groupsDef().map((group) => {
       const manual = group.type === 'select'
+      const canPin = pinnable(group.type)
+      const pinned = canPin ? fixed.get(group.name) ?? null : null
       const now = manual
         ? selections.get(group.name) ?? group.proxies[0]
-        : autoNow.get(group.name) ?? (state.kernel_running ? group.proxies[0] : '')
+        : autoNow.get(group.name) ?? pinned ?? (state.kernel_running ? group.proxies[0] : '')
       return {
         name: group.name,
         kind: manual ? 'manual' : 'auto',
@@ -380,6 +391,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         sort: 'default',
         group_type: group.type,
         icon: groupIcons[group.name] ?? null,
+        pinnable: canPin,
+        fixed: pinned,
+        hidden: hiddenGroups.has(group.name),
         nodes: group.proxies.map((name) => {
           const delay = delays.get(name)
           const baseTags = DEMO_TAGS[types.get(name) ?? ''] ?? []
@@ -508,6 +522,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     startedAt = Date.now()
     autoNow.set('自动选择', names[1])
     autoNow.set('故障转移', names[0])
+    if (options.loadBalance) autoNow.set('负载均衡', names[0])
+    fixed.forEach((node, group) => autoNow.set(group, node))
     log('info', `Mihomo ${kernel.version} started, mixed proxy listening at 127.0.0.1:${state.mixed_port ?? 7890}`)
     return true
   }
@@ -857,10 +873,40 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
 
     async selectNode(group, node) {
+      const def = groupsDef().find((item) => item.name === group)
+      if (def && def.type !== 'select') {
+        if (!pinnable(def.type)) state.nodes_error = '不能改选'
+        else if (!state.kernel_running) state.nodes_error = '内核没有运行'
+        else {
+          state.nodes_error = null
+          const changed = autoNow.get(group) !== node
+          fixed.set(group, node)
+          autoNow.set(group, node)
+          if (changed && state.settings.close_connections_on_switch) {
+            connections = connections.filter((row) => !row.chains.includes(group) || row.chains.includes(node))
+          }
+        }
+        return done(60)
+      }
       const changed = selections.get(group) !== node
+      state.nodes_error = null
       selections.set(group, node)
       if (changed && state.settings.close_connections_on_switch) {
         connections = connections.filter((row) => !row.chains.includes(group) || row.chains.includes(node))
+      }
+      return done(60)
+    },
+    async unfixGroup(group) {
+      const def = groupsDef().find((item) => item.name === group)
+      if (!def || !pinnable(def.type)) state.nodes_error = '不能改选'
+      else if (!state.kernel_running) state.nodes_error = '内核没有运行'
+      else {
+        state.nodes_error = null
+        fixed.delete(group)
+        // The group picks again: the fastest tested member, else its default choice.
+        const tested = def.proxies.filter((name) => typeof delays.get(name) === 'number')
+        const fastest = tested.sort((a, b) => (delays.get(a) as number) - (delays.get(b) as number))[0]
+        autoNow.set(group, (def.type === 'url-test' ? fastest ?? def.proxies[1] : undefined) ?? def.proxies[0] ?? '')
       }
       return done(60)
     },

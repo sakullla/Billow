@@ -11,6 +11,7 @@ pub const NO_MATCH: &str = "没有匹配的节点";
 pub const NOT_MANUAL: &str = "不能改选";
 pub const KERNEL_DOWN: &str = "内核没有运行";
 pub const SELECT_FAILED: &str = "节点没有切换";
+pub const UNFIX_FAILED: &str = "没有恢复自动选择";
 
 const CONTROLLER_PORT: u16 = 17690;
 const CONTROLLER_SECRET: &str = "billow-local";
@@ -40,6 +41,10 @@ pub struct ParsedGroup {
     pub group_type: String,
     /// Config-declared `icon`, kept only for remote http(s) or inline image data.
     pub icon: Option<String>,
+    /// `url-test` / `fallback`: the kernel accepts a fixed node (`SelectAble`).
+    pub pinnable: bool,
+    /// Config-declared `hidden: true`; list entry points skip it.
+    pub hidden: bool,
 }
 
 /// The controller has already expanded providers and applied group filters.
@@ -51,6 +56,10 @@ pub struct RuntimeCatalog {
     pub tags: BTreeMap<String, Vec<String>>,
     pub providers: BTreeMap<String, String>,
     pub dialers: BTreeMap<String, String>,
+    /// Node pinned on a `url-test` / `fallback` group; absent or empty means automatic.
+    pub fixed: BTreeMap<String, String>,
+    /// Controller-reported `hidden` per group.
+    pub hidden: BTreeMap<String, bool>,
 }
 
 impl RuntimeCatalog {
@@ -87,6 +96,8 @@ struct ControllerProxy {
     mptcp: Option<bool>,
     #[serde(rename = "dialer-proxy")]
     dialer_proxy: Option<String>,
+    fixed: Option<String>,
+    hidden: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +141,12 @@ fn catalog_from_reader(reader: impl Read) -> Result<RuntimeCatalog, String> {
         add_proxy_metadata(&mut catalog, &name, &item);
         if let Some(all) = item.all {
             catalog.members.insert(name.clone(), all);
+        }
+        if let Some(fixed) = item.fixed.filter(|s| !s.is_empty()) {
+            catalog.fixed.insert(name.clone(), fixed);
+        }
+        if let Some(hidden) = item.hidden {
+            catalog.hidden.insert(name.clone(), hidden);
         }
         if let Some(now) = item.now.filter(|s| !s.is_empty()) {
             catalog.now.insert(name, now);
@@ -180,6 +197,12 @@ pub struct NodeGroupView {
     pub nodes: Vec<NodeItemView>,
     pub group_type: String,
     pub icon: Option<String>,
+    /// `url-test` / `fallback`: a node can be fixed and released again.
+    pub pinnable: bool,
+    /// Node fixed on a pinnable group. The controller's value wins while it runs.
+    pub fixed: Option<String>,
+    /// `hidden: true`; list entry points skip it, chains still resolve through it.
+    pub hidden: bool,
 }
 
 static TEST_URL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
@@ -355,6 +378,8 @@ pub fn parse_proxy_groups(value: &Value) -> Vec<ParsedGroup> {
                 .unwrap_or_default()
                 .to_ascii_lowercase(),
             icon: read_string(group, "icon").and_then(|icon| usable_icon(&icon)),
+            pinnable: is_pinnable(group),
+            hidden: mapping_get(group, "hidden").and_then(Value::as_bool) == Some(true),
         });
     }
     parsed
@@ -415,6 +440,46 @@ pub fn prioritize_selections(yaml: &str, selected: &BTreeMap<String, String>) ->
         }
     }
     serde_yaml::to_string(&value).unwrap_or_else(|_| yaml.to_string())
+}
+
+/// `DELETE /proxies/{group}` clears the fixed node of a `url-test` / `fallback` group.
+pub fn delete_selection(endpoint: &ControllerEndpoint, group: &str) -> Result<(), String> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return Err(KERNEL_DOWN.to_string());
+    }
+    if group.is_empty() {
+        return Err(UNFIX_FAILED.to_string());
+    }
+    let url = format!(
+        "http://{}:{}/proxies/{}",
+        endpoint.host,
+        endpoint.port,
+        encode_segment(group)
+    );
+    let agent = agent(Duration::from_millis(800));
+    let request = agent.delete(&url).set("User-Agent", "Billow");
+    let request = if endpoint.secret.is_empty() {
+        request
+    } else {
+        request.set("Authorization", &format!("Bearer {}", endpoint.secret))
+    };
+    match request.call() {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(_, response)) => Err(with_reason(UNFIX_FAILED, response)),
+        Err(ureq::Error::Transport(_)) => Err(KERNEL_DOWN.to_string()),
+    }
+}
+
+/// Appends the controller's `message` so a rejected pin explains itself.
+fn with_reason(base: &str, response: ureq::Response) -> String {
+    let reason = read_body(response).ok()
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .and_then(|value| value.get("message").and_then(|m| m.as_str()).map(|m| m.trim().to_string()))
+        .filter(|message| !message.is_empty());
+    match reason {
+        Some(reason) => format!("{base}：{}", reason.chars().take(200).collect::<String>()),
+        None => base.to_string(),
+    }
 }
 
 /// Loopback controller so a running kernel can apply a node without touching system proxy.
@@ -512,6 +577,7 @@ pub fn put_selection(endpoint: &ControllerEndpoint, group: &str, node: &str) -> 
     };
     match request.send_string(&body) {
         Ok(_) => Ok(()),
+        Err(ureq::Error::Status(_, response)) => Err(with_reason(SELECT_FAILED, response)),
         Err(_) => Err(SELECT_FAILED.to_string()),
     }
 }
@@ -814,6 +880,13 @@ fn is_manual(group: &Value) -> bool {
     }
 }
 
+/// Mirrors the kernel's `SelectAble` minus `Selector`: load-balance and smart stay automatic.
+fn is_pinnable(group: &Value) -> bool {
+    read_string(group, "type").is_some_and(|kind| {
+        matches!(kind.trim().to_ascii_lowercase().as_str(), "url-test" | "fallback")
+    })
+}
+
 fn proxy_names(value: &Value) -> Vec<String> {
     let Some(list) = mapping_get(value, "proxies").and_then(Value::as_sequence) else {
         return Vec::new();
@@ -945,6 +1018,54 @@ mod tests {
         assert_eq!(runtime.types["JP 1"], "VLESS");
         assert!(runtime_catalog(&serde_json::json!({"message":"unauthorized"})).is_err());
     }
+    #[test]
+    fn auto_groups_report_pinnable_fixed_and_hidden_from_yaml_and_controller() {
+        let document: Value = serde_yaml::from_str("proxy-groups:\n  - {name: Pick, type: select, proxies: [a]}\n  - {name: Fast, type: URL-Test, proxies: [a, b]}\n  - {name: Backup, type: fallback, proxies: [a, b], hidden: true}\n  - {name: Spread, type: load-balance, proxies: [a, b]}\n  - {name: Smart, type: smart, proxies: [a, b]}\n").unwrap();
+        let groups = parse_proxy_groups(&document);
+        let pinnable: Vec<bool> = groups.iter().map(|group| group.pinnable).collect();
+        assert_eq!(pinnable, [false, true, true, false, false]);
+        let hidden: Vec<bool> = groups.iter().map(|group| group.hidden).collect();
+        assert_eq!(hidden, [false, false, true, false, false]);
+        let runtime = runtime_catalog(&serde_json::json!({"proxies": {
+            "Fast": {"type":"URLTest", "all":["a", "b"], "now":"b", "fixed":"b", "hidden": true},
+            "Backup": {"type":"Fallback", "all":["a", "b"], "now":"a", "fixed":"", "hidden": false},
+            "a": {"type":"Shadowsocks"}
+        }})).unwrap();
+        assert_eq!(runtime.fixed.get("Fast").map(String::as_str), Some("b"));
+        assert!(!runtime.fixed.contains_key("Backup"), "an empty fixed means automatic");
+        assert_eq!(runtime.hidden.get("Fast"), Some(&true));
+        assert_eq!(runtime.hidden.get("Backup"), Some(&false));
+        assert!(!runtime.hidden.contains_key("a"));
+    }
+
+    #[test]
+    fn unfix_sends_delete_to_the_injected_endpoint_and_reports_the_kernel_reason() {
+        let (port, handle) = serve(vec![
+            http_response("204 No Content", ""),
+            http_response("400 Bad Request", "{\"message\":\"Selector update error: not found\"}"),
+            http_response("400 Bad Request", "{\"message\":\"proxy not exist\"}"),
+        ]);
+        let endpoint = ControllerEndpoint { host: "127.0.0.1".to_string(), port, secret: CONTROLLER_SECRET.to_string() };
+        delete_selection(&endpoint, "自动").unwrap();
+        let rejected = delete_selection(&endpoint, "Fast").unwrap_err();
+        assert!(rejected.starts_with(UNFIX_FAILED) && rejected.contains("not found"), "{rejected}");
+        let refused = put_selection(&endpoint, "Fast", "gone").unwrap_err();
+        assert!(refused.starts_with(SELECT_FAILED) && refused.contains("proxy not exist"), "{refused}");
+        let seen = handle.join().unwrap();
+        assert!(seen[0].starts_with("DELETE /proxies/%E8%87%AA%E5%8A%A8 "), "{}", seen[0]);
+        assert!(seen[0].contains("Bearer billow-local"));
+        assert!(seen[1].starts_with("DELETE /proxies/Fast "));
+        assert!(seen[2].starts_with("PUT /proxies/Fast "));
+
+        let remote = ControllerEndpoint { host: "198.51.100.1".to_string(), port: 80, secret: String::new() };
+        assert_eq!(delete_selection(&remote, "Fast").unwrap_err(), KERNEL_DOWN);
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let down = ControllerEndpoint { host: "127.0.0.1".to_string(), port: closed_port, secret: String::new() };
+        assert_eq!(delete_selection(&down, "Fast").unwrap_err(), KERNEL_DOWN);
+    }
+
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;

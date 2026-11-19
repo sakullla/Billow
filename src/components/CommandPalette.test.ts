@@ -261,4 +261,43 @@ describe('CommandPalette', () => {
     expect(wrapper.emitted('select-node')).toEqual([['节点选择', '日本 02']])
     wrapper.unmount()
   })
+
+  it('skips hidden groups and offers url-test nodes for fixing, but not load-balance ones', async () => {
+    const node = (name: string, selected = false) => ({ name, delay_ms: null, failed: false, selected, node_type: 'vless', tags: [] })
+    const catalog = [
+      { name: '隐藏组', kind: 'manual', now: '香港 01', sort: 'default', group_type: 'select', icon: null, hidden: true, nodes: [node('香港 01', true), node('隐藏节点')] },
+      { name: '节点选择', kind: 'manual', now: '香港 01', sort: 'default', group_type: 'select', icon: null, nodes: [node('香港 01', true)] },
+      { name: '自动选择', kind: 'auto', now: '日本 01', sort: 'default', group_type: 'url-test', icon: null, pinnable: true, fixed: '日本 01', nodes: [node('日本 01', true), node('日本 02')] },
+      { name: '负载均衡', kind: 'auto', now: '日本 01', sort: 'default', group_type: 'load-balance', icon: null, pinnable: false, fixed: null, nodes: [node('日本 01', true), node('日本 02')] },
+    ]
+    const { wrapper } = mountPalette({ connected: true, nodeCatalog: catalog })
+    await settle()
+    search('隐藏')
+    await nextTick()
+    expect(option('group:隐藏组')).toBeNull()
+    expect(option('node:隐藏组:隐藏节点')).toBeNull()
+
+    search('自动选择')
+    await nextTick()
+    expect(option('group:自动选择')?.textContent).toContain('已固定')
+
+    search('日本')
+    await nextTick()
+    expect(option('node:自动选择:日本 01')?.textContent).toContain('已固定')
+    expect(option('node:负载均衡:日本 02')).toBeNull()
+    option('node:自动选择:日本 02')?.click()
+    expect(wrapper.emitted('select-node')).toEqual([['自动选择', '日本 02']])
+    wrapper.unmount()
+
+    const offline = mountPalette({ connected: false, nodeCatalog: catalog })
+    await settle()
+    search('日本 02')
+    await nextTick()
+    const pin = option('node:自动选择:日本 02')
+    expect(pin?.getAttribute('aria-disabled')).toBe('true')
+    expect(pin?.textContent).toContain('连接后可固定')
+    pin?.click()
+    expect(offline.wrapper.emitted('select-node')).toBeUndefined()
+    offline.wrapper.unmount()
+  })
 })

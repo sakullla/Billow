@@ -167,3 +167,8 @@ commands.allow = ["open_uwp_tool"]
 identifier = "allow-set-profile-user-agent"
 description = "Enables setting a subscription User-Agent."
 commands.allow = ["set_profile_user_agent"]
+
+[[permission]]
+identifier = "allow-unfix-profile-group"
+description = "Enables the unfix_profile_group command without any pre-configured scope."
+commands.allow = ["unfix_profile_group"]

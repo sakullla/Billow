@@ -88,6 +88,8 @@ export interface Backend {
   setAppRules(mode: AppMode, packages: string[]): Promise<Snapshot>
 
   selectNode(group: string, node: string): Promise<Snapshot>
+  /** Release a fixed `url-test` / `fallback` group back to its own strategy (R28). */
+  unfixGroup(group: string): Promise<Snapshot>
   testGroup(group: string): Promise<Snapshot>
   testAll(): Promise<Snapshot>
   testNode(node: string): Promise<Snapshot>
@@ -211,6 +213,7 @@ function createTauriBackend(): Backend {
     setAppRules: (mode, packages) => snap('set_app_rules', { mode, packages }),
 
     selectNode: (group, node) => snap('select_profile_node', { group, node }),
+    unfixGroup: (group) => snap('unfix_profile_group', { group }),
     testGroup: (group) => snap('test_profile_group', { group }),
     testAll: () => snap('test_all_nodes'),
     testNode: (node) => snap('test_node', { node }),

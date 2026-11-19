@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canPickNode,
   daysLeft,
   delayText,
   delayTone,
@@ -10,6 +11,7 @@ import {
   groupStrategy,
   hostOf,
   isInfoNode,
+  listedGroups,
   resolveChain,
   protocolLabel,
   usagePercent,
@@ -111,5 +113,22 @@ describe('format', () => {
     expect(resolveChain('节点选择', groups)).toEqual(['自动选择', '香港 01'])
     expect(resolveChain('A', groups)).toEqual(['B', 'A'])
     expect(resolveChain('missing', groups)).toEqual([])
+  })
+
+  it('lists only unhidden groups while chains still pass through hidden ones', () => {
+    const groups = [
+      { name: '漏网之鱼', now: '节点选择', hidden: false },
+      { name: '节点选择', now: '香港 01', hidden: true },
+      { name: '自动选择', now: '日本 01' },
+    ]
+    expect(listedGroups(groups).map((group) => group.name)).toEqual(['漏网之鱼', '自动选择'])
+    expect(resolveChain('漏网之鱼', groups)).toEqual(['节点选择', '香港 01'])
+  })
+
+  it('lets select groups and fixable auto groups take a hand-picked node', () => {
+    expect(canPickNode({ kind: 'manual' })).toBe(true)
+    expect(canPickNode({ kind: 'auto', pinnable: true })).toBe(true)
+    expect(canPickNode({ kind: 'auto', pinnable: false })).toBe(false)
+    expect(canPickNode({ kind: 'auto' })).toBe(false)
   })
 })

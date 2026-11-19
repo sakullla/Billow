@@ -625,6 +625,14 @@ fn select_profile_node(app: AppHandle, group: String, node: String) -> ProfileSn
 }
 
 #[tauri::command(async)]
+fn unfix_profile_group(app: AppHandle, group: String) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.unfix_group(&group, runtime)
+    })
+}
+
+#[tauri::command(async)]
 fn test_profile_group(app: AppHandle, group: String) -> ProfileSnapshot {
     let events = app.clone();
     with_session(&app, |session| {
@@ -1459,6 +1467,7 @@ pub fn run() {
             include_package,
             set_app_rules,
             select_profile_node,
+            unfix_profile_group,
             test_profile_group,
             set_node_query,
             set_node_sort,

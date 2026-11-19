@@ -156,6 +156,16 @@ const STRATEGIES: Record<string, GroupStrategy> = {
 }
 const STRATEGY_ALIASES: Record<string, string> = { urltest: 'url-test', loadbalance: 'load-balance' }
 
+/** Group lists skip config `hidden: true`; chains still resolve through the full catalog (R29). */
+export function listedGroups<T extends { hidden?: boolean }>(groups: readonly T[]): T[] {
+  return groups.filter((group) => !group.hidden)
+}
+
+/** Select groups switch by hand; url-test / fallback pin the picked node until 恢复自动 (R28). */
+export function canPickNode(group: { kind: string; pinnable?: boolean }): boolean {
+  return group.kind === 'manual' || group.pinnable === true
+}
+
 /** How an automatic group chooses its node; null for hand-picked groups. */
 export function groupStrategy(type: string): GroupStrategy | null {
   const key = type.trim().toLowerCase()

@@ -73,6 +73,9 @@ struct Profile {
     last_success_ms: Option<u64>,
     usage: Option<Usage>,
     selected: BTreeMap<String, String>,
+    /// Nodes fixed on `url-test` / `fallback` groups, replayed after each reload.
+    /// Kept apart from `selected` so auto-group member order is never rewritten.
+    fixed: BTreeMap<String, String>,
     interval_hours: u32,
     /// age X25519 identities, one per line, for subscriptions published encrypted.
     age_key: String,
@@ -828,6 +831,11 @@ pub trait KernelLaunch {
     }
 
     fn select_proxy(&mut self, _group: &str, _node: &str) -> Result<(), String> {
+        Err(KERNEL_DOWN.to_string())
+    }
+
+    /// Clears the fixed node of a `url-test` / `fallback` group (`DELETE /proxies/{group}`).
+    fn unfix_proxy(&mut self, _group: &str) -> Result<(), String> {
         Err(KERNEL_DOWN.to_string())
     }
 
@@ -1691,6 +1699,16 @@ impl KernelLaunch for ProcessRuntime {
         nodes::put_selection(&endpoint, group, node)
     }
 
+    fn unfix_proxy(&mut self, group: &str) -> Result<(), String> {
+        if !self.running() {
+            return Err(KERNEL_DOWN.to_string());
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return Err(KERNEL_DOWN.to_string());
+        };
+        nodes::delete_selection(&endpoint, group)
+    }
+
     fn close_previous_group_connections(&mut self, group: &str, selected: &str) -> Result<Vec<String>, String> {
         let endpoint = self.controller().ok_or_else(|| KERNEL_DOWN.to_string())?;
         diagnostics::close_previous_group_connections(&endpoint, group, selected)
@@ -1900,6 +1918,8 @@ struct DiskProfile<'a> {
     expire: Option<u64>,
     #[serde(default)]
     selected: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    fixed: BTreeMap<String, String>,
     #[serde(default)]
     interval_hours: u32,
     #[serde(default)]
@@ -3132,6 +3152,7 @@ impl ProfileBook {
             last_success_ms: None,
             usage: None,
             selected: BTreeMap::new(),
+            fixed: BTreeMap::new(),
             interval_hours: 0,
             age_key: String::new(),
             updated_ms: None,
@@ -3180,6 +3201,7 @@ impl ProfileBook {
                     refresh_revision: 0,
                     node_metadata: OnceLock::new(),
                     selected: profile.selected,
+                    fixed: profile.fixed,
                     interval_hours: profile.interval_hours,
                     age_key: profile.age_key,
                     updated_ms: profile.updated_ms,
@@ -3292,6 +3314,7 @@ impl ProfileBook {
                     total: profile.usage.as_ref().and_then(|usage| usage.total),
                     expire: profile.usage.as_ref().and_then(|usage| usage.expire),
                     selected: profile.selected.clone(),
+                    fixed: profile.fixed.clone(),
                     interval_hours: profile.interval_hours,
                     age_key: profile.age_key.clone(),
                     updated_ms: profile.updated_ms,
@@ -3470,6 +3493,10 @@ impl ProfileBook {
             self.nodes_error = Some("没有这个代理组".to_string());
             return self.snapshot();
         };
+        if found.pinnable {
+            let found = found.clone();
+            return self.fix_node(index, &found, node_name, kernel);
+        }
         if !found.manual {
             self.nodes_error = Some(NOT_MANUAL.to_string());
             return self.snapshot();
@@ -3502,16 +3529,99 @@ impl ProfileBook {
         if self.notice.as_deref().is_some_and(|notice| notice.starts_with("节点已切换，但")) {
             self.notice = None;
         }
-        if self.kernel_running && changed && self.settings.close_connections_on_switch.unwrap_or(true) {
-            match kernel.close_previous_group_connections(group_name, node_name) {
-                Ok(ids) => {
-                    let closed: BTreeSet<_> = ids.into_iter().collect();
-                    self.connections.retain(|connection| !closed.contains(&connection.id));
-                    self.connection_total = self.connection_total.saturating_sub(closed.len());
-                }
-                Err(message) => self.notice = Some(format!("节点已切换，但{message}")),
-            }
+        if self.kernel_running && changed {
+            self.close_switched_group(group_name, node_name, kernel);
         }
+        self.persist();
+        self.snapshot()
+    }
+
+    fn close_switched_group(&mut self, group: &str, node: &str, kernel: &mut dyn KernelLaunch) {
+        if !self.settings.close_connections_on_switch.unwrap_or(true) {
+            return;
+        }
+        match kernel.close_previous_group_connections(group, node) {
+            Ok(ids) => {
+                let closed: BTreeSet<_> = ids.into_iter().collect();
+                self.connections.retain(|connection| !closed.contains(&connection.id));
+                self.connection_total = self.connection_total.saturating_sub(closed.len());
+            }
+            Err(message) => self.notice = Some(format!("节点已切换，但{message}")),
+        }
+    }
+
+    /// Pins a node on a `url-test` / `fallback` group. Needs a running kernel: the
+    /// pin lives in the controller, and Billow only replays it after reloads.
+    fn fix_node(
+        &mut self,
+        index: usize,
+        group: &ParsedGroup,
+        node: &str,
+        kernel: &mut dyn KernelLaunch,
+    ) -> ProfileSnapshot {
+        if !self.kernel_running {
+            self.nodes_error = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        }
+        let current = self.auto_now.get(&group.name).cloned();
+        if !group.proxies.iter().any(|item| item == node) && current.as_deref() != Some(node) {
+            self.nodes_error = Some("没有这个节点".to_string());
+            return self.snapshot();
+        }
+        if let Err(message) = kernel.select_proxy(&group.name, node) {
+            self.nodes_error = Some(if message.is_empty() { SELECT_FAILED.to_string() } else { message });
+            return self.snapshot();
+        }
+        self.profiles[index].fixed.insert(group.name.clone(), node.to_string());
+        self.runtime_catalog.fixed.insert(group.name.clone(), node.to_string());
+        self.runtime_catalog.now.insert(group.name.clone(), node.to_string());
+        self.auto_now.insert(group.name.clone(), node.to_string());
+        self.nodes_error = None;
+        if self.notice.as_deref().is_some_and(|notice| notice.starts_with("节点已切换，但")) {
+            self.notice = None;
+        }
+        if current.as_deref() != Some(node) {
+            self.close_switched_group(&group.name, node, kernel);
+        }
+        self.persist();
+        self.snapshot()
+    }
+
+    /// Releases a fixed `url-test` / `fallback` group back to its own strategy.
+    pub fn unfix_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        self.sync_nodes(kernel);
+        let group_name = group.trim();
+        let Some(index) = self.nodes_profile_index() else {
+            self.nodes_error = Some(NEED_PROFILE.to_string());
+            return self.snapshot();
+        };
+        let Some(document) = document_value(&self.profiles[index]) else {
+            self.nodes_error = Some(NO_NODES.to_string());
+            return self.snapshot();
+        };
+        let parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
+        let Some(found) = parsed.iter().find(|item| item.name == group_name) else {
+            self.nodes_error = Some("没有这个代理组".to_string());
+            return self.snapshot();
+        };
+        if !found.pinnable {
+            self.nodes_error = Some(NOT_MANUAL.to_string());
+            return self.snapshot();
+        }
+        if !self.kernel_running {
+            self.nodes_error = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        }
+        if let Err(message) = kernel.unfix_proxy(group_name) {
+            self.nodes_error = Some(if message.is_empty() { nodes::UNFIX_FAILED.to_string() } else { message });
+            return self.snapshot();
+        }
+        self.profiles[index].fixed.remove(group_name);
+        self.nodes_error = None;
+        // The group picks again by its own strategy; read what it chose.
+        self.runtime_catalog = kernel.node_catalog();
+        self.runtime_catalog.fixed.remove(group_name);
+        self.auto_now = self.runtime_catalog.now.clone();
         self.persist();
         self.snapshot()
     }
@@ -3630,8 +3740,20 @@ impl ProfileBook {
         types: &BTreeMap<String, nodes::ProxyInfo>,
     ) -> NodeGroupView {
         let sort = self.sort_of(&group.name);
+        let hidden = self.runtime_catalog.hidden.get(&group.name).copied().unwrap_or(group.hidden);
         if !group.manual {
-            let now = self.auto_now.get(&group.name).cloned().unwrap_or_default();
+            // A running controller reports the live pin (it can drop a dead node by
+            // itself); a stopped kernel shows the pin Billow will replay on start.
+            let fixed = if !group.pinnable {
+                None
+            } else if self.kernel_running {
+                self.runtime_catalog.fixed.get(&group.name).cloned()
+            } else {
+                profile.fixed.get(&group.name).cloned()
+            };
+            let now = self.auto_now.get(&group.name).cloned()
+                .or_else(|| fixed.clone())
+                .unwrap_or_default();
             let extra = (!now.is_empty() && !members.contains(&now)).then_some(&now);
             let nodes = members
                 .iter().chain(extra)
@@ -3645,6 +3767,9 @@ impl ProfileBook {
                 nodes,
                 group_type: group.group_type.clone(),
                 icon: group.icon.clone(),
+                pinnable: group.pinnable,
+                fixed,
+                hidden,
             };
         }
         let chosen = self.auto_now.get(&group.name)
@@ -3672,6 +3797,9 @@ impl ProfileBook {
             nodes,
             group_type: group.group_type.clone(),
             icon: group.icon.clone(),
+            pinnable: false,
+            fixed: None,
+            hidden,
         }
     }
 
@@ -3732,7 +3860,7 @@ impl ProfileBook {
         let Some(profile) = self.profiles.iter().find(|profile| profile.id == id) else {
             return;
         };
-        if profile.selected.is_empty() {
+        if profile.selected.is_empty() && profile.fixed.is_empty() {
             return;
         }
         self.runtime_catalog = kernel.node_catalog();
@@ -3740,16 +3868,30 @@ impl ProfileBook {
         let Some(document) = document_value(profile) else {
             return;
         };
+        let mut pinned = Vec::new();
         for group in nodes::resolved_groups(&document, &self.runtime_catalog) {
-            if !group.manual {
-                continue;
-            }
-            let Some(node) = profile.selected.get(&group.name) else {
+            let saved = if group.manual {
+                &profile.selected
+            } else if group.pinnable {
+                &profile.fixed
+            } else {
                 continue;
             };
-            if group.proxies.iter().any(|item| item == node) {
-                let _ = kernel.select_proxy(&group.name, node);
+            let Some(node) = saved.get(&group.name) else {
+                continue;
+            };
+            if group.proxies.iter().any(|item| item == node)
+                && kernel.select_proxy(&group.name, node).is_ok()
+                && group.pinnable
+            {
+                pinned.push((group.name.clone(), node.clone()));
             }
+        }
+        // Keep the saved pin even when the kernel refuses it now; the next reload tries again.
+        for (group, node) in pinned {
+            self.runtime_catalog.fixed.insert(group.clone(), node.clone());
+            self.runtime_catalog.now.insert(group.clone(), node.clone());
+            self.auto_now.insert(group, node);
         }
     }
 
@@ -6794,6 +6936,10 @@ rules:\n  - MATCH,pick\n",
         fail_close: bool,
         stats_reads: usize,
         catalog: nodes::RuntimeCatalog,
+        /// Groups the fake kernel treats as `SelectAble` auto groups: a PUT pins them.
+        pin_groups: Vec<String>,
+        unfixed: Vec<String>,
+        reject_unfix: bool,
     }
 
     impl KernelLaunch for NodeKernel {
@@ -6801,6 +6947,20 @@ rules:\n  - MATCH,pick\n",
             self.calls += 1;
             self.yaml = Some(config_yaml.to_string());
             self.report_running = true;
+            // A fresh process forgets pins; Billow must replay them.
+            self.catalog.fixed.clear();
+            Ok(())
+        }
+
+        fn unfix_proxy(&mut self, group: &str) -> Result<(), String> {
+            if !self.report_running {
+                return Err(KERNEL_DOWN.to_string());
+            }
+            if self.reject_unfix {
+                return Err("没有恢复自动选择：busy".to_string());
+            }
+            self.unfixed.push(group.to_string());
+            self.catalog.fixed.remove(group);
             Ok(())
         }
 
@@ -6813,6 +6973,10 @@ rules:\n  - MATCH,pick\n",
                 return Err("节点没有切换".to_string());
             }
             self.applied.push((group.to_string(), node.to_string()));
+            if self.pin_groups.iter().any(|name| name == group) {
+                self.catalog.fixed.insert(group.to_string(), node.to_string());
+                self.auto.insert(group.to_string(), node.to_string());
+            }
             Ok(())
         }
 
@@ -6874,7 +7038,117 @@ rules:\n  - MATCH,pick\n",
             fail_close: false,
             stats_reads: 0,
             catalog: nodes::RuntimeCatalog::default(),
+            pin_groups: Vec::new(),
+            unfixed: Vec::new(),
+            reject_unfix: false,
         }
+    }
+
+    fn pinnable_config() -> String {
+        grouped_config()
+            + "  - name: backup\n    type: fallback\n    hidden: true\n    proxies: [z-node, m-node]\n"
+            + "  - name: spread\n    type: load-balance\n    proxies: [z-node, m-node]\n"
+    }
+
+    #[test]
+    fn auto_groups_can_be_fixed_replayed_after_reload_and_released() {
+        let dir = temp_dir("pin-auto");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("nodes", &pinnable_config());
+        let mut kernel = node_kernel();
+        kernel.pin_groups = vec!["auto".into(), "backup".into()];
+
+        let listed = book.snapshot();
+        let auto = group(&listed.node_catalog, "auto");
+        assert!(auto.pinnable && auto.fixed.is_none() && !auto.hidden);
+        assert!(group(&listed.node_catalog, "backup").pinnable);
+        assert!(group(&listed.node_catalog, "backup").hidden, "YAML hidden applies while the kernel is down");
+        assert!(!group(&listed.node_catalog, "spread").pinnable);
+        assert!(!group(&listed.node_catalog, "manual").pinnable);
+
+        let offline = book.select_node("auto", "m-node", &mut kernel);
+        assert_eq!(offline.nodes_error.as_deref(), Some(KERNEL_DOWN));
+        assert!(kernel.applied.is_empty());
+        let offline = book.unfix_group("auto", &mut kernel);
+        assert_eq!(offline.nodes_error.as_deref(), Some(KERNEL_DOWN));
+        assert!(kernel.unfixed.is_empty());
+
+        book.enable("p1", &RejectSource, &mut kernel);
+        kernel.auto.insert("auto".into(), "z-node".into());
+        let pinned = book.select_node("auto", "m-node", &mut kernel);
+        assert!(pinned.nodes_error.is_none(), "{:?}", pinned.nodes_error);
+        assert_eq!(kernel.applied.last(), Some(&("auto".to_string(), "m-node".to_string())));
+        let auto = group(&pinned.node_catalog, "auto");
+        assert_eq!(auto.now, "m-node");
+        assert_eq!(auto.fixed.as_deref(), Some("m-node"));
+        assert!(auto.nodes.iter().any(|node| node.name == "m-node" && node.selected));
+        let yaml = kernel.yaml.clone().unwrap();
+        assert_eq!(proxies_of(&yaml, "auto"), ["z-node", "m-node", "a-node"], "auto member order stays untouched");
+        let stored = fs::read_to_string(dir.0.join("profiles.json")).unwrap();
+        assert!(stored.contains("\"fixed\"") && stored.contains("m-node"));
+
+        // A rejected pin leaves the shown node as it was.
+        kernel.reject_select = true;
+        let refused = book.select_node("auto", "a-node", &mut kernel);
+        assert_eq!(refused.nodes_error.as_deref(), Some("节点没有切换"));
+        assert_eq!(group(&refused.node_catalog, "auto").now, "m-node");
+        kernel.reject_select = false;
+
+        let spread = book.select_node("spread", "m-node", &mut kernel);
+        assert_eq!(spread.nodes_error.as_deref(), Some(NOT_MANUAL));
+        assert_eq!(book.unfix_group("spread", &mut kernel).nodes_error.as_deref(), Some(NOT_MANUAL));
+
+        // A reload starts a process without the pin; Billow puts it back.
+        kernel.applied.clear();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        let reconnected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(reconnected.connected);
+        book.enable("p1", &RejectSource, &mut kernel);
+        assert!(kernel.applied.contains(&("auto".to_string(), "m-node".to_string())));
+        book.sync_runtime(&mut kernel);
+        let replayed = book.snapshot();
+        assert_eq!(group(&replayed.node_catalog, "auto").fixed.as_deref(), Some("m-node"));
+        assert_eq!(group(&replayed.node_catalog, "auto").now, "m-node");
+
+        // The kernel drops a pin on its own (dead node): show it as automatic, keep the saved value.
+        kernel.catalog.fixed.clear();
+        kernel.auto.insert("auto".into(), "z-node".into());
+        book.sync_runtime(&mut kernel);
+        let dropped = book.snapshot();
+        assert!(group(&dropped.node_catalog, "auto").fixed.is_none());
+        assert!(book.profiles[0].fixed.contains_key("auto"));
+        kernel.catalog.fixed.insert("auto".into(), "m-node".into());
+        kernel.auto.insert("auto".into(), "m-node".into());
+
+        // Controller hidden wins over YAML while running.
+        kernel.catalog.hidden.insert("backup".into(), false);
+        kernel.catalog.hidden.insert("auto".into(), true);
+        book.sync_runtime(&mut kernel);
+        let live = book.snapshot();
+        assert!(!group(&live.node_catalog, "backup").hidden);
+        assert!(group(&live.node_catalog, "auto").hidden);
+        kernel.catalog.hidden.clear();
+
+        kernel.reject_unfix = true;
+        let busy = book.unfix_group("auto", &mut kernel);
+        assert!(busy.nodes_error.as_deref().is_some_and(|message| message.contains("busy")));
+        assert_eq!(group(&busy.node_catalog, "auto").fixed.as_deref(), Some("m-node"));
+        kernel.reject_unfix = false;
+
+        kernel.auto.insert("auto".into(), "z-node".into());
+        let released = book.unfix_group("auto", &mut kernel);
+        assert!(released.nodes_error.is_none());
+        assert_eq!(kernel.unfixed, ["auto"]);
+        let auto = group(&released.node_catalog, "auto");
+        assert!(auto.fixed.is_none());
+        assert_eq!(auto.now, "z-node");
+        assert!(book.profiles[0].fixed.is_empty());
+        kernel.applied.clear();
+        book.enable("p1", &RejectSource, &mut kernel);
+        assert!(!kernel.applied.iter().any(|(group, _)| group == "auto"), "a released group is not pinned again");
     }
 
     #[test]
@@ -7103,7 +7377,7 @@ proxy-groups:
         assert_eq!(manual.now, "a-node");
 
         let rejected = book.select_node("auto", "m-node", &mut kernel);
-        assert_eq!(rejected.nodes_error.as_deref(), Some(NOT_MANUAL));
+        assert_eq!(rejected.nodes_error.as_deref(), Some(KERNEL_DOWN), "fixing an auto group needs a running kernel");
         assert!(kernel.applied.is_empty());
         let reopened = ProfileBook::open(&dir.0);
         let stored = fs::read_to_string(dir.0.join("profiles.json")).unwrap();
@@ -7361,6 +7635,7 @@ proxy-groups:
         let permissions = capability["permissions"].as_array().unwrap();
         for permission in [
             "allow-select-profile-node",
+            "allow-unfix-profile-group",
             "allow-test-profile-group",
             "allow-set-node-query",
             "allow-set-node-sort",

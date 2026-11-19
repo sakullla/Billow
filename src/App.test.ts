@@ -1422,8 +1422,9 @@ describe('App', () => {
     expect(wrapper.findAll('[data-group-card="节点选择"] [data-node]')).toHaveLength(22)
   })
 
-  it('selects a manual node with Space while auto-group rows stay inert', async () => {
-    const { wrapper, backend } = await mountApp()
+  it('selects a manual node with Space while load-balance rows stay inert', async () => {
+    const { wrapper, backend } = await mountApp({ loadBalance: true })
+    const store = (wrapper.vm as unknown as { store: Store }).store
     const select = vi.spyOn(backend, 'selectNode')
     await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
     await flushPromises()
@@ -1435,19 +1436,119 @@ describe('App', () => {
     expect(select).toHaveBeenCalledWith('节点选择', '日本 02')
     expect(wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"]').classes()).toContain('selected')
 
-    // Automatic groups open from the entry that uses them (R14).
-    await wrapper.find('[data-group-card="节点选择"] [data-testid="open-auto-自动选择"]').trigger('click')
-    await flushPromises()
-    if (!wrapper.find('[data-group-card="自动选择"] [data-node="香港 01"]').exists()) {
-      await wrapper.find('[data-group-card="自动选择"] .group-toggle').trigger('click')
+    // load-balance spreads connections and never takes a fixed node (R28).
+    store.go('proxies', '负载均衡')
+    await settle(100)
+    if (!wrapper.find('[data-group-card="负载均衡"] [data-node="香港 01"]').exists()) {
+      await wrapper.find('[data-group-card="负载均衡"] .group-toggle').trigger('click')
       await flushPromises()
     }
-    const auto = wrapper.find('[data-group-card="自动选择"] [data-node="香港 01"] .node-select')
-    expect(auto.attributes('aria-disabled')).toBe('true')
-    expect(auto.attributes('tabindex')).toBe('-1')
-    await auto.trigger('click')
+    const balanced = wrapper.find('[data-group-card="负载均衡"] [data-node="香港 02"] .node-select')
+    expect(balanced.attributes('aria-disabled')).toBe('true')
+    expect(balanced.attributes('tabindex')).toBe('-1')
+    await balanced.trigger('click')
     await settle(100)
     expect(select).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="unfix-group-负载均衡"]').exists()).toBe(false)
+  })
+
+  it('fixes a url-test node, keeps it across reconnect, and releases it with 恢复自动', async () => {
+    const { wrapper, backend } = await mountApp()
+    const select = vi.spyOn(backend, 'selectNode')
+    const unfix = vi.spyOn(backend, 'unfixGroup')
+    const autoCard = () => wrapper.find('[data-group-card="自动选择"]')
+    const openAutoGroup = async () => {
+      await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+      await flushPromises()
+      await wrapper.find('[data-group-card="节点选择"] [data-testid="open-auto-自动选择"]').trigger('click')
+      await flushPromises()
+      if (!autoCard().find('[data-node="日本 01"]').exists()) {
+        await autoCard().find('.group-toggle').trigger('click')
+        await flushPromises()
+      }
+    }
+
+    // Kernel down: the pin is refused with the reason and nothing changes.
+    await openAutoGroup()
+    const offline = autoCard().find('[data-node="日本 01"] .node-select')
+    expect(offline.attributes('aria-disabled')).toBeUndefined()
+    await offline.trigger('click')
+    await settle(200)
+    expect(select).toHaveBeenCalledWith('自动选择', '日本 01')
+    expect(wrapper.text()).toContain('内核没有运行')
+    expect(autoCard().find('[data-testid="group-fixed-自动选择"]').exists()).toBe(false)
+
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openAutoGroup()
+    expect(autoCard().find('[data-node="香港 02"]').classes()).toContain('selected')
+    await autoCard().find('[data-node="日本 01"] .node-select').trigger('click')
+    await settle(200)
+    expect(autoCard().find('[data-node="日本 01"]').classes()).toContain('selected')
+    expect(autoCard().find('[data-node="香港 02"]').classes()).not.toContain('selected')
+    expect(autoCard().find('[data-testid="group-fixed-自动选择"]').text()).toBe('已固定')
+    expect(autoCard().find('.group-now').text()).toContain('日本 01')
+
+    // Disconnect and connect again: the demo kernel restarts and the pin is replayed.
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openAutoGroup()
+    expect(autoCard().find('[data-node="日本 01"]').classes()).toContain('selected')
+    expect(autoCard().find('[data-testid="group-fixed-自动选择"]').exists()).toBe(true)
+
+    await autoCard().find('[data-testid="unfix-group-自动选择"]').trigger('click')
+    await settle(200)
+    expect(unfix).toHaveBeenCalledWith('自动选择')
+    expect(autoCard().find('[data-testid="group-fixed-自动选择"]').exists()).toBe(false)
+    expect(autoCard().find('[data-testid="unfix-group-自动选择"]').exists()).toBe(false)
+    expect(autoCard().find('[data-node="日本 01"]').classes()).not.toContain('selected')
+    expect(autoCard().find('[data-node="香港 02"]').classes()).toContain('selected')
+  })
+
+  it('leaves hidden groups out of the proxies page, home and palette but keeps them in chains', async () => {
+    const { wrapper, backend } = await mountApp({ hiddenGroups: ['节点选择'] })
+    const pending = backend.configOverview()
+    await settle(500)
+    expect((await pending).counts['proxy-groups']).toBe(7)
+
+    expect(wrapper.find('[data-testid="groups-card"] [data-group="节点选择"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="groups-card"] [data-group="漏网之鱼"]').exists()).toBe(true)
+
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-group-card="节点选择"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="jump-group-节点选择"]').exists()).toBe(false)
+    expect(wrapper.find('[data-group-card="漏网之鱼"]').exists()).toBe(true)
+    // 漏网之鱼 → 节点选择 → 香港 01: the hidden group still shows as a transit hop.
+    const chain = wrapper.find('[data-group-card="漏网之鱼"] .group-now').text()
+    expect(chain).toContain('节点选择')
+    expect(chain).toContain('香港 01')
+    expect(wrapper.find('[data-testid="node-search"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="node-search"]').setValue('节点选择')
+    await flushPromises()
+    expect(wrapper.find('[data-group-card="节点选择"]').exists()).toBe(false)
+
+    await openPalette()
+    await searchPalette('节点选择')
+    expect(paletteOption('group:节点选择')).toBeNull()
+    expect(paletteOption('node:节点选择:香港 01')).toBeNull()
+  })
+
+  it('says every group is hidden instead of reporting missing nodes', async () => {
+    const { wrapper } = await mountApp({
+      hiddenGroups: ['节点选择', '自动选择', '故障转移', '流媒体', 'OpenAI', '国内网站', '漏网之鱼'],
+    })
+    await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="all-groups-hidden"]').text()).toContain('配置中的代理组均已隐藏')
+    expect(wrapper.text()).not.toContain('还没有可显示的节点')
+    expect(wrapper.find('[data-group-card]').exists()).toBe(false)
   })
 
   it('shows test-all progress and marks only failed nodes as timed out', async () => {

@@ -56,6 +56,12 @@ export interface NodeGroup {
   group_type: string
   /** Config `proxy-groups[].icon`; only http(s) and image data survive normalization. */
   icon: string | null
+  /** `url-test` / `fallback`: picking a node fixes it until 恢复自动 (R28). Normalized snapshots always set these three. */
+  pinnable?: boolean
+  /** Node fixed on a pinnable group; null while the group picks by itself. */
+  fixed?: string | null
+  /** Config `hidden: true`: left out of group lists, still part of chains (R29). */
+  hidden?: boolean
 }
 
 export interface ConnectionRow {
@@ -601,6 +607,9 @@ function normalizeGroup(raw: unknown): NodeGroup {
     nodes: list(group.nodes).map(normalizeNode).filter((node) => node.name),
     group_type: str(group.group_type),
     icon: normalizeIcon(group.icon),
+    pinnable: group.kind === 'auto' && group.pinnable === true,
+    fixed: group.kind === 'auto' && group.pinnable === true ? optStr(group.fixed) || null : null,
+    hidden: group.hidden === true,
   }
 }
 

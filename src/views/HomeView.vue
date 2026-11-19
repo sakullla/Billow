@@ -68,7 +68,8 @@ const homeTestTitle = computed(() => {
 const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${profile.value.id}`]) : false))
 
 const showAllGroups = ref(false)
-const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual'))
+/** Config `hidden: true` groups stay out of the picker; chains below still pass through them (R29). */
+const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual' && !group.hidden))
 const manualGroups = computed(() => (showAllGroups.value ? allManualGroups.value : allManualGroups.value.slice(0, 8)))
 const hiddenGroupCount = computed(() => Math.max(0, allManualGroups.value.length - 8))
 const primaryGroup = computed(() => {

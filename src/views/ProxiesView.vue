@@ -5,7 +5,7 @@ import GroupIcon from '../components/GroupIcon.vue'
 import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
-import { delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, protocolLabel, resolveChain } from '../lib/format'
+import { canPickNode, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, protocolLabel, resolveChain } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
@@ -15,6 +15,9 @@ const store = useStore()
 const grids = new Map<string, InstanceType<typeof ProxyNodeGrid>>()
 const snap = computed(() => store.snapshot.value)
 const catalog = computed(() => snap.value.node_catalog)
+/** Config `hidden: true` groups stay out of every list; chains still resolve through `catalog` (R29). */
+const listed = computed(() => listedGroups(catalog.value))
+const allGroupsHidden = computed(() => catalog.value.length > 0 && listed.value.length === 0)
 const mode = computed(() => snap.value.mode)
 const busyKeys = computed(() => Object.keys(store.busy).join('\0'))
 
@@ -84,7 +87,7 @@ const listView = computed(() => !props.compact && view.value === 'list')
  * config with no manual group falls back to listing them (R13).
  */
 const revealedAuto = ref<Set<string>>(new Set())
-const hasManualGroups = computed(() => catalog.value.some((group) => group.kind !== 'auto'))
+const hasManualGroups = computed(() => listed.value.some((group) => group.kind !== 'auto'))
 function autoHidden(group: NodeGroup): boolean {
   return group.kind === 'auto' && hasManualGroups.value && !revealedAuto.value.has(group.name)
 }
@@ -129,7 +132,7 @@ function openAuto(name: string) {
   void locate(name, 'smooth')
 }
 
-const hiddenAutoCount = computed(() => catalog.value.filter((group) => autoHidden(group)).length)
+const hiddenAutoCount = computed(() => listed.value.filter((group) => autoHidden(group)).length)
 /** Read once at setup so the first paint already has the right groups expanded (R26). */
 const storedOpen = readOpen()
 const open = ref<Set<string>>(storedOpen ?? defaultOpen())
@@ -152,12 +155,12 @@ function infoText(name: string): string {
 }
 
 function manifest(): NodeGroup[] {
-  return snap.value.node_catalog
+  return listedGroups(snap.value.node_catalog)
 }
 
 /** The group a first visit opens: the selected manual group, else the first manual one (R26). */
 function currentManualGroup(): NodeGroup | null {
-  const manual = snap.value.node_catalog.filter((group) => group.kind === 'manual')
+  const manual = manifest().filter((group) => group.kind === 'manual')
   return manual.find((group) => Boolean(group.now)) ?? manual[0] ?? null
 }
 
@@ -254,8 +257,8 @@ function sorted(nodes: NodeItem[]): NodeItem[] {
 
 const groups = computed(() => {
   const source = mode.value === 'global'
-    ? catalog.value
-    : catalog.value.filter((group) => group.name !== 'GLOBAL')
+    ? listed.value
+    : listed.value.filter((group) => group.name !== 'GLOBAL')
   return source
     .filter((group) => !autoHidden(group))
     .map((group): ViewGroup => {
@@ -280,7 +283,7 @@ const matchCount = computed(() =>
 /** Groups share nodes, so the page total counts distinct names instead of row copies. */
 const distinctNodeCount = computed(() => {
   const seen = new Set<string>()
-  catalog.value.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
+  listed.value.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
   return seen.size
 })
 
@@ -339,7 +342,7 @@ const groupNamesSet = computed(() => new Set(catalog.value.map((group) => group.
 const failedNodeCount = computed(() => {
   const seen = new Set<string>()
   let count = 0
-  for (const group of catalog.value) {
+  for (const group of listed.value) {
     if (autoHidden(group)) continue
     for (const node of group.nodes) {
       if (groupNamesSet.value.has(node.name) || seen.has(node.name)) continue
@@ -380,8 +383,16 @@ function copyNodeName(node: NodeItem) {
 }
 
 function pick(group: NodeGroup, node: NodeItem) {
-  if (group.kind !== 'manual' || node.selected) return
+  if (!canPickNode(group)) return
+  // An auto group's current node can still be picked to fix it there (R28).
+  if (node.selected && (group.kind === 'manual' || group.fixed === node.name)) return
   void store.selectNode(group.name, node.name)
+}
+
+function nodeTitle(group: NodeGroup): string | undefined {
+  if (group.kind === 'manual') return undefined
+  if (group.pinnable) return snap.value.kernel_running ? '点选后固定使用该节点，可随时恢复自动' : '内核没有运行，连接后才能固定节点'
+  return `${groupTypeLabel(group)}组由内核自动择优，不可手动切换`
 }
 
 function isOpen(name: string) {
@@ -561,7 +572,8 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       <div>
         <h1>代理</h1>
         <p class="muted small" :title="hiddenAutoCount ? `另有 ${hiddenAutoCount} 个自动组由内核择优，未单独列出` : undefined">
-          <template v-if="snap.node_catalog.length">{{ snap.node_catalog.length - hiddenAutoCount }} 个代理组 · {{ distinctNodeCount }} 个节点</template>
+          <template v-if="listed.length">{{ listed.length - hiddenAutoCount }} 个代理组 · {{ distinctNodeCount }} 个节点</template>
+          <template v-else-if="allGroupsHidden">配置中的代理组均已隐藏</template>
           <template v-else>{{ snap.nodes_notice ?? '没有代理组' }}</template>
         </p>
       </div>
@@ -649,7 +661,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       </button>
     </div>
 
-    <div v-if="snap.node_catalog.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
+    <div v-if="listed.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" placeholder="搜索节点、协议或 UDP 等标签" data-testid="node-search" data-page-search />
@@ -763,6 +775,11 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       <p class="muted">添加并启用一份配置后，这里会列出它的代理组与节点。</p>
       <button type="button" class="btn primary" @click="store.go('profiles')">前往配置</button>
     </div>
+    <div v-else-if="allGroupsHidden" class="empty" data-testid="all-groups-hidden">
+      <Icon name="globe" :size="40" :stroke="1.4" />
+      <h3>配置中的代理组均已隐藏</h3>
+      <p class="muted">这份配置把全部代理组标记为 hidden，如需在这里选择节点，请在配置中取消隐藏。</p>
+    </div>
     <div v-else-if="!groups.length" class="empty small" data-testid="no-match">
       <h3>没有匹配的节点</h3>
       <button type="button" class="btn ghost" @click="query = ''; hideFailed = false">清空搜索</button>
@@ -790,6 +807,12 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             <span class="group-name">
               <strong>{{ group.name }}</strong>
               <span class="tag">{{ groupTypeLabel(group) }}</span>
+              <span
+                v-if="group.fixed"
+                class="tag accent fixed-tag"
+                :title="`已固定使用 ${group.fixed}，恢复自动后由组策略选择`"
+                :data-testid="`group-fixed-${group.name}`"
+              >已固定</span>
               <span class="muted small group-count">{{ group.nodes.length }} 个</span>
               <span v-if="groupHealthText(group)" class="group-health muted small">{{ groupHealthText(group) }}</span>
             </span>
@@ -803,6 +826,17 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             </span>
           </span>
           <Icon name="chevron-down" class="chevron" />
+        </button>
+        <button
+          v-if="group.fixed"
+          type="button"
+          class="btn ghost sm group-unfix"
+          :disabled="!snap.kernel_running || Boolean(store.busy[`select:${group.name}`])"
+          :title="snap.kernel_running ? '解除固定，由组策略重新选择节点' : '内核没有运行'"
+          :data-testid="`unfix-group-${group.name}`"
+          @click="store.unfixGroup(group.name)"
+        >
+          恢复自动
         </button>
         <button
           type="button"
@@ -832,7 +866,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         <template v-if="groupStrategy(group.group_type) || group.info?.length" #header>
           <p v-if="groupStrategy(group.group_type)" class="group-strategy small" data-testid="group-strategy">
             <Icon :name="groupStrategy(group.group_type)!.icon" :size="14" />
-            <span>{{ groupStrategy(group.group_type)!.hint }}</span>
+            <span>{{ groupStrategy(group.group_type)!.hint }}<template v-if="group.pinnable">{{ group.fixed ? `当前已固定为 ${group.fixed}。` : '点选节点可固定使用。' }}</template></span>
           </p>
           <p v-if="group.info?.length" class="group-info small" data-testid="group-info">
             <Icon name="info" :size="13" />
@@ -849,7 +883,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             class="node"
             :class="{
               selected: node.selected,
-              locked: group.kind !== 'manual',
+              locked: !canPickNode(group),
               located: locatedNodeKey === `${group.name}::${node.name}`,
               'failed-node': nodeState(node).failed,
             }"
@@ -859,10 +893,10 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             <button
               type="button"
               class="node-select"
-              :tabindex="group.kind === 'manual' ? undefined : -1"
-              :aria-disabled="group.kind === 'manual' ? undefined : 'true'"
-              :aria-pressed="group.kind === 'manual' ? node.selected : undefined"
-              :title="group.kind === 'manual' ? undefined : `${groupTypeLabel(group)}组由内核自动择优，不可手动切换`"
+              :tabindex="canPickNode(group) ? undefined : -1"
+              :aria-disabled="canPickNode(group) ? undefined : 'true'"
+              :aria-pressed="canPickNode(group) ? node.selected : undefined"
+              :title="nodeTitle(group)"
               :data-testid="`node-select-${node.name}`"
               @click="pick(group, node)"
               @keydown.enter.prevent="pick(group, node)"
@@ -898,7 +932,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               </span>
             </button>
             <button
-              v-if="autoOf(node)"
+              v-if="autoOf(node) && !autoOf(node)!.hidden"
               type="button"
               class="icon-btn sm node-open-auto"
               :aria-label="`查看${groupTypeLabel(autoOf(node)!)}组 ${node.name}`"

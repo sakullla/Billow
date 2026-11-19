@@ -1017,6 +1017,8 @@ export function createStore(backend: Backend) {
     applyOverride: (id: string) => act('override', () => backend.enable(id)),
 
     selectNode: (group: string, node: string) => act(`select:${group}`, () => backend.selectNode(group, node)),
+    /** 恢复自动: a fixed url-test / fallback group picks by its own strategy again (R28). */
+    unfixGroup: (group: string) => act(`select:${group}`, () => backend.unfixGroup(group), '已恢复自动选择'),
 
     /** Per-group test stamps the local result time so headers can show "测速 …" (R26). */
     async testGroup(group: string) {

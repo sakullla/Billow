@@ -31,6 +31,7 @@
     "allow-include-package",
     "allow-set-app-rules",
     "allow-select-profile-node",
+    "allow-unfix-profile-group",
     "allow-test-profile-group",
     "allow-set-node-query",
     "allow-set-node-sort",

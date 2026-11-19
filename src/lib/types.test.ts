@@ -64,6 +64,21 @@ describe('normalizeSnapshot', () => {
     expect(normalizeSnapshot({ node_catalog: [{ name: 'G', kind: 'manual' }] }).node_catalog[0].icon).toBeNull()
   })
 
+  it('reads fixed and hidden groups and keeps a fixed node only on fixable auto groups', () => {
+    const [auto, balance, manual, bare] = normalizeSnapshot({
+      node_catalog: [
+        { name: 'A', kind: 'auto', pinnable: true, fixed: '香港 01', hidden: true },
+        { name: 'B', kind: 'auto', pinnable: false, fixed: '香港 01' },
+        { name: 'C', kind: 'manual', pinnable: true, fixed: '香港 01', hidden: 'yes' },
+        { name: 'D', kind: 'auto', pinnable: true, fixed: '' },
+      ],
+    }).node_catalog
+    expect([auto.pinnable, auto.fixed, auto.hidden]).toEqual([true, '香港 01', true])
+    expect([balance.pinnable, balance.fixed, balance.hidden]).toEqual([false, null, false])
+    expect([manual.pinnable, manual.fixed, manual.hidden]).toEqual([false, null, false])
+    expect([bare.pinnable, bare.fixed]).toEqual([true, null])
+  })
+
   it('accepts only http(s) and image data through normalizeIcon', () => {
     expect(normalizeIcon('https://icons.example.com/a.png')).toBe('https://icons.example.com/a.png')
     expect(normalizeIcon('http://icons.example.com/a.png')).toBe('http://icons.example.com/a.png')

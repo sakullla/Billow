@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
-import { delayText, groupTypeLabel, isInfoNode, protocolLabel } from '../lib/format'
+import { delayText, groupTypeLabel, isInfoNode, listedGroups, protocolLabel } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { getFocusable, useFocusTrap } from '../lib/ui/focus'
 import { getShortcut, pageShortcutCombo, shortcutKeyLabel } from '../lib/ui/shortcuts'
@@ -225,10 +225,13 @@ function matches(label: string, hint?: string): boolean {
   return matchesTokens(`${label} ${hint ?? ''}`, queryTokens.value)
 }
 
+/** Config `hidden: true` groups are not offered here (R29). */
+const listedCatalog = computed(() => listedGroups(props.nodeCatalog))
+
 const primaryManualGroup = computed(() => {
-  const manual = props.nodeCatalog.filter((group) => group.kind === 'manual')
+  const manual = listedCatalog.value.filter((group) => group.kind === 'manual')
   if (props.mode === 'global') {
-    return props.nodeCatalog.find((group) => group.name === 'GLOBAL') ?? manual[0] ?? null
+    return listedCatalog.value.find((group) => group.name === 'GLOBAL') ?? manual[0] ?? null
   }
   return manual.find((group) => Boolean(group.now)) ?? manual[0] ?? null
 })
@@ -286,26 +289,29 @@ const groups = computed(() => {
     }
 
     const visibleGroups = props.mode === 'global'
-      ? props.nodeCatalog
-      : props.nodeCatalog.filter((group) => group.name !== 'GLOBAL')
+      ? listedCatalog.value
+      : listedCatalog.value.filter((group) => group.name !== 'GLOBAL')
     for (const group of visibleGroups) {
       const typeLabel = groupTypeLabel(group)
       if (!matches(group.name, typeLabel)) continue
+      const now = group.now ? `${typeLabel} · ${group.now}` : typeLabel
       proxyEntries.push({
         key: `group:${group.name}`,
         kind: 'group',
         id: group.name,
         label: group.name,
         icon: 'route',
-        hint: group.now ? `${typeLabel} · ${group.now}` : typeLabel,
+        hint: group.fixed ? `${now} · 已固定` : now,
         index: 0,
       })
     }
 
     const primary = primaryManualGroup.value
+    // url-test / fallback come after select groups: picking there fixes the node (R28).
     const manualGroups = [
       ...(primary && primary.kind === 'manual' ? [primary] : []),
       ...visibleGroups.filter((group) => group.kind === 'manual' && group.name !== primary?.name),
+      ...visibleGroups.filter((group) => group.pinnable),
     ]
     const groupNames = new Set(props.nodeCatalog.map((group) => group.name))
     let added = 0
@@ -318,6 +324,8 @@ const groups = computed(() => {
         const tagText = [targetGroup.name, proto, ...node.tags].filter(Boolean).join(' ')
         if (!matches(node.name, tagText)) continue
         const delay = props.connected ? delayText(node.delay_ms, node.failed) : ''
+        const pinned = targetGroup.pinnable && targetGroup.fixed === node.name
+        const pinOffline = targetGroup.pinnable && !props.connected
         proxyEntries.push({
           key: `node:${targetGroup.name}:${node.name}`,
           kind: 'node',
@@ -325,7 +333,9 @@ const groups = computed(() => {
           groupName: targetGroup.name,
           label: node.name,
           icon: 'globe',
-          hint: [targetGroup.name, node.selected ? '当前' : delay || proto].filter(Boolean).join(' · '),
+          hint: [targetGroup.name, pinned ? '已固定' : node.selected ? '当前' : delay || proto].filter(Boolean).join(' · '),
+          disabled: pinOffline || undefined,
+          reason: pinOffline ? '连接后可固定' : undefined,
           index: 0,
         })
         added += 1
