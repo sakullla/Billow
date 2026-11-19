@@ -1519,6 +1519,20 @@ const TABS = computed(() => [
             <Toggle :model-value="currentSettings.close_connections_on_switch" label="切换节点后重连" data-testid="close-on-node-switch"
               @update:model-value="(on) => save({ close_connections_on_switch: on })" />
           </div>
+          <!-- Automatic exit IP queries are off by default and name the services used (R40). -->
+          <div v-if="app" class="nav-row static" data-testid="auto-exit-ip-setting">
+            <span class="nav-row-icon violet"><Icon name="globe" /></span>
+            <div class="grow min0">
+              <span class="nav-row-title">{{ t('settings.exitIp.auto') }}</span>
+              <p class="muted small">{{ t('settings.exitIp.detail') }}</p>
+            </div>
+            <Toggle
+              :model-value="app.auto_exit_ip"
+              :label="t('settings.exitIp.auto')"
+              data-testid="auto-exit-ip-toggle"
+              @update:model-value="store.setAutoExitIp"
+            />
+          </div>
           <details class="nav-fold" data-testid="subscription-settings" :open="Boolean(snap.settings.subscription_user_agent) || undefined">
             <summary class="nav-row">
               <span class="nav-row-icon violet"><Icon name="link" /></span>
@@ -1568,6 +1582,19 @@ const TABS = computed(() => [
           </div>
           <Toggle :model-value="currentSettings.close_connections_on_switch" label="切换节点后重连" data-testid="close-on-node-switch"
             @update:model-value="(on) => save({ close_connections_on_switch: on })" />
+        </div>
+        <!-- Automatic exit IP queries are off by default and name the services used (R40). -->
+        <div v-if="app" class="setting-row" data-testid="auto-exit-ip-setting">
+          <div class="grow">
+            <strong>{{ t('settings.exitIp.auto') }}</strong>
+            <p class="muted small">{{ t('settings.exitIp.detail') }}</p>
+          </div>
+          <Toggle
+            :model-value="app.auto_exit_ip"
+            :label="t('settings.exitIp.auto')"
+            data-testid="auto-exit-ip-toggle"
+            @update:model-value="store.setAutoExitIp"
+          />
         </div>
       </section>
 

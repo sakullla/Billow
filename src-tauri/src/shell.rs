@@ -44,6 +44,10 @@ pub struct ShellState {
     /// not part of a backup; nothing is bound by default.
     #[serde(default)]
     pub hotkeys: BTreeMap<String, String>,
+    /// Query the exit IP automatically after connecting or switching (R40).
+    /// Off by default; the tray and background tasks never query.
+    #[serde(default)]
+    pub auto_exit_ip: bool,
 }
 
 fn default_true() -> bool {
@@ -85,6 +89,7 @@ impl Default for ShellState {
             webdav_user: String::new(),
             webdav_password: String::new(),
             hotkeys: BTreeMap::new(),
+            auto_exit_ip: false,
         }
     }
 }
@@ -272,6 +277,8 @@ mod tests {
         assert!(state.close_to_tray);
         // Lightweight mode is off until the user turns it on (R44).
         assert!(!state.release_ui_on_close);
+        // Automatic exit IP queries are off until the user turns them on (R40).
+        assert!(!state.auto_exit_ip);
     }
 
     #[test]
@@ -334,6 +341,7 @@ mod tests {
             webdav_user: "me".to_string(),
             webdav_password: "p a s s".to_string(),
             hotkeys: [("proxy".to_string(), "Ctrl+Alt+P".to_string())].into_iter().collect(),
+            auto_exit_ip: true,
         };
         write_shell_state(&path, &state).unwrap();
         let loaded = read_shell_state(&path);
@@ -343,6 +351,7 @@ mod tests {
         assert_eq!(loaded.close_to_tray, false);
         assert_eq!(loaded.silent_start, true);
         assert!(loaded.release_ui_on_close);
+        assert!(loaded.auto_exit_ip);
         assert_eq!(loaded.language, "en");
         assert_eq!(loaded.hotkeys.get("proxy").map(String::as_str), Some("Ctrl+Alt+P"));
         // Saved as typed, trimmed, with spaces inside the password kept.
@@ -363,6 +372,7 @@ mod tests {
             webdav_url: "https://dav.example.com/billow/".to_string(),
             webdav_user: "me".to_string(),
             webdav_password: "secret".to_string(),
+            auto_exit_ip: true,
             ..ShellState::default()
         };
         let backup: ShellBackup =
@@ -379,6 +389,8 @@ mod tests {
         assert_eq!(restored.last_entry, "logs");
         // Lightweight mode follows this machine like the window size does.
         assert!(restored.release_ui_on_close);
+        // The automatic exit IP query is this machine's choice, not a backup setting (R40).
+        assert!(restored.auto_exit_ip);
         assert_eq!(restored.webdav_url, "https://dav.example.com/billow/");
         assert_eq!(restored.webdav_password, "secret");
 

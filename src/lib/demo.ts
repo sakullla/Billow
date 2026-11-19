@@ -1,5 +1,5 @@
 import type { Backend, NodeTestEvent } from './backend'
-import { resolveLanguage } from './i18n'
+import { locale, resolveLanguage, translate } from './i18n'
 import { ruleKeys } from './rule-keys'
 import {
   DNS_QUERY_TYPES,
@@ -14,6 +14,7 @@ import {
   type ConfigOverview,
   type ConnectionRow,
   type DnsQueryResult,
+  type ExitIpInfo,
   type HotkeyAction,
   type HotkeySettings,
   type KernelStatus,
@@ -196,6 +197,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     close_to_tray: true,
     silent_start: false,
     release_ui_on_close: false,
+    auto_exit_ip: false,
     data_dir: null,
   }
   /** Desktop global shortcuts (R39): nothing is bound until the user records one. */
@@ -890,6 +892,25 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         silent_start: silentStart,
         release_ui_on_close: releaseUiOnClose,
       }
+      return app
+    },
+    /** Pretends the lookup went through the mixed port and ip.sb (R40). */
+    async exitIp() {
+      if (!state.connected) throw new Error(translate(locale.value, 'exitIp.offline'))
+      await wait(320)
+      const node = catalog().find((group) => group.name === '节点选择')?.now ?? ''
+      const region = node.split(' ')[0] ?? ''
+      const result: ExitIpInfo = {
+        ip: '203.0.113.42',
+        region: region || '香港',
+        isp: 'AS15169 Google LLC',
+        service: 'ip.sb',
+        time_ms: Date.now(),
+      }
+      return result
+    },
+    async setExitIpAuto(enabled) {
+      app = { ...app, auto_exit_ip: enabled }
       return app
     },
     async hotkeySettings() {

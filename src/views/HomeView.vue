@@ -14,6 +14,7 @@ import {
   effectiveGroupDelay,
   formatBytes,
   formatDate,
+  formatClock,
   formatRelative,
   formatSpeed,
   canPickNode,
@@ -22,6 +23,7 @@ import {
   usagePercent,
 } from '../lib/format'
 import { useStore } from '../lib/store'
+import { t } from '../lib/i18n'
 import type { Mode, NodeGroup, ProfileItem } from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
@@ -694,6 +696,64 @@ onBeforeUnmount(() => {
               </p>
             </template>
             <p v-else class="empty-line muted">还没有启用配置，去配置页选择一份</p>
+          </section>
+
+          <!-- Exit IP (R40): queried only on a click or by the optional automatic setting. -->
+          <section class="card" data-testid="exit-ip-card">
+            <header class="card-head">
+              <h2>{{ t('exitIp.title') }}</h2>
+              <div class="card-head-actions">
+                <span v-if="store.exitIpStale.value" class="tag sm warn" data-testid="exit-ip-stale">
+                  {{ t('exitIp.changed') }}
+                </span>
+                <button
+                  v-if="store.exitIp.value"
+                  type="button"
+                  class="btn ghost sm"
+                  :disabled="!snap.connected || store.exitIpBusy.value"
+                  data-testid="exit-ip-refresh"
+                  @click="store.queryExitIp()"
+                >
+                  <span v-if="store.exitIpBusy.value" class="spinner xs" aria-hidden="true" />
+                  <Icon v-else name="refresh" :size="14" />
+                  {{ store.exitIpBusy.value ? t('exitIp.querying') : t('exitIp.refresh') }}
+                </button>
+              </div>
+            </header>
+            <div v-if="store.exitIp.value" class="sub-head" data-testid="exit-ip-result">
+              <span class="sub-icon"><Icon name="globe" /></span>
+              <div class="grow min0">
+                <strong class="mono" data-testid="exit-ip-value">{{ store.exitIp.value.ip }}</strong>
+                <p class="muted small" data-testid="exit-ip-region">
+                  {{ t('exitIp.region', { region: store.exitIp.value.region || '—' }) }}
+                </p>
+              </div>
+            </div>
+            <p v-if="store.exitIp.value" class="muted small" data-testid="exit-ip-isp">
+              {{ t('exitIp.isp', { isp: store.exitIp.value.isp || '—' }) }}
+            </p>
+            <p v-if="store.exitIp.value" class="muted small" data-testid="exit-ip-meta">
+              {{ t('exitIp.meta', { service: store.exitIp.value.service, time: formatClock(store.exitIp.value.time_ms) }) }}
+            </p>
+            <p v-if="store.exitIpError.value" class="field-error" role="alert" data-testid="exit-ip-error">
+              <Icon name="alert" :size="13" />{{ store.exitIpError.value }}
+            </p>
+            <p v-if="!snap.connected" class="muted small" data-testid="exit-ip-offline">
+              {{ t('exitIp.offline') }}
+            </p>
+            <button
+              v-if="!store.exitIp.value"
+              type="button"
+              class="btn sm block"
+              :disabled="!snap.connected || store.exitIpBusy.value"
+              :aria-busy="store.exitIpBusy.value || undefined"
+              data-testid="exit-ip-query"
+              @click="store.queryExitIp()"
+            >
+              <span v-if="store.exitIpBusy.value" class="spinner xs" aria-hidden="true" />
+              <Icon v-else name="globe" :size="14" />
+              {{ store.exitIpBusy.value ? t('exitIp.querying') : t('exitIp.query') }}
+            </button>
           </section>
         </div>
 

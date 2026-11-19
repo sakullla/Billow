@@ -385,6 +385,35 @@ export function normalizeDnsQueryResult(raw: unknown): DnsQueryResult {
   }
 }
 
+/**
+ * One exit-IP lookup (R40): the IP the internet sees, its region and ISP, the
+ * service that answered and when. Streaming unlock checks are out of scope (R47).
+ */
+export interface ExitIpInfo {
+  ip: string
+  region: string
+  isp: string
+  service: string
+  time_ms: number
+}
+
+export function normalizeExitIp(raw: unknown): ExitIpInfo | null {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const text = (item: unknown) => (typeof item === 'string' ? item.trim() : '')
+  const ip = text(value.ip)
+  if (!ip) return null
+  return {
+    ip,
+    region: text(value.region),
+    isp: text(value.isp),
+    service: text(value.service),
+    time_ms:
+      typeof value.time_ms === 'number' && Number.isFinite(value.time_ms) && value.time_ms > 0
+        ? value.time_ms
+        : Date.now(),
+  }
+}
+
 export interface Snapshot {
   profiles: ProfileItem[]
   active_id: string | null
@@ -442,6 +471,8 @@ export interface AppInfo {
   silent_start: boolean
   /** Desktop only; hidden while `close_to_tray` is off (R44). */
   release_ui_on_close: boolean
+  /** Query the exit IP automatically; off by default (R40). */
+  auto_exit_ip: boolean
   data_dir: string | null
 }
 

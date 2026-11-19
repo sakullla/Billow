@@ -85,4 +85,19 @@ export const EN: Partial<Record<MessageKey, string>> = {
   'settings.behavior.releaseUi': 'Release the window on close',
   'settings.behavior.releaseUiDetail':
     'Destroys the interface after the window closes to free its memory; the tray, global shortcuts and background tasks keep running, and reopening returns to the last page',
+
+  // Exit IP (R40; streaming unlock checks are out of scope, R47)
+  'settings.exitIp.auto': 'Query the exit IP automatically',
+  'settings.exitIp.detail':
+    'Off by default; when on, queries after connecting and after a node, mode or profile switch. Uses ip.sb through the current proxy, then ipinfo.io if it fails',
+  'exitIp.title': 'Exit IP',
+  'exitIp.query': 'Query exit IP',
+  'exitIp.querying': 'Querying…',
+  'exitIp.refresh': 'Refresh',
+  'exitIp.changed': 'May have changed',
+  'exitIp.offline': 'Not connected yet; connect before querying the exit IP',
+  'exitIp.region': 'Region: {region}',
+  'exitIp.isp': 'ISP: {isp}',
+  'exitIp.meta': '{service} · queried at {time}',
+  'exitIp.badResponse': 'The exit IP service returned an unexpected response',
 }

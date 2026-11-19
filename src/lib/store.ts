@@ -10,6 +10,7 @@ import {
   type ClosedConnectionRow,
   type ConnectionRow,
   type DnsQueryType,
+  type ExitIpInfo,
   type KernelChannel,
   type KernelSettings,
   type KernelStatus,
@@ -143,6 +144,11 @@ export function createStore(backend: Backend) {
   const overrideRequest = ref<{ id: string; append: string } | null>(null)
   /** The DNS query dialog, opened from the DNS settings tab or the palette (R31). */
   const dnsQueryOpen = ref(false)
+  /** Exit IP lookup result, stale mark, in-flight flag and last failure (R40). */
+  const exitIp = shallowRef<ExitIpInfo | null>(null)
+  const exitIpStale = ref(false)
+  const exitIpBusy = ref(false)
+  const exitIpError = ref<string | null>(null)
   const loaded = ref(false)
   const busy = reactive<Record<string, boolean>>({})
   const toasts = ref<Toast[]>([])
@@ -205,6 +211,17 @@ export function createStore(backend: Backend) {
   /** True while 重启内核 runs; the home status reads 重启中 instead of 断开中. */
   const restarting = ref(false)
   const appUpdate = createAppUpdater(nativeUpdateDriver(() => isAndroid.value))
+  /** Automatic exit IP queries, off by default (R40); the home card reads it too. */
+  const autoExitIp = computed(() => app.value?.auto_exit_ip ?? false)
+  /** Which exit the proxy currently uses: profile, outbound mode and node choices (R40). */
+  const exitIpSignature = computed(() => {
+    const groups = snapshot.value.node_catalog
+    if (groups.length === 0) return ''
+    return (
+      `${snapshot.value.active_id ?? ''}|${snapshot.value.mode ?? ''}|` +
+      groups.map((group) => `${group.name}=${group.now}|${group.fixed ?? ''}`).join(';')
+    )
+  })
 
   function dismissToast(id: number) {
     const timer = toastTimers.get(id)
@@ -302,6 +319,45 @@ export function createStore(backend: Backend) {
       down: [...traffic.value.down.slice(1), down],
     }
     if (next.connected) trafficSamples.value = Math.min(HISTORY, trafficSamples.value + 1)
+  }
+
+  /**
+   * Ask the backend for the exit IP through the local mixed port (R40). It must
+   * only run from a click or from the automatic-query watchers below; a
+   * disconnected snapshot never sends a request. A failed lookup keeps the
+   * previous result and only reports the reason.
+   */
+  async function queryExitIp(again = false) {
+    if (exitIpBusy.value || !snapshot.value.connected) return undefined
+    const signature = exitIpSignature.value
+    exitIpBusy.value = true
+    exitIpError.value = null
+    try {
+      const result = await backend.exitIp()
+      exitIp.value = result
+      // A switch while the request was in flight already makes this answer old.
+      exitIpStale.value = signature !== exitIpSignature.value
+      return result
+    } catch (error) {
+      exitIpError.value = error instanceof Error ? error.message : String(error)
+      return undefined
+    } finally {
+      exitIpBusy.value = false
+      // One follow-up at most: a switch that arrived during the request needs a
+      // fresh answer, but a service that keeps changing must not loop.
+      if (!again && autoExitIp.value && snapshot.value.connected && exitIp.value && signature !== exitIpSignature.value) {
+        void queryExitIp(true)
+      }
+    }
+  }
+
+  /** Turn the automatic lookup on or off; stored with the app settings (R40). */
+  async function setAutoExitIp(enabled: boolean) {
+    try {
+      app.value = await backend.setExitIpAuto(enabled)
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error')
+    }
   }
 
   function apply(next: Snapshot) {
@@ -661,6 +717,23 @@ export function createStore(backend: Backend) {
       if (id !== prevId || (prevRunning && !running)) clearTestProgress()
     },
   )
+
+  // Reconnecting gets a fresh automatic lookup when the option is on (R40).
+  watch(
+    () => snapshot.value.connected,
+    (connected, was) => {
+      if (connected && !was && autoExitIp.value) void queryExitIp()
+    },
+  )
+
+  // A node, outbound-mode or profile switch may change the exit (R40). Leaving
+  // the connection (empty catalog) does not mark the last answer.
+  watch(exitIpSignature, (next, prev) => {
+    if (!prev || next === prev) return
+    if (!snapshot.value.connected || snapshot.value.node_catalog.length === 0) return
+    if (exitIp.value) exitIpStale.value = true
+    if (autoExitIp.value) void queryExitIp()
+  })
 
   const isCurrent = (session: number) => !stopped && session === generation
   const isVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
@@ -1176,6 +1249,14 @@ export function createStore(backend: Backend) {
     },
     /** Runs outside the action queue: a slow resolver must not hold up other controls. */
     dnsQuery: (name: string, qtype: DnsQueryType) => backend.dnsQuery(name, qtype),
+    /** Exit IP lookup, its stale mark and last failure (R40). */
+    exitIp,
+    exitIpStale,
+    exitIpBusy,
+    exitIpError,
+    autoExitIp,
+    queryExitIp,
+    setAutoExitIp,
     clearLogs: () => act(null, () => backend.clearLogs()),
     flushCache: (which: 'fakeip' | 'dns') =>
       act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除'),

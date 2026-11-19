@@ -1,6 +1,7 @@
 import {
   normalizeConfigOverview,
   normalizeDnsQueryResult,
+  normalizeExitIp,
   normalizeKernel,
   normalizeRuleRow,
   normalizeSnapshot,
@@ -9,6 +10,7 @@ import {
   type ConfigOverview,
   type DnsQueryResult,
   type DnsQueryType,
+  type ExitIpInfo,
   type HotkeyAction,
   type HotkeyBinding,
   type HotkeySettings,
@@ -31,7 +33,7 @@ import {
   type WebdavSettings,
   type WebdavTestResult,
 } from './types'
-import { normalizeLanguage, normalizeLocale } from './i18n'
+import { normalizeLanguage, normalizeLocale, t } from './i18n'
 import { createDemoBackend } from './demo'
 
 /** Rule rows plus the runtime-disabled keys; the keys are never persisted. */
@@ -120,6 +122,10 @@ export interface Backend {
   closeConnections(ids: string[] | null): Promise<Snapshot>
   /** Resolve `name` through the kernel's live DNS config (R31); failures come back in `error`. */
   dnsQuery(name: string, qtype: DnsQueryType): Promise<DnsQueryResult>
+  /** Query the exit IP through the local mixed port (R40); rejects with the reason. */
+  exitIp(): Promise<ExitIpInfo>
+  /** Turn the optional automatic exit IP query on or off (R40); off by default. */
+  setExitIpAuto(enabled: boolean): Promise<AppInfo>
   rules(): Promise<RulesSnapshot>
   setRuleDisabled(key: string, disabled: boolean): Promise<RulesSnapshot>
   providers(): Promise<ProvidersResult>
@@ -330,6 +336,12 @@ function createTauriBackend(): Backend {
     closeConnection: (id) => snap('close_connection', { id }),
     closeConnections: (ids) => snap('close_connections', { ids }),
     dnsQuery: async (name, qtype) => normalizeDnsQueryResult(await call<unknown>('dns_query', { name, qtype })),
+    exitIp: async () => {
+      const result = normalizeExitIp(await call<unknown>('exit_ip'))
+      if (!result) throw new Error(t('exitIp.badResponse'))
+      return result
+    },
+    setExitIpAuto: (enabled) => call<AppInfo>('set_exit_ip_auto', { enabled }),
     rules: () => rules('kernel_rules'),
     setRuleDisabled: (key, disabled) =>
       rules('set_rule_disabled', { command: { key, disabled } }),

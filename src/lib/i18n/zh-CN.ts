@@ -75,6 +75,21 @@ export const ZH_CN = {
   'settings.behavior.releaseUi': '关闭窗口时释放界面',
   'settings.behavior.releaseUiDetail':
     '关闭主窗口后销毁界面以释放内存；托盘、全局快捷键和后台任务继续运行，再次打开时回到上次的页面',
+
+  // 出口 IP (R40；不检测流媒体解锁 R47)
+  'settings.exitIp.auto': '自动查询出口 IP',
+  'settings.exitIp.detail':
+    '默认关闭；开启后连接成功以及切换节点、出站模式或配置时自动查询。查询经当前代理使用 ip.sb，失败时改用 ipinfo.io',
+  'exitIp.title': '出口 IP',
+  'exitIp.query': '查询出口 IP',
+  'exitIp.querying': '查询中…',
+  'exitIp.refresh': '刷新',
+  'exitIp.changed': '可能已变化',
+  'exitIp.offline': '还没有连接，连接后才能查询出口 IP',
+  'exitIp.region': '地区：{region}',
+  'exitIp.isp': '运营商：{isp}',
+  'exitIp.meta': '{service} · 查询于 {time}',
+  'exitIp.badResponse': '出口 IP 服务返回了无法识别的内容',
 } as const
 
 export type MessageKey = keyof typeof ZH_CN

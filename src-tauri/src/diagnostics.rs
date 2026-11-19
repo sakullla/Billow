@@ -841,6 +841,133 @@ fn transport_timed_out(transport: &ureq::Transport) -> bool {
     text.contains("timed out") || text.contains("timeout") || text.contains("os error 10060")
 }
 
+/// One exit-IP service, tried in order through the local mixed port (R40).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitIpSource {
+    pub name: &'static str,
+    pub url: &'static str,
+}
+
+/// ip.sb reports the ISP and country name; ipinfo.io is the fallback and
+/// reports the ASN organisation. Streaming unlock checks are out of scope (R47).
+pub const EXIT_IP_SOURCES: [ExitIpSource; 2] = [
+    ExitIpSource { name: "ip.sb", url: "https://api.ip.sb/geoip" },
+    ExitIpSource { name: "ipinfo.io", url: "https://ipinfo.io/json" },
+];
+
+/// What the home screen shows after a lookup: the exit IP, its region and ISP,
+/// which service answered, and when the answer arrived.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ExitIp {
+    pub ip: String,
+    pub region: String,
+    pub isp: String,
+    pub service: String,
+    pub time_ms: u64,
+}
+
+fn json_text(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn json_first(value: &serde_json::Value, keys: &[&str]) -> String {
+    keys.iter().find_map(|key| json_text(value, key)).unwrap_or_default()
+}
+
+/// Map one service's JSON body onto the fields the UI shows. Field names differ
+/// between the services, so the mapping is chosen by the service label.
+pub fn exit_ip_from_body(service: &str, body: &str, time_ms: u64) -> Result<ExitIp, String> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| crate::i18n::tr(crate::i18n::Key::ExitIpBadResponse).to_string())?;
+    let Some(ip) = json_text(&value, "ip") else {
+        return Err(crate::i18n::tr(crate::i18n::Key::ExitIpBadResponse).to_string());
+    };
+    let (region, isp) = if service == "ipinfo.io" {
+        (
+            json_first(&value, &["country_name", "country"]),
+            json_first(&value, &["org", "asn_organization", "isp"]),
+        )
+    } else {
+        // ip.sb / geoip: `country` is the display name and `isp` the operator.
+        (
+            json_first(&value, &["country", "country_name", "country_code"]),
+            json_first(&value, &["isp", "organization", "asn_organization"]),
+        )
+    };
+    Ok(ExitIp { ip, region, isp, service: service.to_string(), time_ms })
+}
+
+fn exit_ip_agent(proxy: &str, timeout: Duration) -> Result<ureq::Agent, String> {
+    let proxy = ureq::Proxy::new(proxy).map_err(|err| {
+        crate::i18n::tr_args(
+            crate::i18n::Key::ExitIpRequestFailed,
+            &[("reason", &err.to_string())],
+        )
+    })?;
+    Ok(ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_millis(1500).min(timeout))
+        .timeout(timeout)
+        .redirects(2)
+        .try_proxy_from_env(false)
+        .proxy(proxy)
+        .build())
+}
+
+fn exit_ip_transport_error(transport: &ureq::Transport) -> String {
+    if transport_timed_out(transport) {
+        crate::i18n::tr(crate::i18n::Key::ExitIpTimeout).to_string()
+    } else {
+        crate::i18n::tr_args(
+            crate::i18n::Key::ExitIpRequestFailed,
+            &[("reason", &transport.to_string())],
+        )
+    }
+}
+
+/// Query the exit IP through the local mixed port, trying each service until one
+/// answers. Every failure is reported as UI text; the caller keeps the previous
+/// result (R40).
+pub fn query_exit_ip(proxy: &str, timeout: Duration) -> Result<ExitIp, String> {
+    query_exit_ip_via(proxy, timeout, &EXIT_IP_SOURCES)
+}
+
+pub fn query_exit_ip_via(
+    proxy: &str,
+    timeout: Duration,
+    sources: &[ExitIpSource],
+) -> Result<ExitIp, String> {
+    let agent = exit_ip_agent(proxy, timeout)?;
+    let mut last = crate::i18n::tr(crate::i18n::Key::ExitIpBadResponse).to_string();
+    for source in sources {
+        match agent.get(source.url).set("User-Agent", "Billow").call() {
+            Ok(response) => {
+                let mut body = String::new();
+                if response.into_reader().take(64 * 1024).read_to_string(&mut body).is_err() {
+                    last = crate::i18n::tr(crate::i18n::Key::ExitIpBadResponse).to_string();
+                    continue;
+                }
+                match exit_ip_from_body(source.name, &body, now_ms()) {
+                    Ok(result) => return Ok(result),
+                    Err(message) => last = message,
+                }
+            }
+            Err(ureq::Error::Status(code, _)) => {
+                last = crate::i18n::tr_args(
+                    crate::i18n::Key::ExitIpRequestFailed,
+                    &[("reason", &format!("HTTP {code}"))],
+                );
+            }
+            Err(ureq::Error::Transport(transport)) => last = exit_ip_transport_error(&transport),
+        }
+    }
+    Err(last)
+}
+
 /// Resolves `name` through the kernel's live DNS config with `GET /dns/query`.
 /// Every failure lands in `error` so the dialog can show it beside the query.
 pub fn dns_query(endpoint: Option<&ControllerEndpoint>, name: &str, qtype: &str, timeout: Duration) -> DnsQueryResult {
@@ -1477,6 +1604,140 @@ fn loopback(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reads one proxied HTTP request head and returns its request line.
+    fn read_proxy_request(stream: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&buf).lines().next().unwrap_or("").to_string()
+    }
+
+    fn reply(stream: &mut std::net::TcpStream, status: &str, body: &str) {
+        use std::io::Write;
+        use std::net::Shutdown;
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        let _ = stream.shutdown(Shutdown::Write);
+    }
+
+    #[test]
+    fn exit_ip_maps_both_services_onto_the_same_fields() {
+        let ip_sb = exit_ip_from_body(
+            "ip.sb",
+            r#"{"ip":"198.51.100.7","country":"Singapore","country_code":"SG","isp":"DigitalOcean","organization":"DigitalOcean, LLC","asn":14061}"#,
+            1_700_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(ip_sb.ip, "198.51.100.7");
+        assert_eq!(ip_sb.region, "Singapore");
+        assert_eq!(ip_sb.isp, "DigitalOcean");
+        assert_eq!(ip_sb.service, "ip.sb");
+        assert_eq!(ip_sb.time_ms, 1_700_000_000_000);
+
+        let ipinfo = exit_ip_from_body(
+            "ipinfo.io",
+            r#"{"ip":"203.0.113.42","city":"Tokyo","region":"Tokyo","country":"JP","org":"AS2914 NTT Communications"}"#,
+            1_700_000_001_000,
+        )
+        .unwrap();
+        assert_eq!(ipinfo.ip, "203.0.113.42");
+        assert_eq!(ipinfo.region, "JP");
+        assert_eq!(ipinfo.isp, "AS2914 NTT Communications");
+        assert_eq!(ipinfo.service, "ipinfo.io");
+        assert_eq!(ipinfo.time_ms, 1_700_000_001_000);
+
+        // Missing ISP and a country code alone still produce a usable row.
+        let sparse = exit_ip_from_body("ip.sb", r#"{"ip":"192.0.2.9","country_code":"DE"}"#, 0).unwrap();
+        assert_eq!(sparse.region, "DE");
+        assert_eq!(sparse.isp, "");
+
+        let bad = crate::i18n::tr_at(crate::i18n::Locale::ZhCn, crate::i18n::Key::ExitIpBadResponse);
+        assert_eq!(exit_ip_from_body("ip.sb", "not json", 0).unwrap_err(), bad);
+        assert_eq!(exit_ip_from_body("ipinfo.io", r#"{"country":"JP"}"#, 0).unwrap_err(), bad);
+    }
+
+    #[test]
+    fn exit_ip_falls_back_to_the_second_service_and_reports_timeouts() {
+        use std::net::{Shutdown, TcpListener};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            // ip.sb fails with a server error, so ipinfo.io answers.
+            let (mut first, _) = listener.accept().unwrap();
+            lines.push(read_proxy_request(&mut first));
+            reply(&mut first, "503 Service Unavailable", "");
+            let (mut second, _) = listener.accept().unwrap();
+            lines.push(read_proxy_request(&mut second));
+            reply(
+                &mut second,
+                "200 OK",
+                r#"{"ip":"203.0.113.42","country":"US","org":"AS15169 Google LLC"}"#,
+            );
+            lines
+        });
+        let sources = [
+            ExitIpSource { name: "ip.sb", url: "http://ip.sb.invalid/geoip" },
+            ExitIpSource { name: "ipinfo.io", url: "http://ipinfo.io.invalid/json" },
+        ];
+        let result = query_exit_ip_via(
+            &format!("http://127.0.0.1:{port}"),
+            Duration::from_secs(2),
+            &sources,
+        )
+        .unwrap();
+        let seen = handle.join().unwrap();
+        assert_eq!(result.service, "ipinfo.io");
+        assert_eq!(result.ip, "203.0.113.42");
+        assert_eq!(result.region, "US");
+        assert_eq!(result.isp, "AS15169 Google LLC");
+        // Both lookups go through the supplied proxy, in order.
+        assert!(seen[0].starts_with("GET http://ip.sb.invalid/geoip "), "{}", seen[0]);
+        assert!(seen[1].starts_with("GET http://ipinfo.io.invalid/json "), "{}", seen[1]);
+
+        // A proxy that accepts but never answers times out on both services.
+        let slow = TcpListener::bind("127.0.0.1:0").unwrap();
+        let slow_port = slow.local_addr().unwrap().port();
+        let slow_handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = slow.accept().unwrap();
+                let _ = read_proxy_request(&mut stream);
+                std::thread::sleep(Duration::from_millis(400));
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+        });
+        let error = query_exit_ip_via(
+            &format!("http://127.0.0.1:{slow_port}"),
+            Duration::from_millis(120),
+            &sources,
+        )
+        .unwrap_err();
+        slow_handle.join().unwrap();
+        let timeouts = [
+            crate::i18n::tr_at(crate::i18n::Locale::ZhCn, crate::i18n::Key::ExitIpTimeout),
+            crate::i18n::tr_at(crate::i18n::Locale::En, crate::i18n::Key::ExitIpTimeout),
+        ];
+        assert!(timeouts.contains(&error.as_str()), "{error}");
+    }
 
     #[test]
     fn switch_cleanup_filters_full_chains_without_the_display_row_limit() {

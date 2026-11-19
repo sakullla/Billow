@@ -143,6 +143,10 @@ pub enum Key {
     HotkeyNotifyTitle,
     HotkeyConnect,
     HotkeyWindow,
+    ExitIpNotConnected,
+    ExitIpTimeout,
+    ExitIpRequestFailed,
+    ExitIpBadResponse,
 }
 
 impl Key {
@@ -257,6 +261,19 @@ impl Key {
             Self::HotkeyNotifyTitle => ("快捷键操作失败", Some("Shortcut action failed")),
             Self::HotkeyConnect => ("连接 / 断开", Some("Connect / disconnect")),
             Self::HotkeyWindow => ("显示 / 隐藏主窗口", Some("Show / hide window")),
+            Self::ExitIpNotConnected => (
+                "还没有连接，连接后才能查询出口 IP",
+                Some("Not connected yet; connect before querying the exit IP"),
+            ),
+            Self::ExitIpTimeout => ("出口 IP 查询超时", Some("The exit IP query timed out")),
+            Self::ExitIpRequestFailed => (
+                "出口 IP 查询失败：{reason}",
+                Some("The exit IP query failed: {reason}"),
+            ),
+            Self::ExitIpBadResponse => (
+                "出口 IP 服务返回了无法识别的内容",
+                Some("The exit IP service returned an unexpected response"),
+            ),
         }
     }
 }
@@ -370,6 +387,10 @@ mod tests {
             Key::HotkeyNotifyTitle,
             Key::HotkeyConnect,
             Key::HotkeyWindow,
+            Key::ExitIpNotConnected,
+            Key::ExitIpTimeout,
+            Key::ExitIpRequestFailed,
+            Key::ExitIpBadResponse,
         ] {
             assert!(!tr_at(Locale::ZhCn, key).trim().is_empty(), "{key:?} has no Chinese text");
             assert!(!tr_at(Locale::En, key).trim().is_empty(), "{key:?} has no English text");

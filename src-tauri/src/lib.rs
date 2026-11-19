@@ -927,6 +927,28 @@ fn dns_query(app: AppHandle, name: String, qtype: String) -> diagnostics::DnsQue
     diagnostics::dns_query(endpoint.as_ref(), &name, &qtype, std::time::Duration::from_secs(8))
 }
 
+/// Queries the exit IP through the local mixed port (R40). It only runs when the
+/// user asks for it: disconnected Billow rejects without sending a request, and
+/// the network call runs without the session lock.
+#[tauri::command(async)]
+fn exit_ip(app: AppHandle) -> Result<diagnostics::ExitIp, String> {
+    let proxy = with_session_raw(&app, |session| {
+        let snapshot = session.book.snapshot();
+        if !snapshot.connected {
+            return None;
+        }
+        snapshot
+            .mixed_port
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port > 0)
+            .map(|port| format!("http://127.0.0.1:{port}"))
+    });
+    let Some(proxy) = proxy else {
+        return Err(i18n::tr(i18n::Key::ExitIpNotConnected).to_string());
+    };
+    diagnostics::query_exit_ip(&proxy, std::time::Duration::from_secs(8))
+}
+
 #[tauri::command(async)]
 fn kernel_rules(app: AppHandle) -> RulesSnapshot {
     with_session_raw(&app, |session| {
@@ -1366,15 +1388,17 @@ struct AppInfo {
     silent_start: bool,
     /// Desktop only; hidden while "stay in tray" is off (R44).
     release_ui_on_close: bool,
+    /// Query the exit IP automatically; off by default (R40).
+    auto_exit_ip: bool,
     data_dir: Option<String>,
 }
 
 #[tauri::command]
 fn app_info(app: AppHandle) -> AppInfo {
-    let (close_to_tray, silent_start, release_ui_on_close) = {
+    let (close_to_tray, silent_start, release_ui_on_close, auto_exit_ip) = {
         let store = app.state::<Store>();
         let state = lock(&store.state);
-        (state.close_to_tray, state.silent_start, state.release_ui_on_close)
+        (state.close_to_tray, state.silent_start, state.release_ui_on_close, state.auto_exit_ip)
     };
     AppInfo {
         version: app.package_info().version.to_string(),
@@ -1383,6 +1407,7 @@ fn app_info(app: AppHandle) -> AppInfo {
         close_to_tray,
         silent_start,
         release_ui_on_close,
+        auto_exit_ip,
         data_dir: app
             .path()
             .app_config_dir()
@@ -1433,6 +1458,21 @@ fn set_app_behavior(
         state.silent_start = silent_start;
         state.release_ui_on_close = release_ui_on_close;
         persist(&app, &state);
+    }
+    app_info(app)
+}
+
+/// Turns the optional automatic exit IP query on or off (R40). Off by default;
+/// the frontend is the only caller, and nothing runs in the background.
+#[tauri::command]
+fn set_exit_ip_auto(app: AppHandle, enabled: bool) -> AppInfo {
+    {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        if state.auto_exit_ip != enabled {
+            state.auto_exit_ip = enabled;
+            persist(&app, &state);
+        }
     }
     app_info(app)
 }
@@ -2060,6 +2100,7 @@ pub fn run() {
             close_connection,
             close_connections,
             dns_query,
+            exit_ip,
             kernel_rules,
             set_rule_disabled,
             clear_logs,
@@ -2077,6 +2118,7 @@ pub fn run() {
             app_info,
             set_autostart,
             set_app_behavior,
+            set_exit_ip_auto,
             sync_tray,
             hotkey_settings,
             set_hotkey,
