@@ -219,6 +219,9 @@ pub fn merge_platform(
     // Lightweight mode is a desktop window behaviour like the tray flags, so an
     // Android backup must not switch it on or off here (R44).
     backup.shell.release_ui_on_close = local_shell.release_ui_on_close;
+    // Global shortcuts belong to this keyboard and this desktop's other apps,
+    // so a restore from the other platform keeps the local bindings (R39).
+    backup.shell.hotkeys = local_shell.hotkeys.clone();
     backup.platform = current_platform.to_string();
     true
 }
@@ -613,6 +616,8 @@ mod tests {
             release_ui_on_close: true,
             language: "en".to_string(),
             auto_exit_ip: true,
+            hotkeys: [("proxy".to_string(), "Ctrl+Alt+P".to_string())].into_iter().collect(),
+            traffic_history: true,
             ..ShellState::default()
         }
     }
@@ -639,11 +644,15 @@ mod tests {
         assert_eq!(parsed.profiles.settings.mixed_port, Some(7890));
         assert_eq!(parsed.shell.theme, "dark");
         assert!(!parsed.shell.close_to_tray);
-        // Both behaviour switches travel with the file (R38, R40, R44).
+        // Every behaviour switch travels with the file (R38, R40, R43, R44).
         assert!(parsed.shell.release_ui_on_close);
         assert!(parsed.shell.auto_exit_ip);
-        // WebDAV credentials, window size, traffic history and the current page
-        // are not part of a backup.
+        assert!(parsed.shell.traffic_history, "the recording switch is an app setting (R43)");
+        // Global shortcuts travel too, so a cleared restore brings them back
+        // (R39); only a cross-platform restore keeps this machine's.
+        assert_eq!(parsed.shell.hotkeys.get("proxy").map(String::as_str), Some("Ctrl+Alt+P"));
+        // WebDAV credentials, window size, traffic history rows and the current
+        // page are not part of a backup.
         let mut state = sample_shell();
         state.webdav_url = "https://dav.example.com/billow/".to_string();
         state.webdav_password = "dav-secret".to_string();
@@ -656,7 +665,15 @@ mod tests {
             1_700_000_000_000,
         );
         let text = to_text(&with_dav).unwrap();
-        for absent in ["dav-secret", "dav.example.com", "\"width\"", "\"height\"", "traffic", "\"last_entry\""] {
+        for absent in [
+            "dav-secret",
+            "dav.example.com",
+            "\"width\"",
+            "\"height\"",
+            "\"last_entry\"",
+            "traffic-history",
+            "\"entries\"",
+        ] {
             assert!(!text.contains(absent), "{absent} must not be in a backup:\n{text}");
         }
         assert_eq!(with_dav.shell, ShellBackup::of(&sample_shell()));
@@ -717,6 +734,7 @@ mod tests {
             silent_start: false,
             release_ui_on_close: false,
             auto_exit_ip: false,
+            hotkeys: [("tun".to_string(), "Ctrl+Alt+T".to_string())].into_iter().collect(),
             ..sample_shell()
         };
 
@@ -733,6 +751,11 @@ mod tests {
         assert!(!file.shell.release_ui_on_close);
         // Auto-query is a plain preference, so the backup keeps its value.
         assert!(file.shell.auto_exit_ip);
+        // Shortcuts are this machine's, so the file's binding is replaced (R39).
+        assert_eq!(file.shell.hotkeys, local_shell.hotkeys);
+        assert!(file.shell.hotkeys.get("proxy").is_none());
+        // The recording switch is a plain app setting, so it still travels (R43).
+        assert!(file.shell.traffic_history);
         // Configuration and 覆写 still come from the backup.
         assert_eq!(file.profiles.profiles[0].name, "机场 A");
         assert_eq!(file.platform, "desktop");

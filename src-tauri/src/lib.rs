@@ -1370,7 +1370,9 @@ fn export_backup(app: AppHandle) -> Result<String, String> {
 }
 
 /// Restore a whole backup. Validation happens first; a failure partway restores
-/// the state captured before the attempt, so nothing is half applied.
+/// the state captured before the attempt, so nothing is half applied. After a
+/// success the restored shortcut bindings are registered and the recorder
+/// follows the restored switch (R38, R39, R43).
 #[tauri::command(async)]
 fn restore_backup_text(app: AppHandle, text: String) -> Result<ProfileSnapshot, String> {
     let version = app.package_info().version.to_string();
@@ -1433,6 +1435,26 @@ fn restore_backup_text(app: AppHandle, text: String) -> Result<ProfileSnapshot, 
         let store = app.state::<Store>();
         let mut state = lock(&store.state);
         *state = shell_after.clone();
+    }
+    // Restored bindings have to work at once instead of waiting for the next
+    // launch, and the recorder mirrors the restored switch immediately. The file
+    // carries the switch only, never traffic history rows (R39, R43).
+    //
+    // Bindings this session still holds that the file no longer contains are
+    // dropped first, so a restore never leaves an invisible old shortcut or
+    // blocks the restored combination with its own previous one.
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        for (action, combo) in &shell_before.hotkeys {
+            if shell_after.hotkeys.get(action) != Some(combo) {
+                let _ = app.global_shortcut().unregister(combo.as_str());
+            }
+        }
+    }
+    hotkeys::prepare(&app);
+    if let Some(store) = app.try_state::<TrafficStore>() {
+        lock_traffic(&store.history).set_enabled(shell_after.traffic_history);
     }
     i18n::apply_preference(&shell_after.language);
     apply_native_theme(&app, &shell_after.theme);

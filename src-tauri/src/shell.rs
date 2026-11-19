@@ -99,9 +99,11 @@ impl Default for ShellState {
     }
 }
 
-/// The app settings a backup carries (R38). Window size, the last page, the
-/// WebDAV account and the global shortcuts are machine specific and stay out of
-/// the file; a restore keeps this machine's.
+/// The app settings a backup carries (R38). Window size, the last page and the
+/// WebDAV account are machine specific and stay out of the file; a restore keeps
+/// this machine's. Global shortcuts are written to the file so a cleared
+/// restore brings them back, but a file from the other platform keeps this
+/// machine's bindings (see `backup::merge_platform`, R39).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellBackup {
@@ -114,8 +116,12 @@ pub struct ShellBackup {
     /// Automatic exit IP queries are a behaviour preference, not a machine
     /// detail, so they travel with the theme and language (R40).
     pub auto_exit_ip: bool,
-    // Traffic history is deliberately absent: importing a file must never start
-    // background recording, and its rows are excluded outright (R38, R43).
+    /// Desktop global shortcut per action id (R39). Per-machine values, kept
+    /// local when the backup came from the other platform.
+    pub hotkeys: BTreeMap<String, String>,
+    /// The traffic-recording switch, not its rows (R43). Only the switch is an
+    /// app setting; the history data stays out of every backup (R38).
+    pub traffic_history: bool,
 }
 
 impl Default for ShellBackup {
@@ -127,6 +133,8 @@ impl Default for ShellBackup {
             release_ui_on_close: false,
             language: default_language(),
             auto_exit_ip: false,
+            hotkeys: BTreeMap::new(),
+            traffic_history: false,
         }
     }
 }
@@ -140,6 +148,8 @@ impl ShellBackup {
             release_ui_on_close: state.release_ui_on_close,
             language: state.language.clone(),
             auto_exit_ip: state.auto_exit_ip,
+            hotkeys: state.hotkeys.clone(),
+            traffic_history: state.traffic_history,
         }
     }
 
@@ -154,6 +164,10 @@ impl ShellBackup {
             release_ui_on_close: self.release_ui_on_close,
             language: resolve_language(&self.language).to_string(),
             auto_exit_ip: self.auto_exit_ip,
+            // Same cleanup the stored state goes through, so the in-memory
+            // state matches what `write_shell_state` saves (R39).
+            hotkeys: crate::hotkeys::clean_bindings(&self.hotkeys),
+            traffic_history: self.traffic_history,
             ..current.clone()
         }
     }
@@ -391,16 +405,18 @@ mod tests {
             width: 1280.0,
             height: 800.0,
             last_entry: "logs".to_string(),
-            // This machine has both switches off; the backup turns them on.
+            // This machine has both switches off and one shortcut bound; the
+            // backup turns the switches on and binds another action.
             release_ui_on_close: false,
             auto_exit_ip: false,
+            hotkeys: [("tun".to_string(), "Ctrl+Alt+T".to_string())].into_iter().collect(),
             webdav_url: "https://dav.example.com/billow/".to_string(),
             webdav_user: "me".to_string(),
             webdav_password: "secret".to_string(),
             ..ShellState::default()
         };
         let backup: ShellBackup = serde_json::from_str(
-            r#"{"theme":"dark","close_to_tray":false,"silent_start":true,"release_ui_on_close":true,"language":"en","auto_exit_ip":true}"#,
+            r#"{"theme":"dark","close_to_tray":false,"silent_start":true,"release_ui_on_close":true,"language":"en","auto_exit_ip":true,"hotkeys":{"proxy":"Ctrl+Alt+P"},"traffic_history":true}"#,
         )
         .unwrap();
         let restored = backup.apply(&current);
@@ -408,9 +424,14 @@ mod tests {
         assert!(!restored.close_to_tray);
         assert!(restored.silent_start);
         assert_eq!(restored.language, "en");
-        // Both behaviour switches travel with the backup (R38, R40, R44).
+        // Every behaviour switch travels with the backup (R38, R40, R43, R44).
         assert!(restored.release_ui_on_close);
         assert!(restored.auto_exit_ip);
+        assert!(restored.traffic_history, "the recording switch is an app setting (R43)");
+        // The same-platform restore takes the file's bindings; only a file from
+        // the other platform keeps this machine's (R39, backup::merge_platform).
+        assert_eq!(restored.hotkeys, backup.hotkeys);
+        assert_eq!(restored.hotkeys.get("proxy").map(String::as_str), Some("Ctrl+Alt+P"));
         // Excluded from every backup: window size, current page and WebDAV credentials.
         assert_eq!(restored.width, 1280.0);
         assert_eq!(restored.height, 800.0);
@@ -418,10 +439,12 @@ mod tests {
         assert_eq!(restored.webdav_url, "https://dav.example.com/billow/");
         assert_eq!(restored.webdav_password, "secret");
 
-        // Export -> clear -> import brings the same switches back.
+        // Export -> clear -> import brings every switch and shortcut back.
         let reimported = ShellBackup::of(&restored).apply(&ShellState::default());
         assert!(reimported.release_ui_on_close);
         assert!(reimported.auto_exit_ip);
+        assert!(reimported.traffic_history);
+        assert_eq!(reimported.hotkeys, backup.hotkeys);
         assert_eq!(reimported.theme, "dark");
 
         // Unknown values fall back like every other stored preference.
@@ -430,23 +453,46 @@ mod tests {
         assert_eq!(odd.apply(&current).theme, "system");
         assert_eq!(odd.apply(&current).language, "system");
         assert!(odd.close_to_tray, "an omitted flag keeps its default");
-        // A backup written before the switches existed leaves them off instead
-        // of silently inheriting another machine's choice.
+        // A backup written before the switches and shortcuts existed brings
+        // none of them: recording stays off and the local bindings are gone
+        // instead of silently keeping another machine's.
         let switched = ShellState {
             release_ui_on_close: true,
             auto_exit_ip: true,
+            traffic_history: true,
+            hotkeys: [("tun".to_string(), "Ctrl+Alt+T".to_string())].into_iter().collect(),
             ..current.clone()
         };
         assert!(!odd.apply(&switched).release_ui_on_close);
         assert!(!odd.apply(&switched).auto_exit_ip);
-        // Traffic recording is never turned on by importing a file (R38, R43).
-        let recording = ShellState {
-            traffic_history: true,
-            ..current.clone()
-        };
-        assert!(odd.apply(&recording).traffic_history);
-        assert!(!backup.apply(&ShellState::default()).traffic_history);
+        assert!(!odd.apply(&switched).traffic_history);
+        assert!(odd.apply(&switched).hotkeys.is_empty());
         assert_eq!(ShellBackup::of(&current).theme, "system");
+    }
+
+    #[test]
+    fn export_clear_import_restores_shortcuts_and_the_recording_switch() {
+        let state = ShellState {
+            hotkeys: [
+                ("proxy".to_string(), "Ctrl+Alt+P".to_string()),
+                ("tun".to_string(), "Ctrl+Alt+T".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            traffic_history: true,
+            ..ShellState::default()
+        };
+        let text = serde_json::to_string(&ShellBackup::of(&state)).unwrap();
+        // The switch travels; the history rows (and their file) do not.
+        assert!(text.contains("\"traffic_history\":true"), "{text}");
+        assert!(!text.contains("traffic-history"), "{text}");
+        assert!(!text.contains("entries"), "{text}");
+
+        let restored = serde_json::from_str::<ShellBackup>(&text)
+            .unwrap()
+            .apply(&ShellState::default());
+        assert!(restored.traffic_history);
+        assert_eq!(restored.hotkeys, state.hotkeys);
     }
 
     #[test]
