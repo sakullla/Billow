@@ -300,6 +300,7 @@ onBeforeUnmount(detachDesktopListeners)
         :class="{ above: flipAbove }"
         :style="popoverStyle"
         tabindex="-1"
+        data-focus-portal
         data-testid="select-popover"
         @keydown="onPopoverKeydown"
       >

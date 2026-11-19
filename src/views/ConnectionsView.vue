@@ -978,6 +978,15 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         label="出站分流筛选"
         data-testid="connection-route-filter"
       />
+      <button
+        v-if="isFiltered"
+        type="button"
+        class="btn ghost sm"
+        data-testid="reset-connection-toolbar"
+        @click="resetFilters"
+      >
+        重置
+      </button>
       <!-- The desktop table sorts from its column headers; phone cards have none, so they keep the switch. -->
       <SelectField
         v-if="compact"

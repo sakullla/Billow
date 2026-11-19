@@ -238,6 +238,7 @@ export function useFocusTrap(
 
   function onKeydown(event: KeyboardEvent): void {
     if (!active || !isTopmost(id)) return
+    if (event.target instanceof Element && event.target.closest('[data-focus-portal]')) return
     const container = getContainer()
     if (!container) return
     if (event.key === 'Escape') {
@@ -254,6 +255,7 @@ export function useFocusTrap(
     if (!active || !isTopmost(id)) return
     const container = getContainer()
     const target = event.target
+    if (target instanceof Element && target.closest('[data-focus-portal]')) return
     if (container && target instanceof Node && !container.contains(target)) {
       focusInitial(container, options.initialFocus)
     }

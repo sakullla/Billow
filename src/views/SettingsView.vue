@@ -6,6 +6,7 @@ import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
 import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
+import UwpLoopbackDialog from '../components/UwpLoopbackDialog.vue'
 import { useStore } from '../lib/store'
 import { layerDepth } from '../lib/ui/focus'
 import { useHotkeys } from '../lib/ui/hotkeys'
@@ -36,6 +37,7 @@ import type { SettingsTab } from '../lib/store'
 const props = defineProps<{ compact?: boolean }>()
 const appIcon = `${import.meta.env.BASE_URL}icon.png`
 const store = useStore()
+const uwpOpen = ref(false)
 
 function openRepo() {
   openExternal(REPO_URL).catch(() => store.toast('无法打开浏览器，请访问 ' + REPO_URL, 'error'))
@@ -1575,9 +1577,8 @@ const TABS = computed(() => [
           <button
             type="button"
             class="btn sm"
-            :disabled="store.busy.uwp"
             data-testid="open-uwp-tool"
-            @click="store.openUwpTool()"
+            @click="uwpOpen = true"
           >
             打开 UWP 工具
           </button>
@@ -2553,5 +2554,6 @@ const TABS = computed(() => [
         <button type="button" class="btn danger" data-testid="confirm-restart-kernel" @click="restartConfirmed">重启</button>
       </template>
     </Modal>
+    <UwpLoopbackDialog v-if="uwpOpen" @close="uwpOpen = false" />
   </div>
 </template>

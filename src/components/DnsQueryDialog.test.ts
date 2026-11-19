@@ -112,4 +112,32 @@ describe('DnsQueryDialog', () => {
     expect(find('[data-testid="dns-query-meta"]')!.textContent).toContain('状态码 3')
     expect(body().querySelectorAll('[data-testid="dns-query-answer"]')).toHaveLength(0)
   })
+
+  it('keeps the record-type SelectField popover interactive inside the modal focus trap', async () => {
+    const query = vi.fn(async (name: string, qtype: DnsQueryType) => ({
+      name,
+      qtype,
+      status: 0,
+      answers: [{ type: qtype, value: '2606:2800:220:1::', ttl: 60 }],
+      elapsed_ms: 8,
+      error: null,
+    }))
+    mountDialog({ running: true, query })
+    await flushPromises()
+
+    find('[data-testid="dns-query-type"]')!.click()
+    await flushPromises()
+    const popover = find('[data-testid="select-popover"]')
+    expect(popover).not.toBeNull()
+    expect(popover!.hasAttribute('data-focus-portal')).toBe(true)
+    expect(document.activeElement).toBe(popover)
+
+    find('[data-option-value="AAAA"]')!.click()
+    await flushPromises()
+    expect(find('[data-testid="select-popover"]')).toBeNull()
+
+    await typeName('example.com')
+    await submit()
+    expect(query).toHaveBeenCalledWith('example.com', 'AAAA')
+  })
 })

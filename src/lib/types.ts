@@ -449,6 +449,14 @@ export interface RulesResult {
   error: string | null
 }
 
+export interface UwpApp {
+  name: string
+  display_name: string
+  family_name: string
+  sid: string
+  exempted: boolean
+}
+
 export const DEFAULT_PAC_SCRIPT = `function FindProxyForURL(url, host) {
   if (
     isPlainHostName(host) ||

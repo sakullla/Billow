@@ -544,6 +544,8 @@ fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
     })
 }
 
+static APP_UPDATING: AtomicBool = AtomicBool::new(false);
+
 #[tauri::command]
 async fn prepare_app_update(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -552,6 +554,15 @@ async fn prepare_app_update(app: AppHandle) -> Result<(), String> {
         refresh_tray(&app, &next);
         if next.system_proxy || next.tun || next.vpn || next.connected {
             return Err("代理连接未能安全关闭，请手动断开后重试更新".to_string());
+        }
+        // Stop the kernel and wait for any elevated helper (`billow.exe --billow-kernel-helper`)
+        // to exit before the Windows NSIS installer launches, otherwise the per-user installer
+        // cannot terminate an elevated Billow process and aborts with "Failed to kill Billow".
+        APP_UPDATING.store(true, Ordering::SeqCst);
+        release_proxy_on_exit(&app);
+        #[cfg(target_os = "windows")]
+        if let Some(tray) = app.remove_tray_by_id("billow") {
+            drop(tray);
         }
         Ok(())
     }).await.map_err(|error| error.to_string())?
@@ -1005,6 +1016,16 @@ fn open_uwp_tool() -> Result<(), String> {
     takeover::open_uwp_loopback_tool()
 }
 
+#[tauri::command(async)]
+fn list_uwp_apps() -> Result<Vec<takeover::UwpApp>, String> {
+    takeover::list_uwp_apps()
+}
+
+#[tauri::command(async)]
+fn save_uwp_exemptions(family_names: Vec<String>) -> Result<Vec<takeover::UwpApp>, String> {
+    takeover::save_uwp_exemptions(family_names)
+}
+
 /// 重启内核 (R35): Billow stops and respawns the process; mihomo's `/restart` is not used.
 #[tauri::command(async)]
 fn restart_kernel(app: AppHandle) -> Result<ProfileSnapshot, String> {
@@ -1450,7 +1471,7 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
                 let store = app.state::<Store>();
                 lock(&store.state).close_to_tray
             };
-            if to_tray && has_tray(app) {
+            if !APP_UPDATING.load(Ordering::SeqCst) && to_tray && has_tray(app) {
                 api.prevent_close();
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
@@ -1549,6 +1570,8 @@ pub fn run() {
             provider_action,
             upgrade_geo,
             open_uwp_tool,
+            list_uwp_apps,
+            save_uwp_exemptions,
             provider_detail,
             geo_files
         ])

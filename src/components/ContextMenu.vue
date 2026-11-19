@@ -144,6 +144,7 @@ onBeforeUnmount(() => {
       :style="menuStyle"
       role="menu"
       :aria-label="label"
+      data-focus-portal
       data-testid="context-menu"
       @contextmenu.prevent
       @keydown="onKeydown"

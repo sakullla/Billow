@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChainPath from '../components/ChainPath.vue'
+import EmptyState from '../components/EmptyState.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
@@ -394,6 +395,44 @@ function pick(group: NodeGroup, node: NodeItem) {
   void store.selectNode(group.name, node.name)
 }
 
+const BUILTIN_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
+
+/** Lowest-latency tested proxy in a manual group, hidden if it is already selected. */
+function fastestCandidate(group: NodeGroup): { node: NodeItem; delay: number } | null {
+  if (group.kind !== 'manual' || !snap.value.kernel_running) return null
+  let best: { node: NodeItem; delay: number } | null = null
+  for (const node of group.nodes) {
+    if (groupNamesSet.value.has(node.name)) continue
+    if (BUILTIN_POLICIES.has(node.name.toUpperCase()) || isInfoNode(node.name)) continue
+    const state = nodeState(node)
+    if (state.failed || state.delay == null || state.delay <= 0) continue
+    if (!best || state.delay < best.delay) {
+      best = { node, delay: state.delay }
+    }
+  }
+  if (!best || best.node.selected) return null
+  return best
+}
+
+async function pickFastest(group: NodeGroup) {
+  const best = fastestCandidate(group)
+  if (!best) return
+  const res = await store.selectNode(group.name, best.node.name)
+  if (res) {
+    store.toast(`已切至最快节点：${best.node.name} (${delayText(best.delay, false)})`, 'success')
+  }
+}
+
+const testAllProgressPct = computed<number | null>(() => {
+  if (!store.busy.testAll || store.testProgress.value.total <= 0) return null
+  return Math.min(100, Math.round((store.testProgress.value.tested / store.testProgress.value.total) * 100))
+})
+
+function groupTestProgressPct(name: string): number | null {
+  if (store.activeTest.value?.group !== name || store.testProgress.value.total <= 0) return null
+  return Math.min(100, Math.round((store.testProgress.value.tested / store.testProgress.value.total) * 100))
+}
+
 function nodeTitle(group: NodeGroup): string | undefined {
   if (group.kind === 'manual') return undefined
   if (group.pinnable) return snap.value.kernel_running ? '点选后固定使用该节点，可随时恢复自动' : '内核没有运行，连接后才能固定节点'
@@ -422,6 +461,10 @@ async function scrollToGroup(name: string | null, behavior: ScrollBehavior = 'in
   const toolbarHeight = toolbarEl.value?.getBoundingClientRect().height ?? 0
   el.style.scrollMarginTop = `${Math.ceil(toolbarHeight) + TOOLBAR_GAP}px`
   el.scrollIntoView?.({ block: 'start', behavior })
+  const pill = document.querySelector(`[data-testid="jump-group-${CSS.escape(name)}"]`)
+  if (pill instanceof HTMLElement) {
+    pill.scrollIntoView?.({ inline: 'nearest', block: 'nearest', behavior })
+  }
 }
 
 /** The located ring is a short cue, not a lasting state: it fades and the request is cleared. */
@@ -788,23 +831,42 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           <span class="group-pill-count mono">{{ group.nodes.length }}</span>
         </button>
       </nav>
+      <div v-if="testAllProgressPct != null" class="test-progress-track" aria-hidden="true">
+        <span class="test-progress-fill" :style="{ width: `${testAllProgressPct}%` }" />
+      </div>
     </div>
 
-    <div v-if="!snap.node_catalog.length" class="empty">
-      <Icon name="globe" :size="40" :stroke="1.4" />
-      <h3>{{ snap.nodes_notice ?? '没有代理组' }}</h3>
-      <p class="muted">添加并启用一份配置后，这里会列出它的代理组与节点。</p>
-      <button type="button" class="btn primary" @click="store.go('profiles')">前往配置</button>
-    </div>
-    <div v-else-if="allGroupsHidden" class="empty" data-testid="all-groups-hidden">
-      <Icon name="globe" :size="40" :stroke="1.4" />
-      <h3>配置中的代理组均已隐藏</h3>
-      <p class="muted">这份配置把全部代理组标记为 hidden，如需在这里选择节点，请在配置中取消隐藏。</p>
-    </div>
-    <div v-else-if="!groups.length" class="empty small" data-testid="no-match">
-      <h3>没有匹配的节点</h3>
-      <button type="button" class="btn ghost" @click="query = ''; hideFailed = false">清空搜索</button>
-    </div>
+    <EmptyState
+      v-if="!snap.node_catalog.length"
+      variant="no-data"
+      icon="globe"
+      :title="snap.nodes_notice ?? '没有代理组'"
+      description="添加并启用一份配置后，这里会列出它的代理组与节点。"
+    >
+      <template #action>
+        <button type="button" class="btn primary sm" @click="store.go('profiles')">前往配置</button>
+      </template>
+    </EmptyState>
+    <EmptyState
+      v-else-if="allGroupsHidden"
+      variant="no-data"
+      icon="globe"
+      title="配置中的代理组均已隐藏"
+      description="这份配置把全部代理组标记为 hidden，如需在这里选择节点，请在配置中取消隐藏。"
+      data-testid="all-groups-hidden"
+    />
+    <EmptyState
+      v-else-if="!groups.length"
+      compact
+      variant="no-match"
+      title="没有匹配的节点"
+      description="换一个关键词或关闭「隐藏超时」筛选。"
+      data-testid="no-match"
+    >
+      <template #action>
+        <button type="button" class="btn ghost sm" @click="query = ''; hideFailed = false">清空搜索</button>
+      </template>
+    </EmptyState>
 
     <section
       v-for="(group, index) in groups"
@@ -849,6 +911,18 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           <Icon name="chevron-down" class="chevron" />
         </button>
         <button
+          v-if="fastestCandidate(group)"
+          type="button"
+          class="btn ghost sm group-fastest"
+          :disabled="Boolean(store.busy[`select:${group.name}`])"
+          :title="`切换至当前最快的节点：${fastestCandidate(group)!.node.name} (${delayText(fastestCandidate(group)!.delay, false)})`"
+          :data-testid="`pick-fastest-${group.name}`"
+          @click="pickFastest(group)"
+        >
+          <Icon name="zap" :size="13" />
+          {{ compact ? '最快' : '选最快' }}
+        </button>
+        <button
           v-if="group.fixed"
           type="button"
           class="btn ghost sm group-unfix"
@@ -873,6 +947,9 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           <span v-if="store.busy[`test:${group.name}`]" class="spinner sm" />
           <Icon v-else name="zap" />
         </button>
+        <div v-if="groupTestProgressPct(group.name) != null" class="test-progress-track" aria-hidden="true">
+          <span class="test-progress-fill" :style="{ width: `${groupTestProgressPct(group.name)}%` }" />
+        </div>
       </header>
 
       <ProxyNodeGrid

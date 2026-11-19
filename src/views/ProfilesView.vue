@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
@@ -818,12 +819,17 @@ const failedSubscriptionIds = computed(() =>
     </form>
     <p v-if="quickError" id="quick-import-error" class="field-error small" role="alert">{{ quickError }}</p>
 
-    <div v-if="!snap.profiles.length" class="empty">
-      <Icon name="layers" :size="40" :stroke="1.4" />
-      <h3>还没有配置</h3>
-      <p class="muted">添加机场订阅链接，或导入本地 Clash / Mihomo 配置文件。</p>
-      <button type="button" class="btn primary" @click="store.adding.value = true"><Icon name="plus" :size="16" /> 添加配置</button>
-    </div>
+    <EmptyState
+      v-if="!snap.profiles.length"
+      variant="no-data"
+      icon="layers"
+      title="还没有配置"
+      description="添加机场订阅链接，或导入本地 Clash / Mihomo 配置文件。"
+    >
+      <template #action>
+        <button type="button" class="btn primary sm" @click="store.adding.value = true"><Icon name="plus" :size="15" /> 添加配置</button>
+      </template>
+    </EmptyState>
 
     <div class="profile-grid">
       <article
@@ -889,7 +895,10 @@ const failedSubscriptionIds = computed(() =>
           <div v-if="usagePercent(profile.used, profile.total) != null" class="usage-bar">
             <span
               :style="{ width: `${(usagePercent(profile.used, profile.total) ?? 0) > 0 ? Math.max(usagePercent(profile.used, profile.total) ?? 0, 1.5) : 0}%` }"
-              :class="{ warn: (usagePercent(profile.used, profile.total) ?? 0) > 85 }"
+              :class="{
+                danger: (usagePercent(profile.used, profile.total) ?? 0) >= 98 || (Boolean(profile.expire) && daysLeft(profile.expire!) < 0),
+                warn: (usagePercent(profile.used, profile.total) ?? 0) > 85 && (usagePercent(profile.used, profile.total) ?? 0) < 98 && (!profile.expire || daysLeft(profile.expire) >= 0),
+              }"
             />
           </div>
           <div class="usage-text small">

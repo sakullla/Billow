@@ -21,6 +21,7 @@ import {
   type RuleRow,
   type Snapshot,
   type ThemePreference,
+  type UwpApp,
 } from './types'
 
 /**
@@ -129,6 +130,36 @@ const DEMO_GROUP_ICONS: Record<string, string> = {
 }
 
 export function createDemoBackend(options: DemoOptions = {}): Backend {
+  const demoUwpApps: UwpApp[] = [
+    {
+      name: 'Microsoft.WindowsStore',
+      display_name: 'Microsoft Store',
+      family_name: 'Microsoft.WindowsStore_8wekyb3d8bbwe',
+      sid: 'S-1-15-2-1609473798-1231923017-684268153-4268514328',
+      exempted: true,
+    },
+    {
+      name: 'Microsoft.WindowsTerminal',
+      display_name: 'Windows Terminal',
+      family_name: 'Microsoft.WindowsTerminal_8wekyb3d8bbwe',
+      sid: 'S-1-15-2-2381923017-684268153-4268514328',
+      exempted: false,
+    },
+    {
+      name: 'Microsoft.XboxApp',
+      display_name: 'Xbox',
+      family_name: 'Microsoft.XboxApp_8wekyb3d8bbwe',
+      sid: 'S-1-15-2-3381923017-684268153-4268514328',
+      exempted: false,
+    },
+    {
+      name: 'Microsoft.Todos',
+      display_name: 'Microsoft To Do',
+      family_name: 'Microsoft.Todos_8wekyb3d8bbwe',
+      sid: 'S-1-15-2-4381923017-684268153-4268514328',
+      exempted: false,
+    },
+  ]
   const baseNames = options.longNames ? [...DEMO_LONG_NAMES, ...nodeNames()] : nodeNames()
   const names = options.big
     ? [...baseNames, ...Array.from({ length: 48 }, (_, index) => `【KLM】Hong Kong ${String(index + 1).padStart(2, '0')}`)]
@@ -1098,6 +1129,20 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async openUwpTool() {
       await wait(60)
       log('info', '已打开 UWP 回环豁免工具')
+    },
+    async listUwpApps() {
+      await wait(80)
+      return demoUwpApps.map((item) => ({ ...item }))
+    },
+    async saveUwpExemptions(familyNames) {
+      await wait(120)
+      const desired = new Set(familyNames.map((n) => n.toLowerCase()))
+      for (const app of demoUwpApps) {
+        app.exempted = desired.has(app.family_name.toLowerCase())
+      }
+      demoUwpApps.sort((a, b) => Number(b.exempted) - Number(a.exempted) || a.display_name.localeCompare(b.display_name))
+      log('info', `已保存 UWP 回环豁免：${demoUwpApps.filter((a) => a.exempted).length} 个应用`)
+      return demoUwpApps.map((item) => ({ ...item }))
     },
     async providerDetail(kind, name, query) {
       await wait(200)

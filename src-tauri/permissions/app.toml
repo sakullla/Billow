@@ -164,6 +164,16 @@ description = "Enables the open_uwp_tool command without any pre-configured scop
 commands.allow = ["open_uwp_tool"]
 
 [[permission]]
+identifier = "allow-list-uwp-apps"
+description = "Enables listing Windows UWP apps and their loopback exemption status."
+commands.allow = ["list_uwp_apps"]
+
+[[permission]]
+identifier = "allow-save-uwp-exemptions"
+description = "Enables saving Windows UWP loopback exemption rules."
+commands.allow = ["save_uwp_exemptions"]
+
+[[permission]]
 identifier = "allow-set-profile-user-agent"
 description = "Enables setting a subscription User-Agent."
 commands.allow = ["set_profile_user_agent"]

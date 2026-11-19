@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import ChainPath from '../components/ChainPath.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
@@ -308,6 +308,34 @@ function onPrimary() {
   }
   void store.toggleConnection()
 }
+
+const portCopied = ref(false)
+let portCopiedTimer: ReturnType<typeof setTimeout> | null = null
+
+async function onCopyProxyEnv() {
+  await store.copyProxyEnv()
+  portCopied.value = true
+  if (portCopiedTimer) clearTimeout(portCopiedTimer)
+  portCopiedTimer = setTimeout(() => {
+    portCopied.value = false
+    portCopiedTimer = null
+  }, 1600)
+}
+
+function toggleSystemProxyTile() {
+  if (store.busy.proxy) return
+  void store.setSystemProxy(!snap.value.system_proxy)
+}
+
+function toggleTunTile() {
+  if (store.busy.tun) return
+  void store.setTun(!snap.value.tun)
+}
+
+onBeforeUnmount(() => {
+  if (portCopiedTimer) clearTimeout(portCopiedTimer)
+  portCopiedTimer = null
+})
 </script>
 
 <template>
@@ -377,12 +405,13 @@ function onPrimary() {
               v-if="!compact && !store.isAndroid.value && snap.mixed_port"
               type="button"
               class="hero-port-btn mono"
+              :class="{ copied: portCopied }"
               :title="`点击复制终端环境变量 (127.0.0.1:${snap.mixed_port})`"
               data-testid="copy-proxy-cmd"
-              @click="store.copyProxyEnv()"
+              @click="onCopyProxyEnv"
             >
               <span>:{{ snap.mixed_port }}</span>
-              <Icon name="copy" :size="12" />
+              <Icon :name="portCopied ? 'check' : 'copy'" :size="12" />
             </button>
             <button
               v-if="profile"
@@ -534,8 +563,8 @@ function onPrimary() {
               <div class="takeover-grid">
                 <div
                   class="takeover-tile"
-                  :class="{ active: snap.system_proxy }"
-                  @click="store.setSystemProxy(!snap.system_proxy)"
+                  :class="{ active: snap.system_proxy, busy: Boolean(store.busy.proxy) }"
+                  @click="toggleSystemProxyTile"
                 >
                   <div class="takeover-tile-top">
                     <span class="row-icon"><Icon name="monitor" :size="17" /></span>
@@ -567,8 +596,8 @@ function onPrimary() {
 
                 <div
                   class="takeover-tile"
-                  :class="{ active: snap.tun }"
-                  @click="store.setTun(!snap.tun)"
+                  :class="{ active: snap.tun, busy: Boolean(store.busy.tun) }"
+                  @click="toggleTunTile"
                 >
                   <div class="takeover-tile-top">
                     <span class="row-icon"><Icon name="shield" :size="17" /></span>
@@ -632,7 +661,13 @@ function onPrimary() {
               </div>
               <div v-if="usage != null || profile.expire" class="usage">
                 <div v-if="usage != null" class="usage-bar">
-                  <span :style="{ width: `${usage > 0 ? Math.max(usage, 1.5) : 0}%` }" :class="{ warn: usage > 85 }" />
+                  <span
+                    :style="{ width: `${usage > 0 ? Math.max(usage, 1.5) : 0}%` }"
+                    :class="{
+                      danger: usage >= 98 || (expireDays != null && expireDays < 0),
+                      warn: usage > 85 && usage < 98 && (expireDays == null || expireDays >= 0),
+                    }"
+                  />
                 </div>
                 <div class="usage-text small">
                   <span v-if="usage != null" class="mono">

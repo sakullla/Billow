@@ -1442,5 +1442,77 @@ describe('UI/UX polish', () => {
       expect(previewPanel.exists()).toBe(true)
       expect(previewPanel.text()).toContain('合并结果')
     })
+
+    it('provides copy feedback on home port pill, one-click fastest node pick, and connections toolbar reset', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+      const { wrapper } = await mountApp()
+      const store = storeOf(wrapper)
+      await connect(wrapper)
+
+      // Home port pill gives immediate copied feedback and resets after 1.6s.
+      const portBtn = wrapper.find('[data-testid="copy-proxy-cmd"]')
+      expect(portBtn.exists()).toBe(true)
+      await portBtn.trigger('click')
+      await flushPromises()
+      expect(writeText).toHaveBeenCalled()
+      expect(portBtn.classes()).toContain('copied')
+      await settle(1700)
+      expect(portBtn.classes()).not.toContain('copied')
+
+      // Proxies manual group offers 选最快 after testing when a faster proxy exists.
+      await openPage(wrapper, 'proxies')
+      void store.testGroup('节点选择')
+      await settle(3000)
+      const pickFastestBtn = wrapper.find('[data-testid="pick-fastest-节点选择"]')
+      expect(pickFastestBtn.exists()).toBe(true)
+      await pickFastestBtn.trigger('click')
+      await settle(300)
+      // Once switched to the fastest proxy node, the button hides cleanly.
+      expect(wrapper.find('[data-testid="pick-fastest-节点选择"]').exists()).toBe(false)
+
+      // Connections toolbar reset clears combined route + search filters in one click.
+      await openPage(wrapper, 'connections')
+      await settle(1100)
+      expect(wrapper.find('[data-testid="reset-connection-toolbar"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="connection-search"]').setValue('example')
+      await flushPromises()
+      const resetBtn = wrapper.find('[data-testid="reset-connection-toolbar"]')
+      expect(resetBtn.exists()).toBe(true)
+      await resetBtn.trigger('click')
+      await flushPromises()
+      expect((wrapper.find('[data-testid="connection-search"]').element as HTMLInputElement).value).toBe('')
+      expect(wrapper.find('[data-testid="reset-connection-toolbar"]').exists()).toBe(false)
+    })
+
+    it('opens the redesigned in-app UWP loopback manager on Windows and saves exemption changes', async () => {
+      const { wrapper } = await mountApp({ os: 'windows' })
+      const store = storeOf(wrapper)
+      store.openSettings('proxy')
+      await flushPromises()
+
+      const openBtn = wrapper.find('[data-testid="open-uwp-tool"]')
+      expect(openBtn.exists()).toBe(true)
+      await openBtn.trigger('click')
+      await settle(200)
+
+      expect(body().find('[data-testid="uwp-dialog"]').exists()).toBe(true)
+      const rows = body().findAll('[data-testid="uwp-row"]')
+      expect(rows.length).toBeGreaterThanOrEqual(3)
+
+      // Toggle Windows Terminal to exempted, verify dirty counter, then save.
+      const terminalRow = body().find('[data-uwp-family="Microsoft.WindowsTerminal_8wekyb3d8bbwe"]')
+      expect(terminalRow.exists()).toBe(true)
+      expect(terminalRow.attributes('aria-pressed')).toBe('false')
+      await terminalRow.trigger('click')
+      await flushPromises()
+      expect(terminalRow.attributes('aria-pressed')).toBe('true')
+      expect(body().find('[data-testid="uwp-dirty-count"]').text()).toContain('1')
+
+      await body().find('[data-testid="uwp-save"]').trigger('click')
+      await settle(200)
+      expect(body().find('[data-testid="uwp-dirty-count"]').exists()).toBe(false)
+      expect(body().find('[data-uwp-family="Microsoft.WindowsTerminal_8wekyb3d8bbwe"]').attributes('aria-pressed')).toBe('true')
+    })
   })
 })

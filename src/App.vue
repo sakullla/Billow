@@ -898,6 +898,7 @@ defineExpose({ store })
           :key="item.id"
           class="toast"
           :class="item.tone"
+          :role="item.tone === 'error' ? 'alert' : 'status'"
           title="点击关闭"
           @mouseenter="store.pauseToast(item.id)"
           @mouseleave="store.resumeToast(item.id)"

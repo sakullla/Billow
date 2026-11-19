@@ -1392,7 +1392,7 @@ select.input {
 
 .select-popover {
   position: fixed;
-  z-index: 90;
+  z-index: 150;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -8125,4 +8125,80 @@ details.cfg-section[open] .cfg-fold-icon {
   background: transparent;
   color: var(--fair-ink);
   font-weight: 560;
+}
+
+/* ───────────── Craft & Efficiency Refinements ───────────── */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+.main > .page {
+  animation: page-in var(--dur-fast) var(--ease);
+}
+
+.hero-port-btn.copied {
+  background: var(--good-soft);
+  border-color: color-mix(in srgb, var(--good) 42%, var(--border));
+  color: var(--good-ink);
+}
+
+.takeover-tile.busy {
+  cursor: progress;
+  opacity: 0.78;
+}
+.takeover-tile.busy:active {
+  transform: none;
+}
+
+.usage-bar span.danger {
+  background: var(--poor);
+}
+
+.group-head {
+  position: relative;
+}
+.group-fastest {
+  flex: none;
+  gap: 4px;
+  color: var(--text-2);
+}
+.group-fastest:hover:not(:disabled) {
+  background: var(--good-soft);
+  color: var(--good-ink);
+}
+.group-fastest .icon {
+  color: var(--good-ink);
+}
+
+.test-progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent-soft);
+  overflow: hidden;
+  pointer-events: none;
+}
+.test-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  transition: width 180ms var(--ease);
+}
+
+.toast-move {
+  transition: transform var(--dur-base) var(--ease);
+}
+
+.log-card .jump {
+  backdrop-filter: saturate(1.4) blur(12px);
+  -webkit-backdrop-filter: saturate(1.4) blur(12px);
+}
+.log-card .jump:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
 }

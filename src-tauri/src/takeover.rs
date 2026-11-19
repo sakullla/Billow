@@ -1616,6 +1616,281 @@ pub fn ensure_pac_server(host: &str, port: u16, template: &str) -> Result<String
     Ok(format!("http://127.0.0.1:{listen_port}/billow.pac"))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UwpApp {
+    pub name: String,
+    pub display_name: String,
+    pub family_name: String,
+    pub sid: String,
+    pub exempted: bool,
+}
+
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+#[derive(Debug, Deserialize)]
+struct RawUwpApp {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    family_name: String,
+    #[serde(default)]
+    sid: String,
+}
+
+pub fn is_valid_uwp_family_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 256
+        && trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Parses `CheckNetIsolation LoopbackExempt -s` output (English and localized Windows builds)
+/// into a lowercased set of exempted SIDs and PackageFamilyNames.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub fn parse_loopback_exempt_output(output: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Extract any AppContainer SID token (`S-1-15-2-...`) regardless of OS language.
+        for token in trimmed.split(|c: char| c.is_whitespace() || matches!(c, ':' | '：' | '[' | ']' | '(' | ')')) {
+            let clean = token.trim();
+            if clean.len() > 8 && clean.to_ascii_uppercase().starts_with("S-1-15-2-") {
+                set.insert(clean.to_ascii_lowercase());
+            }
+        }
+        // Extract package family name after `Name:` / `名称:` / `名称：`
+        if let Some((_, rest)) = trimmed.split_once(':').or_else(|| trimmed.split_once('：')) {
+            let value = rest.trim();
+            if is_valid_uwp_family_name(value) && value.contains('_') {
+                set.insert(value.to_ascii_lowercase());
+            }
+        }
+    }
+    set
+}
+
+/// Parses the JSON emitted by the PowerShell AppContainer/Appx enumeration script and merges
+/// the current loopback exemption state.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub fn parse_uwp_apps_json(
+    json: &str,
+    exempt: &std::collections::HashSet<String>,
+) -> Result<Vec<UwpApp>, String> {
+    let trimmed = json.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(Vec::new());
+    }
+    let raw_list: Vec<RawUwpApp> = if trimmed.starts_with('[') {
+        serde_json::from_str(trimmed).map_err(|e| format!("无法解析 UWP 应用列表：{e}"))?
+    } else {
+        let single: RawUwpApp =
+            serde_json::from_str(trimmed).map_err(|e| format!("无法解析 UWP 应用列表：{e}"))?;
+        vec![single]
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut apps = Vec::with_capacity(raw_list.len());
+    for item in raw_list {
+        let family = item.family_name.trim().to_string();
+        if !is_valid_uwp_family_name(&family) {
+            continue;
+        }
+        let family_lower = family.to_ascii_lowercase();
+        if !seen.insert(family_lower.clone()) {
+            continue;
+        }
+        let sid = item.sid.trim().to_string();
+        let name = if item.name.trim().is_empty() {
+            family.split('_').next().unwrap_or(&family).to_string()
+        } else {
+            item.name.trim().to_string()
+        };
+        let raw_display = item.display_name.trim();
+        let display_name = if raw_display.is_empty() || raw_display.starts_with("@{") || raw_display.starts_with("ms-resource:") {
+            name.clone()
+        } else {
+            raw_display.to_string()
+        };
+        let exempted = exempt.contains(&family_lower)
+            || (!sid.is_empty() && exempt.contains(&sid.to_ascii_lowercase()));
+        apps.push(UwpApp {
+            name,
+            display_name,
+            family_name: family,
+            sid,
+            exempted,
+        });
+    }
+    apps.sort_by(|a, b| {
+        b.exempted
+            .cmp(&a.exempted)
+            .then_with(|| a.display_name.to_ascii_lowercase().cmp(&b.display_name.to_ascii_lowercase()))
+            .then_with(|| a.family_name.cmp(&b.family_name))
+    });
+    Ok(apps)
+}
+
+/// Computes `(to_add, to_remove)` family names between the current UWP list and desired exempted families.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub fn diff_uwp_exemptions(current: &[UwpApp], desired_families: &[String]) -> (Vec<String>, Vec<String>) {
+    let desired: std::collections::HashSet<String> = desired_families
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| is_valid_uwp_family_name(s))
+        .collect();
+    let mut to_add = Vec::new();
+    let mut to_remove = Vec::new();
+    for app in current {
+        let want = desired.contains(&app.family_name.to_ascii_lowercase());
+        if want && !app.exempted {
+            to_add.push(app.family_name.clone());
+        } else if !want && app.exempted {
+            to_remove.push(app.family_name.clone());
+        }
+    }
+    (to_add, to_remove)
+}
+
+/// Lists installed Windows UWP / AppContainer applications together with their loopback exemption state.
+pub fn list_uwp_apps() -> Result<Vec<UwpApp>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let exempt_out = std::process::Command::new("CheckNetIsolation")
+            .creation_flags(0x08000000)
+            .args(["LoopbackExempt", "-s"])
+            .output()
+            .map_err(|error| format!("无法读取 UWP 回环豁免列表：{error}"))?;
+        let exempt_text = String::from_utf8_lossy(&exempt_out.stdout);
+        let exempt = parse_loopback_exempt_output(&exempt_text);
+
+        let ps_script = concat!(
+            "$ErrorActionPreference='SilentlyContinue'; ",
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ",
+            "$map = @{}; ",
+            "Get-ChildItem 'HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings' | ForEach-Object { ",
+            "  $p = Get-ItemProperty $_.PSPath; ",
+            "  if ($p.Moniker) { $map[$p.Moniker.ToLowerInvariant()] = @{ sid = $_.PSChildName; display = [string]$p.DisplayName; moniker = [string]$p.Moniker } } ",
+            "}; ",
+            "$out = New-Object System.Collections.Generic.List[object]; ",
+            "$seen = @{}; ",
+            "Get-AppxPackage | ForEach-Object { ",
+            "  $fam = [string]$_.PackageFamilyName; ",
+            "  if (-not $fam) { return }; ",
+            "  $key = $fam.ToLowerInvariant(); ",
+            "  if ($seen.ContainsKey($key)) { return }; ",
+            "  $seen[$key] = $true; ",
+            "  $entry = $map[$key]; ",
+            "  $disp = if ($entry -and $entry.display) { $entry.display } else { [string]$_.Name }; ",
+            "  $sid = if ($entry -and $entry.sid) { $entry.sid } else { '' }; ",
+            "  $out.Add([PSCustomObject]@{ name = [string]$_.Name; display_name = $disp; family_name = $fam; sid = $sid }) ",
+            "}; ",
+            "foreach ($kv in $map.GetEnumerator()) { ",
+            "  if (-not $seen.ContainsKey($kv.Key)) { ",
+            "    $fam = $kv.Value.moniker; ",
+            "    $short = ($fam -split '_')[0]; ",
+            "    $out.Add([PSCustomObject]@{ name = $short; display_name = if ($kv.Value.display) { $kv.Value.display } else { $short }; family_name = $fam; sid = $kv.Value.sid }) ",
+            "  } ",
+            "}; ",
+            "if ($out.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject @($out) -Depth 3 -Compress }"
+        );
+        let out = std::process::Command::new("powershell")
+            .creation_flags(0x08000000)
+            .args(["-NoProfile", "-NonInteractive", "-Command", ps_script])
+            .output()
+            .map_err(|error| format!("无法枚举 UWP 应用：{error}"))?;
+        if !out.status.success() && out.stdout.is_empty() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("无法枚举 UWP 应用：{}", stderr.trim()));
+        }
+        let json = String::from_utf8_lossy(&out.stdout);
+        return parse_uwp_apps_json(&json, &exempt);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("UWP 回环工具仅适用于 Windows 系统".to_string())
+    }
+}
+
+/// Applies the desired set of exempted UWP PackageFamilyNames via `CheckNetIsolation`,
+/// elevating once via UAC only if the process is not already elevated and changes are needed.
+pub fn save_uwp_exemptions(family_names: Vec<String>) -> Result<Vec<UwpApp>, String> {
+    for name in &family_names {
+        if !is_valid_uwp_family_name(name) {
+            return Err(format!("无效的 UWP 包名：{name}"));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let current = list_uwp_apps()?;
+        let (to_add, to_remove) = diff_uwp_exemptions(&current, &family_names);
+        if to_add.is_empty() && to_remove.is_empty() {
+            return Ok(current);
+        }
+        let mut lines = Vec::with_capacity(to_add.len() + to_remove.len() + 1);
+        lines.push("$ErrorActionPreference='Continue'".to_string());
+        for fam in &to_add {
+            lines.push(format!("CheckNetIsolation LoopbackExempt -a -n=\"{fam}\" | Out-Null"));
+        }
+        for fam in &to_remove {
+            lines.push(format!("CheckNetIsolation LoopbackExempt -d -n=\"{fam}\" | Out-Null"));
+        }
+        let script = lines.join("\r\n");
+        let temp_path = std::env::temp_dir().join(format!(
+            "billow-uwp-{}-{}.ps1",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&temp_path, script.as_bytes())
+            .map_err(|error| format!("无法准备 UWP 豁免脚本：{error}"))?;
+        let run_result = if crate::elevation::is_admin() {
+            std::process::Command::new("powershell")
+                .creation_flags(0x08000000)
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(&temp_path)
+                .status()
+                .map_err(|error| format!("执行 UWP 回环豁免失败：{error}"))
+        } else {
+            let escaped = temp_path.to_string_lossy().replace('\'', "''");
+            let elevate_cmd = format!(
+                "$p = Start-Process powershell -Verb RunAs -PassThru -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{escaped}'; exit $p.ExitCode"
+            );
+            std::process::Command::new("powershell")
+                .creation_flags(0x08000000)
+                .args(["-NoProfile", "-NonInteractive", "-Command", &elevate_cmd])
+                .status()
+                .map_err(|error| format!("请求管理员权限失败：{error}"))
+        };
+        let _ = std::fs::remove_file(&temp_path);
+        let status = run_result?;
+        if !status.success() {
+            return Err("未获得管理员权限或 UWP 豁免未能保存".to_string());
+        }
+        return list_uwp_apps();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = family_names;
+        Err("UWP 回环工具仅适用于 Windows 系统".to_string())
+    }
+}
+
 /// Launch the Windows UWP loopback exemption utility so Microsoft Store / UWP apps can
 /// connect to the local `127.0.0.1` system proxy.
 pub fn open_uwp_loopback_tool() -> Result<(), String> {
@@ -3449,9 +3724,47 @@ mod tests {
             "allow-exclude-package",
             "allow-include-package",
             "allow-open-uwp-tool",
+            "allow-list-uwp-apps",
+            "allow-save-uwp-exemptions",
         ] {
             assert!(permissions.contains(&permission), "{permission}");
         }
+    }
+
+    #[test]
+    fn uwp_loopback_parsers_and_diff_handle_english_chinese_and_validation() {
+        let exempt_output = "
+[1] -----------------------------------------------------------------
+    Name: Microsoft.WindowsStore_8wekyb3d8bbwe
+    SID:  S-1-15-2-1609473798-1231923017-684268153-4268514328-882773646-2760585773-1760938157
+[2] -----------------------------------------------------------------
+    名称：Microsoft.WindowsTerminal_8wekyb3d8bbwe
+    SID:  S-1-15-2-9999-8888
+";
+        let exempt = parse_loopback_exempt_output(exempt_output);
+        assert!(exempt.contains("microsoft.windowsstore_8wekyb3d8bbwe"));
+        assert!(exempt.contains("microsoft.windowsterminal_8wekyb3d8bbwe"));
+        assert!(exempt.contains("s-1-15-2-9999-8888"));
+
+        let json = r#"[
+            {"name":"Microsoft.WindowsStore","display_name":"Microsoft Store","family_name":"Microsoft.WindowsStore_8wekyb3d8bbwe","sid":"S-1-15-2-1"},
+            {"name":"Microsoft.XboxApp","display_name":"@{Microsoft.XboxApp?ms-resource://title}","family_name":"Microsoft.XboxApp_8wekyb3d8bbwe","sid":"S-1-15-2-2"},
+            {"name":"Bad","display_name":"Bad","family_name":"bad;rm -rf","sid":""}
+        ]"#;
+        let apps = parse_uwp_apps_json(json, &exempt).unwrap();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].family_name, "Microsoft.WindowsStore_8wekyb3d8bbwe");
+        assert!(apps[0].exempted);
+        assert_eq!(apps[1].family_name, "Microsoft.XboxApp_8wekyb3d8bbwe");
+        assert_eq!(apps[1].display_name, "Microsoft.XboxApp");
+        assert!(!apps[1].exempted);
+
+        let (to_add, to_remove) = diff_uwp_exemptions(
+            &apps,
+            &["Microsoft.XboxApp_8wekyb3d8bbwe".to_string()],
+        );
+        assert_eq!(to_add, vec!["Microsoft.XboxApp_8wekyb3d8bbwe"]);
+        assert_eq!(to_remove, vec!["Microsoft.WindowsStore_8wekyb3d8bbwe"]);
     }
 
     #[test]

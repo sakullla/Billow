@@ -21,6 +21,7 @@ import {
   type ShellState,
   type Snapshot,
   type ThemePreference,
+  type UwpApp,
 } from './types'
 import { createDemoBackend } from './demo'
 
@@ -111,6 +112,10 @@ export interface Backend {
   upgradeGeo(key?: string): Promise<GeoFile[]>
   /** Opens the Windows UWP loopback exemption tool. */
   openUwpTool(): Promise<void>
+  /** Lists installed Windows UWP / AppContainer apps with loopback exemption state. */
+  listUwpApps(): Promise<UwpApp[]>
+  /** Saves the desired exempted Windows UWP PackageFamilyNames. */
+  saveUwpExemptions(familyNames: string[]): Promise<UwpApp[]>
   /** Nodes of a proxy provider or rules of a rule provider. */
   /** A query filters a rule set's full content, beyond the rows a plain preview carries. */
   providerDetail(kind: 'proxy' | 'rule', name: string, query?: string): Promise<ProviderDetail>
@@ -246,6 +251,8 @@ function createTauriBackend(): Backend {
     providerAction: (kind, name, action) => call<void>('provider_action', { kind, name, action }),
     upgradeGeo: (key) => call<GeoFile[]>('upgrade_geo', key ? { key } : {}),
     openUwpTool: () => call<void>('open_uwp_tool'),
+    listUwpApps: () => call<UwpApp[]>('list_uwp_apps'),
+    saveUwpExemptions: (familyNames) => call<UwpApp[]>('save_uwp_exemptions', { familyNames }),
     providerDetail: (kind, name, query) => call<ProviderDetail>('provider_detail', { kind, name, query: query ?? null }),
     geoFiles: () => call<GeoFile[]>('geo_files'),
     flushCache: (which) => snap('flush_cache', { which }),
