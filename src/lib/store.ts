@@ -193,6 +193,9 @@ export function createStore(backend: Backend) {
   const current = computed(() => snapshot.value.profiles.find((item) => item.current) ?? null)
   const hasProfiles = computed(() => snapshot.value.profiles.length > 0)
   const isAndroid = computed(() => snapshot.value.platform === 'android')
+  /** Desktop OS from `AppInfo.platform` (Rust `std::env::consts::OS`); gates Linux / macOS-only options. */
+  const isLinux = computed(() => !isAndroid.value && app.value?.platform === 'linux')
+  const isMac = computed(() => !isAndroid.value && app.value?.platform === 'macos')
   const connecting = computed(() => Boolean(busy.connect))
   const connectStage = ref('')
   /** True while 重启内核 runs; the home status reads 重启中 instead of 断开中. */
@@ -980,6 +983,8 @@ export function createStore(backend: Backend) {
     current,
     hasProfiles,
     isAndroid,
+    isLinux,
+    isMac,
     connecting,
     connectStage,
     restarting,

@@ -138,6 +138,8 @@ const users: Format = (value) => {
   const names = value.map((item) => String(item).split(':')[0])
   return names.length > 2 ? `${names.slice(0, 2).join('、')} 等 ${names.length} 个用户` : names.join('、')
 }
+/** mihomo reads port 0 as a listener that stays off. */
+const port: Format = (value) => (value === 0 ? '关闭' : formatValue(value))
 const sniffs: Format = (value) => (isRecord(value) ? Object.keys(value).join('、') || '无' : formatValue(value))
 const geodata: Format = (value) => (value === true ? 'dat（GeoIP / GeoSite）' : value === false ? 'mmdb' : formatValue(value))
 
@@ -147,10 +149,10 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
     title: '入站',
     fields: [
       { path: 'mixed-port', label: '混合端口', to: KERNEL },
-      { path: 'port', label: 'HTTP 端口' },
-      { path: 'socks-port', label: 'SOCKS5 端口' },
-      { path: 'redir-port', label: '透明代理端口' },
-      { path: 'tproxy-port', label: 'TProxy 端口' },
+      { path: 'port', label: 'HTTP 端口', format: port, to: KERNEL },
+      { path: 'socks-port', label: 'SOCKS5 端口', format: port, to: KERNEL },
+      { path: 'redir-port', label: '透明代理端口', format: port, to: KERNEL },
+      { path: 'tproxy-port', label: 'TProxy 端口', format: port, to: KERNEL },
       { path: 'allow-lan', label: '局域网连接', fallback: '关闭', to: KERNEL },
       { path: 'bind-address', label: '监听地址' },
       { path: 'lan-allowed-ips', label: '允许的来源', to: KERNEL },
@@ -168,8 +170,8 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
       { path: 'keep-alive-interval', label: 'TCP 保活间隔', format: seconds, to: KERNEL },
       { path: 'keep-alive-idle', label: 'TCP 保活空闲', format: seconds },
       { path: 'disable-keep-alive', label: '关闭 TCP 保活', to: KERNEL },
-      { path: 'interface-name', label: '出口网卡' },
-      { path: 'routing-mark', label: '路由标记' },
+      { path: 'interface-name', label: '出口网卡', to: KERNEL },
+      { path: 'routing-mark', label: '路由标记', to: KERNEL },
     ],
   },
   {
@@ -203,6 +205,8 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
       { path: 'tun.dns-hijack', label: 'DNS 劫持', to: TUN },
       { path: 'tun.mtu', label: 'MTU', to: TUN },
       { path: 'tun.device', label: '网卡名称', to: TUN },
+      { path: 'tun.route-address', label: '只走 TUN 的地址', to: TUN },
+      { path: 'tun.route-exclude-address', label: '不走 TUN 的地址', to: TUN },
     ],
   },
   {
@@ -211,6 +215,12 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
     fields: [
       { path: 'sniffer.enable', label: '域名嗅探', fallback: '关闭', to: KERNEL },
       { path: 'sniffer.sniff', label: '嗅探协议', format: sniffs },
+      { path: 'sniffer.sniff.HTTP.ports', label: 'HTTP 嗅探端口', to: KERNEL },
+      { path: 'sniffer.sniff.TLS.ports', label: 'TLS 嗅探端口', to: KERNEL },
+      { path: 'sniffer.sniff.QUIC.ports', label: 'QUIC 嗅探端口', to: KERNEL },
+      { path: 'sniffer.force-domain', label: '强制嗅探域名', to: KERNEL },
+      { path: 'sniffer.skip-domain', label: '跳过嗅探域名', to: KERNEL },
+      { path: 'sniffer.override-destination', label: '嗅探结果覆盖目标', to: KERNEL },
       { path: 'geodata-mode', label: 'GeoIP 格式', format: geodata, fallback: 'mmdb', to: RESOURCES },
       { path: 'geodata-loader', label: 'GEO 加载方式', format: loader, fallback: '低内存', to: RESOURCES },
       { path: 'geo-auto-update', label: '自动更新 GEO', to: RESOURCES },

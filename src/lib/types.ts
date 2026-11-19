@@ -153,6 +153,17 @@ export interface TunSettings {
   dns_hijack: string[]
   mtu: number
   device: string
+  /** `tun.route-address`; null follows the profile. Desktop only. */
+  route_address: string[] | null
+  /** `tun.route-exclude-address`; null follows the profile. Desktop only. */
+  route_exclude_address: string[] | null
+}
+
+/** Per-protocol sniff ports (`443` or `8000-9000`); null keeps the sniffer block's own. */
+export interface SniffPorts {
+  http: string[] | null
+  tls: string[] | null
+  quic: string[] | null
 }
 
 export interface ProviderRow {
@@ -206,6 +217,21 @@ export interface KernelSettings {
   geo_source: GeoSource
   /** Individual URL overrides per GEO database. */
   geo_urls: GeoUrls
+  /** Sniffer details layered on the final sniffer block while it is on; null follows it. */
+  sniff_ports: SniffPorts
+  sniff_force_domain: string[] | null
+  sniff_skip_domain: string[] | null
+  sniff_override_destination: boolean | null
+  /** Extra inbound ports; 0 turns a listener off, null follows the profile. */
+  socks_port: number | null
+  /** mihomo `port`, the HTTP-only listener. */
+  http_port: number | null
+  redir_port: number | null
+  tproxy_port: number | null
+  /** Outbound interface; '' drops the profile's, null follows it. */
+  interface_name: string | null
+  /** Linux `routing-mark`; 0 drops the profile's, null follows it. */
+  routing_mark: number | null
 }
 
 export type GeoSource = '' | 'github' | 'jsdelivr' | 'testingcf'
@@ -247,6 +273,23 @@ export interface ConfigValues {
   find_process_mode: string | null
   keep_alive_interval: number | null
   disable_keep_alive: boolean | null
+  socks_port: number | null
+  /** The profile's own `port`; `mixed_port` falls back to it. */
+  http_port: number | null
+  redir_port: number | null
+  tproxy_port: number | null
+  interface_name: string | null
+  routing_mark: number | null
+  /** `sniffer.enable` in the profile. */
+  sniffer: boolean | null
+  sniff_http_ports: string[] | null
+  sniff_tls_ports: string[] | null
+  sniff_quic_ports: string[] | null
+  sniff_force_domain: string[] | null
+  sniff_skip_domain: string[] | null
+  sniff_override_destination: boolean | null
+  tun_route_address: string[] | null
+  tun_route_exclude_address: string[] | null
 }
 
 /** A 覆写 applied to its profile without saving. */
@@ -531,6 +574,41 @@ export function defaultTun(): TunSettings {
     dns_hijack: ['any:53', 'tcp://any:53'],
     mtu: 1500,
     device: '',
+    route_address: null,
+    route_exclude_address: null,
+  }
+}
+
+export function emptySniffPorts(): SniffPorts {
+  return { http: null, tls: null, quic: null }
+}
+
+export function emptyConfigValues(): ConfigValues {
+  return {
+    mixed_port: null,
+    allow_lan: null,
+    ipv6: null,
+    log_level: null,
+    unified_delay: null,
+    tcp_concurrent: null,
+    find_process_mode: null,
+    keep_alive_interval: null,
+    disable_keep_alive: null,
+    socks_port: null,
+    http_port: null,
+    redir_port: null,
+    tproxy_port: null,
+    interface_name: null,
+    routing_mark: null,
+    sniffer: null,
+    sniff_http_ports: null,
+    sniff_tls_ports: null,
+    sniff_quic_ports: null,
+    sniff_force_domain: null,
+    sniff_skip_domain: null,
+    sniff_override_destination: null,
+    tun_route_address: null,
+    tun_route_exclude_address: null,
   }
 }
 
@@ -562,6 +640,16 @@ export function emptyKernelSettings(): KernelSettings {
     find_process_mode: null,
     test_url: '',
     test_timeout_ms: 0,
+    sniff_ports: emptySniffPorts(),
+    sniff_force_domain: null,
+    sniff_skip_domain: null,
+    sniff_override_destination: null,
+    socks_port: null,
+    http_port: null,
+    redir_port: null,
+    tproxy_port: null,
+    interface_name: null,
+    routing_mark: null,
   }
 }
 
@@ -599,17 +687,7 @@ export function emptySnapshot(): Snapshot {
     upload_total: null,
     download_total: null,
     settings: emptyKernelSettings(),
-    config_values: {
-      mixed_port: null,
-      allow_lan: null,
-      ipv6: null,
-      log_level: null,
-      unified_delay: null,
-      tcp_concurrent: null,
-      find_process_mode: null,
-      keep_alive_interval: null,
-      disable_keep_alive: null,
-    },
+    config_values: emptyConfigValues(),
     notice: null,
   }
 }
@@ -690,6 +768,18 @@ export function normalizeRuleRow(raw: unknown): RuleRow {
 
 const strings = (value: unknown): string[] =>
   list(value).filter((item): item is string => typeof item === 'string')
+/** A list that may be absent (null = follow the profile); an empty one counts as absent. */
+const optStrings = (value: unknown): string[] | null => {
+  if (!Array.isArray(value)) return null
+  const items = value
+    .map((item) => (typeof item === 'number' ? String(item) : item))
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+  return items.length ? items : null
+}
+const optPort = (value: unknown): number | null => {
+  const port = num(value)
+  return port != null && Number.isInteger(port) && port <= 65535 ? port : null
+}
 
 function normalizeStringMap(raw: unknown): Record<string, string[]> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
@@ -772,6 +862,8 @@ function normalizeTun(raw: unknown): TunSettings {
     dns_hijack: strings(value.dns_hijack),
     mtu: num(value.mtu) ?? base.mtu,
     device: str(value.device),
+    route_address: optStrings(value.route_address),
+    route_exclude_address: optStrings(value.route_exclude_address),
   }
 }
 
@@ -806,6 +898,20 @@ function normalizeSettings(raw: unknown): KernelSettings {
     find_process_mode: optStr(value.find_process_mode),
     test_url: str(value.test_url),
     test_timeout_ms: num(value.test_timeout_ms) ?? 0,
+    sniff_ports: {
+      http: optStrings(obj(value.sniff_ports).http),
+      tls: optStrings(obj(value.sniff_ports).tls),
+      quic: optStrings(obj(value.sniff_ports).quic),
+    },
+    sniff_force_domain: optStrings(value.sniff_force_domain),
+    sniff_skip_domain: optStrings(value.sniff_skip_domain),
+    sniff_override_destination: optBool(value.sniff_override_destination),
+    socks_port: optPort(value.socks_port),
+    http_port: optPort(value.http_port),
+    redir_port: optPort(value.redir_port),
+    tproxy_port: optPort(value.tproxy_port),
+    interface_name: typeof value.interface_name === 'string' ? value.interface_name.trim() : null,
+    routing_mark: num(value.routing_mark),
   }
 }
 
@@ -902,6 +1008,21 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
       find_process_mode: optStr(config.find_process_mode),
       keep_alive_interval: num(config.keep_alive_interval),
       disable_keep_alive: optBool(config.disable_keep_alive),
+      socks_port: num(config.socks_port),
+      http_port: num(config.http_port),
+      redir_port: num(config.redir_port),
+      tproxy_port: num(config.tproxy_port),
+      interface_name: optStr(config.interface_name),
+      routing_mark: num(config.routing_mark),
+      sniffer: optBool(config.sniffer),
+      sniff_http_ports: optStrings(config.sniff_http_ports),
+      sniff_tls_ports: optStrings(config.sniff_tls_ports),
+      sniff_quic_ports: optStrings(config.sniff_quic_ports),
+      sniff_force_domain: optStrings(config.sniff_force_domain),
+      sniff_skip_domain: optStrings(config.sniff_skip_domain),
+      sniff_override_destination: optBool(config.sniff_override_destination),
+      tun_route_address: optStrings(config.tun_route_address),
+      tun_route_exclude_address: optStrings(config.tun_route_exclude_address),
     },
     notice: optStr(source.notice),
   }
@@ -915,4 +1036,46 @@ export function normalizeKernel(raw: unknown): KernelStatus {
     ready: Boolean(value.ready),
     version: optStr(value.version),
   }
+}
+
+/** Entries of a comma / whitespace / newline separated list, empty ones dropped. */
+export function splitList(text: string): string[] {
+  return text.split(/[\s,，;；]+/).map((item) => item.trim()).filter(Boolean)
+}
+
+function ipv4(text: string): boolean {
+  const parts = text.split('.')
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+}
+
+function ipv6(text: string): boolean {
+  if (!/^[0-9a-f:.]+$/i.test(text) || !text.includes(':')) return false
+  const tail = text.includes('.') ? text.slice(text.lastIndexOf(':') + 1) : ''
+  if (tail && !ipv4(tail)) return false
+  const head = tail ? text.slice(0, text.lastIndexOf(':') + 1) + '0:0' : text
+  const halves = head.split('::')
+  if (halves.length > 2) return false
+  const groups = halves.flatMap((half) => (half ? half.split(':') : []))
+  if (groups.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) return false
+  return halves.length === 2 ? groups.length < 8 : groups.length === 8
+}
+
+/** An IP address or `ip/prefix` network, as the backend accepts it. */
+export function isCidrEntry(entry: string): boolean {
+  const [addr, prefix, ...rest] = entry.trim().split('/')
+  if (rest.length || !addr) return false
+  const v4 = ipv4(addr)
+  if (!v4 && !ipv6(addr)) return false
+  if (prefix === undefined) return true
+  if (!/^\d{1,3}$/.test(prefix)) return false
+  return Number(prefix) <= (v4 ? 32 : 128)
+}
+
+/** A sniff port entry: `443` or `8000-9000`, each end within 1–65535. */
+export function isPortEntry(entry: string): boolean {
+  const text = entry.replace(/\s+/g, '')
+  const port = (part: string) => /^\d{1,5}$/.test(part) && Number(part) >= 1 && Number(part) <= 65535
+  const range = /^(\d+)-(\d+)$/.exec(text)
+  if (range) return port(range[1]!) && port(range[2]!) && Number(range[1]) <= Number(range[2])
+  return port(text)
 }

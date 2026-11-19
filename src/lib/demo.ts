@@ -2,10 +2,14 @@ import type { Backend, NodeTestEvent } from './backend'
 import { ruleKeys } from './rule-keys'
 import {
   DNS_QUERY_TYPES,
+  emptyConfigValues,
   emptyKernelSettings,
+  isCidrEntry,
+  isPortEntry,
   isValidDnsName,
   emptySnapshot,
   type AppInfo,
+  type KernelSettings,
   type ConfigOverview,
   type ConnectionRow,
   type DnsQueryResult,
@@ -63,6 +67,8 @@ function nodeNames(): string[] {
 interface DemoOptions {
   profiles?: boolean
   platform?: 'desktop' | 'android'
+  /** Desktop OS reported as `AppInfo.platform` (`windows` / `macos` / `linux`); defaults to `demo`. */
+  os?: string
   /** Group icons by group name; include an unreachable URL to exercise the fallback. */
   groupIcons?: Record<string, string>
   /** Simulate a `/connections` read failure while connected. */
@@ -139,7 +145,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   let kernel: KernelStatus = { channel: 'stable', failure: null, ready: true, version: 'v1.19.17' }
   let app: AppInfo = {
     version: '0.2.0',
-    platform: 'demo',
+    platform: options.platform === 'android' ? 'android' : (options.os ?? 'demo'),
     // Android has no autostart or tray; the real shell reports null there.
     autostart: options.platform === 'android' ? null : false,
     close_to_tray: true,
@@ -252,6 +258,35 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     }
     if (s.lan_allowed_ips.length) out['lan-allowed-ips'] = [...s.lan_allowed_ips, ...loopback]
     if (s.sniffer != null) out.sniffer = s.sniffer ? demoProfileOptions().sniffer : { enable: false }
+    const sniffer = out.sniffer as Record<string, unknown> | undefined
+    if (sniffer?.enable === true) {
+      const sniff = { ...(sniffer.sniff as Record<string, Record<string, unknown>> | undefined) }
+      const ports: [string, string[] | null][] = [
+        ['HTTP', s.sniff_ports.http],
+        ['TLS', s.sniff_ports.tls],
+        ['QUIC', s.sniff_ports.quic],
+      ]
+      for (const [protocol, items] of ports) {
+        if (items) sniff[protocol] = { ...sniff[protocol], ports: items.map((item) => (/^\d+$/.test(item) ? Number(item) : item)) }
+      }
+      sniffer.sniff = sniff
+      if (s.sniff_force_domain) sniffer['force-domain'] = s.sniff_force_domain
+      if (s.sniff_skip_domain) sniffer['skip-domain'] = s.sniff_skip_domain
+      if (s.sniff_override_destination != null) sniffer['override-destination'] = s.sniff_override_destination
+    }
+    if (state.platform !== 'android') {
+      const explicit: [string, number | null][] = [
+        ['socks-port', s.socks_port],
+        ['port', s.http_port],
+        ['redir-port', s.redir_port],
+        ['tproxy-port', s.tproxy_port],
+      ]
+      for (const [name, port] of explicit) if (port != null) out[name] = port
+      if (s.interface_name === '') delete out['interface-name']
+      else if (s.interface_name) out['interface-name'] = s.interface_name
+      if (s.routing_mark === 0) delete out['routing-mark']
+      else if (s.routing_mark != null) out['routing-mark'] = s.routing_mark
+    }
     if (s.dns_override) {
       out.dns = {
         enable: true,
@@ -271,6 +306,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         'strict-route': s.tun.strict_route,
         'dns-hijack': s.tun.dns_hijack,
         ...(s.tun.mtu ? { mtu: s.tun.mtu } : {}),
+        ...(s.tun.route_address ? { 'route-address': s.tun.route_address } : {}),
+        ...(s.tun.route_exclude_address ? { 'route-exclude-address': s.tun.route_exclude_address } : {}),
       }
     }
     return out
@@ -526,6 +563,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     state.node_catalog = catalog()
     state.nodes_notice = state.active_id ? null : '需要先添加或更新配置'
     state.config_values = {
+      ...emptyConfigValues(),
       mixed_port: 7890,
       allow_lan: false,
       ipv6: false,
@@ -533,8 +571,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       unified_delay: true,
       tcp_concurrent: true,
       find_process_mode: 'strict',
-      keep_alive_interval: null,
-      disable_keep_alive: null,
+      sniffer: true,
+      sniff_http_ports: ['80'],
+      sniff_tls_ports: ['443'],
+      sniff_quic_ports: ['443'],
     }
     state.mixed_port = state.settings.mixed_port ?? (state.active_id ? 7890 : null)
     return structuredClone(state)
@@ -1133,6 +1173,12 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(0)
     },
     async saveSettings(settings) {
+      const refused = demoSettingsError(settings, settings.mixed_port || state.config_values.mixed_port || 7890)
+      if (refused) {
+        state.input_error = refused
+        return done(120)
+      }
+      state.input_error = null
       state.settings = JSON.parse(JSON.stringify({ ...emptyKernelSettings(), ...settings }))
       return done(300)
     },
@@ -1143,4 +1189,40 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return () => listeners.delete(handler)
     },
   }
+}
+
+/** Mirror of the backend's KernelSettings::validate: refuse and name the first bad entry. */
+function demoSettingsError(s: KernelSettings, mixed: number): string | null {
+  const routes: [string, string[] | null | undefined][] = [
+    ['只让这些地址走 TUN', s.tun?.route_address],
+    ['不走 TUN 的地址', s.tun?.route_exclude_address],
+  ]
+  for (const [label, items] of routes) {
+    const bad = items?.find((item) => !isCidrEntry(item))
+    if (bad) return `${label}中的「${bad}」不是有效的 IP 或网段，例如 192.168.0.0/16`
+  }
+  const sniff: [string, string[] | null | undefined][] = [
+    ['HTTP 嗅探端口', s.sniff_ports?.http],
+    ['TLS 嗅探端口', s.sniff_ports?.tls],
+    ['QUIC 嗅探端口', s.sniff_ports?.quic],
+  ]
+  for (const [label, items] of sniff) {
+    const bad = items?.find((item) => !isPortEntry(item))
+    if (bad) return `${label}中的「${bad.trim()}」无效，请填 1–65535 的端口或“起-止”范围`
+  }
+  if (s.interface_name && /\s/.test(s.interface_name.trim())) return '出口网卡名称不能包含空格'
+  const taken: [string, number][] = mixed > 0 ? [['混合端口', mixed]] : []
+  const ports: [string, number | null | undefined][] = [
+    ['SOCKS 端口', s.socks_port],
+    ['HTTP 端口', s.http_port],
+    ['redir 端口', s.redir_port],
+    ['tproxy 端口', s.tproxy_port],
+  ]
+  for (const [label, port] of ports) {
+    if (!port) continue
+    const other = taken.find(([, used]) => used === port)
+    if (other) return `${label} ${port} 与${other[0]}重复，请换一个端口`
+    taken.push([label, port])
+  }
+  return null
 }

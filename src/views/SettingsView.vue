@@ -18,6 +18,10 @@ import {
   defaultDns,
   defaultSystemProxy,
   defaultTun,
+  emptySniffPorts,
+  isCidrEntry,
+  isPortEntry,
+  splitList,
   type DnsSettings,
   type KernelChannel,
   type KernelSettings,
@@ -157,7 +161,10 @@ const overridden = computed(() => {
   return Boolean(
     s.mixed_port || s.log_level || s.find_process_mode || s.test_url || s.test_timeout_ms || s.sniffer != null ||
       s.keep_alive_interval != null || s.lan_auth.length || s.lan_allowed_ips.length ||
-      FLAGS.some((flag) => s[flag.key] != null),
+      FLAGS.some((flag) => s[flag.key] != null) ||
+      sniffOverridden.value ||
+      NET_KEYS.some((key) => s[key] != null) ||
+      s.tun.route_address != null || s.tun.route_exclude_address != null,
   )
 })
 
@@ -219,6 +226,218 @@ watch(
   { immediate: true },
 )
 const lanPort = computed(() => snap.value.mixed_port ?? snap.value.settings.mixed_port ?? snap.value.config_values.mixed_port ?? 7890)
+
+/** SOCKS / HTTP listeners other devices can also use, with the value the kernel would bind (R34). */
+const lanExtraPorts = computed(() => {
+  if (store.isAndroid.value) return []
+  const s = snap.value.settings
+  const config = snap.value.config_values
+  // An explicit mixed port makes the backend drop the profile's own HTTP / SOCKS listeners.
+  const follow = (value: number | null) => (s.mixed_port || value === effectiveMixedPort.value ? null : value)
+  const extra = [
+    { label: 'SOCKS', port: s.socks_port ?? follow(config.socks_port) },
+    { label: 'HTTP', port: s.http_port ?? follow(config.http_port) },
+  ]
+  return extra.filter((item): item is { label: string; port: number } => Boolean(item.port))
+})
+
+// ── Sniffer details (R33): shown while sniffing is on, whoever turned it on.
+const snifferOn = computed(() => snap.value.settings.sniffer ?? snap.value.config_values.sniffer ?? false)
+type OverrideChoice = '' | 'on' | 'off'
+const OVERRIDE_CHOICES: { id: OverrideChoice; label: string }[] = [
+  { id: '', label: '跟随配置' },
+  { id: 'on', label: '覆盖' },
+  { id: 'off', label: '不覆盖' },
+]
+const SNIFF_PORTS = [
+  { key: 'http', title: 'HTTP 端口', config: 'sniff_http_ports' },
+  { key: 'tls', title: 'TLS 端口', config: 'sniff_tls_ports' },
+  { key: 'quic', title: 'QUIC 端口', config: 'sniff_quic_ports' },
+] as const
+const sniffText = ref({ http: '', tls: '', quic: '', force: '', skip: '' })
+const sniffOverride = ref<OverrideChoice>('')
+const sniffError = ref<string | null>(null)
+let lastSyncedSniff = ''
+const listOrNull = (items: string[]) => (items.length ? items : null)
+const domainLines = (text: string) => listOrNull(text.split(/[\n,，]/).map((item) => item.trim()).filter(Boolean))
+const sniffSaved = computed(() => {
+  const s = snap.value.settings
+  return {
+    ports: { ...s.sniff_ports },
+    force: s.sniff_force_domain,
+    skip: s.sniff_skip_domain,
+    override: s.sniff_override_destination,
+  }
+})
+const sniffOverridden = computed(() => JSON.stringify(sniffSaved.value) !== JSON.stringify({ ports: emptySniffPorts(), force: null, skip: null, override: null }))
+function loadSniff(value: typeof sniffSaved.value) {
+  sniffText.value = {
+    http: (value.ports.http ?? []).join(', '),
+    tls: (value.ports.tls ?? []).join(', '),
+    quic: (value.ports.quic ?? []).join(', '),
+    force: (value.force ?? []).join('\n'),
+    skip: (value.skip ?? []).join('\n'),
+  }
+  sniffOverride.value = value.override == null ? '' : value.override ? 'on' : 'off'
+  sniffError.value = null
+  lastSyncedSniff = JSON.stringify(value)
+}
+watch(sniffSaved, (value) => {
+  if (JSON.stringify(value) !== lastSyncedSniff) loadSniff(value)
+}, { immediate: true })
+const sniffDraft = computed(() => ({
+  ports: {
+    http: listOrNull(splitList(sniffText.value.http)),
+    tls: listOrNull(splitList(sniffText.value.tls)),
+    quic: listOrNull(splitList(sniffText.value.quic)),
+  },
+  force: domainLines(sniffText.value.force),
+  skip: domainLines(sniffText.value.skip),
+  override: sniffOverride.value === '' ? null : sniffOverride.value === 'on',
+}))
+const sniffDirty = computed(() => JSON.stringify(sniffDraft.value) !== JSON.stringify(sniffSaved.value))
+const configList = (items: string[] | null, empty = '配置未设置') => (items?.length ? `配置中为 ${items.join('、')}` : empty)
+function saveSniff() {
+  const draft = sniffDraft.value
+  for (const field of SNIFF_PORTS) {
+    const bad = draft.ports[field.key]?.find((item) => !isPortEntry(item))
+    if (bad) {
+      sniffError.value = `${field.title}中的「${bad}」无效，请填 1–65535 的端口或“起-止”范围，例如 443 或 8000-9000`
+      store.toast(sniffError.value, 'error')
+      return
+    }
+  }
+  sniffError.value = null
+  lastSyncedSniff = ''
+  void save({
+    sniff_ports: draft.ports,
+    sniff_force_domain: draft.force,
+    sniff_skip_domain: draft.skip,
+    sniff_override_destination: draft.override,
+  })
+}
+function undoSniff() {
+  loadSniff(sniffSaved.value)
+}
+
+// ── Extra inbound ports, outbound interface and routing mark (R34)
+type PortKey = 'socks_port' | 'http_port' | 'redir_port' | 'tproxy_port'
+const NET_KEYS = ['socks_port', 'http_port', 'redir_port', 'tproxy_port', 'interface_name', 'routing_mark'] as const
+const PORT_FIELDS: { key: PortKey; title: string; label: string; hint: string }[] = [
+  { key: 'socks_port', title: 'SOCKS 端口', label: 'SOCKS 端口', hint: '单独的 SOCKS5 入站' },
+  { key: 'http_port', title: 'HTTP 端口', label: 'HTTP 端口', hint: '单独的 HTTP 代理入站' },
+  { key: 'redir_port', title: '透明代理端口（redir）', label: 'redir 端口', hint: '配合防火墙重定向使用' },
+  { key: 'tproxy_port', title: '透明代理端口（tproxy）', label: 'tproxy 端口', hint: '配合 iptables / nftables TProxy 使用' },
+]
+/** mihomo implements redir on Linux and macOS, tproxy and routing marks on Linux only. */
+const visiblePorts = computed(() =>
+  PORT_FIELDS.filter((field) => {
+    if (field.key === 'redir_port') return store.isLinux.value || store.isMac.value
+    if (field.key === 'tproxy_port') return store.isLinux.value
+    return !store.isAndroid.value
+  }),
+)
+const showRoutingMark = computed(() => store.isLinux.value)
+const showNetBlock = computed(() => visiblePorts.value.length > 0 || !store.isAndroid.value || showRoutingMark.value)
+type IfaceChoice = 'follow' | 'off' | 'custom'
+const IFACE_CHOICES: { id: IfaceChoice; label: string }[] = [
+  { id: 'follow', label: '跟随配置' },
+  { id: 'off', label: '不指定' },
+  { id: 'custom', label: '指定' },
+]
+const netText = ref<Record<PortKey | 'routing_mark' | 'interface_name', string>>({
+  socks_port: '',
+  http_port: '',
+  redir_port: '',
+  tproxy_port: '',
+  routing_mark: '',
+  interface_name: '',
+})
+const ifaceChoice = ref<IfaceChoice>('follow')
+const netError = ref<string | null>(null)
+let lastSyncedNet = ''
+const netSaved = computed(() => {
+  const s = snap.value.settings
+  return {
+    socks_port: s.socks_port,
+    http_port: s.http_port,
+    redir_port: s.redir_port,
+    tproxy_port: s.tproxy_port,
+    interface_name: s.interface_name,
+    routing_mark: s.routing_mark,
+  }
+})
+function loadNet(value: typeof netSaved.value) {
+  const text = (item: number | null) => (item == null ? '' : String(item))
+  netText.value = {
+    socks_port: text(value.socks_port),
+    http_port: text(value.http_port),
+    redir_port: text(value.redir_port),
+    tproxy_port: text(value.tproxy_port),
+    routing_mark: text(value.routing_mark),
+    interface_name: value.interface_name ?? '',
+  }
+  ifaceChoice.value = value.interface_name == null ? 'follow' : value.interface_name === '' ? 'off' : 'custom'
+  netError.value = null
+  lastSyncedNet = JSON.stringify(value)
+}
+watch(netSaved, (value) => {
+  if (JSON.stringify(value) !== lastSyncedNet) loadNet(value)
+}, { immediate: true })
+const numberOrNull = (text: string) => (text.trim() === '' ? null : Number(text.trim()))
+const netDraft = computed(() => ({
+  socks_port: numberOrNull(netText.value.socks_port),
+  http_port: numberOrNull(netText.value.http_port),
+  redir_port: numberOrNull(netText.value.redir_port),
+  tproxy_port: numberOrNull(netText.value.tproxy_port),
+  interface_name: ifaceChoice.value === 'follow' ? null : ifaceChoice.value === 'off' ? '' : netText.value.interface_name.trim(),
+  routing_mark: numberOrNull(netText.value.routing_mark),
+}))
+const netDirty = computed(() => JSON.stringify(netDraft.value) !== JSON.stringify(netSaved.value))
+function configPort(key: PortKey): string {
+  const config = snap.value.config_values
+  const value = { socks_port: config.socks_port, http_port: config.http_port, redir_port: config.redir_port, tproxy_port: config.tproxy_port }[key]
+  if (key === 'http_port' && value != null && value === config.mixed_port && !snap.value.settings.mixed_port) return '配置中的 port 已作为混合端口'
+  return value == null ? '配置未设置' : value === 0 ? '配置中为关闭' : `配置中为 ${value}`
+}
+function netValidationError(): string | null {
+  const text = netText.value
+  for (const field of PORT_FIELDS) {
+    const raw = text[field.key].trim()
+    if (raw && (!/^\d+$/.test(raw) || Number(raw) > 65535)) return `${field.label}必须是 1–65535 的整数，填 0 表示关闭`
+  }
+  const mark = text.routing_mark.trim()
+  if (mark && (!/^\d+$/.test(mark) || Number(mark) > 4294967295)) return '路由标记必须是非负整数，填 0 表示不设置'
+  if (ifaceChoice.value === 'custom') {
+    const name = text.interface_name.trim()
+    if (!name) return '请填写出口网卡名称，或选择“跟随配置”'
+    if (/\s/.test(name)) return '出口网卡名称不能包含空格'
+  }
+  const draft = netDraft.value
+  const mixed = snap.value.settings.mixed_port || snap.value.config_values.mixed_port || 7890
+  const taken: [string, number][] = [['混合端口', mixed]]
+  for (const field of PORT_FIELDS) {
+    const port = draft[field.key]
+    if (!port) continue
+    const other = taken.find(([, used]) => used === port)
+    if (other) return `${field.label} ${port} 与${other[0]}重复，请换一个端口`
+    taken.push([field.label, port])
+  }
+  return null
+}
+function saveNet() {
+  const error = netValidationError()
+  netError.value = error
+  if (error) {
+    store.toast(error, 'error')
+    return
+  }
+  lastSyncedNet = ''
+  void save({ ...netDraft.value })
+}
+function undoNet() {
+  loadNet(netSaved.value)
+}
 
 function saveLan() {
   const user = lanUser.value.trim()
@@ -377,6 +596,18 @@ function reset() {
     find_process_mode: null,
     test_url: '',
     test_timeout_ms: 0,
+    sniff_ports: emptySniffPorts(),
+    sniff_force_domain: null,
+    sniff_skip_domain: null,
+    sniff_override_destination: null,
+    socks_port: null,
+    http_port: null,
+    redir_port: null,
+    tproxy_port: null,
+    interface_name: null,
+    routing_mark: null,
+    // TUN routes are the one TUN item 全部跟随配置 also clears (R32).
+    tun: { ...currentSettings.value.tun, route_address: null, route_exclude_address: null },
   })
 }
 void props
@@ -569,11 +800,18 @@ const STACK_HINTS: Record<TunSettings['stack'], string> = {
 const tun = ref<TunSettings>(copy(snap.value.settings.tun))
 const tunHijack = ref('')
 const tunMtu = ref('')
+const tunRoutes = ref({ route_address: '', route_exclude_address: '' })
+const tunError = ref<string | null>(null)
 let lastSyncedTun = ''
 function applyTunDraft(value: TunSettings) {
   tun.value = copy(value)
   tunHijack.value = value.dns_hijack.join('\n')
   tunMtu.value = value.mtu ? String(value.mtu) : ''
+  tunRoutes.value = {
+    route_address: (value.route_address ?? []).join('\n'),
+    route_exclude_address: (value.route_exclude_address ?? []).join('\n'),
+  }
+  tunError.value = null
 }
 function loadTun(value: TunSettings) {
   applyTunDraft(value)
@@ -595,14 +833,30 @@ const tunDraft = computed<TunSettings>(() => {
     ...tun.value,
     dns_hijack: lines(tunHijack.value),
     mtu: Number.isFinite(mtuNum) && mtuNum > 0 ? Math.round(mtuNum) : 0,
+    route_address: listOrNull(splitList(tunRoutes.value.route_address)),
+    route_exclude_address: listOrNull(splitList(tunRoutes.value.route_exclude_address)),
   }
 })
+const TUN_ROUTES = [
+  { key: 'route_exclude_address', title: '不走 TUN 的地址', config: 'tun_route_exclude_address', hint: '这些 IP 或网段绕过 TUN，例如局域网 192.168.0.0/16' },
+  { key: 'route_address', title: '只让这些地址走 TUN', config: 'tun_route_address', hint: '只把这些 IP 或网段路由进 TUN，其余不接管' },
+] as const
 const tunDirty = computed(() => JSON.stringify(tunDraft.value) !== JSON.stringify(snap.value.settings.tun))
 function undoTun() {
   loadTun(snap.value.settings.tun)
 }
 function saveTun() {
-  save({ tun: tunDraft.value })
+  const draft = tunDraft.value
+  for (const field of TUN_ROUTES) {
+    const bad = draft[field.key]?.find((item) => !isCidrEntry(item))
+    if (bad) {
+      tunError.value = `${field.title}中的「${bad}」不是有效的 IP 或网段，例如 192.168.0.0/16`
+      store.toast(tunError.value, 'error')
+      return
+    }
+  }
+  tunError.value = null
+  save({ tun: draft })
 }
 function resetTun() {
   applyTunDraft(defaultTun())
@@ -1561,6 +1815,11 @@ const TABS = computed(() => [
               </template>
               <template v-else>其他设备的代理地址填本机局域网 IP 与端口 {{ lanPort }}</template>
             </p>
+            <p v-for="extra in lanExtraPorts" :key="extra.label" class="lan-address small" data-testid="lan-extra-address">
+              <Icon name="network" :size="14" />
+              {{ extra.label }} 代理地址
+              <span class="lan-address-value mono">{{ lanAddress ?? '本机局域网 IP' }}:{{ extra.port }}</span>
+            </p>
             <div class="lan-field">
               <div class="lan-label">
                 <strong>访问认证<span v-if="snap.settings.lan_auth.length" class="tag accent sm">已开启</span></strong>
@@ -1625,7 +1884,7 @@ const TABS = computed(() => [
           <summary>
             <Icon name="chevron-right" :size="14" />
             <span>高级内核与测速选项</span>
-            <span class="muted small">{{ store.isAndroid.value ? '日志、进程匹配、嗅探与测速地址' : '日志、进程匹配、嗅探、TCP 保活与测速地址' }}</span>
+            <span class="muted small">{{ store.isAndroid.value ? '日志、进程匹配、嗅探与测速地址' : '日志、进程匹配、嗅探、TCP 保活、端口、出口网卡与测速地址' }}</span>
           </summary>
           <div class="settings-fold-body">
             <div class="setting-row">
@@ -1662,8 +1921,62 @@ const TABS = computed(() => [
                 <strong>域名嗅探<span v-if="snap.settings.sniffer != null" class="tag accent sm">已覆盖</span></strong>
                 <p class="muted small">从 HTTP / TLS / QUIC 流量中识别域名，让按域名分流在 IP 直连时也生效</p>
               </div>
-              <Toggle :model-value="Boolean(snap.settings.sniffer)" :busy="store.busy.settings" label="域名嗅探" @update:model-value="(on) => save({ sniffer: on })" />
+              <Toggle :model-value="snifferOn" :busy="store.busy.settings" label="域名嗅探" @update:model-value="(on) => save({ sniffer: on })" />
             </div>
+            <!-- Details layer on whichever sniffer block is on; while it is off they stay saved but hidden (R33). -->
+            <details v-if="snifferOn" class="settings-fold flush sniff-fold" data-testid="sniff-advanced" :open="sniffOverridden || undefined">
+              <summary>
+                <Icon name="chevron-right" :size="14" />
+                <span>嗅探高级选项</span>
+                <span class="muted small">嗅探端口、强制与跳过的域名</span>
+              </summary>
+              <div class="settings-fold-body">
+                <div v-for="field in SNIFF_PORTS" :key="field.key" class="setting-row">
+                  <div class="grow">
+                    <strong>{{ field.title }}<span v-if="snap.settings.sniff_ports[field.key] != null" class="tag accent sm">已覆盖</span></strong>
+                    <p class="muted small">端口或“起-止”范围，逗号分隔；留空跟随配置 · {{ configList(snap.config_values[field.config]) }}</p>
+                  </div>
+                  <input
+                    v-model="sniffText[field.key]"
+                    class="input sm mono"
+                    spellcheck="false"
+                    :placeholder="snap.config_values[field.config]?.join(', ') || '跟随配置'"
+                    :aria-label="`${field.title.replace(' 端口', '')} 嗅探端口`"
+                    :data-testid="`sniff-ports-${field.key}`"
+                    @keydown.enter="saveSniff"
+                  />
+                </div>
+                <div class="setting-row stacked">
+                  <div>
+                    <strong>强制嗅探域名<span v-if="snap.settings.sniff_force_domain != null" class="tag accent sm">已覆盖</span></strong>
+                    <p class="muted small">这些域名总是嗅探，每行一个；留空跟随配置 · {{ configList(snap.config_values.sniff_force_domain) }}</p>
+                  </div>
+                  <textarea v-model="sniffText.force" class="input list-input mono" rows="2" spellcheck="false" aria-label="强制嗅探域名" data-testid="sniff-force-domain" />
+                </div>
+                <div class="setting-row stacked">
+                  <div>
+                    <strong>跳过嗅探域名<span v-if="snap.settings.sniff_skip_domain != null" class="tag accent sm">已覆盖</span></strong>
+                    <p class="muted small">嗅探到这些域名时不改写，每行一个；留空跟随配置 · {{ configList(snap.config_values.sniff_skip_domain) }}</p>
+                  </div>
+                  <textarea v-model="sniffText.skip" class="input list-input mono" rows="2" spellcheck="false" aria-label="跳过嗅探域名" data-testid="sniff-skip-domain" />
+                </div>
+                <div class="setting-row">
+                  <div class="grow">
+                    <strong>用嗅探结果覆盖目标<span v-if="snap.settings.sniff_override_destination != null" class="tag accent sm">已覆盖</span></strong>
+                    <p class="muted small">用嗅探到的域名替换连接的目标地址{{ snap.config_values.sniff_override_destination == null ? '' : ` · 配置中为${snap.config_values.sniff_override_destination ? '覆盖' : '不覆盖'}` }}</p>
+                  </div>
+                  <Segmented v-model="sniffOverride" :options="OVERRIDE_CHOICES" size="sm" label="用嗅探结果覆盖目标" data-testid="sniff-override" />
+                </div>
+                <p v-if="sniffError" class="field-error small" role="alert" data-testid="sniff-error">
+                  <Icon name="alert" :size="13" />
+                  <span>{{ sniffError }}</span>
+                </p>
+                <div v-if="sniffDirty" class="lan-actions">
+                  <button type="button" class="btn ghost sm" data-testid="undo-sniff" @click="undoSniff">撤销</button>
+                  <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-sniff" @click="saveSniff">保存</button>
+                </div>
+              </div>
+            </details>
             <!-- mihomo always disables TCP keep-alive on Android, so the choice would do nothing there. -->
             <div v-if="!store.isAndroid.value" class="setting-row">
               <div class="grow">
@@ -1680,6 +1993,66 @@ const TABS = computed(() => [
                 @update:model-value="(value) => save({ keep_alive_interval: value === '' ? null : Number(value) })"
               />
             </div>
+            <!-- Extra listeners and outbound binding; platform rules follow what mihomo implements (R34). -->
+            <template v-if="showNetBlock">
+              <div v-for="field in visiblePorts" :key="field.key" class="setting-row">
+                <div class="grow">
+                  <strong>{{ field.title }}<span v-if="snap.settings[field.key] != null" class="tag accent sm">已覆盖</span></strong>
+                  <p class="muted small">{{ field.hint }}；留空跟随配置，填 0 关闭 · {{ configPort(field.key) }}</p>
+                </div>
+                <input
+                  v-model="netText[field.key]"
+                  class="input sm mono short"
+                  inputmode="numeric"
+                  placeholder="跟随配置"
+                  :aria-label="field.label"
+                  :data-testid="`port-${field.key}`"
+                  @keydown.enter="saveNet"
+                />
+              </div>
+              <div v-if="!store.isAndroid.value" class="setting-row wrap">
+                <div class="grow">
+                  <strong>出口网卡<span v-if="snap.settings.interface_name != null" class="tag accent sm">已覆盖</span></strong>
+                  <p class="muted small">让代理流量从指定网卡发出{{ snap.config_values.interface_name ? ` · 配置中为 ${snap.config_values.interface_name}` : ' · 配置未设置' }}</p>
+                </div>
+                <div class="inline-field">
+                  <Segmented v-model="ifaceChoice" :options="IFACE_CHOICES" size="sm" label="出口网卡" data-testid="interface-choice" />
+                  <input
+                    v-if="ifaceChoice === 'custom'"
+                    v-model="netText.interface_name"
+                    class="input sm mono short"
+                    spellcheck="false"
+                    placeholder="例如 en0"
+                    aria-label="出口网卡名称"
+                    data-testid="interface-name"
+                    @keydown.enter="saveNet"
+                  />
+                </div>
+              </div>
+              <div v-if="showRoutingMark" class="setting-row">
+                <div class="grow">
+                  <strong>路由标记<span v-if="snap.settings.routing_mark != null" class="tag accent sm">已覆盖</span></strong>
+                  <p class="muted small">给出站连接打上 fwmark，配合策略路由；留空跟随配置，填 0 不设置{{ snap.config_values.routing_mark != null ? ` · 配置中为 ${snap.config_values.routing_mark}` : '' }}</p>
+                </div>
+                <input
+                  v-model="netText.routing_mark"
+                  class="input sm mono short"
+                  inputmode="numeric"
+                  placeholder="跟随配置"
+                  aria-label="路由标记"
+                  data-testid="routing-mark"
+                  @keydown.enter="saveNet"
+                />
+              </div>
+              <p v-if="netError" class="field-error small" role="alert" data-testid="net-error">
+                <Icon name="alert" :size="13" />
+                <span>{{ netError }}</span>
+              </p>
+              <div v-if="netDirty" class="lan-actions">
+                <button type="button" class="btn ghost sm" data-testid="undo-net" @click="undoNet">撤销</button>
+                <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-net" @click="saveNet">保存</button>
+              </div>
+            </template>
             <div class="setting-row wrap">
               <div class="grow">
                 <strong>测速地址</strong>
@@ -1767,7 +2140,7 @@ const TABS = computed(() => [
           <summary>
             <Icon name="chevron-right" :size="14" />
             <span>高级虚拟网卡参数</span>
-            <span class="muted small">出口接口、DNS 劫持、MTU 与网卡名称</span>
+            <span class="muted small">出口接口、DNS 劫持、MTU、网卡名称与路由地址</span>
           </summary>
           <div class="settings-fold-body">
             <div class="setting-row">
@@ -1798,6 +2171,27 @@ const TABS = computed(() => [
               </div>
               <input v-model="tun.device" class="input sm mono" placeholder="自动" aria-label="网卡名称" />
             </div>
+            <!-- Android routes through the VPN service and per-app rules instead (R32). -->
+            <template v-if="!store.isAndroid.value">
+              <div v-for="field in TUN_ROUTES" :key="field.key" class="setting-row stacked">
+                <div>
+                  <strong>{{ field.title }}<span v-if="snap.settings.tun[field.key] != null" class="tag accent sm">已覆盖</span></strong>
+                  <p class="muted small">{{ field.hint }}，每行一个；留空跟随配置 · {{ configList(snap.config_values[field.config]) }}</p>
+                </div>
+                <textarea
+                  v-model="tunRoutes[field.key]"
+                  class="input list-input mono"
+                  rows="2"
+                  spellcheck="false"
+                  :aria-label="field.title"
+                  :data-testid="`tun-${field.key.replace(/_/g, '-')}`"
+                />
+              </div>
+            </template>
+            <p v-if="tunError" class="field-error small" role="alert" data-testid="tun-error">
+              <Icon name="alert" :size="13" />
+              <span>{{ tunError }}</span>
+            </p>
           </div>
         </details>
       </section>

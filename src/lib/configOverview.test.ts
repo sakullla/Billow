@@ -105,4 +105,22 @@ describe('config overview', () => {
     expect(formatValue({ a: 1, b: 2 })).toBe('2 项')
     expect(formatValue('strict')).toBe('自动')
   })
+
+  it('labels the TUN route, sniff detail and extra port rows Billow sets (R32–R34)', () => {
+    const profile = { 'mixed-port': 7890, sniffer: { enable: true, sniff: { TLS: { ports: [443] } } }, tun: { enable: false } }
+    const effective = {
+      ...profile,
+      'socks-port': 7891,
+      'redir-port': 0,
+      sniffer: { enable: true, sniff: { TLS: { ports: [443, 8443] } }, 'skip-domain': ['a.example'] },
+      tun: { enable: false, 'route-exclude-address': ['192.168.0.0/16'] },
+    }
+    const sections = buildOverview(overview({ profile, prepared: profile, effective }))
+    expect(rowOf(sections, 'socks-port')).toMatchObject({ value: '7891', source: 'billow', to: { page: 'settings', tab: 'kernel' } })
+    expect(rowOf(sections, 'redir-port')).toMatchObject({ value: '关闭', source: 'billow' })
+    expect(rowOf(sections, 'sniffer.sniff.TLS.ports')).toMatchObject({ value: '443、8443', source: 'billow', before: '443' })
+    expect(rowOf(sections, 'sniffer.skip-domain')).toMatchObject({ value: 'a.example', source: 'billow' })
+    expect(rowOf(sections, 'tun.route-exclude-address')).toMatchObject({ value: '192.168.0.0/16', source: 'billow' })
+    expect(rowOf(buildOverview(overview({ profile, prepared: profile, effective }), { android: true }), 'tun.route-exclude-address')).toBeUndefined()
+  })
 })

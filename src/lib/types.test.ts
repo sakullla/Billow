@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isValidDnsName, normalizeDnsQueryResult, normalizeIcon, normalizeKernel, normalizeRuleRow, normalizeSnapshot } from './types'
+import { isCidrEntry, isPortEntry, isValidDnsName, normalizeDnsQueryResult, normalizeIcon, normalizeKernel, normalizeRuleRow, normalizeSnapshot } from './types'
 import { resolvePage } from './store'
 
 describe('normalizeSnapshot', () => {
@@ -279,5 +279,45 @@ describe('DNS query helpers', () => {
       elapsed_ms: 18,
       error: null,
     })
+  })
+})
+
+describe('settings for TUN routes, sniffing and extra listeners (R32–R34)', () => {
+  it('reads the new settings and profile values, treating absent or empty lists as follow', () => {
+    const snapshot = normalizeSnapshot({
+      settings: {
+        tun: { route_exclude_address: ['192.168.0.0/16'], route_address: [] },
+        sniff_ports: { tls: ['443', 8443], http: 'bad' },
+        sniff_force_domain: null,
+        sniff_override_destination: false,
+        socks_port: 0,
+        http_port: 70000,
+        interface_name: ' en0 ',
+        routing_mark: 255,
+      },
+      config_values: { sniffer: true, socks_port: 7891, tun_route_exclude_address: ['10.0.0.0/8'] },
+    })
+    const s = snapshot.settings
+    expect(s.tun.route_exclude_address).toEqual(['192.168.0.0/16'])
+    expect(s.tun.route_address).toBeNull()
+    expect(s.sniff_ports).toEqual({ http: null, tls: ['443', '8443'], quic: null })
+    expect(s.sniff_force_domain).toBeNull()
+    expect(s.sniff_override_destination).toBe(false)
+    expect(s.socks_port).toBe(0)
+    expect(s.http_port).toBeNull()
+    expect(s.interface_name).toBe('en0')
+    expect(s.routing_mark).toBe(255)
+    expect(snapshot.config_values).toMatchObject({ sniffer: true, socks_port: 7891, tun_route_exclude_address: ['10.0.0.0/8'], redir_port: null })
+    expect(normalizeSnapshot({}).settings.interface_name).toBeNull()
+  })
+
+  it('accepts IP and network entries the backend accepts, and nothing else', () => {
+    for (const ok of ['192.168.0.0/16', '10.0.0.5', '::1/128', 'fd00::/8', '2001:db8::1', '0.0.0.0/0']) expect(isCidrEntry(ok), ok).toBe(true)
+    for (const bad of ['300.1.1.0/24', '1.2.3.4/40', 'phone', '1.2.3/24', '::1/129', '1.2.3.4/', '']) expect(isCidrEntry(bad), bad).toBe(false)
+  })
+
+  it('accepts a port or a start-end range within 1–65535', () => {
+    for (const ok of ['443', '8000-9000', '1', '65535', ' 80 ']) expect(isPortEntry(ok), ok).toBe(true)
+    for (const bad of ['70000', '0', '9000-8000', 'abc', '1-', '-5']) expect(isPortEntry(bad), bad).toBe(false)
   })
 })

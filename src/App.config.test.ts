@@ -5,7 +5,8 @@ import { createDemoBackend } from './lib/demo'
 import type { Store } from './lib/store'
 import type { KernelSettings } from './lib/types'
 
-// Regression coverage for docs/requirements/2026-11-08-mihomo-config.md (R22–R26).
+// Regression coverage for docs/requirements/2026-11-08-mihomo-config.md (R22–R26)
+// and docs/requirements/2026-11-19-mihomo-support-gaps.md (R32–R35).
 
 async function settle(ms = 1000) {
   await vi.advanceTimersByTimeAsync(ms)
@@ -340,5 +341,201 @@ describe('kernel maintenance (R35)', () => {
     await pickSelect(wrapper, '[data-testid="log-level-select"]', 'info')
     await settle(400)
     expect(wrapper.find('[data-testid="kernel-gc-row"]').exists()).toBe(false)
+  })
+})
+
+/** The demo overview waits on a timer; fake timers must run it. */
+async function overviewOf(backend: ReturnType<typeof createDemoBackend>) {
+  const pending = backend.configOverview()
+  await settle(200)
+  return pending
+}
+
+describe('TUN route addresses (R32)', () => {
+  async function openTun(wrapper: Wrapper) {
+    storeOf(wrapper).openSettings('tun')
+    await flushPromises()
+  }
+
+  it('saves 不走 TUN 的地址 into the running config, refuses an unreadable entry and is cleared by both resets', async () => {
+    const { wrapper, backend, saved } = await mountApp()
+    await openTun(wrapper)
+    const exclude = () => wrapper.find('textarea[data-testid="tun-route-exclude-address"]')
+    expect(exclude().exists()).toBe(true)
+    expect(wrapper.find('textarea[data-testid="tun-route-address"]').exists()).toBe(true)
+
+    await exclude().setValue('192.168.0.0/16')
+    await wrapper.find('[data-testid="save-tun"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.tun.route_exclude_address).toEqual(['192.168.0.0/16'])
+    expect(saved.at(-1)!.tun.route_address).toBeNull()
+    expect(rowWith(wrapper, '不走 TUN 的地址').find('.tag').text()).toBe('已覆盖')
+    const overview = await overviewOf(backend)
+    expect((overview.effective.tun as Record<string, unknown>)['route-exclude-address']).toEqual(['192.168.0.0/16'])
+    storeOf(wrapper).openConfig('overview')
+    await settle(300)
+    const row = body().find('.cfg-row[data-path="tun.route-exclude-address"]')
+    expect(row.text()).toContain('192.168.0.0/16')
+    expect(row.attributes('data-source')).toBe('billow')
+    await body().find('.modal-foot .btn.primary').trigger('click')
+    await flushPromises()
+
+    const count = saved.length
+    await exclude().setValue('300.1.1.0/24')
+    await wrapper.find('[data-testid="save-tun"]').trigger('click')
+    await settle(400)
+    expect(saved.length).toBe(count)
+    expect(wrapper.find('[data-testid="tun-error"]').text()).toContain('「300.1.1.0/24」')
+    const unchanged = await overviewOf(backend)
+    expect((unchanged.effective.tun as Record<string, unknown>)['route-exclude-address']).toEqual(['192.168.0.0/16'])
+
+    // TUN 恢复默认 clears the draft; saving drops the override.
+    const restore = wrapper.findAll('button').find((button) => button.text() === '恢复默认')!
+    await restore.trigger('click')
+    await flushPromises()
+    expect((exclude().element as HTMLTextAreaElement).value).toBe('')
+    await wrapper.find('[data-testid="save-tun"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.tun.route_exclude_address).toBeNull()
+
+    // 全部跟随配置 on the kernel page clears it too.
+    await exclude().setValue('10.0.0.0/8')
+    await wrapper.find('[data-testid="save-tun"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.tun.route_exclude_address).toEqual(['10.0.0.0/8'])
+    await openKernelSettings(wrapper)
+    await wrapper.findAll('button').find((button) => button.text() === '全部跟随配置')!.trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.tun.route_exclude_address).toBeNull()
+    expect(saved.at(-1)!.tun.route_address).toBeNull()
+  })
+
+  it('stays out of sight on Android', async () => {
+    const { wrapper } = await mountApp({ platform: 'android' }, 390)
+    await openTun(wrapper)
+    expect(wrapper.find('[data-testid="tun-route-exclude-address"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="tun-route-address"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('不走 TUN 的地址')
+  })
+})
+
+describe('sniffer details (R33)', () => {
+  it('shows the profile value while following, and a fold with per-protocol ports only while sniffing is on', async () => {
+    const { wrapper, backend, saved } = await mountApp()
+    await openKernelSettings(wrapper)
+    // The demo profile enables sniffing, so following it shows the switch on.
+    expect(rowWith(wrapper, '域名嗅探').find('[role="switch"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="sniff-advanced"]').exists()).toBe(true)
+    expect(rowWith(wrapper, 'TLS 端口').text()).toContain('配置中为 443')
+
+    await wrapper.find('[data-testid="sniff-ports-tls"]').setValue('443,8443')
+    await wrapper.find('[data-testid="save-sniff"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.sniff_ports).toEqual({ http: null, tls: ['443', '8443'], quic: null })
+    expect(rowWith(wrapper, 'TLS 端口').find('.tag').text()).toBe('已覆盖')
+    const overview = await overviewOf(backend)
+    const sniff = (overview.effective.sniffer as { sniff: Record<string, { ports: unknown }> }).sniff
+    expect(sniff.TLS!.ports).toEqual([443, 8443])
+    expect(sniff.HTTP!.ports).toEqual([80])
+
+    const count = saved.length
+    await wrapper.find('[data-testid="sniff-ports-tls"]').setValue('70000')
+    await wrapper.find('[data-testid="save-sniff"]').trigger('click')
+    await settle(400)
+    expect(saved.length).toBe(count)
+    expect(wrapper.find('[data-testid="sniff-error"]').text()).toContain('「70000」')
+    expect(((await overviewOf(backend)).effective.sniffer as { sniff: Record<string, { ports: unknown }> }).sniff.TLS!.ports).toEqual([443, 8443])
+    await wrapper.find('[data-testid="undo-sniff"]').trigger('click')
+    await flushPromises()
+
+    // Off hides the fold but keeps what was saved, so turning it back on restores the ports.
+    await rowWith(wrapper, '域名嗅探').find('[role="switch"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.sniffer).toBe(false)
+    expect(saved.at(-1)!.sniff_ports.tls).toEqual(['443', '8443'])
+    expect(wrapper.find('[data-testid="sniff-advanced"]').exists()).toBe(false)
+    expect((await overviewOf(backend)).effective.sniffer).toEqual({ enable: false })
+    await rowWith(wrapper, '域名嗅探').find('[role="switch"]').trigger('click')
+    await settle(400)
+    expect((wrapper.find('[data-testid="sniff-ports-tls"]').element as HTMLInputElement).value).toBe('443, 8443')
+
+    // 全部跟随配置 clears the details along with the switch.
+    await wrapper.findAll('button').find((button) => button.text() === '全部跟随配置')!.trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.sniffer).toBeNull()
+    expect(saved.at(-1)!.sniff_ports).toEqual({ http: null, tls: null, quic: null })
+  })
+})
+
+describe('extra listeners, outbound interface and routing mark (R34)', () => {
+  it('saves a SOCKS port into the running config, lists it for LAN devices and refuses a clash with the mixed port', async () => {
+    const { wrapper, backend, saved } = await mountApp()
+    await openKernelSettings(wrapper)
+    await wrapper.find('[data-testid="port-socks_port"]').setValue('7891')
+    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.socks_port).toBe(7891)
+    expect((await overviewOf(backend)).effective['socks-port']).toBe(7891)
+
+    await rowWith(wrapper, '局域网连接').find('[role="switch"]').trigger('click')
+    await settle(400)
+    expect(wrapper.find('[data-testid="lan-extra-address"]').text()).toContain('SOCKS')
+    expect(wrapper.find('[data-testid="lan-extra-address"]').text()).toContain('192.168.1.23:7891')
+
+    const count = saved.length
+    await wrapper.find('[data-testid="port-http_port"]').setValue('7890')
+    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await settle(400)
+    expect(saved.length).toBe(count)
+    expect(wrapper.find('[data-testid="net-error"]').text()).toContain('HTTP 端口 7890 与混合端口重复')
+    expect((await overviewOf(backend)).effective.port).toBeUndefined()
+    await wrapper.find('[data-testid="undo-net"]').trigger('click')
+    await flushPromises()
+
+    storeOf(wrapper).openConfig('overview')
+    await settle(300)
+    const row = body().find('.cfg-row[data-path="socks-port"]')
+    expect(row.text()).toContain('7891')
+    expect(row.attributes('data-source')).toBe('billow')
+    await body().find('.modal-foot .btn.primary').trigger('click')
+    await flushPromises()
+
+    // An interface name with a space is refused; 全部跟随配置 clears every new item.
+    await wrapper.find('[data-testid="interface-choice"] [data-value="custom"]').trigger('click')
+    await wrapper.find('[data-testid="interface-name"]').setValue('Wi Fi')
+    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="net-error"]').text()).toContain('不能包含空格')
+    await wrapper.find('[data-testid="interface-name"]').setValue('en0')
+    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.interface_name).toBe('en0')
+    await wrapper.findAll('button').find((button) => button.text() === '全部跟随配置')!.trigger('click')
+    await settle(400)
+    const last = saved.at(-1)!
+    expect([last.socks_port, last.http_port, last.redir_port, last.tproxy_port, last.interface_name, last.routing_mark]).toEqual([
+      null, null, null, null, null, null,
+    ])
+  })
+
+  it('shows each item only on the platforms mihomo supports it', async () => {
+    const visible = async (options: Parameters<typeof createDemoBackend>[0], width = 1200) => {
+      const { wrapper } = await mountApp(options, width)
+      await settle(50)
+      await openKernelSettings(wrapper)
+      const has = (id: string) => wrapper.find(`[data-testid="${id}"]`).exists()
+      return {
+        socks: has('port-socks_port'),
+        http: has('port-http_port'),
+        redir: has('port-redir_port'),
+        tproxy: has('port-tproxy_port'),
+        iface: has('interface-choice'),
+        mark: has('routing-mark'),
+      }
+    }
+    expect(await visible({ os: 'windows' })).toEqual({ socks: true, http: true, redir: false, tproxy: false, iface: true, mark: false })
+    expect(await visible({ os: 'macos' })).toEqual({ socks: true, http: true, redir: true, tproxy: false, iface: true, mark: false })
+    expect(await visible({ os: 'linux' })).toEqual({ socks: true, http: true, redir: true, tproxy: true, iface: true, mark: true })
+    expect(await visible({ platform: 'android' }, 390)).toEqual({ socks: false, http: false, redir: false, tproxy: false, iface: false, mark: false })
   })
 })

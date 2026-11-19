@@ -109,6 +109,24 @@ impl Profile {
                     find_process_mode: read_string(&value, "find-process-mode"),
                     keep_alive_interval: read_i64(&value, "keep-alive-interval"),
                     disable_keep_alive: flag("disable-keep-alive"),
+                    socks_port: read_i64(&value, "socks-port"),
+                    http_port: read_i64(&value, "port"),
+                    redir_port: read_i64(&value, "redir-port"),
+                    tproxy_port: read_i64(&value, "tproxy-port"),
+                    interface_name: read_string(&value, "interface-name"),
+                    routing_mark: read_i64(&value, "routing-mark"),
+                    sniffer: mapping_get(&value, "sniffer").and_then(|s| mapping_get(s, "enable")).and_then(Value::as_bool),
+                    sniff_http_ports: sniff_config_ports(&value, "HTTP"),
+                    sniff_tls_ports: sniff_config_ports(&value, "TLS"),
+                    sniff_quic_ports: sniff_config_ports(&value, "QUIC"),
+                    sniff_force_domain: mapping_get(&value, "sniffer").and_then(|s| yaml_strings(mapping_get(s, "force-domain"))),
+                    sniff_skip_domain: mapping_get(&value, "sniffer").and_then(|s| yaml_strings(mapping_get(s, "skip-domain"))),
+                    sniff_override_destination: mapping_get(&value, "sniffer")
+                        .and_then(|s| mapping_get(s, "override-destination"))
+                        .and_then(Value::as_bool),
+                    tun_route_address: mapping_get(&value, "tun").and_then(|t| yaml_strings(mapping_get(t, "route-address"))),
+                    tun_route_exclude_address: mapping_get(&value, "tun")
+                        .and_then(|t| yaml_strings(mapping_get(t, "route-exclude-address"))),
                 },
             })
         }).as_ref()
@@ -230,6 +248,39 @@ pub struct KernelSettings {
     /// Per-database URL overrides (`geoip`, `mmdb`, `geosite`, `asn`).
     #[serde(default)]
     pub geo_urls: GeoUrls,
+    /// Per-protocol sniff ports layered on the final sniffer block; `None` keeps what it has.
+    #[serde(default)]
+    pub sniff_ports: SniffPorts,
+    #[serde(default)]
+    pub sniff_force_domain: Option<Vec<String>>,
+    #[serde(default)]
+    pub sniff_skip_domain: Option<Vec<String>>,
+    #[serde(default)]
+    pub sniff_override_destination: Option<bool>,
+    /// Extra inbound ports; `Some(0)` turns the listener off, `None` follows the profile.
+    #[serde(default)]
+    pub socks_port: Option<u16>,
+    /// mihomo's `port` (HTTP-only listener).
+    #[serde(default)]
+    pub http_port: Option<u16>,
+    #[serde(default)]
+    pub redir_port: Option<u16>,
+    #[serde(default)]
+    pub tproxy_port: Option<u16>,
+    /// Outbound interface; `Some("")` removes the profile's, `None` follows it.
+    #[serde(default)]
+    pub interface_name: Option<String>,
+    /// Linux `routing-mark`; `Some(0)` removes the profile's.
+    #[serde(default)]
+    pub routing_mark: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SniffPorts {
+    pub http: Option<Vec<String>>,
+    pub tls: Option<Vec<String>>,
+    pub quic: Option<Vec<String>>,
 }
 
 /// `geox-url` for a named GEO source; `None` leaves the profile's own value.
@@ -321,6 +372,10 @@ pub struct TunSettings {
     pub dns_hijack: Vec<String>,
     pub mtu: u32,
     pub device: String,
+    /// `tun.route-address`; `None` follows the profile. Desktop only.
+    pub route_address: Option<Vec<String>>,
+    /// `tun.route-exclude-address`; `None` follows the profile. Desktop only.
+    pub route_exclude_address: Option<Vec<String>>,
 }
 
 impl Default for TunSettings {
@@ -335,6 +390,8 @@ impl Default for TunSettings {
             dns_hijack: vec!["any:53".to_string(), "tcp://any:53".to_string()],
             mtu: 1500,
             device: String::new(),
+            route_address: None,
+            route_exclude_address: None,
         }
     }
 }
@@ -504,7 +561,19 @@ impl TunSettings {
             .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
             .take(32)
             .collect();
+        self.route_address = self.route_address.map(|items| normalize_cidrs(&items)).filter(|items| !items.is_empty());
+        self.route_exclude_address =
+            self.route_exclude_address.map(|items| normalize_cidrs(&items)).filter(|items| !items.is_empty());
         self
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (label, items) in [("只让这些地址走 TUN", &self.route_address), ("不走 TUN 的地址", &self.route_exclude_address)] {
+            if let Some(bad) = items.as_deref().and_then(invalid_cidr) {
+                return Err(format!("{label}中的「{bad}」不是有效的 IP 或网段，例如 192.168.0.0/16"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -520,6 +589,23 @@ pub struct ConfigValues {
     pub find_process_mode: Option<String>,
     pub keep_alive_interval: Option<i64>,
     pub disable_keep_alive: Option<bool>,
+    pub socks_port: Option<i64>,
+    /// The profile's own `port`, unlike `mixed_port` which falls back to it.
+    pub http_port: Option<i64>,
+    pub redir_port: Option<i64>,
+    pub tproxy_port: Option<i64>,
+    pub interface_name: Option<String>,
+    pub routing_mark: Option<i64>,
+    /// `sniffer.enable`, so the switch can show the profile's value while following it.
+    pub sniffer: Option<bool>,
+    pub sniff_http_ports: Option<Vec<String>>,
+    pub sniff_tls_ports: Option<Vec<String>>,
+    pub sniff_quic_ports: Option<Vec<String>>,
+    pub sniff_force_domain: Option<Vec<String>>,
+    pub sniff_skip_domain: Option<Vec<String>>,
+    pub sniff_override_destination: Option<bool>,
+    pub tun_route_address: Option<Vec<String>>,
+    pub tun_route_exclude_address: Option<Vec<String>>,
 }
 
 /// Read-only view of the running config for the overview screen. Long lists
@@ -998,12 +1084,18 @@ fn friendly_listen_error(message: &str) -> String {
     let in_use = lower.contains("only one usage of each socket address")
         || lower.contains("address already in use")
         || lower.contains("10048");
-    if (message.contains("Start Mixed")
-        || message.contains("Start HTTP")
-        || message.contains("Start SOCKS")
-        || message.contains("RESTful API"))
-        && in_use
-    {
+    let kind = [
+        ("Start Mixed", "混合端口"),
+        ("Start HTTP", "HTTP 端口"),
+        ("Start SOCKS", "SOCKS 端口"),
+        ("Start Redir", "redir 端口"),
+        ("Start TProxy", "tproxy 端口"),
+        ("RESTful API", "混合端口"),
+    ]
+    .into_iter()
+    .find(|(marker, _)| message.contains(marker))
+    .map(|(_, kind)| kind);
+    if let Some(kind) = kind.filter(|_| in_use) {
         let address = message
             .split("listen tcp ")
             .nth(1)
@@ -1012,7 +1104,7 @@ fn friendly_listen_error(message: &str) -> String {
             .filter(|address| !address.is_empty())
             .unwrap_or("混合端口");
         return format!(
-            "端口 {address} 已被其他程序占用，内核无法启动。请关闭占用它的程序（例如另一个 Clash / mihomo 客户端），或在设置中更换混合端口后重试"
+            "端口 {address} 已被其他程序占用，内核无法启动。请关闭占用它的程序（例如另一个 Clash / mihomo 客户端），或在设置中更换{kind}后重试"
         );
     }
     if message.contains("Start TUN") || lower.contains("configure tun") {
@@ -4065,7 +4157,79 @@ impl KernelSettings {
         self.keep_alive_interval = self.keep_alive_interval.map(|secs| if secs == 0 { 0 } else { secs.clamp(5, 3600) });
         self.lan_auth = normalize_lan_auth(&self.lan_auth);
         self.lan_allowed_ips = normalize_cidrs(&self.lan_allowed_ips);
+        let ports = |items: Option<Vec<String>>| {
+            items
+                .map(|items| {
+                    let mut out: Vec<String> = Vec::new();
+                    for entry in items.iter().filter_map(|item| sniff_port_entry(item)) {
+                        if !out.contains(&entry) && out.len() < 64 {
+                            out.push(entry);
+                        }
+                    }
+                    out
+                })
+                .filter(|items| !items.is_empty())
+        };
+        self.sniff_ports = SniffPorts {
+            http: ports(self.sniff_ports.http),
+            tls: ports(self.sniff_ports.tls),
+            quic: ports(self.sniff_ports.quic),
+        };
+        let domains = |items: Option<Vec<String>>| {
+            items
+                .map(|items| clean_list(items, 500))
+                .filter(|items| !items.is_empty())
+        };
+        self.sniff_force_domain = domains(self.sniff_force_domain);
+        self.sniff_skip_domain = domains(self.sniff_skip_domain);
+        self.interface_name = self
+            .interface_name
+            .map(|name| name.trim().chars().filter(|ch| !ch.is_control()).take(64).collect());
         self
+    }
+
+    /// Entries Billow cannot write faithfully are refused with the offending item named.
+    /// `mixed` is the mixed port the kernel would actually bind.
+    fn validate(&self, mixed: Option<i64>) -> Result<(), String> {
+        self.tun.validate()?;
+        for (label, items) in [
+            ("HTTP 嗅探端口", &self.sniff_ports.http),
+            ("TLS 嗅探端口", &self.sniff_ports.tls),
+            ("QUIC 嗅探端口", &self.sniff_ports.quic),
+        ] {
+            if let Some(bad) = items.iter().flatten().find(|item| sniff_port_entry(item).is_none()) {
+                return Err(format!("{label}中的「{}」无效，请填 1–65535 的端口或“起-止”范围", bad.trim()));
+            }
+        }
+        if let Some(name) = &self.interface_name {
+            if name.trim().contains(char::is_whitespace) {
+                return Err("出口网卡名称不能包含空格".to_string());
+            }
+        }
+        let mut taken: Vec<(&str, i64)> = Vec::new();
+        if let Some(port) = mixed.filter(|port| *port > 0) {
+            taken.push(("混合端口", port));
+        }
+        for (label, port) in [
+            ("SOCKS 端口", self.socks_port),
+            ("HTTP 端口", self.http_port),
+            ("redir 端口", self.redir_port),
+            ("tproxy 端口", self.tproxy_port),
+        ] {
+            let Some(port) = port.map(i64::from).filter(|port| *port > 0) else { continue };
+            if let Some((other, _)) = taken.iter().find(|(_, used)| *used == port) {
+                return Err(format!("{label} {port} 与{other}重复，请换一个端口"));
+            }
+            taken.push((label, port));
+        }
+        Ok(())
+    }
+
+    fn sniff_details_set(&self) -> bool {
+        self.sniff_ports != SniffPorts::default()
+            || self.sniff_force_domain.is_some()
+            || self.sniff_skip_domain.is_some()
+            || self.sniff_override_destination.is_some()
     }
 
     /// Everything except UI/startup preferences, the delay probe and OS system-proxy settings, which never need a kernel restart.
@@ -4160,6 +4324,44 @@ fn apply_settings(
                     map.remove(key(name));
                 }
             }
+        }
+        // Explicit ports win over the cleanup above; a profile port they would collide with goes.
+        let explicit = [
+            ("socks-port", settings.socks_port),
+            ("port", settings.http_port),
+            ("redir-port", settings.redir_port),
+            ("tproxy-port", settings.tproxy_port),
+        ];
+        let taken: Vec<i64> = explicit.iter().filter_map(|(_, port)| port.map(i64::from)).filter(|port| *port > 0).collect();
+        for (name, port) in explicit {
+            match port {
+                Some(port) => {
+                    map.insert(key(name), Value::Number(i64::from(port).into()));
+                }
+                None => {
+                    if map.get(key(name)).and_then(Value::as_i64).is_some_and(|port| taken.contains(&port)) {
+                        map.remove(key(name));
+                    }
+                }
+            }
+        }
+        match settings.interface_name.as_deref() {
+            Some("") => {
+                map.remove(key("interface-name"));
+            }
+            Some(name) => {
+                map.insert(key("interface-name"), Value::String(name.to_string()));
+            }
+            None => {}
+        }
+        match settings.routing_mark {
+            Some(0) => {
+                map.remove(key("routing-mark"));
+            }
+            Some(mark) => {
+                map.insert(key("routing-mark"), Value::Number(u64::from(mark).into()));
+            }
+            None => {}
         }
     }
     if !desktop {
@@ -4280,6 +4482,14 @@ fn apply_settings(
             map.insert(key("sniffer"), Value::Mapping(off));
         }
     }
+    if settings.sniff_details_set() {
+        // Details ride on whatever sniffer block ends up enabled; while sniffing is off they wait.
+        if let Some(sniffer) = map.get_mut(key("sniffer")).and_then(Value::as_mapping_mut) {
+            if sniffer.get(key("enable")).and_then(Value::as_bool) == Some(true) {
+                overlay_sniffer(sniffer, settings);
+            }
+        }
+    }
     if desktop {
         // Android hands the kernel a VPN fd; routing options there belong to the system.
         let mut tun = map
@@ -4304,11 +4514,57 @@ fn apply_settings(
         if !tun_settings.device.is_empty() {
             tun.insert(key("device"), Value::String(tun_settings.device.clone()));
         }
+        let strings = |items: &[String]| Value::Sequence(items.iter().map(|item| Value::String(item.clone())).collect());
+        if let Some(items) = &tun_settings.route_address {
+            tun.insert(key("route-address"), strings(items));
+        }
+        if let Some(items) = &tun_settings.route_exclude_address {
+            tun.insert(key("route-exclude-address"), strings(items));
+        }
         map.insert(key("tun"), Value::Mapping(tun));
     }
     let port = map.get(key("mixed-port")).and_then(Value::as_i64);
     let text = serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())?;
     Ok((text, port))
+}
+
+fn overlay_sniffer(sniffer: &mut serde_yaml::Mapping, settings: &KernelSettings) {
+    let key = |name: &str| Value::String(name.to_string());
+    let ports = [
+        ("HTTP", &settings.sniff_ports.http),
+        ("TLS", &settings.sniff_ports.tls),
+        ("QUIC", &settings.sniff_ports.quic),
+    ];
+    if ports.iter().any(|(_, items)| items.is_some()) {
+        let mut sniff = sniffer.get(key("sniff")).and_then(Value::as_mapping).cloned().unwrap_or_default();
+        for (protocol, items) in ports {
+            let Some(items) = items else { continue };
+            let mut entry = sniff.get(key(protocol)).and_then(Value::as_mapping).cloned().unwrap_or_default();
+            entry.insert(key("ports"), sniff_ports_value(items));
+            sniff.insert(key(protocol), Value::Mapping(entry));
+        }
+        sniffer.insert(key("sniff"), Value::Mapping(sniff));
+    }
+    let strings = |items: &[String]| Value::Sequence(items.iter().map(|item| Value::String(item.clone())).collect());
+    if let Some(items) = &settings.sniff_force_domain {
+        sniffer.insert(key("force-domain"), strings(items));
+    }
+    if let Some(items) = &settings.sniff_skip_domain {
+        sniffer.insert(key("skip-domain"), strings(items));
+    }
+    if let Some(flag) = settings.sniff_override_destination {
+        sniffer.insert(key("override-destination"), Value::Bool(flag));
+        // A per-protocol value would win over the global one, so keep them in step.
+        if let Some(sniff) = sniffer.get_mut(key("sniff")).and_then(Value::as_mapping_mut) {
+            for (_, entry) in sniff.iter_mut() {
+                if let Some(entry) = entry.as_mapping_mut() {
+                    if entry.contains_key(key("override-destination")) {
+                        entry.insert(key("override-destination"), Value::Bool(flag));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Loopback ranges stay exempt from LAN authentication and allow-lists, so the
@@ -4332,6 +4588,42 @@ fn normalize_lan_auth(items: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+/// The first entry `normalize_cidrs` would drop, so the user hears which one is wrong.
+fn invalid_cidr(items: &[String]) -> Option<String> {
+    items
+        .iter()
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .find(|item| normalize_cidrs(&[item.to_string()]).is_empty())
+        .map(str::to_string)
+}
+
+/// A sniff port entry as `443` or `8080-8880`, each end within 1–65535.
+fn sniff_port_entry(raw: &str) -> Option<String> {
+    let text: String = raw.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let port = |part: &str| part.parse::<u16>().ok().filter(|port| *port > 0 && part.chars().all(|ch| ch.is_ascii_digit()));
+    match text.split_once('-') {
+        Some((start, end)) => {
+            let (start, end) = (port(start)?, port(end)?);
+            (start <= end).then(|| format!("{start}-{end}"))
+        }
+        None => port(&text).map(|port| port.to_string()),
+    }
+}
+
+/// Sniff ports as YAML: single ports stay numbers, ranges are strings.
+fn sniff_ports_value(items: &[String]) -> Value {
+    Value::Sequence(
+        items
+            .iter()
+            .map(|item| match item.parse::<u16>() {
+                Ok(port) => Value::Number(u64::from(port).into()),
+                Err(_) => Value::String(item.clone()),
+            })
+            .collect(),
+    )
 }
 
 /// IP or CIDR entries in canonical `ip/prefix` form; a bare address becomes a host range.
@@ -4769,6 +5061,17 @@ impl ProfileBook {
             Ok(value) => value,
             Err(message) => { self.input_error = Some(message); return self.snapshot(); }
         };
+        let config = self.config_values();
+        let mixed = settings
+            .mixed_port
+            .filter(|port| *port > 0)
+            .map(i64::from)
+            .or(config.mixed_port)
+            .unwrap_or(FALLBACK_MIXED_PORT);
+        if let Err(message) = settings.validate(Some(mixed)) {
+            self.input_error = Some(message);
+            return self.snapshot();
+        }
         let mut settings = settings.normalized();
         settings.subscription_user_agent = user_agent;
         self.input_error = None;
@@ -5249,6 +5552,24 @@ fn mapping_get<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
         .iter()
         .find(|(candidate, _)| candidate.as_str() == Some(key))
         .map(|(_, item)| item)
+}
+
+/// A YAML list (or a lone scalar) of strings and numbers as text, for "配置中为 …" hints.
+fn yaml_strings(value: Option<&Value>) -> Option<Vec<String>> {
+    let scalar = |item: &Value| match item {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    };
+    match value? {
+        Value::Sequence(items) => Some(items.iter().filter_map(scalar).collect()),
+        other => scalar(other).map(|text| vec![text]),
+    }
+}
+
+fn sniff_config_ports(value: &Value, protocol: &str) -> Option<Vec<String>> {
+    let sniff = mapping_get(mapping_get(value, "sniffer")?, "sniff")?;
+    yaml_strings(mapping_get(mapping_get(sniff, protocol)?, "ports"))
 }
 
 fn parse_userinfo(header: Option<&str>) -> Option<Usage> {
@@ -6225,6 +6546,185 @@ proxy-groups:
         assert_eq!(normalized("MIPS"), "mips");
         assert_eq!(normalized("mixed"), "mixed");
         assert_eq!(normalized("bogus"), "", "unknown stacks fall back to the kernel default");
+    }
+
+    fn save_with(book: &mut ProfileBook, kernel: &mut FakeKernel, settings: KernelSettings) -> ProfileSnapshot {
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.save_settings(settings, kernel, &mut proxy, &mut tun, &mut vpn)
+    }
+
+    fn yaml_list(value: Option<&Value>) -> Vec<String> {
+        yaml_strings(value).unwrap_or_default()
+    }
+
+    #[test]
+    fn tun_route_addresses_reach_desktop_and_bad_entries_are_named() {
+        let dir = temp_dir("tun-route");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", "mixed-port: 7890\nproxies: []\ntun:\n  route-exclude-address: [10.0.0.0/8]\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        let enabled = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(enabled.config_values.tun_route_exclude_address, Some(vec!["10.0.0.0/8".to_string()]));
+
+        let tun = TunSettings { route_exclude_address: Some(vec!["192.168.0.0/16".into(), "1.1.1.1".into()]), ..TunSettings::default() };
+        let saved = save_with(&mut book, &mut kernel, KernelSettings { tun, ..Default::default() });
+        assert_eq!(saved.input_error, None);
+        assert_eq!(saved.settings.tun.route_exclude_address, Some(vec!["192.168.0.0/16".to_string(), "1.1.1.1/32".to_string()]));
+        assert_eq!(saved.settings.tun.route_address, None);
+        let (yaml, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        let tun_block = mapping_get(&running, "tun").unwrap();
+        assert_eq!(yaml_list(mapping_get(tun_block, "route-exclude-address")), ["192.168.0.0/16", "1.1.1.1/32"]);
+        assert!(mapping_get(tun_block, "route-address").is_none(), "None follows the profile");
+
+        let bad = TunSettings { route_exclude_address: Some(vec!["300.1.1.0/24".into()]), ..TunSettings::default() };
+        let refused = save_with(&mut book, &mut kernel, KernelSettings { tun: bad, ..Default::default() });
+        assert!(refused.input_error.as_deref().unwrap().contains("300.1.1.0/24"), "{:?}", refused.input_error);
+        assert_eq!(refused.settings.tun.route_exclude_address.as_ref().unwrap()[0], "192.168.0.0/16", "nothing saved");
+
+        // Android hands routing to the VPN service; the lists are never written there.
+        let settings = KernelSettings {
+            tun: TunSettings { route_address: Some(vec!["1.0.0.0/8".into()]), ..TunSettings::default() },
+            ..Default::default()
+        };
+        let (android, _) = apply_settings("mixed-port: 7890\n", &settings, false).unwrap();
+        assert!(!android.contains("route-address"), "{android}");
+        let (desktop, _) = apply_settings("mixed-port: 7890\n", &settings, true).unwrap();
+        assert!(desktop.contains("route-address"), "{desktop}");
+    }
+
+    #[test]
+    fn sniff_details_layer_on_the_final_sniffer_block_only_while_it_is_on() {
+        let profile = "mixed-port: 7890\nsniffer:\n  enable: true\n  sniff:\n    HTTP:\n      ports: [80]\n      override-destination: true\n    TLS:\n      ports: [443]\n  skip-domain: [a.example]\n";
+        let settings = KernelSettings {
+            sniff_ports: SniffPorts { tls: Some(vec!["443".into(), " 8443 ".into()]), quic: Some(vec!["443".into(), "8000-9000".into()]), http: None },
+            sniff_force_domain: Some(vec!["+.force.example".into(), "".into()]),
+            sniff_override_destination: Some(false),
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(settings.sniff_ports.tls, Some(vec!["443".to_string(), "8443".to_string()]));
+        assert_eq!(settings.sniff_force_domain, Some(vec!["+.force.example".to_string()]));
+
+        // Following the profile's enabled block: details are added, the rest is kept.
+        let (yaml, _) = apply_settings(profile, &settings, true).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        let sniffer = mapping_get(&value, "sniffer").unwrap();
+        let sniff = mapping_get(sniffer, "sniff").unwrap();
+        let tls = mapping_get(mapping_get(sniff, "TLS").unwrap(), "ports").and_then(Value::as_sequence).unwrap();
+        assert_eq!(tls.iter().filter_map(Value::as_i64).collect::<Vec<_>>(), [443, 8443]);
+        assert_eq!(yaml_list(mapping_get(mapping_get(sniff, "QUIC").unwrap(), "ports")), ["443", "8000-9000"]);
+        assert_eq!(yaml_list(mapping_get(mapping_get(sniff, "HTTP").unwrap(), "ports")), ["80"], "unset protocols keep the profile's");
+        assert_eq!(yaml_list(mapping_get(sniffer, "force-domain")), ["+.force.example"]);
+        assert_eq!(yaml_list(mapping_get(sniffer, "skip-domain")), ["a.example"]);
+        assert_eq!(mapping_get(sniffer, "override-destination").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            mapping_get(mapping_get(sniff, "HTTP").unwrap(), "override-destination").and_then(Value::as_bool),
+            Some(false),
+            "per-protocol value follows the override"
+        );
+
+        // Billow's own default block takes the details too.
+        let on = KernelSettings { sniffer: Some(true), ..settings.clone() };
+        let (yaml, _) = apply_settings("mixed-port: 7890\n", &on, true).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        let sniffer = mapping_get(&value, "sniffer").unwrap();
+        assert_eq!(yaml_list(mapping_get(mapping_get(mapping_get(sniffer, "sniff").unwrap(), "TLS").unwrap(), "ports")), ["443", "8443"]);
+
+        // Switched off, or a profile without sniffing: details stay saved but are not written.
+        let off = KernelSettings { sniffer: Some(false), ..settings.clone() };
+        let (yaml, _) = apply_settings(profile, &off, true).unwrap();
+        assert!(!yaml.contains("force-domain") && !yaml.contains("8443"), "{yaml}");
+        let (yaml, _) = apply_settings("mixed-port: 7890\n", &settings, true).unwrap();
+        assert!(!yaml.contains("sniffer"), "{yaml}");
+
+        let bad = KernelSettings { sniff_ports: SniffPorts { tls: Some(vec!["70000".into()]), ..Default::default() }, ..Default::default() };
+        assert!(bad.validate(Some(7890)).unwrap_err().contains("70000"));
+        for entry in ["0", "9000-8000", "abc", "1-"] {
+            assert_eq!(sniff_port_entry(entry), None, "{entry}");
+        }
+        assert_eq!(sniff_port_entry("8080 - 8880").as_deref(), Some("8080-8880"));
+    }
+
+    #[test]
+    fn extra_inbound_ports_interface_and_routing_mark() {
+        let dir = temp_dir("inbound");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("a.yaml", "mixed-port: 7890\nsocks-port: 7891\ninterface-name: en0\nrouting-mark: 6666\nsniffer: {enable: true}\nproxies: []\n");
+        let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
+        let enabled = book.enable("p1", &RejectSource, &mut kernel);
+        assert_eq!(enabled.config_values.socks_port, Some(7891));
+        assert_eq!(enabled.config_values.interface_name.as_deref(), Some("en0"));
+        assert_eq!(enabled.config_values.routing_mark, Some(6666));
+        assert_eq!(enabled.config_values.sniffer, Some(true));
+
+        // HTTP on the old SOCKS port: explicit wins, the profile's colliding listener goes.
+        let settings = KernelSettings {
+            http_port: Some(7891),
+            redir_port: Some(0),
+            interface_name: Some("".into()),
+            routing_mark: Some(0),
+            ..Default::default()
+        };
+        let saved = save_with(&mut book, &mut kernel, settings);
+        assert_eq!(saved.input_error, None);
+        let (yaml, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(read_i64(&running, "port"), Some(7891));
+        assert_eq!(read_i64(&running, "socks-port"), None);
+        assert_eq!(read_i64(&running, "redir-port"), Some(0));
+        assert!(mapping_get(&running, "interface-name").is_none());
+        assert!(mapping_get(&running, "routing-mark").is_none());
+
+        // An explicit mixed port no longer strips an explicit SOCKS port.
+        let settings = KernelSettings {
+            mixed_port: Some(7990),
+            socks_port: Some(7891),
+            interface_name: Some("eth0".into()),
+            routing_mark: Some(255),
+            ..Default::default()
+        };
+        let saved = save_with(&mut book, &mut kernel, settings);
+        assert_eq!(saved.input_error, None);
+        let (yaml, _) = book.kernel_yaml(false, None).ok().unwrap();
+        let running: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(read_i64(&running, "socks-port"), Some(7891));
+        assert_eq!(read_string(&running, "interface-name").as_deref(), Some("eth0"));
+        assert_eq!(read_i64(&running, "routing-mark"), Some(255));
+
+        // Conflicts are refused and name both sides; nothing is saved.
+        let clash = save_with(&mut book, &mut kernel, KernelSettings { http_port: Some(7890), ..Default::default() });
+        let message = clash.input_error.clone().unwrap();
+        assert!(message.contains("HTTP 端口 7890") && message.contains("混合端口"), "{message}");
+        assert_eq!(clash.settings.socks_port, Some(7891), "previous settings kept");
+        let pair = KernelSettings { socks_port: Some(1080), tproxy_port: Some(1080), ..Default::default() };
+        let message = pair.validate(Some(7890)).unwrap_err();
+        assert!(message.contains("tproxy 端口 1080") && message.contains("SOCKS 端口"), "{message}");
+        let zeros = KernelSettings { socks_port: Some(0), http_port: Some(0), ..Default::default() };
+        assert!(zeros.validate(Some(7890)).is_ok(), "0 turns a listener off and never conflicts");
+        let spaced = KernelSettings { interface_name: Some("Wi Fi".into()), ..Default::default() };
+        assert!(spaced.validate(Some(7890)).unwrap_err().contains("空格"));
+
+        // Android keeps every extra listener off whatever is saved.
+        let android = KernelSettings { socks_port: Some(1080), http_port: Some(8080), interface_name: Some("wlan0".into()), ..Default::default() };
+        let (yaml, _) = apply_settings("mixed-port: 7890\n", &android, false).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        for name in ["port", "socks-port", "redir-port", "tproxy-port"] {
+            assert_eq!(read_i64(&value, name), Some(0), "{name}");
+        }
+        assert!(mapping_get(&value, "interface-name").is_none());
+    }
+
+    #[test]
+    fn listener_failures_name_the_port_kind() {
+        let socks = friendly_listen_error("Start SOCKS server error: listen tcp 127.0.0.1:7891: bind: address already in use");
+        assert!(socks.contains("127.0.0.1:7891") && socks.contains("更换SOCKS 端口"), "{socks}");
+        let tproxy = friendly_listen_error("Start TProxy server error: listen tcp 0.0.0.0:7895: bind: address already in use");
+        assert!(tproxy.contains("tproxy 端口"), "{tproxy}");
     }
 
     #[test]

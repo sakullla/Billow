@@ -196,9 +196,11 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
     const line = source.value[i]!
     if (line.level !== 'error') continue
     if (line.message.includes('更换混合端口') || (line.message.includes('端口') && line.message.includes('占用'))) {
+      // The backend names which listener failed (SOCKS / HTTP / redir / tproxy); the mixed port is the default.
+      const kind = /更换((?:SOCKS|HTTP|redir|tproxy) 端口)/.exec(line.message)?.[1] ?? '混合端口'
       return {
-        message: '本地监听端口冲突导致内核未能启动，可前往内核设置更换混合代理端口后重新连接。',
-        label: '更换混合端口',
+        message: `本地监听端口冲突导致内核未能启动，可前往内核设置更换${kind === '混合端口' ? '混合代理端口' : kind}后重新连接。`,
+        label: `更换${kind}`,
         tab: 'kernel',
       }
     }
