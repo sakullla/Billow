@@ -1,11 +1,14 @@
 import type { Backend, NodeTestEvent } from './backend'
 import { ruleKeys } from './rule-keys'
 import {
+  DNS_QUERY_TYPES,
   emptyKernelSettings,
+  isValidDnsName,
   emptySnapshot,
   type AppInfo,
   type ConfigOverview,
   type ConnectionRow,
+  type DnsQueryResult,
   type KernelStatus,
   type LogLine,
   type NodeGroup,
@@ -78,6 +81,29 @@ interface DemoOptions {
   hiddenGroups?: readonly string[]
   /** Add a `load-balance` group, which stays automatic (R28). */
   loadBalance?: boolean
+  /**
+   * A fixed set of this many connections, one per demo host in order, that
+   * never churn or refill, so close-by-filter can be checked row for row (R30).
+   */
+  stableConnections?: number
+}
+
+/** Fixed `/dns/query` answers the demo returns per record type (R31). */
+const DEMO_DNS_ANSWERS: Record<string, { type: string; value: string; ttl: number }[]> = {
+  A: [
+    { type: 'A', value: '93.184.215.14', ttl: 300 },
+    { type: 'A', value: '23.192.228.80', ttl: 300 },
+  ],
+  AAAA: [{ type: 'AAAA', value: '2606:2800:21f:cb07:6820:80da:af6b:8b2c', ttl: 300 }],
+  CNAME: [{ type: 'CNAME', value: 'edge.example.net.', ttl: 3600 }],
+  MX: [{ type: 'MX', value: '10 mail.example.com.', ttl: 3600 }],
+  TXT: [{ type: 'TXT', value: '"v=spf1 -all"', ttl: 3600 }],
+  NS: [
+    { type: 'NS', value: 'a.iana-servers.net.', ttl: 86400 },
+    { type: 'NS', value: 'b.iana-servers.net.', ttl: 86400 },
+  ],
+  SRV: [],
+  HTTPS: [{ type: 'HTTPS', value: '1 . alpn="h2,h3"', ttl: 300 }],
 }
 
 /** Real subscriptions pack region, line, rate and unlocks into one name. */
@@ -132,6 +158,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   const hiddenGroups = new Set(options.hiddenGroups ?? [])
   const pinnable = (type: string) => type === 'url-test' || type === 'fallback'
   let connections: ConnectionRow[] = []
+  /** `stableConnections` seeds once per connected session. */
+  let stableSeeded = false
   let totals = { up: 0, down: 0 }
   let startedAt: number | null = null
   let nextId = 1
@@ -448,6 +476,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       state.upload_total = null
       state.download_total = null
       connections = []
+      stableSeeded = false
       return
     }
     const wave = Math.sin(Date.now() / 4000)
@@ -458,6 +487,16 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     totals = { up: totals.up + up, down: totals.down + down }
     state.upload_total = totals.up
     state.download_total = totals.down
+    if (options.stableConnections !== undefined) {
+      if (!stableSeeded) {
+        stableSeeded = true
+        connections = Array.from({ length: options.stableConnections }, (_, index) => ({
+          ...makeConnection(HOSTS[index % HOSTS.length]),
+          id: `stable-${index + 1}`,
+        }))
+      }
+      return
+    }
     connections = connections
       .filter(() => Math.random() > 0.06)
       .map((row) => ({ ...row, upload: row.upload + Math.floor(Math.random() * 3000), download: row.download + Math.floor(Math.random() * 90_000) }))
@@ -941,6 +980,33 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async closeConnection(id) {
       connections = id ? connections.filter((row) => row.id !== id) : []
       return done(60)
+    },
+    async closeConnections(ids) {
+      if (!state.kernel_running) {
+        state.notice = '内核没有运行'
+        return done(0)
+      }
+      const targets = ids ? new Set(ids) : null
+      connections = targets ? connections.filter((row) => !targets.has(row.id)) : []
+      return done(60)
+    },
+    async dnsQuery(name, qtype) {
+      const result: DnsQueryResult = { name: name.trim(), qtype, status: null, answers: [], elapsed_ms: 0, error: null }
+      if (!isValidDnsName(name)) return { ...result, error: '域名格式无效' }
+      if (!DNS_QUERY_TYPES.includes(qtype)) return { ...result, error: '不支持的记录类型' }
+      await wait(80)
+      if (!state.kernel_running) return { ...result, error: '内核没有运行' }
+      const host = name.trim().replace(/\.$/, '').toLowerCase()
+      if (host.endsWith('.invalid')) return { ...result, name: host, status: 3, elapsed_ms: 31, error: '没有找到记录（NXDOMAIN）' }
+      const answers = DEMO_DNS_ANSWERS[qtype] ?? []
+      return {
+        ...result,
+        name: host,
+        status: 0,
+        answers: answers.map((answer) => ({ ...answer })),
+        elapsed_ms: 24,
+        error: answers.length ? null : `没有找到 ${qtype} 记录`,
+      }
     },
     async rules() {
       await wait(200)

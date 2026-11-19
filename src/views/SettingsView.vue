@@ -2086,6 +2086,13 @@ const TABS = computed(() => [
           </div>
           <button type="button" class="btn sm" :disabled="!snap.kernel_running || store.busy['flush:dns']" @click="store.flushCache('dns')">清除</button>
         </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>DNS 查询</strong>
+            <p class="muted small">用内核当前的 DNS 配置解析域名，查看记录、TTL 与耗时</p>
+          </div>
+          <button type="button" class="btn sm" data-testid="open-dns-query" @click="store.dnsQueryOpen.value = true">查询</button>
+        </div>
       </section>
     </template>
   </div>

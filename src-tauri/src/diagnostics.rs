@@ -668,6 +668,207 @@ pub fn close_connections(endpoint: &ControllerEndpoint, id: Option<&str>) -> Res
         .map_err(|_| "连接没有关闭".to_string())
 }
 
+/// Closes the listed connections one by one and returns how many failed. A
+/// 404 means the connection already ended, which counts as closed.
+pub fn close_connection_list(endpoint: &ControllerEndpoint, ids: &[String]) -> Result<usize, String> {
+    if !loopback(&endpoint.host) || endpoint.port == 0 {
+        return Err("内核没有运行".to_string());
+    }
+    let ids: Vec<&str> = ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>().into_iter().collect();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let agent = controller_agent(Duration::from_millis(800));
+    let base = format!("http://{}:{}/connections", endpoint.host, endpoint.port);
+    let next = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..ids.len().min(4) {
+            let (ids, next, failed, agent, base) = (&ids, &next, &failed, &agent, &base);
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(id) = ids.get(index) else { break };
+                let result = authorize(agent.delete(&format!("{base}/{}", encode_path(id))), endpoint).call();
+                if !(result.is_ok() || matches!(result, Err(ureq::Error::Status(404, _)))) {
+                    failed.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    Ok(failed.into_inner())
+}
+
+/// DNS record types the query tool offers (R31).
+pub const DNS_QUERY_TYPES: [&str; 8] = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "HTTPS"];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct DnsAnswer {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub value: String,
+    pub ttl: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct DnsQueryResult {
+    pub name: String,
+    pub qtype: String,
+    /// DNS RCODE reported by the kernel; `None` when no answer arrived.
+    pub status: Option<u64>,
+    pub answers: Vec<DnsAnswer>,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+pub const DNS_INVALID_NAME: &str = "域名格式无效";
+
+/// Lowercased name without a trailing dot, or `None` when it is not a valid
+/// hostname: 1–253 chars, 1–63 char labels of letters, digits, `-` or `_`.
+pub fn normalize_dns_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    let name = name.strip_suffix('.').unwrap_or(name);
+    if name.is_empty() || name.len() > 253 {
+        return None;
+    }
+    let valid = name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    });
+    valid.then(|| name.to_ascii_lowercase())
+}
+
+pub fn normalize_dns_type(qtype: &str) -> Option<&'static str> {
+    let qtype = qtype.trim();
+    let qtype = if qtype.is_empty() { "A" } else { qtype };
+    DNS_QUERY_TYPES.iter().copied().find(|known| known.eq_ignore_ascii_case(qtype))
+}
+
+fn dns_type_name(code: u64) -> String {
+    match code {
+        1 => "A".into(),
+        2 => "NS".into(),
+        5 => "CNAME".into(),
+        6 => "SOA".into(),
+        12 => "PTR".into(),
+        15 => "MX".into(),
+        16 => "TXT".into(),
+        28 => "AAAA".into(),
+        33 => "SRV".into(),
+        64 => "SVCB".into(),
+        65 => "HTTPS".into(),
+        other => format!("TYPE{other}"),
+    }
+}
+
+fn dns_rcode_name(code: u64) -> String {
+    match code {
+        1 => "FORMERR".into(),
+        2 => "SERVFAIL".into(),
+        3 => "NXDOMAIN".into(),
+        4 => "NOTIMP".into(),
+        5 => "REFUSED".into(),
+        other => format!("RCODE {other}"),
+    }
+}
+
+/// Reads mihomo's `/dns/query` body: `Status` plus `Answer[{type, TTL, data}]`.
+pub fn dns_result_from_body(body: &str) -> Result<(u64, Vec<DnsAnswer>), String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|_| "内核没有响应".to_string())?;
+    let status = json_u64(value.get("Status")).unwrap_or(0);
+    let answers = value
+        .get("Answer")
+        .and_then(serde_json::Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|item| DnsAnswer {
+                    kind: match item.get("type") {
+                        Some(serde_json::Value::String(text)) => clean_token(text, 20),
+                        other => dns_type_name(json_u64(other).unwrap_or(0)),
+                    },
+                    value: clean_token(item.get("data").and_then(serde_json::Value::as_str).unwrap_or("").trim(), 1000),
+                    ttl: json_u64(item.get("TTL")).unwrap_or(0),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((status, answers))
+}
+
+fn dns_query_error(err: ureq::Error) -> String {
+    match err {
+        ureq::Error::Status(code, response) => {
+            let mut body = String::new();
+            let _ = response.into_reader().take(2048).read_to_string(&mut body);
+            let message = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|json| json.get("message")?.as_str().map(str::trim).map(str::to_string))
+                .unwrap_or_else(|| body.trim().to_string());
+            if message.to_ascii_lowercase().contains("dns section is disabled") {
+                "当前配置未启用 DNS".to_string()
+            } else if message.is_empty() {
+                format!("DNS 查询失败（HTTP {code}）")
+            } else {
+                format!("DNS 查询失败：{}", message.chars().take(120).collect::<String>())
+            }
+        }
+        ureq::Error::Transport(transport) => {
+            let text = transport.to_string().to_ascii_lowercase();
+            if text.contains("timed out") || text.contains("timeout") {
+                "DNS 查询超时".to_string()
+            } else {
+                "内核没有响应".to_string()
+            }
+        }
+    }
+}
+
+/// Resolves `name` through the kernel's live DNS config with `GET /dns/query`.
+/// Every failure lands in `error` so the dialog can show it beside the query.
+pub fn dns_query(endpoint: Option<&ControllerEndpoint>, name: &str, qtype: &str, timeout: Duration) -> DnsQueryResult {
+    let mut result = DnsQueryResult { name: name.trim().to_string(), qtype: qtype.trim().to_string(), ..Default::default() };
+    let Some(clean_name) = normalize_dns_name(name) else {
+        result.error = Some(DNS_INVALID_NAME.to_string());
+        return result;
+    };
+    result.name = clean_name.clone();
+    let Some(clean_type) = normalize_dns_type(qtype) else {
+        result.error = Some("不支持的记录类型".to_string());
+        return result;
+    };
+    result.qtype = clean_type.to_string();
+    let Some(endpoint) = endpoint.filter(|endpoint| loopback(&endpoint.host) && endpoint.port != 0) else {
+        result.error = Some("内核没有运行".to_string());
+        return result;
+    };
+    let url = format!("http://{}:{}/dns/query?name={}&type={clean_type}", endpoint.host, endpoint.port, encode_path(&clean_name));
+    let agent = controller_agent(timeout);
+    let started = Instant::now();
+    let response = authorize(agent.get(&url), endpoint).timeout(timeout).call();
+    let body = response.map_err(dns_query_error).and_then(|response| {
+        let mut body = String::new();
+        response.into_reader().take(4_000_000).read_to_string(&mut body)
+            .map(|_| body).map_err(|_| "内核没有响应".to_string())
+    });
+    result.elapsed_ms = started.elapsed().as_millis() as u64;
+    match body.and_then(|body| dns_result_from_body(&body)) {
+        Ok((status, answers)) => {
+            result.status = Some(status);
+            if status != 0 {
+                result.error = Some(format!("没有找到记录（{}）", dns_rcode_name(status)));
+            } else if answers.is_empty() {
+                result.error = Some(format!("没有找到 {clean_type} 记录"));
+            }
+            result.answers = answers;
+        }
+        Err(message) => result.error = Some(message),
+    }
+    result
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct ProviderView {
     pub name: String,
@@ -1868,5 +2069,136 @@ rules:
         let err = upgrade_geo(&ep2).unwrap_err();
         assert!(err.contains("jsDelivr"), "{err}");
         handle2.join().unwrap();
+    }
+
+    /// Serves `count` requests, answering each from `respond(request line)`, and
+    /// returns the request lines it saw (sorted, since callers may run in parallel).
+    fn scripted_controller(
+        count: usize,
+        respond: fn(&str) -> Option<(u16, String)>,
+    ) -> (ControllerEndpoint, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..count {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() { break; }
+                }
+                let line = first.trim().to_string();
+                match respond(&line) {
+                    Some((code, body)) => {
+                        let _ = write!(stream, "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    }
+                    // Hold the socket open without answering, to exercise timeouts.
+                    None => std::thread::sleep(Duration::from_millis(600)),
+                }
+                requests.push(line);
+            }
+            requests.sort();
+            requests
+        });
+        (ControllerEndpoint { host: "127.0.0.1".into(), port, secret: "s".into() }, server)
+    }
+
+    #[test]
+    fn closing_listed_connections_deletes_each_and_counts_failures() {
+        let (endpoint, server) = scripted_controller(3, |line| {
+            Some(if line.contains("/connections/ok ") { (204, String::new()) }
+            else if line.contains("/connections/gone%2Fid ") { (404, String::new()) }
+            else { (500, r#"{"message":"boom"}"#.to_string()) })
+        });
+        let ids = ["ok", "gone/id", "bad", " ", "ok"].map(String::from);
+        assert_eq!(close_connection_list(&endpoint, &ids).unwrap(), 1);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests.iter().all(|line| line.starts_with("DELETE /connections/")));
+        assert!(requests.iter().any(|line| line.starts_with("DELETE /connections/bad ")));
+        assert_eq!(close_connection_list(&endpoint, &[]).unwrap(), 0);
+        let down = ControllerEndpoint { host: "127.0.0.1".into(), port: 0, secret: String::new() };
+        assert_eq!(close_connection_list(&down, &ids).unwrap_err(), "内核没有运行");
+    }
+
+    #[test]
+    fn closing_without_ids_deletes_the_whole_collection() {
+        let (endpoint, server) = scripted_controller(1, |_| Some((204, String::new())));
+        close_connections(&endpoint, None).unwrap();
+        assert!(server.join().unwrap()[0].starts_with("DELETE /connections HTTP"));
+    }
+
+    #[test]
+    fn dns_names_and_types_are_validated_before_any_request() {
+        assert_eq!(normalize_dns_name(" Example.COM. ").as_deref(), Some("example.com"));
+        assert_eq!(normalize_dns_name("_sip._tcp.example.com").as_deref(), Some("_sip._tcp.example.com"));
+        for bad in ["", "not a domain", "a..b", "-a.com", "a-.com", "例子.com", &"a".repeat(64), "a/b"] {
+            assert!(normalize_dns_name(bad).is_none(), "{bad}");
+        }
+        assert_eq!(normalize_dns_type("aaaa"), Some("AAAA"));
+        assert_eq!(normalize_dns_type(""), Some("A"));
+        assert_eq!(normalize_dns_type("PTR"), None);
+        // No endpoint is touched: an unreachable one would otherwise report 内核没有运行.
+        let unreachable = ControllerEndpoint { host: "127.0.0.1".into(), port: 1, secret: String::new() };
+        let invalid = dns_query(Some(&unreachable), "not a domain", "A", Duration::from_millis(200));
+        assert_eq!(invalid.error.as_deref(), Some(DNS_INVALID_NAME));
+        let kind = dns_query(Some(&unreachable), "example.com", "PTR", Duration::from_millis(200));
+        assert_eq!(kind.error.as_deref(), Some("不支持的记录类型"));
+        let down = dns_query(None, "example.com", "A", Duration::from_millis(200));
+        assert_eq!(down.error.as_deref(), Some("内核没有运行"));
+        assert!(down.answers.is_empty() && down.status.is_none());
+    }
+
+    #[test]
+    fn dns_query_reads_answers_and_maps_numeric_types() {
+        let (endpoint, server) = scripted_controller(1, |_| Some((200, r#"{"Status":0,"Question":[{"name":"example.com.","Qtype":28,"Qclass":1}],
+            "Answer":[{"name":"example.com.","type":5,"TTL":60,"data":"edge.example.net."},
+                      {"name":"edge.example.net.","type":28,"TTL":300,"data":"2606:2800::1"}]}"#.to_string())));
+        let result = dns_query(Some(&endpoint), "Example.com", "aaaa", Duration::from_secs(2));
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /dns/query?name=example.com&type=AAAA "), "{}", requests[0]);
+        assert_eq!(result.error, None);
+        assert_eq!(result.status, Some(0));
+        assert_eq!((result.name.as_str(), result.qtype.as_str()), ("example.com", "AAAA"));
+        assert_eq!(result.answers, vec![
+            DnsAnswer { kind: "CNAME".into(), value: "edge.example.net.".into(), ttl: 60 },
+            DnsAnswer { kind: "AAAA".into(), value: "2606:2800::1".into(), ttl: 300 },
+        ]);
+    }
+
+    #[test]
+    fn dns_query_explains_missing_records_disabled_dns_and_timeouts() {
+        let (endpoint, server) = scripted_controller(1, |_| Some((200, r#"{"Status":3,"Answer":null}"#.to_string())));
+        let nx = dns_query(Some(&endpoint), "missing.example", "A", Duration::from_secs(2));
+        server.join().unwrap();
+        assert_eq!(nx.status, Some(3));
+        assert_eq!(nx.error.as_deref(), Some("没有找到记录（NXDOMAIN）"));
+
+        let (endpoint, server) = scripted_controller(1, |_| Some((200, r#"{"Status":0}"#.to_string())));
+        let empty = dns_query(Some(&endpoint), "example.com", "MX", Duration::from_secs(2));
+        server.join().unwrap();
+        assert_eq!(empty.error.as_deref(), Some("没有找到 MX 记录"));
+
+        let (endpoint, server) = scripted_controller(1, |_| Some((500, r#"{"message":"DNS section is disabled"}"#.to_string())));
+        let disabled = dns_query(Some(&endpoint), "example.com", "A", Duration::from_secs(2));
+        server.join().unwrap();
+        assert_eq!(disabled.error.as_deref(), Some("当前配置未启用 DNS"));
+        assert!(disabled.status.is_none());
+
+        let (endpoint, server) = scripted_controller(1, |_| Some((400, r#"{"message":"invalid query type"}"#.to_string())));
+        let rejected = dns_query(Some(&endpoint), "example.com", "A", Duration::from_secs(2));
+        server.join().unwrap();
+        assert_eq!(rejected.error.as_deref(), Some("DNS 查询失败：invalid query type"));
+
+        let (endpoint, server) = scripted_controller(1, |_| None);
+        let slow = dns_query(Some(&endpoint), "example.com", "A", Duration::from_millis(150));
+        server.join().unwrap();
+        assert_eq!(slow.error.as_deref(), Some("DNS 查询超时"));
     }
 }

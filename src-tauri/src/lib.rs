@@ -850,6 +850,23 @@ fn close_connection(app: AppHandle, id: Option<String>) -> ProfileSnapshot {
     })
 }
 
+/// Closes every connection (`ids` absent) or only the listed ones (R30).
+#[tauri::command(async)]
+fn close_connections(app: AppHandle, ids: Option<Vec<String>>) -> ProfileSnapshot {
+    with_session(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.close_connection_set(ids.as_deref(), runtime)
+    })
+}
+
+/// Resolves a name through the kernel's live DNS config (R31). The query runs
+/// without holding the session lock; failures come back in `error`.
+#[tauri::command(async)]
+fn dns_query(app: AppHandle, name: String, qtype: String) -> diagnostics::DnsQueryResult {
+    let endpoint = with_session_raw(&app, |session| ProfileBook::controller_of(&mut session.runtime));
+    diagnostics::dns_query(endpoint.as_ref(), &name, &qtype, std::time::Duration::from_secs(8))
+}
+
 #[tauri::command(async)]
 fn kernel_rules(app: AppHandle) -> RulesSnapshot {
     with_session_raw(&app, |session| {
@@ -1491,6 +1508,8 @@ pub fn run() {
             test_all_nodes,
             test_node,
             close_connection,
+            close_connections,
+            dns_query,
             kernel_rules,
             set_rule_disabled,
             clear_logs,

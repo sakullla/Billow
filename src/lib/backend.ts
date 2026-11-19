@@ -1,10 +1,13 @@
 import {
   normalizeConfigOverview,
+  normalizeDnsQueryResult,
   normalizeKernel,
   normalizeRuleRow,
   normalizeSnapshot,
   type AppInfo,
   type ConfigOverview,
+  type DnsQueryResult,
+  type DnsQueryType,
   type OverridePreview,
   type KernelChannel,
   type KernelSettings,
@@ -97,6 +100,10 @@ export interface Backend {
   onNodeTest(handler: (event: NodeTestEvent) => void): Promise<() => void>
 
   closeConnection(id: string | null): Promise<Snapshot>
+  /** Close every active connection (`null`) or exactly these ids; failures land in `notice` (R30). */
+  closeConnections(ids: string[] | null): Promise<Snapshot>
+  /** Resolve `name` through the kernel's live DNS config (R31); failures come back in `error`. */
+  dnsQuery(name: string, qtype: DnsQueryType): Promise<DnsQueryResult>
   rules(): Promise<RulesSnapshot>
   setRuleDisabled(key: string, disabled: boolean): Promise<RulesSnapshot>
   providers(): Promise<ProvidersResult>
@@ -223,6 +230,8 @@ function createTauriBackend(): Backend {
     },
 
     closeConnection: (id) => snap('close_connection', { id }),
+    closeConnections: (ids) => snap('close_connections', { ids }),
+    dnsQuery: async (name, qtype) => normalizeDnsQueryResult(await call<unknown>('dns_query', { name, qtype })),
     rules: () => rules('kernel_rules'),
     setRuleDisabled: (key, disabled) =>
       rules('set_rule_disabled', { command: { key, disabled } }),

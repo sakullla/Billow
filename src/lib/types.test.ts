@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeIcon, normalizeKernel, normalizeRuleRow, normalizeSnapshot } from './types'
+import { isValidDnsName, normalizeDnsQueryResult, normalizeIcon, normalizeKernel, normalizeRuleRow, normalizeSnapshot } from './types'
 import { resolvePage } from './store'
 
 describe('normalizeSnapshot', () => {
@@ -243,6 +243,41 @@ describe('normalizeSnapshot', () => {
       hosts: {
         'router.local': ['192.168.1.1'],
       },
+    })
+  })
+})
+
+describe('DNS query helpers', () => {
+  it('accepts hostnames and rejects what the backend would refuse', () => {
+    for (const ok of ['example.com', 'Example.COM.', '_sip._tcp.example.com', 'localhost', 'xn--fiqs8s.cn']) {
+      expect(isValidDnsName(ok), ok).toBe(true)
+    }
+    for (const bad of ['', '   ', 'not a domain', 'a..b', '-a.com', 'a-.com', '例子.com', `${'a'.repeat(64)}.com`, 'a/b', `${'a.'.repeat(127)}a`]) {
+      expect(isValidDnsName(bad), bad).toBe(false)
+    }
+  })
+
+  it('normalizes a query result and drops malformed answers', () => {
+    expect(normalizeDnsQueryResult(null)).toEqual({ name: '', qtype: '', status: null, answers: [], elapsed_ms: 0, error: null })
+    expect(
+      normalizeDnsQueryResult({
+        name: 'example.com',
+        qtype: 'A',
+        status: 0,
+        answers: [{ type: 'A', value: '1.2.3.4', ttl: 60 }, { type: 'A', value: '' }, 'x', { type: 'A', value: '5.6.7.8', ttl: -1 }],
+        elapsed_ms: 18,
+        error: '',
+      }),
+    ).toEqual({
+      name: 'example.com',
+      qtype: 'A',
+      status: 0,
+      answers: [
+        { type: 'A', value: '1.2.3.4', ttl: 60 },
+        { type: 'A', value: '5.6.7.8', ttl: 0 },
+      ],
+      elapsed_ms: 18,
+      error: null,
     })
   })
 })

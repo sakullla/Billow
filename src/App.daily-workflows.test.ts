@@ -851,4 +851,51 @@ describe('Daily UI/UX workflows (R1–R5)', () => {
       expect(body().find('.modal').text()).toContain('127.0.0.1:56123')
     })
   })
+
+  describe('R31: DNS query from the DNS settings tab and the command palette', () => {
+    it('resolves example.com from settings and explains why it cannot query once the kernel stops', async () => {
+      const { wrapper, backend } = await mountApp()
+      await connect(wrapper)
+      const query = vi.spyOn(backend, 'dnsQuery')
+      storeOf(wrapper).openSettings('dns')
+      await flushPromises()
+      await wrapper.find('[data-testid="open-dns-query"]').trigger('click')
+      await flushPromises()
+
+      await body().find('[data-testid="dns-query-name"]').setValue('not a domain')
+      await body().find('[data-testid="dns-query-form"]').trigger('submit')
+      await flushPromises()
+      expect(body().find('[data-testid="dns-query-input-error"]').text()).toContain('格式无效')
+      expect(query).not.toHaveBeenCalled()
+
+      await body().find('[data-testid="dns-query-name"]').setValue('example.com')
+      await body().find('[data-testid="dns-query-form"]').trigger('submit')
+      await settle(200)
+      expect(query).toHaveBeenCalledWith('example.com', 'A')
+      const answer = body().find('[data-testid="dns-query-answer"]')
+      expect(answer.text()).toMatch(/\d+\.\d+\.\d+\.\d+/)
+      expect(answer.text()).toContain('秒')
+      expect(body().find('[data-testid="dns-query-meta"]').text()).toMatch(/耗时 \d+ ms/)
+
+      // Stopping the kernel keeps the dialog open but disables the query with a reason.
+      void storeOf(wrapper).disconnect()
+      await settle(600)
+      expect(storeOf(wrapper).snapshot.value.kernel_running).toBe(false)
+      expect(body().find('[data-testid="dns-query-submit"]').attributes('disabled')).toBeDefined()
+      expect(body().find('[data-testid="dns-query-blocked"]').text()).toContain('内核没有运行')
+    })
+
+    it('offers DNS 查询 in the command palette even while disconnected', async () => {
+      const { wrapper } = await mountApp()
+      await wrapper.find('[data-testid="open-palette"]').trigger('click')
+      await flushPromises()
+      const action = body().find('[data-command="action:dns-query"]')
+      expect(action.text()).toContain('DNS 查询')
+      await action.trigger('click')
+      await settle(50)
+      expect(body().find('.modal').text()).toContain('DNS 查询')
+      expect(body().find('[data-testid="dns-query-submit"]').attributes('disabled')).toBeDefined()
+      expect(storeOf(wrapper).dnsQueryOpen.value).toBe(true)
+    })
+  })
 })

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ConfigViewer from './components/ConfigViewer.vue'
+import DnsQueryDialog from './components/DnsQueryDialog.vue'
 import Icon from './components/Icon.vue'
 import Modal from './components/Modal.vue'
 import TitleBar from './components/TitleBar.vue'
@@ -323,6 +324,12 @@ function onPaletteAction(id: string) {
       break
     case 'flush-dns':
       void store.flushCache('dns')
+      break
+    case 'dns-query':
+      // Opens after the palette has released focus, like the shortcut sheet.
+      void nextTick(() => {
+        store.dnsQueryOpen.value = true
+      })
       break
     case 'open-shortcuts':
       void nextTick(() => {
@@ -794,6 +801,14 @@ defineExpose({ store })
     />
 
     <ConfigViewer v-if="store.configView.value" />
+
+    <DnsQueryDialog
+      v-if="store.dnsQueryOpen.value"
+      :running="snap.kernel_running"
+      :query="store.dnsQuery"
+      :compact="compact"
+      @close="store.dnsQueryOpen.value = false"
+    />
 
     <Modal v-if="helpOpen" title="快捷键" subtitle="在应用内生效，输入框会保留自己的按键" @close="helpOpen = false">
       <dl class="shortcut-list">

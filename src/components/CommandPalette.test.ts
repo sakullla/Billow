@@ -127,6 +127,19 @@ describe('CommandPalette', () => {
     wrapper.unmount()
   })
 
+  it('offers DNS 查询 while disconnected so the dialog can explain itself', async () => {
+    const { wrapper } = mountPalette({ connected: false })
+    await settle()
+    const input = search('DNS 查询')
+    await settle()
+    const action = option('action:dns-query')
+    expect(action?.textContent).toContain('DNS 查询')
+    expect(action?.getAttribute('aria-disabled')).not.toBe('true')
+    press(input, 'Enter')
+    expect(wrapper.emitted('action')).toEqual([['dns-query']])
+    wrapper.unmount()
+  })
+
   it('closes with Escape and returns focus to the previous element on unmount', async () => {
     const { wrapper, trigger } = mountPalette()
     await settle()

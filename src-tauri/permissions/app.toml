@@ -172,3 +172,13 @@ commands.allow = ["set_profile_user_agent"]
 identifier = "allow-unfix-profile-group"
 description = "Enables the unfix_profile_group command without any pre-configured scope."
 commands.allow = ["unfix_profile_group"]
+
+[[permission]]
+identifier = "allow-close-connections"
+description = "Enables the close_connections command without any pre-configured scope."
+commands.allow = ["close_connections"]
+
+[[permission]]
+identifier = "allow-dns-query"
+description = "Enables the dns_query command without any pre-configured scope."
+commands.allow = ["dns_query"]

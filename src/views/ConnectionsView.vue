@@ -122,6 +122,9 @@ const selectedAt = ref(Date.now())
 const detailFromClosed = ref(false)
 const rulePolicy = ref('DIRECT')
 const confirmAll = ref(false)
+/** Rows chosen when the close confirmation opened: `null` means every active connection (R30). */
+const confirmIds = ref<string[] | null>(null)
+const confirmCount = ref(0)
 const returnNotice = ref<string | null>(null)
 let restoringContext = false
 const rates = shallowRef(new Map<string, { up: number; down: number }>())
@@ -736,10 +739,24 @@ async function closeOne(row: ConnectionRow) {
   await store.closeConnection(row.id)
 }
 
+/** Without a search or route filter this closes everything; otherwise only the listed rows. */
+function askCloseAll() {
+  if (!rows.value.length) return
+  confirmIds.value = isFiltered.value ? rows.value.map((row) => row.id) : null
+  confirmCount.value = isFiltered.value ? rows.value.length : Math.max(displayTotal.value, rows.value.length)
+  confirmAll.value = true
+}
+
 async function disconnectAll() {
   confirmAll.value = false
-  const result = await store.closeConnection(null)
-  if (result) store.toast('已断开全部连接', 'success')
+  const ids = confirmIds.value
+  const result = await store.closeConnections(ids)
+  if (result && paused.value) {
+    // A paused list keeps its frozen rows; drop the ones the kernel was asked to close.
+    const closed = ids ? new Set(ids) : null
+    const live = new Set(result.connections.map((row) => idOf(row)))
+    frozenRows.value = frozenRows.value.filter((row) => (closed ? !closed.has(row.id) || live.has(idOf(row)) : live.has(idOf(row))))
+  }
 }
 
 function resetFilters() {
@@ -917,11 +934,11 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           <button
             type="button"
             class="btn ghost sm danger-text"
-            :disabled="!snap.connections.length"
+            :disabled="!rows.length"
             data-testid="disconnect-all"
-            @click="confirmAll = true"
+            @click="askCloseAll"
           >
-            <Icon name="x" :size="15" />全部断开
+            <Icon name="x" :size="15" />{{ isFiltered ? '关闭筛选结果' : '全部关闭' }}
           </button>
         </template>
       </div>
@@ -1493,11 +1510,13 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </template>
     </Modal>
 
-    <Modal v-if="confirmAll" title="断开全部连接" @close="confirmAll = false">
-      <p class="small">将断开当前 {{ displayTotal }} 个活动连接，已建立的连接会立即中断。</p>
+    <Modal v-if="confirmAll" :title="confirmIds ? '关闭筛选结果' : '全部关闭'" @close="confirmAll = false">
+      <p class="small" data-testid="close-connections-count">
+        关闭 {{ confirmCount }} 条连接<template v-if="confirmIds">（仅当前筛选结果）</template>，已建立的连接会立即中断。
+      </p>
       <template #footer>
         <button type="button" class="btn ghost" data-testid="cancel-disconnect-all" @click="confirmAll = false">取消</button>
-        <button type="button" class="btn danger" data-testid="confirm-disconnect-all" @click="disconnectAll">断开全部</button>
+        <button type="button" class="btn danger" data-testid="confirm-disconnect-all" @click="disconnectAll">关闭 {{ confirmCount }} 条</button>
       </template>
     </Modal>
 

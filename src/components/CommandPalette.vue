@@ -201,6 +201,8 @@ const defaultActions = computed<PaletteAction[]>(() => [
     disabled: !props.connected,
     reason: !props.connected ? '连接后可用' : undefined,
   },
+  // Opens even while the kernel is down: the dialog itself says why it cannot query (R31).
+  { id: 'dns-query', label: 'DNS 查询', icon: 'search', hint: 'A / AAAA / MX' },
   { id: 'toggle-theme', label: '切换主题', icon: 'moon' },
   { id: 'open-logs', label: '打开日志', icon: 'terminal' },
 ])

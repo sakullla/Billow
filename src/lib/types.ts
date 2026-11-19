@@ -286,6 +286,58 @@ export function normalizeConfigOverview(raw: unknown): ConfigOverview {
   }
 }
 
+/** Record types the DNS query tool offers (R31); the backend checks the same list. */
+export const DNS_QUERY_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'HTTPS'] as const
+export type DnsQueryType = (typeof DNS_QUERY_TYPES)[number]
+
+export interface DnsAnswer {
+  type: string
+  value: string
+  ttl: number
+}
+
+export interface DnsQueryResult {
+  name: string
+  qtype: string
+  /** DNS RCODE from the kernel; null when no answer arrived. */
+  status: number | null
+  answers: DnsAnswer[]
+  elapsed_ms: number
+  error: string | null
+}
+
+/**
+ * Hostname check mirrored from the backend: 1–253 chars, dot-separated
+ * 1–63 char labels of ASCII letters, digits, `-` or `_`, no edge hyphens.
+ * A single trailing dot is allowed.
+ */
+export function isValidDnsName(raw: string): boolean {
+  let name = raw.trim()
+  if (name.endsWith('.')) name = name.slice(0, -1)
+  if (!name || name.length > 253) return false
+  return name
+    .split('.')
+    .every((label) => label.length > 0 && label.length <= 63 && /^[A-Za-z0-9_-]+$/.test(label) && !label.startsWith('-') && !label.endsWith('-'))
+}
+
+export function normalizeDnsQueryResult(raw: unknown): DnsQueryResult {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const text = (item: unknown) => (typeof item === 'string' ? item : '')
+  const count = (item: unknown) => (typeof item === 'number' && Number.isFinite(item) && item >= 0 ? item : 0)
+  const answers = Array.isArray(value.answers) ? value.answers : []
+  return {
+    name: text(value.name),
+    qtype: text(value.qtype),
+    status: typeof value.status === 'number' && Number.isFinite(value.status) ? value.status : null,
+    answers: answers
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({ type: text(item.type), value: text(item.value), ttl: count(item.ttl) }))
+      .filter((item) => item.value !== ''),
+    elapsed_ms: count(value.elapsed_ms),
+    error: typeof value.error === 'string' && value.error ? value.error : null,
+  }
+}
+
 export interface Snapshot {
   profiles: ProfileItem[]
   active_id: string | null

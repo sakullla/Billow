@@ -2038,7 +2038,8 @@ describe('App', () => {
     await openPage(wrapper, 'connections')
     await settle(1100)
 
-    const close = vi.spyOn(backend, 'closeConnection')
+    const close = vi.spyOn(backend, 'closeConnections')
+    expect(wrapper.find('[data-testid="disconnect-all"]').text()).toBe('全部关闭')
     await wrapper.find('[data-testid="disconnect-all"]').trigger('click')
     await flushPromises()
     expect(document.body.textContent).toContain('已建立的连接会立即中断')
@@ -2053,7 +2054,57 @@ describe('App', () => {
     await settle(200)
     expect(close).toHaveBeenCalledWith(null)
     expect(document.body.querySelector('.modal')).toBeNull()
-    expect(wrapper.findAll('.toast.success').at(-1)?.text()).toContain('已断开全部连接')
+    expect(wrapper.findAll('.toast.success').at(-1)?.text()).toContain('已关闭全部连接')
+  })
+
+  it('closes only the filtered connections after confirming their count', async () => {
+    const { wrapper, backend } = await mountApp({ stableConnections: 12 })
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+    await openPage(wrapper, 'connections')
+    await settle(1100)
+    const liveIds = () => storeOf(wrapper).snapshot.value.connections.map((row) => row.id).sort()
+    expect(liveIds()).toHaveLength(12)
+
+    await wrapper.find('[data-testid="connection-search"]').setValue('www.')
+    await flushPromises()
+    const shown = wrapper.findAll('[data-testid="connection-row"]')
+    expect(shown).toHaveLength(3)
+    const button = wrapper.find('[data-testid="disconnect-all"]')
+    expect(button.text()).toBe('关闭筛选结果')
+
+    const close = vi.spyOn(backend, 'closeConnections')
+    await button.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('.modal')?.textContent).toContain('关闭 3 条连接')
+    bodyClick('[data-testid="confirm-disconnect-all"]')
+    await settle(200)
+    const targets = close.mock.calls[0]![0]!
+    expect(targets).toHaveLength(3)
+    const remaining = liveIds()
+    expect(remaining).toHaveLength(9)
+    expect(remaining.some((id) => targets.includes(id))).toBe(false)
+    expect(wrapper.findAll('.toast.success').at(-1)?.text()).toContain('已关闭 3 条连接')
+
+    // The emptied filter leaves nothing to close; clearing it offers 全部关闭 again.
+    expect(wrapper.findAll('[data-testid="connection-row"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="disconnect-all"]').attributes('disabled')).toBeDefined()
+    await wrapper.find('[data-testid="connection-search"]').setValue('')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="disconnect-all"]').text()).toBe('全部关闭')
+    await wrapper.find('[data-testid="disconnect-all"]').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('.modal')?.textContent).toContain('关闭 9 条连接')
+    bodyClick('[data-testid="confirm-disconnect-all"]')
+    await settle(200)
+    expect(close).toHaveBeenLastCalledWith(null)
+    expect(liveIds()).toHaveLength(0)
+    expect(wrapper.find('[data-testid="disconnect-all"]').attributes('disabled')).toBeDefined()
+
+    // The closed list never offers the bulk close.
+    await wrapper.find('[data-testid="connection-tab"]').findAll('button')[1]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="disconnect-all"]').exists()).toBe(false)
   })
 
   it('distinguishes unconnected, empty and failed connection reads', async () => {

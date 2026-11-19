@@ -4847,6 +4847,26 @@ impl ProfileBook {
         self.publish(kernel)
     }
 
+    /// Closes every connection (`None`) or exactly the listed ones (R30). Failed
+    /// ids are counted in the notice; closed ones leave the next snapshot.
+    pub fn close_connection_set(&mut self, ids: Option<&[String]>, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        let Some(endpoint) = kernel.controller() else {
+            self.notice = Some(KERNEL_DOWN.to_string());
+            return self.snapshot();
+        };
+        let outcome = match ids {
+            None => diagnostics::close_connections(&endpoint, None),
+            Some(ids) => diagnostics::close_connection_list(&endpoint, ids).and_then(|failed| match failed {
+                0 => Ok(()),
+                failed => Err(format!("{failed} 条连接没有关闭")),
+            }),
+        };
+        if let Err(message) = outcome {
+            self.notice = Some(message);
+        }
+        self.publish(kernel)
+    }
+
     /// Full rule list from the active profile, keys computed over the original order.
     fn active_config_rules(&self) -> Vec<diagnostics::ConfigRule> {
         let Some(profile) = self
@@ -9274,5 +9294,54 @@ proxy-groups:
         let current_b = book.prepare_refresh("p2").unwrap();
         book.finish_refresh(&current_b, Err("timeout".into()), &mut kernel);
         assert_eq!(book.profiles[1].failure.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn closing_a_connection_set_reports_failures_and_offline_kernels() {
+        use std::io::{BufRead, BufReader as Lines, Write};
+        struct ControllerKernel(Option<ControllerEndpoint>);
+        impl KernelLaunch for ControllerKernel {
+            fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> { Ok(()) }
+            fn running(&mut self) -> bool { self.0.is_some() }
+            fn controller(&mut self) -> Option<ControllerEndpoint> { self.0.clone() }
+        }
+        let dir = temp_dir("close-connection-set");
+        let mut book = ProfileBook::open(&dir.0);
+
+        let offline = book.close_connection_set(Some(&["a".to_string()]), &mut ControllerKernel(None));
+        assert_eq!(offline.notice.as_deref(), Some(KERNEL_DOWN));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = Lines::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() { break; }
+                }
+                let code = if first.contains("/connections/kept ") { 500 } else { 204 };
+                write!(stream, "HTTP/1.1 {code} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                lines.push(first);
+            }
+            lines
+        });
+        let mut kernel = ControllerKernel(Some(ControllerEndpoint { host: "127.0.0.1".into(), port, secret: String::new() }));
+        let partial = book.close_connection_set(Some(&["closed".to_string(), "kept".to_string()]), &mut kernel);
+        assert_eq!(partial.notice.as_deref(), Some("1 条连接没有关闭"));
+        let lines = server.join().unwrap();
+        assert!(lines.iter().all(|line| line.starts_with("DELETE /connections/")));
+
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let permissions = capability["permissions"].as_array().unwrap();
+        for permission in ["allow-close-connections", "allow-dns-query"] {
+            assert!(permissions.iter().any(|item| item.as_str() == Some(permission)), "{permission}");
+        }
     }
 }
