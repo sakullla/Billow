@@ -40,8 +40,9 @@ pub struct ShellState {
     pub webdav_user: String,
     #[serde(default)]
     pub webdav_password: String,
-    /// Desktop global shortcut per action id (R39). Machine specific, so it is
-    /// not part of a backup; nothing is bound by default.
+    /// Desktop global shortcut per action id (R39). Nothing is bound by default.
+    /// A same-platform backup carries it so a cleared restore brings it back; a
+    /// restore from the other platform keeps this machine's (see `ShellBackup`).
     #[serde(default)]
     pub hotkeys: BTreeMap<String, String>,
     /// Query the exit IP automatically after connecting or switching (R40).

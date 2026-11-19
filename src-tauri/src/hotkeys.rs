@@ -3,7 +3,9 @@
 //! Every action here is also a tray menu item: both go through the one action
 //! dispatcher in `lib.rs`, so a shortcut-triggered switch refreshes the tray and
 //! the window exactly like a click does. Bindings live in `shell-state.json`
-//! under action ids, never in a backup file, and nothing is bound by default.
+//! under action ids and nothing is bound by default. A backup carries them so a
+//! cleared restore brings them back, while a restore from the other platform
+//! keeps this machine's (R38, see `backup::merge_platform`).
 
 use std::collections::BTreeMap;
 
