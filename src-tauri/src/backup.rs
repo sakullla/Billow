@@ -216,6 +216,9 @@ pub fn merge_platform(
     backup.profiles.app_mode = local_profiles.app_mode.clone();
     backup.shell.close_to_tray = local_shell.close_to_tray;
     backup.shell.silent_start = local_shell.silent_start;
+    // Lightweight mode is a desktop window behaviour like the tray flags, so an
+    // Android backup must not switch it on or off here (R44).
+    backup.shell.release_ui_on_close = local_shell.release_ui_on_close;
     backup.platform = current_platform.to_string();
     true
 }
@@ -607,7 +610,9 @@ mod tests {
             theme: "dark".to_string(),
             close_to_tray: false,
             silent_start: true,
+            release_ui_on_close: true,
             language: "en".to_string(),
+            auto_exit_ip: true,
             ..ShellState::default()
         }
     }
@@ -634,6 +639,9 @@ mod tests {
         assert_eq!(parsed.profiles.settings.mixed_port, Some(7890));
         assert_eq!(parsed.shell.theme, "dark");
         assert!(!parsed.shell.close_to_tray);
+        // Both behaviour switches travel with the file (R38, R40, R44).
+        assert!(parsed.shell.release_ui_on_close);
+        assert!(parsed.shell.auto_exit_ip);
         // WebDAV credentials, window size, traffic history and the current page
         // are not part of a backup.
         let mut state = sample_shell();
@@ -704,7 +712,13 @@ mod tests {
         local.included_packages = vec!["com.local.only".to_string()];
         local.app_mode = "include".to_string();
         local.tun_wanted = false;
-        let local_shell = ShellState { close_to_tray: true, silent_start: false, ..sample_shell() };
+        let local_shell = ShellState {
+            close_to_tray: true,
+            silent_start: false,
+            release_ui_on_close: false,
+            auto_exit_ip: false,
+            ..sample_shell()
+        };
 
         assert!(merge_platform(&mut file, "desktop", &local, &local_shell));
         assert_eq!(file.profiles.settings.tun, local.settings.tun);
@@ -715,6 +729,10 @@ mod tests {
         assert_eq!(file.profiles.app_mode, "include");
         assert!(file.shell.close_to_tray);
         assert!(!file.shell.silent_start);
+        // Lightweight mode is a desktop window behaviour and stays this machine's.
+        assert!(!file.shell.release_ui_on_close);
+        // Auto-query is a plain preference, so the backup keeps its value.
+        assert!(file.shell.auto_exit_ip);
         // Configuration and 覆写 still come from the backup.
         assert_eq!(file.profiles.profiles[0].name, "机场 A");
         assert_eq!(file.platform, "desktop");

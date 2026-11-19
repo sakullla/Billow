@@ -726,6 +726,14 @@ export function createStore(backend: Backend) {
     },
   )
 
+  // App settings can arrive after the first snapshot, e.g. a released window
+  // reopening on a live connection or a launch auto-connect that finished first
+  // (R44). The connected watcher above already missed that transition while
+  // `auto_exit_ip` was still unknown, so evaluate once the option becomes known.
+  watch(autoExitIp, (enabled) => {
+    if (enabled && snapshot.value.connected && exitIp.value === null) void queryExitIp()
+  })
+
   // A node, outbound-mode or profile switch may change the exit (R40). Leaving
   // the connection (empty catalog) does not mark the last answer.
   watch(exitIpSignature, (next, prev) => {

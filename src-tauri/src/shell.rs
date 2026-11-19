@@ -94,15 +94,21 @@ impl Default for ShellState {
     }
 }
 
-/// The app settings a backup carries (R38). Window size, the last page and the
-/// WebDAV credentials stay out of the file; a restore keeps this machine's.
+/// The app settings a backup carries (R38). Window size, the last page, the
+/// WebDAV account and the global shortcuts are machine specific and stay out of
+/// the file; a restore keeps this machine's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellBackup {
     pub theme: String,
     pub close_to_tray: bool,
     pub silent_start: bool,
+    /// Lightweight mode travels with "stay in tray" (R44).
+    pub release_ui_on_close: bool,
     pub language: String,
+    /// Automatic exit IP queries are a behaviour preference, not a machine
+    /// detail, so they travel with the theme and language (R40).
+    pub auto_exit_ip: bool,
 }
 
 impl Default for ShellBackup {
@@ -111,7 +117,9 @@ impl Default for ShellBackup {
             theme: default_theme(),
             close_to_tray: true,
             silent_start: false,
+            release_ui_on_close: false,
             language: default_language(),
+            auto_exit_ip: false,
         }
     }
 }
@@ -122,7 +130,9 @@ impl ShellBackup {
             theme: state.theme.clone(),
             close_to_tray: state.close_to_tray,
             silent_start: state.silent_start,
+            release_ui_on_close: state.release_ui_on_close,
             language: state.language.clone(),
+            auto_exit_ip: state.auto_exit_ip,
         }
     }
 
@@ -134,7 +144,9 @@ impl ShellBackup {
             theme: resolve_theme(&self.theme).to_string(),
             close_to_tray: self.close_to_tray,
             silent_start: self.silent_start,
+            release_ui_on_close: self.release_ui_on_close,
             language: resolve_language(&self.language).to_string(),
+            auto_exit_ip: self.auto_exit_ip,
             ..current.clone()
         }
     }
@@ -368,31 +380,38 @@ mod tests {
             width: 1280.0,
             height: 800.0,
             last_entry: "logs".to_string(),
-            release_ui_on_close: true,
+            // This machine has both switches off; the backup turns them on.
+            release_ui_on_close: false,
+            auto_exit_ip: false,
             webdav_url: "https://dav.example.com/billow/".to_string(),
             webdav_user: "me".to_string(),
             webdav_password: "secret".to_string(),
-            auto_exit_ip: true,
             ..ShellState::default()
         };
-        let backup: ShellBackup =
-            serde_json::from_str(r#"{"theme":"dark","close_to_tray":false,"silent_start":true,"language":"en"}"#)
-                .unwrap();
+        let backup: ShellBackup = serde_json::from_str(
+            r#"{"theme":"dark","close_to_tray":false,"silent_start":true,"release_ui_on_close":true,"language":"en","auto_exit_ip":true}"#,
+        )
+        .unwrap();
         let restored = backup.apply(&current);
         assert_eq!(restored.theme, "dark");
         assert!(!restored.close_to_tray);
         assert!(restored.silent_start);
         assert_eq!(restored.language, "en");
+        // Both behaviour switches travel with the backup (R38, R40, R44).
+        assert!(restored.release_ui_on_close);
+        assert!(restored.auto_exit_ip);
         // Excluded from every backup: window size, current page and WebDAV credentials.
         assert_eq!(restored.width, 1280.0);
         assert_eq!(restored.height, 800.0);
         assert_eq!(restored.last_entry, "logs");
-        // Lightweight mode follows this machine like the window size does.
-        assert!(restored.release_ui_on_close);
-        // The automatic exit IP query is this machine's choice, not a backup setting (R40).
-        assert!(restored.auto_exit_ip);
         assert_eq!(restored.webdav_url, "https://dav.example.com/billow/");
         assert_eq!(restored.webdav_password, "secret");
+
+        // Export -> clear -> import brings the same switches back.
+        let reimported = ShellBackup::of(&restored).apply(&ShellState::default());
+        assert!(reimported.release_ui_on_close);
+        assert!(reimported.auto_exit_ip);
+        assert_eq!(reimported.theme, "dark");
 
         // Unknown values fall back like every other stored preference.
         let odd: ShellBackup =
@@ -400,6 +419,15 @@ mod tests {
         assert_eq!(odd.apply(&current).theme, "system");
         assert_eq!(odd.apply(&current).language, "system");
         assert!(odd.close_to_tray, "an omitted flag keeps its default");
+        // A backup written before the switches existed leaves them off instead
+        // of silently inheriting another machine's choice.
+        let switched = ShellState {
+            release_ui_on_close: true,
+            auto_exit_ip: true,
+            ..current.clone()
+        };
+        assert!(!odd.apply(&switched).release_ui_on_close);
+        assert!(!odd.apply(&switched).auto_exit_ip);
         assert_eq!(ShellBackup::of(&current).theme, "system");
     }
 
@@ -428,5 +456,14 @@ mod tests {
         assert!(permissions.contains(&"allow-set-theme"));
         assert!(permissions.contains(&"allow-set-language"));
         assert!(permissions.contains(&"allow-set-last-entry"));
+        // Exit IP lookup and its opt-in (R40) must stay reachable from the window.
+        assert!(permissions.contains(&"allow-exit-ip"));
+        assert!(permissions.contains(&"allow-set-exit-ip-auto"));
+        // Each capability entry also needs its permission definition, or the
+        // command silently drops out of the window.
+        assert!(include_str!("../permissions/app.toml").contains("identifier = \"allow-exit-ip\""));
+        assert!(
+            include_str!("../permissions/shell.toml").contains("identifier = \"allow-set-exit-ip-auto\"")
+        );
     }
 }

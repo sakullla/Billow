@@ -68,6 +68,31 @@ describe('Exit IP lookup (R40)', () => {
     expect(card().find('[data-testid="exit-ip-query"]').exists()).toBe(false)
   })
 
+  it('queries once when the window opens on a live connection with auto-query on', async () => {
+    vi.useFakeTimers()
+    const backend = createDemoBackend()
+    // A released window reopening from the tray (R44) or a launch auto-connect
+    // can both finish before the first snapshot: the connection already exists
+    // and auto-query is already on when the store initializes.
+    const connecting = backend.connect()
+    await vi.advanceTimersByTimeAsync(700)
+    await connecting
+    const info = await backend.appInfo()
+    vi.spyOn(backend, 'appInfo').mockResolvedValue({ ...info, auto_exit_ip: true })
+    const exitSpy = vi.spyOn(backend, 'exitIp')
+
+    const wrapper = mount(App, { props: { backend, width: 1200 }, attachTo: document.body })
+    mounted.push(wrapper)
+    await settle(1200)
+
+    // Exactly one automatic query, and the result is on screen without a click.
+    expect(exitSpy).toHaveBeenCalledTimes(1)
+    const card = wrapper.find('[data-testid="exit-ip-card"]')
+    expect(card.find('[data-testid="exit-ip-query"]').exists()).toBe(false)
+    expect(card.find('[data-testid="exit-ip-value"]').text()).toBe('203.0.113.42')
+    expect(card.find('[data-testid="exit-ip-stale"]').exists()).toBe(false)
+  })
+
   it('shows the entry but explains why nothing can be queried while disconnected', async () => {
     const { wrapper, backend } = await mountApp()
     const exitSpy = vi.spyOn(backend, 'exitIp')
