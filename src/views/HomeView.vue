@@ -16,6 +16,7 @@ import {
   formatDate,
   formatRelative,
   formatSpeed,
+  canPickNode,
   groupTypeLabel,
   resolveChain,
   usagePercent,
@@ -72,8 +73,10 @@ const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${
 const showAllGroups = ref(false)
 /** Config `hidden: true` groups stay out of the picker; chains below still pass through them (R29). */
 const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual' && !group.hidden))
-const manualGroups = computed(() => (showAllGroups.value ? allManualGroups.value : allManualGroups.value.slice(0, 8)))
-const hiddenGroupCount = computed(() => Math.max(0, allManualGroups.value.length - 8))
+/** The groups card also lists url-test / fallback groups, which can be pinned like select groups (R28). */
+const allPickableGroups = computed(() => snap.value.node_catalog.filter((group) => canPickNode(group) && !group.hidden))
+const manualGroups = computed(() => (showAllGroups.value ? allPickableGroups.value : allPickableGroups.value.slice(0, 8)))
+const hiddenGroupCount = computed(() => Math.max(0, allPickableGroups.value.length - 8))
 const primaryGroup = computed(() => {
   if (snap.value.mode === 'global') {
     return snap.value.node_catalog.find((group) => group.name === 'GLOBAL') ?? allManualGroups.value[0] ?? null
@@ -663,7 +666,7 @@ function onPrimary() {
           <section class="card home-groups" :class="{ 'direct-dim': snap.mode === 'direct' }" data-testid="groups-card">
             <header class="card-head">
               <h2>
-                代理组<span v-if="allManualGroups.length" class="card-count">{{ allManualGroups.length }}</span>
+                代理组<span v-if="allPickableGroups.length" class="card-count">{{ allPickableGroups.length }}</span>
                 <span v-if="snap.mode === 'direct' && manualGroups.length" class="tag sm">直连中</span>
               </h2>
               <div class="card-head-actions">
@@ -702,6 +705,12 @@ function onPrimary() {
                     <span class="group-row-head">
                       <span class="group-row-name">{{ group.name }}</span>
                       <span class="tag sm" data-testid="home-group-type">{{ groupTypeLabel(group) }}</span>
+                      <span
+                        v-if="group.fixed"
+                        class="tag sm accent"
+                        :title="`已固定使用 ${group.fixed}`"
+                        data-testid="home-group-fixed"
+                      >已固定</span>
                     </span>
                     <span class="group-row-now">
                       <ChainPath :hops="hopsOf(group)" :groups="groupNames" fold data-testid="home-group-now" />
@@ -721,6 +730,12 @@ function onPrimary() {
                     <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="20" /></span>
                     <span class="group-tile-meta">
                       <span class="tag sm" data-testid="home-group-type">{{ groupTypeLabel(group) }}</span>
+                      <span
+                        v-if="group.fixed"
+                        class="tag sm accent"
+                        :title="`已固定使用 ${group.fixed}`"
+                        data-testid="home-group-fixed"
+                      >已固定</span>
                       <span
                         class="delay home-group-delay mono"
                         :class="groupDelay(group).tone"

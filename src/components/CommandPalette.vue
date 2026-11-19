@@ -40,6 +40,8 @@ const props = withDefaults(
     profiles?: readonly ProfileItem[]
     nodeCatalog?: readonly NodeGroup[]
     connected?: boolean
+    /** Pinning a url-test / fallback node only needs the kernel controller, not takeover (R28). */
+    kernelRunning?: boolean
     hasProfiles?: boolean
     systemProxy?: boolean
     tun?: boolean
@@ -62,6 +64,7 @@ const props = withDefaults(
     profiles: () => [],
     nodeCatalog: () => [],
     connected: false,
+    kernelRunning: false,
     hasProfiles: true,
     systemProxy: false,
     tun: false,
@@ -327,7 +330,7 @@ const groups = computed(() => {
         if (!matches(node.name, tagText)) continue
         const delay = props.connected ? delayText(node.delay_ms, node.failed) : ''
         const pinned = targetGroup.pinnable && targetGroup.fixed === node.name
-        const pinOffline = targetGroup.pinnable && !props.connected
+        const pinOffline = targetGroup.pinnable && !props.kernelRunning
         proxyEntries.push({
           key: `node:${targetGroup.name}:${node.name}`,
           kind: 'node',
@@ -337,7 +340,7 @@ const groups = computed(() => {
           icon: 'globe',
           hint: [targetGroup.name, pinned ? '已固定' : node.selected ? '当前' : delay || proto].filter(Boolean).join(' · '),
           disabled: pinOffline || undefined,
-          reason: pinOffline ? '连接后可固定' : undefined,
+          reason: pinOffline ? '内核没有运行' : undefined,
           index: 0,
         })
         added += 1

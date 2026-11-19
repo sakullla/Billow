@@ -1476,6 +1476,8 @@ describe('App', () => {
     const { wrapper, backend } = await mountApp({ loadBalance: true })
     const store = (wrapper.vm as unknown as { store: Store }).store
     const select = vi.spyOn(backend, 'selectNode')
+    // Home only lists groups whose node can be picked: load-balance stays off (R28).
+    expect(wrapper.find('[data-testid="groups-card"] [data-group="负载均衡"]').exists()).toBe(false)
     await wrapper.find('.sidebar [data-page="proxies"]').trigger('click')
     await flushPromises()
 
@@ -1541,6 +1543,19 @@ describe('App', () => {
     expect(autoCard().find('[data-testid="group-fixed-自动选择"]').text()).toBe('已固定')
     expect(autoCard().find('.group-now').text()).toContain('日本 01')
 
+    // Home lists url-test / fallback beside select groups and marks the pin (R28).
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await flushPromises()
+    const homeTile = (name: string) => wrapper.find(`[data-testid="groups-card"] [data-group="${name}"]`)
+    expect(homeTile('自动选择').find('[data-testid="home-group-fixed"]').text()).toBe('已固定')
+    expect(homeTile('自动选择').find('[data-testid="home-group-now"]').text()).toContain('日本 01')
+    expect(homeTile('故障转移').exists()).toBe(true)
+    expect(homeTile('故障转移').find('[data-testid="home-group-fixed"]').exists()).toBe(false)
+    expect(homeTile('节点选择').find('[data-testid="home-group-fixed"]').exists()).toBe(false)
+    await homeTile('自动选择').trigger('click')
+    await settle(100)
+    expect(autoCard().find('[data-node="日本 01"]').classes()).toContain('selected')
+
     // Disconnect and connect again: the demo kernel restarts and the pin is replayed.
     await wrapper.find('.sidebar [data-page="home"]').trigger('click')
     await flushPromises()
@@ -1559,6 +1574,12 @@ describe('App', () => {
     expect(autoCard().find('[data-testid="unfix-group-自动选择"]').exists()).toBe(false)
     expect(autoCard().find('[data-node="日本 01"]').classes()).not.toContain('selected')
     expect(autoCard().find('[data-node="香港 02"]').classes()).toContain('selected')
+
+    await wrapper.find('.sidebar [data-page="home"]').trigger('click')
+    await flushPromises()
+    const homeAuto = wrapper.find('[data-testid="groups-card"] [data-group="自动选择"]')
+    expect(homeAuto.exists()).toBe(true)
+    expect(homeAuto.find('[data-testid="home-group-fixed"]').exists()).toBe(false)
   })
 
   it('leaves hidden groups out of the proxies page, home and palette but keeps them in chains', async () => {

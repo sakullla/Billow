@@ -283,7 +283,8 @@ describe('CommandPalette', () => {
       { name: '自动选择', kind: 'auto', now: '日本 01', sort: 'default', group_type: 'url-test', icon: null, pinnable: true, fixed: '日本 01', nodes: [node('日本 01', true), node('日本 02')] },
       { name: '负载均衡', kind: 'auto', now: '日本 01', sort: 'default', group_type: 'load-balance', icon: null, pinnable: false, fixed: null, nodes: [node('日本 01', true), node('日本 02')] },
     ]
-    const { wrapper } = mountPalette({ connected: true, nodeCatalog: catalog })
+    // Kernel running without takeover: pinning still works, it only needs the controller.
+    const { wrapper } = mountPalette({ connected: false, kernelRunning: true, nodeCatalog: catalog })
     await settle()
     search('隐藏')
     await nextTick()
@@ -302,13 +303,13 @@ describe('CommandPalette', () => {
     expect(wrapper.emitted('select-node')).toEqual([['自动选择', '日本 02']])
     wrapper.unmount()
 
-    const offline = mountPalette({ connected: false, nodeCatalog: catalog })
+    const offline = mountPalette({ connected: false, kernelRunning: false, nodeCatalog: catalog })
     await settle()
     search('日本 02')
     await nextTick()
     const pin = option('node:自动选择:日本 02')
     expect(pin?.getAttribute('aria-disabled')).toBe('true')
-    expect(pin?.textContent).toContain('连接后可固定')
+    expect(pin?.textContent).toContain('内核没有运行')
     pin?.click()
     expect(offline.wrapper.emitted('select-node')).toBeUndefined()
     offline.wrapper.unmount()
