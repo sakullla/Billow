@@ -35,17 +35,17 @@ type ConnTab = 'active' | 'closed'
 type RouteFilter = 'all' | 'proxy' | 'direct'
 type SortKey = 'time' | 'speed' | 'download' | 'upload' | 'host'
 const SORTS: { id: SortKey; label: string }[] = [
-  { id: 'time', label: tr('时间') },
-  { id: 'speed', label: tr('速度') },
-  { id: 'download', label: tr('下载') },
-  { id: 'upload', label: tr('上传') },
-  { id: 'host', label: tr('主机') },
+  { id: 'time', get label() { return tr('时间') } },
+  { id: 'speed', get label() { return tr('速度') } },
+  { id: 'download', get label() { return tr('下载') } },
+  { id: 'upload', get label() { return tr('上传') } },
+  { id: 'host', get label() { return tr('主机') } },
 ]
 const CLOSED_SORTS: { id: SortKey; label: string }[] = [
-  { id: 'time', label: tr('关闭时间') },
-  { id: 'download', label: tr('下载') },
-  { id: 'upload', label: tr('上传') },
-  { id: 'host', label: tr('主机') },
+  { id: 'time', get label() { return tr('关闭时间') } },
+  { id: 'download', get label() { return tr('下载') } },
+  { id: 'upload', get label() { return tr('上传') } },
+  { id: 'host', get label() { return tr('主机') } },
 ]
 
 const TABLE_ROW = 40

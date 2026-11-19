@@ -283,7 +283,10 @@ export function createStore(backend: Backend) {
       toastTimers.delete(item.id)
       toastMeta.delete(item.id)
     }
-    toasts.value = [...toasts.value.slice(-3), { id, tone, text }]
+    // Backend messages arrive in Chinese; the catalog translates a known reason
+    // and leaves unknown text untouched (T8).
+    const shown = tr(text)
+    toasts.value = [...toasts.value.slice(-3), { id, tone, text: shown }]
     scheduleToast(id, tone === 'error' ? 5200 : 2800)
   }
 

@@ -55,7 +55,7 @@ const kernelUpdateBusy = computed(() =>
   store.isAndroid.value ? store.appUpdate.busy.value : Boolean(store.busy.kernel),
 )
 const kernelUpdateSubtitle = computed(() => {
-  if (kernel.value.failure) return kernel.value.failure
+  if (kernel.value.failure) return tr(kernel.value.failure)
   if (!store.isAndroid.value) return tr('已安装的内核直接使用；可手动检查新版本')
   const status = store.appUpdate.status.value
   if (status === 'checking') return tr('正在检查 Billow 与内核更新…')
@@ -95,40 +95,40 @@ const LANGUAGES = computed<{ id: LanguagePreference; label: string }[]>(() => [
   { id: 'en', label: 'English' },
 ])
 const CHANNELS: { id: KernelChannel; label: string }[] = [
-  { id: 'stable', label: tr('稳定版') },
-  { id: 'preview', label: tr('预览版') },
+  { id: 'stable', get label() { return tr('稳定版') } },
+  { id: 'preview', get label() { return tr('预览版') } },
 ]
 const LOG_LEVELS = [
-  { id: '', label: tr('跟随配置') },
-  { id: 'debug', label: tr('调试') },
-  { id: 'info', label: tr('信息') },
-  { id: 'warning', label: tr('警告') },
-  { id: 'error', label: tr('错误') },
-  { id: 'silent', label: tr('静默') },
+  { id: '', get label() { return tr('跟随配置') } },
+  { id: 'debug', get label() { return tr('调试') } },
+  { id: 'info', get label() { return tr('信息') } },
+  { id: 'warning', get label() { return tr('警告') } },
+  { id: 'error', get label() { return tr('错误') } },
+  { id: 'silent', get label() { return tr('静默') } },
 ]
 const PROCESS_MODES = [
-  { id: '', label: tr('跟随配置') },
-  { id: 'always', label: tr('始终') },
-  { id: 'strict', label: tr('自动') },
-  { id: 'off', label: tr('关闭') },
+  { id: '', get label() { return tr('跟随配置') } },
+  { id: 'always', get label() { return tr('始终') } },
+  { id: 'strict', get label() { return tr('自动') } },
+  { id: 'off', get label() { return tr('关闭') } },
 ]
 
 /** Seconds; '0' turns TCP keep-alive off. */
 const KEEP_ALIVE = [
-  { id: '', label: tr('跟随配置') },
-  { id: '15', label: tr('15 秒') },
-  { id: '30', label: tr('30 秒') },
-  { id: '60', label: tr('60 秒') },
-  { id: '120', label: tr('120 秒（省电）') },
-  { id: '0', label: tr('关闭') },
+  { id: '', get label() { return tr('跟随配置') } },
+  { id: '15', get label() { return tr('15 秒') } },
+  { id: '30', get label() { return tr('30 秒') } },
+  { id: '60', get label() { return tr('60 秒') } },
+  { id: '120', get label() { return tr('120 秒（省电）') } },
+  { id: '0', get label() { return tr('关闭') } },
 ]
 
 type Flag = 'allow_lan' | 'ipv6' | 'unified_delay' | 'tcp_concurrent'
 const FLAGS: { key: Flag; title: string; hint: string }[] = [
-  { key: 'allow_lan', get title() { return tr('局域网连接') }, hint: tr('允许同一网络的其他设备使用本机代理') },
-  { key: 'ipv6', title: 'IPv6', hint: tr('解析并连接 IPv6 地址') },
-  { key: 'unified_delay', get title() { return tr('统一延迟') }, hint: tr('测速时去除握手耗时，结果更接近真实体验') },
-  { key: 'tcp_concurrent', get title() { return tr('TCP 并发') }, hint: tr('同时连接多个解析结果，取最快的一个') },
+  { key: 'allow_lan', get title() { return tr('局域网连接') }, get hint() { return tr('允许同一网络的其他设备使用本机代理') } },
+  { key: 'ipv6', title: 'IPv6', get hint() { return tr('解析并连接 IPv6 地址') } },
+  { key: 'unified_delay', get title() { return tr('统一延迟') }, get hint() { return tr('测速时去除握手耗时，结果更接近真实体验') } },
+  { key: 'tcp_concurrent', get title() { return tr('TCP 并发') }, get hint() { return tr('同时连接多个解析结果，取最快的一个') } },
 ]
 
 const pendingSettings = ref<KernelSettings | null>(null)
@@ -295,9 +295,9 @@ const lanExtraPorts = computed(() => {
 const snifferOn = computed(() => snap.value.settings.sniffer ?? snap.value.config_values.sniffer ?? false)
 type OverrideChoice = '' | 'on' | 'off'
 const OVERRIDE_CHOICES: { id: OverrideChoice; label: string }[] = [
-  { id: '', label: tr('跟随配置') },
-  { id: 'on', label: tr('覆盖') },
-  { id: 'off', label: tr('不覆盖') },
+  { id: '', get label() { return tr('跟随配置') } },
+  { id: 'on', get label() { return tr('覆盖') } },
+  { id: 'off', get label() { return tr('不覆盖') } },
 ]
 const SNIFF_PORTS = [
   { key: 'http', get title() { return tr('HTTP 端口') }, config: 'sniff_http_ports' },
@@ -374,10 +374,10 @@ function undoSniff() {
 type PortKey = 'socks_port' | 'http_port' | 'redir_port' | 'tproxy_port'
 const NET_KEYS = ['socks_port', 'http_port', 'redir_port', 'tproxy_port', 'interface_name', 'routing_mark'] as const
 const PORT_FIELDS: { key: PortKey; title: string; label: string; hint: string }[] = [
-  { key: 'socks_port', get title() { return tr('SOCKS 端口') }, get label() { return tr('SOCKS 端口') }, hint: tr('单独的 SOCKS5 入站') },
-  { key: 'http_port', get title() { return tr('HTTP 端口') }, get label() { return tr('HTTP 端口') }, hint: tr('单独的 HTTP 代理入站') },
-  { key: 'redir_port', get title() { return tr('透明代理端口（redir）') }, get label() { return tr('redir 端口') }, hint: tr('配合防火墙重定向使用') },
-  { key: 'tproxy_port', get title() { return tr('透明代理端口（tproxy）') }, get label() { return tr('tproxy 端口') }, hint: tr('配合 iptables / nftables TProxy 使用') },
+  { key: 'socks_port', get title() { return tr('SOCKS 端口') }, get label() { return tr('SOCKS 端口') }, get hint() { return tr('单独的 SOCKS5 入站') } },
+  { key: 'http_port', get title() { return tr('HTTP 端口') }, get label() { return tr('HTTP 端口') }, get hint() { return tr('单独的 HTTP 代理入站') } },
+  { key: 'redir_port', get title() { return tr('透明代理端口（redir）') }, get label() { return tr('redir 端口') }, get hint() { return tr('配合防火墙重定向使用') } },
+  { key: 'tproxy_port', get title() { return tr('透明代理端口（tproxy）') }, get label() { return tr('tproxy 端口') }, get hint() { return tr('配合 iptables / nftables TProxy 使用') } },
 ]
 /** mihomo implements redir on Linux and macOS, tproxy and routing marks on Linux only. */
 const visiblePorts = computed(() =>
@@ -391,9 +391,9 @@ const showRoutingMark = computed(() => store.isLinux.value)
 const showNetBlock = computed(() => visiblePorts.value.length > 0 || !store.isAndroid.value || showRoutingMark.value)
 type IfaceChoice = 'follow' | 'off' | 'custom'
 const IFACE_CHOICES: { id: IfaceChoice; label: string }[] = [
-  { id: 'follow', label: tr('跟随配置') },
-  { id: 'off', label: tr('不指定') },
-  { id: 'custom', label: tr('指定') },
+  { id: 'follow', get label() { return tr('跟随配置') } },
+  { id: 'off', get label() { return tr('不指定') } },
+  { id: 'custom', get label() { return tr('指定') } },
 ]
 const netText = ref<Record<PortKey | 'routing_mark' | 'interface_name', string>>({
   socks_port: '',
@@ -701,7 +701,7 @@ const appSummary = computed(() => {
 
 // ── System Proxy draft
 const PROXY_MODES: { id: SystemProxyMode; label: string }[] = [
-  { id: 'manual', label: tr('手动') },
+  { id: 'manual', get label() { return tr('手动') } },
   { id: 'pac', label: 'PAC' },
 ]
 const proxyHost = ref('')
@@ -849,18 +849,18 @@ function saveProxy() {
 
 // ── TUN draft
 const STACKS = [
-  { id: '', label: tr('默认') },
+  { id: '', get label() { return tr('默认') } },
   { id: 'mixed', label: 'Mixed' },
   { id: 'gvisor', label: 'gVisor' },
   { id: 'system', label: 'System' },
 ] as const
-const STACK_HINTS: Record<TunSettings['stack'], string> = {
+const STACK_HINTS = computed<Record<TunSettings['stack'], string>>(() => ({
   '': tr('跟随配置；配置未指定时用内核推荐的 Mips 自研协议栈（旧内核为 gVisor）'),
   mips: tr('Mips：mihomo 自研协议栈，新版内核的默认值'),
   mixed: tr('Mixed：TCP 走系统栈、UDP 走 gVisor；开着防火墙时需放行内核'),
   gvisor: tr('gVisor：用户态协议栈，隔离性好，不受系统防火墙影响'),
   system: tr('System：系统协议栈，占用最低；开着防火墙时需放行内核'),
-}
+}))
 const tun = ref<TunSettings>(copy(snap.value.settings.tun))
 const tunHijack = ref('')
 const tunMtu = ref('')
@@ -902,8 +902,8 @@ const tunDraft = computed<TunSettings>(() => {
   }
 })
 const TUN_ROUTES = [
-  { key: 'route_exclude_address', get title() { return tr('不走 TUN 的地址') }, config: 'tun_route_exclude_address', hint: tr('这些 IP 或网段绕过 TUN，例如局域网 192.168.0.0/16') },
-  { key: 'route_address', get title() { return tr('只让这些地址走 TUN') }, config: 'tun_route_address', hint: tr('只把这些 IP 或网段路由进 TUN，其余不接管') },
+  { key: 'route_exclude_address', get title() { return tr('不走 TUN 的地址') }, config: 'tun_route_exclude_address', get hint() { return tr('这些 IP 或网段绕过 TUN，例如局域网 192.168.0.0/16') } },
+  { key: 'route_address', get title() { return tr('只让这些地址走 TUN') }, config: 'tun_route_address', get hint() { return tr('只把这些 IP 或网段路由进 TUN，其余不接管') } },
 ] as const
 const tunDirty = computed(() => JSON.stringify(tunDraft.value) !== JSON.stringify(snap.value.settings.tun))
 function undoTun() {
@@ -933,15 +933,15 @@ const MODES_DNS = [
   { id: 'normal', label: 'Normal' },
 ] as const
 const FILTER_MODES_DNS = [
-  { id: 'blacklist', label: tr('黑名单') },
-  { id: 'whitelist', label: tr('白名单') },
-  { id: 'rule', label: tr('规则') },
+  { id: 'blacklist', get label() { return tr('黑名单') } },
+  { id: 'whitelist', get label() { return tr('白名单') } },
+  { id: 'rule', get label() { return tr('规则') } },
 ] as const
-const FILTER_MODE_HINTS: Record<DnsSettings['fake_ip_filter_mode'], string> = {
+const FILTER_MODE_HINTS = computed<Record<DnsSettings['fake_ip_filter_mode'], string>>(() => ({
   blacklist: tr('黑名单：列表中的域名返回真实 IP，其余返回虚拟地址'),
   whitelist: tr('白名单：仅列表中的域名返回虚拟地址，其余返回真实 IP'),
   rule: tr('规则：列表按规则写法自上而下匹配，例如 GEOSITE,cn,real-ip，最后写 MATCH,fake-ip'),
-}
+}))
 const CACHE_ALGOS_DNS = [
   { id: 'lru', label: 'LRU' },
   { id: 'arc', label: 'ARC' },
@@ -950,9 +950,9 @@ type ListKey = 'nameserver' | 'default_nameserver' | 'fallback' | 'proxy_server_
 const LISTS: { key: ListKey; title: string; hint: string; fakeIpOnly?: boolean; core?: boolean }[] = [
   { key: 'nameserver', get title() { return tr('主 DNS 服务器') }, get hint() { return tr('默认用于解析所有域名，支持 DoH / DoT / DoQ') }, core: true },
   { key: 'default_nameserver', get title() { return tr('引导 DNS') }, get hint() { return tr('只用 IP 形式，用于解析上面 DoH 等服务器自身的域名') }, core: true },
-  { key: 'proxy_server_nameserver', get title() { return tr('节点域名解析') }, hint: tr('解析代理节点服务器地址') },
-  { key: 'direct_nameserver', get title() { return tr('直连域名解析') }, hint: tr('直连出站使用；留空则用主 DNS') },
-  { key: 'fallback', get title() { return tr('备用 DNS') }, hint: tr('可选，海外服务器；留空则不启用') },
+  { key: 'proxy_server_nameserver', get title() { return tr('节点域名解析') }, get hint() { return tr('解析代理节点服务器地址') } },
+  { key: 'direct_nameserver', get title() { return tr('直连域名解析') }, get hint() { return tr('直连出站使用；留空则用主 DNS') } },
+  { key: 'fallback', get title() { return tr('备用 DNS') }, get hint() { return tr('可选，海外服务器；留空则不启用') } },
   { key: 'fake_ip_filter', get title() { return tr('Fake-IP 过滤') }, get hint() { return tr('黑名单下这些域名返回真实 IP；白名单下仅这些域名返回 Fake-IP；规则模式下每行一条规则') }, fakeIpOnly: true },
 ]
 const CORE_DNS_LISTS = LISTS.filter((item) => item.core)

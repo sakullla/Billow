@@ -250,26 +250,26 @@ const lastFailedGeoKey = ref<string | undefined>(undefined)
 // ── GEO databases: file state, mode, source preset, and per-database URLs ──
 const geoFiles = shallowRef<GeoFile[]>([])
 const GEO_INTERVALS = [
-  { id: '24', label: tr('每天') },
-  { id: '72', label: tr('每 3 天') },
-  { id: '168', label: tr('每周') },
+  { id: '24', get label() { return tr('每天') } },
+  { id: '72', get label() { return tr('每 3 天') } },
+  { id: '168', get label() { return tr('每周') } },
 ] as const
 const GEO_SOURCES: { id: GeoSource; label: string }[] = [
-  { id: '', label: tr('默认') },
+  { id: '', get label() { return tr('默认') } },
   { id: 'github', label: 'GitHub' },
   { id: 'jsdelivr', label: 'jsDelivr' },
   { id: 'testingcf', label: 'CF' },
 ]
 const GEODATA_MODES = [
-  { id: '', label: tr('默认') },
+  { id: '', get label() { return tr('默认') } },
   { id: 'db', label: 'MMDB' },
   { id: 'dat', label: 'DAT' },
 ] as const
 /** mihomo defaults to the low-memory loader; 标准 reads each file whole. */
 const GEODATA_LOADERS = [
-  { id: '', label: tr('默认') },
-  { id: 'memconservative', label: tr('低内存') },
-  { id: 'standard', label: tr('标准') },
+  { id: '', get label() { return tr('默认') } },
+  { id: 'memconservative', get label() { return tr('低内存') } },
+  { id: 'standard', get label() { return tr('标准') } },
 ] as const
 const GEO_URL_FIELDS: { key: keyof GeoUrls; label: string }[] = [
   { key: 'geoip', label: 'GeoIP' },
@@ -792,7 +792,7 @@ onMounted(() => {
       </ul>
       <div v-if="geoError" class="geo-alert" role="alert" data-testid="geo-error">
         <Icon name="alert" :size="15" />
-        <span class="geo-alert-text small">{{ geoError }}</span>
+        <span class="geo-alert-text small">{{ tr(geoError) }}</span>
         <div class="geo-alert-actions">
           <button
             v-if="geoSettings.geo_source !== 'jsdelivr'"
@@ -994,10 +994,10 @@ onMounted(() => {
             <Icon name="x" :size="14" />
           </button>
         </div>
-        <p v-if="detail.error" class="field-error" role="alert">{{ detail.error }}</p>
+        <p v-if="detail.error" class="field-error" role="alert">{{ tr(detail.error) }}</p>
         <div v-else-if="!detail.data" class="detail-loading muted small"><span class="spinner xs" /> {{ tr('正在读取…') }}</div>
         <template v-else>
-          <p v-if="detailNotice" class="banner info small" data-testid="provider-notice"><Icon name="info" :size="15" />{{ detailNotice }}</p>
+          <p v-if="detailNotice" class="banner info small" data-testid="provider-notice"><Icon name="info" :size="15" />{{ tr(detailNotice) }}</p>
           <ul v-if="detail.row.kind === 'proxy'" class="detail-list">
             <li v-for="proxy in detailProxies.slice(0, RULE_PAGE)" :key="proxy.name" class="detail-proxy">
               <span class="grow min0">

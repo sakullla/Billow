@@ -25,7 +25,7 @@ const snap = computed(() => store.snapshot.value)
 const tab = computed(() => store.configView.value ?? 'overview')
 
 const TABS: { id: ConfigViewTab; label: string }[] = [
-  { id: 'overview', label: tr('概览') },
+  { id: 'overview', get label() { return tr('概览') } },
   { id: 'yaml', label: 'YAML' },
 ]
 

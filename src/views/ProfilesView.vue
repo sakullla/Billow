@@ -14,7 +14,7 @@ import { subscriptionUserAgent } from '../lib/subscription'
 import type { OverridePreview, ProfileItem } from '../lib/types'
 import { shortcutKeyLabel } from '../lib/ui/shortcuts'
 import { mergeOverrideAppend } from '../lib/yaml/mergeOverride'
-import { overrideLanguage, SCRIPT_TEMPLATE, YAML_TEMPLATE, type OverrideLanguage } from '../lib/yaml/script'
+import { overrideLanguage, scriptTemplate, yamlTemplate, type OverrideLanguage } from '../lib/yaml/script'
 
 const findShortcut = shortcutKeyLabel('mod+f').replace(/\s+/g, '')
 const saveShortcut = shortcutKeyLabel('mod+s').replace(/\s+/g, '')
@@ -259,12 +259,12 @@ function ageFailure(profile: ProfileItem): boolean {
   return profile.kind === 'subscription' && AGE_FAILURE.test(profile.failure ?? '')
 }
 const INTERVALS = [
-  { hours: 0, label: tr('不自动更新') },
-  { hours: 6, label: tr('每 6 小时') },
-  { hours: 12, label: tr('每 12 小时') },
-  { hours: 24, label: tr('每天') },
-  { hours: 72, label: tr('每 3 天') },
-  { hours: 168, label: tr('每周') },
+  { hours: 0, get label() { return tr('不自动更新') } },
+  { hours: 6, get label() { return tr('每 6 小时') } },
+  { hours: 12, get label() { return tr('每 12 小时') } },
+  { hours: 24, get label() { return tr('每天') } },
+  { hours: 72, get label() { return tr('每 3 天') } },
+  { hours: 168, get label() { return tr('每周') } },
 ]
 
 function clearEditTracking() {
@@ -511,7 +511,10 @@ const OVERRIDE_LANGUAGES: { id: OverrideLanguage; label: string }[] = [
   { id: 'yaml', label: 'YAML' },
   { id: 'javascript', label: 'JavaScript' },
 ]
-const TEMPLATES: Record<OverrideLanguage, string> = { yaml: YAML_TEMPLATE, javascript: SCRIPT_TEMPLATE }
+const TEMPLATES = computed<Record<OverrideLanguage, string>>(() => ({
+  yaml: yamlTemplate(),
+  javascript: scriptTemplate(),
+}))
 
 const yaml = ref<YamlDraft | null>(null)
 const syntaxOpen = ref(false)
@@ -560,7 +563,7 @@ function chooseLanguage(next: OverrideLanguage) {
   const draft = yaml.value
   if (!draft || draft.language === next) return
   const text = draft.text.trim()
-  if (!text || text === TEMPLATES[draft.language].trim()) {
+  if (!text || text === TEMPLATES.value[draft.language].trim()) {
     applyLanguage(next)
     return
   }
@@ -572,7 +575,7 @@ function applyLanguage(next: OverrideLanguage) {
   languageSwitch.value = null
   if (!draft) return
   draft.language = next
-  draft.text = TEMPLATES[next]
+  draft.text = TEMPLATES.value[next]
   draft.dirty = true
   preview.value = null
   void nextTick(() => editorRef.value?.focus())
@@ -581,7 +584,7 @@ function applyLanguage(next: OverrideLanguage) {
 function insertTemplate() {
   const draft = yaml.value
   if (!draft) return
-  draft.text = TEMPLATES[draft.language]
+  draft.text = TEMPLATES.value[draft.language]
   draft.dirty = true
   void nextTick(() => editorRef.value?.focus())
 }
@@ -938,7 +941,7 @@ const failedSubscriptionIds = computed(() =>
           <span v-if="profile.age_recipients.length" class="tag" :title="tr('订阅内容使用 age 私钥解密')"><Icon name="shield" :size="11" />age</span>
         </footer>
         <p v-if="profile.failure && store.profileUpdates[profile.id]?.state !== 'failure'" class="field-error small">
-          <Icon name="alert" :size="13" /> {{ profile.failure }}
+          <Icon name="alert" :size="13" /> {{ tr(profile.failure) }}
           <button
             v-if="ageFailure(profile)"
             type="button"

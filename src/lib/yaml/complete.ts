@@ -5,6 +5,7 @@
  * names from the schema. Flow mappings are only read for names.
  */
 import { BUILTIN_TARGETS, RULE_TYPES, resolve, type SchemaNode } from './schema'
+import { tr, locale } from '../i18n'
 
 export interface CompletionOption {
   label: string
@@ -142,11 +143,15 @@ function keyOptions(node: SchemaNode, indent: number, prefix: string, siblings: 
     const mapping = Boolean(child.keys)
     const list = !child.keys && Boolean(child.item || child.rules)
     const body = mapping ? `\n${pad}` : list ? `\n${pad}- ` : ' '
-    const variants: { label: string; detail?: string }[] = [{ label: key, detail: child.doc }]
+    const doc = child.doc ? tr(child.doc) : key
+    // Without a translation, an English completion shows the config key (already
+    // English) instead of leaving Chinese text in the popup (T8).
+    const detail = locale.value === 'en' && doc === child.doc ? key : doc
+    const variants: { label: string; detail?: string }[] = [{ label: key, detail }]
     if (override && list) {
-      variants.push({ label: `+${key}`, detail: '插入到原列表前面' }, { label: `${key}+`, detail: '追加到原列表后面' })
+      variants.push({ label: `+${key}`, detail: tr('插入到原列表前面') }, { label: `${key}+`, detail: tr('追加到原列表后面') })
     }
-    if (override && mapping) variants.push({ label: `${key}!`, detail: '整体替换，不与原配置合并' })
+    if (override && mapping) variants.push({ label: `${key}!`, detail: tr('整体替换，不与原配置合并') })
     for (const variant of variants) {
       if (siblings.has(variant.label) || !startsWith(variant.label, prefix)) continue
       options.push({ label: variant.label, apply: `${variant.label}:${body}`, detail: variant.detail, type: 'property' })
@@ -167,9 +172,9 @@ function valueOptions(node: SchemaNode, names: Required<KnownNames>, prefix: str
 }
 
 function nameOptions(kind: 'proxies' | 'groups' | 'targets', names: Required<KnownNames>, prefix: string): CompletionOption[] {
-  const groups = unique(names.groups).map((label) => ({ label, detail: '代理组', type: 'variable' as const }))
-  const proxies = unique(names.proxies).map((label) => ({ label, detail: '节点', type: 'variable' as const }))
-  const builtins = BUILTIN_TARGETS.map((label) => ({ label, detail: '内置', type: 'constant' as const }))
+  const groups = unique(names.groups).map((label) => ({ label, detail: tr('代理组'), type: 'variable' as const }))
+  const proxies = unique(names.proxies).map((label) => ({ label, detail: tr('节点'), type: 'variable' as const }))
+  const builtins = BUILTIN_TARGETS.map((label) => ({ label, detail: tr('内置'), type: 'constant' as const }))
   const all = kind === 'groups' ? groups : kind === 'proxies' ? proxies : [...groups, ...builtins, ...proxies]
   const seen = new Set<string>()
   return all
@@ -191,7 +196,7 @@ function ruleOptions(body: string, bodyFrom: number, names: Required<KnownNames>
       options: RULE_TYPES.filter((rule) => startsWith(rule, prefix)).map((rule) => ({
         label: rule,
         apply: rule === 'MATCH' ? 'MATCH,' : `${rule},`,
-        detail: '规则类型',
+        detail: tr('规则类型'),
         type: 'keyword',
       })),
     }
@@ -204,11 +209,11 @@ function ruleOptions(body: string, bodyFrom: number, names: Required<KnownNames>
       from,
       options: unique(names.ruleProviders)
         .filter((name) => startsWith(name, prefix))
-        .map((label) => ({ label, apply: `${label},`, detail: '规则集', type: 'variable' })),
+        .map((label) => ({ label, apply: `${label},`, detail: tr('规则集'), type: 'variable' })),
     }
   }
   if (index === 3 && IP_RULES.has(type)) {
-    return { from, options: [{ label: 'no-resolve', detail: '不为匹配解析域名', type: 'keyword' }].filter((option) => startsWith(option.label, prefix)) as CompletionOption[] }
+    return { from, options: [{ label: 'no-resolve', detail: tr('不为匹配解析域名'), type: 'keyword' }].filter((option) => startsWith(option.label, prefix)) as CompletionOption[] }
   }
   return null
 }

@@ -12,8 +12,8 @@ const store = useStore()
 const snap = computed(() => store.snapshot.value)
 
 const MODES: { id: AppMode; label: string }[] = [
-  { id: 'exclude', label: tr('绕过选中应用') },
-  { id: 'include', label: tr('仅代理选中应用') },
+  { id: 'exclude', get label() { return tr('绕过选中应用') } },
+  { id: 'include', get label() { return tr('仅代理选中应用') } },
 ]
 
 // ── Drafts: each mode keeps its own list; edits commit in one batch ──

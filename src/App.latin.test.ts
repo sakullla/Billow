@@ -155,4 +155,25 @@ describe('T8 Latin demo', () => {
     await settle(80)
     expectEnglish('apps page')
   })
+
+  it('renders the empty proxies state in English', async () => {
+    const wrapper = await mountApp({ profiles: false })
+    const store = (wrapper.vm as unknown as { store: any }).store
+    store.go('proxies')
+    await settle(80)
+    expectEnglish('proxies empty state')
+  })
+
+  it('updates an already mounted settings tab when the language changes', async () => {
+    const wrapper = await mountApp({ systemLocale: 'zh-CN' })
+    const store = (wrapper.vm as unknown as { store: any }).store
+    store.go('settings')
+    store.settingsTab.value = 'kernel'
+    await settle(80)
+    // The English dictionary is applied without a remount: every label in the
+    // mounted tab must follow immediately (R42).
+    applyLocale('en')
+    await settle(30)
+    expectEnglish('settings kernel after switching')
+  })
 })

@@ -25,14 +25,14 @@ const busyKeys = computed(() => Object.keys(store.busy).join('\0'))
 
 type Sort = 'default' | 'delay' | 'name'
 const SORTS: { id: Sort; label: string }[] = [
-  { id: 'default', label: tr('默认') },
-  { id: 'delay', label: tr('延迟') },
-  { id: 'name', label: tr('名称') },
+  { id: 'default', get label() { return tr('默认') } },
+  { id: 'delay', get label() { return tr('延迟') } },
+  { id: 'name', get label() { return tr('名称') } },
 ]
 const MODES: { id: Mode; label: string }[] = [
-  { id: 'rule', label: tr('规则') },
-  { id: 'global', label: tr('全局') },
-  { id: 'direct', label: tr('直连') },
+  { id: 'rule', get label() { return tr('规则') } },
+  { id: 'global', get label() { return tr('全局') } },
+  { id: 'direct', get label() { return tr('直连') } },
 ]
 
 const OPEN_KEY = 'proxy-open'
@@ -632,7 +632,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         <p class="muted small" :title="hiddenAutoCount ? tr('另有 {0} 个自动组由内核择优，未单独列出', { 0: hiddenAutoCount }) : undefined">
           <template v-if="listed.length">{{ listed.length - hiddenAutoCount }} {{ tr('个代理组 ·') }} {{ distinctNodeCount }} {{ tr('个节点') }}</template>
           <template v-else-if="allGroupsHidden">{{ tr('配置中的代理组均已隐藏') }}</template>
-          <template v-else>{{ snap.nodes_notice ?? tr('没有代理组') }}</template>
+          <template v-else>{{ snap.nodes_notice ? tr(snap.nodes_notice) : tr('没有代理组') }}</template>
         </p>
       </div>
       <div class="head-actions">
@@ -839,7 +839,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       v-if="!snap.node_catalog.length"
       variant="no-data"
       icon="globe"
-      :title="snap.nodes_notice ?? tr('没有代理组')"
+      :title="snap.nodes_notice ? tr(snap.nodes_notice) : tr('没有代理组')"
       :description="tr('添加并启用一份配置后，这里会列出它的代理组与节点。')"
     >
       <template #action>

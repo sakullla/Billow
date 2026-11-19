@@ -341,7 +341,7 @@ onBeforeUnmount(() => {
   <div class="page home">
     <div v-if="store.hasProfiles.value && failureText" class="banner error" role="alert" data-testid="home-failure">
       <Icon name="alert" />
-      <span class="grow">{{ failureText }}</span>
+      <span class="grow">{{ tr(failureText) }}</span>
       <button
         v-if="failureSettingsAction"
         type="button"
@@ -690,9 +690,9 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <p v-else class="muted small">{{ tr('本地或无流量统计信息') }}</p>
-              <p v-if="profile.failure" class="field-error"><Icon name="alert" :size="13" /> {{ profile.failure }}</p>
+              <p v-if="profile.failure" class="field-error"><Icon name="alert" :size="13" /> {{ tr(profile.failure) }}</p>
               <p v-if="profile.override_error" class="field-error">
-                <Icon name="alert" :size="13" /> {{ profile.override_error }}
+                <Icon name="alert" :size="13" /> {{ tr(profile.override_error) }}
                 <button type="button" class="btn ghost sm" data-testid="home-override-fix" @click="openProfileOverride(profile.id)">{{ tr('修改覆写') }}</button>
               </p>
             </template>
@@ -737,7 +737,7 @@ onBeforeUnmount(() => {
               {{ t('exitIp.meta', { service: store.exitIp.value.service, time: formatClock(store.exitIp.value.time_ms) }) }}
             </p>
             <p v-if="store.exitIpError.value" class="field-error" role="alert" data-testid="exit-ip-error">
-              <Icon name="alert" :size="13" />{{ store.exitIpError.value }}
+              <Icon name="alert" :size="13" />{{ tr(store.exitIpError.value) }}
             </p>
             <p v-if="!snap.connected" class="muted small" data-testid="exit-ip-offline">
               {{ t('exitIp.offline') }}
@@ -784,7 +784,7 @@ onBeforeUnmount(() => {
               </div>
             </header>
             <p v-if="snap.mode === 'direct' && manualGroups.length" class="card-note muted small">{{ tr('当前为直连模式，新发起的连接不经过代理组') }}</p>
-            <p v-if="!manualGroups.length" class="empty-line muted">{{ snap.nodes_notice ?? tr('这份配置没有可手动选择的代理组') }}</p>
+            <p v-if="!manualGroups.length" class="empty-line muted">{{ snap.nodes_notice ? tr(snap.nodes_notice) : tr('这份配置没有可手动选择的代理组') }}</p>
             <div v-else class="home-groups-grid" :class="{ single: manualGroups.length === 1 }">
               <button
                 v-for="group in manualGroups"
@@ -928,7 +928,7 @@ onBeforeUnmount(() => {
             :data-testid="`sheet-error-${item.id}`"
           >
             <Icon name="alert" :size="14" />
-            <span class="grow">{{ sheetFailureFor(item.id) }}</span>
+            <span class="grow">{{ tr(sheetFailureFor(item.id) ?? '') }}</span>
             <button
               type="button"
               class="btn ghost sm"

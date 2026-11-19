@@ -18,11 +18,11 @@ const snap = computed(() => store.snapshot.value)
 
 type Filter = 'all' | LogLevel
 const FILTERS: { id: Filter; label: string }[] = [
-  { id: 'all', label: tr('全部') },
-  { id: 'debug', label: tr('调试') },
-  { id: 'info', label: tr('信息') },
-  { id: 'warning', label: tr('警告') },
-  { id: 'error', label: tr('错误') },
+  { id: 'all', get label() { return tr('全部') } },
+  { id: 'debug', get label() { return tr('调试') } },
+  { id: 'info', get label() { return tr('信息') } },
+  { id: 'warning', get label() { return tr('警告') } },
+  { id: 'error', get label() { return tr('错误') } },
 ]
 const LABEL: Record<LogLevel, string> = { debug: 'DBG', info: 'INF', warning: 'WRN', error: 'ERR' }
 
