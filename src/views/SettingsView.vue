@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
+import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
 import Toggle from '../components/Toggle.vue'
@@ -933,6 +934,13 @@ useHotkeys([
 ])
 
 const saveKey = shortcutKeyLabel('mod+s')
+
+/** 重启内核 drops live connections, so it runs only after the user confirms (R35). */
+const confirmRestart = ref(false)
+function restartConfirmed() {
+  confirmRestart.value = false
+  void store.restartKernel()
+}
 const kernelDirty = computed(() => lanDirty.value || portDirty.value || probeDirty.value)
 
 function onPolicyPatternEnter() {
@@ -1457,7 +1465,7 @@ const TABS = computed(() => [
             class="btn ghost sm"
             :disabled="!snap.connected || store.connecting.value"
             data-testid="restart-kernel"
-            @click="store.restartKernel()"
+            @click="confirmRestart = true"
           >
             <Icon name="refresh" :size="15" :class="{ spin: store.restarting.value }" />重启
           </button>
@@ -2130,5 +2138,15 @@ const TABS = computed(() => [
         </div>
       </section>
     </template>
+
+    <Modal v-if="confirmRestart" title="重启内核" @close="confirmRestart = false">
+      <p class="small" data-testid="restart-kernel-note">
+        内核会以当前生效配置重新启动，已建立的连接会中断；代理、TUN 与出站模式保持不变。
+      </p>
+      <template #footer>
+        <button type="button" class="btn ghost" data-testid="cancel-restart-kernel" @click="confirmRestart = false">取消</button>
+        <button type="button" class="btn danger" data-testid="confirm-restart-kernel" @click="restartConfirmed">重启</button>
+      </template>
+    </Modal>
   </div>
 </template>

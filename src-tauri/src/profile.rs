@@ -2530,6 +2530,8 @@ impl ProfileBook {
         match vpn.establish(&model.app_filter()) {
             Ok(fd) => self.finish_android_fd(kernel, vpn, model, fd),
             Err(_) => {
+                // Dropping TUN is a plain hot reload; the forced respawn was meant for the new fd.
+                self.force_launch = false;
                 let _ = self.reload(kernel, false, None);
                 let _ = vpn.close();
                 let mut model = self.link_model();
@@ -8525,6 +8527,50 @@ proxy-groups:
         assert_eq!(vpn.establish_calls, establishes + 1);
         assert!(kernel.launches.last().unwrap().1);
         assert!(restarted.connected && restarted.vpn && vpn.open);
+    }
+
+    /// Grants the first VPN, then refuses to establish again.
+    #[derive(Default)]
+    struct OnceVpn {
+        inner: MemoryVpn,
+    }
+
+    impl VpnGrant for OnceVpn {
+        fn authorize(&mut self) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn establish(&mut self, filter: &crate::takeover::AppFilter) -> Result<i32, String> {
+            if self.inner.establish_calls > 0 {
+                return Err("refused".to_string());
+            }
+            self.inner.establish(filter)
+        }
+
+        fn close(&mut self) -> Result<(), String> {
+            self.inner.close()
+        }
+    }
+
+    #[test]
+    fn android_restart_without_a_vpn_drops_tun_by_hot_reload() {
+        let dir = temp_dir("restart-kernel-android-novpn");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = RestartKernel::default();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = OnceVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        assert!(book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn).vpn);
+        let launches = kernel.launches.len();
+        let failed = book.restart_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn).unwrap();
+        // The fallback that removes TUN is a hot reload, not a forced respawn.
+        assert_eq!(kernel.launches.len(), launches + 1);
+        assert!(!kernel.launches.last().unwrap().1);
+        assert!(!failed.connected && !failed.vpn && !vpn.inner.open);
+        assert_eq!(failed.failure.as_deref(), Some("VPN 没有建立"));
     }
 
     struct SampleKernel {
