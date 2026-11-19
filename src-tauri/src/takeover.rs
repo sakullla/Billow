@@ -1757,6 +1757,60 @@ pub fn diff_uwp_exemptions(current: &[UwpApp], desired_families: &[String]) -> (
     (to_add, to_remove)
 }
 
+#[cfg(target_os = "windows")]
+const UWP_APP_ENUMERATION_SCRIPT: &str = concat!(
+    "$ErrorActionPreference='Stop'; ",
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ",
+    "$map = @{}; ",
+    "Get-ChildItem 'HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings' -ErrorAction SilentlyContinue | ForEach-Object { ",
+    "  $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue; ",
+    "  if ($p.Moniker) { $map[$p.Moniker.ToLowerInvariant()] = @{ sid = $_.PSChildName; display = [string]$p.DisplayName; moniker = [string]$p.Moniker } } ",
+    "}; ",
+    "$out = New-Object System.Collections.Generic.List[object]; ",
+    "$seen = @{}; ",
+    "Get-AppxPackage | ForEach-Object { ",
+    "  $fam = [string]$_.PackageFamilyName; ",
+    "  if (-not $fam) { return }; ",
+    "  $key = $fam.ToLowerInvariant(); ",
+    "  if ($seen.ContainsKey($key)) { return }; ",
+    "  $seen[$key] = $true; ",
+    "  $entry = $map[$key]; ",
+    "  $disp = if ($entry -and $entry.display) { $entry.display } else { [string]$_.Name }; ",
+    "  $sid = if ($entry -and $entry.sid) { $entry.sid } else { '' }; ",
+    "  $out.Add([PSCustomObject]@{ name = [string]$_.Name; display_name = $disp; family_name = $fam; sid = $sid }) ",
+    "}; ",
+    "foreach ($kv in $map.GetEnumerator()) { ",
+    "  if (-not $seen.ContainsKey($kv.Key)) { ",
+    "    $fam = $kv.Value.moniker; ",
+    "    $short = ($fam -split '_')[0]; ",
+    "    $out.Add([PSCustomObject]@{ name = $short; display_name = if ($kv.Value.display) { $kv.Value.display } else { $short }; family_name = $fam; sid = $kv.Value.sid }) ",
+    "  } ",
+    "}; ",
+    // Windows PowerShell can fail when @() wraps a list created by New-Object.
+    "ConvertTo-Json -InputObject ($out.ToArray()) -Depth 3 -Compress"
+);
+
+#[cfg(target_os = "windows")]
+fn read_uwp_apps_json(script: &str) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+
+    let output = std::process::Command::new("powershell")
+        .creation_flags(0x08000000)
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .map_err(|error| format!("无法枚举 UWP 应用：{error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        return if detail.is_empty() {
+            Err(format!("无法枚举 UWP 应用：PowerShell {}", output.status))
+        } else {
+            Err(format!("无法枚举 UWP 应用：{detail}"))
+        };
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Lists installed Windows UWP / AppContainer applications together with their loopback exemption state.
 pub fn list_uwp_apps() -> Result<Vec<UwpApp>, String> {
     #[cfg(target_os = "windows")]
@@ -1770,46 +1824,7 @@ pub fn list_uwp_apps() -> Result<Vec<UwpApp>, String> {
         let exempt_text = String::from_utf8_lossy(&exempt_out.stdout);
         let exempt = parse_loopback_exempt_output(&exempt_text);
 
-        let ps_script = concat!(
-            "$ErrorActionPreference='SilentlyContinue'; ",
-            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ",
-            "$map = @{}; ",
-            "Get-ChildItem 'HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings' | ForEach-Object { ",
-            "  $p = Get-ItemProperty $_.PSPath; ",
-            "  if ($p.Moniker) { $map[$p.Moniker.ToLowerInvariant()] = @{ sid = $_.PSChildName; display = [string]$p.DisplayName; moniker = [string]$p.Moniker } } ",
-            "}; ",
-            "$out = New-Object System.Collections.Generic.List[object]; ",
-            "$seen = @{}; ",
-            "Get-AppxPackage | ForEach-Object { ",
-            "  $fam = [string]$_.PackageFamilyName; ",
-            "  if (-not $fam) { return }; ",
-            "  $key = $fam.ToLowerInvariant(); ",
-            "  if ($seen.ContainsKey($key)) { return }; ",
-            "  $seen[$key] = $true; ",
-            "  $entry = $map[$key]; ",
-            "  $disp = if ($entry -and $entry.display) { $entry.display } else { [string]$_.Name }; ",
-            "  $sid = if ($entry -and $entry.sid) { $entry.sid } else { '' }; ",
-            "  $out.Add([PSCustomObject]@{ name = [string]$_.Name; display_name = $disp; family_name = $fam; sid = $sid }) ",
-            "}; ",
-            "foreach ($kv in $map.GetEnumerator()) { ",
-            "  if (-not $seen.ContainsKey($kv.Key)) { ",
-            "    $fam = $kv.Value.moniker; ",
-            "    $short = ($fam -split '_')[0]; ",
-            "    $out.Add([PSCustomObject]@{ name = $short; display_name = if ($kv.Value.display) { $kv.Value.display } else { $short }; family_name = $fam; sid = $kv.Value.sid }) ",
-            "  } ",
-            "}; ",
-            "if ($out.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject @($out) -Depth 3 -Compress }"
-        );
-        let out = std::process::Command::new("powershell")
-            .creation_flags(0x08000000)
-            .args(["-NoProfile", "-NonInteractive", "-Command", ps_script])
-            .output()
-            .map_err(|error| format!("无法枚举 UWP 应用：{error}"))?;
-        if !out.status.success() && out.stdout.is_empty() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!("无法枚举 UWP 应用：{}", stderr.trim()));
-        }
-        let json = String::from_utf8_lossy(&out.stdout);
+        let json = read_uwp_apps_json(UWP_APP_ENUMERATION_SCRIPT)?;
         return parse_uwp_apps_json(&json, &exempt);
     }
     #[cfg(not(target_os = "windows"))]
@@ -3729,6 +3744,42 @@ mod tests {
         ] {
             assert!(permissions.contains(&permission), "{permission}");
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn uwp_enumeration_serializes_packages_as_a_json_array() {
+        let empty_packages = "function Get-ChildItem {}; function Get-AppxPackage {}; ";
+        let json =
+            read_uwp_apps_json(&format!("{empty_packages}{UWP_APP_ENUMERATION_SCRIPT}")).unwrap();
+        assert_eq!(json.trim(), "[]");
+
+        let one_package = concat!(
+            "function Get-ChildItem {}; ",
+            "function Get-AppxPackage { ",
+            "  [PSCustomObject]@{ Name = 'Billow.Test'; PackageFamilyName = 'Billow.Test_example' } ",
+            "}; "
+        );
+        let json =
+            read_uwp_apps_json(&format!("{one_package}{UWP_APP_ENUMERATION_SCRIPT}")).unwrap();
+        let packages: Vec<RawUwpApp> = serde_json::from_str(&json).unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].family_name, "Billow.Test_example");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn uwp_enumeration_reports_powershell_errors() {
+        let mock_commands = concat!(
+            "function Get-ChildItem {}; ",
+            "function Get-AppxPackage { Write-Error 'Appx enumeration failed' }; "
+        );
+        let error = read_uwp_apps_json(&format!("{mock_commands}{UWP_APP_ENUMERATION_SCRIPT}"))
+            .unwrap_err();
+        assert!(error.contains("Appx enumeration failed"), "{error}");
+
+        let error = read_uwp_apps_json("exit 7").unwrap_err();
+        assert!(error.contains("PowerShell") && error.contains('7'), "{error}");
     }
 
     #[test]
