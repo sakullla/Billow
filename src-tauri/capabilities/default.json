@@ -68,6 +68,8 @@
     "allow-set-app-behavior",
     "allow-sync-tray",
     "allow-flush-cache",
+    "allow-restart-kernel",
+    "allow-kernel-gc",
     "allow-kernel-providers",
     "allow-provider-action",
     "allow-upgrade-geo",

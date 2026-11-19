@@ -820,6 +820,13 @@ pub trait SubscriptionSource {
 pub trait KernelLaunch {
     fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String>;
 
+    /// `force` stops the running process and spawns a new one even when the YAML
+    /// is unchanged (内核重启); otherwise identical to [`Self::start_or_reload`].
+    fn start_or_reload_with(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
+        let _ = force;
+        self.start_or_reload(config_yaml)
+    }
+
     /// Applies a filtered runtime config without restarting the process, so the
     /// rule list can be toggled while TUN/VPN stays up.
     fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
@@ -1433,8 +1440,8 @@ impl Drop for ProcessRuntime {
     }
 }
 
-impl KernelLaunch for ProcessRuntime {
-    fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
+impl ProcessRuntime {
+    fn launch(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
         let Some(path) = self.kernel_path.clone() else {
             return Err(MISSING_KERNEL.to_string());
         };
@@ -1453,7 +1460,8 @@ impl KernelLaunch for ProcessRuntime {
         let can_reload = !needs_elevation || self.elevated.is_some();
         #[cfg(not(target_os = "windows"))]
         let can_reload = true;
-        if can_reload && self.running()
+        // A forced restart skips both the no-op and the hot-reload path.
+        if !force && can_reload && self.running()
             && self.launched_kernel.as_ref() == Some(&path)
             && self.launched_privileged == priv_now
         {
@@ -1658,6 +1666,16 @@ impl KernelLaunch for ProcessRuntime {
             self.memory_watch = Some(MetricWatch::spawn(endpoint, diagnostics::watch_memory));
         }
         Ok(())
+    }
+}
+
+impl KernelLaunch for ProcessRuntime {
+    fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
+        self.launch(config_yaml, false)
+    }
+
+    fn start_or_reload_with(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
+        self.launch(config_yaml, force)
     }
 
     fn running(&mut self) -> bool {
@@ -1979,7 +1997,12 @@ pub struct ProfileBook {
     shutting_down: bool,
     crash_recoveries: u8,
     last_crash_ms: Option<u64>,
+    /// Set only while [`ProfileBook::restart_kernel`] runs: the next launch stops
+    /// and respawns the process even for an unchanged YAML.
+    force_launch: bool,
 }
+
+pub const RESTART_NEEDS_CONNECTION: &str = "请先连接，再重启内核";
 
 const STARTUP_GUARD_FILE: &str = "auto-connect.guard";
 const STARTUP_STABLE_SECS: u64 = 8;
@@ -2042,6 +2065,7 @@ impl ProfileBook {
             shutting_down: false,
             crash_recoveries: 0,
             last_crash_ms: None,
+            force_launch: false,
         };
         book.load();
         book
@@ -2471,6 +2495,94 @@ impl ProfileBook {
         self.apply_model(model);
         self.remember_current_failure();
         Some(self.publish(kernel))
+    }
+
+    /// 重启内核 (R35): stops the process and respawns it with the current effective
+    /// YAML instead of mihomo's `/restart`. System proxy, TUN / VPN and the outbound
+    /// mode come back as they were; a failed respawn releases takeover through
+    /// [`takeover::fail_kernel`] like any other failed launch.
+    pub fn restart_kernel(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> Result<ProfileSnapshot, String> {
+        if !self.connected || !kernel.running() {
+            return Err(RESTART_NEEDS_CONNECTION.to_string());
+        }
+        self.home_failure = None;
+        self.crash_recoveries = 0;
+        self.last_crash_ms = None;
+        self.force_launch = true;
+        let snapshot = if self.platform == ClientPlatform::Android {
+            self.restart_android(kernel, vpn)
+        } else {
+            self.restart_desktop(kernel, proxy, tun, vpn)
+        };
+        self.force_launch = false;
+        Ok(snapshot)
+    }
+
+    fn restart_android(&mut self, kernel: &mut dyn KernelLaunch, vpn: &mut dyn VpnGrant) -> ProfileSnapshot {
+        // The respawned kernel needs a live TUN fd, so the VPN is established again.
+        let model = self.link_model();
+        match vpn.establish(&model.app_filter()) {
+            Ok(fd) => self.finish_android_fd(kernel, vpn, model, fd),
+            Err(_) => {
+                let _ = self.reload(kernel, false, None);
+                let _ = vpn.close();
+                let mut model = self.link_model();
+                model.vpn = false;
+                model.connected = false;
+                model.failure = Some("VPN 没有建立".to_string());
+                self.apply_model(model);
+                self.remember_current_failure();
+                self.publish(kernel)
+            }
+        }
+    }
+
+    fn restart_desktop(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> ProfileSnapshot {
+        let tun_on = self.takeover.tun;
+        match self.reload(kernel, tun_on, None) {
+            Ok(port) => {
+                if self.takeover.system_proxy {
+                    let mut model = self.link_model();
+                    takeover::set_system_proxy_with_settings(
+                        &mut model,
+                        true,
+                        Some(port),
+                        &self.settings.system_proxy,
+                        proxy,
+                    );
+                    self.apply_model(model);
+                }
+            }
+            Err(StartError::Idle(message)) => {
+                self.home_failure = Some(message);
+                self.connected = false;
+                self.remember_current_failure();
+            }
+            // The config was rejected before the old process was stopped: nothing changed.
+            Err(StartError::Failed(message)) if kernel.running() => {
+                self.home_failure = Some(message);
+                self.remember_current_failure();
+            }
+            Err(StartError::Failed(message)) => {
+                let mut model = self.link_model();
+                takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
+                self.apply_model(model);
+                self.remember_current_failure();
+            }
+        }
+        self.publish(kernel)
     }
 
     pub fn set_system_proxy(
@@ -2994,6 +3106,7 @@ impl ProfileBook {
         tun_enable: bool,
         fd: Option<i32>,
     ) -> Result<u16, StartError> {
+        let force = std::mem::take(&mut self.force_launch);
         let (base, port) = self.kernel_yaml(tun_enable, fd)?;
         let filtered;
         let yaml = if self.disabled_rules.is_empty() {
@@ -3005,7 +3118,7 @@ impl ProfileBook {
         };
         self.runtime_catalog = nodes::RuntimeCatalog::default();
         self.auto_now.clear();
-        kernel.start_or_reload(yaml).map_err(|message| {
+        kernel.start_or_reload_with(yaml, force).map_err(|message| {
             StartError::Failed(if message.is_empty() {
                 KERNEL_ERROR.to_string()
             } else {
@@ -6899,6 +7012,28 @@ rules:\n  - MATCH,pick\n",
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn forced_launch_respawns_even_for_an_unchanged_config() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("forced-launch");
+        let stand_in = dir.0.join("stand-in.sh");
+        fs::write(&stand_in, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&stand_in, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut runtime = ProcessRuntime::new(&dir.0);
+        runtime.home_dir = dir.0.join("home");
+        runtime.set_kernel_path(Some(stand_in));
+        runtime.start_or_reload(&config(7890)).unwrap();
+        let first = runtime.child.as_ref().unwrap().id();
+        runtime.start_or_reload(&config(7890)).unwrap();
+        assert_eq!(runtime.child.as_ref().unwrap().id(), first, "an unchanged config must not respawn");
+        runtime.start_or_reload_with(&config(7890), true).unwrap();
+        let second = runtime.child.as_ref().unwrap().id();
+        assert_ne!(second, first, "a forced launch must stop and respawn");
+        assert!(runtime.running());
+        runtime.stop();
+    }
+
     #[test]
     fn deep_link_scheme_is_billow_only() {
         let config: serde_json::Value =
@@ -8276,6 +8411,120 @@ proxy-groups:
         let disconnected = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(!disconnected.system_proxy && !disconnected.tun && !disconnected.vpn);
         assert!(disconnected.upload.is_none() && disconnected.download.is_none());
+    }
+
+    /// Records every launch with its `force` flag; `fail_forced` makes a forced respawn die.
+    #[derive(Default)]
+    struct RestartKernel {
+        alive: bool,
+        fail_forced: bool,
+        launches: Vec<(String, bool)>,
+    }
+
+    impl KernelLaunch for RestartKernel {
+        fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
+            self.start_or_reload_with(config_yaml, false)
+        }
+
+        fn start_or_reload_with(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
+            self.launches.push((config_yaml.to_string(), force));
+            if force && self.fail_forced {
+                self.alive = false;
+                return Err("内核启动失败：test-restart".to_string());
+            }
+            self.alive = true;
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.alive
+        }
+
+        fn set_mode(&mut self, _mode: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restart_kernel_respawns_and_keeps_takeover_and_mode() {
+        let dir = temp_dir("restart-kernel");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = RestartKernel::default();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun { grant: true, ..MemoryTun::default() };
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        // Not connected: the request is refused without touching the kernel.
+        let launches = kernel.launches.len();
+        assert_eq!(
+            book.restart_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn).unwrap_err(),
+            RESTART_NEEDS_CONNECTION
+        );
+        assert_eq!(kernel.launches.len(), launches);
+
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        book.set_outbound_mode("global", &mut kernel);
+        assert!(kernel.launches.iter().all(|(_, force)| !force));
+        let before = kernel.launches.last().unwrap().0.clone();
+
+        let restarted = book.restart_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn).unwrap();
+        let (yaml, force) = kernel.launches.last().unwrap().clone();
+        assert!(force, "restart must force a respawn");
+        let config: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(config["mode"].as_str(), Some("global"));
+        // The respawn reuses the running YAML; only the mode switched live is carried over.
+        assert_eq!(yaml, before.replace("mode: rule", "mode: global"));
+        assert!(restarted.connected && restarted.tun && restarted.system_proxy);
+        assert_eq!(restarted.mode.as_deref(), Some("global"));
+        assert!(restarted.failure.is_none());
+        assert!(tun.enabled);
+        assert_eq!(proxy.http.as_ref().map(|endpoint| endpoint.port), Some(7890));
+
+        // The force flag is consumed by the restart alone.
+        book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!kernel.launches.last().unwrap().1);
+    }
+
+    #[test]
+    fn failed_restart_releases_takeover_like_a_failed_launch() {
+        let dir = temp_dir("restart-kernel-fail");
+        let mut book = ProfileBook::open(&dir.0);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = RestartKernel::default();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun { grant: true, ..MemoryTun::default() };
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        kernel.fail_forced = true;
+        let failed = book.restart_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn).unwrap();
+        assert!(!failed.connected && !failed.tun && !failed.system_proxy);
+        assert_eq!(failed.failure.as_deref(), Some("内核启动失败：test-restart"));
+        assert!(proxy.http.is_none());
+        assert!(!tun.enabled);
+    }
+
+    #[test]
+    fn android_restart_reestablishes_the_vpn_and_forces_a_respawn() {
+        let dir = temp_dir("restart-kernel-android");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = RestartKernel::default();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        assert!(book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn).vpn);
+        let establishes = vpn.establish_calls;
+        let restarted = book.restart_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn).unwrap();
+        assert_eq!(vpn.establish_calls, establishes + 1);
+        assert!(kernel.launches.last().unwrap().1);
+        assert!(restarted.connected && restarted.vpn && vpn.open);
     }
 
     struct SampleKernel {

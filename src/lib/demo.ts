@@ -1100,6 +1100,21 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       log('info', which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除')
       return done(100)
     },
+    async restartKernel() {
+      if (!state.kernel_running || !(state.system_proxy || state.tun || state.vpn)) throw new Error('请先连接，再重启内核')
+      await wait(600)
+      // Billow respawns the process: uptime restarts, takeover and mode stay as they were.
+      startedAt = Date.now()
+      log('info', '内核已重启')
+      return done(0)
+    },
+    async gcKernel() {
+      const level = state.settings.log_level ?? 'info'
+      if (!state.kernel_running) throw new Error('内核没有运行')
+      if (level !== 'debug') throw new Error('内存没有回收：日志级别为 debug 时才可用，请稍后重试')
+      await wait(80)
+      log('debug', '已手动触发内存回收')
+    },
     async clearLogs() {
       state.logs = []
       return done(0)

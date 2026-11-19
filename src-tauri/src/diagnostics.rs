@@ -1102,6 +1102,21 @@ pub fn flush_cache(endpoint: &ControllerEndpoint, which: &str) -> Result<(), Str
         .map_err(|_| "缓存没有清除".to_string())
 }
 
+/// Asks the kernel to run Go's garbage collector (`PUT /debug/gc`). mihomo only
+/// mounts the debug routes when its log level is debug.
+pub fn kernel_gc(endpoint: Option<&ControllerEndpoint>) -> Result<(), String> {
+    let Some(endpoint) = endpoint.filter(|endpoint| loopback(&endpoint.host) && endpoint.port != 0) else {
+        return Err("内核没有运行".to_string());
+    };
+    let url = format!("http://{}:{}/debug/gc", endpoint.host, endpoint.port);
+    let agent = controller_agent(Duration::from_secs(5));
+    match authorize(agent.put(&url), endpoint).send_string("") {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(404, _)) => Err("内存没有回收：日志级别为 debug 时才可用，请稍后重试".to_string()),
+        Err(_) => Err("内存没有回收".to_string()),
+    }
+}
+
 pub fn fetch_rules(endpoint: &ControllerEndpoint) -> Result<Vec<RuleView>, String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err("内核没有运行".to_string());
@@ -2132,6 +2147,25 @@ rules:
         let (endpoint, server) = scripted_controller(1, |_| Some((204, String::new())));
         close_connections(&endpoint, None).unwrap();
         assert!(server.join().unwrap()[0].starts_with("DELETE /connections HTTP"));
+    }
+
+    #[test]
+    fn kernel_gc_puts_debug_gc_and_reports_failures() {
+        let (endpoint, server) = scripted_controller(1, |_| Some((200, String::new())));
+        kernel_gc(Some(&endpoint)).unwrap();
+        assert!(server.join().unwrap()[0].starts_with("PUT /debug/gc HTTP"));
+
+        let (endpoint, server) = scripted_controller(1, |_| Some((404, String::new())));
+        assert!(kernel_gc(Some(&endpoint)).unwrap_err().contains("debug"));
+        server.join().unwrap();
+
+        let (endpoint, server) = scripted_controller(1, |_| Some((500, String::new())));
+        assert_eq!(kernel_gc(Some(&endpoint)).unwrap_err(), "内存没有回收");
+        server.join().unwrap();
+
+        assert_eq!(kernel_gc(None).unwrap_err(), "内核没有运行");
+        let remote = ControllerEndpoint { host: "10.0.0.1".into(), port: 9090, secret: String::new() };
+        assert_eq!(kernel_gc(Some(&remote)).unwrap_err(), "内核没有运行");
     }
 
     #[test]

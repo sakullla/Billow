@@ -39,6 +39,7 @@ const MIN_CHART_SAMPLES = 5
 const MODE_OPTIONS = MODES.map(({ id, label, icon }) => ({ id, label, icon }))
 
 const status = computed(() => {
+  if (store.restarting.value) return { word: '重启中', tone: 'pending' }
   if (store.connecting.value) return { word: snap.value.connected ? '断开中' : '连接中', tone: 'pending' }
   if (snap.value.connected) return { word: '已连接', tone: 'on' }
   return { word: '未连接', tone: 'off' }
@@ -47,6 +48,7 @@ const status = computed(() => {
 /** One control owns connect, disconnect and the empty-state add action (R24). */
 const connectLabel = computed(() => {
   if (!store.hasProfiles.value) return '添加配置'
+  if (store.restarting.value) return '重启中'
   if (store.connecting.value) return snap.value.connected ? '断开中' : '连接中'
   return snap.value.connected ? '断开' : '连接'
 })

@@ -195,6 +195,8 @@ export function createStore(backend: Backend) {
   const isAndroid = computed(() => snapshot.value.platform === 'android')
   const connecting = computed(() => Boolean(busy.connect))
   const connectStage = ref('')
+  /** True while 重启内核 runs; the home status reads 重启中 instead of 断开中. */
+  const restarting = ref(false)
   const appUpdate = createAppUpdater(nativeUpdateDriver(() => isAndroid.value))
 
   function dismissToast(id: number) {
@@ -873,6 +875,35 @@ export function createStore(backend: Backend) {
     })
   }
 
+  /** Billow stops and respawns the kernel; it shares the connect slot so other takeover changes wait (R35). */
+  async function restartKernel() {
+    if (connecting.value || !snapshot.value.connected) return undefined
+    restarting.value = true
+    try {
+      return await act('connect', async () => {
+        connectStage.value = '正在重启内核…'
+        try {
+          return await backend.restartKernel()
+        } finally {
+          connectStage.value = ''
+        }
+      }, '内核已重启')
+    } finally {
+      restarting.value = false
+    }
+  }
+
+  /** 回收内存: success only toasts; the memory reading refreshes on its own stream. */
+  async function gcKernel() {
+    lastRunError.value = null
+    const ok = await run('gc', async () => {
+      await backend.gcKernel()
+      return true
+    })
+    if (ok) toast('已回收', 'success')
+    return ok
+  }
+
   function setMode(mode: Mode) {
     return act('mode', () => backend.setMode(mode), undefined, {
       action: { kind: 'mode', mode },
@@ -951,6 +982,7 @@ export function createStore(backend: Backend) {
     isAndroid,
     connecting,
     connectStage,
+    restarting,
     toast,
     dismissToast,
     pauseToast,
@@ -1075,6 +1107,8 @@ export function createStore(backend: Backend) {
     clearLogs: () => act(null, () => backend.clearLogs()),
     flushCache: (which: 'fakeip' | 'dns') =>
       act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除'),
+    restartKernel,
+    gcKernel,
     saveSettings: (settings: KernelSettings) => act('settings', () => backend.saveSettings(settings), '内核设置已保存'),
     async openUwpTool() {
       const ok = await run('uwp', async () => {

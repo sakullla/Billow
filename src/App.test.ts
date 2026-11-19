@@ -239,6 +239,40 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="status"]').text()).toBe('未连接')
   })
 
+  it('R35: restarts the kernel from settings and keeps TUN and the outbound mode', async () => {
+    const { wrapper, backend } = await mountApp()
+    const store = (wrapper.vm as unknown as { store: Store }).store
+    const restart = vi.spyOn(backend, 'restartKernel')
+    store.openSettings('kernel')
+    await flushPromises()
+    // Not connected: the button is disabled and nothing reaches the backend.
+    expect(wrapper.find('[data-testid="restart-kernel"]').attributes('disabled')).toBeDefined()
+
+    store.go('home')
+    await flushPromises()
+    await wrapper.find('[data-testid="toggle-tun"]').trigger('click')
+    await settle(1000)
+    void store.setMode('global')
+    await settle(300)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('已连接')
+
+    store.openSettings('kernel')
+    await flushPromises()
+    const button = wrapper.find('[data-testid="restart-kernel"]')
+    expect(button.attributes('disabled')).toBeUndefined()
+    await button.trigger('click')
+    store.go('home')
+    await settle(100)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('重启中')
+    expect(wrapper.find('[data-testid="power"]').text()).toContain('重启中')
+    await settle(1500)
+    expect(restart).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('已连接')
+    expect(wrapper.find('[data-testid="toggle-tun"]').attributes('aria-checked')).toBe('true')
+    expect(store.snapshot.value.mode).toBe('global')
+    expect(document.body.textContent).toContain('内核已重启')
+  })
+
   it('says in the hero whether traffic is taken over, not only that the kernel runs', async () => {
     const { wrapper } = await mountApp()
     expect(wrapper.find('[data-testid="hero-eyebrow"]').text()).toBe('代理未运行')

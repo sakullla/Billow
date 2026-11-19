@@ -1005,6 +1005,28 @@ fn open_uwp_tool() -> Result<(), String> {
     takeover::open_uwp_loopback_tool()
 }
 
+/// 重启内核 (R35): Billow stops and respawns the process; mihomo's `/restart` is not used.
+#[tauri::command(async)]
+fn restart_kernel(app: AppHandle) -> Result<ProfileSnapshot, String> {
+    with_session_raw(&app, |session| {
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = session;
+        book.restart_kernel(runtime, proxy, tun, vpn)
+    })
+}
+
+/// 回收内存 (R35): `PUT /debug/gc`, sent without holding the session lock.
+#[tauri::command(async)]
+fn kernel_gc(app: AppHandle) -> Result<(), String> {
+    let endpoint = with_session_raw(&app, |session| ProfileBook::controller_of(&mut session.runtime));
+    diagnostics::kernel_gc(endpoint.as_ref())
+}
+
 #[tauri::command(async)]
 fn flush_cache(app: AppHandle, which: String) -> ProfileSnapshot {
     with_session(&app, |session| {
@@ -1521,6 +1543,8 @@ pub fn run() {
             set_app_behavior,
             sync_tray,
             flush_cache,
+            restart_kernel,
+            kernel_gc,
             kernel_providers,
             provider_action,
             upgrade_geo,

@@ -117,6 +117,10 @@ export interface Backend {
   /** GEO database files the kernel loads, with size and modification time. */
   geoFiles(): Promise<GeoFile[]>
   flushCache(which: 'fakeip' | 'dns'): Promise<Snapshot>
+  /** Stop and respawn the kernel with the running config; takeover and mode come back (R35). */
+  restartKernel(): Promise<Snapshot>
+  /** `PUT /debug/gc`; the kernel serves it only at log level debug (R35). */
+  gcKernel(): Promise<void>
   clearLogs(): Promise<Snapshot>
   exportLogs(content: string): Promise<string>
   clearNotice(): Promise<Snapshot>
@@ -245,6 +249,8 @@ function createTauriBackend(): Backend {
     providerDetail: (kind, name, query) => call<ProviderDetail>('provider_detail', { kind, name, query: query ?? null }),
     geoFiles: () => call<GeoFile[]>('geo_files'),
     flushCache: (which) => snap('flush_cache', { which }),
+    restartKernel: () => snap('restart_kernel'),
+    gcKernel: () => call<void>('kernel_gc'),
     clearLogs: () => snap('clear_logs'),
     exportLogs: (content) => call<string>('export_logs', { content }),
     clearNotice: () => snap('clear_notice'),

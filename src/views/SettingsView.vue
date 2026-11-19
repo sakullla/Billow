@@ -139,6 +139,10 @@ const portDirty = computed(() => port.value.trim() !== savedPortText.value)
 const effectiveMixedPort = computed(
   () => snap.value.mixed_port ?? snap.value.settings.mixed_port ?? snap.value.config_values.mixed_port ?? 7890,
 )
+/** mihomo mounts `/debug` only at log level debug, so 回收内存 shows only then (R35). */
+const debugLogging = computed(
+  () => (snap.value.settings.log_level ?? snap.value.config_values.log_level ?? 'info') === 'debug',
+)
 
 const probeDirty = computed(() => {
   const base = currentSettings.value
@@ -1443,6 +1447,36 @@ const TABS = computed(() => [
             <Icon name="file" :size="15" />查看
           </button>
         </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>重启内核</strong>
+            <p class="muted small">{{ snap.connected ? '停止并重新启动内核进程，代理、TUN 与出站模式保持不变' : '连接后可用' }}</p>
+          </div>
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="!snap.connected || store.connecting.value"
+            data-testid="restart-kernel"
+            @click="store.restartKernel()"
+          >
+            <Icon name="refresh" :size="15" :class="{ spin: store.restarting.value }" />重启
+          </button>
+        </div>
+        <div v-if="debugLogging" class="setting-row" data-testid="kernel-gc-row">
+          <div class="grow">
+            <strong>回收内存</strong>
+            <p class="muted small">让内核立即释放空闲内存，仅在日志级别为 debug 时可用</p>
+          </div>
+          <button
+            type="button"
+            class="btn ghost sm"
+            :disabled="!snap.kernel_running || store.busy.gc"
+            data-testid="kernel-gc"
+            @click="store.gcKernel()"
+          >
+            回收
+          </button>
+        </div>
       </section>
 
       <section class="card">
@@ -1597,6 +1631,7 @@ const TABS = computed(() => [
                 :sheet="compact"
                 size="sm"
                 label="日志级别"
+                data-testid="log-level-select"
                 @update:model-value="(value) => save({ log_level: String(value) || null })"
               />
             </div>

@@ -317,3 +317,28 @@ describe('batch editors', () => {
     expect(wrapper.findAll('[data-testid="bypass-list"] li').map((item) => item.text())).toEqual(['localhost', 'g7e6ai.com', '*.corp.local'])
   })
 })
+
+describe('kernel maintenance (R35)', () => {
+  it('offers 回收内存 only at log level debug and toasts 已回收', async () => {
+    const { wrapper, backend } = await mountApp()
+    const gc = vi.spyOn(backend, 'gcKernel')
+    void storeOf(wrapper).connect()
+    await settle(1000)
+    await openKernelSettings(wrapper)
+    expect(wrapper.find('[data-testid="kernel-gc-row"]').exists()).toBe(false)
+
+    await pickSelect(wrapper, '[data-testid="log-level-select"]', 'debug')
+    await settle(400)
+    const button = wrapper.find('[data-testid="kernel-gc"]')
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('disabled')).toBeUndefined()
+    await button.trigger('click')
+    await settle(300)
+    expect(gc).toHaveBeenCalledTimes(1)
+    expect(body().findAll('.toast').map((toast) => toast.text()).join('\n')).toContain('已回收')
+
+    await pickSelect(wrapper, '[data-testid="log-level-select"]', 'info')
+    await settle(400)
+    expect(wrapper.find('[data-testid="kernel-gc-row"]').exists()).toBe(false)
+  })
+})

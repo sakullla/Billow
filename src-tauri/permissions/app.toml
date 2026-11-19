@@ -182,3 +182,13 @@ commands.allow = ["close_connections"]
 identifier = "allow-dns-query"
 description = "Enables the dns_query command without any pre-configured scope."
 commands.allow = ["dns_query"]
+
+[[permission]]
+identifier = "allow-restart-kernel"
+description = "Enables the restart_kernel command without any pre-configured scope."
+commands.allow = ["restart_kernel"]
+
+[[permission]]
+identifier = "allow-kernel-gc"
+description = "Enables the kernel_gc command without any pre-configured scope."
+commands.allow = ["kernel_gc"]
