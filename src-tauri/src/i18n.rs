@@ -133,6 +133,16 @@ pub enum Key {
     WebdavDirectoryFailed,
     WebdavUnknownBackup,
     WebdavNotTested,
+    HotkeyUnsupported,
+    HotkeyWayland,
+    HotkeyInvalidCombo,
+    HotkeyUnknownAction,
+    HotkeyConflict,
+    HotkeyFailed,
+    HotkeyInactive,
+    HotkeyNotifyTitle,
+    HotkeyConnect,
+    HotkeyWindow,
 }
 
 impl Key {
@@ -216,6 +226,37 @@ impl Key {
                 "请先测试连接，WebDAV 还不可用",
                 Some("Test the connection first; WebDAV is not usable yet"),
             ),
+            Self::HotkeyUnsupported => (
+                "此系统不支持全局快捷键",
+                Some("Global shortcuts are not supported on this system"),
+            ),
+            Self::HotkeyWayland => (
+                "当前 Wayland 会话不支持全局快捷键，请改用 X11 会话",
+                Some("Global shortcuts are not available in a Wayland session; use an X11 session"),
+            ),
+            Self::HotkeyInvalidCombo => (
+                "无法识别组合键「{combo}」",
+                Some("The key combination “{combo}” was not recognised"),
+            ),
+            Self::HotkeyUnknownAction => (
+                "无法识别的快捷键操作",
+                Some("Unknown shortcut action"),
+            ),
+            Self::HotkeyConflict => (
+                "组合键 {combo} 已绑定给「{action}」",
+                Some("{combo} is already assigned to {action}"),
+            ),
+            Self::HotkeyFailed => (
+                "系统不允许注册 {combo}，可能已被其他应用占用",
+                Some("The system refused {combo}; another application may already use it"),
+            ),
+            Self::HotkeyInactive => (
+                "启动时未能注册，可能已被其他应用占用",
+                Some("Could not be registered at startup; another application may already use it"),
+            ),
+            Self::HotkeyNotifyTitle => ("快捷键操作失败", Some("Shortcut action failed")),
+            Self::HotkeyConnect => ("连接 / 断开", Some("Connect / disconnect")),
+            Self::HotkeyWindow => ("显示 / 隐藏主窗口", Some("Show / hide window")),
         }
     }
 }
@@ -319,6 +360,16 @@ mod tests {
             Key::WebdavDirectoryFailed,
             Key::WebdavUnknownBackup,
             Key::WebdavNotTested,
+            Key::HotkeyUnsupported,
+            Key::HotkeyWayland,
+            Key::HotkeyInvalidCombo,
+            Key::HotkeyUnknownAction,
+            Key::HotkeyConflict,
+            Key::HotkeyFailed,
+            Key::HotkeyInactive,
+            Key::HotkeyNotifyTitle,
+            Key::HotkeyConnect,
+            Key::HotkeyWindow,
         ] {
             assert!(!tr_at(Locale::ZhCn, key).trim().is_empty(), "{key:?} has no Chinese text");
             assert!(!tr_at(Locale::En, key).trim().is_empty(), "{key:?} has no English text");

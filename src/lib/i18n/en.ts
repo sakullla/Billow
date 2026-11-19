@@ -57,4 +57,27 @@ export const EN: Partial<Record<MessageKey, string>> = {
   'backup.confirm.cancel': 'Cancel',
   'backup.confirm.restore': 'Replace and restore',
   'backup.restored': 'Backup restored',
+
+  // Global shortcuts (R39)
+  'settings.hotkey.title': 'Global shortcuts',
+  'settings.hotkey.detail':
+    'Works while the window is in the background or hidden; nothing is bound by default',
+  'hotkey.connect': 'Connect / disconnect',
+  'hotkey.proxy': 'Toggle system proxy',
+  'hotkey.tun': 'Toggle TUN',
+  'hotkey.modeRule': 'Switch to rule mode',
+  'hotkey.modeGlobal': 'Switch to global mode',
+  'hotkey.modeDirect': 'Switch to direct mode',
+  'hotkey.window': 'Show / hide window',
+  'hotkey.record': 'Record',
+  'hotkey.recording': 'Press the combination…',
+  'hotkey.clear': 'Clear',
+  'hotkey.empty': 'Not bound',
+  'hotkey.hint': 'Click Record, then press a combination with at least one modifier (Ctrl / Alt / Shift)',
+  'hotkey.modifierOnly': 'Only modifiers were pressed; add a letter or function key',
+  'hotkey.plainKey': 'Hold Ctrl / Alt / Shift first, then press the key to bind',
+  'hotkey.unavailable': 'Global shortcuts are unavailable: {reason}',
+  'hotkey.conflict.window': '{combo} conflicts with the in-window shortcut “{action}”; nothing was saved',
+  'hotkey.inWindow.save': 'Save settings',
+  'hotkey.inactive': 'Not active: {reason}',
 }

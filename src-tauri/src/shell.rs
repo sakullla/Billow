@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -34,6 +35,10 @@ pub struct ShellState {
     pub webdav_user: String,
     #[serde(default)]
     pub webdav_password: String,
+    /// Desktop global shortcut per action id (R39). Machine specific, so it is
+    /// not part of a backup; nothing is bound by default.
+    #[serde(default)]
+    pub hotkeys: BTreeMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -73,6 +78,7 @@ impl Default for ShellState {
             webdav_url: String::new(),
             webdav_user: String::new(),
             webdav_password: String::new(),
+            hotkeys: BTreeMap::new(),
         }
     }
 }
@@ -172,6 +178,7 @@ pub fn normalize(mut state: ShellState) -> ShellState {
     state.webdav_user = clean_field(&state.webdav_user, 200, true);
     // A password may legitimately hold spaces, so only control characters go.
     state.webdav_password = clean_field(&state.webdav_password, 500, false);
+    state.hotkeys = crate::hotkeys::clean_bindings(&state.hotkeys);
     if usable_window_size(state.width, state.height).is_none() {
         state.width = DEFAULT_WIDTH;
         state.height = DEFAULT_HEIGHT;
@@ -290,6 +297,7 @@ mod tests {
             webdav_url: " https://dav.example.com/remote.php/dav/files/me ".to_string(),
             webdav_user: "me".to_string(),
             webdav_password: "p a s s".to_string(),
+            hotkeys: [("proxy".to_string(), "Ctrl+Alt+P".to_string())].into_iter().collect(),
         };
         write_shell_state(&path, &state).unwrap();
         let loaded = read_shell_state(&path);
@@ -299,6 +307,7 @@ mod tests {
         assert_eq!(loaded.close_to_tray, false);
         assert_eq!(loaded.silent_start, true);
         assert_eq!(loaded.language, "en");
+        assert_eq!(loaded.hotkeys.get("proxy").map(String::as_str), Some("Ctrl+Alt+P"));
         // Saved as typed, trimmed, with spaces inside the password kept.
         assert_eq!(loaded.webdav_url, "https://dav.example.com/remote.php/dav/files/me");
         assert_eq!(loaded.webdav_user, "me");

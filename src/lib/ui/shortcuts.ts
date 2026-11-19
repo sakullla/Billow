@@ -1,4 +1,5 @@
 import type { HotkeyBinding } from './hotkeys'
+import { t } from '../i18n'
 
 export type ShortcutId =
   | 'palette'
@@ -95,6 +96,134 @@ export function getShortcut(id: ShortcutId): ShortcutSpec {
   return shortcut
 }
 
+/**
+ * One spelling per combination so `mod+k`, `Ctrl+K` and `⌘K` compare the same.
+ * `mod` follows the platform, mirroring how `useHotkeys` matches it (R39).
+ */
+export function comboSignature(combo: string, mac = isMacPlatform()): string | null {
+  const parts = combo
+    .split('+')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean)
+  if (!parts.length) return null
+  const key = parts.pop() ?? ''
+  // The pages row is a display range, not a single binding.
+  if (!key || key.includes('…') || key === '...') return null
+  let ctrl = false
+  let alt = false
+  let shift = false
+  let meta = false
+  for (const part of parts) {
+    if (part === 'mod') {
+      if (mac) meta = true
+      else ctrl = true
+    } else if (part === 'ctrl' || part === 'control') ctrl = true
+    else if (part === 'alt' || part === 'option') alt = true
+    else if (part === 'shift') shift = true
+    else if (part === 'meta' || part === 'cmd' || part === 'command' || part === 'super') meta = true
+    else return null
+  }
+  const name = key === 'esc' ? 'escape' : key
+  return [ctrl ? 'ctrl' : '', alt ? 'alt' : '', shift ? 'shift' : '', meta ? 'meta' : '', name]
+    .filter(Boolean)
+    .join('+')
+}
+
+/** In-window shortcuts that a global binding must not shadow, with the row that owns them. */
+function inWindowEntries(): { combo: string; label: string }[] {
+  const entries = SHORTCUTS.map((spec) => ({ combo: spec.combo, label: spec.label }))
+  const pages = getShortcut('pages')
+  for (let index = 0; index < PAGE_SHORTCUT_COUNT; index += 1) {
+    entries.push({ combo: `mod+${index + 1}`, label: pages.label })
+  }
+  // The settings page saves the open tab with this combination.
+  entries.push({ combo: 'mod+s', label: t('hotkey.inWindow.save') })
+  return entries
+}
+
+/**
+ * The in-window shortcut a global combination would collide with (R39). The
+ * window owns these combos while it is focused, so a global binding for the same
+ * keys would fire both actions at once.
+ */
+export function inWindowShortcut(
+  combo: string,
+  mac = isMacPlatform(),
+): { combo: string; label: string } | null {
+  const signature = comboSignature(combo, mac)
+  if (!signature) return null
+  return inWindowEntries().find((entry) => comboSignature(entry.combo, mac) === signature) ?? null
+}
+
+/** `event.code` values that can become a global shortcut, named how the backend parses them. */
+const NAMED_KEYS: Record<string, string> = {
+  Space: 'Space',
+  Enter: 'Enter',
+  Tab: 'Tab',
+  Backspace: 'Backspace',
+  Delete: 'Delete',
+  Insert: 'Insert',
+  Home: 'Home',
+  End: 'End',
+  PageUp: 'PageUp',
+  PageDown: 'PageDown',
+  ArrowUp: 'ArrowUp',
+  ArrowDown: 'ArrowDown',
+  ArrowLeft: 'ArrowLeft',
+  ArrowRight: 'ArrowRight',
+  Comma: ',',
+  Period: '.',
+  Slash: '/',
+  Backquote: '`',
+  Minus: '-',
+  Equal: '=',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  Semicolon: ';',
+  Quote: "'",
+}
+
+const MODIFIER_CODES = new Set([
+  'ControlLeft',
+  'ControlRight',
+  'AltLeft',
+  'AltRight',
+  'ShiftLeft',
+  'ShiftRight',
+  'MetaLeft',
+  'MetaRight',
+])
+
+/** What one keydown means while recording a global shortcut (R39). */
+export type ComboCapture =
+  | { kind: 'combo'; combo: string }
+  /** Only modifiers were held down; keep waiting for the main key. */
+  | { kind: 'modifier' }
+  /** A printable key without a modifier would hijack ordinary typing. */
+  | { kind: 'plain' }
+  | { kind: 'unsupported' }
+
+/** Turn a keydown into the accelerator string the Rust side stores. */
+export function comboFromEvent(event: KeyboardEvent): ComboCapture {
+  const code = event.code || ''
+  if (MODIFIER_CODES.has(code)) return { kind: 'modifier' }
+  let key: string | null = null
+  if (/^Key[A-Z]$/.test(code)) key = code.slice(3)
+  else if (/^Digit[0-9]$/.test(code)) key = code.slice(5)
+  else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) key = code
+  else if (/^Numpad[0-9]$/.test(code)) key = code
+  else if (code in NAMED_KEYS) key = NAMED_KEYS[code] ?? null
+  if (!key) return { kind: 'unsupported' }
+  const parts: string[] = []
+  if (event.ctrlKey) parts.push('Ctrl')
+  if (event.altKey) parts.push('Alt')
+  if (event.shiftKey) parts.push('Shift')
+  if (event.metaKey) parts.push('Super')
+  if (!parts.length) return { kind: 'plain' }
+  return { kind: 'combo', combo: [...parts, key].join('+') }
+}
+
 export function isMacPlatform(): boolean {
   if (typeof navigator === 'undefined') return false
   return /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent)
@@ -111,6 +240,7 @@ export function shortcutKeyLabel(combo: string, mac = isMacPlatform()): string {
       if (token === 'mod') return mac ? '⌘' : 'Ctrl'
       if (token === 'ctrl' || token === 'control') return mac ? '⌃' : 'Ctrl'
       if (token === 'meta' || token === 'cmd' || token === 'command') return mac ? '⌘' : 'Meta'
+      if (token === 'super') return mac ? '⌘' : 'Win'
       if (token === 'shift') return mac ? '⇧' : 'Shift'
       if (token === 'alt' || token === 'option') return mac ? '⌥' : 'Alt'
       if (part.length === 1) return part.toUpperCase()

@@ -7,6 +7,7 @@ import SelectField from '../components/SelectField.vue'
 import Toggle from '../components/Toggle.vue'
 import AppUpdateCard from '../components/AppUpdateCard.vue'
 import BackupSection from '../components/BackupSection.vue'
+import HotkeySection from '../components/HotkeySection.vue'
 import UwpLoopbackDialog from '../components/UwpLoopbackDialog.vue'
 import { useStore } from '../lib/store'
 import { t } from '../lib/i18n'
@@ -1489,6 +1490,8 @@ const TABS = computed(() => [
           </div>
         </template>
       </section>
+
+      <HotkeySection v-if="!compact && !store.isAndroid.value" />
 
       <!-- Phone: the rest of the general page keeps the grouped-list rhythm instead of loose cards. -->
       <template v-if="compact">

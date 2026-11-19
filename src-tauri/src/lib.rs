@@ -5,6 +5,7 @@ mod bundled_geo;
 mod diagnostics;
 #[cfg(target_os = "windows")]
 mod elevation;
+mod hotkeys;
 mod i18n;
 mod kernel;
 mod mrs;
@@ -1531,57 +1532,144 @@ fn navigate_main(app: &AppHandle, target: &str) {
     let _ = app.emit("tray-navigate", target.to_string());
 }
 
+/// One action the tray menu or a global shortcut asks the backend to run (R39).
+#[cfg(desktop)]
+enum BackendAction {
+    Show,
+    /// Show the window and open a page (or the add-profile dialog).
+    Navigate(String),
+    /// Show the window, or hide it when it is already in front.
+    ToggleWindow,
+    Quit,
+    ToggleConnection,
+    SystemProxy,
+    Tun,
+    Mode(String),
+    Profile(String),
+    Node { group: String, node: String },
+}
+
+#[cfg(desktop)]
+impl BackendAction {
+    fn from_tray(command: tray::TrayCommand) -> Self {
+        use tray::TrayCommand;
+        match command {
+            TrayCommand::Show => Self::Show,
+            TrayCommand::Navigate(target) => Self::Navigate(target),
+            TrayCommand::ToggleConnection => Self::ToggleConnection,
+            TrayCommand::SystemProxy => Self::SystemProxy,
+            TrayCommand::Tun => Self::Tun,
+            TrayCommand::Mode(mode) => Self::Mode(mode),
+            TrayCommand::Profile(id) => Self::Profile(id),
+            TrayCommand::Node { group, node } => Self::Node { group, node },
+            TrayCommand::Quit => Self::Quit,
+        }
+    }
+
+    fn from_hotkey(action: hotkeys::Action) -> Self {
+        match action {
+            hotkeys::Action::ToggleConnection => Self::ToggleConnection,
+            hotkeys::Action::SystemProxy => Self::SystemProxy,
+            hotkeys::Action::Tun => Self::Tun,
+            hotkeys::Action::ToggleWindow => Self::ToggleWindow,
+            hotkeys::Action::ModeRule | hotkeys::Action::ModeGlobal | hotkeys::Action::ModeDirect => {
+                Self::Mode(action.mode().unwrap_or("rule").to_string())
+            }
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn toggle_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let visible = window.is_visible().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    if visible && !minimized {
+        let _ = window.hide();
+    } else {
+        show_main(app);
+    }
+}
+
+/// The one place a tray click and a global shortcut meet (R39): run the action,
+/// refresh the tray, then tell the window what changed.
+#[cfg(desktop)]
+fn dispatch(app: &AppHandle, action: BackendAction, notify_failure: bool) {
+    match action {
+        BackendAction::Show => show_main(app),
+        BackendAction::Navigate(target) => navigate_main(app, &target),
+        BackendAction::ToggleWindow => toggle_main_window(app),
+        BackendAction::Quit => {
+            release_proxy_on_exit(app);
+            app.exit(0);
+        }
+        action => {
+            // Connecting, switching profiles (which may download) and node
+            // selection talk to the kernel; keep them off the menu thread so the
+            // tray never freezes.
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let snapshot = match apply_action(&app, action) {
+                    Ok(snapshot) => snapshot,
+                    Err(message) => {
+                        // A shortcut can fire while the window is hidden, so the
+                        // reason also goes to a system notification (R39).
+                        if notify_failure {
+                            hotkeys::notify_failure(&app, &message);
+                        }
+                        with_profile(&app, |session| session.book.report_failure(message))
+                    }
+                };
+                refresh_tray(&app, &snapshot);
+                let _ = app.emit("profile-changed", snapshot);
+            });
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn apply_action(app: &AppHandle, action: BackendAction) -> Result<ProfileSnapshot, String> {
+    match action {
+        BackendAction::ToggleConnection => {
+            let connected = with_profile(app, |session| session.book.snapshot().connected);
+            if connected {
+                Ok(disconnect_session(app.clone()))
+            } else {
+                connect_session(app.clone())
+            }
+        }
+        BackendAction::SystemProxy => {
+            let on = with_profile(app, |session| session.book.snapshot().system_proxy);
+            Ok(set_system_proxy(app.clone(), !on))
+        }
+        BackendAction::Tun => {
+            let on = with_profile(app, |session| session.book.snapshot().tun);
+            set_tun_enabled(app.clone(), !on)
+        }
+        BackendAction::Mode(mode) => Ok(set_outbound_mode(app.clone(), mode)),
+        BackendAction::Profile(id) => Ok(enable_profile(app.clone(), id)),
+        BackendAction::Node { group, node } => Ok(select_profile_node(app.clone(), group, node)),
+        BackendAction::Show
+        | BackendAction::Navigate(_)
+        | BackendAction::ToggleWindow
+        | BackendAction::Quit => unreachable!("handled synchronously"),
+    }
+}
+
 #[cfg(desktop)]
 fn tray_action(app: &AppHandle, id: &str) {
-    use tray::TrayCommand;
     let Some(command) = tray::parse(id) else {
         return;
     };
-    match command {
-        TrayCommand::Show => {
-            show_main(app);
-            return;
-        }
-        TrayCommand::Navigate(target) => {
-            navigate_main(app, &target);
-            return;
-        }
-        TrayCommand::Quit => {
-            release_proxy_on_exit(app);
-            app.exit(0);
-            return;
-        }
-        _ => {}
-    }
-    // Connecting, switching profiles (which may download) and node selection talk
-    // to the kernel; keep them off the menu thread so the tray never freezes.
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let snapshot = match command {
-            TrayCommand::ToggleConnection => {
-                let connected = with_profile(&app, |session| session.book.snapshot().connected);
-                if connected {
-                    disconnect_session(app.clone())
-                } else {
-                    connect_session(app.clone()).unwrap_or_else(|message| with_profile(&app, |s| s.book.report_failure(message)))
-                }
-            }
-            TrayCommand::SystemProxy => {
-                let on = with_profile(&app, |session| session.book.snapshot().system_proxy);
-                set_system_proxy(app.clone(), !on)
-            }
-            TrayCommand::Tun => {
-                let on = with_profile(&app, |session| session.book.snapshot().tun);
-                set_tun_enabled(app.clone(), !on).unwrap_or_else(|message| with_profile(&app, |s| s.book.report_failure(message)))
-            }
-            TrayCommand::Mode(mode) => set_outbound_mode(app.clone(), mode),
-            TrayCommand::Profile(id) => enable_profile(app.clone(), id),
-            TrayCommand::Node { group, node } => select_profile_node(app.clone(), group, node),
-            TrayCommand::Show | TrayCommand::Navigate(_) | TrayCommand::Quit => return,
-        };
-        refresh_tray(&app, &snapshot);
-        let _ = app.emit("profile-changed", snapshot);
-    });
+    dispatch(app, BackendAction::from_tray(command), false);
+}
+
+/// A global shortcut runs through the same dispatcher as the tray (R39).
+#[cfg(desktop)]
+fn run_hotkey(app: &AppHandle, action: hotkeys::Action) {
+    dispatch(app, BackendAction::from_hotkey(action), true);
 }
 
 #[cfg(desktop)]
@@ -1703,6 +1791,19 @@ fn sync_tray(app: AppHandle) {
     refresh_tray(&app, &snapshot);
 }
 
+/// The global shortcut bindings, whether this platform can use them and why not (R39).
+#[tauri::command(async)]
+fn hotkey_settings(app: AppHandle) -> hotkeys::Settings {
+    hotkeys::settings(&app)
+}
+
+/// Bind one action to a combination, or clear it with an empty string. A
+/// rejected edit leaves the stored binding untouched and returns its reason.
+#[tauri::command(async)]
+fn set_hotkey(app: AppHandle, action: String, combo: String) -> Result<hotkeys::Settings, String> {
+    hotkeys::set(&app, &action, &combo)
+}
+
 fn release_proxy_on_exit(app: &AppHandle) {
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
@@ -1751,6 +1852,9 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Global shortcuts (R39) and the notification a failed action sends.
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         Some(vec!["--autostart"]),
@@ -1828,6 +1932,8 @@ pub fn run() {
             set_autostart,
             set_app_behavior,
             sync_tray,
+            hotkey_settings,
+            set_hotkey,
             flush_cache,
             restart_kernel,
             kernel_gc,
@@ -1848,6 +1954,8 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 prepare_tray(app);
+                // Bindings from the previous run come back before the window loads (R39).
+                hotkeys::prepare(app.handle());
                 let silent = {
                     let store = app.state::<Store>();
                     lock(&store.state).silent_start

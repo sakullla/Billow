@@ -790,7 +790,13 @@ mod tests {
             let handle = thread::spawn(move || {
                 while !thread_stop.load(Ordering::SeqCst) {
                     match listener.accept() {
-                        Ok((stream, _)) => serve(stream, &thread_state),
+                        Ok((stream, _)) => {
+                            // Windows accepts inherit the listener's non-blocking mode; a
+                            // non-blocking read here closes the socket before the client
+                            // finishes sending and surfaces as a sporadic reset.
+                            let _ = stream.set_nonblocking(false);
+                            serve(stream, &thread_state);
+                        }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(5));
                         }
@@ -816,7 +822,7 @@ mod tests {
     }
 
     fn serve(mut stream: TcpStream, state: &Arc<Mutex<DavState>>) {
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         let mut raw = Vec::new();
         let mut buffer = [0u8; 1024];
         loop {

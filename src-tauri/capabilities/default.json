@@ -76,6 +76,8 @@
     "allow-set-autostart",
     "allow-set-app-behavior",
     "allow-sync-tray",
+    "allow-hotkey-settings",
+    "allow-set-hotkey",
     "allow-flush-cache",
     "allow-restart-kernel",
     "allow-kernel-gc",

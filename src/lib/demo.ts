@@ -14,6 +14,8 @@ import {
   type ConfigOverview,
   type ConnectionRow,
   type DnsQueryResult,
+  type HotkeyAction,
+  type HotkeySettings,
   type KernelStatus,
   type LanguagePreference,
   type Locale,
@@ -194,6 +196,26 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     close_to_tray: true,
     silent_start: false,
     data_dir: null,
+  }
+  /** Desktop global shortcuts (R39): nothing is bound until the user records one. */
+  const hotkeys = new Map<HotkeyAction, string>()
+  const HOTKEY_LABELS: Record<HotkeyAction, string> = {
+    connect: '连接 / 断开',
+    proxy: '系统代理',
+    tun: 'TUN 模式',
+    'mode-rule': '规则',
+    'mode-global': '全局',
+    'mode-direct': '直连',
+    window: '显示 / 隐藏主窗口',
+  }
+  function hotkeySettings(): HotkeySettings {
+    const available = options.platform !== 'android'
+    return {
+      available,
+      reason: available ? null : '此系统不支持全局快捷键',
+      platform: app.platform,
+      bindings: [...hotkeys].map(([action, combo]) => ({ action, combo, active: available, error: null })),
+    }
   }
   const delays = new Map<string, number | null>()
   const selections = new Map<string, string>([['节点选择', '香港 01']])
@@ -863,6 +885,22 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async setAppBehavior(closeToTray, silentStart) {
       app = { ...app, close_to_tray: closeToTray, silent_start: silentStart }
       return app
+    },
+    async hotkeySettings() {
+      return hotkeySettings()
+    },
+    async setHotkey(action, combo) {
+      if (!hotkeySettings().available) throw new Error('此系统不支持全局快捷键')
+      if (!combo) {
+        hotkeys.delete(action)
+        return hotkeySettings()
+      }
+      const clash = [...hotkeys].find(([other, bound]) => other !== action && bound === combo)
+      if (clash) {
+        throw new Error(`组合键 ${combo} 已绑定给「${HOTKEY_LABELS[clash[0]]}」`)
+      }
+      hotkeys.set(action, combo)
+      return hotkeySettings()
     },
     async kernel() {
       return kernel

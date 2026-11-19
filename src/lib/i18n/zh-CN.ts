@@ -48,6 +48,28 @@ export const ZH_CN = {
   'backup.confirm.cancel': '取消',
   'backup.confirm.restore': '覆盖并恢复',
   'backup.restored': '已恢复备份',
+
+  // 全局快捷键 (R39)
+  'settings.hotkey.title': '全局快捷键',
+  'settings.hotkey.detail': '窗口在后台或已隐藏时也生效；所有操作默认都不绑定',
+  'hotkey.connect': '连接 / 断开',
+  'hotkey.proxy': '系统代理开关',
+  'hotkey.tun': 'TUN 开关',
+  'hotkey.modeRule': '切换到规则模式',
+  'hotkey.modeGlobal': '切换到全局模式',
+  'hotkey.modeDirect': '切换到直连模式',
+  'hotkey.window': '显示 / 隐藏主窗口',
+  'hotkey.record': '录入',
+  'hotkey.recording': '请按下组合键…',
+  'hotkey.clear': '清除',
+  'hotkey.empty': '未绑定',
+  'hotkey.hint': '点击录入后按下组合键，至少包含一个修饰键（Ctrl / Alt / Shift）',
+  'hotkey.modifierOnly': '只按了修饰键，请连同一个字母或功能键一起按下',
+  'hotkey.plainKey': '请先按住 Ctrl / Alt / Shift，再按要绑定的键',
+  'hotkey.unavailable': '全局快捷键不可用：{reason}',
+  'hotkey.conflict.window': '{combo} 与窗口内快捷键「{action}」冲突，未保存',
+  'hotkey.inWindow.save': '保存设置',
+  'hotkey.inactive': '未生效：{reason}',
 } as const
 
 export type MessageKey = keyof typeof ZH_CN

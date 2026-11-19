@@ -476,6 +476,42 @@ export interface WebdavTestResult {
   error: string | null
 }
 
+/** One thing a desktop global shortcut can do (R39); the ids are stored as is. */
+export type HotkeyAction =
+  | 'connect'
+  | 'proxy'
+  | 'tun'
+  | 'mode-rule'
+  | 'mode-global'
+  | 'mode-direct'
+  | 'window'
+
+export const HOTKEY_ACTIONS: readonly HotkeyAction[] = [
+  'connect',
+  'proxy',
+  'tun',
+  'mode-rule',
+  'mode-global',
+  'mode-direct',
+  'window',
+]
+
+/** A saved binding; `active` is false when the system refused it at startup. */
+export interface HotkeyBinding {
+  action: HotkeyAction
+  combo: string
+  active: boolean
+  error: string | null
+}
+
+/** Everything the hotkey section needs, including why it is disabled (R39). */
+export interface HotkeySettings {
+  available: boolean
+  reason: string | null
+  platform: string
+  bindings: HotkeyBinding[]
+}
+
 export interface RulesResult {
   rules: RuleRow[]
   error: string | null

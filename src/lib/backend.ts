@@ -4,10 +4,14 @@ import {
   normalizeKernel,
   normalizeRuleRow,
   normalizeSnapshot,
+  HOTKEY_ACTIONS,
   type AppInfo,
   type ConfigOverview,
   type DnsQueryResult,
   type DnsQueryType,
+  type HotkeyAction,
+  type HotkeyBinding,
+  type HotkeySettings,
   type OverridePreview,
   type KernelChannel,
   type KernelSettings,
@@ -55,6 +59,10 @@ export interface Backend {
   appInfo(): Promise<AppInfo>
   setAutostart(enabled: boolean): Promise<AppInfo>
   setAppBehavior(closeToTray: boolean, silentStart: boolean): Promise<AppInfo>
+  /** Desktop global shortcuts and whether this platform supports them (R39). */
+  hotkeySettings(): Promise<HotkeySettings>
+  /** Bind one action; an empty combo clears it. A rejection names the conflict. */
+  setHotkey(action: HotkeyAction, combo: string): Promise<HotkeySettings>
 
   kernel(): Promise<KernelStatus>
   setChannel(channel: KernelChannel): Promise<KernelStatus>
@@ -194,6 +202,32 @@ export function normalizeRemoteBackup(raw: unknown): RemoteBackup {
   }
 }
 
+function isHotkeyAction(value: unknown): value is HotkeyAction {
+  return typeof value === 'string' && (HOTKEY_ACTIONS as readonly string[]).includes(value)
+}
+
+export function normalizeHotkeys(raw: unknown): HotkeySettings {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const rawBindings = Array.isArray(value.bindings) ? value.bindings : []
+  const bindings: HotkeyBinding[] = []
+  for (const entry of rawBindings) {
+    const item = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {}
+    if (!isHotkeyAction(item.action) || typeof item.combo !== 'string' || !item.combo) continue
+    bindings.push({
+      action: item.action,
+      combo: item.combo,
+      active: Boolean(item.active),
+      error: typeof item.error === 'string' ? item.error : null,
+    })
+  }
+  return {
+    available: Boolean(value.available),
+    reason: typeof value.reason === 'string' ? value.reason : null,
+    platform: typeof value.platform === 'string' ? value.platform : '',
+    bindings,
+  }
+}
+
 function createTauriBackend(): Backend {
   const call = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -243,6 +277,9 @@ function createTauriBackend(): Backend {
     setAutostart: (enabled) => call<AppInfo>('set_autostart', { enabled }),
     setAppBehavior: (closeToTray, silentStart) =>
       call<AppInfo>('set_app_behavior', { closeToTray, silentStart }),
+    hotkeySettings: async () => normalizeHotkeys(await call<unknown>('hotkey_settings')),
+    setHotkey: async (action, combo) =>
+      normalizeHotkeys(await call<unknown>('set_hotkey', { action, combo })),
 
     kernel: () => kern('kernel_state'),
     setChannel: (channel) => kern('set_kernel_channel', { channel }),
