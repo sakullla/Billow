@@ -17,7 +17,7 @@ import {
   formatRelative,
   formatSpeed,
   canPickNode,
-  groupTypeLabel,
+  autoTypeLabel,
   resolveChain,
   usagePercent,
 } from '../lib/format'
@@ -704,7 +704,7 @@ function onPrimary() {
                   <div class="group-row-text">
                     <span class="group-row-head">
                       <span class="group-row-name">{{ group.name }}</span>
-                      <span class="tag sm" data-testid="home-group-type">{{ groupTypeLabel(group) }}</span>
+                      <span v-if="autoTypeLabel(group)" class="tag sm" data-testid="home-group-type">{{ autoTypeLabel(group) }}</span>
                       <span
                         v-if="group.fixed"
                         class="tag sm accent"
@@ -729,7 +729,7 @@ function onPrimary() {
                   <div class="group-tile-top">
                     <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="20" /></span>
                     <span class="group-tile-meta">
-                      <span class="tag sm" data-testid="home-group-type">{{ groupTypeLabel(group) }}</span>
+                      <span v-if="autoTypeLabel(group)" class="tag sm" data-testid="home-group-type">{{ autoTypeLabel(group) }}</span>
                       <span
                         v-if="group.fixed"
                         class="tag sm accent"

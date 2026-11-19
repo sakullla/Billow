@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
-import { delayText, groupTypeLabel, isInfoNode, listedGroups, protocolLabel } from '../lib/format'
+import { autoTypeLabel, delayText, groupTypeLabel, isInfoNode, listedGroups, protocolLabel } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { getFocusable, useFocusTrap } from '../lib/ui/focus'
 import { getShortcut, pageShortcutCombo, shortcutKeyLabel } from '../lib/ui/shortcuts'
@@ -297,9 +297,9 @@ const groups = computed(() => {
       ? listedCatalog.value
       : listedCatalog.value.filter((group) => group.name !== 'GLOBAL')
     for (const group of visibleGroups) {
-      const typeLabel = groupTypeLabel(group)
-      if (!matches(group.name, typeLabel)) continue
-      const now = group.now ? `${typeLabel} · ${group.now}` : typeLabel
+      const typeLabel = autoTypeLabel(group)
+      if (!matches(group.name, typeLabel || groupTypeLabel(group))) continue
+      const now = [typeLabel, group.now].filter(Boolean).join(' · ') || '未选择节点'
       proxyEntries.push({
         key: `group:${group.name}`,
         kind: 'group',

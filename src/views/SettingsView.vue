@@ -12,6 +12,7 @@ import { useHotkeys } from '../lib/ui/hotkeys'
 import { shortcutKeyLabel } from '../lib/ui/shortcuts'
 import { subscriptionUserAgent } from '../lib/subscription'
 import { bypassOverride } from '../lib/bypass'
+import { REPO_LABEL, REPO_URL, openExternal } from '../lib/links'
 import {
   DEFAULT_PAC_SCRIPT,
   DEFAULT_PROXY_BYPASS,
@@ -35,6 +36,10 @@ import type { SettingsTab } from '../lib/store'
 const props = defineProps<{ compact?: boolean }>()
 const appIcon = `${import.meta.env.BASE_URL}icon.png`
 const store = useStore()
+
+function openRepo() {
+  openExternal(REPO_URL).catch(() => store.toast('无法打开浏览器，请访问 ' + REPO_URL, 'error'))
+}
 const snap = computed(() => store.snapshot.value)
 const app = computed(() => store.app.value)
 const kernel = computed(() => store.kernel.value)
@@ -1445,22 +1450,14 @@ const TABS = computed(() => [
         <p class="settings-group-label">关于</p>
         <section class="card list-card settings-list" data-testid="settings-about">
           <AppUpdateCard variant="row" />
-          <div v-if="app?.data_dir" class="nav-row static">
-            <span class="nav-row-icon slate"><Icon name="database" /></span>
+          <button type="button" class="nav-row" data-testid="open-repo" @click="openRepo">
+            <span class="nav-row-icon slate"><Icon name="github" /></span>
             <div class="grow min0">
-              <span class="nav-row-title">数据目录</span>
-              <p class="muted small mono ellipsis" :title="app.data_dir">{{ app.data_dir }}</p>
+              <span class="nav-row-title">项目主页</span>
+              <p class="muted small ellipsis">{{ REPO_LABEL }}</p>
             </div>
-            <button
-              type="button"
-              class="icon-btn"
-              aria-label="复制数据目录路径"
-              data-testid="copy-data-dir"
-              @click="store.copyText(app.data_dir, '已复制数据目录路径')"
-            >
-              <Icon name="copy" :size="16" />
-            </button>
-          </div>
+            <Icon name="external" :size="15" class="muted" />
+          </button>
         </section>
         <p class="settings-foot">基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0</p>
       </template>
@@ -1505,19 +1502,11 @@ const TABS = computed(() => [
           <div class="grow min0">
             <strong>Billow</strong>
             <p class="muted small">基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0</p>
-            <div v-if="app?.data_dir" class="about-dir">
-              <p class="muted small mono ellipsis" :title="app.data_dir">{{ app.data_dir }}</p>
-              <button
-                type="button"
-                class="icon-btn sm"
-                title="复制数据目录路径"
-                aria-label="复制数据目录路径"
-                data-testid="copy-data-dir"
-                @click="store.copyText(app.data_dir, '已复制数据目录路径')"
-              >
-                <Icon name="copy" :size="13" />
-              </button>
-            </div>
+            <button type="button" class="about-link" :title="REPO_URL" data-testid="open-repo" @click="openRepo">
+              <Icon name="github" :size="14" />
+              <span>{{ REPO_LABEL }}</span>
+              <Icon name="external" :size="12" />
+            </button>
           </div>
           <span class="muted small mono">v{{ app?.version ?? '—' }}</span>
         </div>

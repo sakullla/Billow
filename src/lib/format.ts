@@ -383,6 +383,23 @@ export function groupTypeLabel(group: { group_type: string; kind: string }): str
   return protocolLabel(group.group_type) || (group.kind === 'manual' ? '手选' : '自动')
 }
 
+/**
+ * Badge text for a group's strategy. Plain select groups are the norm and carry no badge;
+ * only automatic strategies (自动选择、故障转移、负载均衡…) are worth calling out.
+ */
+export function autoTypeLabel(group: { group_type: string; kind: string }): string {
+  return group.kind === 'manual' ? '' : groupTypeLabel(group)
+}
+
+/**
+ * Airport names often lead with a provider tag such as 【KLM】 or [LOCAL]. Splitting it off
+ * lets the UI dim the tag so the region and line number stay readable.
+ */
+export function splitNodePrefix(name: string): { prefix: string; rest: string } {
+  const match = /^(\s*[【[][^】\]]{1,16}[】\]]\s*)(\S.*)$/u.exec(name)
+  return match ? { prefix: match[1]!, rest: match[2]! } : { prefix: '', rest: name }
+}
+
 export function usagePercent(used: number | null, total: number | null): number | null {
   if (used == null || total == null || total <= 0) return null
   return Math.min(100, Math.max(0, (used / total) * 100))

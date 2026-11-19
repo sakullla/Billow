@@ -1775,7 +1775,7 @@ describe('App', () => {
     expect(media.attributes('src')).toBe('https://icons.example.com/media.png')
     expect(media.attributes('loading')).toBe('lazy')
     expect(media.attributes('decoding')).toBe('async')
-    expect(wrapper.find('[data-group-card="流媒体"] .group-toggle .group-icon').attributes('style')).toContain('width: 24px')
+    expect(wrapper.find('[data-group-card="流媒体"] .group-toggle .group-icon').attributes('style')).toContain('width: 22px')
 
     const unreachable = wrapper.find('[data-group-card="国内网站"] .group-toggle img')
     expect(unreachable.attributes('src')).toBe('https://unreachable.invalid/cn.png')

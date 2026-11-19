@@ -5,7 +5,7 @@ import GroupIcon from '../components/GroupIcon.vue'
 import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
-import { canPickNode, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, protocolLabel, resolveChain } from '../lib/format'
+import { autoTypeLabel, canPickNode, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, protocolLabel, resolveChain, splitNodePrefix } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
@@ -62,22 +62,21 @@ const toolbarHeight = ref(0)
 let toolbarObserver: ResizeObserver | null = null
 const sort = ref<Sort>(readPref('proxy-sort', 'default'))
 type NodeView = 'card' | 'dense' | 'list'
-/** Cards show protocol tags, 紧凑 fits more nodes per screen, 列表 gives every name a full row. */
+/** Desktop offers a card grid and a one-row-per-node list; phones keep their two-column toggle. */
 const VIEWS: { id: NodeView; label: string; icon: string }[] = [
   { id: 'card', label: '卡片', icon: 'grid' },
-  { id: 'dense', label: '紧凑', icon: 'grid-dense' },
   { id: 'list', label: '列表', icon: 'list' },
 ]
 function readView(): NodeView {
   const stored = readPref<string>('proxy-view', '')
   if (stored === 'card' || stored === 'dense' || stored === 'list') return stored
-  // Earlier versions only stored the 紧凑 toggle.
+  // Earlier versions only stored the two-column toggle.
   return readPref('proxy-dense', false) ? 'dense' : 'card'
 }
 const view = ref<NodeView>(readView())
-const currentView = computed(() => VIEWS.find((item) => item.id === view.value) ?? VIEWS[0]!)
-const nextView = computed(() => VIEWS[(VIEWS.indexOf(currentView.value) + 1) % VIEWS.length]!)
-const dense = computed(() => view.value === 'dense')
+/** The retired desktop 紧凑 view reads as cards; phones still use it as their two-column grid. */
+const desktopView = computed<NodeView>(() => (view.value === 'list' ? 'list' : 'card'))
+const dense = computed(() => Boolean(props.compact) && view.value === 'dense')
 /** Phones already list one node per row; there 列表 is simply their default view. */
 const listView = computed(() => !props.compact && view.value === 'list')
 /**
@@ -376,6 +375,12 @@ function groupHealthText(group: NodeGroup): string {
 
 function highlight(name: string) {
   return highlightTokens(name, query.value)
+}
+
+/** The provider tag is dimmed; search hits still mark both parts. */
+function nameParts(name: string) {
+  const { prefix, rest } = splitNodePrefix(name)
+  return { prefix: prefix ? highlight(prefix) : [], rest: highlight(rest) }
 }
 
 function copyNodeName(node: NodeItem) {
@@ -700,10 +705,34 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       </button>
       <div v-if="showOptions" id="proxy-options" class="toolbar-options">
         <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
-        <!-- Every view control carries a short text label; phones lay them out as equal chips (R3, R12). Auto groups need no toggle (R13). -->
+        <!-- Desktop: quiet icon buttons with tooltips; phones lay them out as labelled chips (R3, R12). Auto groups need no toggle (R13). -->
+        <div
+          v-if="!compact"
+          class="view-switch"
+          role="group"
+          aria-label="节点视图"
+          :data-value="desktopView"
+          data-testid="node-view"
+        >
+          <button
+            v-for="item in VIEWS"
+            :key="item.id"
+            type="button"
+            class="view-switch-btn"
+            :class="{ active: desktopView === item.id }"
+            :aria-pressed="desktopView === item.id"
+            :aria-label="`${item.label}视图`"
+            :title="`${item.label}视图`"
+            :data-testid="`node-view-${item.id}`"
+            @click="view = item.id"
+          >
+            <Icon :name="item.icon" :size="15" />
+          </button>
+        </div>
         <button
           type="button"
           class="btn ghost sm tool-btn"
+          :class="{ 'icon-only': !compact }"
           :disabled="!canLocateActive"
           aria-label="定位当前选中节点"
           :title="canLocateActive ? '定位当前选中节点' : '当前没有已选中的节点'"
@@ -711,25 +740,10 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           @click="locateActiveNode"
         >
           <Icon name="locate" :size="15" />
-          <span class="tool-btn-label">定位</span>
-        </button>
-        <!-- One button names the current view and steps through the rest. -->
-        <button
-          v-if="!compact"
-          type="button"
-          class="btn ghost sm tool-btn"
-          :class="{ active: view !== 'card' }"
-          :data-value="view"
-          :aria-label="`节点视图：${currentView.label}，点击切换为${nextView.label}`"
-          :title="`切换为${nextView.label}视图`"
-          data-testid="node-view"
-          @click="view = nextView.id"
-        >
-          <Icon :name="currentView.icon" :size="15" />
-          <span class="tool-btn-label">{{ currentView.label }}</span>
+          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">定位</span>
         </button>
         <button
-          v-else
+          v-if="compact"
           type="button"
           class="btn ghost sm tool-btn"
           :class="{ active: dense }"
@@ -742,9 +756,16 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           <Icon :name="denseIcon" :size="15" />
           <span class="tool-btn-label">双列</span>
         </button>
-        <button type="button" class="btn ghost sm tool-btn" data-testid="toggle-all" @click="toggleAll">
-          <Icon name="chevron-down" :size="15" :class="{ 'icon-flip': allExpanded }" />
-          <span class="tool-btn-label">{{ allExpanded ? '收起全部' : '展开全部' }}</span>
+        <button
+          type="button"
+          class="btn ghost sm tool-btn"
+          :class="{ 'icon-only': !compact }"
+          :title="allExpanded ? '收起全部代理组' : '展开全部代理组'"
+          data-testid="toggle-all"
+          @click="toggleAll"
+        >
+          <Icon :name="allExpanded ? 'collapse-all' : 'expand-all'" :size="15" />
+          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ allExpanded ? '收起全部' : '展开全部' }}</span>
         </button>
       </div>
 
@@ -802,18 +823,18 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           :data-testid="`group-toggle-${group.name}`"
           @click="toggle(group.name)"
         >
-          <GroupIcon :icon="group.icon" :type="group.group_type" :size="24" />
+          <span class="group-head-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="22" /></span>
           <span class="group-title">
             <span class="group-name">
               <strong>{{ group.name }}</strong>
-              <span class="tag">{{ groupTypeLabel(group) }}</span>
+              <span v-if="autoTypeLabel(group)" class="tag group-kind" data-testid="group-kind">{{ autoTypeLabel(group) }}</span>
               <span
                 v-if="group.fixed"
                 class="tag accent fixed-tag"
                 :title="`已固定使用 ${group.fixed}，恢复自动后由组策略选择`"
                 :data-testid="`group-fixed-${group.name}`"
               >已固定</span>
-              <span class="muted small group-count">{{ group.nodes.length }} 个</span>
+              <span class="muted small group-count mono">{{ group.nodes.length }}</span>
               <span v-if="groupHealthText(group)" class="group-health muted small">{{ groupHealthText(group) }}</span>
             </span>
             <span class="group-now small">
@@ -903,13 +924,15 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               @keydown.space.prevent="pick(group, node)"
             >
               <span class="node-name" :title="dense && autoOf(node) && viaOf(node) ? `${node.name} → ${viaOf(node)}` : node.name">
+                <Icon v-if="node.selected" name="check" :size="13" :stroke="2.8" class="node-check" />
                 <span
                   v-if="groupStrategy(group.group_type)?.ordered"
                   class="node-rank mono"
                   :title="`优先级 ${rankOf(group, node)}`"
                   data-testid="node-rank"
                 >{{ rankOf(group, node) }}</span>
-                <template v-for="(part, partIndex) in highlight(node.name)" :key="partIndex">
+                <span v-if="nameParts(node.name).prefix.length" class="node-prefix"><template v-for="(part, partIndex) in nameParts(node.name).prefix" :key="partIndex"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
+                <template v-for="(part, partIndex) in nameParts(node.name).rest" :key="`r${partIndex}`">
                   <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
                 </template>
                 <!-- 紧凑 has no meta line, so an auto entry or chained node keeps its target beside the name. -->
@@ -954,11 +977,10 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               :data-testid="`test-node-${node.name}`"
               @click="store.testNode(node.name)"
             >
-              <template v-if="store.pendingTests.value.has(node.name)"><span class="spinner xs" /><span class="small">测速中</span></template>
+              <template v-if="store.pendingTests.value.has(node.name)"><span class="spinner xs" /><span class="sr-only">测速中</span></template>
               <template v-else-if="nodeDelay(node)">{{ nodeDelay(node) }}</template>
               <Icon v-else name="zap" :size="13" />
             </button>
-            <Icon v-if="node.selected" name="check" :size="14" class="node-check" :stroke="2.6" />
           </div>
         </template>
       </ProxyNodeGrid>

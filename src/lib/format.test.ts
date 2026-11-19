@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  autoTypeLabel,
   canPickNode,
   daysLeft,
   delayText,
@@ -14,8 +15,25 @@ import {
   listedGroups,
   resolveChain,
   protocolLabel,
+  splitNodePrefix,
   usagePercent,
 } from './format'
+
+describe('node and group labels', () => {
+  it('badges only automatic strategies, never plain select groups', () => {
+    expect(autoTypeLabel({ group_type: 'select', kind: 'manual' })).toBe('')
+    expect(autoTypeLabel({ group_type: 'url-test', kind: 'auto' })).toBe('自动')
+    expect(autoTypeLabel({ group_type: 'fallback', kind: 'auto' })).toBe('故障转移')
+  })
+
+  it('splits a provider tag off the front of a node name', () => {
+    expect(splitNodePrefix('【KLM】 🇭🇰 Hong Kong 01')).toEqual({ prefix: '【KLM】 ', rest: '🇭🇰 Hong Kong 01' })
+    expect(splitNodePrefix('[LOCAL] dmit-us')).toEqual({ prefix: '[LOCAL] ', rest: 'dmit-us' })
+    expect(splitNodePrefix('香港 01')).toEqual({ prefix: '', rest: '香港 01' })
+    // A name that is only a tag stays whole.
+    expect(splitNodePrefix('【公告】')).toEqual({ prefix: '', rest: '【公告】' })
+  })
+})
 
 describe('format', () => {
   it('formats byte sizes with sensible precision', () => {

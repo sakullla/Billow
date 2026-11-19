@@ -75,6 +75,7 @@
     "allow-upgrade-geo",
     "allow-provider-detail",
     "allow-geo-files",
-    "allow-open-uwp-tool"
+    "allow-open-uwp-tool",
+    { "identifier": "opener:allow-open-url", "allow": [{ "url": "https://github.com/sakullla/Billow" }] }
   ]
 }

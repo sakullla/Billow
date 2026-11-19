@@ -47,10 +47,13 @@ afterEach(() => {
 })
 
 describe('UI/UX polish', () => {
-  it('R1: home group cards show the group type and a delay slot that never fakes a value', async () => {
+  it('R1: home group cards badge only automatic strategies and keep a delay slot that never fakes a value', async () => {
     const { wrapper } = await mountApp()
     const card = () => wrapper.find('[data-testid="groups-card"] [data-group="节点选择"]')
-    expect(card().find('[data-testid="home-group-type"]').text()).toBe('手选')
+    // Plain select groups are the norm and carry no “手选” badge; automatic strategies are named.
+    expect(card().find('[data-testid="home-group-type"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="groups-card"] [data-group="自动选择"] [data-testid="home-group-type"]').text()).toBe('自动')
+    expect(wrapper.find('[data-testid="groups-card"]').text()).not.toContain('手选')
     // Disconnected: the slot reads "—", never 0 ms or 超时.
     expect(card().find('[data-testid="home-group-delay"]').text()).toBe('—')
 
@@ -97,23 +100,27 @@ describe('UI/UX polish', () => {
     expect(wrapper.find('[data-testid="chart-collecting"]').exists()).toBe(true)
   })
 
-  it('R3: desktop proxy view controls carry text and a pressed state', async () => {
+  it('R3: desktop proxy view controls are labelled icon buttons with a pressed state', async () => {
     const { wrapper } = await mountApp()
     await openPage(wrapper, 'proxies')
-    expect(wrapper.find('[data-testid="locate-active-node"]').text()).toContain('定位')
+    const locate = wrapper.find('[data-testid="locate-active-node"]')
+    expect(locate.text()).toContain('定位')
+    expect(locate.attributes('aria-label')).toBe('定位当前选中节点')
 
-    // One button names the current view and cycles 卡片 → 紧凑 → 列表.
+    // A two-way switch: 卡片 and 列表, each an icon with an accessible name.
     const view = () => wrapper.find('[data-testid="node-view"]')
-    expect(view().text()).toBe('卡片')
-    expect(view().attributes('title')).toBe('切换为紧凑视图')
-    await view().trigger('click')
-    expect(view().text()).toBe('紧凑')
-    expect(view().classes()).toContain('active')
-    expect(wrapper.find('.nodes').classes()).toContain('dense')
-    await view().trigger('click')
-    expect(view().text()).toBe('列表')
-    await view().trigger('click')
-    expect(view().text()).toBe('卡片')
+    const card = () => wrapper.find('[data-testid="node-view-card"]')
+    const list = () => wrapper.find('[data-testid="node-view-list"]')
+    expect(view().attributes('data-value')).toBe('card')
+    expect(card().attributes('aria-label')).toBe('卡片视图')
+    expect(card().attributes('aria-pressed')).toBe('true')
+    expect(list().attributes('aria-pressed')).toBe('false')
+    await list().trigger('click')
+    expect(view().attributes('data-value')).toBe('list')
+    expect(list().attributes('aria-pressed')).toBe('true')
+    expect(wrapper.find('.nodes').classes()).toContain('list')
+    await card().trigger('click')
+    expect(wrapper.find('.nodes').classes()).not.toContain('list')
 
     const all = wrapper.find('[data-testid="toggle-all"]')
     if (all.text() === '展开全部') await all.trigger('click')
@@ -556,14 +563,15 @@ describe('UI/UX polish', () => {
   })
 
   describe('R22–R24: long node names and proxy chains', () => {
-    it('R22: desktop switches between card, dense and list views, remembering the choice', async () => {
+    it('R22: desktop switches between card and list views, remembering the choice', async () => {
       localStorage.setItem('billow:proxy-dense', 'true')
       const { wrapper } = await mountApp({ longNames: true })
       await openPage(wrapper, 'proxies')
-      // The old 紧凑 toggle carries over.
-      expect(wrapper.find('[data-testid="node-view"]').attributes('data-value')).toBe('dense')
+      // The retired desktop 紧凑 view reads as cards.
+      expect(wrapper.find('[data-testid="node-view"]').attributes('data-value')).toBe('card')
+      expect(wrapper.find('[data-group-card="节点选择"] .nodes').classes()).not.toContain('dense')
 
-      await wrapper.find('[data-testid="node-view"]').trigger('click')
+      await wrapper.find('[data-testid="node-view-list"]').trigger('click')
       const grid = wrapper.find('[data-group-card="节点选择"] .nodes')
       expect(grid.classes()).toContain('list')
       expect(grid.classes()).not.toContain('dense')
@@ -585,10 +593,10 @@ describe('UI/UX polish', () => {
       expect(head.find('.chain-via').text()).toBe('自动选择')
       expect(head.find('.chain-exit').text()).toBe(autoNow)
 
-      await wrapper.find('[data-testid="node-view"]').trigger('click')
+      // The entry's caption names how it picks and the server it currently leads to.
       const entry = wrapper.find('[data-group-card="节点选择"] [data-node="自动选择"]')
-      expect(entry.find('.node-via-inline').text()).toBe(`→ ${autoNow}`)
-      expect(entry.find('.node-name').attributes('title')).toBe(`自动选择 → ${autoNow}`)
+      expect(entry.find('[data-testid="node-via"] .node-via-target').text()).toBe(`→ ${autoNow}`)
+      expect(entry.find('[data-testid="node-via"] .node-via-target').attributes('title')).toBe(autoNow)
 
       // Home tiles fold the middle hops but keep the server.
       await openPage(wrapper, 'home')
