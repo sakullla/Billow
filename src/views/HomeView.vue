@@ -699,8 +699,8 @@ onBeforeUnmount(() => {
             <p v-else class="empty-line muted">{{ tr('还没有启用配置，去配置页选择一份') }}</p>
           </section>
 
-          <!-- Exit IP (R40): queried only on a click or by the optional automatic setting. -->
-          <section class="card" data-testid="exit-ip-card">
+          <!-- Exit IP (R40): absent while auto-query is off, so nothing is requested. -->
+          <section v-if="store.autoExitIp.value" class="card" data-testid="exit-ip-card">
             <header class="card-head">
               <h2>{{ t('exitIp.title') }}</h2>
               <div class="card-head-actions">

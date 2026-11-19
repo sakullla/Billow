@@ -138,6 +138,23 @@ describe('T8 Latin demo', () => {
     expectEnglish('traffic stats dialog')
   })
 
+  it('renders the exit IP card in English once auto-query is on', async () => {
+    const wrapper = await mountApp({})
+    const store = (wrapper.vm as unknown as { store: any }).store
+    // The card only exists while the option is on (R40), so the default home
+    // page no longer exercises its English text.
+    await store.setAutoExitIp(true)
+    await settle(20)
+    store.go('home')
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+
+    const card = wrapper.find('[data-testid="exit-ip-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('Exit IP')
+    expectEnglish('home exit IP card')
+  })
+
   it('renders the UWP tool and Android app list in English', async () => {
     const windows = await mountApp({ os: 'windows' })
     const windowsStore = (windows.vm as unknown as { store: any }).store

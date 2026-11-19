@@ -1381,6 +1381,20 @@ const TABS = computed(() => [
             <span class="nav-row-value">{{ kernel.ready ? (kernel.version ?? tr('已安装')) : tr('未安装') }}{{ overridden ? tr(' · 已调整') : '' }}</span>
             <Icon name="chevron-right" :size="16" class="muted" />
           </button>
+          <!-- Automatic exit IP queries are off by default and name the services used (R40). -->
+          <div v-if="app" class="nav-row static" data-testid="auto-exit-ip-setting">
+            <span class="nav-row-icon violet"><Icon name="globe" /></span>
+            <div class="grow min0">
+              <span class="nav-row-title">{{ t('settings.exitIp.auto') }}</span>
+              <p class="muted small">{{ t('settings.exitIp.detail') }}</p>
+            </div>
+            <Toggle
+              :model-value="app.auto_exit_ip"
+              :label="t('settings.exitIp.auto')"
+              data-testid="auto-exit-ip-toggle"
+              @update:model-value="store.setAutoExitIp"
+            />
+          </div>
         </section>
 
         <p class="settings-group-label">{{ tr('外观与启动') }}</p>
@@ -1519,20 +1533,6 @@ const TABS = computed(() => [
             <Toggle :model-value="currentSettings.close_connections_on_switch" :label="tr('切换节点后重连')" data-testid="close-on-node-switch"
               @update:model-value="(on) => save({ close_connections_on_switch: on })" />
           </div>
-          <!-- Automatic exit IP queries are off by default and name the services used (R40). -->
-          <div v-if="app" class="nav-row static" data-testid="auto-exit-ip-setting">
-            <span class="nav-row-icon violet"><Icon name="globe" /></span>
-            <div class="grow min0">
-              <span class="nav-row-title">{{ t('settings.exitIp.auto') }}</span>
-              <p class="muted small">{{ t('settings.exitIp.detail') }}</p>
-            </div>
-            <Toggle
-              :model-value="app.auto_exit_ip"
-              :label="t('settings.exitIp.auto')"
-              data-testid="auto-exit-ip-toggle"
-              @update:model-value="store.setAutoExitIp"
-            />
-          </div>
           <div v-if="app" class="nav-row static" data-testid="traffic-history-setting">
             <span class="nav-row-icon slate"><Icon name="activity" /></span>
             <div class="grow min0">
@@ -1590,17 +1590,11 @@ const TABS = computed(() => [
       </template>
 
       <template v-else>
-      <section class="card" data-testid="node-switch-settings">
-        <div class="setting-row">
-          <div class="grow">
-            <strong>{{ tr('切换节点后重连') }}</strong>
-            <p class="muted small">{{ tr('关闭经过当前代理组的旧连接，让应用重连新节点。下载、视频或通话可能中断；关闭后仅新连接使用新节点。') }}</p>
-          </div>
-          <Toggle :model-value="currentSettings.close_connections_on_switch" :label="tr('切换节点后重连')" data-testid="close-on-node-switch"
-            @update:model-value="(on) => save({ close_connections_on_switch: on })" />
-        </div>
+      <!-- Network: options that query third-party services through the proxy (R40). -->
+      <section v-if="app" class="card" data-testid="settings-network">
+        <header class="card-head"><h2>{{ tr('网络') }}</h2></header>
         <!-- Automatic exit IP queries are off by default and name the services used (R40). -->
-        <div v-if="app" class="setting-row" data-testid="auto-exit-ip-setting">
+        <div class="setting-row" data-testid="auto-exit-ip-setting">
           <div class="grow">
             <strong>{{ t('settings.exitIp.auto') }}</strong>
             <p class="muted small">{{ t('settings.exitIp.detail') }}</p>
@@ -1611,6 +1605,17 @@ const TABS = computed(() => [
             data-testid="auto-exit-ip-toggle"
             @update:model-value="store.setAutoExitIp"
           />
+        </div>
+      </section>
+
+      <section class="card" data-testid="node-switch-settings">
+        <div class="setting-row">
+          <div class="grow">
+            <strong>{{ tr('切换节点后重连') }}</strong>
+            <p class="muted small">{{ tr('关闭经过当前代理组的旧连接，让应用重连新节点。下载、视频或通话可能中断；关闭后仅新连接使用新节点。') }}</p>
+          </div>
+          <Toggle :model-value="currentSettings.close_connections_on_switch" :label="tr('切换节点后重连')" data-testid="close-on-node-switch"
+            @update:model-value="(on) => save({ close_connections_on_switch: on })" />
         </div>
         <!-- Traffic history is opt-in; the same switch is in the stats dialog (R43). -->
         <div v-if="app" class="setting-row" data-testid="traffic-history-setting">

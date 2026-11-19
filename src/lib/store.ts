@@ -340,16 +340,20 @@ export function createStore(backend: Backend) {
   /**
    * Ask the backend for the exit IP through the local mixed port (R40). It must
    * only run from a click or from the automatic-query watchers below; a
-   * disconnected snapshot never sends a request. A failed lookup keeps the
-   * previous result and only reports the reason.
+   * disconnected snapshot or an off switch never sends a request. A failed
+   * lookup keeps the previous result and only reports the reason.
    */
   async function queryExitIp(again = false) {
-    if (exitIpBusy.value || !snapshot.value.connected) return undefined
+    // The card is the only manual entry point and it exists only while on (R40).
+    if (!autoExitIp.value || exitIpBusy.value || !snapshot.value.connected) return undefined
     const signature = exitIpSignature.value
     exitIpBusy.value = true
     exitIpError.value = null
     try {
       const result = await backend.exitIp()
+      // Turning the option off while the request was in flight hides the card and
+      // drops the answer instead of keeping a result nobody asked for (R40).
+      if (!autoExitIp.value) return result
       exitIp.value = result
       // A switch while the request was in flight already makes this answer old.
       exitIpStale.value = signature !== exitIpSignature.value
@@ -795,8 +799,16 @@ export function createStore(backend: Backend) {
   // reopening on a live connection or a launch auto-connect that finished first
   // (R44). The connected watcher above already missed that transition while
   // `auto_exit_ip` was still unknown, so evaluate once the option becomes known.
+  // The card exists only while the option is on, so disabling it clears the old
+  // answer and any error; enabling again queries the current connection (R40).
   watch(autoExitIp, (enabled) => {
-    if (enabled && snapshot.value.connected && exitIp.value === null) void queryExitIp()
+    if (!enabled) {
+      exitIp.value = null
+      exitIpStale.value = false
+      exitIpError.value = null
+      return
+    }
+    if (snapshot.value.connected && exitIp.value === null) void queryExitIp()
   })
 
   // A node, outbound-mode or profile switch may change the exit (R40). Leaving
