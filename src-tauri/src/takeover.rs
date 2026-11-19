@@ -1200,17 +1200,26 @@ static VPN_LOCK: Mutex<()> = Mutex::new(());
 // Rust worker threads attach with the system class loader. Resolve our bridge through
 // the Activity's loader, otherwise FindClass throws and terminates the app on connect.
 #[cfg(target_os = "android")]
-fn vpn_bridge_class<'local>(env: &mut jni::JNIEnv<'local>, activity: &jni::objects::JObject<'_>) -> Result<jni::objects::JClass<'local>, String> {
+fn android_class<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    activity: &jni::objects::JObject<'_>,
+    name: &str,
+) -> Result<jni::objects::JClass<'local>, String> {
     let result = (|| -> jni::errors::Result<jni::objects::JClass<'local>> {
         let loader = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
-        let name = env.new_string("app.billow.client.BillowVpnBridge")?;
-        let class = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[jni::objects::JValue::Object(&name)])?.l()?;
+        let class_name = env.new_string(name)?;
+        let class = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[jni::objects::JValue::Object(&class_name)])?.l()?;
         Ok(jni::objects::JClass::from(class))
     })();
     result.map_err(|error| {
         let _ = env.exception_clear();
-        format!("VPN 桥接不可用：{error}")
+        format!("Android 桥接不可用：{error}")
     })
+}
+
+#[cfg(target_os = "android")]
+fn vpn_bridge_class<'local>(env: &mut jni::JNIEnv<'local>, activity: &jni::objects::JObject<'_>) -> Result<jni::objects::JClass<'local>, String> {
+    android_class(env, activity, "app.billow.client.BillowVpnBridge")
 }
 
 #[cfg(target_os = "android")]
@@ -1501,6 +1510,220 @@ pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeTunFd(
     fd: i32,
 ) {
     report_vpn_fd(fd);
+}
+
+// ---------------------------------------------------------------------------
+// Android tile, widget and notification (R41)
+//
+// Rust owns the connection, so it is the one source of truth these surfaces
+// render: it publishes the state, the running profile's name, the two rates and
+// the UI language to Kotlin, and a tap on the tile or the widget switch runs the
+// same connection toggle as the tray.
+// ---------------------------------------------------------------------------
+
+/// The three states the Quick Settings tile shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkState {
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+impl LinkState {
+    /// The key `BillowStatus` in Kotlin understands.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Disconnected => "disconnected",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+        }
+    }
+}
+
+/// One snapshot of what the tile, the widget and the notification show (R41).
+///
+/// `language` carries the effective UI language from T1, so all three render
+/// their own text in the language the app is set to instead of the system one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AndroidStatus {
+    pub state: LinkState,
+    pub profile: Option<String>,
+    /// Bytes per second; the widget shows no speed while disconnected (R41).
+    pub upload: Option<u64>,
+    pub download: Option<u64>,
+    pub language: &'static str,
+    /// Why a connection attempt failed; the notification explains it (R41).
+    pub reason: Option<String>,
+}
+
+impl AndroidStatus {
+    pub fn of(link: &crate::profile::LinkStatus, connecting: bool, locale: crate::i18n::Locale) -> Self {
+        let state = if connecting {
+            LinkState::Connecting
+        } else if link.connected {
+            LinkState::Connected
+        } else {
+            LinkState::Disconnected
+        };
+        let moving = state == LinkState::Connected;
+        Self {
+            state,
+            profile: link.profile.clone(),
+            upload: if moving { link.upload } else { None },
+            download: if moving { link.download } else { None },
+            language: locale.tag(),
+            // A stale banner from an earlier attempt must not become a new
+            // notification while the tile reads "connected" (R41).
+            reason: if state == LinkState::Disconnected {
+                link.failure.clone()
+            } else {
+                None
+            },
+        }
+    }
+}
+
+/// Remembers the last published status so an unchanged one stays in Rust.
+#[derive(Debug, Default)]
+pub struct StatusPublisher {
+    last: Option<AndroidStatus>,
+}
+
+impl StatusPublisher {
+    /// `Some` means the tile, widget or notification must be told; `None` means
+    /// nothing they render has changed.
+    pub fn changed(&mut self, next: AndroidStatus) -> Option<AndroidStatus> {
+        if self.last.as_ref() == Some(&next) {
+            return None;
+        }
+        self.last = Some(next.clone());
+        Some(next)
+    }
+}
+
+static STATUS: Mutex<StatusPublisher> = Mutex::new(StatusPublisher { last: None });
+
+/// Push a status to Kotlin when it changed. Returns whether it was sent.
+pub fn publish_status(next: AndroidStatus) -> bool {
+    let changed = match STATUS.lock() {
+        Ok(mut publisher) => publisher.changed(next),
+        Err(poisoned) => poisoned.into_inner().changed(next),
+    };
+    let Some(status) = changed else {
+        return false;
+    };
+    #[cfg(target_os = "android")]
+    if let Err(error) = android_push_status(&status) {
+        eprintln!("Billow status was not published: {error}");
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = status;
+    true
+}
+
+/// What a tap on the tile or the widget switch does (R41).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapPlan {
+    /// Run the shared connection toggle.
+    Toggle,
+    /// Bring Billow to the front on the profiles page: there is nothing to run.
+    OpenProfiles,
+    /// Bring Billow to the front so the activity can ask for VPN permission.
+    OpenForConsent,
+}
+
+/// A tap needs the app only when it cannot do the work itself (R41): without a
+/// profile the profiles page is the useful answer, and without VPN permission the
+/// activity has to run the system dialog. A tap that happens inside the app skips
+/// the permission branch, because the activity is already there to show it.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+pub fn plan_tap(connected: bool, has_profile: bool, consent: bool, in_app: bool) -> TapPlan {
+    if connected {
+        return TapPlan::Toggle;
+    }
+    if !has_profile {
+        return TapPlan::OpenProfiles;
+    }
+    if !in_app && !consent {
+        return TapPlan::OpenForConsent;
+    }
+    TapPlan::Toggle
+}
+
+/// `BillowVpnBridge.hasConsent` asks the system without showing a dialog, so a
+/// tap knows whether it can connect on its own (R41).
+#[cfg(target_os = "android")]
+pub fn android_has_consent() -> bool {
+    let ask = || -> Result<bool, String> {
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|_| "Android 桥接不可用".to_string())?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|_| "Android 桥接不可用".to_string())?;
+        let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+        let bridge = android_class(&mut env, &context, "app.billow.client.BillowVpnBridge")?;
+        env.call_static_method(
+            bridge,
+            "hasConsent",
+            "(Landroid/content/Context;)Z",
+            &[jni::objects::JValue::Object(&context)],
+        )
+        .map_err(|_| {
+            let _ = env.exception_clear();
+            "Android 桥接不可用".to_string()
+        })?
+        .z()
+        .map_err(|_| "Android 桥接不可用".to_string())
+    };
+    ask().unwrap_or(false)
+}
+
+#[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
+pub fn android_has_consent() -> bool {
+    false
+}
+
+/// `BillowStatus.publish(context, state, profile, up, down, language, reason)`.
+#[cfg(target_os = "android")]
+fn android_push_status(status: &AndroidStatus) -> Result<(), String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|_| "Android 桥接不可用".to_string())?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|_| "Android 桥接不可用".to_string())?;
+    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+    let status_class = android_class(&mut env, &context, "app.billow.client.BillowStatus")?;
+    let state = env.new_string(status.state.key()).map_err(|error| error.to_string())?;
+    let profile = env
+        .new_string(status.profile.clone().unwrap_or_default())
+        .map_err(|error| error.to_string())?;
+    let language = env.new_string(status.language).map_err(|error| error.to_string())?;
+    let reason = env
+        .new_string(status.reason.clone().unwrap_or_default())
+        .map_err(|error| error.to_string())?;
+    env.call_static_method(
+        status_class,
+        "publish",
+        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;JJLjava/lang/String;Ljava/lang/String;)V",
+        &[
+            jni::objects::JValue::Object(&context),
+            jni::objects::JValue::Object(&state),
+            jni::objects::JValue::Object(&profile),
+            jni::objects::JValue::Long(status.upload.unwrap_or(0) as i64),
+            jni::objects::JValue::Long(status.download.unwrap_or(0) as i64),
+            jni::objects::JValue::Object(&language),
+            jni::objects::JValue::Object(&reason),
+        ],
+    )
+    .map_err(|error| {
+        let _ = env.exception_clear();
+        error.to_string()
+    })?;
+    Ok(())
 }
 
 /// Real HTTP/HTTPS/PAC system proxy. Unit tests use [`MemoryProxy`] instead.
@@ -2499,7 +2722,7 @@ pub fn excluded_file(directory: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::{KernelLaunch, ProfileBook, SubscriptionSource};
+    use crate::profile::{KernelLaunch, LinkStatus, ProfileBook, SubscriptionSource};
     use std::fs;
 
     struct TempDir(PathBuf);
@@ -3869,5 +4092,176 @@ mod tests {
         let mut tun = HostTun::with_evidence(open_without_linux_node);
         tun.set_kernel_path(Some(dir.0.join("missing-core")));
         assert!(tun.authorize().is_err());
+    }
+
+    #[test]
+    fn a_tap_only_opens_the_app_when_it_cannot_run_the_toggle_itself() {
+        // Connected: a tap disconnects, whatever else is missing.
+        assert_eq!(plan_tap(true, true, true, false), TapPlan::Toggle);
+        assert_eq!(plan_tap(true, true, false, false), TapPlan::Toggle);
+        assert_eq!(plan_tap(true, false, false, false), TapPlan::Toggle);
+        // Nothing to run: the profiles page is the useful answer, permission or not.
+        assert_eq!(plan_tap(false, false, false, false), TapPlan::OpenProfiles);
+        assert_eq!(plan_tap(false, false, true, false), TapPlan::OpenProfiles);
+        // A profile but no VPN permission: only the activity can show the dialog.
+        assert_eq!(plan_tap(false, true, false, false), TapPlan::OpenForConsent);
+        // A tap already inside the app has the activity it needs.
+        assert_eq!(plan_tap(false, true, false, true), TapPlan::Toggle);
+        assert_eq!(plan_tap(false, true, true, false), TapPlan::Toggle);
+        assert_eq!(plan_tap(false, true, true, true), TapPlan::Toggle);
+    }
+
+    #[test]
+    fn the_tile_and_widget_are_told_about_every_visible_change() {
+        let mut publisher = StatusPublisher::default();
+        let idle = LinkStatus::default();
+        let first = publisher
+            .changed(AndroidStatus::of(&idle, false, crate::i18n::Locale::ZhCn))
+            .expect("the first status is always published");
+        assert_eq!(first.state, LinkState::Disconnected);
+        assert_eq!(first.state.key(), "disconnected");
+        assert_eq!(first.language, "zh-CN");
+        assert!(first.profile.is_none() && first.upload.is_none() && first.download.is_none());
+        // Nothing the surfaces show has changed: no second push.
+        assert!(publisher
+            .changed(AndroidStatus::of(&idle, false, crate::i18n::Locale::ZhCn))
+            .is_none());
+
+        // Connecting replaces the state without showing the previous rates.
+        let mut running = LinkStatus {
+            connected: true,
+            profile: Some("星河云".to_string()),
+            upload: Some(1200),
+            download: Some(3400),
+            failure: Some("旧的失败原因".to_string()),
+        };
+        let connecting = publisher
+            .changed(AndroidStatus::of(&running, true, crate::i18n::Locale::ZhCn))
+            .expect("连接中 is a new state");
+        assert_eq!(connecting.state.key(), "connecting");
+        assert_eq!(connecting.profile.as_deref(), Some("星河云"));
+        assert!(connecting.upload.is_none() && connecting.download.is_none());
+        assert!(connecting.reason.is_none(), "a stale banner is not a new failure");
+
+        let connected = publisher
+            .changed(AndroidStatus::of(&running, false, crate::i18n::Locale::ZhCn))
+            .expect("connected carries the rates");
+        assert_eq!(connected.state, LinkState::Connected);
+        assert_eq!((connected.upload, connected.download), (Some(1200), Some(3400)));
+        assert!(connected.reason.is_none());
+
+        // The two rates move every sample, so the widget follows them.
+        running.upload = Some(2400);
+        running.download = Some(6800);
+        let moved = publisher
+            .changed(AndroidStatus::of(&running, false, crate::i18n::Locale::ZhCn))
+            .expect("a rate change is published");
+        assert_eq!((moved.upload, moved.download), (Some(2400), Some(6800)));
+
+        // A language switch re-renders the same state in the other language (T1).
+        let translated = publisher
+            .changed(AndroidStatus::of(&running, false, crate::i18n::Locale::En))
+            .expect("the language is part of what the surfaces render");
+        assert_eq!(translated.language, "en");
+
+        // A failed attempt returns the tile to 未连接 with the reason and no speed.
+        let failed = LinkStatus {
+            connected: false,
+            profile: Some("星河云".to_string()),
+            upload: Some(2400),
+            download: Some(6800),
+            failure: Some(VPN_DENIED.to_string()),
+        };
+        let failure = publisher
+            .changed(AndroidStatus::of(&failed, false, crate::i18n::Locale::En))
+            .expect("a failure is published");
+        assert_eq!(failure.state, LinkState::Disconnected);
+        assert!(failure.upload.is_none() && failure.download.is_none());
+        assert_eq!(failure.reason.as_deref(), Some(VPN_DENIED));
+
+        // Disconnecting clears both the rates and the reason.
+        let idle_again = publisher
+            .changed(AndroidStatus::of(
+                &LinkStatus {
+                    connected: false,
+                    profile: Some("星河云".to_string()),
+                    ..LinkStatus::default()
+                },
+                false,
+                crate::i18n::Locale::En,
+            ))
+            .expect("disconnecting is a new state");
+        assert_eq!(idle_again.state, LinkState::Disconnected);
+        assert!(idle_again.reason.is_none() && idle_again.upload.is_none());
+    }
+
+    /// Returns a traffic sample, so a connected book reports the two rates.
+    struct RateKernel {
+        alive: bool,
+        rate: (u64, u64),
+    }
+
+    impl KernelLaunch for RateKernel {
+        fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+            self.alive = true;
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.alive
+        }
+
+        fn traffic(&mut self) -> Option<(u64, u64)> {
+            if self.alive { Some(self.rate) } else { None }
+        }
+    }
+
+    #[test]
+    fn the_published_state_follows_the_android_connection() {
+        let dir = temp_dir("android-status");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("home.yaml", "mixed-port: 7890\nmode: rule\n");
+        let mut kernel = RateKernel { alive: false, rate: (900, 1800) };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &UnusedSource, &mut kernel);
+        let mut publisher = StatusPublisher::default();
+
+        let idle = publisher
+            .changed(AndroidStatus::of(&book.link_status(), false, crate::i18n::Locale::En))
+            .expect("the first status is published");
+        assert_eq!(idle.state, LinkState::Disconnected);
+        assert_eq!(idle.profile.as_deref(), Some("home.yaml"));
+
+        // The tap shows 连接中 while the VPN and the kernel come up.
+        assert_eq!(
+            publisher
+                .changed(AndroidStatus::of(&book.link_status(), true, crate::i18n::Locale::En))
+                .expect("连接中 is a new state")
+                .state,
+            LinkState::Connecting
+        );
+
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        book.refresh_link_rates(&mut kernel);
+        let connected = publisher
+            .changed(AndroidStatus::of(&book.link_status(), false, crate::i18n::Locale::En))
+            .expect("a finished connect is published");
+        assert_eq!(connected.state, LinkState::Connected);
+        assert_eq!(connected.profile.as_deref(), Some("home.yaml"));
+        assert_eq!((connected.upload, connected.download), (Some(900), Some(1800)));
+
+        // A refused permission returns the tile to 未连接 and names the reason.
+        book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        let mut denied = MemoryVpn { grant: false, ..MemoryVpn::default() };
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut denied);
+        let failed = publisher
+            .changed(AndroidStatus::of(&book.link_status(), false, crate::i18n::Locale::En))
+            .expect("a failed connect is published");
+        assert_eq!(failed.state, LinkState::Disconnected);
+        assert_eq!(failed.reason.as_deref(), Some(VPN_DENIED));
+        assert!(failed.upload.is_none() && failed.download.is_none(), "未连接 shows no speed");
     }
 }

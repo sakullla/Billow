@@ -504,6 +504,9 @@ fn set_language(app: AppHandle, language: String) -> ShellInfo {
     i18n::apply_preference(&resolved);
     let snapshot = with_profile(&app, |session| session.book.snapshot());
     refresh_tray(&app, &snapshot);
+    // The notification, the tile and the widget render their own text in this
+    // language, so they are republished with the new one (R41, R42).
+    publish_android(&app);
     ShellInfo::of(&state)
 }
 
@@ -611,24 +614,29 @@ fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot 
     };
     let client = subscription_client(&app);
     let store = app.state::<ProfileStore>();
-    let mut session = lock_profiles(&store.session);
-    let ProfileSession {
-        book,
-        runtime,
-        proxy,
-        tun,
-        vpn,
-    } = &mut *session;
-    runtime.set_kernel_path(kernel_path.clone());
-    tun.set_kernel_path(kernel_path);
-    if update {
-        book.update(id, &client, runtime);
-    } else {
-        book.enable(id, &client, runtime);
-    }
-    book.apply_release(proxy, tun, vpn);
-    book.reconcile_system_proxy(proxy);
-    book.snapshot()
+    let snapshot = {
+        let mut session = lock_profiles(&store.session);
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = &mut *session;
+        runtime.set_kernel_path(kernel_path.clone());
+        tun.set_kernel_path(kernel_path);
+        if update {
+            book.update(id, &client, runtime);
+        } else {
+            book.enable(id, &client, runtime);
+        }
+        book.apply_release(proxy, tun, vpn);
+        book.reconcile_system_proxy(proxy);
+        book.snapshot()
+    };
+    // Switching profiles can release or re-establish the VPN (R41).
+    publish_android(app);
+    snapshot
 }
 
 fn with_session(
@@ -698,7 +706,7 @@ fn save_profile_override(app: AppHandle, id: String, text: String) -> ProfileSna
 
 #[tauri::command(async)]
 fn connect_session(app: AppHandle) -> Result<ProfileSnapshot, String> {
-    Ok(with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book,
             runtime,
@@ -707,12 +715,14 @@ fn connect_session(app: AppHandle) -> Result<ProfileSnapshot, String> {
             vpn,
         } = session;
         book.connect(runtime, proxy, tun, vpn)
-    }))
+    });
+    publish_android(&app);
+    Ok(snapshot)
 }
 
 #[tauri::command(async)]
 fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book,
             runtime,
@@ -721,7 +731,20 @@ fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
             vpn,
         } = session;
         book.disconnect(runtime, proxy, tun, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
+}
+
+/// The tray, a global shortcut and the Android tile all toggle the same way
+/// (R39, R41): connect when disconnected, disconnect when connected.
+fn toggle_connection(app: &AppHandle) -> Result<ProfileSnapshot, String> {
+    let connected = with_profile(app, |session| session.book.is_connected());
+    if connected {
+        Ok(disconnect_session(app.clone()))
+    } else {
+        connect_session(app.clone())
+    }
 }
 
 static APP_UPDATING: AtomicBool = AtomicBool::new(false);
@@ -778,33 +801,39 @@ fn set_tun_enabled(app: AppHandle, enabled: bool) -> Result<ProfileSnapshot, Str
 
 #[tauri::command(async)]
 fn exclude_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book, runtime, vpn, ..
         } = session;
         book.exclude_package(&package_name, runtime, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
 }
 
 #[tauri::command(async)]
 fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book, runtime, vpn, ..
         } = session;
         book.include_package(&package_name, runtime, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
 }
 
 /// Android app access control: `mode` is `exclude` or `include`, `packages` replaces that mode's list.
 #[tauri::command(async)]
 fn set_app_rules(app: AppHandle, mode: String, packages: Vec<String>) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book, runtime, vpn, ..
         } = session;
         book.set_app_rules(&mode, &packages, runtime, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
 }
 
 #[tauri::command(async)]
@@ -2001,14 +2030,7 @@ fn dispatch(app: &AppHandle, action: BackendAction, notify_failure: bool) {
 #[cfg(desktop)]
 fn apply_action(app: &AppHandle, action: BackendAction) -> Result<ProfileSnapshot, String> {
     match action {
-        BackendAction::ToggleConnection => {
-            let connected = with_profile(app, |session| session.book.snapshot().connected);
-            if connected {
-                Ok(disconnect_session(app.clone()))
-            } else {
-                connect_session(app.clone())
-            }
-        }
+        BackendAction::ToggleConnection => toggle_connection(app),
         BackendAction::SystemProxy => {
             let on = with_profile(app, |session| session.book.snapshot().system_proxy);
             Ok(set_system_proxy(app.clone(), !on))
@@ -2223,6 +2245,162 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Android tile, widget and notification (R41)
+//
+// Kotlin owns the three surfaces; Rust owns the connection. A tap is handed to
+// the same toggle the tray uses, and every state the surfaces render is pushed
+// from here after it changed.
+// ---------------------------------------------------------------------------
+
+/// Set once the Tauri runtime exists. A tile tap before that opens the app,
+/// which is also the only place the VPN permission dialog can appear (R41).
+#[cfg(target_os = "android")]
+static ANDROID_APP: Mutex<Option<AppHandle>> = Mutex::new(None);
+
+/// True while a tap connects, so the tile can show 连接中 instead of the
+/// disconnected state the cancelled kernel would otherwise report (R41).
+#[cfg(target_os = "android")]
+static ANDROID_CONNECTING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "android")]
+fn android_app() -> Option<AppHandle> {
+    ANDROID_APP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Push what the tile, the widget and the notification show (R41). Cheap enough
+/// for a two-second ticker: an unchanged status never crosses into Kotlin.
+fn publish_android(app: &AppHandle) {
+    let link = with_profile(app, |session| {
+        session.book.refresh_link_rates(&mut session.runtime);
+        session.book.link_status()
+    });
+    // A tap that is connecting shows 连接中 instead of the state of the kernel
+    // it is about to replace.
+    #[cfg(target_os = "android")]
+    let connecting = ANDROID_CONNECTING.load(Ordering::SeqCst);
+    #[cfg(not(target_os = "android"))]
+    let connecting = false;
+    takeover::publish_status(takeover::AndroidStatus::of(
+        &link,
+        connecting,
+        i18n::locale(),
+    ));
+}
+
+/// The tile and the widget keep showing the two rates while no window exists,
+/// so the publish loop lives in Rust, not in the page (R41).
+#[cfg(target_os = "android")]
+fn spawn_android_status(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        publish_android(&handle);
+    });
+}
+
+/// Ask the running page to open `target`, or store it so a window that is not
+/// loaded yet restores it — the same path the tray uses (R41).
+#[cfg(target_os = "android")]
+fn open_page(app: &AppHandle, target: &str) {
+    let entry = resolve_entry(target);
+    {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        if state.last_entry != entry {
+            state.last_entry = entry.to_string();
+            persist(app, &state);
+        }
+    }
+    let _ = app.emit("tray-navigate", target.to_string());
+}
+
+/// One tap on the Quick Settings tile or the widget switch (R41).
+///
+/// 0 = handled in the background, 1 = the app has to show a page (or ask for the
+/// VPN permission), 2 = the runtime is not ready yet, try again after it starts.
+#[cfg(target_os = "android")]
+fn android_tap(in_app: bool) -> i32 {
+    let Some(app) = android_app() else {
+        return 2;
+    };
+    let (connected, has_profile) = with_profile(&app, |session| {
+        (
+            session.book.is_connected(),
+            session.book.active_profile().is_some(),
+        )
+    });
+    match takeover::plan_tap(
+        connected,
+        has_profile,
+        takeover::android_has_consent(),
+        in_app,
+    ) {
+        takeover::TapPlan::Toggle => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if !connected {
+                    ANDROID_CONNECTING.store(true, Ordering::SeqCst);
+                    publish_android(&handle);
+                }
+                let result = toggle_connection(&handle);
+                ANDROID_CONNECTING.store(false, Ordering::SeqCst);
+                let snapshot = match result {
+                    Ok(snapshot) => snapshot,
+                    Err(message) => with_profile(&handle, |session| {
+                        session.book.report_failure(message)
+                    }),
+                };
+                // A failed connect leaves the tile on 未连接 and hands the
+                // reason to the notification (R41).
+                publish_android(&handle);
+                refresh_tray(&handle, &snapshot);
+                let _ = handle.emit("profile-changed", snapshot);
+            });
+            0
+        }
+        takeover::TapPlan::OpenProfiles => {
+            open_page(&app, "profiles");
+            1
+        }
+        takeover::TapPlan::OpenForConsent => 1,
+    }
+}
+
+/// `BillowVpnBridge.tap` from the tile and the widget switch (R41).
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeTap(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    in_app: i32,
+) -> i32 {
+    android_tap(in_app != 0)
+}
+
+/// The system revoked our VPN permission: disconnect and keep the app, the tile,
+/// the widget and the notification in step (R41).
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeRevoked(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    let Some(app) = android_app() else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        ANDROID_CONNECTING.store(false, Ordering::SeqCst);
+        let snapshot = disconnect_session(app.clone());
+        publish_android(&app);
+        refresh_tray(&app, &snapshot);
+        let _ = app.emit("profile-changed", snapshot);
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "windows")]
@@ -2375,6 +2553,16 @@ pub fn run() {
             }
             spawn_kernel_guardian(app.handle());
             spawn_traffic_recorder(app.handle());
+            // The tile and widget exist without a window, so they get their
+            // first status as soon as the runtime is up (R41).
+            #[cfg(target_os = "android")]
+            {
+                if let Ok(mut slot) = ANDROID_APP.lock() {
+                    *slot = Some(app.handle().clone());
+                }
+                publish_android(app.handle());
+                spawn_android_status(app.handle());
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

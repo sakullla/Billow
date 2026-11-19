@@ -1,4 +1,23 @@
 <resources>
     <string name="app_name">"Billow"</string>
     <string name="main_activity_title">"Billow"</string>
+
+    <!-- Android Quick Settings tile, widget and notification (R41).
+         This folder is the fallback: anything that is not Simplified Chinese. -->
+    <string name="tile_label">"Billow"</string>
+    <string name="tile_description">"Billow · %1$s"</string>
+    <string name="state_connected">"Connected"</string>
+    <string name="state_disconnected">"Disconnected"</string>
+    <string name="state_connecting">"Connecting"</string>
+    <string name="notify_title">"Billow"</string>
+    <string name="notify_channel_vpn">"VPN connection"</string>
+    <string name="notify_channel_alerts">"Connection alerts"</string>
+    <string name="notify_connected">"Proxy connection running"</string>
+    <string name="notify_connected_profile">"Connected · %1$s"</string>
+    <string name="notify_failed">"Connection failed"</string>
+    <string name="widget_description">"Connection state, profile and speed, with a connect switch"</string>
+    <string name="widget_connect">"Connect"</string>
+    <string name="widget_disconnect">"Disconnect"</string>
+    <string name="widget_no_profile">"No profile selected"</string>
+    <string name="widget_speed">"↓ %1$s   ↑ %2$s"</string>
 </resources>

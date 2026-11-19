@@ -1,6 +1,8 @@
 package app.billow.client
 
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -15,11 +17,70 @@ class MainActivity : TauriActivity() {
     /** Latest insets in CSS pixels; read by the page on load and pushed on every change. */
     @Volatile private var insetsJson = "{\"top\":0,\"right\":0,\"bottom\":0,\"left\":0,\"ime\":0}"
     private var webView: WebView? = null
+    /** A tile or widget tap that still has to reach Rust (R41). */
+    private var pendingTap = false
+    private var tapAttempts = 0
+    private var tapping = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        pendingTap = takeTap(intent)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         BillowVpnBridge.attach(this)
+        requestNotificationPermission()
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent == null) return
+        setIntent(intent)
+        if (takeTap(intent)) {
+            pendingTap = true
+            tapAttempts = 0
+        }
+    }
+
+    /** Reads the tap flag and clears it, so a configuration change cannot repeat it. */
+    private fun takeTap(intent: Intent?): Boolean {
+        if (intent?.getBooleanExtra(BillowShortcuts.EXTRA_TAP, false) != true) return false
+        intent.removeExtra(BillowShortcuts.EXTRA_TAP)
+        return true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        runPendingTap()
+    }
+
+    /**
+     * A tile tap that needed the app continues here (R41). Rust keeps the tap
+     * until its runtime is up, so a cold start still reaches the same toggle,
+     * and the permission dialog appears with this activity in front.
+     */
+    private fun runPendingTap() {
+        if (!pendingTap || tapping) return
+        tapping = true
+        BillowShortcuts.tap(true) { result ->
+            tapping = false
+            when (result) {
+                BillowShortcuts.HANDLED, BillowShortcuts.OPEN_APP -> pendingTap = false
+                else -> {
+                    tapAttempts += 1
+                    if (tapAttempts > TAP_ATTEMPTS) {
+                        pendingTap = false
+                    } else {
+                        window.decorView.postDelayed({ runPendingTap() }, TAP_RETRY_MS)
+                    }
+                }
+            }
+        }
+    }
+
+    /** The tile returns to 未连接 with a reason, which needs a notification (R41). */
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
     }
 
     override fun onWebViewCreate(webView: WebView) {
@@ -110,5 +171,12 @@ class MainActivity : TauriActivity() {
             return
         }
         super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    private companion object {
+        /** 40 tries × 250 ms: long enough for the runtime to come up on a cold start. */
+        const val TAP_ATTEMPTS = 40
+        const val TAP_RETRY_MS = 250L
+        const val REQUEST_NOTIFICATIONS = 45
     }
 }

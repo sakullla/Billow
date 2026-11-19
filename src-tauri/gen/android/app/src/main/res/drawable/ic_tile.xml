@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Quick Settings tile icon; the system tints it, so it is a single colour. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2 L3.5,5.5 V12 c0,4.7 3.6,8.9 8.5,9.5 4.9,-0.6 8.5,-4.8 8.5,-9.5 V5.5 Z M12,7 l4,5.5 h-2.5 V17 h-3 v-4.5 H8 Z" />
+</vector>

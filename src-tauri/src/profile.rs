@@ -841,6 +841,15 @@ pub struct ProfileSnapshot {
     pub notice: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LinkStatus {
+    pub connected: bool,
+    pub profile: Option<String>,
+    pub upload: Option<u64>,
+    pub download: Option<u64>,
+    pub failure: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchedSubscription {
     pub content: String,
@@ -2555,6 +2564,33 @@ impl ProfileBook {
 
     pub fn is_connected(&self) -> bool {
         self.connected
+    }
+
+    /// The connection state, the running profile's name and the two rates the
+    /// Android tile and widget render (R41). Cheap: no connections or logs are
+    /// cloned, so a background ticker can read it while no window exists.
+    pub fn link_status(&self) -> LinkStatus {
+        LinkStatus {
+            connected: self.connected,
+            profile: self.active_profile().map(|(_, name)| name),
+            upload: self.upload,
+            download: self.download,
+            failure: self.home_failure.clone(),
+        }
+    }
+
+    /// Refresh only the two rates, for the tile's and widget's two-second ticker
+    /// (R41). The samples themselves come from the kernel's traffic watch.
+    pub fn refresh_link_rates(&mut self, kernel: &mut dyn KernelLaunch) {
+        if !self.connected {
+            self.upload = None;
+            self.download = None;
+            return;
+        }
+        if let Some((upload, download)) = kernel.traffic() {
+            self.upload = Some(upload);
+            self.download = Some(download);
+        }
     }
 
     /// The running profile's id and name, captured when a traffic sample lands

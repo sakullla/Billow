@@ -1,40 +1,29 @@
 package app.billow.client
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.os.Build
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
-import java.io.FileDescriptor
 
 /**
  * System VpnService. Rust calls prepare, then start with an app filter: either
  * the packages that bypass the VPN, or (allowlist) the only packages that use it.
- * This class only opens the TUN and returns the fd.
+ * This class only opens the TUN and returns the fd. Its foreground notification
+ * renders the state Rust publishes, in the language picked in Billow (R41).
  */
 class BillowVpnService : VpnService() {
     private var tunnel: ParcelFileDescriptor? = null
 
     override fun onCreate() {
         super.onCreate()
-        val manager = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26) {
-            manager.createNotificationChannel(NotificationChannel("vpn", "VPN 连接", NotificationManager.IMPORTANCE_LOW))
-        }
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val notification = (if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, "vpn") else Notification.Builder(this))
-            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
-            .setContentTitle("Billow VPN")
-            .setContentText("代理连接运行中")
-            .setContentIntent(open)
-            .setOngoing(true)
-            .build()
-        startForeground(1, notification)
+        // The background toggle and the revoke path need this instance to update
+        // the notification the moment Rust publishes (R41).
+        BillowStatus.service = this
+        startForeground(BillowStatus.VPN_NOTIFICATION, notification(BillowStatus.current(this)))
     }
 
     override fun onDestroy() {
@@ -42,6 +31,7 @@ class BillowVpnService : VpnService() {
         tunnel = null
         BillowVpnBridge.reportFd(-1)
         stopForeground(STOP_FOREGROUND_REMOVE)
+        if (BillowStatus.service === this) BillowStatus.service = null
         super.onDestroy()
     }
 
@@ -59,8 +49,45 @@ class BillowVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        // The permission is gone: Rust disconnects, so the app, the tile, the
+        // widget and the notification all leave 已连接 together (R41).
         BillowVpnBridge.reportConsent(false)
+        BillowVpnBridge.reportRevoked()
         stopSelf()
+    }
+
+    /** Re-render the foreground notification after Rust published a new status. */
+    fun render(status: BillowStatus.Status) {
+        // 未连接 means this service is being torn down; the notification goes with it.
+        if (status.state == BillowStatus.DISCONNECTED) return
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(BillowStatus.VPN_NOTIFICATION, notification(status))
+    }
+
+    private fun notification(status: BillowStatus.Status): Notification {
+        val view = BillowStatus.localized(this, status)
+        BillowStatus.ensureChannel(
+            this,
+            BillowStatus.VPN_CHANNEL,
+            view.getString(R.string.notify_channel_vpn),
+            NotificationManager.IMPORTANCE_LOW,
+        )
+        val text = when (status.state) {
+            BillowStatus.CONNECTED -> if (status.profile.isEmpty()) {
+                view.getString(R.string.notify_connected)
+            } else {
+                view.getString(R.string.notify_connected_profile, status.profile)
+            }
+            BillowStatus.CONNECTING -> view.getString(R.string.state_connecting)
+            else -> view.getString(R.string.state_disconnected)
+        }
+        return BillowStatus.builder(this, BillowStatus.VPN_CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setContentTitle(view.getString(R.string.notify_title))
+            .setContentText(text)
+            .setContentIntent(BillowStatus.openApp(this, 0))
+            .setOngoing(true)
+            .build()
     }
 
     fun establishTun(packages: List<String>, only: Boolean): Int? {
@@ -118,6 +145,26 @@ class BillowVpnBridge {
             return false
         }
 
+        /**
+         * Whether the system already trusts Billow to start a VPN. `VpnService.prepare`
+         * answers without showing the dialog, so a tile tap can tell whether it may
+         * connect on its own (R41).
+         */
+        @JvmStatic
+        fun hasConsent(context: Context): Boolean = VpnService.prepare(context) == null
+
+        /**
+         * One tap on the tile or the widget switch, answered by Rust (R41):
+         * 0 = handled, 1 = the app has to show a page, 2 = the runtime is not
+         * loaded yet (a tap can start the process before Tauri is up).
+         */
+        @JvmStatic
+        fun tap(inApp: Boolean): Int = try {
+            nativeTap(if (inApp) 1 else 0)
+        } catch (_: Throwable) {
+            2
+        }
+
         @JvmStatic
         fun onActivityResult(resultCode: Int) {
             reportConsent(resultCode == Activity.RESULT_OK)
@@ -146,10 +193,22 @@ class BillowVpnBridge {
             nativeTunFd(fd)
         }
 
+        /** `onRevoke` reached Rust: disconnect and republish every surface (R41). */
+        @JvmStatic
+        fun reportRevoked() {
+            nativeRevoked()
+        }
+
         @JvmStatic
         private external fun nativeConsent(granted: Int)
 
         @JvmStatic
         private external fun nativeTunFd(fd: Int)
+
+        @JvmStatic
+        private external fun nativeTap(inApp: Int): Int
+
+        @JvmStatic
+        private external fun nativeRevoked()
     }
 }

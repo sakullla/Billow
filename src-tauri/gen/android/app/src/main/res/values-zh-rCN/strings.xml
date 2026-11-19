@@ -1,0 +1,20 @@
+<resources>
+    <!-- Android 快捷设置磁贴、小组件与通知（R41）。
+         应用语言为简体中文时读取这一份；values/ 是其他语言的回退。 -->
+    <string name="tile_label">"Billow"</string>
+    <string name="tile_description">"Billow · %1$s"</string>
+    <string name="state_connected">"已连接"</string>
+    <string name="state_disconnected">"未连接"</string>
+    <string name="state_connecting">"连接中"</string>
+    <string name="notify_title">"Billow"</string>
+    <string name="notify_channel_vpn">"VPN 连接"</string>
+    <string name="notify_channel_alerts">"连接提示"</string>
+    <string name="notify_connected">"代理连接运行中"</string>
+    <string name="notify_connected_profile">"已连接 · %1$s"</string>
+    <string name="notify_failed">"连接失败"</string>
+    <string name="widget_description">"显示连接状态、配置名和网速，并提供连接开关"</string>
+    <string name="widget_connect">"连接"</string>
+    <string name="widget_disconnect">"断开"</string>
+    <string name="widget_no_profile">"未选择配置"</string>
+    <string name="widget_speed">"↓ %1$s   ↑ %2$s"</string>
+</resources>
