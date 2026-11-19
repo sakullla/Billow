@@ -675,7 +675,7 @@ onBeforeUnmount(() => {
                 <div class="usage-text small">
                   <span v-if="usage != null" class="mono">
                     {{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}
-                    <span v-if="remainingBytes != null" class="muted">{{ tr('· 剩') }} {{ formatBytes(remainingBytes) }}</span>
+                    <span v-if="remainingBytes != null" class="muted">{{ tr('· 剩 {0}', { 0: formatBytes(remainingBytes) }) }}</span>
                   </span>
                   <span v-else class="muted">{{ tr('不限流量') }}</span>
                   <span
@@ -905,7 +905,7 @@ onBeforeUnmount(() => {
                 <template v-if="usagePercent(item.used, item.total) != null"> {{ tr('· 已用') }} {{ Math.round(usagePercent(item.used, item.total)!) }}%
                 </template>
                 <span v-if="item.expire && daysLeft(item.expire) < 0" class="text-error">{{ tr('· 已过期') }}</span>
-                <span v-else-if="item.expire && daysLeft(item.expire) <= 7" class="text-warn">{{ tr('· 剩') }} {{ daysLeft(item.expire) }} {{ tr('天') }}</span>
+                <span v-else-if="item.expire && daysLeft(item.expire) <= 7" class="text-warn">{{ tr('· 剩 {0} 天', { 0: daysLeft(item.expire) }) }}</span>
                 <span v-else-if="item.failure || item.override_error" class="text-error">{{ tr('· 有异常') }}</span>
               </span>
             </span>

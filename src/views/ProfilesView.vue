@@ -904,7 +904,7 @@ const failedSubscriptionIds = computed(() =>
           <div class="usage-text small">
             <span v-if="usagePercent(profile.used, profile.total) != null" class="mono">
               {{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}
-              <span v-if="profile.total != null && profile.used != null && profile.total > 0" class="muted"> {{ tr('· 剩') }} {{ formatBytes(Math.max(0, profile.total - profile.used)) }}
+              <span v-if="profile.total != null && profile.used != null && profile.total > 0" class="muted"> {{ tr('· 剩 {0}', { 0: formatBytes(Math.max(0, profile.total - profile.used)) }) }}
               </span>
             </span>
             <span v-else class="muted">{{ tr('不限流量') }}</span>
@@ -1273,13 +1273,13 @@ const failedSubscriptionIds = computed(() =>
             <Icon name="x" :size="14" />
           </button>
         </header>
-        <p v-if="preview.error" class="field-error small" role="alert"><Icon name="alert" :size="13" /> {{ preview.error }}</p>
+        <p v-if="preview.error" class="field-error small" role="alert"><Icon name="alert" :size="13" /> {{ tr(preview.error) }}</p>
         <ol v-if="preview.logs.length" class="override-logs mono small" :aria-label="tr('脚本输出')">
           <li v-for="(line, index) in preview.logs" :key="index">{{ line }}</li>
         </ol>
         <YamlEditor v-if="!preview.error" class="editor preview-editor readonly" :model-value="preview.yaml" readonly :label="tr('合并结果')" />
       </section>
-      <p v-if="yamlError" class="field-error editor-error" role="alert">{{ yamlError }}</p>
+      <p v-if="yamlError" class="field-error editor-error" role="alert">{{ tr(yamlError) }}</p>
       <template #footer>
         <span class="muted small grow editor-meta">
           <span>{{ yamlLines }} {{ tr('行') }}{{ yaml.dirty ? tr(' · 未保存') : '' }}</span>

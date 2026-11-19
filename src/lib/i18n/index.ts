@@ -82,6 +82,7 @@ const UI_PATTERNS: { pattern: RegExp; render: (match: RegExpMatchArray) => strin
   { pattern: /^写入失败：(.*)$/, render: (m) => `Write failed: ${m[1]}` },
   { pattern: /^写入临时文件失败：(.*)$/, render: (m) => `Could not write the temporary file: ${m[1]}` },
   { pattern: /^下载写入失败：(.*)$/, render: (m) => `Could not write the download: ${m[1]}` },
+  { pattern: /^还没有找到可读取的规则文件（(.*)）；连接并更新这个规则集后再查看$/, render: (m) => `No readable rule file yet (${m[1]}); connect and update this rule set first` },
   { pattern: /^(.+)（请求超时）$/, render: (m) => `${m[1]} (request timed out)` },
 ]
 

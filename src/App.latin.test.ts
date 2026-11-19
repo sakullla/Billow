@@ -58,6 +58,8 @@ function chineseSnippets(): string[] {
 function expectEnglish(label: string) {
   const snippets = chineseSnippets()
   expect(snippets, `${label} still shows Chinese: ${snippets.join(' | ')}`).toEqual([])
+  // An unsubstituted placeholder is the same kind of leak as a key or blank (R42).
+  expect(visibleText(), `${label} still shows a placeholder`).not.toMatch(/\{\d+\}/)
 }
 
 afterEach(() => {
