@@ -24,6 +24,11 @@ pub struct ShellState {
     pub close_to_tray: bool,
     #[serde(default)]
     pub silent_start: bool,
+    /// Release the main webview when the window is closed to give its memory
+    /// back (R44). Only has an effect while `close_to_tray` is on, where the
+    /// window would otherwise stay hidden instead of closing; off by default.
+    #[serde(default)]
+    pub release_ui_on_close: bool,
     /// UI language preference: `system`, `zh-CN` or `en` (R42).
     #[serde(default = "default_language")]
     pub language: String,
@@ -74,6 +79,7 @@ impl Default for ShellState {
             height: DEFAULT_HEIGHT,
             close_to_tray: true,
             silent_start: false,
+            release_ui_on_close: false,
             language: default_language(),
             webdav_url: String::new(),
             webdav_user: String::new(),
@@ -136,10 +142,20 @@ pub fn resolve_entry(value: &str) -> &'static str {
         "profiles" => "profiles",
         "connections" => "connections",
         "rules" => "rules",
+        "resources" => "resources",
         "logs" => "logs",
         "settings" => "settings",
+        // Android only, but a released window or a restored page may ask for it.
+        "apps" => "apps",
         _ => "home",
     }
+}
+
+/// Closing the window frees the webview only when the window would otherwise
+/// stay in the tray (R44). With "stay in tray" off the option is hidden in the
+/// settings and must not change what closing does.
+pub fn releases_ui_on_close(state: &ShellState) -> bool {
+    state.close_to_tray && state.release_ui_on_close
 }
 
 pub fn resolve_theme(value: &str) -> &'static str {
@@ -233,6 +249,10 @@ mod tests {
         assert_eq!(resolve_entry("nodes"), "proxies");
         assert_eq!(resolve_entry("settings"), "settings");
         assert_eq!(resolve_entry("logs"), "logs");
+        // The tool pages keep their own page instead of falling back to home,
+        // so a released window can come back where it was (R44).
+        assert_eq!(resolve_entry("resources"), "resources");
+        assert_eq!(resolve_entry("apps"), "apps");
         assert_eq!(resolve_entry("diagnostics"), "home");
         assert_eq!(resolve_entry("theme"), "home");
         assert_eq!(resolve_theme("dark"), "dark");
@@ -250,6 +270,21 @@ mod tests {
         assert_eq!(state.language, "system");
         assert_eq!(state.last_entry, "home");
         assert!(state.close_to_tray);
+        // Lightweight mode is off until the user turns it on (R44).
+        assert!(!state.release_ui_on_close);
+    }
+
+    #[test]
+    fn releasing_the_ui_needs_stay_in_tray() {
+        let mut state = ShellState { release_ui_on_close: true, ..ShellState::default() };
+        assert!(releases_ui_on_close(&state));
+        // Without "stay in tray" the option is hidden and does nothing: closing
+        // still ends the app instead of leaving the kernel running alone (R44).
+        state.close_to_tray = false;
+        assert!(!releases_ui_on_close(&state));
+        state.close_to_tray = true;
+        state.release_ui_on_close = false;
+        assert!(!releases_ui_on_close(&state));
     }
 
     #[test]
@@ -293,6 +328,7 @@ mod tests {
             height: 700.0,
             close_to_tray: false,
             silent_start: true,
+            release_ui_on_close: true,
             language: "en".to_string(),
             webdav_url: " https://dav.example.com/remote.php/dav/files/me ".to_string(),
             webdav_user: "me".to_string(),
@@ -306,6 +342,7 @@ mod tests {
         assert_eq!(loaded.width, 1024.0);
         assert_eq!(loaded.close_to_tray, false);
         assert_eq!(loaded.silent_start, true);
+        assert!(loaded.release_ui_on_close);
         assert_eq!(loaded.language, "en");
         assert_eq!(loaded.hotkeys.get("proxy").map(String::as_str), Some("Ctrl+Alt+P"));
         // Saved as typed, trimmed, with spaces inside the password kept.
@@ -322,6 +359,7 @@ mod tests {
             width: 1280.0,
             height: 800.0,
             last_entry: "logs".to_string(),
+            release_ui_on_close: true,
             webdav_url: "https://dav.example.com/billow/".to_string(),
             webdav_user: "me".to_string(),
             webdav_password: "secret".to_string(),
@@ -339,6 +377,8 @@ mod tests {
         assert_eq!(restored.width, 1280.0);
         assert_eq!(restored.height, 800.0);
         assert_eq!(restored.last_entry, "logs");
+        // Lightweight mode follows this machine like the window size does.
+        assert!(restored.release_ui_on_close);
         assert_eq!(restored.webdav_url, "https://dav.example.com/billow/");
         assert_eq!(restored.webdav_password, "secret");
 

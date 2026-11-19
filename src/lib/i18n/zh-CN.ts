@@ -70,6 +70,11 @@ export const ZH_CN = {
   'hotkey.conflict.window': '{combo} 与窗口内快捷键「{action}」冲突，未保存',
   'hotkey.inWindow.save': '保存设置',
   'hotkey.inactive': '未生效：{reason}',
+
+  // 轻量模式 (R44)
+  'settings.behavior.releaseUi': '关闭窗口时释放界面',
+  'settings.behavior.releaseUiDetail':
+    '关闭主窗口后销毁界面以释放内存；托盘、全局快捷键和后台任务继续运行，再次打开时回到上次的页面',
 } as const
 
 export type MessageKey = keyof typeof ZH_CN

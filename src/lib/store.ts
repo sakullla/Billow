@@ -1217,8 +1217,8 @@ export function createStore(backend: Backend) {
     async setAutostart(enabled: boolean) {
       app.value = await backend.setAutostart(enabled)
     },
-    async setBehavior(closeToTray: boolean, silentStart: boolean) {
-      app.value = await backend.setAppBehavior(closeToTray, silentStart)
+    async setBehavior(closeToTray: boolean, silentStart: boolean, releaseUiOnClose: boolean) {
+      app.value = await backend.setAppBehavior(closeToTray, silentStart, releaseUiOnClose)
     },
   }
 }

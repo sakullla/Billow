@@ -1479,14 +1479,27 @@ const TABS = computed(() => [
               <strong>静默启动</strong>
               <p class="muted small">开机自启时不弹出主窗口，只在托盘显示</p>
             </div>
-            <Toggle :model-value="app.silent_start" label="静默启动" @update:model-value="(on) => store.setBehavior(app!.close_to_tray, on)" />
+            <Toggle :model-value="app.silent_start" label="静默启动" @update:model-value="(on) => store.setBehavior(app!.close_to_tray, on, app!.release_ui_on_close)" />
           </div>
           <div class="setting-row">
             <div class="grow">
               <strong>关闭时最小化到托盘</strong>
               <p class="muted small">关闭窗口后继续在后台运行；从托盘菜单退出</p>
             </div>
-            <Toggle :model-value="app.close_to_tray" label="关闭时最小化到托盘" @update:model-value="(on) => store.setBehavior(on, app!.silent_start)" />
+            <Toggle :model-value="app.close_to_tray" label="关闭时最小化到托盘" @update:model-value="(on) => store.setBehavior(on, app!.silent_start, app!.release_ui_on_close)" />
+          </div>
+          <!-- Lightweight mode only exists while the window stays in the tray (R44). -->
+          <div v-if="app.close_to_tray && !store.isAndroid.value" class="setting-row" data-testid="release-ui-setting">
+            <div class="grow">
+              <strong>{{ t('settings.behavior.releaseUi') }}</strong>
+              <p class="muted small">{{ t('settings.behavior.releaseUiDetail') }}</p>
+            </div>
+            <Toggle
+              :model-value="app.release_ui_on_close"
+              :label="t('settings.behavior.releaseUi')"
+              data-testid="release-ui-toggle"
+              @update:model-value="(on) => store.setBehavior(app!.close_to_tray, app!.silent_start, on)"
+            />
           </div>
         </template>
       </section>

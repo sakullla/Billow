@@ -558,3 +558,42 @@ describe('extra listeners, outbound interface and routing mark (R34)', () => {
     expect(await visible({ platform: 'android' }, 390)).toEqual({ socks: false, http: false, redir: false, tproxy: false, iface: false, mark: false })
   })
 })
+
+describe('lightweight mode (R44)', () => {
+  const releaseRow = () => body().find('[data-testid="release-ui-setting"]')
+
+  it('is offered only while the window stays in the tray and is off by default', async () => {
+    const { wrapper } = await mountApp()
+    storeOf(wrapper).openSettings('general')
+    await settle(50)
+    expect(releaseRow().exists()).toBe(true)
+    expect(releaseRow().text()).toContain('关闭窗口时释放界面')
+    expect(storeOf(wrapper).app.value?.release_ui_on_close).toBe(false)
+  })
+
+  it('disappears and stops applying once "close to tray" is turned off', async () => {
+    const { wrapper } = await mountApp()
+    storeOf(wrapper).openSettings('general')
+    await settle(50)
+
+    // Turn the release option on, then turn stay-in-tray off.
+    await releaseRow().find('[role="switch"]').trigger('click')
+    await settle(50)
+    expect(storeOf(wrapper).app.value?.release_ui_on_close).toBe(true)
+
+    await rowWith(wrapper, '关闭时最小化到托盘').find('[role="switch"]').trigger('click')
+    await settle(50)
+    expect(releaseRow().exists()).toBe(false)
+    expect(storeOf(wrapper).app.value?.close_to_tray).toBe(false)
+    // The stored choice is kept, but has no effect while stay-in-tray is off.
+    expect(storeOf(wrapper).app.value?.release_ui_on_close).toBe(true)
+  })
+
+  it('never appears on Android', async () => {
+    // Phones have no tray and no window to release.
+    const { wrapper } = await mountApp({ platform: 'android' }, 390)
+    storeOf(wrapper).openSettings('general')
+    await settle(50)
+    expect(releaseRow().exists()).toBe(false)
+  })
+})

@@ -80,4 +80,9 @@ export const EN: Partial<Record<MessageKey, string>> = {
   'hotkey.conflict.window': '{combo} conflicts with the in-window shortcut “{action}”; nothing was saved',
   'hotkey.inWindow.save': 'Save settings',
   'hotkey.inactive': 'Not active: {reason}',
+
+  // Lightweight mode (R44)
+  'settings.behavior.releaseUi': 'Release the window on close',
+  'settings.behavior.releaseUiDetail':
+    'Destroys the interface after the window closes to free its memory; the tray, global shortcuts and background tasks keep running, and reopening returns to the last page',
 }

@@ -43,6 +43,8 @@ tauri-plugin-process = "2"
 # Desktop global shortcuts (R39) and the notification a failed shortcut sends.
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+# One running Billow; a second launch shows it and forwards its deep link (R44).
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # rquickjs ships no prebuilt Android bindings; generate them with the NDK sysroot.

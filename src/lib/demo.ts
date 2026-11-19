@@ -195,6 +195,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     autostart: options.platform === 'android' ? null : false,
     close_to_tray: true,
     silent_start: false,
+    release_ui_on_close: false,
     data_dir: null,
   }
   /** Desktop global shortcuts (R39): nothing is bound until the user records one. */
@@ -882,8 +883,13 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       app = { ...app, autostart: enabled }
       return app
     },
-    async setAppBehavior(closeToTray, silentStart) {
-      app = { ...app, close_to_tray: closeToTray, silent_start: silentStart }
+    async setAppBehavior(closeToTray, silentStart, releaseUiOnClose) {
+      app = {
+        ...app,
+        close_to_tray: closeToTray,
+        silent_start: silentStart,
+        release_ui_on_close: releaseUiOnClose,
+      }
       return app
     },
     async hotkeySettings() {

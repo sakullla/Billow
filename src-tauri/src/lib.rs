@@ -1364,15 +1364,17 @@ struct AppInfo {
     autostart: Option<bool>,
     close_to_tray: bool,
     silent_start: bool,
+    /// Desktop only; hidden while "stay in tray" is off (R44).
+    release_ui_on_close: bool,
     data_dir: Option<String>,
 }
 
 #[tauri::command]
 fn app_info(app: AppHandle) -> AppInfo {
-    let (close_to_tray, silent_start) = {
+    let (close_to_tray, silent_start, release_ui_on_close) = {
         let store = app.state::<Store>();
         let state = lock(&store.state);
-        (state.close_to_tray, state.silent_start)
+        (state.close_to_tray, state.silent_start, state.release_ui_on_close)
     };
     AppInfo {
         version: app.package_info().version.to_string(),
@@ -1380,6 +1382,7 @@ fn app_info(app: AppHandle) -> AppInfo {
         autostart: autostart_enabled(&app),
         close_to_tray,
         silent_start,
+        release_ui_on_close,
         data_dir: app
             .path()
             .app_config_dir()
@@ -1417,12 +1420,18 @@ fn set_autostart(app: AppHandle, enabled: bool) -> AppInfo {
 }
 
 #[tauri::command]
-fn set_app_behavior(app: AppHandle, close_to_tray: bool, silent_start: bool) -> AppInfo {
+fn set_app_behavior(
+    app: AppHandle,
+    close_to_tray: bool,
+    silent_start: bool,
+    release_ui_on_close: bool,
+) -> AppInfo {
     {
         let store = app.state::<Store>();
         let mut state = lock(&store.state);
         state.close_to_tray = close_to_tray;
         state.silent_start = silent_start;
+        state.release_ui_on_close = release_ui_on_close;
         persist(&app, &state);
     }
     app_info(app)
@@ -1452,6 +1461,9 @@ fn spawn_auto_update(app: &AppHandle) {
                 continue;
             }
             let snapshot = refresh_ids(&handle, &due);
+            // A background subscription update can change node names and the
+            // active profile while no window exists (R44), so the tray is told.
+            refresh_tray(&handle, &snapshot);
             let _ = handle.emit("profile-changed", snapshot);
         }
     });
@@ -1513,21 +1525,83 @@ fn spawn_kernel_guardian(app: &AppHandle) {
     });
 }
 
+/// Set just before the main window is destroyed to give its memory back (R44).
+/// The "last window gone" exit request that follows must not quit Billow, while
+/// a later Quit or Cmd+Q still does.
+static RELEASING_UI: AtomicBool = AtomicBool::new(false);
+
+/// Build the main window again after lightweight mode released it (R44).
+///
+/// It reads the same settings as the packaged window: the label, title, minimum
+/// size and the size the user last had.
+#[cfg(desktop)]
+fn create_main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    let (width, height, theme) = {
+        let store = app.state::<Store>();
+        let state = lock(&store.state);
+        let (width, height) = shell::usable_window_size(state.width, state.height)
+            .unwrap_or((shell::DEFAULT_WIDTH, shell::DEFAULT_HEIGHT));
+        (width, height, state.theme.clone())
+    };
+    let builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Billow")
+    .inner_size(width, height)
+    .min_inner_size(shell::MIN_WIDTH, shell::MIN_HEIGHT)
+    .resizable(true);
+    match builder.build() {
+        Ok(window) => {
+            if let Some(icon) = app.default_window_icon() {
+                let _ = window.set_icon(icon.clone());
+            }
+            apply_native_theme(app, &theme);
+            Some(window)
+        }
+        Err(err) => {
+            eprintln!("Billow window was not recreated: {err}");
+            None
+        }
+    }
+}
+
+/// The main window, recreated on demand when lightweight mode released it.
+#[cfg(desktop)]
+fn main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    app.get_webview_window("main").or_else(|| create_main_window(app))
+}
+
 #[cfg(desktop)]
 fn show_main(app: &AppHandle) {
     // A hidden app on macOS must be activated before its window can take focus.
     #[cfg(target_os = "macos")]
     let _ = app.show();
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    let Some(window) = main_window(app) else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// Show the window and ask the page to open a view ("settings", "profiles", "add-profile", …).
 #[cfg(desktop)]
 fn navigate_main(app: &AppHandle, target: &str) {
+    if app.get_webview_window("main").is_none() {
+        // A released window restores the stored page while it boots, so the page
+        // the tray asked for is written first; a fresh page cannot hear the
+        // navigation event yet (R44).
+        let page = if target == "add-profile" { "profiles" } else { target };
+        let entry = resolve_entry(page);
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        if state.last_entry != entry {
+            state.last_entry = entry.to_string();
+            persist(app, &state);
+        }
+    }
     show_main(app);
     let _ = app.emit("tray-navigate", target.to_string());
 }
@@ -1581,7 +1655,9 @@ impl BackendAction {
 
 #[cfg(desktop)]
 fn toggle_main_window(app: &AppHandle) {
+    // Lightweight mode leaves no window; the first press brings it back (R44).
     let Some(window) = app.get_webview_window("main") else {
+        show_main(app);
         return;
     };
     let visible = window.is_visible().unwrap_or(false);
@@ -1865,15 +1941,28 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
         tauri::WindowEvent::ScaleFactorChanged { .. } => remember_window_size(app),
         tauri::WindowEvent::CloseRequested { api, .. } => {
             remember_window_size(app);
-            let to_tray = {
+            let (to_tray, release_ui) = {
                 let store = app.state::<Store>();
-                lock(&store.state).close_to_tray
+                let state = lock(&store.state);
+                (state.close_to_tray, shell::releases_ui_on_close(&state))
             };
             if !APP_UPDATING.load(Ordering::SeqCst) && to_tray && has_tray(app) {
                 api.prevent_close();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
+                let Some(window) = app.get_webview_window("main") else {
+                    return;
+                };
+                if release_ui {
+                    // Lightweight mode: destroy the webview so its memory goes
+                    // back, and leave the tray, shortcuts, the kernel and
+                    // background tasks running (R44).
+                    RELEASING_UI.store(true, Ordering::SeqCst);
+                    if let Err(err) = window.destroy() {
+                        RELEASING_UI.store(false, Ordering::SeqCst);
+                        eprintln!("Billow window was not released: {err}");
+                    }
+                    return;
                 }
+                let _ = window.hide();
                 return;
             }
             release_proxy_on_exit(app);
@@ -1886,9 +1975,25 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
 pub fn run() {
     #[cfg(target_os = "windows")]
     if elevation::run_helper_if_requested() { return; }
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    // The single-instance plugin must come before deep links (R44): a second
+    // launch hands its arguments over and exits, and the deep-link feature lets
+    // the running instance stage a `billow://` link it was started with.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(
+            tauri_plugin_single_instance::Builder::new()
+                .callback(|app, _argv, _cwd| {
+                    // Bring the running window back, recreating it when
+                    // lightweight mode released it (R44).
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || show_main(&handle));
+                })
+                .build(),
+        )
+        .plugin(tauri_plugin_deep_link::init());
+    #[cfg(not(desktop))]
+    let builder = builder.plugin(tauri_plugin_deep_link::init());
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -2015,8 +2120,16 @@ pub fn run() {
         .expect("error while building Billow")
         .run(|app, event| match event {
             tauri::RunEvent::WindowEvent { label, event, .. } => on_window_event(app, &label, event),
+            // Lightweight mode leaves no window, which normally means "quit".
+            // Only the request raised by our own destroy is ignored; Quit and
+            // Cmd+Q still exit (R44).
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
+                if code.is_none() && RELEASING_UI.swap(false, Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
             // Clicking the Dock icon (or relaunching from Finder/Launchpad) while the
-            // window sits hidden in the menu bar brings it back.
+            // window sits hidden or released brings it back.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { has_visible_windows, .. } => {
                 if !has_visible_windows {

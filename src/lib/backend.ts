@@ -58,7 +58,7 @@ export interface Backend {
   setEntry(entry: string): Promise<void>
   appInfo(): Promise<AppInfo>
   setAutostart(enabled: boolean): Promise<AppInfo>
-  setAppBehavior(closeToTray: boolean, silentStart: boolean): Promise<AppInfo>
+  setAppBehavior(closeToTray: boolean, silentStart: boolean, releaseUiOnClose: boolean): Promise<AppInfo>
   /** Desktop global shortcuts and whether this platform supports them (R39). */
   hotkeySettings(): Promise<HotkeySettings>
   /** Bind one action; an empty combo clears it. A rejection names the conflict. */
@@ -275,8 +275,8 @@ function createTauriBackend(): Backend {
     },
     appInfo: () => call<AppInfo>('app_info'),
     setAutostart: (enabled) => call<AppInfo>('set_autostart', { enabled }),
-    setAppBehavior: (closeToTray, silentStart) =>
-      call<AppInfo>('set_app_behavior', { closeToTray, silentStart }),
+    setAppBehavior: (closeToTray, silentStart, releaseUiOnClose) =>
+      call<AppInfo>('set_app_behavior', { closeToTray, silentStart, releaseUiOnClose }),
     hotkeySettings: async () => normalizeHotkeys(await call<unknown>('hotkey_settings')),
     setHotkey: async (action, combo) =>
       normalizeHotkeys(await call<unknown>('set_hotkey', { action, combo })),

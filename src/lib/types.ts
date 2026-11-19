@@ -440,6 +440,8 @@ export interface AppInfo {
   autostart: boolean | null
   close_to_tray: boolean
   silent_start: boolean
+  /** Desktop only; hidden while `close_to_tray` is off (R44). */
+  release_ui_on_close: boolean
   data_dir: string | null
 }
 
