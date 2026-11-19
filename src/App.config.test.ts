@@ -518,6 +518,25 @@ describe('extra listeners, outbound interface and routing mark (R34)', () => {
     ])
   })
 
+  it('warns on a saved port that later equals the mixed port in effect', async () => {
+    const { wrapper, saved } = await mountApp()
+    await openKernelSettings(wrapper)
+    await wrapper.find('[data-testid="port-socks_port"]').setValue('7891')
+    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await settle(400)
+    expect(saved.at(-1)!.socks_port).toBe(7891)
+    expect(wrapper.find('[data-testid="port-clash-socks_port"]').exists()).toBe(false)
+
+    // Another profile brings its own mixed-port 7891; the saved SOCKS port now collides.
+    const snapshot = storeOf(wrapper).snapshot
+    snapshot.value = { ...snapshot.value, mixed_port: 7891 }
+    await flushPromises()
+    const warning = wrapper.find('[data-testid="port-clash-socks_port"]')
+    expect(warning.exists()).toBe(true)
+    expect(warning.text()).toContain('与当前混合端口 7891 相同')
+    expect(wrapper.find('[data-testid="port-clash-http_port"]').exists()).toBe(false)
+  })
+
   it('shows each item only on the platforms mihomo supports it', async () => {
     const visible = async (options: Parameters<typeof createDemoBackend>[0], width = 1200) => {
       const { wrapper } = await mountApp(options, width)

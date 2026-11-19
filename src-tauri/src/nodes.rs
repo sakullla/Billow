@@ -554,6 +554,10 @@ pub fn patch_mode(endpoint: &ControllerEndpoint, mode: &str) -> Result<(), Strin
     }
 }
 
+/// mihomo's `Fallback.Set` records the pin first, then URL-tests a node that is not alive for
+/// up to 5 s before answering, so a shorter wait reports a failure for a pin that took effect.
+const SELECT_READ_TIMEOUT: Duration = Duration::from_millis(6500);
+
 pub fn put_selection(endpoint: &ControllerEndpoint, group: &str, node: &str) -> Result<(), String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 || group.is_empty() || node.is_empty() {
         return Err(SELECT_FAILED.to_string());
@@ -565,7 +569,7 @@ pub fn put_selection(endpoint: &ControllerEndpoint, group: &str, node: &str) -> 
         encode_segment(group)
     );
     let body = serde_json::json!({ "name": node }).to_string();
-    let agent = agent(Duration::from_millis(800));
+    let agent = agent(SELECT_READ_TIMEOUT);
     let request = agent
         .put(&url)
         .set("Content-Type", "application/json")
@@ -1068,6 +1072,34 @@ mod tests {
 
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn pinning_waits_for_the_kernel_to_probe_a_dead_fallback_member() {
+        // Fallback.Set answers only after URL-testing a dead member (up to 5 s).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 2048];
+            while let Ok(n) = stream.read(&mut tmp) {
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if request_complete(&buf) {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(1500));
+            let _ = stream.write_all(http_response("204 No Content", "").as_bytes());
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        let endpoint = ControllerEndpoint { host: "127.0.0.1".to_string(), port, secret: String::new() };
+        put_selection(&endpoint, "故障转移", "dead").unwrap();
+        assert!(handle.join().unwrap().starts_with("PUT /proxies/"));
+    }
     use std::thread;
     use std::time::Duration;
 

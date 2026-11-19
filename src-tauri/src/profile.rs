@@ -1625,9 +1625,20 @@ impl ProcessRuntime {
             }
         }
         fs::create_dir_all(&self.work_dir).map_err(|_| "配置没有写入".to_string())?;
+        // A live elevated helper starts the next kernel itself, so a restart with TUN needs no
+        // second UAC prompt. It keeps the old kernel until the new launch request arrives, and
+        // its stdout reader keeps feeding the existing log buffer.
+        #[cfg(target_os = "windows")]
+        let mut reused = if needs_elevation {
+            self.elevated.take().filter(|helper| helper.running())
+        } else { None };
+        #[cfg(target_os = "windows")]
+        let reused_logs = if reused.is_some() { self.log_buffer.take() } else { None };
+        #[cfg(not(target_os = "windows"))]
+        let reused_logs: Option<CapturedLogs> = None;
         // Consent/handshake precedes shutdown, so cancelling UAC leaves the old session intact.
         #[cfg(target_os = "windows")]
-        let mut elevated = if needs_elevation {
+        let mut elevated = if needs_elevation && reused.is_none() {
             Some(crate::elevation::ElevatedKernel::prepare()?)
         } else { None };
         self.stop();
@@ -1668,8 +1679,9 @@ impl ProcessRuntime {
         }
         // A kernel orphaned by an earlier app process still holds the mixed and
         // controller ports; every new start would fail with "address in use".
+        // A reused helper still runs the previous kernel here and replaces it itself.
         #[cfg(target_os = "windows")]
-        {
+        if reused.is_none() {
             let stuck = kernel_root(&path)
                 .map(|root| crate::win_process::end_stray_kernels(&root, None))
                 .unwrap_or_default();
@@ -1699,7 +1711,15 @@ impl ProcessRuntime {
             Ok(streams)
         };
         #[cfg(target_os = "windows")]
-        let streams = if let Some(mut helper) = elevated.take() {
+        let streams = if let Some(mut helper) = reused.take() {
+            // The helper stops the previous kernel before starting this one.
+            helper.start(&path, &self.home_dir, &config_path).map_err(|error| {
+                let _ = fs::remove_file(&config_path);
+                format!("{KERNEL_ERROR}：{error}")
+            })?;
+            self.elevated = Some(helper);
+            Vec::new()
+        } else if let Some(mut helper) = elevated.take() {
             helper.start(&path, &self.home_dir, &config_path).map_err(|error| {
                 let _ = fs::remove_file(&config_path);
                 format!("{KERNEL_ERROR}：{error}")
@@ -1723,7 +1743,14 @@ impl ProcessRuntime {
         self.last_requested_yaml = Some(config_yaml.to_string());
         self.controller = controller;
         self.cached_catalog = nodes::RuntimeCatalog::default();
-        self.log_buffer = Some(spawn_log_buffer(streams));
+        self.log_buffer = Some(match reused_logs {
+            // Same pipe, new kernel: start from an empty log like a fresh spawn would.
+            Some(logs) => {
+                logs.lines.lock().unwrap_or_else(|p| p.into_inner()).clear();
+                logs
+            }
+            None => spawn_log_buffer(streams),
+        });
         let wait = if self.controller.is_some() { Duration::from_secs(25) } else { Duration::from_millis(300) };
         let deadline = Instant::now() + wait;
         loop {

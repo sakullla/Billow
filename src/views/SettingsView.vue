@@ -394,6 +394,19 @@ const netDraft = computed(() => ({
   routing_mark: numberOrNull(netText.value.routing_mark),
 }))
 const netDirty = computed(() => JSON.stringify(netDraft.value) !== JSON.stringify(netSaved.value))
+/**
+ * A saved port can come to equal the mixed port later, e.g. after switching to a profile
+ * whose mixed-port differs. Saving does not re-check that case, so warn on the row instead.
+ */
+const portClashes = computed(() => {
+  const mixed = effectiveMixedPort.value
+  const out: Partial<Record<PortKey, string>> = {}
+  for (const field of PORT_FIELDS) {
+    const saved = snap.value.settings[field.key]
+    if (saved && saved === mixed) out[field.key] = `与当前混合端口 ${mixed} 相同，连接时会因端口被占用而失败；请改用其他端口或留空跟随配置`
+  }
+  return out
+})
 function configPort(key: PortKey): string {
   const config = snap.value.config_values
   const value = { socks_port: config.socks_port, http_port: config.http_port, redir_port: config.redir_port, tproxy_port: config.tproxy_port }[key]
@@ -1999,6 +2012,15 @@ const TABS = computed(() => [
                 <div class="grow">
                   <strong>{{ field.title }}<span v-if="snap.settings[field.key] != null" class="tag accent sm">已覆盖</span></strong>
                   <p class="muted small">{{ field.hint }}；留空跟随配置，填 0 关闭 · {{ configPort(field.key) }}</p>
+                  <p
+                    v-if="portClashes[field.key]"
+                    class="field-error small"
+                    role="alert"
+                    :data-testid="`port-clash-${field.key}`"
+                  >
+                    <Icon name="alert" :size="13" />
+                    <span>{{ portClashes[field.key] }}</span>
+                  </p>
                 </div>
                 <input
                   v-model="netText[field.key]"

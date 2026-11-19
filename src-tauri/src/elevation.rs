@@ -192,6 +192,8 @@ impl ElevatedKernel {
         Ok(helper)
     }
 
+    /// Sends a launch request. While a kernel already runs under this helper, the helper
+    /// stops it first and starts the new one in the same elevated process.
     pub fn start(&mut self, kernel: &Path, home: &Path, config: &Path) -> io::Result<()> {
         let launch = Launch {
             kernel: kernel.to_path_buf(),
@@ -252,12 +254,10 @@ fn duplicate(parent: &OwnedHandle, raw: usize) -> io::Result<File> {
     Ok(unsafe { File::from_raw_handle(handle) })
 }
 
-fn supervise(parent: &OwnedHandle, input: File, output: &mut File) -> io::Result<()> {
-    output.write_all(READY)?;
-    let mut reader = BufReader::new(input);
+fn read_launch(reader: &mut BufReader<File>) -> io::Result<Launch> {
     let mut line = String::new();
     // A launch contains only three paths. Bound allocation even on a malformed request.
-    (&mut reader).take(128 * 1024).read_line(&mut line)?;
+    (&mut *reader).take(128 * 1024).read_line(&mut line)?;
     let launch: Launch = serde_json::from_str(&line)?;
     if !launch.kernel.is_absolute()
         || !launch.home.is_absolute()
@@ -267,6 +267,52 @@ fn supervise(parent: &OwnedHandle, input: File, output: &mut File) -> io::Result
     {
         return Err(io::Error::other("内核启动路径无效"));
     }
+    Ok(launch)
+}
+
+fn stop_child(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Runs one kernel at a time. Another launch request on the control pipe replaces the running
+/// kernel inside this elevated process, so restarting with TUN does not ask for UAC again.
+/// The helper still exits when its kernel exits, which is how the UI detects a kernel exit.
+fn supervise(parent: &OwnedHandle, input: File, output: &mut File) -> io::Result<()> {
+    output.write_all(READY)?;
+    let mut reader = BufReader::new(input);
+    let mut launch = read_launch(&mut reader)?;
+    loop {
+        let mut child = spawn_kernel(&launch, output)?;
+        loop {
+            if child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            let parent_alive =
+                unsafe { WaitForSingleObject(parent.as_raw_handle(), 50) == WAIT_TIMEOUT };
+            if !parent_alive {
+                stop_child(&mut child);
+                return Ok(());
+            }
+            match available(reader.get_ref()) {
+                // Control pipe closed: the UI stopped the kernel or went away.
+                Err(_) => {
+                    stop_child(&mut child);
+                    return Ok(());
+                }
+                Ok(0) if reader.buffer().is_empty() => {}
+                Ok(_) => {
+                    // The previous kernel must release its ports before the next one binds.
+                    stop_child(&mut child);
+                    launch = read_launch(&mut reader)?;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn spawn_kernel(launch: &Launch, output: &File) -> io::Result<std::process::Child> {
     let mut child = Command::new(&launch.kernel)
         .arg("-d")
         .arg(&launch.home)
@@ -278,22 +324,10 @@ fn supervise(parent: &OwnedHandle, input: File, output: &mut File) -> io::Result
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .spawn()?;
     if let Err(error) = crate::win_process::try_bind_to_app_lifetime(&child) {
-        let _ = child.kill();
-        let _ = child.wait();
+        stop_child(&mut child);
         return Err(error);
     }
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok(());
-        }
-        let parent_alive =
-            unsafe { WaitForSingleObject(parent.as_raw_handle(), 50) == WAIT_TIMEOUT };
-        if !parent_alive || available(reader.get_ref()).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(());
-        }
-    }
+    Ok(child)
 }
 
 /// Called before constructing Tauri, so this process never creates a WebView/tray/updater.
