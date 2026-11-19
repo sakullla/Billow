@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { KnownNames } from '../lib/yaml/complete'
 import type { YamlEditorHandle } from '../lib/yaml/editor'
@@ -81,6 +82,6 @@ defineExpose({
       spellcheck="false"
       @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
     />
-    <div v-else-if="!handle" class="yaml-editor-loading muted small"><span class="spinner xs" /> 正在载入编辑器…</div>
+    <div v-else-if="!handle" class="yaml-editor-loading muted small"><span class="spinner xs" /> {{ tr('正在载入编辑器…') }}</div>
   </div>
 </template>

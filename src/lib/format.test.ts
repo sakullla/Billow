@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import { locale } from './i18n'
 import {
   autoTypeLabel,
   canPickNode,
+  compareText,
   daysLeft,
   delayText,
   delayTone,
   formatBytes,
+  formatDate,
+  formatNumber,
   formatRelative,
   formatSpeed,
   formatSpeedCompact,
@@ -38,12 +42,29 @@ describe('node and group labels', () => {
 describe('format', () => {
   it('formats byte sizes with sensible precision', () => {
     expect(formatBytes(0)).toBe('0 B')
-    expect(formatBytes(1023)).toBe('1023 B')
+    expect(formatBytes(1023)).toBe('1,023 B')
     expect(formatBytes(1536)).toBe('1.50 KB')
     expect(formatBytes(15 * 1024 * 1024)).toBe('15.0 MB')
     expect(formatBytes(200 * 1024 ** 3)).toBe('200 GB')
     expect(formatBytes(null)).toBe('—')
     expect(formatSpeed(2048)).toBe('2.00 KB/s')
+  })
+
+  it('formats numbers, dates and collation in the selected language', () => {
+    const before = locale.value
+    try {
+      const noon = new Date(2026, 5, 15, 12, 0, 0).getTime() / 1000
+      locale.value = 'zh-CN'
+      expect(formatNumber(1234)).toBe('1,234')
+      expect(formatDate(noon)).toContain('2026')
+      expect(compareText('a', 'b')).toBeLessThan(0)
+      locale.value = 'en'
+      expect(formatNumber(1234)).toBe('1,234')
+      expect(formatDate(noon)).toContain('2026')
+      expect(compareText('node10', 'node2')).toBeGreaterThan(0)
+    } finally {
+      locale.value = before
+    }
   })
 
   it('keeps compact sidebar speeds within six characters', () => {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
 import { autoTypeLabel, delayText, groupTypeLabel, isInfoNode, listedGroups, protocolLabel } from '../lib/format'
-import { t } from '../lib/i18n'
+import { t, tr } from '../lib/i18n'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { getFocusable, useFocusTrap } from '../lib/ui/focus'
 import { getShortcut, pageShortcutCombo, shortcutKeyLabel } from '../lib/ui/shortcuts'
@@ -56,11 +56,11 @@ const props = withDefaults(
     pages: () =>
       PAGES.map((page) => ({ id: page.id, label: page.label, icon: page.icon })),
     settings: () => [
-      { id: 'general', label: '通用设置', description: '主题、行为与启动', icon: 'sliders' },
-      { id: 'proxy', label: '系统代理设置', description: '代理主机、PAC 模式与绕过列表', icon: 'monitor' },
-      { id: 'kernel', label: '内核设置', description: '通道与版本', icon: 'cpu' },
-      { id: 'tun', label: 'TUN 设置', description: '栈、DNS 劫持与 MTU', icon: 'shield' },
-      { id: 'dns', label: 'DNS 设置', description: 'Fake-IP、解析策略与 Hosts', icon: 'globe' },
+      { id: 'general', get label() { return tr('通用设置') }, get description() { return tr('主题、行为与启动') }, icon: 'sliders' },
+      { id: 'proxy', get label() { return tr('系统代理设置') }, get description() { return tr('代理主机、PAC 模式与绕过列表') }, icon: 'monitor' },
+      { id: 'kernel', get label() { return tr('内核设置') }, get description() { return tr('通道与版本') }, icon: 'cpu' },
+      { id: 'tun', get label() { return tr('TUN 设置') }, get description() { return tr('栈、DNS 劫持与 MTU') }, icon: 'shield' },
+      { id: 'dns', get label() { return tr('DNS 设置') }, get description() { return tr('Fake-IP、解析策略与 Hosts') }, icon: 'globe' },
     ],
     profiles: () => [],
     nodeCatalog: () => [],
@@ -122,101 +122,101 @@ const settings = computed(() => [
 const defaultActions = computed<PaletteAction[]>(() => [
   {
     id: 'connect',
-    label: '连接',
+    get label() { return tr('连接') },
     icon: 'power',
     disabled: props.connected,
-    reason: props.connected ? '已连接' : undefined,
+    reason: props.connected ? tr('已连接') : undefined,
   },
   {
     id: 'disconnect',
-    label: '断开',
+    get label() { return tr('断开') },
     icon: 'stop',
     disabled: !props.connected,
-    reason: !props.connected ? '连接后可断开' : undefined,
+    reason: !props.connected ? tr('连接后可断开') : undefined,
   },
   {
     id: 'test-all',
-    label: '全部测速',
+    get label() { return tr('全部测速') },
     icon: 'zap',
     disabled: !props.connected,
-    reason: !props.connected ? '连接后可测速' : undefined,
+    reason: !props.connected ? tr('连接后可测速') : undefined,
   },
   {
     id: 'refresh-profiles',
-    label: '更新全部订阅',
+    get label() { return tr('更新全部订阅') },
     icon: 'refresh',
     disabled: !props.hasProfiles,
-    reason: !props.hasProfiles ? '先添加配置' : undefined,
+    reason: !props.hasProfiles ? tr('先添加配置') : undefined,
   },
-  { id: 'add-profile', label: '添加配置', icon: 'plus' },
+  { id: 'add-profile', get label() { return tr('添加配置') }, icon: 'plus' },
   {
     id: 'mode-rule',
-    label: '切换为规则模式',
+    get label() { return tr('切换为规则模式') },
     icon: 'route',
-    hint: props.mode === 'rule' ? '当前' : 'Rule',
+    hint: props.mode === 'rule' ? tr('当前') : 'Rule',
   },
   {
     id: 'mode-global',
-    label: '切换为全局模式',
+    get label() { return tr('切换为全局模式') },
     icon: 'globe',
-    hint: props.mode === 'global' ? '当前' : 'Global',
+    hint: props.mode === 'global' ? tr('当前') : 'Global',
   },
   {
     id: 'mode-direct',
-    label: '切换为直连模式',
+    get label() { return tr('切换为直连模式') },
     icon: 'zap',
-    hint: props.mode === 'direct' ? '当前' : 'Direct',
+    hint: props.mode === 'direct' ? tr('当前') : 'Direct',
   },
   ...(props.platform === 'android'
     ? []
     : [
         {
           id: 'toggle-system-proxy',
-          label: props.systemProxy ? '关闭系统代理' : '开启系统代理',
+          label: props.systemProxy ? tr('关闭系统代理') : tr('开启系统代理'),
           icon: 'monitor',
-          hint: props.systemProxy ? '已开启' : 'HTTP / SOCKS',
+          hint: props.systemProxy ? tr('已开启') : 'HTTP / SOCKS',
         },
         {
           id: 'toggle-tun',
-          label: props.tun ? '关闭 TUN 模式' : '开启 TUN 模式',
+          label: props.tun ? tr('关闭 TUN 模式') : tr('开启 TUN 模式'),
           icon: 'shield',
-          hint: props.tun ? '已开启' : '虚拟网卡',
+          hint: props.tun ? tr('已开启') : tr('虚拟网卡'),
         },
         {
           id: 'toggle-sidebar',
-          label: props.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏',
+          label: props.sidebarCollapsed ? tr('展开侧边栏') : tr('收起侧边栏'),
           icon: props.sidebarCollapsed ? 'panel-left-open' : 'panel-left-close',
           hint: shortcutKeyLabel(getShortcut('sidebar').combo),
         },
-        { id: 'copy-proxy-env', label: '复制终端环境变量', icon: 'terminal', hint: 'HTTP / SOCKS5' },
-        { id: 'open-shortcuts', label: '查看快捷键说明', icon: 'keyboard', hint: '?' },
+        { id: 'copy-proxy-env', get label() { return tr('复制终端环境变量') }, icon: 'terminal', hint: 'HTTP / SOCKS5' },
+        { id: 'open-shortcuts', get label() { return tr('查看快捷键说明') }, icon: 'keyboard', hint: '?' },
       ]),
   {
     id: 'open-config',
-    label: '查看生效配置',
+    get label() { return tr('查看生效配置') },
     icon: 'file',
     hint: 'YAML',
     disabled: !props.hasProfiles,
-    reason: !props.hasProfiles ? '先添加配置' : undefined,
+    reason: !props.hasProfiles ? tr('先添加配置') : undefined,
   },
   {
     id: 'flush-fakeip',
-    label: '刷新 FakeIP 缓存',
+    get label() { return tr('刷新 FakeIP 缓存') },
     icon: 'refresh',
     disabled: !props.connected,
-    reason: !props.connected ? '连接后可用' : undefined,
+    reason: !props.connected ? tr('连接后可用') : undefined,
   },
   {
     id: 'flush-dns',
-    label: '刷新 DNS 缓存',
+    get label() { return tr('刷新 DNS 缓存') },
     icon: 'refresh',
     disabled: !props.connected,
-    reason: !props.connected ? '连接后可用' : undefined,
+    reason: !props.connected ? tr('连接后可用') : undefined,
   },
   // Opens even while the kernel is down: the dialog itself says why it cannot query (R31).
-  { id: 'dns-query', label: 'DNS 查询', icon: 'search', hint: 'A / AAAA / MX' },
-  { id: 'toggle-theme', label: '切换主题', icon: 'moon' },
-  { id: 'open-logs', label: '打开日志', icon: 'terminal' },
+  { id: 'dns-query', get label() { return tr('DNS 查询') }, icon: 'search', hint: 'A / AAAA / MX' },
+  { id: 'toggle-theme', get label() { return tr('切换主题') }, icon: 'moon' },
+  { id: 'open-logs', get label() { return tr('打开日志') }, icon: 'terminal' },
 ])
 
 const normalized = computed(() => query.value.trim().toLowerCase())
@@ -274,7 +274,7 @@ const groups = computed(() => {
         icon: icon(item),
         hint: itemHint,
         disabled: isDisabled,
-        reason: isDisabled ? (reason(item) ?? '当前不可用') : undefined,
+        reason: isDisabled ? (reason(item) ?? tr('当前不可用')) : undefined,
         index: index++,
       })
     }
@@ -289,7 +289,7 @@ const groups = computed(() => {
   const proxyEntries: PaletteEntry[] = []
   if (normalized.value) {
     for (const item of props.profiles) {
-      const itemHint = item.current ? '当前' : item.proxy_count ? `${item.proxy_count} 个节点` : undefined
+      const itemHint = item.current ? tr('当前') : item.proxy_count ? tr('{0} 个节点', { 0: item.proxy_count }) : undefined
       if (!matches(item.name, itemHint)) continue
       profileEntries.push({
         key: `profile:${item.id}`,
@@ -308,14 +308,14 @@ const groups = computed(() => {
     for (const group of visibleGroups) {
       const typeLabel = autoTypeLabel(group)
       if (!matches(group.name, typeLabel || groupTypeLabel(group))) continue
-      const now = [typeLabel, group.now].filter(Boolean).join(' · ') || '未选择节点'
+      const now = [typeLabel, group.now].filter(Boolean).join(' · ') || tr('未选择节点')
       proxyEntries.push({
         key: `group:${group.name}`,
         kind: 'group',
         id: group.name,
         label: group.name,
         icon: 'route',
-        hint: group.fixed ? `${now} · 已固定` : now,
+        hint: group.fixed ? tr('{0} · 已固定', { 0: now }) : now,
         index: 0,
       })
     }
@@ -347,9 +347,9 @@ const groups = computed(() => {
           groupName: targetGroup.name,
           label: node.name,
           icon: 'globe',
-          hint: [targetGroup.name, pinned ? '已固定' : node.selected ? '当前' : delay || proto].filter(Boolean).join(' · '),
+          hint: [targetGroup.name, pinned ? tr('已固定') : node.selected ? tr('当前') : delay || proto].filter(Boolean).join(' · '),
           disabled: pinOffline || undefined,
-          reason: pinOffline ? '内核没有运行' : undefined,
+          reason: pinOffline ? tr('内核没有运行') : undefined,
           index: 0,
         })
         added += 1
@@ -360,16 +360,16 @@ const groups = computed(() => {
   const sections = [
     build(
       'page',
-      '页面',
+      tr('页面'),
       props.pages,
       (item) => item.icon,
-      (item) => (props.currentPage && item.id === props.currentPage ? '当前' : pageKeyHint(item.id)),
+      (item) => (props.currentPage && item.id === props.currentPage ? tr('当前') : pageKeyHint(item.id)),
       () => false,
       () => undefined,
     ),
     build(
       'setting',
-      '设置',
+      tr('设置'),
       settings.value,
       (item) => item.icon,
       (item) => item.description,
@@ -378,15 +378,15 @@ const groups = computed(() => {
     ),
     build(
       'action',
-      '动作',
+      tr('动作'),
       actionItems,
       (item) => item.icon,
       (item) => item.hint,
       (item) => Boolean(item.disabled),
       (item) => item.reason,
     ),
-    { id: 'profile', label: '配置', entries: profileEntries },
-    { id: 'proxy', label: '代理组与节点', entries: proxyEntries },
+    { id: 'profile', get label() { return tr('配置') }, entries: profileEntries },
+    { id: 'proxy', get label() { return tr('代理组与节点') }, entries: proxyEntries },
   ].filter((group) => group.entries.length > 0)
 
   let finalIndex = 0
@@ -482,7 +482,7 @@ useFocusTrap(() => panel.value, {
         :aria-labelledby="titleId"
         @keydown="onKeydown"
       >
-        <h2 :id="titleId" class="sr-only">命令面板</h2>
+        <h2 :id="titleId" class="sr-only">{{ tr('命令面板') }}</h2>
         <div class="palette-search">
           <Icon name="search" :size="16" />
           <input
@@ -494,8 +494,8 @@ useFocusTrap(() => panel.value, {
             aria-expanded="true"
             :aria-controls="listId"
             :aria-activedescendant="activeEntry?.key"
-            aria-label="搜索命令"
-            placeholder="搜索页面、设置、节点或动作"
+            :aria-label="tr('搜索命令')"
+            :placeholder="tr('搜索页面、设置、节点或动作')"
             autocomplete="off"
             spellcheck="false"
             @input="active = 0"
@@ -504,19 +504,19 @@ useFocusTrap(() => panel.value, {
             v-if="query"
             type="button"
             class="icon-btn sm"
-            aria-label="清空搜索"
+            :aria-label="tr('清空搜索')"
             data-testid="palette-clear"
             @click="query = ''; inputEl?.focus()"
           >
             <Icon name="x" :size="14" />
           </button>
           <kbd class="palette-kbd">{{ paletteKey }}</kbd>
-          <button type="button" class="icon-btn sm" aria-label="关闭" @click="emit('close')">
+          <button type="button" class="icon-btn sm" :aria-label="tr('关闭')" @click="emit('close')">
             <Icon name="x" :size="15" />
           </button>
         </div>
 
-        <div :id="listId" class="palette-list" role="listbox" aria-label="命令">
+        <div :id="listId" class="palette-list" role="listbox" :aria-label="tr('命令')">
           <div v-for="group in groups" :key="group.id" class="palette-group" role="group" :aria-label="group.label">
             <p class="palette-group-label" aria-hidden="true">{{ group.label }}</p>
             <div
@@ -543,16 +543,16 @@ useFocusTrap(() => panel.value, {
               <span v-if="entry.disabled && entry.reason" :id="reasonId(entry)" class="palette-reason">
                 {{ entry.reason }}
               </span>
-              <span v-else-if="entry.hint" class="palette-hint" :class="{ current: entry.hint === '当前' || entry.hint.endsWith('· 当前') }">{{ entry.hint }}</span>
+              <span v-else-if="entry.hint" class="palette-hint" :class="{ current: entry.hint === tr('当前') || entry.hint.endsWith(tr('· 当前')) }">{{ entry.hint }}</span>
             </div>
           </div>
-          <p v-if="!groups.length" class="palette-empty">没有匹配的命令</p>
+          <p v-if="!groups.length" class="palette-empty">{{ tr('没有匹配的命令') }}</p>
         </div>
 
         <footer class="palette-foot">
-          <span>↑↓ 选择</span>
-          <span>Enter 执行</span>
-          <span>Esc 关闭</span>
+          <span>{{ tr('↑↓ 选择') }}</span>
+          <span>{{ tr('Enter 执行') }}</span>
+          <span>{{ tr('Esc 关闭') }}</span>
         </footer>
       </section>
     </div>

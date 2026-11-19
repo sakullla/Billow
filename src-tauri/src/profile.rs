@@ -23,18 +23,51 @@ use crate::takeover::{
 };
 
 const BODY_LIMIT: u64 = 2_000_000;
-const CONTENT_ERROR: &str = "配置无法应用";
-const OVERRIDE_ERROR: &str = "覆写无法应用";
-const FETCH_ERROR: &str = "订阅没有取回";
-const KERNEL_ERROR: &str = "内核没有启动";
-const MISSING_KERNEL: &str = "没有本地内核";
-const LINK_ERROR: &str = "不支持这个导入链接";
-const ONE_LINK_ERROR: &str = "需要一条订阅链接";
-const URL_ERROR: &str = "订阅链接不可用";
-const DUPLICATE_ERROR: &str = "该订阅已存在";
-const MISSING_PROFILE: &str = "没有这份配置";
+
+fn content_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::ContentError).to_string()
+}
+
+fn override_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::OverrideError).to_string()
+}
+
+fn fetch_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::FetchError).to_string()
+}
+
+fn kernel_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::KernelError).to_string()
+}
+
+fn missing_kernel() -> String {
+    crate::i18n::tr(crate::i18n::Key::MissingKernel).to_string()
+}
+
+fn link_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::LinkError).to_string()
+}
+
+fn one_link_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::OneLinkError).to_string()
+}
+
+fn url_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::UrlError).to_string()
+}
+
+fn duplicate_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::DuplicateError).to_string()
+}
+
+fn missing_profile() -> String {
+    crate::i18n::tr(crate::i18n::Key::MissingProfile).to_string()
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
-const PERSIST_ERROR: &str = "本地数据没有写入";
+fn persist_error() -> String {
+    crate::i18n::tr(crate::i18n::Key::PersistError).to_string()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -793,6 +826,15 @@ pub struct ProfileView {
     pub age_recipients: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FailureHint {
+    /// A listener port is already in use; the kernel settings page can change it.
+    Port,
+    /// TUN could not be authorised or created; the TUN settings page applies.
+    Tun,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ProfileSnapshot {
     pub profiles: Vec<ProfileView>,
@@ -804,6 +846,8 @@ pub struct ProfileSnapshot {
     pub vpn: bool,
     pub pending_url: Option<String>,
     pub failure: Option<String>,
+    /// Structured shortcut for the failure banner; set from the launch error, never parsed from text (T8).
+    pub failure_hint: Option<FailureHint>,
     pub input_error: Option<String>,
     pub connected: bool,
     pub platform: String,
@@ -848,6 +892,8 @@ pub struct LinkStatus {
     pub upload: Option<u64>,
     pub download: Option<u64>,
     pub failure: Option<String>,
+    /// Structured kind of `failure`, for clients that offer a shortcut to fix it.
+    pub failure_hint: Option<FailureHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -885,7 +931,7 @@ impl FetchedSubscription {
 impl RefreshRequest {
     pub fn fetch(&self, source: &dyn SubscriptionSource) -> Result<DownloadedProfile, String> {
         source.fetch_with_user_agent(&self.source, &self.user_agent)
-            .map_err(|_| FETCH_ERROR.to_string())?
+            .map_err(|_| fetch_error())?
             .into_profile(&self.age_key)
     }
 }
@@ -932,6 +978,12 @@ pub trait KernelLaunch {
 
     fn running(&mut self) -> bool {
         false
+    }
+
+    /// A structured failure hint the last launch produced, so the book does not
+    /// have to match translated message text (T8).
+    fn take_failure_hint(&mut self) -> Option<FailureHint> {
+        None
     }
 
     fn select_proxy(&mut self, _group: &str, _node: &str) -> Result<(), String> {
@@ -1058,29 +1110,29 @@ impl SubscriptionSource for HttpSubscriptionClient {
         let custom = normalize_subscription_user_agent(user_agent)?;
         let user_agent = if custom.is_empty() { &self.default_user_agent } else { &custom };
         if validate_subscription_url(url).is_err() {
-            return Err(FETCH_ERROR.to_string());
+            return Err(fetch_error());
         }
         let response = self
             .agent
             .get(url)
             .set("User-Agent", user_agent)
             .call()
-            .map_err(|_| FETCH_ERROR.to_string())?;
+            .map_err(|_| fetch_error())?;
         let userinfo = response.header("subscription-userinfo").map(str::to_string);
         let mut body = Vec::new();
         response
             .into_reader()
             .take(BODY_LIMIT + 1)
             .read_to_end(&mut body)
-            .map_err(|_| FETCH_ERROR.to_string())?;
+            .map_err(|_| fetch_error())?;
         if body.len() as u64 > BODY_LIMIT {
-            return Err(FETCH_ERROR.to_string());
+            return Err(fetch_error());
         }
         // Binary age files are armored so the rest of the pipeline stays textual.
         let text = if age_key::is_encrypted_bytes(&body) {
             age_key::armor_binary(&body)
         } else {
-            String::from_utf8(body).map_err(|_| FETCH_ERROR.to_string())?
+            String::from_utf8(body).map_err(|_| fetch_error())?
         };
         Ok(FetchedSubscription {
             content: text,
@@ -1091,17 +1143,23 @@ impl SubscriptionSource for HttpSubscriptionClient {
 
 /// Kernel listener failures arrive as raw Go errors; say what is wrong and what to do.
 fn friendly_listen_error(message: &str) -> String {
+    friendly_listen_error_parts(message).0
+}
+
+/// The message plus the structured settings shortcut it implies (T8).
+fn friendly_listen_error_parts(message: &str) -> (String, Option<FailureHint>) {
+    use crate::i18n::{self, Key};
     let lower = message.to_lowercase();
     let in_use = lower.contains("only one usage of each socket address")
         || lower.contains("address already in use")
         || lower.contains("10048");
     let kind = [
-        ("Start Mixed", "混合端口"),
-        ("Start HTTP", "HTTP 端口"),
-        ("Start SOCKS", "SOCKS 端口"),
-        ("Start Redir", "redir 端口"),
-        ("Start TProxy", "tproxy 端口"),
-        ("RESTful API", "混合端口"),
+        ("Start Mixed", Key::PortMixed),
+        ("Start HTTP", Key::PortHttp),
+        ("Start SOCKS", Key::PortSocks),
+        ("Start Redir", Key::PortRedir),
+        ("Start TProxy", Key::PortTproxy),
+        ("RESTful API", Key::PortMixed),
     ]
     .into_iter()
     .find(|(marker, _)| message.contains(marker))
@@ -1113,10 +1171,12 @@ fn friendly_listen_error(message: &str) -> String {
             .and_then(|rest| rest.split(": bind").next())
             .map(str::trim)
             .filter(|address| !address.is_empty())
-            .unwrap_or("混合端口");
-        return format!(
-            "端口 {address} 已被其他程序占用，内核无法启动。请关闭占用它的程序（例如另一个 Clash / mihomo 客户端），或在设置中更换{kind}后重试"
+            .unwrap_or_else(|| i18n::tr(Key::PortMixed));
+        let text = i18n::tr_args(
+            Key::PortBusy,
+            &[("address", address), ("kind", i18n::tr(kind))],
         );
+        return (text, Some(FailureHint::Port));
     }
     if message.contains("Start TUN") || lower.contains("configure tun") {
         if lower.contains("access is denied")
@@ -1124,18 +1184,21 @@ fn friendly_listen_error(message: &str) -> String {
             || lower.contains("permission denied")
         {
             #[cfg(target_os = "macos")]
-            return "TUN 启动失败：需要系统管理员权限授权内核，请重新开启 TUN 并在弹出的系统授权窗口中确认".to_string();
+            return (i18n::tr(Key::TunDeniedMac).to_string(), Some(FailureHint::Tun));
             #[cfg(target_os = "linux")]
-            return "TUN 启动失败：需要管理员权限（root 或 CAP_NET_ADMIN）后才能创建虚拟网卡".to_string();
+            return (i18n::tr(Key::TunDeniedLinux).to_string(), Some(FailureHint::Tun));
             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            return "TUN 启动失败：需要管理员权限。请以管理员身份运行 Billow 后重试".to_string();
+            return (i18n::tr(Key::TunDeniedOther).to_string(), Some(FailureHint::Tun));
         }
         if lower.contains("already exists") || in_use {
-            return "TUN 启动失败：系统里已有同名虚拟网卡或地址冲突，通常是另一个代理客户端的 TUN 模式仍在运行。请先关闭它，或在 TUN 设置中更换网卡名称".to_string();
+            return (i18n::tr(Key::TunConflict).to_string(), Some(FailureHint::Tun));
         }
-        return format!("TUN 启动失败：{message}");
+        return (
+            i18n::tr_args(Key::TunFailed, &[("reason", message)]),
+            Some(FailureHint::Tun),
+        );
     }
-    message.to_string()
+    (message.to_string(), None)
 }
 
 /// The kernels directory: `…/kernels/files/<hash>/core.exe` → `…/kernels`.
@@ -1290,6 +1353,8 @@ pub struct ProcessRuntime {
     log_buffer: Option<CapturedLogs>,
     pending_logs: Vec<LogView>,
     exit_detail: Option<String>,
+    /// Structured hint for the failure this runtime just reported (T8).
+    pending_failure_hint: Option<FailureHint>,
     traffic_watch: Option<MetricWatch<(u64, u64)>>,
     memory_watch: Option<MetricWatch<u64>>,
     totals: Option<TrafficTotals>,
@@ -1357,6 +1422,7 @@ impl ProcessRuntime {
             log_buffer: None,
             pending_logs: Vec::new(),
             exit_detail: None,
+            pending_failure_hint: None,
             traffic_watch: None,
             memory_watch: None,
             totals: None,
@@ -1447,6 +1513,7 @@ impl ProcessRuntime {
         self.connection_total = None;
         self.connections_error = None;
         self.started = None;
+        self.pending_failure_hint = None;
     }
 
     fn fail_start(&mut self, reason: Option<String>) -> String {
@@ -1454,13 +1521,17 @@ impl ProcessRuntime {
         let exit_detail = self.exit_detail.clone();
         self.stop();
         let lines = logs.map(|buffer| buffer.drain_after_exit()).unwrap_or_default();
+        let error_line = lines.iter().rev().find(|line| line.level == "error");
+        self.pending_failure_hint = error_line.and_then(|line| friendly_listen_error_parts(&line.message).1);
         let message = reason.unwrap_or_else(|| {
-            let detail = lines.iter().rev().find(|line| line.level == "error")
-                .map(|line| friendly_listen_error(&line.message));
+            let detail = error_line.map(|line| friendly_listen_error(&line.message));
             let status = exit_detail.map(|status| format!("（{status}）")).unwrap_or_default();
             match detail {
-                Some(detail) => format!("内核启动失败{status}：{detail}"),
-                None => format!("内核进程提前退出{status}，请检查系统崩溃或安全日志"),
+                Some(detail) => crate::i18n::tr_args(
+                    crate::i18n::Key::LaunchFailed,
+                    &[("status", &status), ("detail", &detail)],
+                ),
+                None => crate::i18n::tr_args(crate::i18n::Key::LaunchExitedEarly, &[("status", &status)]),
             }
         });
         diagnostics::push_logs(&mut self.pending_logs, lines);
@@ -1520,10 +1591,15 @@ fn spawn_log_buffer(streams: Vec<LogReader>) -> CapturedLogs {
                     let text = String::from_utf8_lossy(&chunk);
                     let text = text.trim();
                     if !text.is_empty() {
-                        let item = diagnostics::parse_log_line(text).unwrap_or_else(|| LogView {
-                            level: if stderr { "error" } else { "info" }.to_string(),
-                            message: text.to_string(),
-                            time_ms: now_ms(),
+                        let item = diagnostics::parse_log_line(text).unwrap_or_else(|| {
+                            let (hint, hint_kind) = diagnostics::log_hint(text);
+                            LogView {
+                                level: if stderr { "error" } else { "info" }.to_string(),
+                                message: text.to_string(),
+                                time_ms: now_ms(),
+                                hint,
+                                hint_kind,
+                            }
                         });
                         let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
                         diagnostics::push_logs(&mut guard, vec![item]);
@@ -1546,10 +1622,10 @@ impl Drop for ProcessRuntime {
 impl ProcessRuntime {
     fn launch(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
         let Some(path) = self.kernel_path.clone() else {
-            return Err(MISSING_KERNEL.to_string());
+            return Err(missing_kernel());
         };
         if !path.is_file() {
-            return Err(MISSING_KERNEL.to_string());
+            return Err(missing_kernel());
         }
         if let Some(resources) = &self.bundled_resources {
             crate::bundled_geo::seed_directory(&resources.join("geo"), &self.home_dir)?;
@@ -1629,7 +1705,9 @@ impl ProcessRuntime {
                                 || lower.contains("configure tun")
                                 || err.contains("listen tcp "))
                         {
-                            return Err(friendly_listen_error(&err));
+                            let (message, hint) = friendly_listen_error_parts(&err);
+                            self.pending_failure_hint = hint;
+                            return Err(message);
                         }
                     }
                 }
@@ -1709,7 +1787,7 @@ impl ProcessRuntime {
         let mut spawn_normal = || -> Result<Vec<LogReader>, String> {
             let mut child = command.spawn().map_err(|error| {
                 let _ = fs::remove_file(&config_path);
-                format!("{KERNEL_ERROR}：{error}")
+                format!("{}：{error}", kernel_error())
             })?;
             #[cfg(target_os = "windows")]
             crate::win_process::bind_to_app_lifetime(&child);
@@ -1726,14 +1804,14 @@ impl ProcessRuntime {
             // The helper stops the previous kernel before starting this one.
             helper.start(&path, &self.home_dir, &config_path).map_err(|error| {
                 let _ = fs::remove_file(&config_path);
-                format!("{KERNEL_ERROR}：{error}")
+                format!("{}：{error}", kernel_error())
             })?;
             self.elevated = Some(helper);
             Vec::new()
         } else if let Some(mut helper) = elevated.take() {
             helper.start(&path, &self.home_dir, &config_path).map_err(|error| {
                 let _ = fs::remove_file(&config_path);
-                format!("{KERNEL_ERROR}：{error}")
+                format!("{}：{error}", kernel_error())
             })?;
             let streams: Vec<LogReader> = helper.take_stdout().into_iter()
                 .map(|stdout| (Box::new(stdout) as Box<dyn Read + Send>, true)).collect();
@@ -1806,6 +1884,10 @@ impl KernelLaunch for ProcessRuntime {
 
     fn start_or_reload_with(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
         self.launch(config_yaml, force)
+    }
+
+    fn take_failure_hint(&mut self) -> Option<FailureHint> {
+        self.pending_failure_hint.take()
     }
 
     fn running(&mut self) -> bool {
@@ -2127,6 +2209,12 @@ pub struct ProfileBook {
     takeover: Takeover,
     pending_url: Option<String>,
     home_failure: Option<String>,
+    /// Structured kind of the current home failure; cleared with it (T8).
+    home_failure_hint: Option<FailureHint>,
+    /// Hint recorded by the launch path, adopted by the next snapshot when a failure is shown.
+    pending_failure_hint: Option<FailureHint>,
+    /// The lingering-proxy cleanup failed; distinguishes it without comparing message text (T8).
+    lingering_proxy_failure: bool,
     input_error: Option<String>,
     mixed_port: Option<i64>,
     mode: Option<String>,
@@ -2166,6 +2254,8 @@ pub struct ProfileBook {
     totals: Option<TrafficTotals>,
     settings: KernelSettings,
     notice: Option<String>,
+    /// The current notice came from a partial node switch; cleared on the next switch (T8).
+    node_switch_notice: bool,
     startup_guard_active: bool,
     shutting_down: bool,
     crash_recoveries: u8,
@@ -2221,6 +2311,9 @@ impl ProfileBook {
             takeover: Takeover::default(),
             pending_url: None,
             home_failure: None,
+            home_failure_hint: None,
+            pending_failure_hint: None,
+            lingering_proxy_failure: false,
             input_error: None,
             mixed_port: None,
             mode: None,
@@ -2257,6 +2350,7 @@ impl ProfileBook {
             totals: None,
             settings: KernelSettings::default(),
             notice: None,
+            node_switch_notice: false,
             startup_guard_active: false,
             shutting_down: false,
             crash_recoveries: 0,
@@ -2309,6 +2403,7 @@ impl ProfileBook {
             vpn: self.takeover.vpn,
             pending_url: self.pending_url.clone(),
             failure: self.home_failure.clone(),
+            failure_hint: self.home_failure_hint,
             input_error: self.input_error.clone(),
             connected: self.connected,
             platform: self.platform.as_str().to_string(),
@@ -2385,16 +2480,19 @@ impl ProfileBook {
                 self.takeover.system_proxy = false;
                 self.connected = false;
                 self.our_endpoint = None;
-                if self.home_failure.as_deref() == Some("系统代理没有关闭") {
+                if self.lingering_proxy_failure {
                     self.home_failure = None;
+                    self.home_failure_hint = None;
+                    self.lingering_proxy_failure = false;
                 }
                 self.persist();
             }
             Err(message) => {
                 self.takeover.system_proxy = true;
                 self.connected = false;
+                self.lingering_proxy_failure = message.is_empty();
                 self.home_failure = Some(if message.is_empty() {
-                    "系统代理没有关闭".to_string()
+                    crate::i18n::tr(crate::i18n::Key::SystemProxyNotClosed).to_string()
                 } else {
                     message
                 });
@@ -2413,7 +2511,7 @@ impl ProfileBook {
                     .iter()
                     .any(|profile| profile.kind == ProfileKind::Subscription && profile.source.trim() == url)
                 {
-                    self.input_error = Some(DUPLICATE_ERROR.to_string());
+                    self.input_error = Some(duplicate_error());
                 } else {
                     self.push_profile(
                         ProfileKind::Subscription,
@@ -2432,7 +2530,7 @@ impl ProfileBook {
 
     pub fn add_local(&mut self, name: &str, content: &str) -> ProfileSnapshot {
         if content.trim().is_empty() {
-            self.input_error = Some(CONTENT_ERROR.to_string());
+            self.input_error = Some(content_error());
             return self.snapshot();
         }
         let name = clean_name(name, "本地配置");
@@ -2484,14 +2582,14 @@ impl ProfileBook {
                 None
             } else {
                 match prepare_named(&profile.content, text, &profile.name) {
-                    Err(PrepareError::Override(reason)) => Some(format!("{OVERRIDE_ERROR}：{reason}")),
+                    Err(PrepareError::Override(reason)) => Some(format!("{}: {reason}", crate::i18n::tr(crate::i18n::Key::OverrideError))),
                     _ => None,
                 }
             };
             self.input_error = None;
             self.persist();
         } else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
+            self.input_error = Some(missing_profile());
         }
         self.snapshot()
     }
@@ -2576,6 +2674,7 @@ impl ProfileBook {
             upload: self.upload,
             download: self.download,
             failure: self.home_failure.clone(),
+            failure_hint: self.home_failure_hint,
         }
     }
 
@@ -2702,9 +2801,8 @@ impl ProfileBook {
                 self.kernel_running = true;
                 self.reconcile_system_proxy(proxy);
                 self.connected = self.takeover.system_proxy || self.takeover.tun;
-                self.append_logs(vec![diagnostics::failure_log(&format!(
-                    "内核异常退出（{exit_status}），已自动恢复运行"
-                ))]);
+                let text = crate::i18n::tr_args(crate::i18n::Key::KernelRecovered, &[("status", &exit_status)]);
+                self.append_logs(vec![diagnostics::failure_log(&text)]);
                 return Some(self.publish(kernel));
             }
         }
@@ -2717,13 +2815,15 @@ impl ProfileBook {
             .find(|line| line.level == "error")
             .map(|line| friendly_listen_error(&line.message));
         let base = if repeated {
-            format!("内核连续异常退出（{exit_status}），已停止自动重启并关闭系统代理")
+            crate::i18n::tr_args(crate::i18n::Key::KernelCrashedRepeated, &[("status", &exit_status)])
         } else {
-            format!("内核异常退出（{exit_status}），已自动关闭系统代理以免断网")
+            crate::i18n::tr_args(crate::i18n::Key::KernelCrashed, &[("status", &exit_status)])
         };
         let message = match detail {
-            Some(reason) if !reason.is_empty() && !base.contains(&reason) => format!("{base}：{reason}"),
-            _ => format!("{base}，请检查配置或查看日志"),
+            Some(reason) if !reason.is_empty() && !base.contains(&reason) => {
+                crate::i18n::tr_args(crate::i18n::Key::KernelCrashDetail, &[("base", &base), ("reason", &reason)])
+            }
+            _ => crate::i18n::tr_args(crate::i18n::Key::KernelCrashedSuffix, &[("base", &base)]),
         };
         let mut model = self.link_model();
         takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
@@ -2855,7 +2955,8 @@ impl ProfileBook {
                     model.tun = false;
                     model.system_proxy = previous;
                     model.connected = false;
-                    model.failure = Some(takeover::TUN_DENIED.to_string());
+                    self.pending_failure_hint = Some(FailureHint::Tun);
+                    model.failure = Some(crate::i18n::tr(crate::i18n::Key::TunDenied).to_string());
                     self.apply_model(model);
                     self.remember_current_failure();
                     return self.publish(kernel);
@@ -2885,8 +2986,9 @@ impl ProfileBook {
                 self.connected = false;
                 self.remember_current_failure();
             }
-            Err(StartError::Failed(message)) if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
-                self.home_failure = Some(message);
+            Err(StartError::Failed(_message)) if _message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
+                self.pending_failure_hint = Some(FailureHint::Tun);
+                self.home_failure = Some(crate::i18n::tr(crate::i18n::Key::TunAuthorizationFailed).to_string());
                 self.remember_current_failure();
             }
             Err(StartError::Failed(message)) => {
@@ -2919,7 +3021,8 @@ impl ProfileBook {
         }
         let grant = tun.authorize();
         if !matches!(grant, Ok(true)) {
-            self.home_failure = Some(grant.err().unwrap_or_else(|| takeover::TUN_DENIED.to_string()));
+            self.pending_failure_hint = Some(FailureHint::Tun);
+            self.home_failure = Some(grant.err().unwrap_or_else(|| crate::i18n::tr(crate::i18n::Key::TunDenied).to_string()));
             self.remember_current_failure();
             return self.publish(kernel);
         }
@@ -2937,8 +3040,9 @@ impl ProfileBook {
                 self.connected = false;
                 self.remember_current_failure();
             }
-            Err(StartError::Failed(message)) if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
-                self.home_failure = Some(message);
+            Err(StartError::Failed(_message)) if _message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
+                self.pending_failure_hint = Some(FailureHint::Tun);
+                self.home_failure = Some(crate::i18n::tr(crate::i18n::Key::TunAuthorizationFailed).to_string());
                 self.remember_current_failure();
             }
             Err(StartError::Failed(message)) => {
@@ -2969,7 +3073,8 @@ impl ProfileBook {
                     model.tun = false;
                     model.system_proxy = previous;
                     model.connected = false;
-                    model.failure = Some(takeover::TUN_DENIED.to_string());
+                    self.pending_failure_hint = Some(FailureHint::Tun);
+                    model.failure = Some(crate::i18n::tr(crate::i18n::Key::TunDenied).to_string());
                     self.apply_model(model);
                     self.remember_current_failure();
                     return self.publish(kernel);
@@ -3000,8 +3105,9 @@ impl ProfileBook {
                 self.connected = false;
                 self.remember_current_failure();
             }
-            Err(StartError::Failed(message)) if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
-                self.home_failure = Some(message);
+            Err(StartError::Failed(_message)) if _message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) => {
+                self.pending_failure_hint = Some(FailureHint::Tun);
+                self.home_failure = Some(crate::i18n::tr(crate::i18n::Key::TunAuthorizationFailed).to_string());
                 self.remember_current_failure();
             }
             Err(StartError::Failed(message)) => {
@@ -3020,7 +3126,7 @@ impl ProfileBook {
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
         if self.active_id.is_none() {
-            self.home_failure = Some(takeover::NO_PROFILE.to_string());
+            self.home_failure = Some(crate::i18n::tr(crate::i18n::Key::NoProfile).to_string());
             self.connected = false;
             self.remember_current_failure();
             return self.publish(kernel);
@@ -3032,7 +3138,7 @@ impl ProfileBook {
             model.connected = false;
             model.system_proxy = false;
             model.tun = false;
-            model.failure = Some(takeover::VPN_DENIED.to_string());
+            model.failure = Some(crate::i18n::tr(crate::i18n::Key::VpnDenied).to_string());
             self.apply_model(model);
             self.remember_current_failure();
             return self.publish(kernel);
@@ -3148,7 +3254,7 @@ impl ProfileBook {
         refresh: bool,
     ) -> ProfileSnapshot {
         let Some(index) = self.profiles.iter().position(|profile| profile.id == id) else {
-            self.home_failure = Some(MISSING_PROFILE.to_string());
+            self.home_failure = Some(missing_profile());
             return self.snapshot();
         };
         let needs_fetch = self.profiles[index].kind == ProfileKind::Subscription
@@ -3156,7 +3262,7 @@ impl ProfileBook {
         let fetched = if needs_fetch {
             self.profiles[index].refresh_revision += 1;
             match source.fetch_with_user_agent(&self.profiles[index].source, self.subscription_user_agent(index))
-                .map_err(|_| FETCH_ERROR.to_string())
+                .map_err(|_| fetch_error())
                 .and_then(|fetched| fetched.into_profile(&self.profiles[index].age_key))
             {
                 Ok(profile) => Some(profile),
@@ -3176,12 +3282,12 @@ impl ProfileBook {
         let prepared = match prepare_named(content, &override_text, &self.profiles[index].name) {
             Ok(prepared) => prepared,
             Err(PrepareError::Content) => {
-                self.fail_activation(index, CONTENT_ERROR.to_string());
+                self.fail_activation(index, content_error());
                 return self.publish(kernel);
             }
             Err(PrepareError::Override(reason)) => {
                 // Judged before the running config changes, so takeover and the active id stay.
-                self.profiles[index].override_error = Some(format!("{OVERRIDE_ERROR}：{reason}"));
+                self.profiles[index].override_error = Some(format!("{}: {reason}", crate::i18n::tr(crate::i18n::Key::OverrideError)));
                 self.persist();
                 return self.snapshot();
             }
@@ -3211,15 +3317,20 @@ impl ProfileBook {
         self.auto_now.clear();
         if let Err(message) = kernel.start_or_reload(&yaml) {
             let message = if message.is_empty() {
-                KERNEL_ERROR.to_string()
+                kernel_error()
             } else {
                 message
             };
+            // A cancelled authorization keeps the running session; the sentinel is
+            // ASCII protocol, not user-visible text (T8).
             if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) {
-                self.profiles[index].failure = Some(message.clone());
-                self.home_failure = Some(message);
+                self.pending_failure_hint = Some(FailureHint::Tun);
+                let reason = crate::i18n::tr(crate::i18n::Key::TunAuthorizationFailed).to_string();
+                self.profiles[index].failure = Some(reason.clone());
+                self.home_failure = Some(reason);
                 self.remember_current_failure();
             } else {
+                self.pending_failure_hint = kernel.take_failure_hint();
                 self.fail_activation(index, message);
             }
             return self.publish(kernel);
@@ -3275,12 +3386,26 @@ impl ProfileBook {
     }
 
     fn publish(&mut self, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        self.adopt_failure_hint();
         self.sync_runtime(kernel);
         self.snapshot()
     }
 
+    /// Move the launch hint onto the banner, or clear both when the failure is gone (T8).
+    fn adopt_failure_hint(&mut self) {
+        if self.home_failure.is_some() {
+            if let Some(hint) = self.pending_failure_hint.take() {
+                self.home_failure_hint = Some(hint);
+            }
+        } else {
+            self.home_failure_hint = None;
+            self.pending_failure_hint = None;
+        }
+    }
+
     pub fn report_failure(&mut self, message: String) -> ProfileSnapshot {
         self.home_failure = Some(message);
+        self.adopt_failure_hint();
         self.remember_current_failure();
         self.snapshot()
     }
@@ -3355,15 +3480,19 @@ impl ProfileBook {
         };
         self.runtime_catalog = nodes::RuntimeCatalog::default();
         self.auto_now.clear();
-        kernel.start_or_reload_with(yaml, force).map_err(|message| {
-            StartError::Failed(if message.is_empty() {
-                KERNEL_ERROR.to_string()
+        if let Err(message) = kernel.start_or_reload_with(yaml, force) {
+            // The launch path knows whether the port or TUN caused the failure;
+            // keep it structured instead of matching the translated message (T8).
+            self.pending_failure_hint = kernel.take_failure_hint();
+            return Err(StartError::Failed(if message.is_empty() {
+                kernel_error()
             } else {
                 message
-            })
-        })?;
-        if self.home_failure.as_deref().is_some_and(|message| message.starts_with(takeover::TUN_AUTHORIZATION_FAILED)) {
+            }));
+        }
+        if self.home_failure_hint == Some(FailureHint::Tun) {
             self.home_failure = None;
+            self.home_failure_hint = None;
         }
         self.runtime_base = Some(base);
         self.mixed_port = Some(i64::from(port));
@@ -3393,12 +3522,12 @@ impl ProfileBook {
     /// alongside so the UI can tell where each value comes from.
     pub fn config_overview(&self) -> Result<ConfigOverview, String> {
         let effective_yaml = self.effective_config()?;
-        let effective: Value = serde_yaml::from_str(&effective_yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+        let effective: Value = serde_yaml::from_str(&effective_yaml).map_err(|_| content_error())?;
         let profile = self
             .active_id
             .as_ref()
             .and_then(|id| self.profiles.iter().find(|profile| &profile.id == id))
-            .ok_or_else(|| takeover::NO_PROFILE.to_string())?;
+            .ok_or_else(|| crate::i18n::tr(crate::i18n::Key::NoProfile).to_string())?;
         let raw = parse_config(&profile.content).unwrap_or(Value::Null);
         let prepared = prepare(&profile.content, &profile.applied_override)
             .ok()
@@ -3417,15 +3546,15 @@ impl ProfileBook {
 
     fn kernel_yaml(&self, tun_enable: bool, fd: Option<i32>) -> Result<(String, u16), StartError> {
         let Some(active) = self.active_id.clone() else {
-            return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
+            return Err(StartError::Idle(crate::i18n::tr(crate::i18n::Key::NoProfile).to_string()));
         };
         let Some(profile) = self.profiles.iter().find(|profile| profile.id == active) else {
-            return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
+            return Err(StartError::Idle(crate::i18n::tr(crate::i18n::Key::NoProfile).to_string()));
         };
         let prepared = match prepare_named(&profile.content, &profile.applied_override, &profile.name) {
             Ok(prepared) => prepared,
-            Err(PrepareError::Override(reason)) => return Err(StartError::Failed(format!("{OVERRIDE_ERROR}：{reason}"))),
-            Err(PrepareError::Content) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
+            Err(PrepareError::Override(reason)) => return Err(StartError::Failed(format!("{}: {reason}", crate::i18n::tr(crate::i18n::Key::OverrideError)))),
+            Err(PrepareError::Content) => return Err(StartError::Failed(content_error())),
         };
         let (settled, settled_port) =
             apply_settings(&prepared.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
@@ -3632,7 +3761,7 @@ impl ProfileBook {
         #[cfg(test)]
         if self.persist_failures.load(Ordering::SeqCst) > 0 {
             self.persist_failures.fetch_sub(1, Ordering::SeqCst);
-            return Err(PERSIST_ERROR.to_string());
+            return Err(persist_error());
         }
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
@@ -4116,8 +4245,9 @@ impl ProfileBook {
             self.auto_now.insert(group_name.to_string(), node_name.to_string());
         }
         self.nodes_error = None;
-        if self.notice.as_deref().is_some_and(|notice| notice.starts_with("节点已切换，但")) {
+        if self.node_switch_notice {
             self.notice = None;
+            self.node_switch_notice = false;
         }
         if self.kernel_running && changed {
             self.close_switched_group(group_name, node_name, kernel);
@@ -4136,7 +4266,10 @@ impl ProfileBook {
                 self.connections.retain(|connection| !closed.contains(&connection.id));
                 self.connection_total = self.connection_total.saturating_sub(closed.len());
             }
-            Err(message) => self.notice = Some(format!("节点已切换，但{message}")),
+            Err(message) => {
+                self.notice = Some(crate::i18n::tr_args(crate::i18n::Key::NodeSwitchPartial, &[("reason", &message)]));
+                self.node_switch_notice = true;
+            }
         }
     }
 
@@ -4167,8 +4300,10 @@ impl ProfileBook {
         self.runtime_catalog.now.insert(group.name.clone(), node.to_string());
         self.auto_now.insert(group.name.clone(), node.to_string());
         self.nodes_error = None;
-        if self.notice.as_deref().is_some_and(|notice| notice.starts_with("节点已切换，但")) {
+        // A partial-switch notice is a flag, never matched by its translated text (T8).
+        if self.node_switch_notice {
             self.notice = None;
+            self.node_switch_notice = false;
         }
         if current.as_deref() != Some(node) {
             self.close_switched_group(&group.name, node, kernel);
@@ -4679,9 +4814,9 @@ fn apply_settings(
     settings: &KernelSettings,
     desktop: bool,
 ) -> Result<(String, Option<i64>), String> {
-    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| content_error())?;
     let Some(map) = value.as_mapping_mut() else {
-        return Err(CONTENT_ERROR.to_string());
+        return Err(content_error());
     };
     let key = |name: &str| Value::String(name.to_string());
     if let Some(port) = settings.mixed_port {
@@ -4911,7 +5046,7 @@ fn apply_settings(
         map.insert(key("tun"), Value::Mapping(tun));
     }
     let port = map.get(key("mixed-port")).and_then(Value::as_i64);
-    let text = serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())?;
+    let text = serde_yaml::to_string(&value).map_err(|_| content_error())?;
     Ok((text, port))
 }
 
@@ -5064,9 +5199,9 @@ fn default_sniffer() -> Value {
 /// TUN hijacks DNS, so the kernel must answer it. Without a `dns` block that is enabled,
 /// a profile written for system-proxy use would leave every lookup unanswered under TUN.
 fn ensure_tun_dns(yaml: &str, settings: &KernelSettings) -> Result<String, String> {
-    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| content_error())?;
     let Some(map) = value.as_mapping_mut() else {
-        return Err(CONTENT_ERROR.to_string());
+        return Err(content_error());
     };
     let key = |name: &str| Value::String(name.to_string());
     let tun_on = map
@@ -5086,7 +5221,7 @@ fn ensure_tun_dns(yaml: &str, settings: &KernelSettings) -> Result<String, Strin
         return Ok(yaml.to_string());
     }
     map.insert(key("dns"), settings.dns.clone().normalized().to_value());
-    serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
+    serde_yaml::to_string(&value).map_err(|_| content_error())
 }
 
 fn subscription_proxy_count(text: &str) -> Option<usize> {
@@ -5124,7 +5259,7 @@ impl ProfileBook {
     /// Removes a profile. The active one can go only while nothing is connected.
     pub fn delete_profile(&mut self, id: &str) -> ProfileSnapshot {
         let Some(index) = self.index_of(id) else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
+            self.input_error = Some(missing_profile());
             return self.snapshot();
         };
         let active = self.active_id.as_deref() == Some(id);
@@ -5147,7 +5282,7 @@ impl ProfileBook {
 
     pub fn rename_profile(&mut self, id: &str, name: &str) -> ProfileSnapshot {
         let Some(index) = self.index_of(id) else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
+            self.input_error = Some(missing_profile());
             return self.snapshot();
         };
         let name = clean_name(name, &self.profiles[index].name.clone());
@@ -5158,7 +5293,7 @@ impl ProfileBook {
 
     pub fn set_profile_source(&mut self, id: &str, url: &str) -> ProfileSnapshot {
         let Some(index) = self.index_of(id) else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
+            self.input_error = Some(missing_profile());
             return self.snapshot();
         };
         if self.profiles[index].kind != ProfileKind::Subscription {
@@ -5182,7 +5317,7 @@ impl ProfileBook {
 
     pub fn set_profile_user_agent(&mut self, id: &str, user_agent: &str) -> ProfileSnapshot {
         let Some(index) = self.index_of(id) else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
+            self.input_error = Some(missing_profile());
             return self.snapshot();
         };
         if self.profiles[index].kind != ProfileKind::Subscription { return self.snapshot(); }
@@ -5200,7 +5335,7 @@ impl ProfileBook {
     /// Store (or clear, with empty text) the age identities used to decrypt this subscription.
     pub fn set_profile_age_key(&mut self, id: &str, keys: &str) -> ProfileSnapshot {
         let Some(index) = self.index_of(id) else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
+            self.input_error = Some(missing_profile());
             return self.snapshot();
         };
         if self.profiles[index].kind != ProfileKind::Subscription {
@@ -5231,7 +5366,7 @@ impl ProfileBook {
             .profiles
             .iter()
             .find(|profile| profile.id == id)
-            .ok_or_else(|| MISSING_PROFILE.to_string())?;
+            .ok_or_else(|| missing_profile())?;
         let (yaml, logs) = preview_override(&profile.content, text, &profile.name)?;
         Ok(OverridePreview { yaml, logs })
     }
@@ -5251,12 +5386,12 @@ impl ProfileBook {
         kernel: &mut dyn KernelLaunch,
     ) -> ProfileSnapshot {
         let Some(index) = self.index_of(id) else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
+            self.input_error = Some(missing_profile());
             return self.snapshot();
         };
         let Some(proxy_count) = subscription_proxy_count(content) else {
-            self.profiles[index].failure = Some(CONTENT_ERROR.to_string());
-            self.input_error = Some(CONTENT_ERROR.to_string());
+            self.profiles[index].failure = Some(content_error());
+            self.input_error = Some(content_error());
             return self.snapshot();
         };
         let profile = &mut self.profiles[index];
@@ -5286,7 +5421,7 @@ impl ProfileBook {
 
     pub fn prepare_refresh(&mut self, id: &str) -> Option<RefreshRequest> {
         let Some(index) = self.index_of(id) else {
-            self.input_error = Some(MISSING_PROFILE.to_string());
+            self.input_error = Some(missing_profile());
             return None;
         };
         let user_agent = self.subscription_user_agent(index).to_string();
@@ -5853,21 +5988,21 @@ fn normalize_outbound(mode: &str) -> Option<&'static str> {
 }
 
 fn force_mode(yaml: &str, mode: &str) -> Result<String, String> {
-    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| content_error())?;
     let Some(map) = value.as_mapping_mut() else {
-        return Err(CONTENT_ERROR.to_string());
+        return Err(content_error());
     };
     map.insert(
         Value::String("mode".to_string()),
         Value::String(mode.to_string()),
     );
-    serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
+    serde_yaml::to_string(&value).map_err(|_| content_error())
 }
 
 fn force_tun(yaml: &str, enable: bool, fd: Option<i32>) -> Result<String, String> {
-    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| content_error())?;
     let Some(map) = value.as_mapping_mut() else {
-        return Err(CONTENT_ERROR.to_string());
+        return Err(content_error());
     };
     let tun_key = Value::String("tun".to_string());
     let mut tun = map
@@ -5883,7 +6018,7 @@ fn force_tun(yaml: &str, enable: bool, fd: Option<i32>) -> Result<String, String
         tun.remove(&fd_key);
     }
     map.insert(tun_key, Value::Mapping(tun));
-    serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
+    serde_yaml::to_string(&value).map_err(|_| content_error())
 }
 
 fn document_value(profile: &Profile) -> Option<Value> {
@@ -5921,12 +6056,12 @@ fn prepare_named(content: &str, override_text: &str, name: &str) -> Result<Prepa
 
 /// Apply `override_text` to `content` without saving, for the editor's preview.
 pub fn preview_override(content: &str, override_text: &str, name: &str) -> Result<(String, Vec<String>), String> {
-    let mut base = parse_config(content).map_err(|_| CONTENT_ERROR.to_string())?;
+    let mut base = parse_config(content).map_err(|_| content_error())?;
     let applied = crate::override_engine::apply(&mut base, override_text, name, parse_yaml)?;
     if !is_config(&base) {
         return Err("覆写后配置为空".to_string());
     }
-    let yaml = serde_yaml::to_string(&base).map_err(|_| CONTENT_ERROR.to_string())?;
+    let yaml = serde_yaml::to_string(&base).map_err(|_| content_error())?;
     Ok((yaml, applied.logs))
 }
 
@@ -6050,19 +6185,19 @@ fn usage_from_parts(used: Option<u64>, total: Option<u64>, expire: Option<u64>) 
 fn parse_install_link(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.to_ascii_lowercase().starts_with("clash://") {
-        return Err(LINK_ERROR.to_string());
+        return Err(link_error());
     }
     let Some(rest) = strip_prefix_ignore_ascii_case(raw, "billow://") else {
-        return Err(LINK_ERROR.to_string());
+        return Err(link_error());
     };
     let Some((host, query)) = rest.split_once('?') else {
-        return Err(ONE_LINK_ERROR.to_string());
+        return Err(link_error());
     };
     if !host
         .trim_end_matches('/')
         .eq_ignore_ascii_case("install-config")
     {
-        return Err(LINK_ERROR.to_string());
+        return Err(link_error());
     }
     let mut urls = Vec::new();
     for pair in query.split('&') {
@@ -6075,7 +6210,7 @@ fn parse_install_link(raw: &str) -> Result<String, String> {
         }
     }
     if urls.len() != 1 {
-        return Err(ONE_LINK_ERROR.to_string());
+        return Err(one_link_error());
     }
     validate_subscription_url(&urls[0])
 }
@@ -6084,10 +6219,10 @@ fn validate_subscription_url(url: &str) -> Result<String, String> {
     let url = url.trim();
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return Err(URL_ERROR.to_string());
+        return Err(url_error());
     }
     if url.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
-        return Err(URL_ERROR.to_string());
+        return Err(url_error());
     }
     let host = url
         .split_once("://")
@@ -6099,7 +6234,7 @@ fn validate_subscription_url(url: &str) -> Result<String, String> {
     let host = host.rsplit('@').next().unwrap_or(host);
     let host = host.split(':').next().unwrap_or(host);
     if host.is_empty() || !host.contains('.') && host != "localhost" {
-        return Err(URL_ERROR.to_string());
+        return Err(url_error());
     }
     Ok(url.to_string())
 }
@@ -6176,7 +6311,7 @@ fn parse_subscription_content(mut content: String) -> Result<(String, usize), St
     use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
     for engine in [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD] {
         if let Ok(bytes) = engine.decode(&content) {
-            let mut decoded = String::from_utf8(bytes).map_err(|_| CONTENT_ERROR.to_string())?;
+            let mut decoded = String::from_utf8(bytes).map_err(|_| content_error())?;
             trim_body(&mut decoded);
             if let Some(count) = subscription_proxy_count(&decoded) {
                 return Ok((decoded, count));
@@ -6184,7 +6319,7 @@ fn parse_subscription_content(mut content: String) -> Result<(String, usize), St
             break;
         }
     }
-    Err(CONTENT_ERROR.to_string())
+    Err(content_error())
 }
 
 fn now_ms() -> u64 {
@@ -6485,6 +6620,17 @@ proxy-groups:
         let clash = friendly_listen_error("Start TUN listening error: Cannot create a file when that file already exists.");
         assert!(clash.contains("另一个代理客户端"));
         assert_eq!(friendly_listen_error("something else"), "something else");
+
+        // The same classifier exposes the settings shortcut as a structured hint
+        // so views never match this translated text (T8).
+        let (_, port_hint) = friendly_listen_error_parts(
+            "Start Mixed(http+socks) server error: listen tcp 127.0.0.1:7890: bind: address already in use",
+        );
+        assert_eq!(port_hint, Some(FailureHint::Port));
+        let (_, tun_hint) = friendly_listen_error_parts("Start TUN listening error: configure tun interface: Access is denied.");
+        assert_eq!(tun_hint, Some(FailureHint::Tun));
+        let (_, none) = friendly_listen_error_parts("something else");
+        assert_eq!(none, None);
     }
 
     #[cfg(target_os = "windows")]
@@ -6525,7 +6671,7 @@ proxy-groups:
             self.items
                 .get(url)
                 .cloned()
-                .unwrap_or(Err(FETCH_ERROR.to_string()))
+                .unwrap_or(Err(fetch_error()))
         }
     }
 
@@ -6533,7 +6679,7 @@ proxy-groups:
 
     impl SubscriptionSource for RejectSource {
         fn fetch(&self, _url: &str) -> Result<FetchedSubscription, String> {
-            Err(FETCH_ERROR.to_string())
+            Err(fetch_error())
         }
     }
 
@@ -6547,7 +6693,7 @@ proxy-groups:
         fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
             self.calls += 1;
             if self.fail {
-                return Err(KERNEL_ERROR.to_string());
+                return Err(kernel_error());
             }
             self.running = Some(config_yaml.to_string());
             Ok(())
@@ -7402,7 +7548,7 @@ rules:\n  - MATCH,pick\n",
         assert_eq!(book.due_profiles(now_ms()), ["p1"]);
         let mut kernel = FakeKernel { running: None, fail: false, calls: 0 };
         let failed = book.refresh_profile("p1", &RejectSource, &mut kernel);
-        assert_eq!(failed.profiles[0].failure.as_deref(), Some(FETCH_ERROR));
+        assert_eq!(failed.profiles[0].failure.as_deref(), Some(fetch_error().as_str()));
         assert!(book.due_profiles(now_ms()).is_empty());
         assert_eq!(book.due_profiles(now_ms() + 6 * 3_600_000), ["p1"]);
         assert_eq!(book.subscription_ids(), ["p1"]);
@@ -7613,14 +7759,14 @@ rules:\n  - MATCH,pick\n",
         let before = book.snapshot();
         let rejected =
             book.stage_install_link("clash://install-config?url=https://example.com/other");
-        assert_eq!(rejected.input_error.as_deref(), Some(LINK_ERROR));
+        assert_eq!(rejected.input_error.as_deref(), Some(link_error().as_str()));
         assert_eq!(rejected.profiles.len(), before.profiles.len());
         assert!(rejected.pending_url.is_none());
 
         let doubled = book.stage_install_link(
             "billow://install-config?url=https://a.example/x&url=https://b.example/y",
         );
-        assert_eq!(doubled.input_error.as_deref(), Some(ONE_LINK_ERROR));
+        assert_eq!(doubled.input_error.as_deref(), Some(one_link_error().as_str()));
         assert_eq!(doubled.profiles.len(), 1);
         assert!(
             book.stage_install_link("billow://install-config?url=ftp://example.com/a")
@@ -7648,11 +7794,11 @@ rules:\n  - MATCH,pick\n",
 
         let doubled = book.add_subscription("https://example.com/sub");
         assert_eq!(doubled.profiles.len(), 1);
-        assert_eq!(doubled.input_error.as_deref(), Some(DUPLICATE_ERROR));
+        assert_eq!(doubled.input_error.as_deref(), Some(duplicate_error().as_str()));
 
         let spaced = book.add_subscription("  https://example.com/sub  ");
         assert_eq!(spaced.profiles.len(), 1);
-        assert_eq!(spaced.input_error.as_deref(), Some(DUPLICATE_ERROR));
+        assert_eq!(spaced.input_error.as_deref(), Some(duplicate_error().as_str()));
 
         let other = book.add_subscription("https://example.com/other");
         assert_eq!(other.profiles.len(), 2);
@@ -7664,7 +7810,7 @@ rules:\n  - MATCH,pick\n",
         );
         let confirmed = book.confirm_pending();
         assert_eq!(confirmed.profiles.len(), 2);
-        assert_eq!(confirmed.input_error.as_deref(), Some(DUPLICATE_ERROR));
+        assert_eq!(confirmed.input_error.as_deref(), Some(duplicate_error().as_str()));
         assert_eq!(
             confirmed.pending_url.as_deref(),
             Some("https://example.com/sub")
@@ -7701,7 +7847,7 @@ rules:\n  - MATCH,pick\n",
         let update = book.update("p2", &RejectSource, &mut kernel);
         assert_eq!(
             update.profiles.iter().find(|p| p.id == "p2").unwrap().failure.as_deref(),
-            Some(FETCH_ERROR)
+            Some(fetch_error().as_str())
         );
     }
 
@@ -7723,7 +7869,7 @@ rules:\n  - MATCH,pick\n",
         };
         missing.items.insert(
             "https://down.example/sub".to_string(),
-            Err(FETCH_ERROR.to_string()),
+            Err(fetch_error()),
         );
         let snapshot = book.enable("p2", &missing, &mut kernel);
         assert_eq!(snapshot.active_id.as_deref(), Some("p1"));
@@ -7734,11 +7880,11 @@ rules:\n  - MATCH,pick\n",
             .iter()
             .find(|profile| profile.id == "p2")
             .unwrap();
-        assert_eq!(failed.failure.as_deref(), Some(FETCH_ERROR));
+        assert_eq!(failed.failure.as_deref(), Some(fetch_error().as_str()));
         assert!(!failed.current);
         assert_eq!(kernel.calls, 1);
         assert_eq!(snapshot.mixed_port, Some(7890));
-        assert_eq!(snapshot.failure.as_deref(), Some(FETCH_ERROR));
+        assert_eq!(snapshot.failure.as_deref(), Some(fetch_error().as_str()));
 
         let again = book.enable("p2", &missing, &mut kernel);
         assert_eq!(
@@ -7749,7 +7895,7 @@ rules:\n  - MATCH,pick\n",
                 .unwrap()
                 .failure
                 .as_deref(),
-            Some(FETCH_ERROR)
+            Some(fetch_error().as_str())
         );
         assert!(!again.system_proxy && !again.tun && !again.vpn);
 
@@ -7792,7 +7938,7 @@ rules:\n  - MATCH,pick\n",
         assert_eq!(preview.logs, ["rule"]);
         let broken = book.save_override("p1", "function main(config) {\n  return config.a.b\n}\n");
         let error = broken.profiles[0].override_error.clone().unwrap();
-        assert!(error.starts_with(OVERRIDE_ERROR) && error.contains("第 2 行"), "{error}");
+        assert!(error.starts_with(override_error().as_str()) && error.contains("第 2 行"), "{error}");
     }
 
     #[test]
@@ -7819,7 +7965,7 @@ rules:\n  - MATCH,pick\n",
         assert_eq!(rejected.mixed_port, Some(7890));
         assert_eq!(rejected.mode.as_deref(), Some("rule"));
         assert!(rejected.system_proxy && !rejected.tun && rejected.vpn);
-        assert!(rejected.profiles[0].override_error.as_deref().is_some_and(|error| error.starts_with(OVERRIDE_ERROR)));
+        assert!(rejected.profiles[0].override_error.as_deref().is_some_and(|error| error.starts_with(override_error().as_str())));
         assert!(rejected.profiles[0].failure.is_none());
         assert_eq!(kernel.calls, calls_before);
         assert_eq!(port_of(kernel.running.as_deref().unwrap()), 7890);
@@ -7837,7 +7983,7 @@ rules:\n  - MATCH,pick\n",
             .unwrap()
             .override_error
             .as_deref()
-            .is_some_and(|error| error.starts_with(OVERRIDE_ERROR)));
+            .is_some_and(|error| error.starts_with(override_error().as_str())));
 
         book.save_override("p1", "mixed-port: 8000\ndns:\n  enable: false\n");
         let applied = book.enable("p1", &RejectSource, &mut kernel);
@@ -7908,7 +8054,7 @@ rules:\n  - MATCH,pick\n",
                 .unwrap()
                 .failure
                 .as_deref(),
-            Some(KERNEL_ERROR)
+            Some(kernel_error().as_str())
         );
         assert_eq!(port_of(kernel.running.as_deref().unwrap()), 7890);
 
@@ -7927,7 +8073,7 @@ rules:\n  - MATCH,pick\n",
                 .unwrap()
                 .failure
                 .as_deref(),
-            Some(CONTENT_ERROR)
+            Some(content_error().as_str())
         );
         assert_eq!(kernel.calls, calls);
     }
@@ -8073,11 +8219,11 @@ rules:\n  - MATCH,pick\n",
         let dir = temp_dir("runtime");
         let mut runtime = ProcessRuntime::new(&dir.0);
         let error = runtime.start_or_reload("mixed-port: 1\n").unwrap_err();
-        assert_eq!(error, MISSING_KERNEL);
+        assert_eq!(error, missing_kernel());
         runtime.set_kernel_path(Some(dir.0.join("missing-core")));
         assert_eq!(
             runtime.start_or_reload("mixed-port: 1\n").unwrap_err(),
-            MISSING_KERNEL
+            missing_kernel()
         );
 
         #[cfg(unix)]
@@ -8419,8 +8565,11 @@ rules:\n  - MATCH,pick\n",
         assert!(partial.nodes_error.is_none());
         assert_eq!(group(&partial.node_catalog, "manual").now, "z-node");
         assert!(partial.notice.unwrap().contains("节点已切换，但"));
+        // The notice is a structured flag, not text later matched by the UI (T8).
+        assert!(book.node_switch_notice);
         kernel.report_running = false;
         book.select_node("manual", "a-node", &mut kernel);
+        assert!(!book.node_switch_notice);
         assert_eq!(kernel.closed_groups.len(), 2, "offline preferences cannot close connections");
     }
 
@@ -8896,7 +9045,7 @@ proxy-groups:
         fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
             if self.fail {
                 self.running = false;
-                return Err(KERNEL_ERROR.to_string());
+                return Err(kernel_error());
             }
             self.running = true;
             Ok(())
@@ -9154,7 +9303,7 @@ proxy-groups:
             failed
                 .logs
                 .iter()
-                .any(|line| { line.level == "error" && line.message.contains(KERNEL_ERROR) })
+                .any(|line| { line.level == "error" && line.message.contains(kernel_error().as_str()) })
         );
         kernel.fail = false;
         kernel.running = true;
@@ -9172,7 +9321,7 @@ proxy-groups:
             errors
                 .logs
                 .iter()
-                .any(|line| line.message.contains(KERNEL_ERROR))
+                .any(|line| line.message.contains(kernel_error().as_str()))
         );
         assert!(errors.logs.iter().all(|line| line.level == "error"));
         assert!(!book.snapshot().connected);
@@ -9204,7 +9353,7 @@ proxy-groups:
             if self.stay_up {
                 Ok(())
             } else {
-                Err(KERNEL_ERROR.to_string())
+                Err(kernel_error())
             }
         }
 
@@ -9272,7 +9421,7 @@ proxy-groups:
             assert!(cancelled.connected && cancelled.system_proxy && cancelled.kernel_running);
             assert!(!cancelled.tun);
             assert_eq!(proxy.http, proxy_before);
-            assert!(cancelled.failure.unwrap().starts_with(takeover::TUN_AUTHORIZATION_FAILED));
+            assert_eq!(cancelled.failure.as_deref(), Some(crate::i18n::tr(crate::i18n::Key::TunAuthorizationFailed)));
             kernel.cancelled = false;
             let calls = kernel.calls;
             let ready = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
@@ -9299,6 +9448,8 @@ proxy-groups:
 
         let denied = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert_eq!(denied.failure.as_deref(), Some(takeover::TUN_DENIED));
+        // The settings shortcut travels as a structured hint, not as text (T8).
+        assert_eq!(denied.failure_hint, Some(FailureHint::Tun));
         assert!(!denied.tun);
         // A shortcut announces the reason its own action raised (R39), even
         // though the action itself returned Ok.
@@ -10480,7 +10631,8 @@ proxy-groups:
         book.enable("p1", &RejectSource, &mut kernel);
         let snap0 = book.snapshot();
         assert_eq!(snap0.node_catalog[0].nodes[0].dialer_proxy.as_deref(), Some("front"));
-        assert!(snap0.node_catalog[0].nodes[0].tags.iter().any(|tag| tag == "链式"));
+        // The machine tag is language-neutral; the UI translates it (T8).
+        assert!(snap0.node_catalog[0].nodes[0].tags.iter().any(|tag| tag == "chained"));
 
         // Off by default: launch hook is a no-op.
         assert!(book.auto_connect_on_launch(&mut kernel, &mut proxy, &mut tun, &mut vpn).is_none());

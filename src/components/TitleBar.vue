@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { closeWindow, minimizeWindow, toggleMaximizeWindow, watchMaximized, type WindowChrome } from '../lib/ui/windowChrome'
 
@@ -29,14 +30,14 @@ onBeforeUnmount(() => {
       <span>Billow</span>
     </span>
     <div v-if="chrome === 'windows'" class="caption-buttons">
-      <button type="button" class="caption-btn" aria-label="最小化" title="最小化" data-testid="window-minimize" @click="minimizeWindow">
+      <button type="button" class="caption-btn" :aria-label="tr('最小化')" :title="tr('最小化')" data-testid="window-minimize" @click="minimizeWindow">
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" /></svg>
       </button>
       <button
         type="button"
         class="caption-btn"
-        :aria-label="maximized ? '还原' : '最大化'"
-        :title="maximized ? '还原' : '最大化'"
+        :aria-label="maximized ? tr('还原') : tr('最大化')"
+        :title="maximized ? tr('还原') : tr('最大化')"
         data-testid="window-maximize"
         @click="toggleMaximizeWindow"
       >
@@ -45,7 +46,7 @@ onBeforeUnmount(() => {
         </svg>
         <svg v-else width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M.5.5h9v9h-9z" /></svg>
       </button>
-      <button type="button" class="caption-btn close" aria-label="关闭" title="关闭" data-testid="window-close" @click="closeWindow">
+      <button type="button" class="caption-btn close" :aria-label="tr('关闭')" :title="tr('关闭')" data-testid="window-close" @click="closeWindow">
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M.5.5l9 9M9.5.5l-9 9" /></svg>
       </button>
     </div>

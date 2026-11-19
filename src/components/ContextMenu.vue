@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { registerLayer } from '../lib/ui/focus'
 import Icon from './Icon.vue'
@@ -11,7 +12,7 @@ const props = withDefaults(
     items: readonly MenuItem[]
     label?: string
   }>(),
-  { label: '快捷操作' },
+  { label: tr('快捷操作') },
 )
 const emit = defineEmits<{ select: [item: MenuItem]; close: [] }>()
 

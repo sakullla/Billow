@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChainPath from '../components/ChainPath.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -6,7 +7,7 @@ import GroupIcon from '../components/GroupIcon.vue'
 import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
-import { autoTypeLabel, canPickNode, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, protocolLabel, resolveChain, splitNodePrefix } from '../lib/format'
+import { autoTypeLabel, canPickNode, compareText, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, protocolLabel, resolveChain, splitNodePrefix } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
@@ -24,14 +25,14 @@ const busyKeys = computed(() => Object.keys(store.busy).join('\0'))
 
 type Sort = 'default' | 'delay' | 'name'
 const SORTS: { id: Sort; label: string }[] = [
-  { id: 'default', label: '默认' },
-  { id: 'delay', label: '延迟' },
-  { id: 'name', label: '名称' },
+  { id: 'default', label: tr('默认') },
+  { id: 'delay', label: tr('延迟') },
+  { id: 'name', label: tr('名称') },
 ]
 const MODES: { id: Mode; label: string }[] = [
-  { id: 'rule', label: '规则' },
-  { id: 'global', label: '全局' },
-  { id: 'direct', label: '直连' },
+  { id: 'rule', label: tr('规则') },
+  { id: 'global', label: tr('全局') },
+  { id: 'direct', label: tr('直连') },
 ]
 
 const OPEN_KEY = 'proxy-open'
@@ -65,8 +66,8 @@ const sort = ref<Sort>(readPref('proxy-sort', 'default'))
 type NodeView = 'card' | 'dense' | 'list'
 /** Desktop offers a card grid and a one-row-per-node list; phones keep their two-column toggle. */
 const VIEWS: { id: NodeView; label: string; icon: string }[] = [
-  { id: 'card', label: '卡片', icon: 'grid' },
-  { id: 'list', label: '列表', icon: 'list' },
+  { id: 'card', get label() { return tr('卡片') }, icon: 'grid' },
+  { id: 'list', get label() { return tr('列表') }, icon: 'list' },
 ]
 function readView(): NodeView {
   const stored = readPref<string>('proxy-view', '')
@@ -228,7 +229,16 @@ function matches(node: NodeItem): boolean {
 
 /** Full protocol and tag list for the tooltip; rows may clip the tail. */
 function metaTitle(node: NodeItem): string {
-  const parts = [protocolLabel(node.node_type), ...node.tags.map((tag) => (tag === '链式' && node.dialer_proxy ? `链式（前置：${dialerTargetLabel(node)}）` : tag))]
+  const parts = [
+    protocolLabel(node.node_type),
+    ...node.tags.map((tag) =>
+      tag === 'chained'
+        ? node.dialer_proxy
+          ? tr('链式（前置：{0}）', { 0: dialerTargetLabel(node) })
+          : tr('链式')
+        : tag,
+    ),
+  ]
   return parts.filter(Boolean).join(' · ')
 }
 
@@ -247,7 +257,7 @@ function dialerTargetLabel(node: NodeItem): string {
 function sorted(nodes: NodeItem[]): NodeItem[] {
   if (sort.value === 'default') return nodes
   const list = nodes.map((node, index) => ({ node, index }))
-  if (sort.value === 'name') list.sort((a, b) => a.node.name.localeCompare(b.node.name, 'zh-CN') || a.index - b.index)
+  if (sort.value === 'name') list.sort((a, b) => compareText(a.node.name, b.node.name) || a.index - b.index)
   if (sort.value === 'delay') {
     const key = (node: NodeItem) => (node.failed ? 2e9 : node.delay_ms == null ? 1e9 : node.delay_ms)
     list.sort((a, b) => key(a.node) - key(b.node) || a.index - b.index)
@@ -371,7 +381,7 @@ function groupHealthText(group: NodeGroup): string {
     }
   }
   if (!tested) return ''
-  return `可用 ${ok}/${tested}`
+  return tr('可用 {0}/{1}', { 0: ok, 1: tested })
 }
 
 function highlight(name: string) {
@@ -385,7 +395,7 @@ function nameParts(name: string) {
 }
 
 function copyNodeName(node: NodeItem) {
-  void store.copyText(node.name, `已复制节点名称：${node.name}`)
+  void store.copyText(node.name, tr('已复制节点名称：{0}', { 0: node.name }))
 }
 
 function pick(group: NodeGroup, node: NodeItem) {
@@ -419,7 +429,7 @@ async function pickFastest(group: NodeGroup) {
   if (!best) return
   const res = await store.selectNode(group.name, best.node.name)
   if (res) {
-    store.toast(`已切至最快节点：${best.node.name} (${delayText(best.delay, false)})`, 'success')
+    store.toast(tr('已切至最快节点：{0} ({1})', { 0: best.node.name, 1: delayText(best.delay, false) }), 'success')
   }
 }
 
@@ -435,8 +445,8 @@ function groupTestProgressPct(name: string): number | null {
 
 function nodeTitle(group: NodeGroup): string | undefined {
   if (group.kind === 'manual') return undefined
-  if (group.pinnable) return snap.value.kernel_running ? '点选后固定使用该节点，可随时恢复自动' : '内核没有运行，连接后才能固定节点'
-  return `${groupTypeLabel(group)}组由内核自动择优，不可手动切换`
+  if (group.pinnable) return snap.value.kernel_running ? tr('点选后固定使用该节点，可随时恢复自动') : tr('内核没有运行，连接后才能固定节点')
+  return tr('{0}组由内核自动择优，不可手动切换', { 0: groupTypeLabel(group) })
 }
 
 function isOpen(name: string) {
@@ -608,7 +618,7 @@ onBeforeUnmount(() => {
 
 /** Phones list one node per row and offer a two-column grid as their only other view. */
 /** A pressed toggle keeps one stable name; aria-pressed carries the on/off state (R3). */
-const denseLabel = '双列视图'
+const denseLabel = tr('双列视图')
 const denseIcon = 'grid'
 
 const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card' || hideFailed.value)
@@ -618,11 +628,11 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
   <div class="page proxies" :style="{ '--toolbar-h': `${toolbarHeight}px` }">
     <header class="page-head">
       <div>
-        <h1>代理</h1>
-        <p class="muted small" :title="hiddenAutoCount ? `另有 ${hiddenAutoCount} 个自动组由内核择优，未单独列出` : undefined">
-          <template v-if="listed.length">{{ listed.length - hiddenAutoCount }} 个代理组 · {{ distinctNodeCount }} 个节点</template>
-          <template v-else-if="allGroupsHidden">配置中的代理组均已隐藏</template>
-          <template v-else>{{ snap.nodes_notice ?? '没有代理组' }}</template>
+        <h1>{{ tr('代理') }}</h1>
+        <p class="muted small" :title="hiddenAutoCount ? tr('另有 {0} 个自动组由内核择优，未单独列出', { 0: hiddenAutoCount }) : undefined">
+          <template v-if="listed.length">{{ listed.length - hiddenAutoCount }} {{ tr('个代理组 ·') }} {{ distinctNodeCount }} {{ tr('个节点') }}</template>
+          <template v-else-if="allGroupsHidden">{{ tr('配置中的代理组均已隐藏') }}</template>
+          <template v-else>{{ snap.nodes_notice ?? tr('没有代理组') }}</template>
         </p>
       </div>
       <div class="head-actions">
@@ -631,7 +641,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           :model-value="snap.mode"
           :options="MODES"
           size="sm"
-          label="出站模式"
+          :label="tr('出站模式')"
           :disabled="store.busy.mode"
           @update:model-value="store.setMode"
         />
@@ -640,15 +650,13 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           class="test-progress small mono"
           data-testid="test-progress"
           aria-live="polite"
-        >已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
+        >{{ tr('已测') }} {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
         <span
           v-if="!snap.kernel_running && snap.node_catalog.length"
           id="proxy-test-hint"
           class="test-hint sr-only"
           data-testid="test-hint"
-        >
-          连接后可测速
-        </span>
+        > {{ tr('连接后可测速') }} </span>
         <!-- Without groups there is nothing to test; the empty state below owns the next step. -->
         <button
           v-if="snap.node_catalog.length"
@@ -656,13 +664,13 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           class="btn primary sm"
           :disabled="store.testing.value || !snap.kernel_running"
           :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
-          :title="snap.kernel_running ? '测试全部节点延迟' : '连接后才能测速'"
+          :title="snap.kernel_running ? tr('测试全部节点延迟') : tr('连接后才能测速')"
           data-testid="test-all"
           @click="store.testAll()"
         >
           <span v-if="store.busy.testAll" class="spinner sm" />
           <Icon v-else name="zap" :size="15" />
-          {{ compact ? '测速' : '全部测速' }}
+          {{ compact ? tr('测速') : tr('全部测速') }}
         </button>
       </div>
     </header>
@@ -673,9 +681,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       data-testid="proxies-connect-bar"
     >
       <span class="proxies-connect-text small">
-        <span class="proxies-connect-dot" aria-hidden="true" />
-        当前未连接，连接后即可测速与实时生效
-      </span>
+        <span class="proxies-connect-dot" aria-hidden="true" /> {{ tr('当前未连接，连接后即可测速与实时生效') }} </span>
       <button
         type="button"
         class="btn primary sm"
@@ -685,7 +691,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       >
         <span v-if="store.connecting.value" class="spinner xs" />
         <Icon v-else name="power" :size="14" />
-        {{ store.connecting.value ? '连接中' : '立即连接' }}
+        {{ store.connecting.value ? tr('连接中') : tr('立即连接') }}
       </button>
     </div>
 
@@ -695,26 +701,22 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       data-testid="proxies-direct-bar"
     >
       <span class="proxies-connect-text small">
-        <Icon name="zap" :size="15" />
-        当前为直连模式，选择的代理节点不会生效
-      </span>
+        <Icon name="zap" :size="15" /> {{ tr('当前为直连模式，选择的代理节点不会生效') }} </span>
       <button
         type="button"
         class="btn ghost sm"
         :disabled="Boolean(store.busy.mode)"
         data-testid="proxies-switch-rule"
         @click="store.setMode('rule')"
-      >
-        切回规则模式
-      </button>
+      > {{ tr('切回规则模式') }} </button>
     </div>
 
     <div v-if="listed.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索节点、协议或 UDP 等标签" data-testid="node-search" data-page-search />
+        <input v-model="query" type="search" :placeholder="tr('搜索节点、协议或 UDP 等标签')" data-testid="node-search" data-page-search />
         <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
-        <button v-if="query" type="button" class="icon-btn sm" aria-label="清空搜索" data-testid="clear-search" @click="query = ''">
+        <button v-if="query" type="button" class="icon-btn sm" :aria-label="tr('清空搜索')" data-testid="clear-search" @click="query = ''">
           <Icon name="x" :size="14" />
         </button>
       </div>
@@ -725,16 +727,14 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         :class="{ active: optionsOpen, marked: optionsActive && !optionsOpen }"
         :aria-expanded="optionsOpen"
         aria-controls="proxy-options"
-        aria-label="排序与视图"
-        title="排序与视图"
+        :aria-label="tr('排序与视图')"
+        :title="tr('排序与视图')"
         data-testid="toggle-options"
         @click="optionsOpen = !optionsOpen"
       >
         <Icon name="sliders" />
       </button>
-      <span v-if="needle && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite">
-        匹配 {{ matchCount }} 个节点
-      </span>
+      <span v-if="needle && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite"> {{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }} </span>
       <button
         v-if="failedNodeCount > 0"
         type="button"
@@ -743,17 +743,16 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         :aria-pressed="hideFailed"
         data-testid="hide-failed-nodes"
         @click="hideFailed = !hideFailed"
-      >
-        隐藏超时 {{ failedNodeCount }}
+      > {{ tr('隐藏超时') }} {{ failedNodeCount }}
       </button>
       <div v-if="showOptions" id="proxy-options" class="toolbar-options">
-        <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
+        <Segmented v-model="sort" :options="SORTS" size="sm" :label="tr('排序')" />
         <!-- Desktop: quiet icon buttons with tooltips; phones lay them out as labelled chips (R3, R12). Auto groups need no toggle (R13). -->
         <div
           v-if="!compact"
           class="view-switch"
           role="group"
-          aria-label="节点视图"
+          :aria-label="tr('节点视图')"
           :data-value="desktopView"
           data-testid="node-view"
         >
@@ -764,8 +763,8 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             class="view-switch-btn"
             :class="{ active: desktopView === item.id }"
             :aria-pressed="desktopView === item.id"
-            :aria-label="`${item.label}视图`"
-            :title="`${item.label}视图`"
+            :aria-label="tr('{0}视图', { 0: item.label })"
+            :title="tr('{0}视图', { 0: item.label })"
             :data-testid="`node-view-${item.id}`"
             @click="view = item.id"
           >
@@ -777,13 +776,13 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           class="btn ghost sm tool-btn"
           :class="{ 'icon-only': !compact }"
           :disabled="!canLocateActive"
-          aria-label="定位当前选中节点"
-          :title="canLocateActive ? '定位当前选中节点' : '当前没有已选中的节点'"
+          :aria-label="tr('定位当前选中节点')"
+          :title="canLocateActive ? tr('定位当前选中节点') : tr('当前没有已选中的节点')"
           data-testid="locate-active-node"
           @click="locateActiveNode"
         >
           <Icon name="locate" :size="15" />
-          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">定位</span>
+          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ tr('定位') }}</span>
         </button>
         <button
           v-if="compact"
@@ -797,25 +796,25 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           @click="view = dense ? 'card' : 'dense'"
         >
           <Icon :name="denseIcon" :size="15" />
-          <span class="tool-btn-label">双列</span>
+          <span class="tool-btn-label">{{ tr('双列') }}</span>
         </button>
         <button
           type="button"
           class="btn ghost sm tool-btn"
           :class="{ 'icon-only': !compact }"
-          :title="allExpanded ? '收起全部代理组' : '展开全部代理组'"
+          :title="allExpanded ? tr('收起全部代理组') : tr('展开全部代理组')"
           data-testid="toggle-all"
           @click="toggleAll"
         >
           <Icon :name="allExpanded ? 'collapse-all' : 'expand-all'" :size="15" />
-          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ allExpanded ? '收起全部' : '展开全部' }}</span>
+          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ allExpanded ? tr('收起全部') : tr('展开全部') }}</span>
         </button>
       </div>
 
       <nav
         v-if="groups.length > 2 && !needle"
         class="group-pills"
-        aria-label="代理组快速跳转"
+        :aria-label="tr('代理组快速跳转')"
         data-testid="group-jump-bar"
       >
         <button
@@ -840,31 +839,31 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       v-if="!snap.node_catalog.length"
       variant="no-data"
       icon="globe"
-      :title="snap.nodes_notice ?? '没有代理组'"
-      description="添加并启用一份配置后，这里会列出它的代理组与节点。"
+      :title="snap.nodes_notice ?? tr('没有代理组')"
+      :description="tr('添加并启用一份配置后，这里会列出它的代理组与节点。')"
     >
       <template #action>
-        <button type="button" class="btn primary sm" @click="store.go('profiles')">前往配置</button>
+        <button type="button" class="btn primary sm" @click="store.go('profiles')">{{ tr('前往配置') }}</button>
       </template>
     </EmptyState>
     <EmptyState
       v-else-if="allGroupsHidden"
       variant="no-data"
       icon="globe"
-      title="配置中的代理组均已隐藏"
-      description="这份配置把全部代理组标记为 hidden，如需在这里选择节点，请在配置中取消隐藏。"
+      :title="tr('配置中的代理组均已隐藏')"
+      :description="tr('这份配置把全部代理组标记为 hidden，如需在这里选择节点，请在配置中取消隐藏。')"
       data-testid="all-groups-hidden"
     />
     <EmptyState
       v-else-if="!groups.length"
       compact
       variant="no-match"
-      title="没有匹配的节点"
-      description="换一个关键词或关闭「隐藏超时」筛选。"
+      :title="tr('没有匹配的节点')"
+      :description="tr('换一个关键词或关闭「隐藏超时」筛选。')"
       data-testid="no-match"
     >
       <template #action>
-        <button type="button" class="btn ghost sm" @click="query = ''; hideFailed = false">清空搜索</button>
+        <button type="button" class="btn ghost sm" @click="query = ''; hideFailed = false">{{ tr('清空搜索') }}</button>
       </template>
     </EmptyState>
 
@@ -893,19 +892,19 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               <span
                 v-if="group.fixed"
                 class="tag accent fixed-tag"
-                :title="`已固定使用 ${group.fixed}，恢复自动后由组策略选择`"
+                :title="tr('已固定使用 {0}，恢复自动后由组策略选择', { 0: group.fixed })"
                 :data-testid="`group-fixed-${group.name}`"
-              >已固定</span>
+              >{{ tr('已固定') }}</span>
               <span class="muted small group-count mono">{{ group.nodes.length }}</span>
               <span v-if="groupHealthText(group)" class="group-health muted small">{{ groupHealthText(group) }}</span>
             </span>
             <span class="group-now small">
               <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
               <ChainPath v-if="group.now" class="group-now-name" :hops="groupHops(group)" :groups="groupNamesSet" />
-              <span v-else class="group-now-name">{{ group.kind === 'auto' ? '连接后显示' : '—' }}</span>
+              <span v-else class="group-now-name">{{ group.kind === 'auto' ? tr('连接后显示') : '—' }}</span>
               <span v-if="groupNowDelay(group)" class="group-delay mono" :class="groupNowTone(group)">{{ groupNowDelay(group) }}</span>
-              <span v-if="store.activeTest.value?.group === group.name" class="small mono" data-testid="group-test-progress" aria-live="polite">已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
-              <span v-else-if="groupTestedAt(group)" class="group-tested">测速 {{ formatRelative(groupTestedAt(group)!) }}</span>
+              <span v-if="store.activeTest.value?.group === group.name" class="small mono" data-testid="group-test-progress" aria-live="polite">{{ tr('已测') }} {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
+              <span v-else-if="groupTestedAt(group)" class="group-tested">{{ tr('测速') }} {{ formatRelative(groupTestedAt(group)!) }}</span>
             </span>
           </span>
           <Icon name="chevron-down" class="chevron" />
@@ -915,30 +914,28 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           type="button"
           class="btn ghost sm group-fastest"
           :disabled="Boolean(store.busy[`select:${group.name}`])"
-          :title="`切换至当前最快的节点：${fastestCandidate(group)!.node.name} (${delayText(fastestCandidate(group)!.delay, false)})`"
+          :title="tr('切换至当前最快的节点：{0} ({1})', { 0: fastestCandidate(group)!.node.name, 1: delayText(fastestCandidate(group)!.delay, false) })"
           :data-testid="`pick-fastest-${group.name}`"
           @click="pickFastest(group)"
         >
           <Icon name="zap" :size="13" />
-          {{ compact ? '最快' : '选最快' }}
+          {{ compact ? tr('最快') : tr('选最快') }}
         </button>
         <button
           v-if="group.fixed"
           type="button"
           class="btn ghost sm group-unfix"
           :disabled="!snap.kernel_running || Boolean(store.busy[`select:${group.name}`])"
-          :title="snap.kernel_running ? '解除固定，由组策略重新选择节点' : '内核没有运行'"
+          :title="snap.kernel_running ? tr('解除固定，由组策略重新选择节点') : tr('内核没有运行')"
           :data-testid="`unfix-group-${group.name}`"
           @click="store.unfixGroup(group.name)"
-        >
-          恢复自动
-        </button>
+        > {{ tr('恢复自动') }} </button>
         <button
           type="button"
           class="icon-btn group-test"
-          :aria-label="`测速 ${group.name}`"
+          :aria-label="tr('测速 {0}', { 0: group.name })"
           :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
-          :title="snap.kernel_running ? '测试该组延迟' : '连接后才能测速'"
+          :title="snap.kernel_running ? tr('测试该组延迟') : tr('连接后才能测速')"
           :disabled="!snap.kernel_running || store.testing.value"
           :aria-busy="store.activeTest.value?.group === group.name || undefined"
           :data-testid="`test-group-${group.name}`"
@@ -964,7 +961,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         <template v-if="groupStrategy(group.group_type) || group.info?.length" #header>
           <p v-if="groupStrategy(group.group_type)" class="group-strategy small" data-testid="group-strategy">
             <Icon :name="groupStrategy(group.group_type)!.icon" :size="14" />
-            <span>{{ groupStrategy(group.group_type)!.hint }}<template v-if="group.pinnable">{{ group.fixed ? `当前已固定为 ${group.fixed}。` : '点选节点可固定使用。' }}</template></span>
+            <span>{{ groupStrategy(group.group_type)!.hint }}<template v-if="group.pinnable">{{ group.fixed ? tr('当前已固定为 {0}。', { 0: group.fixed }) : tr('点选节点可固定使用。') }}</template></span>
           </p>
           <p v-if="group.info?.length" class="group-info small" data-testid="group-info">
             <Icon name="info" :size="13" />
@@ -973,7 +970,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         </template>
         <template #default="{ nodes: visibleNodes }">
           <p v-if="!group.nodes.length" class="muted small">
-            {{ needle ? '没有匹配的节点' : snap.kernel_running ? '该组暂时没有可用节点，请检查资源页中的订阅源状态。' : '连接后加载订阅源节点。' }}
+            {{ needle ? tr('没有匹配的节点') : snap.kernel_running ? tr('该组暂时没有可用节点，请检查资源页中的订阅源状态。') : tr('连接后加载订阅源节点。') }}
           </p>
           <div
             v-for="node in visibleNodes"
@@ -1005,7 +1002,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
                 <span
                   v-if="groupStrategy(group.group_type)?.ordered"
                   class="node-rank mono"
-                  :title="`优先级 ${rankOf(group, node)}`"
+                  :title="tr('优先级 {0}', { 0: rankOf(group, node) })"
                   data-testid="node-rank"
                 >{{ rankOf(group, node) }}</span>
                 <span v-if="nameParts(node.name).prefix.length" class="node-prefix"><template v-for="(part, partIndex) in nameParts(node.name).prefix" :key="partIndex"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
@@ -1014,12 +1011,12 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
                 </template>
                 <!-- 紧凑 has no meta line, so an auto entry or chained node keeps its target beside the name. -->
                 <span v-if="dense && autoOf(node) && viaOf(node)" class="node-via-inline">→ {{ viaOf(node) }}</span>
-                <span v-else-if="dense && node.dialer_proxy" class="node-via-inline">经 {{ node.dialer_proxy }}</span>
+                <span v-else-if="dense && node.dialer_proxy" class="node-via-inline">{{ tr('经') }} {{ node.dialer_proxy }}</span>
               </span>
               <!-- An auto group entry says how it picks and where it currently points (R14). -->
               <span v-if="!dense && autoOf(node)" class="node-meta node-via" data-testid="node-via">
                 <span class="node-type strategy">{{ groupTypeLabel(autoOf(node)!) }}</span>
-                <span class="node-via-target" :title="viaOf(node) || undefined">{{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? '→ 等待测速' : '→ 连接后显示' }}</span>
+                <span class="node-via-target" :title="viaOf(node) || undefined">{{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? tr('→ 等待测速') : tr('→ 连接后显示') }}</span>
               </span>
               <span v-else-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
                 <span class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
@@ -1027,16 +1024,16 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
                   v-for="tag in node.tags"
                   :key="tag"
                   class="node-tag"
-                  :class="{ udp: tag === 'UDP', chained: tag === '链式' }"
-                >{{ tag === '链式' && node.dialer_proxy ? `链式 · ${node.dialer_proxy}` : tag }}</span>
+                  :class="{ udp: tag === 'UDP', chained: tag === 'chained' }"
+                >{{ tag === 'chained' ? (node.dialer_proxy ? tr('链式 · {0}', { 0: node.dialer_proxy }) : tr('链式')) : tag }}</span>
               </span>
             </button>
             <button
               v-if="autoOf(node) && !autoOf(node)!.hidden"
               type="button"
               class="icon-btn sm node-open-auto"
-              :aria-label="`查看${groupTypeLabel(autoOf(node)!)}组 ${node.name}`"
-              :title="`查看「${node.name}」的${groupTypeLabel(autoOf(node)!)}策略与成员`"
+              :aria-label="tr('查看{0}组 {1}', { 0: groupTypeLabel(autoOf(node)!), 1: node.name })"
+              :title="tr('查看「{0}」的{1}策略与成员', { 0: node.name, 1: groupTypeLabel(autoOf(node)!) })"
               :data-testid="`open-auto-${node.name}`"
               @click="openAuto(node.name)"
             >
@@ -1046,15 +1043,15 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               type="button"
               class="delay"
               :class="[nodeTone(node), { busy: store.pendingTests.value.has(node.name), untested: !nodeDelay(node) }]"
-              :aria-label="`测速 ${node.name}`"
+              :aria-label="tr('测速 {0}', { 0: node.name })"
               :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
               :disabled="!snap.kernel_running || store.testing.value"
               :aria-busy="store.pendingTests.value.has(node.name) || undefined"
-              :title="snap.kernel_running ? '测试延迟' : '连接后才能测速'"
+              :title="snap.kernel_running ? tr('测试延迟') : tr('连接后才能测速')"
               :data-testid="`test-node-${node.name}`"
               @click="store.testNode(node.name)"
             >
-              <template v-if="store.pendingTests.value.has(node.name)"><span class="spinner xs" /><span class="sr-only">测速中</span></template>
+              <template v-if="store.pendingTests.value.has(node.name)"><span class="spinner xs" /><span class="sr-only">{{ tr('测速中') }}</span></template>
               <template v-else-if="nodeDelay(node)">{{ nodeDelay(node) }}</template>
               <Icon v-else name="zap" :size="13" />
             </button>

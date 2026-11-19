@@ -2,7 +2,7 @@ import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey }
 import type { Backend, NodeTestEvent } from './backend'
 import { createAppUpdater, nativeUpdateDriver } from './appUpdate'
 import { hostOf } from './format'
-import { applyLocale, normalizeLanguage, normalizeLocale, t } from './i18n'
+import { applyLocale, normalizeLanguage, normalizeLocale, t, tr } from './i18n'
 import { runPool } from './pool'
 import {
   emptySnapshot,
@@ -47,17 +47,17 @@ export function rememberConfigTab(tab: ConfigViewTab) {
 export type PageGroup = 'core' | 'tools' | null
 
 export const PAGES: { id: PageId; label: string; icon: string; mobile: boolean; group: PageGroup }[] = [
-  { id: 'home', label: '首页', icon: 'home', mobile: true, group: 'core' },
-  { id: 'proxies', label: '代理', icon: 'globe', mobile: true, group: 'core' },
-  { id: 'profiles', label: '配置', icon: 'layers', mobile: true, group: 'core' },
+  { id: 'home', get label() { return tr('首页') }, icon: 'home', mobile: true, group: 'core' },
+  { id: 'proxies', get label() { return tr('代理') }, icon: 'globe', mobile: true, group: 'core' },
+  { id: 'profiles', get label() { return tr('配置') }, icon: 'layers', mobile: true, group: 'core' },
   // Phones keep four tabs; connections joins the tools reached from Settings.
-  { id: 'connections', label: '连接', icon: 'activity', mobile: false, group: 'core' },
-  { id: 'rules', label: '规则', icon: 'route', mobile: false, group: 'tools' },
-  { id: 'resources', label: '资源', icon: 'database', mobile: false, group: 'tools' },
-  { id: 'logs', label: '日志', icon: 'terminal', mobile: false, group: 'tools' },
-  { id: 'settings', label: '设置', icon: 'settings', mobile: true, group: null },
+  { id: 'connections', get label() { return tr('连接') }, icon: 'activity', mobile: false, group: 'core' },
+  { id: 'rules', get label() { return tr('规则') }, icon: 'route', mobile: false, group: 'tools' },
+  { id: 'resources', get label() { return tr('资源') }, icon: 'database', mobile: false, group: 'tools' },
+  { id: 'logs', get label() { return tr('日志') }, icon: 'terminal', mobile: false, group: 'tools' },
+  { id: 'settings', get label() { return tr('设置') }, icon: 'settings', mobile: true, group: null },
   // Android only, opened from Settings; never in a nav bar.
-  { id: 'apps', label: '应用访问控制', icon: 'apps', mobile: false, group: null },
+  { id: 'apps', get label() { return tr('应用访问控制') }, icon: 'apps', mobile: false, group: null },
 ]
 
 export function resolvePage(value: string | null | undefined): PageId {
@@ -299,7 +299,7 @@ export function createStore(backend: Backend) {
 
   async function copyProxyEnv() {
     const { host, port, command } = proxyEnvCommand()
-    return copyText(command, `已复制终端代理环境变量 (${host}:${port})`)
+    return copyText(command, tr('已复制终端代理环境变量 ({0}:{1})', { 0: host, 1: port }))
   }
 
   /**
@@ -313,7 +313,7 @@ export function createStore(backend: Backend) {
       return true
     } catch (error) {
       console.error(error)
-      toast('无法写入剪贴板', 'error')
+      toast(tr('无法写入剪贴板'), 'error')
       return false
     }
   }
@@ -577,7 +577,7 @@ export function createStore(backend: Backend) {
     if (!seen.size) return null
     const ok = [...seen.values()].filter(Boolean).length
     const failed = seen.size - ok
-    return failed ? `测速完成：${ok} 个可用，${failed} 个超时` : `测速完成：${ok} 个节点全部可用`
+    return failed ? tr('测速完成：{0} 个可用，{1} 个超时', { 0: ok, 1: failed }) : tr('测速完成：{0} 个节点全部可用', { 0: ok })
   }
 
   function clearTestProgress() {
@@ -639,7 +639,7 @@ export function createStore(backend: Backend) {
     const result = await run(key, action)
     if (!result) {
       if (attempt) {
-        lastActionError.value = lastRunError.value ?? '操作没有完成'
+        lastActionError.value = lastRunError.value ?? tr('操作没有完成')
         lastFailedAction.value = attempt.action
       }
       return undefined
@@ -650,7 +650,7 @@ export function createStore(backend: Backend) {
     else if (!failed && success) toast(success, 'success')
     if (attempt) {
       if (failed) {
-        lastActionError.value = result.failure ?? changed ?? '操作没有完成'
+        lastActionError.value = result.failure ?? changed ?? tr('操作没有完成')
         lastFailedAction.value = attempt.action
       } else if (changed) {
         lastActionError.value = changed
@@ -697,10 +697,10 @@ export function createStore(backend: Backend) {
     }
     let reason: string | null = null
     if (!result) {
-      reason = thrownError ?? '订阅没有更新'
+      reason = thrownError ?? tr('订阅没有更新')
     } else {
       const profile = result.profiles.find((item) => item.id === id)
-      reason = profile ? profile.failure : '没有这份配置'
+      reason = profile ? profile.failure : tr('没有这份配置')
     }
     if (reason) {
       profileUpdates[id] = { state: 'failure', reason }
@@ -709,7 +709,7 @@ export function createStore(backend: Backend) {
       return false
     }
     profileUpdates[id] = { state: 'success', reason: null }
-    if (!quiet) toast('订阅已更新', 'success')
+    if (!quiet) toast(tr('订阅已更新'), 'success')
     if (!quiet && backend.live) void backend.syncTray()
     return true
   }
@@ -755,7 +755,7 @@ export function createStore(backend: Backend) {
       if (backend.live) void backend.syncTray()
       if (ids.length) {
         toast(
-          failed ? `更新完成：${done}/${ids.length}，${failed} 个订阅失败` : '全部订阅已更新',
+          failed ? tr('更新完成：{0}/{1}，{2} 个订阅失败', { 0: done, 1: ids.length, 2: failed }) : tr('全部订阅已更新'),
           failed ? 'error' : 'success',
         )
       }
@@ -1052,23 +1052,23 @@ export function createStore(backend: Backend) {
     }
     if (!snapshot.value.active_id && snapshot.value.profiles.length > 1) {
       go('profiles')
-      toast('请先选择要使用的配置', 'info')
+      toast(tr('请先选择要使用的配置'), 'info')
       return Promise.resolve(undefined)
     }
     return act('connect', async () => {
       try {
         if (!snapshot.value.active_id) {
-          connectStage.value = '正在初始化内核和配置资源…'
+          connectStage.value = tr('正在初始化内核和配置资源…')
           const id = snapshot.value.profiles[0]!.id
           const enabled = await backend.enable(id)
           if (enabled.active_id !== id || enabled.failure) return enabled
         }
-        connectStage.value = isAndroid.value ? '正在建立 VPN，请留意系统授权提示…' : '正在建立代理连接…'
+        connectStage.value = isAndroid.value ? tr('正在建立 VPN，请留意系统授权提示…') : tr('正在建立代理连接…')
         return await backend.connect()
       } finally {
         connectStage.value = ''
       }
-    }, '已连接', {
+    }, tr('已连接'), {
       action: { kind: 'connect' },
       done: (next) => next.connected,
     })
@@ -1076,7 +1076,7 @@ export function createStore(backend: Backend) {
 
   function disconnect() {
     if (connecting.value || !snapshot.value.connected) return Promise.resolve(undefined)
-    return act('connect', () => backend.disconnect(), '已断开', {
+    return act('connect', () => backend.disconnect(), tr('已断开'), {
       action: { kind: 'disconnect' },
       done: (next) => !next.connected,
     })
@@ -1088,13 +1088,13 @@ export function createStore(backend: Backend) {
     restarting.value = true
     try {
       return await act('connect', async () => {
-        connectStage.value = '正在重启内核…'
+        connectStage.value = tr('正在重启内核…')
         try {
           return await backend.restartKernel()
         } finally {
           connectStage.value = ''
         }
-      }, '内核已重启')
+      }, tr('内核已重启'))
     } finally {
       restarting.value = false
     }
@@ -1107,7 +1107,7 @@ export function createStore(backend: Backend) {
       await backend.gcKernel()
       return true
     })
-    if (ok) toast('已回收', 'success')
+    if (ok) toast(tr('已回收'), 'success')
     return ok
   }
 
@@ -1235,7 +1235,7 @@ export function createStore(backend: Backend) {
 
     addSubscription: (url: string) => act('add', () => backend.addSubscription(url)),
     addLocal: (name: string, content: string) => act('add', () => backend.addLocal(name, content)),
-    confirmInstall: () => act(null, () => backend.confirmInstall(), '已添加订阅'),
+    confirmInstall: () => act(null, () => backend.confirmInstall(), tr('已添加订阅')),
     cancelInstall: () => act(null, () => backend.cancelInstall()),
     async enable(id: string) {
       const before = snapshot.value
@@ -1246,10 +1246,10 @@ export function createStore(backend: Backend) {
       const switched = result.active_id === id && Boolean(target?.current) && !target?.failure && !target?.override_error
       const changed = newFailure(before, result)
       const targetError = !switched
-        ? (target?.failure || target?.override_error || changed || result.failure || '配置未能启用')
+        ? (target?.failure || target?.override_error || changed || result.failure || tr('配置未能启用'))
         : null
       if (changed || targetError) toast(changed ?? targetError!, 'error')
-      else toast('已切换配置', 'success')
+      else toast(tr('已切换配置'), 'success')
       if (backend.live) void backend.syncTray()
       return result
     },
@@ -1262,14 +1262,14 @@ export function createStore(backend: Backend) {
     setUserAgent: (id: string, userAgent: string) => act(null, () => backend.setUserAgent(id, userAgent)),
     setInterval: (id: string, hours: number) => act(null, () => backend.setInterval(id, hours)),
     setAgeKey: (id: string, key: string) => act(null, () => backend.setAgeKey(id, key)),
-    saveContent: (id: string, content: string) => act('content', () => backend.saveContent(id, content), '配置已保存'),
+    saveContent: (id: string, content: string) => act('content', () => backend.saveContent(id, content), tr('配置已保存')),
     saveOverride: (id: string, text: string) => act('override', () => backend.saveOverride(id, text)),
     /** Re-apply the active profile so a saved 覆写 takes effect without a manual re-enable. */
     applyOverride: (id: string) => act('override', () => backend.enable(id)),
 
     selectNode: (group: string, node: string) => act(`select:${group}`, () => backend.selectNode(group, node)),
     /** 恢复自动: a fixed url-test / fallback group picks by its own strategy again (R28). */
-    unfixGroup: (group: string) => act(`select:${group}`, () => backend.unfixGroup(group), '已恢复自动选择'),
+    unfixGroup: (group: string) => act(`select:${group}`, () => backend.unfixGroup(group), tr('已恢复自动选择')),
 
     /** Per-group test stamps the local result time so headers can show "测速 …" (R26). */
     async testGroup(group: string) {
@@ -1314,7 +1314,7 @@ export function createStore(backend: Backend) {
       if (!result) return undefined
       // The backend sets `notice` for this call alone, so a repeated failure count still toasts.
       if (result.notice) toast(result.notice, 'error')
-      else toast(ids ? `已关闭 ${ids.length} 条连接` : '已关闭全部连接', 'success')
+      else toast(ids ? tr('已关闭 {0} 条连接', { 0: ids.length }) : tr('已关闭全部连接'), 'success')
       return result
     },
     /** Runs outside the action queue: a slow resolver must not hold up other controls. */
@@ -1339,16 +1339,16 @@ export function createStore(backend: Backend) {
     clearTrafficHistory,
     clearLogs: () => act(null, () => backend.clearLogs()),
     flushCache: (which: 'fakeip' | 'dns') =>
-      act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除'),
+      act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? tr('FakeIP 缓存已清除') : tr('DNS 缓存已清除')),
     restartKernel,
     gcKernel,
-    saveSettings: (settings: KernelSettings) => act('settings', () => backend.saveSettings(settings), '内核设置已保存'),
+    saveSettings: (settings: KernelSettings) => act('settings', () => backend.saveSettings(settings), tr('内核设置已保存')),
     async openUwpTool() {
       const ok = await run('uwp', async () => {
         await backend.openUwpTool()
         return true
       })
-      if (ok) toast('已打开 UWP 回环豁免工具', 'success')
+      if (ok) toast(tr('已打开 UWP 回环豁免工具'), 'success')
     },
 
     async setChannel(channel: KernelChannel) {
@@ -1356,7 +1356,7 @@ export function createStore(backend: Backend) {
       try {
         kernel.value = await backend.setChannel(channel)
         if (kernel.value.failure) toast(kernel.value.failure, 'error')
-        else toast(`已切换到${channel === 'stable' ? '稳定版' : '预览版'}内核`, 'success')
+        else toast(tr('已切换到{0}内核', { 0: channel === 'stable' ? tr('稳定版') : tr('预览版') }), 'success')
       } catch (error) {
         toast(String(error), 'error')
       } finally {
@@ -1368,7 +1368,7 @@ export function createStore(backend: Backend) {
       try {
         kernel.value = await backend.refreshKernel()
         if (kernel.value.failure) toast(kernel.value.failure, 'error')
-        else toast('内核已是最新', 'success')
+        else toast(tr('内核已是最新'), 'success')
       } catch (error) {
         toast(String(error), 'error')
       } finally {

@@ -1,3 +1,4 @@
+import { tr } from './i18n'
 import type { PageId, SettingsTab } from './store'
 import { groupTypeLabel } from './format'
 import { matchesTokens, splitQueryTokens } from './search'
@@ -56,17 +57,17 @@ const TUN: OverviewTarget = { page: 'settings', tab: 'tun' }
 const RESOURCES: OverviewTarget = { page: 'resources' }
 
 const ENUMS: Record<string, string> = {
-  rule: '规则',
-  global: '全局',
-  direct: '直连',
-  debug: '调试',
-  info: '信息',
-  warning: '警告',
-  error: '错误',
-  silent: '静默',
-  always: '始终',
-  strict: '自动',
-  off: '关闭',
+  rule: tr('规则'),
+  global: tr('全局'),
+  direct: tr('直连'),
+  debug: tr('调试'),
+  info: tr('信息'),
+  warning: tr('警告'),
+  error: tr('错误'),
+  silent: tr('静默'),
+  always: tr('始终'),
+  strict: tr('自动'),
+  off: tr('关闭'),
   'fake-ip': 'Fake-IP',
   'redir-host': 'Redir-Host',
   normal: 'Normal',
@@ -78,10 +79,10 @@ const ENUMS: Record<string, string> = {
 const pick =
   (labels: Record<string, string>): Format =>
   (value) =>
-    typeof value === 'string' ? (labels[value.toLowerCase()] ?? value) : formatValue(value)
-const loader = pick({ memconservative: '低内存', standard: '标准' })
-const filterMode = pick({ blacklist: '黑名单', whitelist: '白名单', rule: '规则' })
-const tunDns = pick({ disabled: '不设置', native: '指向 TUN', hijack: '指向 TUN 并拦截' })
+    typeof value === 'string' ? tr(labels[value.toLowerCase()] ?? value) : formatValue(value)
+const loader = pick({ memconservative: tr('低内存'), standard: tr('标准') })
+const filterMode = pick({ blacklist: tr('黑名单'), whitelist: tr('白名单'), rule: tr('规则') })
+const tunDns = pick({ disabled: tr('不设置'), native: tr('指向 TUN'), hijack: tr('指向 TUN 并拦截') })
 
 const FINGERPRINTS: Record<string, string> = {
   chrome: 'Chrome',
@@ -92,7 +93,7 @@ const FINGERPRINTS: Record<string, string> = {
   edge: 'Edge',
   '360': '360',
   qq: 'QQ',
-  random: '随机',
+  random: tr('随机'),
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -101,18 +102,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Generic display: booleans as 开启/关闭, short lists inline, maps as a count. */
 export function formatValue(value: unknown): string {
-  if (value === undefined || value === null || value === '') return '未设置'
-  if (typeof value === 'boolean') return value ? '开启' : '关闭'
+  if (value === undefined || value === null || value === '') return tr('未设置')
+  if (typeof value === 'boolean') return value ? tr('开启') : tr('关闭')
   if (typeof value === 'number') return String(value)
-  if (typeof value === 'string') return ENUMS[value.toLowerCase()] ?? value
+  if (typeof value === 'string') return tr(ENUMS[value.toLowerCase()] ?? value)
   if (Array.isArray(value)) {
-    if (!value.length) return '无'
+    if (!value.length) return tr('无')
     const items = value.map((item) => (typeof item === 'string' || typeof item === 'number' ? String(item) : JSON.stringify(item)))
-    return items.length > 3 ? `${items.slice(0, 3).join('、')} 等 ${items.length} 项` : items.join('、')
+    return items.length > 3 ? tr('{0} 等 {1} 项', { 0: items.slice(0, 3).join('、'), 1: items.length }) : items.join('、')
   }
   if (isRecord(value)) {
     const size = Object.keys(value).length
-    return size ? `${size} 项` : '无'
+    return size ? tr('{0} 项', { 0: size }) : tr('无')
   }
   return String(value)
 }
@@ -127,68 +128,68 @@ function fullText(value: unknown): string | undefined {
   return undefined
 }
 
-const entries: Format = (value) => (isRecord(value) ? `${Object.keys(value).length} 条` : formatValue(value))
-const seconds: Format = (value) => (typeof value === 'number' ? `${value} 秒` : formatValue(value))
-const hours: Format = (value) => (typeof value === 'number' ? `${value} 小时` : formatValue(value))
+const entries: Format = (value) => (isRecord(value) ? tr('{0} 条', { 0: Object.keys(value).length }) : formatValue(value))
+const seconds: Format = (value) => (typeof value === 'number' ? tr('{0} 秒', { 0: value }) : formatValue(value))
+const hours: Format = (value) => (typeof value === 'number' ? tr('{0} 小时', { 0: value }) : formatValue(value))
 /** mihomo removed the global fingerprint (v1.19.34 logs an error and ignores it); profiles may still carry it. */
 const removedFingerprint: Format = (value) =>
-  `${typeof value === 'string' ? (FINGERPRINTS[value.toLowerCase()] ?? value) : formatValue(value)}（内核已移除，不生效）`
+  tr('{0}（内核已移除，不生效）', { 0: typeof value === 'string' ? tr(FINGERPRINTS[value.toLowerCase()] ?? value) : formatValue(value) })
 const users: Format = (value) => {
   if (!Array.isArray(value) || !value.length) return formatValue(value)
   const names = value.map((item) => String(item).split(':')[0])
-  return names.length > 2 ? `${names.slice(0, 2).join('、')} 等 ${names.length} 个用户` : names.join('、')
+  return names.length > 2 ? tr('{0} 等 {1} 个用户', { 0: names.slice(0, 2).join('、'), 1: names.length }) : names.join('、')
 }
 /** mihomo reads port 0 as a listener that stays off. */
-const port: Format = (value) => (value === 0 ? '关闭' : formatValue(value))
-const sniffs: Format = (value) => (isRecord(value) ? Object.keys(value).join('、') || '无' : formatValue(value))
+const port: Format = (value) => (value === 0 ? tr('关闭') : formatValue(value))
+const sniffs: Format = (value) => (isRecord(value) ? Object.keys(value).join('、') || tr('无') : formatValue(value))
 const geodata: Format = (value) => (value === true ? 'dat（GeoIP / GeoSite）' : value === false ? 'mmdb' : formatValue(value))
 
 const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: boolean }[] = [
   {
     id: 'inbound',
-    title: '入站',
+    get title() { return tr('入站') },
     fields: [
-      { path: 'mixed-port', label: '混合端口', to: KERNEL },
-      { path: 'port', label: 'HTTP 端口', format: port, to: KERNEL },
-      { path: 'socks-port', label: 'SOCKS5 端口', format: port, to: KERNEL },
-      { path: 'redir-port', label: '透明代理端口', format: port, to: KERNEL },
-      { path: 'tproxy-port', label: 'TProxy 端口', format: port, to: KERNEL },
-      { path: 'allow-lan', label: '局域网连接', fallback: '关闭', to: KERNEL },
-      { path: 'bind-address', label: '监听地址' },
-      { path: 'lan-allowed-ips', label: '允许的来源', to: KERNEL },
-      { path: 'lan-disallowed-ips', label: '禁止的来源' },
-      { path: 'authentication', label: '访问认证', format: users, to: KERNEL },
-      { path: 'skip-auth-prefixes', label: '免认证来源' },
+      { path: 'mixed-port', get label() { return tr('混合端口') }, to: KERNEL },
+      { path: 'port', get label() { return tr('HTTP 端口') }, format: port, to: KERNEL },
+      { path: 'socks-port', get label() { return tr('SOCKS5 端口') }, format: port, to: KERNEL },
+      { path: 'redir-port', get label() { return tr('透明代理端口') }, format: port, to: KERNEL },
+      { path: 'tproxy-port', get label() { return tr('TProxy 端口') }, format: port, to: KERNEL },
+      { path: 'allow-lan', get label() { return tr('局域网连接') }, get fallback() { return tr('关闭') }, to: KERNEL },
+      { path: 'bind-address', get label() { return tr('监听地址') } },
+      { path: 'lan-allowed-ips', get label() { return tr('允许的来源') }, to: KERNEL },
+      { path: 'lan-disallowed-ips', get label() { return tr('禁止的来源') } },
+      { path: 'authentication', get label() { return tr('访问认证') }, format: users, to: KERNEL },
+      { path: 'skip-auth-prefixes', get label() { return tr('免认证来源') } },
     ],
   },
   {
     id: 'outbound',
-    title: '出站',
+    get title() { return tr('出站') },
     fields: [
-      { path: 'mode', label: '出站模式', fallback: '规则', to: { page: 'home' } },
-      { path: 'global-client-fingerprint', label: '全局 TLS 指纹', format: removedFingerprint },
-      { path: 'keep-alive-interval', label: 'TCP 保活间隔', format: seconds, to: KERNEL },
-      { path: 'keep-alive-idle', label: 'TCP 保活空闲', format: seconds },
-      { path: 'disable-keep-alive', label: '关闭 TCP 保活', to: KERNEL },
-      { path: 'interface-name', label: '出口网卡', to: KERNEL },
-      { path: 'routing-mark', label: '路由标记', to: KERNEL },
+      { path: 'mode', get label() { return tr('出站模式') }, get fallback() { return tr('规则') }, to: { page: 'home' } },
+      { path: 'global-client-fingerprint', get label() { return tr('全局 TLS 指纹') }, format: removedFingerprint },
+      { path: 'keep-alive-interval', get label() { return tr('TCP 保活间隔') }, format: seconds, to: KERNEL },
+      { path: 'keep-alive-idle', get label() { return tr('TCP 保活空闲') }, format: seconds },
+      { path: 'disable-keep-alive', get label() { return tr('关闭 TCP 保活') }, to: KERNEL },
+      { path: 'interface-name', get label() { return tr('出口网卡') }, to: KERNEL },
+      { path: 'routing-mark', get label() { return tr('路由标记') }, to: KERNEL },
     ],
   },
   {
     id: 'dns',
     title: 'DNS',
     fields: [
-      { path: 'dns.enable', label: '内置 DNS', fallback: '关闭', to: DNS },
-      { path: 'dns.enhanced-mode', label: '域名映射', to: DNS },
-      { path: 'dns.listen', label: '监听地址', to: DNS },
-      { path: 'dns.nameserver', label: '主 DNS', to: DNS },
-      { path: 'dns.default-nameserver', label: '引导 DNS', to: DNS },
-      { path: 'dns.fallback', label: '备用 DNS', to: DNS },
-      { path: 'dns.proxy-server-nameserver', label: '节点域名解析', to: DNS },
-      { path: 'dns.nameserver-policy', label: '解析策略', format: entries, to: DNS },
-      { path: 'dns.fake-ip-range', label: 'Fake-IP 地址段', to: DNS },
-      { path: 'dns.fake-ip-filter-mode', label: 'Fake-IP 过滤模式', format: filterMode, to: DNS },
-      { path: 'dns.respect-rules', label: '遵循分流规则', to: DNS },
+      { path: 'dns.enable', get label() { return tr('内置 DNS') }, get fallback() { return tr('关闭') }, to: DNS },
+      { path: 'dns.enhanced-mode', get label() { return tr('域名映射') }, to: DNS },
+      { path: 'dns.listen', get label() { return tr('监听地址') }, to: DNS },
+      { path: 'dns.nameserver', get label() { return tr('主 DNS') }, to: DNS },
+      { path: 'dns.default-nameserver', get label() { return tr('引导 DNS') }, to: DNS },
+      { path: 'dns.fallback', get label() { return tr('备用 DNS') }, to: DNS },
+      { path: 'dns.proxy-server-nameserver', get label() { return tr('节点域名解析') }, to: DNS },
+      { path: 'dns.nameserver-policy', get label() { return tr('解析策略') }, format: entries, to: DNS },
+      { path: 'dns.fake-ip-range', get label() { return tr('Fake-IP 地址段') }, to: DNS },
+      { path: 'dns.fake-ip-filter-mode', get label() { return tr('Fake-IP 过滤模式') }, format: filterMode, to: DNS },
+      { path: 'dns.respect-rules', get label() { return tr('遵循分流规则') }, to: DNS },
       { path: 'hosts', label: 'Hosts', format: entries, to: DNS },
     ],
   },
@@ -197,48 +198,48 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
     title: 'TUN',
     desktopOnly: true,
     fields: [
-      { path: 'tun.enable', label: 'TUN 模式', fallback: '关闭', to: TUN },
-      { path: 'tun.stack', label: '协议栈', fallback: '内核默认（Mips）', to: TUN },
-      { path: 'tun.dns-mode', label: '系统 DNS', format: tunDns },
-      { path: 'tun.auto-route', label: '自动路由', to: TUN },
-      { path: 'tun.strict-route', label: '严格路由', to: TUN },
-      { path: 'tun.dns-hijack', label: 'DNS 劫持', to: TUN },
+      { path: 'tun.enable', get label() { return tr('TUN 模式') }, get fallback() { return tr('关闭') }, to: TUN },
+      { path: 'tun.stack', get label() { return tr('协议栈') }, get fallback() { return tr('内核默认（Mips）') }, to: TUN },
+      { path: 'tun.dns-mode', get label() { return tr('系统 DNS') }, format: tunDns },
+      { path: 'tun.auto-route', get label() { return tr('自动路由') }, to: TUN },
+      { path: 'tun.strict-route', get label() { return tr('严格路由') }, to: TUN },
+      { path: 'tun.dns-hijack', get label() { return tr('DNS 劫持') }, to: TUN },
       { path: 'tun.mtu', label: 'MTU', to: TUN },
-      { path: 'tun.device', label: '网卡名称', to: TUN },
-      { path: 'tun.route-address', label: '只走 TUN 的地址', to: TUN },
-      { path: 'tun.route-exclude-address', label: '不走 TUN 的地址', to: TUN },
+      { path: 'tun.device', get label() { return tr('网卡名称') }, to: TUN },
+      { path: 'tun.route-address', get label() { return tr('只走 TUN 的地址') }, to: TUN },
+      { path: 'tun.route-exclude-address', get label() { return tr('不走 TUN 的地址') }, to: TUN },
     ],
   },
   {
     id: 'sniff',
-    title: '嗅探与 GEO',
+    get title() { return tr('嗅探与 GEO') },
     fields: [
-      { path: 'sniffer.enable', label: '域名嗅探', fallback: '关闭', to: KERNEL },
-      { path: 'sniffer.sniff', label: '嗅探协议', format: sniffs },
-      { path: 'sniffer.sniff.HTTP.ports', label: 'HTTP 嗅探端口', to: KERNEL },
-      { path: 'sniffer.sniff.TLS.ports', label: 'TLS 嗅探端口', to: KERNEL },
-      { path: 'sniffer.sniff.QUIC.ports', label: 'QUIC 嗅探端口', to: KERNEL },
-      { path: 'sniffer.force-domain', label: '强制嗅探域名', to: KERNEL },
-      { path: 'sniffer.skip-domain', label: '跳过嗅探域名', to: KERNEL },
-      { path: 'sniffer.override-destination', label: '嗅探结果覆盖目标', to: KERNEL },
-      { path: 'geodata-mode', label: 'GeoIP 格式', format: geodata, fallback: 'mmdb', to: RESOURCES },
-      { path: 'geodata-loader', label: 'GEO 加载方式', format: loader, fallback: '低内存', to: RESOURCES },
-      { path: 'geo-auto-update', label: '自动更新 GEO', to: RESOURCES },
-      { path: 'geo-update-interval', label: 'GEO 更新间隔', format: hours, to: RESOURCES },
-      { path: 'geox-url', label: 'GEO 下载地址', format: entries, to: RESOURCES },
+      { path: 'sniffer.enable', get label() { return tr('域名嗅探') }, get fallback() { return tr('关闭') }, to: KERNEL },
+      { path: 'sniffer.sniff', get label() { return tr('嗅探协议') }, format: sniffs },
+      { path: 'sniffer.sniff.HTTP.ports', get label() { return tr('HTTP 嗅探端口') }, to: KERNEL },
+      { path: 'sniffer.sniff.TLS.ports', get label() { return tr('TLS 嗅探端口') }, to: KERNEL },
+      { path: 'sniffer.sniff.QUIC.ports', get label() { return tr('QUIC 嗅探端口') }, to: KERNEL },
+      { path: 'sniffer.force-domain', get label() { return tr('强制嗅探域名') }, to: KERNEL },
+      { path: 'sniffer.skip-domain', get label() { return tr('跳过嗅探域名') }, to: KERNEL },
+      { path: 'sniffer.override-destination', get label() { return tr('嗅探结果覆盖目标') }, to: KERNEL },
+      { path: 'geodata-mode', get label() { return tr('GeoIP 格式') }, format: geodata, fallback: 'mmdb', to: RESOURCES },
+      { path: 'geodata-loader', get label() { return tr('GEO 加载方式') }, format: loader, get fallback() { return tr('低内存') }, to: RESOURCES },
+      { path: 'geo-auto-update', get label() { return tr('自动更新 GEO') }, to: RESOURCES },
+      { path: 'geo-update-interval', get label() { return tr('GEO 更新间隔') }, format: hours, to: RESOURCES },
+      { path: 'geox-url', get label() { return tr('GEO 下载地址') }, format: entries, to: RESOURCES },
     ],
   },
   {
     id: 'misc',
-    title: '运行',
+    get title() { return tr('运行') },
     fields: [
-      { path: 'log-level', label: '日志级别', fallback: '信息', to: KERNEL },
-      { path: 'ipv6', label: 'IPv6', fallback: '开启', to: KERNEL },
-      { path: 'unified-delay', label: '统一延迟', fallback: '关闭', to: KERNEL },
-      { path: 'tcp-concurrent', label: 'TCP 并发', fallback: '关闭', to: KERNEL },
-      { path: 'find-process-mode', label: '进程匹配', fallback: '自动', to: KERNEL },
-      { path: 'global-ua', label: '外部资源 UA' },
-      { path: 'etag-support', label: 'ETag 缓存' },
+      { path: 'log-level', get label() { return tr('日志级别') }, get fallback() { return tr('信息') }, to: KERNEL },
+      { path: 'ipv6', label: 'IPv6', get fallback() { return tr('开启') }, to: KERNEL },
+      { path: 'unified-delay', get label() { return tr('统一延迟') }, get fallback() { return tr('关闭') }, to: KERNEL },
+      { path: 'tcp-concurrent', get label() { return tr('TCP 并发') }, get fallback() { return tr('关闭') }, to: KERNEL },
+      { path: 'find-process-mode', get label() { return tr('进程匹配') }, get fallback() { return tr('自动') }, to: KERNEL },
+      { path: 'global-ua', get label() { return tr('外部资源 UA') } },
+      { path: 'etag-support', get label() { return tr('ETag 缓存') } },
     ],
   },
 ]
@@ -279,7 +280,7 @@ function sourceOf(data: ConfigOverview, path: string): { source: OverviewSource;
 function countRow(data: ConfigOverview, key: string, label: string, to: OverviewTarget, detail?: string): OverviewRow | null {
   const count = data.counts[key]
   if (count == null) return null
-  return { path: key, label, value: detail ? `${count} 个 · ${detail}` : `${count} 个`, source: 'profile', to }
+  return { path: key, label, value: detail ? tr('{0} 个 · {1}', { 0: count, 1: detail }) : tr('{0} 个', { 0: count }), source: 'profile', to }
 }
 
 /** Group count broken down by type, in the proxy page's own wording. */
@@ -306,23 +307,23 @@ export function buildOverview(data: ConfigOverview, options: { android?: boolean
         value: value === undefined ? field.fallback! : format(value),
         title: value === undefined ? undefined : fullText(value),
         source,
-        before: source === 'billow' || source === 'override' ? (before === undefined ? '未设置' : format(before)) : undefined,
+        before: source === 'billow' || source === 'override' ? (before === undefined ? tr('未设置') : format(before)) : undefined,
         // Android owns routing and DNS hijack; those settings pages do not exist there.
         to: options.android && field.to?.tab === 'tun' ? undefined : field.to,
       })
     }
     if (section.id === 'outbound') {
       const counted = [
-        countRow(data, 'proxies', '节点', { page: 'proxies' }),
-        countRow(data, 'proxy-groups', '代理组', { page: 'proxies' }, groupDetail(data.group_types)),
-        countRow(data, 'proxy-providers', '代理集', RESOURCES),
-        countRow(data, 'rules', '规则', { page: 'rules' }),
-        countRow(data, 'rule-providers', '规则集', RESOURCES),
+        countRow(data, 'proxies', tr('节点'), { page: 'proxies' }),
+        countRow(data, 'proxy-groups', tr('代理组'), { page: 'proxies' }, groupDetail(data.group_types)),
+        countRow(data, 'proxy-providers', tr('代理集'), RESOURCES),
+        countRow(data, 'rules', tr('规则'), { page: 'rules' }),
+        countRow(data, 'rule-providers', tr('规则集'), RESOURCES),
       ].filter((row): row is OverviewRow => row !== null)
       rows.splice(1, 0, ...counted)
     }
     if (section.id === 'inbound') {
-      const listeners = countRow(data, 'listeners', '额外监听', KERNEL)
+      const listeners = countRow(data, 'listeners', tr('额外监听'), KERNEL)
       if (listeners && data.counts.listeners) rows.push({ ...listeners, to: undefined })
     }
     if (rows.length) sections.push({ id: section.id, title: section.title, rows })
@@ -342,7 +343,7 @@ export function buildOverview(data: ConfigOverview, options: { android?: boolean
         before: source === 'billow' || source === 'override' ? formatValue(before) : undefined,
       }
     })
-  if (rest.length) sections.push({ id: 'rest', title: '其他字段', rows: rest, folded: true })
+  if (rest.length) sections.push({ id: 'rest', get title() { return tr('其他字段') }, rows: rest, folded: true })
   return sections
 }
 

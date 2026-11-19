@@ -67,9 +67,9 @@ const HOSTS = [
 ]
 const PROCESSES = ['chrome', 'Telegram', 'node', 'Code', 'curl', 'Safari', 'Discord']
 
-function nodeNames(): string[] {
+function nodeNames(regions: readonly string[] = REGIONS): string[] {
   const names: string[] = []
-  REGIONS.forEach((region, index) => {
+  regions.forEach((region, index) => {
     const count = index < 3 ? 3 : 2
     for (let i = 1; i <= count; i += 1) names.push(`${region} ${String(i).padStart(2, '0')}`)
   })
@@ -101,6 +101,8 @@ interface DemoOptions {
   loadBalance?: boolean
   /** OS language the demo reports: `system` resolves to this locale (R42). */
   systemLocale?: Locale
+  /** Latin-only demo data (`?demo=latin`) for the English whole-UI check (T8). */
+  latin?: boolean
   /**
    * A fixed set of this many connections, one per demo host in order, that
    * never churn or refill, so close-by-filter can be checked row for row (R30).
@@ -142,6 +144,72 @@ const DEMO_GROUP_ICONS: Record<string, string> = {
   国内网站: 'https://unreachable.invalid/cn.png',
 }
 
+/** Latin-only demo data for `?demo=latin` (T8): names, regions and group labels. */
+const LATIN_EXACT: Record<string, string> = {
+  设置: 'Settings',
+  系统界面: 'System UI',
+  微信: 'WeChat',
+  支付宝: 'Alipay',
+  哔哩哔哩: 'Bilibili',
+  招商银行: 'China Merchants Bank',
+  星河云: 'Galaxy Cloud',
+  备用机场: 'Backup Provider',
+  新配置: 'New Profile',
+  'Google Play 服务': 'Google Play Services',
+  本地配置: 'Local Profile',
+  远程配置: 'Remote Profile',
+  自建节点: 'Self-hosted',
+  测试订阅: 'Test Subscription',
+}
+const LATIN_PARTS: Record<string, string> = {
+  节点选择: 'Node Select',
+  自动选择: 'Auto Select',
+  故障转移: 'Fallback',
+  负载均衡: 'Load Balance',
+  流媒体: 'Streaming',
+  国内网站: 'China Sites',
+  漏网之鱼: 'Final',
+  策略组: 'Policy Group',
+  香港: 'Hong Kong',
+  日本: 'Japan',
+  新加坡: 'Singapore',
+  美国: 'US',
+  台湾: 'Taiwan',
+  韩国: 'South Korea',
+  德国: 'Germany',
+  英国: 'UK',
+}
+
+function latinText(value: string): string {
+  if (LATIN_EXACT[value]) return LATIN_EXACT[value]
+  let out = value
+  for (const [zh, en] of Object.entries(LATIN_PARTS)) out = out.split(zh).join(en)
+  return out
+}
+
+/** Rewrite every string in a demo result so the Latin demo contains no Chinese names. */
+function latinize<T>(value: T): T {
+  if (typeof value === 'string') return latinText(value) as T
+  if (Array.isArray(value)) return value.map((item) => latinize(item)) as T
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) out[key] = latinize(item)
+    return out as T
+  }
+  return value
+}
+
+/** Turn a name the UI received from the Latin demo back into the internal Chinese one. */
+function delatinName(value: string): string {
+  const exact = Object.entries(LATIN_EXACT).find(([, en]) => en === value)
+  if (exact) return exact[0]
+  for (const [zh, en] of Object.entries(LATIN_PARTS)) {
+    if (value === en) return zh
+    if (value.startsWith(`${en} `)) return zh + value.slice(en.length)
+  }
+  return value
+}
+
 export function createDemoBackend(options: DemoOptions = {}): Backend {
   const demoUwpApps: UwpApp[] = [
     {
@@ -173,7 +241,12 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       exempted: false,
     },
   ]
-  const baseNames = options.longNames ? [...DEMO_LONG_NAMES, ...nodeNames()] : nodeNames()
+  const latinRegions = REGIONS.map((region) => LATIN_PARTS[region]!)
+  const baseNames = options.latin
+    ? nodeNames(latinRegions)
+    : options.longNames
+      ? [...DEMO_LONG_NAMES, ...nodeNames()]
+      : nodeNames()
   const names = options.big
     ? [...baseNames, ...Array.from({ length: 48 }, (_, index) => `【KLM】Hong Kong ${String(index + 1).padStart(2, '0')}`)]
     : baseNames
@@ -522,7 +595,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   }
 
   function log(level: LogLine['level'], message: string) {
-    state.logs.push({ level, message, time_ms: Date.now() })
+    state.logs.push({ level, message, time_ms: Date.now(), hint: null, hint_kind: null })
     if (state.logs.length > 1000) state.logs.splice(0, state.logs.length - 1000)
   }
 
@@ -555,7 +628,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
             failed: delay === null,
             selected: name === now,
             node_type: types.get(name) ?? groupsDef().find((g) => g.name === name)?.type ?? (name === 'DIRECT' ? 'direct' : ''),
-            tags: isChained ? [...baseTags, '链式'] : baseTags,
+            tags: isChained ? [...baseTags, 'chained'] : baseTags,
             ...(isChained ? { dialer_proxy: '香港 01' } : {}),
           }
         }),
@@ -665,7 +738,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       sniff_quic_ports: ['443'],
     }
     state.mixed_port = state.settings.mixed_port ?? (state.active_id ? 7890 : null)
-    return structuredClone(state)
+    const result = structuredClone(state)
+    return options.latin ? latinize(result) : result
   }
 
   /** Fold one simulated sample into today's buckets, with the same deltas as Rust. */
@@ -1023,7 +1097,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       const region = node.split(' ')[0] ?? ''
       const result: ExitIpInfo = {
         ip: '203.0.113.42',
-        region: region || '香港',
+        region: latinText(region || '香港'),
         isp: 'AS15169 Google LLC',
         service: 'ip.sb',
         time_ms: Date.now(),
@@ -1035,7 +1109,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return app
     },
     async trafficHistory(range, from, to) {
-      return trafficHistoryView(range, from, to)
+      const view = trafficHistoryView(range, from, to)
+      return options.latin ? latinize(view) : view
     },
     async setTrafficRecording(enabled) {
       if (trafficRecording !== enabled) {
@@ -1246,7 +1321,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       const override = active.override_text.trim()
       const base = contents.get(active.id) ?? ''
       const head = `mixed-port: ${state.mixed_port ?? 7890}\nmode: ${state.mode ?? 'rule'}\nexternal-controller: 127.0.0.1:9090\n`
-      return `${head}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
+      const text = `${head}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
+      return options.latin ? latinText(text) : text
     },
     async configOverview(): Promise<ConfigOverview> {
       await wait(120)
@@ -1348,6 +1424,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
 
     async selectNode(group, node) {
+      if (options.latin) {
+        group = delatinName(group)
+        node = delatinName(node)
+      }
       const def = groupsDef().find((item) => item.name === group)
       if (def && def.type !== 'select') {
         if (!pinnable(def.type)) state.nodes_error = '不能改选'
@@ -1372,6 +1452,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(60)
     },
     async unfixGroup(group) {
+      if (options.latin) group = delatinName(group)
       const def = groupsDef().find((item) => item.name === group)
       if (!def || !pinnable(def.type)) state.nodes_error = '不能改选'
       else if (!state.kernel_running) state.nodes_error = '内核没有运行'
@@ -1386,6 +1467,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(60)
     },
     async testGroup(group) {
+      if (options.latin) group = delatinName(group)
       const def = groupsDef().find((item) => item.name === group)
       if (!state.kernel_running) state.nodes_error = '内核没有运行'
       else {
@@ -1404,6 +1486,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(0)
     },
     async testNode(node) {
+      if (options.latin) node = delatinName(node)
       if (!state.kernel_running) state.nodes_error = '内核没有运行'
       else await probe([node])
       return done(0)
@@ -1447,7 +1530,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async rules() {
       await wait(200)
-      return rulesSnapshot()
+      const result = rulesSnapshot()
+      return options.latin ? latinize(result) : result
     },
     async setRuleDisabled(key, disabled) {
       await wait(120)
@@ -1455,15 +1539,18 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       if (!ruleKeyList.includes(key)) throw new Error('没有这条规则')
       if (disabled) disabledRules.add(key)
       else disabledRules.delete(key)
-      return rulesSnapshot()
+      const result = rulesSnapshot()
+      return options.latin ? latinize(result) : result
     },
     async providers() {
       await wait(200)
       if (!state.kernel_running) return { providers: [], error: '内核没有运行' }
-      return { providers: providerRows.map((row) => ({ ...row })), error: null }
+      const result = { providers: providerRows.map((row) => ({ ...row })), error: null }
+      return options.latin ? latinize(result) : result
     },
     async providerAction(kind, name, action) {
       await wait(900)
+      if (options.latin) name = delatinName(name)
       const row = providerRows.find((item) => item.kind === kind && item.name === name)
       if (row && action === 'update') row.updated_at = new Date().toISOString()
       log('info', `${action === 'update' ? '更新' : '健康检查'} ${name} 完成`)
@@ -1511,6 +1598,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async providerDetail(kind, name, query) {
       await wait(200)
+      if (options.latin) name = delatinName(name)
       const row = providerRows.find((item) => item.kind === kind && item.name === name)
       if (!row) throw new Error('没有这个资源')
       if (kind === 'proxy') {
@@ -1521,7 +1609,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
           delay_ms: state.kernel_running && index % 7 !== 3 ? 60 + index * 23 : null,
           alive: state.kernel_running ? index % 7 !== 3 : null,
         }))
-        return { kind, name, proxies, rules: [], total: proxies.length, notice: null, source: null }
+        const result = { kind, name, proxies, rules: [], total: proxies.length, notice: null, source: null }
+        return options.latin ? latinize(result) : result
       }
       // Mirrors the backend: MRS decodes to domains, previews stop at 5000 rows, a query searches all.
       const all = row.vehicle === 'Inline'
@@ -1536,7 +1625,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         : needle ? `匹配 ${matched.length} 条，只列出前 ${limit} 条`
         : `共 ${matched.length} 条，只列出前 ${limit} 条；搜索会查找全部规则`
       const source = row.vehicle === 'Inline' ? 'inline' : row.format === 'MrsRule' ? 'https://example.com/cn.mrs' : 'https://example.com/telegram.yaml'
-      return { kind, name, proxies: [], rules: matched.slice(0, limit), total: matched.length, notice, source }
+      const result = { kind, name, proxies: [], rules: matched.slice(0, limit), total: matched.length, notice, source }
+      return options.latin ? latinize(result) : result
     },
     async geoFiles() {
       return [

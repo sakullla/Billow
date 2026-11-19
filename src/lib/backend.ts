@@ -425,6 +425,7 @@ function demoOptionsFromUrl() {
     manyProviders: flags.includes('many'),
     longNames: flags.includes('long'),
     big: flags.includes('big'),
+    latin: flags.includes('latin'),
   }
 }
 

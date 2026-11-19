@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { ref, useId } from 'vue'
 import { useFocusTrap } from '../lib/ui/focus'
 import Icon from './Icon.vue'
@@ -69,7 +70,7 @@ useFocusTrap(() => panel.value, {
             <h2 :id="titleId">{{ title }}</h2>
             <p v-if="subtitle" :id="subtitleId" class="muted small">{{ subtitle }}</p>
           </div>
-          <button type="button" class="icon-btn" aria-label="关闭" @click="requestClose">
+          <button type="button" class="icon-btn" :aria-label="tr('关闭')" @click="requestClose">
             <Icon name="x" />
           </button>
         </header>

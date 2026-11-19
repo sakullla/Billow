@@ -11,7 +11,7 @@ import HotkeySection from '../components/HotkeySection.vue'
 import TrafficStatsDialog from '../components/TrafficStatsDialog.vue'
 import UwpLoopbackDialog from '../components/UwpLoopbackDialog.vue'
 import { useStore } from '../lib/store'
-import { t } from '../lib/i18n'
+import { t, tr } from '../lib/i18n'
 import { layerDepth } from '../lib/ui/focus'
 import { useHotkeys } from '../lib/ui/hotkeys'
 import { shortcutKeyLabel } from '../lib/ui/shortcuts'
@@ -45,7 +45,7 @@ const store = useStore()
 const uwpOpen = ref(false)
 
 function openRepo() {
-  openExternal(REPO_URL).catch(() => store.toast('无法打开浏览器，请访问 ' + REPO_URL, 'error'))
+  openExternal(REPO_URL).catch(() => store.toast(tr('无法打开浏览器，请访问 ') + REPO_URL, 'error'))
 }
 const snap = computed(() => store.snapshot.value)
 const app = computed(() => store.app.value)
@@ -56,13 +56,13 @@ const kernelUpdateBusy = computed(() =>
 )
 const kernelUpdateSubtitle = computed(() => {
   if (kernel.value.failure) return kernel.value.failure
-  if (!store.isAndroid.value) return '已安装的内核直接使用；可手动检查新版本'
+  if (!store.isAndroid.value) return tr('已安装的内核直接使用；可手动检查新版本')
   const status = store.appUpdate.status.value
-  if (status === 'checking') return '正在检查 Billow 与内核更新…'
-  if (store.appUpdate.offer.value) return `发现新版本 v${store.appUpdate.offer.value.version}，内核随应用一并更新`
-  if (status === 'current') return '当前 Billow 与内核均已是最新版本'
-  if (status === 'error' && store.appUpdate.error.value) return `检查失败：${store.appUpdate.error.value}`
-  return '内核随 Billow 更新，安装后即可使用'
+  if (status === 'checking') return tr('正在检查 Billow 与内核更新…')
+  if (store.appUpdate.offer.value) return tr('发现新版本 v{0}，内核随应用一并更新', { 0: store.appUpdate.offer.value.version })
+  if (status === 'current') return tr('当前 Billow 与内核均已是最新版本')
+  if (status === 'error' && store.appUpdate.error.value) return tr('检查失败：{0}', { 0: store.appUpdate.error.value })
+  return tr('内核随 Billow 更新，安装后即可使用')
 })
 async function onCheckKernelUpdate() {
   if (!store.isAndroid.value) {
@@ -76,59 +76,59 @@ async function onCheckKernelUpdate() {
   await store.appUpdate.check(false)
   const { offer, error, status } = store.appUpdate
   if (offer.value) {
-    store.toast(`发现新版本 v${offer.value.version}，可点击下载更新`, 'success')
+    store.toast(tr('发现新版本 v{0}，可点击下载更新', { 0: offer.value.version }), 'success')
   } else if (error.value) {
-    store.toast(`检查更新失败：${error.value}`, 'error')
+    store.toast(tr('检查更新失败：{0}', { 0: error.value }), 'error')
   } else if (status.value === 'current') {
-    store.toast('当前 Billow 与内核已是最新版本', 'success')
+    store.toast(tr('当前 Billow 与内核已是最新版本'), 'success')
   }
 }
 
 const THEMES: { id: ThemePreference; label: string; icon: string }[] = [
-  { id: 'system', label: '跟随系统', icon: 'laptop' },
-  { id: 'light', label: '浅色', icon: 'sun' },
-  { id: 'dark', label: '深色', icon: 'moon' },
+  { id: 'system', get label() { return tr('跟随系统') }, icon: 'laptop' },
+  { id: 'light', get label() { return tr('浅色') }, icon: 'sun' },
+  { id: 'dark', get label() { return tr('深色') }, icon: 'moon' },
 ]
 const LANGUAGES = computed<{ id: LanguagePreference; label: string }[]>(() => [
   { id: 'system', label: t('language.system') },
-  { id: 'zh-CN', label: '简体中文' },
+  { id: 'zh-CN', label: tr('简体中文') },
   { id: 'en', label: 'English' },
 ])
 const CHANNELS: { id: KernelChannel; label: string }[] = [
-  { id: 'stable', label: '稳定版' },
-  { id: 'preview', label: '预览版' },
+  { id: 'stable', label: tr('稳定版') },
+  { id: 'preview', label: tr('预览版') },
 ]
 const LOG_LEVELS = [
-  { id: '', label: '跟随配置' },
-  { id: 'debug', label: '调试' },
-  { id: 'info', label: '信息' },
-  { id: 'warning', label: '警告' },
-  { id: 'error', label: '错误' },
-  { id: 'silent', label: '静默' },
+  { id: '', label: tr('跟随配置') },
+  { id: 'debug', label: tr('调试') },
+  { id: 'info', label: tr('信息') },
+  { id: 'warning', label: tr('警告') },
+  { id: 'error', label: tr('错误') },
+  { id: 'silent', label: tr('静默') },
 ]
 const PROCESS_MODES = [
-  { id: '', label: '跟随配置' },
-  { id: 'always', label: '始终' },
-  { id: 'strict', label: '自动' },
-  { id: 'off', label: '关闭' },
+  { id: '', label: tr('跟随配置') },
+  { id: 'always', label: tr('始终') },
+  { id: 'strict', label: tr('自动') },
+  { id: 'off', label: tr('关闭') },
 ]
 
 /** Seconds; '0' turns TCP keep-alive off. */
 const KEEP_ALIVE = [
-  { id: '', label: '跟随配置' },
-  { id: '15', label: '15 秒' },
-  { id: '30', label: '30 秒' },
-  { id: '60', label: '60 秒' },
-  { id: '120', label: '120 秒（省电）' },
-  { id: '0', label: '关闭' },
+  { id: '', label: tr('跟随配置') },
+  { id: '15', label: tr('15 秒') },
+  { id: '30', label: tr('30 秒') },
+  { id: '60', label: tr('60 秒') },
+  { id: '120', label: tr('120 秒（省电）') },
+  { id: '0', label: tr('关闭') },
 ]
 
 type Flag = 'allow_lan' | 'ipv6' | 'unified_delay' | 'tcp_concurrent'
 const FLAGS: { key: Flag; title: string; hint: string }[] = [
-  { key: 'allow_lan', title: '局域网连接', hint: '允许同一网络的其他设备使用本机代理' },
-  { key: 'ipv6', title: 'IPv6', hint: '解析并连接 IPv6 地址' },
-  { key: 'unified_delay', title: '统一延迟', hint: '测速时去除握手耗时，结果更接近真实体验' },
-  { key: 'tcp_concurrent', title: 'TCP 并发', hint: '同时连接多个解析结果，取最快的一个' },
+  { key: 'allow_lan', get title() { return tr('局域网连接') }, hint: tr('允许同一网络的其他设备使用本机代理') },
+  { key: 'ipv6', title: 'IPv6', hint: tr('解析并连接 IPv6 地址') },
+  { key: 'unified_delay', get title() { return tr('统一延迟') }, hint: tr('测速时去除握手耗时，结果更接近真实体验') },
+  { key: 'tcp_concurrent', get title() { return tr('TCP 并发') }, hint: tr('同时连接多个解析结果，取最快的一个') },
 ]
 
 const pendingSettings = ref<KernelSettings | null>(null)
@@ -142,7 +142,7 @@ watch(() => snap.value.settings.subscription_user_agent, (value) => {
 function commitSubscriptionUa() {
   const value = subscriptionUa.value
   if (value.length > 256 || /[^\x20-\x7e]/.test(value)) {
-    store.toast('User-Agent 只能包含可打印的 ASCII 字符，不能含换行', 'error')
+    store.toast(tr('User-Agent 只能包含可打印的 ASCII 字符，不能含换行'), 'error')
     return
   }
   if (value.trim() !== currentSettings.value.subscription_user_agent) save({ subscription_user_agent: value.trim() })
@@ -221,8 +221,8 @@ const overridden = computed(() => {
 /** What the profile itself says about keep-alive, for the "跟随配置" hint. */
 const profileKeepAlive = computed(() => {
   const config = snap.value.config_values
-  if (config.disable_keep_alive) return '配置中已关闭'
-  return config.keep_alive_interval ? `配置中为 ${config.keep_alive_interval} 秒` : '配置未设置，默认 15 秒'
+  if (config.disable_keep_alive) return tr('配置中已关闭')
+  return config.keep_alive_interval ? tr('配置中为 {0} 秒', { 0: config.keep_alive_interval }) : tr('配置未设置，默认 15 秒')
 })
 
 // ── LAN access: only shown while 局域网连接 is on ──
@@ -295,14 +295,14 @@ const lanExtraPorts = computed(() => {
 const snifferOn = computed(() => snap.value.settings.sniffer ?? snap.value.config_values.sniffer ?? false)
 type OverrideChoice = '' | 'on' | 'off'
 const OVERRIDE_CHOICES: { id: OverrideChoice; label: string }[] = [
-  { id: '', label: '跟随配置' },
-  { id: 'on', label: '覆盖' },
-  { id: 'off', label: '不覆盖' },
+  { id: '', label: tr('跟随配置') },
+  { id: 'on', label: tr('覆盖') },
+  { id: 'off', label: tr('不覆盖') },
 ]
 const SNIFF_PORTS = [
-  { key: 'http', title: 'HTTP 端口', config: 'sniff_http_ports' },
-  { key: 'tls', title: 'TLS 端口', config: 'sniff_tls_ports' },
-  { key: 'quic', title: 'QUIC 端口', config: 'sniff_quic_ports' },
+  { key: 'http', get title() { return tr('HTTP 端口') }, config: 'sniff_http_ports' },
+  { key: 'tls', get title() { return tr('TLS 端口') }, config: 'sniff_tls_ports' },
+  { key: 'quic', get title() { return tr('QUIC 端口') }, config: 'sniff_quic_ports' },
 ] as const
 const sniffText = ref({ http: '', tls: '', quic: '', force: '', skip: '' })
 const sniffOverride = ref<OverrideChoice>('')
@@ -346,13 +346,13 @@ const sniffDraft = computed(() => ({
   override: sniffOverride.value === '' ? null : sniffOverride.value === 'on',
 }))
 const sniffDirty = computed(() => JSON.stringify(sniffDraft.value) !== JSON.stringify(sniffSaved.value))
-const configList = (items: string[] | null, empty = '配置未设置') => (items?.length ? `配置中为 ${items.join('、')}` : empty)
+const configList = (items: string[] | null, empty = tr('配置未设置')) => (items?.length ? tr('配置中为 {0}', { 0: items.join('、') }) : empty)
 function saveSniff() {
   const draft = sniffDraft.value
   for (const field of SNIFF_PORTS) {
     const bad = draft.ports[field.key]?.find((item) => !isPortEntry(item))
     if (bad) {
-      sniffError.value = `${field.title}中的「${bad}」无效，请填 1–65535 的端口或“起-止”范围，例如 443 或 8000-9000`
+      sniffError.value = tr('{0}中的「{1}」无效，请填 1–65535 的端口或“起-止”范围，例如 443 或 8000-9000', { 0: field.title, 1: bad })
       store.toast(sniffError.value, 'error')
       return
     }
@@ -374,10 +374,10 @@ function undoSniff() {
 type PortKey = 'socks_port' | 'http_port' | 'redir_port' | 'tproxy_port'
 const NET_KEYS = ['socks_port', 'http_port', 'redir_port', 'tproxy_port', 'interface_name', 'routing_mark'] as const
 const PORT_FIELDS: { key: PortKey; title: string; label: string; hint: string }[] = [
-  { key: 'socks_port', title: 'SOCKS 端口', label: 'SOCKS 端口', hint: '单独的 SOCKS5 入站' },
-  { key: 'http_port', title: 'HTTP 端口', label: 'HTTP 端口', hint: '单独的 HTTP 代理入站' },
-  { key: 'redir_port', title: '透明代理端口（redir）', label: 'redir 端口', hint: '配合防火墙重定向使用' },
-  { key: 'tproxy_port', title: '透明代理端口（tproxy）', label: 'tproxy 端口', hint: '配合 iptables / nftables TProxy 使用' },
+  { key: 'socks_port', get title() { return tr('SOCKS 端口') }, get label() { return tr('SOCKS 端口') }, hint: tr('单独的 SOCKS5 入站') },
+  { key: 'http_port', get title() { return tr('HTTP 端口') }, get label() { return tr('HTTP 端口') }, hint: tr('单独的 HTTP 代理入站') },
+  { key: 'redir_port', get title() { return tr('透明代理端口（redir）') }, get label() { return tr('redir 端口') }, hint: tr('配合防火墙重定向使用') },
+  { key: 'tproxy_port', get title() { return tr('透明代理端口（tproxy）') }, get label() { return tr('tproxy 端口') }, hint: tr('配合 iptables / nftables TProxy 使用') },
 ]
 /** mihomo implements redir on Linux and macOS, tproxy and routing marks on Linux only. */
 const visiblePorts = computed(() =>
@@ -391,9 +391,9 @@ const showRoutingMark = computed(() => store.isLinux.value)
 const showNetBlock = computed(() => visiblePorts.value.length > 0 || !store.isAndroid.value || showRoutingMark.value)
 type IfaceChoice = 'follow' | 'off' | 'custom'
 const IFACE_CHOICES: { id: IfaceChoice; label: string }[] = [
-  { id: 'follow', label: '跟随配置' },
-  { id: 'off', label: '不指定' },
-  { id: 'custom', label: '指定' },
+  { id: 'follow', label: tr('跟随配置') },
+  { id: 'off', label: tr('不指定') },
+  { id: 'custom', label: tr('指定') },
 ]
 const netText = ref<Record<PortKey | 'routing_mark' | 'interface_name', string>>({
   socks_port: '',
@@ -453,37 +453,37 @@ const portClashes = computed(() => {
   const out: Partial<Record<PortKey, string>> = {}
   for (const field of PORT_FIELDS) {
     const saved = snap.value.settings[field.key]
-    if (saved && saved === mixed) out[field.key] = `与当前混合端口 ${mixed} 相同，连接时会因端口被占用而失败；请改用其他端口或留空跟随配置`
+    if (saved && saved === mixed) out[field.key] = tr('与当前混合端口 {0} 相同，连接时会因端口被占用而失败；请改用其他端口或留空跟随配置', { 0: mixed })
   }
   return out
 })
 function configPort(key: PortKey): string {
   const config = snap.value.config_values
   const value = { socks_port: config.socks_port, http_port: config.http_port, redir_port: config.redir_port, tproxy_port: config.tproxy_port }[key]
-  if (key === 'http_port' && value != null && value === config.mixed_port && !snap.value.settings.mixed_port) return '配置中的 port 已作为混合端口'
-  return value == null ? '配置未设置' : value === 0 ? '配置中为关闭' : `配置中为 ${value}`
+  if (key === 'http_port' && value != null && value === config.mixed_port && !snap.value.settings.mixed_port) return tr('配置中的 port 已作为混合端口')
+  return value == null ? tr('配置未设置') : value === 0 ? tr('配置中为关闭') : tr('配置中为 {0}', { 0: value })
 }
 function netValidationError(): string | null {
   const text = netText.value
   for (const field of PORT_FIELDS) {
     const raw = text[field.key].trim()
-    if (raw && (!/^\d+$/.test(raw) || Number(raw) > 65535)) return `${field.label}必须是 1–65535 的整数，填 0 表示关闭`
+    if (raw && (!/^\d+$/.test(raw) || Number(raw) > 65535)) return tr('{0}必须是 1–65535 的整数，填 0 表示关闭', { 0: field.label })
   }
   const mark = text.routing_mark.trim()
-  if (mark && (!/^\d+$/.test(mark) || Number(mark) > 4294967295)) return '路由标记必须是非负整数，填 0 表示不设置'
+  if (mark && (!/^\d+$/.test(mark) || Number(mark) > 4294967295)) return tr('路由标记必须是非负整数，填 0 表示不设置')
   if (ifaceChoice.value === 'custom') {
     const name = text.interface_name.trim()
-    if (!name) return '请填写出口网卡名称，或选择“跟随配置”'
-    if (/\s/.test(name)) return '出口网卡名称不能包含空格'
+    if (!name) return tr('请填写出口网卡名称，或选择“跟随配置”')
+    if (/\s/.test(name)) return tr('出口网卡名称不能包含空格')
   }
   const draft = netDraft.value
   const mixed = snap.value.settings.mixed_port || snap.value.config_values.mixed_port || 7890
-  const taken: [string, number][] = [['混合端口', mixed]]
+  const taken: [string, number][] = [[tr('混合端口'), mixed]]
   for (const field of PORT_FIELDS) {
     const port = draft[field.key]
     if (!port) continue
     const other = taken.find(([, used]) => used === port)
-    if (other) return `${field.label} ${port} 与${other[0]}重复，请换一个端口`
+    if (other) return tr('{0} {1} 与{2}重复，请换一个端口', { 0: field.label, 1: port, 2: other[0] })
     taken.push([field.label, port])
   }
   return null
@@ -506,17 +506,17 @@ function saveLan() {
   const user = lanUser.value.trim()
   const pass = lanPass.value
   if (Boolean(user) !== Boolean(pass)) {
-    store.toast('用户名和密码需要同时填写；都留空则不需要认证', 'error')
+    store.toast(tr('用户名和密码需要同时填写；都留空则不需要认证'), 'error')
     return
   }
   if (/[\s:]/.test(user) || /\s/.test(pass)) {
-    store.toast('用户名不能含空格或冒号，密码不能含空格', 'error')
+    store.toast(tr('用户名不能含空格或冒号，密码不能含空格'), 'error')
     return
   }
   const ips = splitIps(lanIps.value)
   const bad = ips.find((item) => !IP_ENTRY.test(item))
   if (bad) {
-    store.toast(`无法识别「${bad}」，请填写 IP 或网段，例如 192.168.1.0/24`, 'error')
+    store.toast(tr('无法识别「{0}」，请填写 IP 或网段，例如 192.168.1.0/24', { 0: bad }), 'error')
     return
   }
   // Extra users from earlier versions or other tools stay; this form edits the first one.
@@ -532,7 +532,7 @@ function undoLan() {
 
 async function copyLanAddress() {
   if (!lanAddress.value) return
-  await store.copyText(`${lanAddress.value}:${lanPort.value}`, '已复制局域网代理地址')
+  await store.copyText(`${lanAddress.value}:${lanPort.value}`, tr('已复制局域网代理地址'))
 }
 
 function effective(key: Flag): boolean {
@@ -547,7 +547,7 @@ function save(patch: Partial<KernelSettings>) {
   })
 }
 
-const PORT_RANGE_ERROR = '混合端口必须是 1–65535 之间的整数'
+const PORT_RANGE_ERROR = tr('混合端口必须是 1–65535 之间的整数')
 
 function validateMixedPort(raw: string): { valid: true; value: number | null } | { valid: false; message: string } {
   const text = raw.trim()
@@ -591,7 +591,7 @@ async function commitPort(silentInvalid = false, focusOnInvalid = false) {
   const result = await save({ mixed_port: value })
   if (!result) {
     lastSyncedPort = previousPort
-    portError.value = store.lastRunError.value ?? '混合端口未能保存'
+    portError.value = store.lastRunError.value ?? tr('混合端口未能保存')
     return
   }
   port.value = value ? String(value) : ''
@@ -604,7 +604,7 @@ function commitProbe(silentInvalid = false) {
   const parsed = rawTimeout ? Number(rawTimeout) : 0
   if (rawTimeout && (!Number.isInteger(parsed) || parsed < 0)) {
     if (!silentInvalid) {
-      store.toast('测速超时需要是非负整数（毫秒）', 'error')
+      store.toast(tr('测速超时需要是非负整数（毫秒）'), 'error')
       timeout.value = base.test_timeout_ms ? String(base.test_timeout_ms) : ''
     }
     return
@@ -681,10 +681,10 @@ const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab.value = 'general'))
 const openShortcuts = inject<(() => void) | null>('openShortcuts', null)
 const SUB_TITLES = computed<Record<SettingsTab, string>>(() => ({
-  general: '设置',
-  proxy: '系统代理',
-  kernel: '内核',
-  tun: 'TUN 模式',
+  general: tr('设置'),
+  proxy: tr('系统代理'),
+  kernel: tr('内核'),
+  tun: tr('TUN 模式'),
   dns: 'DNS',
   backup: t('settings.backup.title'),
 }))
@@ -695,13 +695,13 @@ const isWindows = computed(
 
 const appSummary = computed(() => {
   const s = snap.value
-  if (s.app_mode === 'include' && s.included.length) return `仅 ${s.included.length} 个应用`
-  return s.excluded.length ? `绕过 ${s.excluded.length} 个` : '全部应用'
+  if (s.app_mode === 'include' && s.included.length) return tr('仅 {0} 个应用', { 0: s.included.length })
+  return s.excluded.length ? tr('绕过 {0} 个', { 0: s.excluded.length }) : tr('全部应用')
 })
 
 // ── System Proxy draft
 const PROXY_MODES: { id: SystemProxyMode; label: string }[] = [
-  { id: 'manual', label: '手动' },
+  { id: 'manual', label: tr('手动') },
   { id: 'pac', label: 'PAC' },
 ]
 const proxyHost = ref('')
@@ -812,7 +812,7 @@ function addDefaultBypass() {
   }
   bypassItems.value = current
   bypassBatchText.value = current.join('\n')
-  if (!added) store.toast('默认代理绕过规则已全部包含')
+  if (!added) store.toast(tr('默认代理绕过规则已全部包含'))
 }
 
 /** TUN sends every app to the kernel; bypass entries need DIRECT rules there. */
@@ -820,11 +820,11 @@ function bypassToOverride() {
   const append = bypassOverride(proxyDraft.value.bypass)
   const id = snap.value.active_id
   if (!append) {
-    store.toast('列表中没有可以转换的地址', 'info')
+    store.toast(tr('列表中没有可以转换的地址'), 'info')
     return
   }
   if (!id) {
-    store.toast('请先启用一个配置', 'info')
+    store.toast(tr('请先启用一个配置'), 'info')
     return
   }
   store.overrideRequest.value = { id, append }
@@ -849,17 +849,17 @@ function saveProxy() {
 
 // ── TUN draft
 const STACKS = [
-  { id: '', label: '默认' },
+  { id: '', label: tr('默认') },
   { id: 'mixed', label: 'Mixed' },
   { id: 'gvisor', label: 'gVisor' },
   { id: 'system', label: 'System' },
 ] as const
 const STACK_HINTS: Record<TunSettings['stack'], string> = {
-  '': '跟随配置；配置未指定时用内核推荐的 Mips 自研协议栈（旧内核为 gVisor）',
-  mips: 'Mips：mihomo 自研协议栈，新版内核的默认值',
-  mixed: 'Mixed：TCP 走系统栈、UDP 走 gVisor；开着防火墙时需放行内核',
-  gvisor: 'gVisor：用户态协议栈，隔离性好，不受系统防火墙影响',
-  system: 'System：系统协议栈，占用最低；开着防火墙时需放行内核',
+  '': tr('跟随配置；配置未指定时用内核推荐的 Mips 自研协议栈（旧内核为 gVisor）'),
+  mips: tr('Mips：mihomo 自研协议栈，新版内核的默认值'),
+  mixed: tr('Mixed：TCP 走系统栈、UDP 走 gVisor；开着防火墙时需放行内核'),
+  gvisor: tr('gVisor：用户态协议栈，隔离性好，不受系统防火墙影响'),
+  system: tr('System：系统协议栈，占用最低；开着防火墙时需放行内核'),
 }
 const tun = ref<TunSettings>(copy(snap.value.settings.tun))
 const tunHijack = ref('')
@@ -902,8 +902,8 @@ const tunDraft = computed<TunSettings>(() => {
   }
 })
 const TUN_ROUTES = [
-  { key: 'route_exclude_address', title: '不走 TUN 的地址', config: 'tun_route_exclude_address', hint: '这些 IP 或网段绕过 TUN，例如局域网 192.168.0.0/16' },
-  { key: 'route_address', title: '只让这些地址走 TUN', config: 'tun_route_address', hint: '只把这些 IP 或网段路由进 TUN，其余不接管' },
+  { key: 'route_exclude_address', get title() { return tr('不走 TUN 的地址') }, config: 'tun_route_exclude_address', hint: tr('这些 IP 或网段绕过 TUN，例如局域网 192.168.0.0/16') },
+  { key: 'route_address', get title() { return tr('只让这些地址走 TUN') }, config: 'tun_route_address', hint: tr('只把这些 IP 或网段路由进 TUN，其余不接管') },
 ] as const
 const tunDirty = computed(() => JSON.stringify(tunDraft.value) !== JSON.stringify(snap.value.settings.tun))
 function undoTun() {
@@ -914,7 +914,7 @@ function saveTun() {
   for (const field of TUN_ROUTES) {
     const bad = draft[field.key]?.find((item) => !isCidrEntry(item))
     if (bad) {
-      tunError.value = `${field.title}中的「${bad}」不是有效的 IP 或网段，例如 192.168.0.0/16`
+      tunError.value = tr('{0}中的「{1}」不是有效的 IP 或网段，例如 192.168.0.0/16', { 0: field.title, 1: bad })
       store.toast(tunError.value, 'error')
       return
     }
@@ -933,14 +933,14 @@ const MODES_DNS = [
   { id: 'normal', label: 'Normal' },
 ] as const
 const FILTER_MODES_DNS = [
-  { id: 'blacklist', label: '黑名单' },
-  { id: 'whitelist', label: '白名单' },
-  { id: 'rule', label: '规则' },
+  { id: 'blacklist', label: tr('黑名单') },
+  { id: 'whitelist', label: tr('白名单') },
+  { id: 'rule', label: tr('规则') },
 ] as const
 const FILTER_MODE_HINTS: Record<DnsSettings['fake_ip_filter_mode'], string> = {
-  blacklist: '黑名单：列表中的域名返回真实 IP，其余返回虚拟地址',
-  whitelist: '白名单：仅列表中的域名返回虚拟地址，其余返回真实 IP',
-  rule: '规则：列表按规则写法自上而下匹配，例如 GEOSITE,cn,real-ip，最后写 MATCH,fake-ip',
+  blacklist: tr('黑名单：列表中的域名返回真实 IP，其余返回虚拟地址'),
+  whitelist: tr('白名单：仅列表中的域名返回虚拟地址，其余返回真实 IP'),
+  rule: tr('规则：列表按规则写法自上而下匹配，例如 GEOSITE,cn,real-ip，最后写 MATCH,fake-ip'),
 }
 const CACHE_ALGOS_DNS = [
   { id: 'lru', label: 'LRU' },
@@ -948,12 +948,12 @@ const CACHE_ALGOS_DNS = [
 ] as const
 type ListKey = 'nameserver' | 'default_nameserver' | 'fallback' | 'proxy_server_nameserver' | 'direct_nameserver' | 'fake_ip_filter'
 const LISTS: { key: ListKey; title: string; hint: string; fakeIpOnly?: boolean; core?: boolean }[] = [
-  { key: 'nameserver', title: '主 DNS 服务器', hint: '默认用于解析所有域名，支持 DoH / DoT / DoQ', core: true },
-  { key: 'default_nameserver', title: '引导 DNS', hint: '只用 IP 形式，用于解析上面 DoH 等服务器自身的域名', core: true },
-  { key: 'proxy_server_nameserver', title: '节点域名解析', hint: '解析代理节点服务器地址' },
-  { key: 'direct_nameserver', title: '直连域名解析', hint: '直连出站使用；留空则用主 DNS' },
-  { key: 'fallback', title: '备用 DNS', hint: '可选，海外服务器；留空则不启用' },
-  { key: 'fake_ip_filter', title: 'Fake-IP 过滤', hint: '黑名单下这些域名返回真实 IP；白名单下仅这些域名返回 Fake-IP；规则模式下每行一条规则', fakeIpOnly: true },
+  { key: 'nameserver', get title() { return tr('主 DNS 服务器') }, get hint() { return tr('默认用于解析所有域名，支持 DoH / DoT / DoQ') }, core: true },
+  { key: 'default_nameserver', get title() { return tr('引导 DNS') }, get hint() { return tr('只用 IP 形式，用于解析上面 DoH 等服务器自身的域名') }, core: true },
+  { key: 'proxy_server_nameserver', get title() { return tr('节点域名解析') }, hint: tr('解析代理节点服务器地址') },
+  { key: 'direct_nameserver', get title() { return tr('直连域名解析') }, hint: tr('直连出站使用；留空则用主 DNS') },
+  { key: 'fallback', get title() { return tr('备用 DNS') }, hint: tr('可选，海外服务器；留空则不启用') },
+  { key: 'fake_ip_filter', get title() { return tr('Fake-IP 过滤') }, get hint() { return tr('黑名单下这些域名返回真实 IP；白名单下仅这些域名返回 Fake-IP；规则模式下每行一条规则') }, fakeIpOnly: true },
 ]
 const CORE_DNS_LISTS = LISTS.filter((item) => item.core)
 const ADV_DNS_LISTS = LISTS.filter((item) => !item.core)
@@ -1159,7 +1159,7 @@ watch(policyBatchText, (text) => {
 function togglePolicyBatch() {
   if (policyBatchMode.value) {
     if (policyInvalid.value.length) {
-      store.toast(`第 ${policyInvalid.value.join('、')} 行格式不对，修正或删除后再切换`, 'error')
+      store.toast(tr('第 {0} 行格式不对，修正或删除后再切换', { 0: policyInvalid.value.join('、') }), 'error')
       return
     }
     policyRows.value = mapToRows(parsePolicyBatchText(policyBatchText.value)).map(({ key, val }) => ({ pattern: key, servers: val }))
@@ -1191,7 +1191,7 @@ watch(hostBatchText, (text) => {
 function toggleHostBatch() {
   if (hostBatchMode.value) {
     if (hostInvalid.value.length) {
-      store.toast(`第 ${hostInvalid.value.join('、')} 行格式不对，修正或删除后再切换`, 'error')
+      store.toast(tr('第 {0} 行格式不对，修正或删除后再切换', { 0: hostInvalid.value.join('、') }), 'error')
       return
     }
     hostRows.value = mapToRows(parseHostsBatchText(hostBatchText.value)).map(({ key, val }) => ({ domain: key, targets: val }))
@@ -1280,9 +1280,9 @@ function onHostDomainEnter() {
 }
 
 const TABS = computed(() => [
-  { id: 'general' as SettingsTab, label: '通用', icon: 'sliders' },
-  ...(store.isAndroid.value ? [] : [{ id: 'proxy' as SettingsTab, label: proxyDirty.value ? '系统代理 •' : '系统代理', icon: 'monitor' }]),
-  { id: 'kernel' as SettingsTab, label: kernelDirty.value ? '内核 •' : '内核', icon: 'cpu' },
+  { id: 'general' as SettingsTab, get label() { return tr('通用') }, icon: 'sliders' },
+  ...(store.isAndroid.value ? [] : [{ id: 'proxy' as SettingsTab, label: proxyDirty.value ? tr('系统代理 •') : tr('系统代理'), icon: 'monitor' }]),
+  { id: 'kernel' as SettingsTab, label: kernelDirty.value ? tr('内核 •') : tr('内核'), icon: 'cpu' },
   ...(store.isAndroid.value ? [] : [{ id: 'tun' as SettingsTab, label: tunDirty.value ? 'TUN •' : 'TUN', icon: 'shield' }]),
   { id: 'dns' as SettingsTab, label: dnsDirty.value ? 'DNS •' : 'DNS', icon: 'globe' },
   { id: 'backup' as SettingsTab, label: t('settings.backup.title'), icon: 'database' },
@@ -1294,26 +1294,26 @@ const TABS = computed(() => [
     <!-- Phone sub-page: a back control and the section title replace the tab bar. -->
     <header v-if="compact && store.settingsTab.value !== 'general'" class="settings-subhead">
       <button type="button" class="back-btn" data-testid="settings-back" @click="settingsBack">
-        <Icon name="chevron-left" :size="18" /><span>设置</span>
+        <Icon name="chevron-left" :size="18" /><span>{{ tr('设置') }}</span>
       </button>
       <h1>{{ SUB_TITLES[store.settingsTab.value] }}</h1>
     </header>
     <header v-else-if="compact" class="page-head">
       <div>
-        <h1>设置</h1>
+        <h1>{{ tr('设置') }}</h1>
         <p class="muted small">Billow {{ app?.version ?? '' }}<template v-if="kernel.version"> · Mihomo {{ kernel.version }}</template></p>
       </div>
     </header>
     <header v-else class="page-head">
       <div>
-        <h1>设置</h1>
+        <h1>{{ tr('设置') }}</h1>
         <p class="muted small">Billow {{ app?.version ?? '' }}</p>
       </div>
       <Segmented
         :model-value="store.settingsTab.value"
         :options="TABS"
         size="sm"
-        label="设置分类"
+        :label="tr('设置分类')"
         data-testid="settings-tabs"
         @update:model-value="(tab) => (store.settingsTab.value = tab)"
       />
@@ -1322,73 +1322,73 @@ const TABS = computed(() => [
     <!-- ───────── 通用 ───────── -->
     <template v-if="store.settingsTab.value === 'general'">
       <!-- Phones reach the tool pages from here (the tab bar keeps four entries). -->
-      <nav v-if="compact" class="tool-grid" aria-label="工具" data-testid="tool-grid">
+      <nav v-if="compact" class="tool-grid" :aria-label="tr('工具')" data-testid="tool-grid">
         <button type="button" class="tool-tile" data-tool="connections" @click="store.go('connections')">
           <span class="tool-icon blue"><Icon name="activity" /></span>
-          <strong>连接</strong>
-          <span class="muted small">{{ snap.connected ? `${snap.connection_total} 个活动` : '未连接' }}</span>
+          <strong>{{ tr('连接') }}</strong>
+          <span class="muted small">{{ snap.connected ? tr('{0} 个活动', { 0: snap.connection_total }) : tr('未连接') }}</span>
         </button>
         <button type="button" class="tool-tile" data-tool="logs" @click="store.go('logs')">
           <span class="tool-icon amber"><Icon name="terminal" /></span>
-          <strong>日志</strong>
-          <span class="muted small">{{ snap.logs.length ? `${snap.logs.length} 条` : '暂无' }}</span>
+          <strong>{{ tr('日志') }}</strong>
+          <span class="muted small">{{ snap.logs.length ? tr('{0} 条', { 0: snap.logs.length }) : tr('暂无') }}</span>
         </button>
         <button type="button" class="tool-tile" data-tool="rules" @click="store.go('rules')">
           <span class="tool-icon violet"><Icon name="route" /></span>
-          <strong>规则</strong>
-          <span class="muted small">分流规则与命中</span>
+          <strong>{{ tr('规则') }}</strong>
+          <span class="muted small">{{ tr('分流规则与命中') }}</span>
         </button>
         <button type="button" class="tool-tile" data-tool="resources" @click="store.go('resources')">
           <span class="tool-icon green"><Icon name="database" /></span>
-          <strong>外部资源</strong>
-          <span class="muted small">规则集与代理集</span>
+          <strong>{{ tr('外部资源') }}</strong>
+          <span class="muted small">{{ tr('规则集与代理集') }}</span>
         </button>
       </nav>
 
       <!-- Phone: grouped list in the shape of the system settings app; each row says its current value. -->
       <template v-if="compact">
-        <p class="settings-group-label">网络</p>
+        <p class="settings-group-label">{{ tr('网络') }}</p>
         <section class="card list-card settings-list" data-testid="settings-network">
           <button v-if="store.isAndroid.value" type="button" class="nav-row" data-testid="open-apps" @click="store.go('apps')">
             <span class="nav-row-icon green"><Icon name="apps" /></span>
-            <span class="nav-row-title">应用访问控制</span>
+            <span class="nav-row-title">{{ tr('应用访问控制') }}</span>
             <span class="nav-row-value">{{ appSummary }}</span>
             <Icon name="chevron-right" :size="16" class="muted" />
           </button>
           <template v-else>
             <button type="button" class="nav-row" data-testid="open-proxy" @click="store.settingsTab.value = 'proxy'">
               <span class="nav-row-icon green"><Icon name="monitor" /></span>
-              <span class="nav-row-title">系统代理</span>
-              <span class="nav-row-value">{{ snap.system_proxy ? (snap.settings.system_proxy.mode === 'pac' ? 'PAC' : '已开启') : '关闭' }}</span>
+              <span class="nav-row-title">{{ tr('系统代理') }}</span>
+              <span class="nav-row-value">{{ snap.system_proxy ? (snap.settings.system_proxy.mode === 'pac' ? 'PAC' : tr('已开启')) : tr('关闭') }}</span>
               <Icon name="chevron-right" :size="16" class="muted" />
             </button>
             <button type="button" class="nav-row" data-testid="open-tun" @click="store.settingsTab.value = 'tun'">
               <span class="nav-row-icon blue"><Icon name="shield" /></span>
-              <span class="nav-row-title">TUN 模式</span>
-              <span class="nav-row-value">{{ snap.tun ? '已开启' : '关闭' }}</span>
+              <span class="nav-row-title">{{ tr('TUN 模式') }}</span>
+              <span class="nav-row-value">{{ snap.tun ? tr('已开启') : tr('关闭') }}</span>
               <Icon name="chevron-right" :size="16" class="muted" />
             </button>
           </template>
           <button type="button" class="nav-row" data-testid="open-dns" @click="store.settingsTab.value = 'dns'">
             <span class="nav-row-icon violet"><Icon name="globe" /></span>
             <span class="nav-row-title">DNS</span>
-            <span class="nav-row-value">{{ snap.settings.dns_override ? '已覆写' : '跟随配置' }}</span>
+            <span class="nav-row-value">{{ snap.settings.dns_override ? tr('已覆写') : tr('跟随配置') }}</span>
             <Icon name="chevron-right" :size="16" class="muted" />
           </button>
           <button type="button" class="nav-row" data-testid="open-kernel" @click="store.settingsTab.value = 'kernel'">
             <span class="nav-row-icon amber"><Icon name="cpu" /></span>
-            <span class="nav-row-title">内核</span>
-            <span class="nav-row-value">{{ kernel.ready ? (kernel.version ?? '已安装') : '未安装' }}{{ overridden ? ' · 已调整' : '' }}</span>
+            <span class="nav-row-title">{{ tr('内核') }}</span>
+            <span class="nav-row-value">{{ kernel.ready ? (kernel.version ?? tr('已安装')) : tr('未安装') }}{{ overridden ? tr(' · 已调整') : '' }}</span>
             <Icon name="chevron-right" :size="16" class="muted" />
           </button>
         </section>
 
-        <p class="settings-group-label">外观与启动</p>
+        <p class="settings-group-label">{{ tr('外观与启动') }}</p>
         <section class="card list-card settings-list">
           <div class="nav-row static">
             <span class="nav-row-icon slate"><Icon :name="THEMES.find((theme) => theme.id === store.theme.value)?.icon ?? 'laptop'" /></span>
-            <span class="nav-row-title">主题</span>
-            <Segmented :model-value="store.theme.value" :options="THEMES.map(({ id, label }) => ({ id, label: id === 'system' ? '自动' : label }))" size="sm" label="主题" @update:model-value="store.setTheme" />
+            <span class="nav-row-title">{{ tr('主题') }}</span>
+            <Segmented :model-value="store.theme.value" :options="THEMES.map(({ id, label }) => ({ id, label: id === 'system' ? tr('自动') : label }))" size="sm" :label="tr('主题')" @update:model-value="store.setTheme" />
           </div>
           <div class="nav-row static language-row" data-testid="language-row">
             <span class="nav-row-icon slate"><Icon name="globe" /></span>
@@ -1406,12 +1406,12 @@ const TABS = computed(() => [
           <div class="nav-row static">
             <span class="nav-row-icon green"><Icon name="power" /></span>
             <div class="grow min0">
-              <span class="nav-row-title">打开时自动启动内核</span>
-              <p class="muted small">异常退出时自动暂停重试并回退代理</p>
+              <span class="nav-row-title">{{ tr('打开时自动启动内核') }}</span>
+              <p class="muted small">{{ tr('异常退出时自动暂停重试并回退代理') }}</p>
             </div>
             <Toggle
               :model-value="currentSettings.auto_connect"
-              label="打开时自动启动内核"
+              :label="tr('打开时自动启动内核')"
               data-testid="auto-connect-toggle"
               @update:model-value="(on) => save({ auto_connect: on })"
             />
@@ -1420,13 +1420,13 @@ const TABS = computed(() => [
       </template>
 
       <section v-else class="card">
-        <header class="card-head"><h2>外观与操作</h2></header>
+        <header class="card-head"><h2>{{ tr('外观与操作') }}</h2></header>
         <div class="setting-row">
           <div class="grow">
-            <strong>主题</strong>
-            <p class="muted small">浅色、深色或跟随系统</p>
+            <strong>{{ tr('主题') }}</strong>
+            <p class="muted small">{{ tr('浅色、深色或跟随系统') }}</p>
           </div>
-          <Segmented :model-value="store.theme.value" :options="THEMES" size="sm" label="主题" @update:model-value="store.setTheme" />
+          <Segmented :model-value="store.theme.value" :options="THEMES" size="sm" :label="tr('主题')" @update:model-value="store.setTheme" />
         </div>
         <div class="setting-row" data-testid="language-setting">
           <div class="grow">
@@ -1444,25 +1444,24 @@ const TABS = computed(() => [
         </div>
         <div v-if="openShortcuts" class="setting-row">
           <div class="grow">
-            <strong>键盘快捷键</strong>
-            <p class="muted small">命令面板、搜索聚焦与快速清除</p>
+            <strong>{{ tr('键盘快捷键') }}</strong>
+            <p class="muted small">{{ tr('命令面板、搜索聚焦与快速清除') }}</p>
           </div>
           <button type="button" class="btn ghost sm" data-testid="settings-shortcuts" @click="openShortcuts()">
-            <Icon name="keyboard" :size="15" />查看快捷键
-          </button>
+            <Icon name="keyboard" :size="15" />{{ tr('查看快捷键') }} </button>
         </div>
       </section>
 
       <section v-if="!compact" class="card" data-testid="startup-settings">
-        <header class="card-head"><h2>启动与窗口</h2></header>
+        <header class="card-head"><h2>{{ tr('启动与窗口') }}</h2></header>
         <div class="setting-row">
           <div class="grow">
-            <strong>打开时自动启动内核</strong>
-            <p class="muted small">启动 Billow 后自动恢复代理连接；若配置有误或内核连续异常退出，将自动停止重试并回退系统代理</p>
+            <strong>{{ tr('打开时自动启动内核') }}</strong>
+            <p class="muted small">{{ tr('启动 Billow 后自动恢复代理连接；若配置有误或内核连续异常退出，将自动停止重试并回退系统代理') }}</p>
           </div>
           <Toggle
             :model-value="currentSettings.auto_connect"
-            label="打开时自动启动内核"
+            :label="tr('打开时自动启动内核')"
             data-testid="auto-connect-toggle"
             @update:model-value="(on) => save({ auto_connect: on })"
           />
@@ -1470,24 +1469,24 @@ const TABS = computed(() => [
         <template v-if="app && app.autostart != null">
           <div class="setting-row">
             <div class="grow">
-              <strong>开机自启</strong>
-              <p class="muted small">登录系统后自动运行 Billow</p>
+              <strong>{{ tr('开机自启') }}</strong>
+              <p class="muted small">{{ tr('登录系统后自动运行 Billow') }}</p>
             </div>
-            <Toggle :model-value="Boolean(app.autostart)" label="开机自启" @update:model-value="store.setAutostart" />
+            <Toggle :model-value="Boolean(app.autostart)" :label="tr('开机自启')" @update:model-value="store.setAutostart" />
           </div>
           <div class="setting-row">
             <div class="grow">
-              <strong>静默启动</strong>
-              <p class="muted small">开机自启时不弹出主窗口，只在托盘显示</p>
+              <strong>{{ tr('静默启动') }}</strong>
+              <p class="muted small">{{ tr('开机自启时不弹出主窗口，只在托盘显示') }}</p>
             </div>
-            <Toggle :model-value="app.silent_start" label="静默启动" @update:model-value="(on) => store.setBehavior(app!.close_to_tray, on, app!.release_ui_on_close)" />
+            <Toggle :model-value="app.silent_start" :label="tr('静默启动')" @update:model-value="(on) => store.setBehavior(app!.close_to_tray, on, app!.release_ui_on_close)" />
           </div>
           <div class="setting-row">
             <div class="grow">
-              <strong>关闭时最小化到托盘</strong>
-              <p class="muted small">关闭窗口后继续在后台运行；从托盘菜单退出</p>
+              <strong>{{ tr('关闭时最小化到托盘') }}</strong>
+              <p class="muted small">{{ tr('关闭窗口后继续在后台运行；从托盘菜单退出') }}</p>
             </div>
-            <Toggle :model-value="app.close_to_tray" label="关闭时最小化到托盘" @update:model-value="(on) => store.setBehavior(on, app!.silent_start, app!.release_ui_on_close)" />
+            <Toggle :model-value="app.close_to_tray" :label="tr('关闭时最小化到托盘')" @update:model-value="(on) => store.setBehavior(on, app!.silent_start, app!.release_ui_on_close)" />
           </div>
           <!-- Lightweight mode only exists while the window stays in the tray (R44). -->
           <div v-if="app.close_to_tray && !store.isAndroid.value" class="setting-row" data-testid="release-ui-setting">
@@ -1509,15 +1508,15 @@ const TABS = computed(() => [
 
       <!-- Phone: the rest of the general page keeps the grouped-list rhythm instead of loose cards. -->
       <template v-if="compact">
-        <p class="settings-group-label">代理行为</p>
+        <p class="settings-group-label">{{ tr('代理行为') }}</p>
         <section class="card list-card settings-list" data-testid="node-switch-settings">
           <div class="nav-row static">
             <span class="nav-row-icon blue"><Icon name="refresh" /></span>
             <div class="grow min0">
-              <span class="nav-row-title">切换节点后重连</span>
-              <p class="muted small">让旧连接立即改走新节点，下载或通话可能中断</p>
+              <span class="nav-row-title">{{ tr('切换节点后重连') }}</span>
+              <p class="muted small">{{ tr('让旧连接立即改走新节点，下载或通话可能中断') }}</p>
             </div>
-            <Toggle :model-value="currentSettings.close_connections_on_switch" label="切换节点后重连" data-testid="close-on-node-switch"
+            <Toggle :model-value="currentSettings.close_connections_on_switch" :label="tr('切换节点后重连')" data-testid="close-on-node-switch"
               @update:model-value="(on) => save({ close_connections_on_switch: on })" />
           </div>
           <!-- Automatic exit IP queries are off by default and name the services used (R40). -->
@@ -1553,15 +1552,15 @@ const TABS = computed(() => [
           <details class="nav-fold" data-testid="subscription-settings" :open="Boolean(snap.settings.subscription_user_agent) || undefined">
             <summary class="nav-row">
               <span class="nav-row-icon violet"><Icon name="link" /></span>
-              <span class="nav-row-title">订阅 User-Agent</span>
-              <span class="nav-row-value">{{ snap.settings.subscription_user_agent ? '已自定义' : '默认' }}</span>
+              <span class="nav-row-title">{{ tr('订阅 User-Agent') }}</span>
+              <span class="nav-row-value">{{ snap.settings.subscription_user_agent ? tr('已自定义') : tr('默认') }}</span>
               <Icon name="chevron-right" :size="16" class="muted nav-fold-chevron" />
             </summary>
             <label class="field nav-fold-body">
-              <span class="sr-only">默认 User-Agent</span>
+              <span class="sr-only">{{ tr('默认 User-Agent') }}</span>
               <input v-model="subscriptionUa" type="text" maxlength="256" :placeholder="defaultSubscriptionUa" spellcheck="false" autocomplete="off" autocapitalize="off" enterkeyhint="done" data-testid="global-subscription-user-agent"
                 @focus="subscriptionUaFocused = true" @blur="subscriptionUaFocused = false; commitSubscriptionUa()" @keydown.enter.prevent="($event.target as HTMLInputElement).blur()" />
-              <p class="muted small">更新订阅时使用；留空用内核默认值，单个订阅可在「编辑信息」中覆盖。</p>
+              <p class="muted small">{{ tr('更新订阅时使用；留空用内核默认值，单个订阅可在「编辑信息」中覆盖。') }}</p>
             </label>
           </details>
         </section>
@@ -1575,29 +1574,29 @@ const TABS = computed(() => [
           </button>
         </section>
 
-        <p class="settings-group-label">关于</p>
+        <p class="settings-group-label">{{ tr('关于') }}</p>
         <section class="card list-card settings-list" data-testid="settings-about">
           <AppUpdateCard variant="row" />
           <button type="button" class="nav-row" data-testid="open-repo" @click="openRepo">
             <span class="nav-row-icon slate"><Icon name="github" /></span>
             <div class="grow min0">
-              <span class="nav-row-title">项目主页</span>
+              <span class="nav-row-title">{{ tr('项目主页') }}</span>
               <p class="muted small ellipsis">{{ REPO_LABEL }}</p>
             </div>
             <Icon name="external" :size="15" class="muted" />
           </button>
         </section>
-        <p class="settings-foot">基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0</p>
+        <p class="settings-foot">{{ tr('基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0') }}</p>
       </template>
 
       <template v-else>
       <section class="card" data-testid="node-switch-settings">
         <div class="setting-row">
           <div class="grow">
-            <strong>切换节点后重连</strong>
-            <p class="muted small">关闭经过当前代理组的旧连接，让应用重连新节点。下载、视频或通话可能中断；关闭后仅新连接使用新节点。</p>
+            <strong>{{ tr('切换节点后重连') }}</strong>
+            <p class="muted small">{{ tr('关闭经过当前代理组的旧连接，让应用重连新节点。下载、视频或通话可能中断；关闭后仅新连接使用新节点。') }}</p>
           </div>
-          <Toggle :model-value="currentSettings.close_connections_on_switch" label="切换节点后重连" data-testid="close-on-node-switch"
+          <Toggle :model-value="currentSettings.close_connections_on_switch" :label="tr('切换节点后重连')" data-testid="close-on-node-switch"
             @update:model-value="(on) => save({ close_connections_on_switch: on })" />
         </div>
         <!-- Automatic exit IP queries are off by default and name the services used (R40). -->
@@ -1635,16 +1634,16 @@ const TABS = computed(() => [
         <details class="settings-fold flush" :open="Boolean(snap.settings.subscription_user_agent) || undefined">
           <summary>
             <Icon name="chevron-right" :size="14" />
-            <span>订阅请求</span>
-            <span v-if="snap.settings.subscription_user_agent" class="tag accent sm">已自定义</span>
-            <span class="muted small">更新订阅时使用的 User-Agent</span>
+            <span>{{ tr('订阅请求') }}</span>
+            <span v-if="snap.settings.subscription_user_agent" class="tag accent sm">{{ tr('已自定义') }}</span>
+            <span class="muted small">{{ tr('更新订阅时使用的 User-Agent') }}</span>
           </summary>
           <div class="settings-fold-body">
             <label class="field fold-field">
-              <span>默认 User-Agent</span>
+              <span>{{ tr('默认 User-Agent') }}</span>
               <input v-model="subscriptionUa" type="text" maxlength="256" :placeholder="defaultSubscriptionUa" spellcheck="false" autocomplete="off" data-testid="global-subscription-user-agent"
                 @focus="subscriptionUaFocused = true" @blur="subscriptionUaFocused = false; commitSubscriptionUa()" @keydown.enter.prevent="commitSubscriptionUa()" />
-              <span class="muted small">留空使用内核默认值；单个订阅可在「编辑信息 › 高级选项」中覆盖。</span>
+              <span class="muted small">{{ tr('留空使用内核默认值；单个订阅可在「编辑信息 › 高级选项」中覆盖。') }}</span>
             </label>
           </div>
         </details>
@@ -1653,12 +1652,12 @@ const TABS = computed(() => [
       <AppUpdateCard />
 
       <section class="card">
-        <header class="card-head"><h2>关于</h2></header>
+        <header class="card-head"><h2>{{ tr('关于') }}</h2></header>
         <div class="about">
           <span class="brand-mark lg"><img :src="appIcon" alt="" /></span>
           <div class="grow min0">
             <strong>Billow</strong>
-            <p class="muted small">基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0</p>
+            <p class="muted small">{{ tr('基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0') }}</p>
             <button type="button" class="about-link" :title="REPO_URL" data-testid="open-repo" @click="openRepo">
               <Icon name="github" :size="14" />
               <span>{{ REPO_LABEL }}</span>
@@ -1675,115 +1674,106 @@ const TABS = computed(() => [
     <template v-else-if="store.settingsTab.value === 'proxy'">
       <section class="card" data-testid="proxy-settings">
         <header class="card-head">
-          <h2>系统代理</h2>
-          <button type="button" class="btn ghost sm" @click="resetProxy">恢复默认</button>
+          <h2>{{ tr('系统代理') }}</h2>
+          <button type="button" class="btn ghost sm" @click="resetProxy">{{ tr('恢复默认') }}</button>
         </header>
-        <p class="muted small card-note">配置系统级 HTTP / SOCKS 接管方式、代理主机与 PAC 脚本。修改后立即应用，不会中断当前内核连接。</p>
+        <p class="muted small card-note">{{ tr('配置系统级 HTTP / SOCKS 接管方式、代理主机与 PAC 脚本。修改后立即应用，不会中断当前内核连接。') }}</p>
         <div class="setting-row master-row" :class="{ active: snap.system_proxy }">
           <span class="row-icon"><Icon name="monitor" /></span>
           <div class="grow">
-            <strong>启用系统代理</strong>
-            <p class="muted small">{{ snap.system_proxy ? (snap.mixed_port ? `${snap.settings.system_proxy.host || '127.0.0.1'}:${snap.mixed_port}` : '已开启，连接后生效') : '未开启' }}</p>
+            <strong>{{ tr('启用系统代理') }}</strong>
+            <p class="muted small">{{ snap.system_proxy ? (snap.mixed_port ? `${snap.settings.system_proxy.host || '127.0.0.1'}:${snap.mixed_port}` : tr('已开启，连接后生效')) : tr('未开启') }}</p>
           </div>
-          <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" label="启用系统代理" @update:model-value="store.setSystemProxy" />
+          <Toggle :model-value="snap.system_proxy" :busy="store.busy.proxy" :label="tr('启用系统代理')" @update:model-value="store.setSystemProxy" />
         </div>
         <div class="setting-row wrap">
           <div class="grow">
-            <strong>代理主机</strong>
-            <p class="muted small">若无特殊需求请勿修改，留空默认使用 127.0.0.1</p>
+            <strong>{{ tr('代理主机') }}</strong>
+            <p class="muted small">{{ tr('若无特殊需求请勿修改，留空默认使用 127.0.0.1') }}</p>
           </div>
           <input
             v-model="proxyHost"
             class="input sm mono proxy-host-field"
             placeholder="127.0.0.1"
-            aria-label="代理主机"
+            :aria-label="tr('代理主机')"
             data-testid="proxy-host-input"
           />
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>代理模式</strong>
-            <p class="muted small">{{ proxyMode === 'pac' ? 'PAC 自动配置脚本：通过本地 HTTP 服务按域名动态决定是否走代理' : '手动代理：直接将 HTTP / HTTPS / SOCKS 指向本地混合端口' }}</p>
+            <strong>{{ tr('代理模式') }}</strong>
+            <p class="muted small">{{ proxyMode === 'pac' ? tr('PAC 自动配置脚本：通过本地 HTTP 服务按域名动态决定是否走代理') : tr('手动代理：直接将 HTTP / HTTPS / SOCKS 指向本地混合端口') }}</p>
           </div>
-          <Segmented v-model="proxyMode" :options="PROXY_MODES" size="sm" label="代理模式" data-testid="proxy-mode" />
+          <Segmented v-model="proxyMode" :options="PROXY_MODES" size="sm" :label="tr('代理模式')" data-testid="proxy-mode" />
         </div>
         <div v-if="proxyMode === 'pac'" class="setting-row stacked">
           <div class="kv-section-head">
             <div>
-              <strong>PAC 脚本</strong>
-              <p class="muted small">支持 <code>%proxy-host%</code> 与 <code>%mixed-port%</code> 占位符</p>
+              <strong>{{ tr('PAC 脚本') }}</strong>
+              <p class="muted small">{{ tr('支持') }} <code>%proxy-host%</code> {{ tr('与') }} <code>%mixed-port%</code> {{ tr('占位符') }}</p>
             </div>
-            <button type="button" class="btn ghost sm" @click="pacScript = DEFAULT_PAC_SCRIPT">恢复默认脚本</button>
+            <button type="button" class="btn ghost sm" @click="pacScript = DEFAULT_PAC_SCRIPT">{{ tr('恢复默认脚本') }}</button>
           </div>
           <textarea
             v-model="pacScript"
             class="input list-input mono"
             rows="9"
             spellcheck="false"
-            aria-label="PAC 脚本"
+            :aria-label="tr('PAC 脚本')"
             data-testid="pac-script-input"
           />
         </div>
         <div v-if="isWindows" class="setting-row">
           <div class="grow">
-            <strong>UWP 工具</strong>
-            <p class="muted small">解除 Windows 商店（UWP）应用的本地回环代理限制</p>
+            <strong>{{ tr('UWP 工具') }}</strong>
+            <p class="muted small">{{ tr('解除 Windows 商店（UWP）应用的本地回环代理限制') }}</p>
           </div>
           <button
             type="button"
             class="btn sm"
             data-testid="open-uwp-tool"
             @click="uwpOpen = true"
-          >
-            打开 UWP 工具
-          </button>
+          > {{ tr('打开 UWP 工具') }} </button>
         </div>
       </section>
 
       <section class="card" data-testid="proxy-bypass-card">
         <header class="card-head wrap-head">
           <div>
-            <h2>代理绕过列表 <span class="muted">{{ proxyDraft.bypass.length }}</span></h2>
-            <p class="muted small">遵循系统代理的应用访问这些地址时直接连接，不经过内核</p>
+            <h2>{{ tr('代理绕过列表') }} <span class="muted">{{ proxyDraft.bypass.length }}</span></h2>
+            <p class="muted small">{{ tr('遵循系统代理的应用访问这些地址时直接连接，不经过内核') }}</p>
           </div>
           <div class="head-actions">
-            <button type="button" class="btn ghost sm" data-testid="add-default-bypass" @click="addDefaultBypass">
-              添加默认代理绕过
-            </button>
+            <button type="button" class="btn ghost sm" data-testid="add-default-bypass" @click="addDefaultBypass"> {{ tr('添加默认代理绕过') }} </button>
             <button
               v-if="bypassItems.length && !bypassBatchMode"
               type="button"
               class="btn ghost sm danger-text"
               data-testid="clear-bypass"
               @click="clearBypass"
-            >
-              清空
-            </button>
+            > {{ tr('清空') }} </button>
             <button type="button" class="btn ghost sm" data-testid="toggle-bypass-batch" @click="toggleBypassBatch">
-              {{ bypassBatchMode ? '列表视图' : '批量编辑' }}
+              {{ bypassBatchMode ? tr('列表视图') : tr('批量编辑') }}
             </button>
           </div>
         </header>
         <div v-if="snap.tun || snap.tun_wanted" class="hint-box small bypass-tun-note" data-testid="bypass-tun-note">
           <Icon name="info" :size="15" />
-          <p class="grow">
-            TUN 已开启：所有应用的流量都会进入内核，命令行工具等不读系统代理的程序不受绕过列表影响。需要直连请在当前配置的覆写里添加 DIRECT 规则。
-          </p>
-          <button type="button" class="btn sm" data-testid="bypass-to-override" @click="bypassToOverride">生成直连规则</button>
+          <p class="grow"> {{ tr('TUN 已开启：所有应用的流量都会进入内核，命令行工具等不读系统代理的程序不受绕过列表影响。需要直连请在当前配置的覆写里添加 DIRECT 规则。') }} </p>
+          <button type="button" class="btn sm" data-testid="bypass-to-override" @click="bypassToOverride">{{ tr('生成直连规则') }}</button>
         </div>
         <template v-if="!bypassBatchMode">
           <div class="bypass-add-row">
             <input
               v-model="newBypassItem"
               class="input sm mono grow"
-              placeholder="输入绕过域名、IP 或网段，如 *.corp.local 或 10.*"
-              aria-label="新增代理绕过地址"
+              :placeholder="tr('输入绕过域名、IP 或网段，如 *.corp.local 或 10.*')"
+              :aria-label="tr('新增代理绕过地址')"
               data-testid="bypass-add-input"
               @keydown.enter.prevent="addBypassItem"
             />
             <button type="button" class="btn sm" :disabled="!newBypassItem.trim()" data-testid="bypass-add-btn" @click="addBypassItem">
-              <Icon name="plus" :size="14" />添加
-            </button>
+              <Icon name="plus" :size="14" />{{ tr('添加') }} </button>
           </div>
           <ul v-if="bypassItems.length" class="bypass-list" data-testid="bypass-list">
             <li v-for="(item, index) in bypassItems" :key="`${item}-${index}`" class="bypass-item">
@@ -1791,34 +1781,34 @@ const TABS = computed(() => [
               <button
                 type="button"
                 class="icon-btn sm"
-                :title="`删除 ${item}`"
-                :aria-label="`删除 ${item}`"
+                :title="tr('删除 {0}', { 0: item })"
+                :aria-label="tr('删除 {0}', { 0: item })"
                 @click="removeBypassItem(index)"
               >
                 <Icon name="trash" :size="14" />
               </button>
             </li>
           </ul>
-          <p v-else class="muted small empty-hint">当前未配置代理绕过地址，可点击上方“添加默认代理绕过”快速填入局域网与本地回环地址。</p>
+          <p v-else class="muted small empty-hint">{{ tr('当前未配置代理绕过地址，可点击上方“添加默认代理绕过”快速填入局域网与本地回环地址。') }}</p>
         </template>
         <div v-else class="setting-row stacked">
-          <p class="muted small">每行一条，也支持分号或逗号分隔</p>
+          <p class="muted small">{{ tr('每行一条，也支持分号或逗号分隔') }}</p>
           <textarea
             v-model="bypassBatchText"
             class="input list-input mono"
             rows="8"
             spellcheck="false"
-            aria-label="代理绕过列表批量编辑"
+            :aria-label="tr('代理绕过列表批量编辑')"
             data-testid="bypass-batch-textarea"
           />
         </div>
       </section>
 
       <div v-if="proxyDirty" class="save-bar floating-save-bar">
-        <span class="muted small grow">有未保存的系统代理修改（保存后立即生效，不会中断连接）</span>
+        <span class="muted small grow">{{ tr('有未保存的系统代理修改（保存后立即生效，不会中断连接）') }}</span>
         <kbd v-if="!compact" class="palette-kbd save-kbd" aria-hidden="true">{{ saveKey }}</kbd>
-        <button type="button" class="btn ghost sm" @click="undoProxy">撤销</button>
-        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-proxy" @click="saveProxy">保存</button>
+        <button type="button" class="btn ghost sm" @click="undoProxy">{{ tr('撤销') }}</button>
+        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-proxy" @click="saveProxy">{{ tr('保存') }}</button>
       </div>
     </template>
 
@@ -1826,26 +1816,26 @@ const TABS = computed(() => [
     <template v-else-if="store.settingsTab.value === 'kernel'">
       <section class="card">
         <header class="card-head">
-          <h2>Mihomo 内核</h2>
-          <span class="tag" :class="kernel.ready ? 'ok' : 'warn'">{{ kernel.ready ? kernel.version ?? '已安装' : '未安装' }}</span>
+          <h2>{{ tr('Mihomo 内核') }}</h2>
+          <span class="tag" :class="kernel.ready ? 'ok' : 'warn'">{{ kernel.ready ? kernel.version ?? tr('已安装') : tr('未安装') }}</span>
         </header>
         <div class="setting-row">
           <div class="grow">
-            <strong>更新渠道</strong>
-            <p class="muted small">预览版更新更快，可能不稳定；切换后下次连接生效</p>
+            <strong>{{ tr('更新渠道') }}</strong>
+            <p class="muted small">{{ tr('预览版更新更快，可能不稳定；切换后下次连接生效') }}</p>
           </div>
           <Segmented
             :model-value="kernel.channel"
             :options="CHANNELS"
             size="sm"
-            label="内核渠道"
+            :label="tr('内核渠道')"
             :disabled="store.busy.kernel"
             @update:model-value="store.setChannel"
           />
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>检查更新</strong>
+            <strong>{{ tr('检查更新') }}</strong>
             <p class="muted small" data-testid="kernel-update-subtitle">{{ kernelUpdateSubtitle }}</p>
           </div>
           <button
@@ -1862,13 +1852,13 @@ const TABS = computed(() => [
               :size="15"
               :class="{ spin: kernelUpdateBusy }"
             />
-            {{ kernelUpdateBusy ? '检查中' : store.isAndroid.value && store.appUpdate.offer.value ? '下载' : '检查' }}
+            {{ kernelUpdateBusy ? tr('检查中') : store.isAndroid.value && store.appUpdate.offer.value ? tr('下载') : tr('检查') }}
           </button>
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>生效配置</strong>
-            <p class="muted small">{{ snap.active_id ? '合并订阅、覆写与下方设置后的全部选项，并标出每项来源' : '启用一份配置后可查看' }}</p>
+            <strong>{{ tr('生效配置') }}</strong>
+            <p class="muted small">{{ snap.active_id ? tr('合并订阅、覆写与下方设置后的全部选项，并标出每项来源') : tr('启用一份配置后可查看') }}</p>
           </div>
           <button
             type="button"
@@ -1877,13 +1867,12 @@ const TABS = computed(() => [
             data-testid="settings-open-config"
             @click="store.openConfig()"
           >
-            <Icon name="file" :size="15" />查看
-          </button>
+            <Icon name="file" :size="15" />{{ tr('查看') }} </button>
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>重启内核</strong>
-            <p class="muted small">{{ snap.connected ? '停止并重新启动内核进程，代理、TUN 与出站模式保持不变' : '连接后可用' }}</p>
+            <strong>{{ tr('重启内核') }}</strong>
+            <p class="muted small">{{ snap.connected ? tr('停止并重新启动内核进程，代理、TUN 与出站模式保持不变') : tr('连接后可用') }}</p>
           </div>
           <button
             type="button"
@@ -1892,13 +1881,12 @@ const TABS = computed(() => [
             data-testid="restart-kernel"
             @click="confirmRestart = true"
           >
-            <Icon name="refresh" :size="15" :class="{ spin: store.restarting.value }" />重启
-          </button>
+            <Icon name="refresh" :size="15" :class="{ spin: store.restarting.value }" />{{ tr('重启') }} </button>
         </div>
         <div v-if="debugLogging" class="setting-row" data-testid="kernel-gc-row">
           <div class="grow">
-            <strong>回收内存</strong>
-            <p class="muted small">让内核立即释放空闲内存，仅在日志级别为 debug 时可用</p>
+            <strong>{{ tr('回收内存') }}</strong>
+            <p class="muted small">{{ tr('让内核立即释放空闲内存，仅在日志级别为 debug 时可用') }}</p>
           </div>
           <button
             type="button"
@@ -1906,23 +1894,20 @@ const TABS = computed(() => [
             :disabled="!snap.kernel_running || store.busy.gc"
             data-testid="kernel-gc"
             @click="store.gcKernel()"
-          >
-            回收
-          </button>
+          > {{ tr('回收') }} </button>
         </div>
       </section>
 
       <section class="card">
         <header class="card-head">
-          <h2>内核设置</h2>
-          <button v-if="overridden" type="button" class="btn ghost sm" @click="reset">全部跟随配置</button>
+          <h2>{{ tr('内核设置') }}</h2>
+          <button v-if="overridden" type="button" class="btn ghost sm" @click="reset">{{ tr('全部跟随配置') }}</button>
         </header>
-        <p class="muted small card-note">这些设置覆盖每份配置中的同名项；留空或选择“跟随配置”则使用配置文件的值。修改后运行中的内核会自动重启。</p>
+        <p class="muted small card-note">{{ tr('这些设置覆盖每份配置中的同名项；留空或选择“跟随配置”则使用配置文件的值。修改后运行中的内核会自动重启。') }}</p>
         <div class="setting-row wrap port-setting-row" :class="{ 'has-error': Boolean(portError) }">
           <div class="grow">
-            <strong>混合代理端口<span v-if="snap.settings.mixed_port" class="tag accent sm">已覆盖</span></strong>
-            <p class="muted small" data-testid="mixed-port-effective">
-              HTTP 与 SOCKS5 共用，系统代理指向它 · 当前生效 {{ effectiveMixedPort }}
+            <strong>{{ tr('混合代理端口') }}<span v-if="snap.settings.mixed_port" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+            <p class="muted small" data-testid="mixed-port-effective"> {{ tr('HTTP 与 SOCKS5 共用，系统代理指向它 · 当前生效') }} {{ effectiveMixedPort }}
             </p>
           </div>
           <div class="port-field-wrap">
@@ -1933,7 +1918,7 @@ const TABS = computed(() => [
                 class="input sm mono"
                 inputmode="numeric"
                 :placeholder="String(snap.config_values.mixed_port ?? 7890)"
-                aria-label="混合代理端口"
+                :aria-label="tr('混合代理端口')"
                 :aria-invalid="portError ? 'true' : undefined"
                 :aria-describedby="portError ? 'mixed-port-error' : undefined"
                 data-testid="mixed-port-input"
@@ -1950,9 +1935,7 @@ const TABS = computed(() => [
                 data-testid="save-port"
                 @mousedown.prevent
                 @click="commitPort(false, true)"
-              >
-                保存
-              </button>
+              > {{ tr('保存') }} </button>
             </div>
             <p
               v-if="portError"
@@ -1969,7 +1952,7 @@ const TABS = computed(() => [
         <template v-for="flag in FLAGS" :key="flag.key">
           <div class="setting-row">
             <div class="grow">
-              <strong>{{ flag.title }}<span v-if="snap.settings[flag.key] != null" class="tag accent sm">已覆盖</span></strong>
+              <strong>{{ flag.title }}<span v-if="snap.settings[flag.key] != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
               <p class="muted small">{{ flag.hint }}</p>
             </div>
             <Toggle :model-value="effective(flag.key)" :busy="store.busy.settings" :label="flag.title" @update:model-value="(on) => save({ [flag.key]: on })" />
@@ -1978,23 +1961,20 @@ const TABS = computed(() => [
           <div v-if="flag.key === 'allow_lan' && lanOn" class="lan-block" data-testid="lan-block">
             <p class="lan-address small">
               <Icon name="network" :size="14" />
-              <template v-if="lanAddress">
-                其他设备的代理地址填
-                <button type="button" class="lan-address-value mono" title="复制" data-testid="lan-address" @click="copyLanAddress">
+              <template v-if="lanAddress"> {{ tr('其他设备的代理地址填') }} <button type="button" class="lan-address-value mono" :title="tr('复制')" data-testid="lan-address" @click="copyLanAddress">
                   {{ lanAddress }}:{{ lanPort }}<Icon name="copy" :size="12" />
                 </button>
               </template>
-              <template v-else>其他设备的代理地址填本机局域网 IP 与端口 {{ lanPort }}</template>
+              <template v-else>{{ tr('其他设备的代理地址填本机局域网 IP 与端口') }} {{ lanPort }}</template>
             </p>
             <p v-for="extra in lanExtraPorts" :key="extra.label" class="lan-address small" data-testid="lan-extra-address">
               <Icon name="network" :size="14" />
-              {{ extra.label }} 代理地址
-              <span class="lan-address-value mono">{{ lanAddress ?? '本机局域网 IP' }}:{{ extra.port }}</span>
+              {{ extra.label }} {{ tr('代理地址') }} <span class="lan-address-value mono">{{ lanAddress ?? tr('本机局域网 IP') }}:{{ extra.port }}</span>
             </p>
             <div class="lan-field">
               <div class="lan-label">
-                <strong>访问认证<span v-if="snap.settings.lan_auth.length" class="tag accent sm">已开启</span></strong>
-                <p class="muted small">留空则不需要密码；本机访问始终免认证</p>
+                <strong>{{ tr('访问认证') }}<span v-if="snap.settings.lan_auth.length" class="tag accent sm">{{ tr('已开启') }}</span></strong>
+                <p class="muted small">{{ tr('留空则不需要密码；本机访问始终免认证') }}</p>
               </div>
               <div class="lan-inputs">
                 <input
@@ -2002,8 +1982,8 @@ const TABS = computed(() => [
                   class="input sm"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="用户名"
-                  aria-label="局域网访问用户名"
+                  :placeholder="tr('用户名')"
+                  :aria-label="tr('局域网访问用户名')"
                   data-testid="lan-user"
                 />
                 <div class="lan-pass">
@@ -2012,15 +1992,15 @@ const TABS = computed(() => [
                     class="input sm"
                     :type="lanPassVisible ? 'text' : 'password'"
                     autocomplete="new-password"
-                    placeholder="密码"
-                    aria-label="局域网访问密码"
+                    :placeholder="tr('密码')"
+                    :aria-label="tr('局域网访问密码')"
                     data-testid="lan-pass"
                   />
                   <button
                     type="button"
                     class="icon-btn sm"
                     :aria-pressed="lanPassVisible"
-                    :aria-label="lanPassVisible ? '隐藏密码' : '显示密码'"
+                    :aria-label="lanPassVisible ? tr('隐藏密码') : tr('显示密码')"
                     @click="lanPassVisible = !lanPassVisible"
                   >
                     <Icon :name="lanPassVisible ? 'eye-off' : 'eye'" :size="14" />
@@ -2030,8 +2010,8 @@ const TABS = computed(() => [
             </div>
             <div class="lan-field">
               <div class="lan-label">
-                <strong>允许的设备</strong>
-                <p class="muted small">留空允许所有局域网设备；填 IP 或网段，逗号分隔</p>
+                <strong>{{ tr('允许的设备') }}</strong>
+                <p class="muted small">{{ tr('留空允许所有局域网设备；填 IP 或网段，逗号分隔') }}</p>
               </div>
               <div class="lan-inputs">
                 <input
@@ -2039,127 +2019,127 @@ const TABS = computed(() => [
                   class="input sm mono"
                   spellcheck="false"
                   :placeholder="lanAddress ? `${lanAddress.replace(/\.\d+$/, '.0')}/24` : '192.168.1.0/24'"
-                  aria-label="允许的设备"
+                  :aria-label="tr('允许的设备')"
                   data-testid="lan-ips"
                   @keydown.enter="saveLan"
                 />
               </div>
             </div>
             <div v-if="lanDirty" class="lan-actions">
-              <button type="button" class="btn ghost sm" data-testid="undo-lan" @click="undoLan">撤销</button>
-              <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-lan" @click="saveLan">保存</button>
+              <button type="button" class="btn ghost sm" data-testid="undo-lan" @click="undoLan">{{ tr('撤销') }}</button>
+              <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-lan" @click="saveLan">{{ tr('保存') }}</button>
             </div>
           </div>
         </template>
         <details class="settings-fold">
           <summary>
             <Icon name="chevron-right" :size="14" />
-            <span>高级内核与测速选项</span>
-            <span class="muted small">{{ store.isAndroid.value ? '日志、进程匹配、嗅探与测速地址' : '日志、进程匹配、嗅探、TCP 保活、端口、出口网卡与测速地址' }}</span>
+            <span>{{ tr('高级内核与测速选项') }}</span>
+            <span class="muted small">{{ store.isAndroid.value ? tr('日志、进程匹配、嗅探与测速地址') : tr('日志、进程匹配、嗅探、TCP 保活、端口、出口网卡与测速地址') }}</span>
           </summary>
           <div class="settings-fold-body">
             <div class="setting-row">
               <div class="grow">
-                <strong>日志级别</strong>
-                <p class="muted small">配置中为 {{ snap.config_values.log_level ?? 'info' }}</p>
+                <strong>{{ tr('日志级别') }}</strong>
+                <p class="muted small">{{ tr('配置中为') }} {{ snap.config_values.log_level ?? 'info' }}</p>
               </div>
               <SelectField
                 :model-value="snap.settings.log_level ?? ''"
                 :options="LOG_LEVELS.map((level) => ({ value: level.id, label: level.label }))"
                 :sheet="compact"
                 size="sm"
-                label="日志级别"
+                :label="tr('日志级别')"
                 data-testid="log-level-select"
                 @update:model-value="(value) => save({ log_level: String(value) || null })"
               />
             </div>
             <div v-if="!store.isAndroid.value" class="setting-row">
               <div class="grow">
-                <strong>进程匹配</strong>
-                <p class="muted small">识别连接来自哪个应用，用于连接页与进程规则</p>
+                <strong>{{ tr('进程匹配') }}</strong>
+                <p class="muted small">{{ tr('识别连接来自哪个应用，用于连接页与进程规则') }}</p>
               </div>
               <SelectField
                 :model-value="snap.settings.find_process_mode ?? ''"
                 :options="PROCESS_MODES.map((mode) => ({ value: mode.id, label: mode.label }))"
                 :sheet="compact"
                 size="sm"
-                label="进程匹配"
+                :label="tr('进程匹配')"
                 @update:model-value="(value) => save({ find_process_mode: String(value) || null })"
               />
             </div>
             <div class="setting-row">
               <div class="grow">
-                <strong>域名嗅探<span v-if="snap.settings.sniffer != null" class="tag accent sm">已覆盖</span></strong>
-                <p class="muted small">从 HTTP / TLS / QUIC 流量中识别域名，让按域名分流在 IP 直连时也生效</p>
+                <strong>{{ tr('域名嗅探') }}<span v-if="snap.settings.sniffer != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                <p class="muted small">{{ tr('从 HTTP / TLS / QUIC 流量中识别域名，让按域名分流在 IP 直连时也生效') }}</p>
               </div>
-              <Toggle :model-value="snifferOn" :busy="store.busy.settings" label="域名嗅探" @update:model-value="(on) => save({ sniffer: on })" />
+              <Toggle :model-value="snifferOn" :busy="store.busy.settings" :label="tr('域名嗅探')" @update:model-value="(on) => save({ sniffer: on })" />
             </div>
             <!-- Details layer on whichever sniffer block is on; while it is off they stay saved but hidden (R33). -->
             <details v-if="snifferOn" class="settings-fold flush sniff-fold" data-testid="sniff-advanced" :open="sniffOverridden || undefined">
               <summary>
                 <Icon name="chevron-right" :size="14" />
-                <span>嗅探高级选项</span>
-                <span class="muted small">嗅探端口、强制与跳过的域名</span>
+                <span>{{ tr('嗅探高级选项') }}</span>
+                <span class="muted small">{{ tr('嗅探端口、强制与跳过的域名') }}</span>
               </summary>
               <div class="settings-fold-body">
                 <div v-for="field in SNIFF_PORTS" :key="field.key" class="setting-row">
                   <div class="grow">
-                    <strong>{{ field.title }}<span v-if="snap.settings.sniff_ports[field.key] != null" class="tag accent sm">已覆盖</span></strong>
-                    <p class="muted small">端口或“起-止”范围，逗号分隔；留空跟随配置 · {{ configList(snap.config_values[field.config]) }}</p>
+                    <strong>{{ field.title }}<span v-if="snap.settings.sniff_ports[field.key] != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                    <p class="muted small">{{ tr('端口或“起-止”范围，逗号分隔；留空跟随配置 ·') }} {{ configList(snap.config_values[field.config]) }}</p>
                   </div>
                   <input
                     v-model="sniffText[field.key]"
                     class="input sm mono"
                     spellcheck="false"
-                    :placeholder="snap.config_values[field.config]?.join(', ') || '跟随配置'"
-                    :aria-label="`${field.title.replace(' 端口', '')} 嗅探端口`"
+                    :placeholder="snap.config_values[field.config]?.join(', ') || tr('跟随配置')"
+                    :aria-label="tr('{0} 嗅探端口', { 0: field.title.replace(tr(' 端口'), '') })"
                     :data-testid="`sniff-ports-${field.key}`"
                     @keydown.enter="saveSniff"
                   />
                 </div>
                 <div class="setting-row stacked">
                   <div>
-                    <strong>强制嗅探域名<span v-if="snap.settings.sniff_force_domain != null" class="tag accent sm">已覆盖</span></strong>
-                    <p class="muted small">这些域名总是嗅探，每行一个；留空跟随配置 · {{ configList(snap.config_values.sniff_force_domain) }}</p>
+                    <strong>{{ tr('强制嗅探域名') }}<span v-if="snap.settings.sniff_force_domain != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                    <p class="muted small">{{ tr('这些域名总是嗅探，每行一个；留空跟随配置 ·') }} {{ configList(snap.config_values.sniff_force_domain) }}</p>
                   </div>
-                  <textarea v-model="sniffText.force" class="input list-input mono" rows="2" spellcheck="false" aria-label="强制嗅探域名" data-testid="sniff-force-domain" />
+                  <textarea v-model="sniffText.force" class="input list-input mono" rows="2" spellcheck="false" :aria-label="tr('强制嗅探域名')" data-testid="sniff-force-domain" />
                 </div>
                 <div class="setting-row stacked">
                   <div>
-                    <strong>跳过嗅探域名<span v-if="snap.settings.sniff_skip_domain != null" class="tag accent sm">已覆盖</span></strong>
-                    <p class="muted small">嗅探到这些域名时不改写，每行一个；留空跟随配置 · {{ configList(snap.config_values.sniff_skip_domain) }}</p>
+                    <strong>{{ tr('跳过嗅探域名') }}<span v-if="snap.settings.sniff_skip_domain != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                    <p class="muted small">{{ tr('嗅探到这些域名时不改写，每行一个；留空跟随配置 ·') }} {{ configList(snap.config_values.sniff_skip_domain) }}</p>
                   </div>
-                  <textarea v-model="sniffText.skip" class="input list-input mono" rows="2" spellcheck="false" aria-label="跳过嗅探域名" data-testid="sniff-skip-domain" />
+                  <textarea v-model="sniffText.skip" class="input list-input mono" rows="2" spellcheck="false" :aria-label="tr('跳过嗅探域名')" data-testid="sniff-skip-domain" />
                 </div>
                 <div class="setting-row">
                   <div class="grow">
-                    <strong>用嗅探结果覆盖目标<span v-if="snap.settings.sniff_override_destination != null" class="tag accent sm">已覆盖</span></strong>
-                    <p class="muted small">用嗅探到的域名替换连接的目标地址{{ snap.config_values.sniff_override_destination == null ? '' : ` · 配置中为${snap.config_values.sniff_override_destination ? '覆盖' : '不覆盖'}` }}</p>
+                    <strong>{{ tr('用嗅探结果覆盖目标') }}<span v-if="snap.settings.sniff_override_destination != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                    <p class="muted small">{{ tr('用嗅探到的域名替换连接的目标地址') }}{{ snap.config_values.sniff_override_destination == null ? '' : tr(' · 配置中为{0}', { 0: snap.config_values.sniff_override_destination ? tr('覆盖') : tr('不覆盖') }) }}</p>
                   </div>
-                  <Segmented v-model="sniffOverride" :options="OVERRIDE_CHOICES" size="sm" label="用嗅探结果覆盖目标" data-testid="sniff-override" />
+                  <Segmented v-model="sniffOverride" :options="OVERRIDE_CHOICES" size="sm" :label="tr('用嗅探结果覆盖目标')" data-testid="sniff-override" />
                 </div>
                 <p v-if="sniffError" class="field-error small" role="alert" data-testid="sniff-error">
                   <Icon name="alert" :size="13" />
                   <span>{{ sniffError }}</span>
                 </p>
                 <div v-if="sniffDirty" class="lan-actions">
-                  <button type="button" class="btn ghost sm" data-testid="undo-sniff" @click="undoSniff">撤销</button>
-                  <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-sniff" @click="saveSniff">保存</button>
+                  <button type="button" class="btn ghost sm" data-testid="undo-sniff" @click="undoSniff">{{ tr('撤销') }}</button>
+                  <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-sniff" @click="saveSniff">{{ tr('保存') }}</button>
                 </div>
               </div>
             </details>
             <!-- mihomo always disables TCP keep-alive on Android, so the choice would do nothing there. -->
             <div v-if="!store.isAndroid.value" class="setting-row">
               <div class="grow">
-                <strong>TCP 保活<span v-if="snap.settings.keep_alive_interval != null" class="tag accent sm">已覆盖</span></strong>
-                <p class="muted small">空闲连接的心跳间隔，手机上调长可省电；{{ profileKeepAlive }}</p>
+                <strong>{{ tr('TCP 保活') }}<span v-if="snap.settings.keep_alive_interval != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                <p class="muted small">{{ tr('空闲连接的心跳间隔，手机上调长可省电；') }}{{ profileKeepAlive }}</p>
               </div>
               <SelectField
                 :model-value="snap.settings.keep_alive_interval == null ? '' : String(snap.settings.keep_alive_interval)"
                 :options="KEEP_ALIVE.map((item) => ({ value: item.id, label: item.label }))"
                 :sheet="compact"
                 size="sm"
-                label="TCP 保活"
+                :label="tr('TCP 保活')"
                 data-testid="keep-alive-select"
                 @update:model-value="(value) => save({ keep_alive_interval: value === '' ? null : Number(value) })"
               />
@@ -2168,8 +2148,8 @@ const TABS = computed(() => [
             <template v-if="showNetBlock">
               <div v-for="field in visiblePorts" :key="field.key" class="setting-row">
                 <div class="grow">
-                  <strong>{{ field.title }}<span v-if="snap.settings[field.key] != null" class="tag accent sm">已覆盖</span></strong>
-                  <p class="muted small">{{ field.hint }}；留空跟随配置，填 0 关闭 · {{ configPort(field.key) }}</p>
+                  <strong>{{ field.title }}<span v-if="snap.settings[field.key] != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                  <p class="muted small">{{ field.hint }}{{ tr('；留空跟随配置，填 0 关闭 ·') }} {{ configPort(field.key) }}</p>
                   <p
                     v-if="portClashes[field.key]"
                     class="field-error small"
@@ -2184,7 +2164,7 @@ const TABS = computed(() => [
                   v-model="netText[field.key]"
                   class="input sm mono short"
                   inputmode="numeric"
-                  placeholder="跟随配置"
+                  :placeholder="tr('跟随配置')"
                   :aria-label="field.label"
                   :data-testid="`port-${field.key}`"
                   @keydown.enter="saveNet"
@@ -2192,18 +2172,18 @@ const TABS = computed(() => [
               </div>
               <div v-if="!store.isAndroid.value" class="setting-row wrap">
                 <div class="grow">
-                  <strong>出口网卡<span v-if="snap.settings.interface_name != null" class="tag accent sm">已覆盖</span></strong>
-                  <p class="muted small">让代理流量从指定网卡发出{{ snap.config_values.interface_name ? ` · 配置中为 ${snap.config_values.interface_name}` : ' · 配置未设置' }}</p>
+                  <strong>{{ tr('出口网卡') }}<span v-if="snap.settings.interface_name != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                  <p class="muted small">{{ tr('让代理流量从指定网卡发出') }}{{ snap.config_values.interface_name ? tr(' · 配置中为 {0}', { 0: snap.config_values.interface_name }) : tr(' · 配置未设置') }}</p>
                 </div>
                 <div class="inline-field">
-                  <Segmented v-model="ifaceChoice" :options="IFACE_CHOICES" size="sm" label="出口网卡" data-testid="interface-choice" />
+                  <Segmented v-model="ifaceChoice" :options="IFACE_CHOICES" size="sm" :label="tr('出口网卡')" data-testid="interface-choice" />
                   <input
                     v-if="ifaceChoice === 'custom'"
                     v-model="netText.interface_name"
                     class="input sm mono short"
                     spellcheck="false"
-                    placeholder="例如 en0"
-                    aria-label="出口网卡名称"
+                    :placeholder="tr('例如 en0')"
+                    :aria-label="tr('出口网卡名称')"
                     data-testid="interface-name"
                     @keydown.enter="saveNet"
                   />
@@ -2211,15 +2191,15 @@ const TABS = computed(() => [
               </div>
               <div v-if="showRoutingMark" class="setting-row">
                 <div class="grow">
-                  <strong>路由标记<span v-if="snap.settings.routing_mark != null" class="tag accent sm">已覆盖</span></strong>
-                  <p class="muted small">给出站连接打上 fwmark，配合策略路由；留空跟随配置，填 0 不设置{{ snap.config_values.routing_mark != null ? ` · 配置中为 ${snap.config_values.routing_mark}` : '' }}</p>
+                  <strong>{{ tr('路由标记') }}<span v-if="snap.settings.routing_mark != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                  <p class="muted small">{{ tr('给出站连接打上 fwmark，配合策略路由；留空跟随配置，填 0 不设置') }}{{ snap.config_values.routing_mark != null ? tr(' · 配置中为 {0}', { 0: snap.config_values.routing_mark }) : '' }}</p>
                 </div>
                 <input
                   v-model="netText.routing_mark"
                   class="input sm mono short"
                   inputmode="numeric"
-                  placeholder="跟随配置"
-                  aria-label="路由标记"
+                  :placeholder="tr('跟随配置')"
+                  :aria-label="tr('路由标记')"
                   data-testid="routing-mark"
                   @keydown.enter="saveNet"
                 />
@@ -2229,14 +2209,14 @@ const TABS = computed(() => [
                 <span>{{ netError }}</span>
               </p>
               <div v-if="netDirty" class="lan-actions">
-                <button type="button" class="btn ghost sm" data-testid="undo-net" @click="undoNet">撤销</button>
-                <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-net" @click="saveNet">保存</button>
+                <button type="button" class="btn ghost sm" data-testid="undo-net" @click="undoNet">{{ tr('撤销') }}</button>
+                <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-net" @click="saveNet">{{ tr('保存') }}</button>
               </div>
             </template>
             <div class="setting-row wrap">
               <div class="grow">
-                <strong>测速地址</strong>
-                <p class="muted small">延迟测试请求的网址与超时（毫秒）</p>
+                <strong>{{ tr('测速地址') }}</strong>
+                <p class="muted small">{{ tr('延迟测试请求的网址与超时（毫秒）') }}</p>
               </div>
               <div class="inline-field">
                 <div class="input-pair">
@@ -2245,7 +2225,7 @@ const TABS = computed(() => [
                     class="input sm mono"
                     type="url"
                     placeholder="http://www.gstatic.com/generate_204"
-                    aria-label="测速地址"
+                    :aria-label="tr('测速地址')"
                     @focus="testUrlFocused = true"
                     @blur="testUrlFocused = false; commitProbe()"
                     @keydown.enter="($event.target as HTMLInputElement).blur()"
@@ -2255,7 +2235,7 @@ const TABS = computed(() => [
                     class="input sm mono short"
                     inputmode="numeric"
                     placeholder="5000"
-                    aria-label="测速超时"
+                    :aria-label="tr('测速超时')"
                     @focus="timeoutFocused = true"
                     @blur="timeoutFocused = false; commitProbe()"
                     @keydown.enter="($event.target as HTMLInputElement).blur()"
@@ -2269,9 +2249,7 @@ const TABS = computed(() => [
                   data-testid="save-probe"
                   @mousedown.prevent
                   @click="commitProbe()"
-                >
-                  保存
-                </button>
+                > {{ tr('保存') }} </button>
               </div>
             </div>
           </div>
@@ -2283,80 +2261,80 @@ const TABS = computed(() => [
     <template v-else-if="store.settingsTab.value === 'tun'">
       <section class="card" data-testid="tun-settings">
         <header class="card-head">
-          <h2>TUN 模式</h2>
-          <button type="button" class="btn ghost sm" @click="resetTun">恢复默认</button>
+          <h2>{{ tr('TUN 模式') }}</h2>
+          <button type="button" class="btn ghost sm" @click="resetTun">{{ tr('恢复默认') }}</button>
         </header>
-        <p class="muted small card-note">在系统中创建虚拟网卡接管全部流量，包括不读取系统代理的应用和命令行工具。以下设置覆盖配置文件中的 tun 段。</p>
+        <p class="muted small card-note">{{ tr('在系统中创建虚拟网卡接管全部流量，包括不读取系统代理的应用和命令行工具。以下设置覆盖配置文件中的 tun 段。') }}</p>
         <div class="setting-row master-row" :class="{ active: snap.tun }">
           <span class="row-icon"><Icon name="shield" /></span>
           <div class="grow">
-            <strong>启用 TUN</strong>
-            <p class="muted small">{{ snap.tun ? '运行中' : snap.tun_wanted ? '已记住开启，下次连接生效' : '未开启' }}；首次开启需要系统授权</p>
+            <strong>{{ tr('启用 TUN') }}</strong>
+            <p class="muted small">{{ snap.tun ? tr('运行中') : snap.tun_wanted ? tr('已记住开启，下次连接生效') : tr('未开启') }}{{ tr('；首次开启需要系统授权') }}</p>
           </div>
-          <Toggle :model-value="snap.tun" :busy="store.busy.tun" label="启用 TUN" @update:model-value="store.setTun" />
+          <Toggle :model-value="snap.tun" :busy="store.busy.tun" :label="tr('启用 TUN')" @update:model-value="store.setTun" />
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>协议栈</strong>
+            <strong>{{ tr('协议栈') }}</strong>
             <p class="muted small">{{ STACK_HINTS[tun.stack] }}</p>
           </div>
-          <Segmented v-model="tun.stack" :options="STACKS" size="sm" label="协议栈" data-testid="tun-stack" />
+          <Segmented v-model="tun.stack" :options="STACKS" size="sm" :label="tr('协议栈')" data-testid="tun-stack" />
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>自动设置路由</strong>
-            <p class="muted small">把全局流量路由到 TUN 网卡，关闭后需要自行配置路由</p>
+            <strong>{{ tr('自动设置路由') }}</strong>
+            <p class="muted small">{{ tr('把全局流量路由到 TUN 网卡，关闭后需要自行配置路由') }}</p>
           </div>
-          <Toggle v-model="tun.auto_route" label="自动设置路由" />
+          <Toggle v-model="tun.auto_route" :label="tr('自动设置路由')" />
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>严格路由</strong>
-            <p class="muted small">阻止流量绕过 TUN（防 DNS 泄漏），但可能让局域网访问失效</p>
+            <strong>{{ tr('严格路由') }}</strong>
+            <p class="muted small">{{ tr('阻止流量绕过 TUN（防 DNS 泄漏），但可能让局域网访问失效') }}</p>
           </div>
-          <Toggle v-model="tun.strict_route" label="严格路由" />
+          <Toggle v-model="tun.strict_route" :label="tr('严格路由')" />
         </div>
         <details class="settings-fold">
           <summary>
             <Icon name="chevron-right" :size="14" />
-            <span>高级虚拟网卡参数</span>
-            <span class="muted small">出口接口、DNS 劫持、MTU、网卡名称与路由地址</span>
+            <span>{{ tr('高级虚拟网卡参数') }}</span>
+            <span class="muted small">{{ tr('出口接口、DNS 劫持、MTU、网卡名称与路由地址') }}</span>
           </summary>
           <div class="settings-fold-body">
             <div class="setting-row">
               <div class="grow">
-                <strong>自动选择出口网卡</strong>
-                <p class="muted small">避免代理流量绕回 TUN 造成回环</p>
+                <strong>{{ tr('自动选择出口网卡') }}</strong>
+                <p class="muted small">{{ tr('避免代理流量绕回 TUN 造成回环') }}</p>
               </div>
-              <Toggle v-model="tun.auto_detect_interface" label="自动选择出口网卡" />
+              <Toggle v-model="tun.auto_detect_interface" :label="tr('自动选择出口网卡')" />
             </div>
             <div class="setting-row wrap">
               <div class="grow">
-                <strong>DNS 劫持</strong>
-                <p class="muted small">把发往这些地址的 DNS 查询交给内核，每行一个</p>
+                <strong>{{ tr('DNS 劫持') }}</strong>
+                <p class="muted small">{{ tr('把发往这些地址的 DNS 查询交给内核，每行一个') }}</p>
               </div>
-              <textarea v-model="tunHijack" class="input list-input mono" rows="2" spellcheck="false" aria-label="DNS 劫持" />
+              <textarea v-model="tunHijack" class="input list-input mono" rows="2" spellcheck="false" :aria-label="tr('DNS 劫持')" />
             </div>
             <div class="setting-row">
               <div class="grow">
                 <strong>MTU</strong>
-                <p class="muted small">一般保持 1500；遇到大包问题可调小，例如 1400</p>
+                <p class="muted small">{{ tr('一般保持 1500；遇到大包问题可调小，例如 1400') }}</p>
               </div>
               <input v-model="tunMtu" class="input sm mono short" inputmode="numeric" placeholder="1500" aria-label="MTU" />
             </div>
             <div class="setting-row">
               <div class="grow">
-                <strong>网卡名称</strong>
-                <p class="muted small">留空由内核决定（macOS 需为 utun 开头）</p>
+                <strong>{{ tr('网卡名称') }}</strong>
+                <p class="muted small">{{ tr('留空由内核决定（macOS 需为 utun 开头）') }}</p>
               </div>
-              <input v-model="tun.device" class="input sm mono" placeholder="自动" aria-label="网卡名称" />
+              <input v-model="tun.device" class="input sm mono" :placeholder="tr('自动')" :aria-label="tr('网卡名称')" />
             </div>
             <!-- Android routes through the VPN service and per-app rules instead (R32). -->
             <template v-if="!store.isAndroid.value">
               <div v-for="field in TUN_ROUTES" :key="field.key" class="setting-row stacked">
                 <div>
-                  <strong>{{ field.title }}<span v-if="snap.settings.tun[field.key] != null" class="tag accent sm">已覆盖</span></strong>
-                  <p class="muted small">{{ field.hint }}，每行一个；留空跟随配置 · {{ configList(snap.config_values[field.config]) }}</p>
+                  <strong>{{ field.title }}<span v-if="snap.settings.tun[field.key] != null" class="tag accent sm">{{ tr('已覆盖') }}</span></strong>
+                  <p class="muted small">{{ field.hint }}{{ tr('，每行一个；留空跟随配置 ·') }} {{ configList(snap.config_values[field.config]) }}</p>
                 </div>
                 <textarea
                   v-model="tunRoutes[field.key]"
@@ -2377,10 +2355,10 @@ const TABS = computed(() => [
       </section>
 
       <div v-if="tunDirty" class="save-bar floating-save-bar">
-        <span class="muted small grow">有未保存的修改{{ snap.kernel_running ? '，保存后将平滑热重载生效' : '' }}</span>
+        <span class="muted small grow">{{ tr('有未保存的修改') }}{{ snap.kernel_running ? tr('，保存后将平滑热重载生效') : '' }}</span>
         <kbd v-if="!compact" class="palette-kbd save-kbd" aria-hidden="true">{{ saveKey }}</kbd>
-        <button type="button" class="btn ghost sm" @click="undoTun">撤销</button>
-        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-tun" @click="saveTun">保存</button>
+        <button type="button" class="btn ghost sm" @click="undoTun">{{ tr('撤销') }}</button>
+        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-tun" @click="saveTun">{{ tr('保存') }}</button>
       </div>
     </template>
 
@@ -2389,40 +2367,38 @@ const TABS = computed(() => [
       <section class="card" data-testid="dns-settings">
         <header class="card-head">
           <h2>DNS</h2>
-          <button type="button" class="btn ghost sm" @click="resetDns">恢复默认</button>
+          <button type="button" class="btn ghost sm" @click="resetDns">{{ tr('恢复默认') }}</button>
         </header>
         <div class="setting-row master-row" :class="{ active: snap.settings.dns_override }">
           <span class="row-icon"><Icon name="sliders" /></span>
           <div class="grow">
-            <strong>DNS 覆写</strong>
-            <p class="muted small">开启后用下面的设置替换每份配置里的 dns 段与自定义 hosts；关闭则使用配置文件自带的设置</p>
+            <strong>{{ tr('DNS 覆写') }}</strong>
+            <p class="muted small">{{ tr('开启后用下面的设置替换每份配置里的 dns 段与自定义 hosts；关闭则使用配置文件自带的设置') }}</p>
           </div>
           <Toggle
             :model-value="snap.settings.dns_override"
             :busy="store.busy.settings"
-            label="DNS 覆写"
+            :label="tr('DNS 覆写')"
             data-testid="dns-override"
             @update:model-value="(on) => save({ dns_override: on, dns: dnsDraft })"
           />
         </div>
         <p v-if="!snap.settings.dns_override" class="hint-box small">
-          <Icon name="info" :size="14" />
-          覆写关闭时，若开启 TUN 而配置文件没有启用 DNS，Billow 会自动使用下方设置，避免 TUN 下域名无法解析。
-        </p>
+          <Icon name="info" :size="14" /> {{ tr('覆写关闭时，若开启 TUN 而配置文件没有启用 DNS，Billow 会自动使用下方设置，避免 TUN 下域名无法解析。') }} </p>
         <div class="setting-row">
           <div class="grow">
-            <strong>域名映射模式</strong>
+            <strong>{{ tr('域名映射模式') }}</strong>
             <p class="muted small">
-              {{ dns.enhanced_mode === 'fake-ip' ? 'Fake-IP：先返回虚拟地址，连接时再解析，速度最快' : dns.enhanced_mode === 'redir-host' ? 'Redir-Host：返回真实 IP 并记录映射，兼容性更好' : 'Normal：标准解析，不做增强映射' }}
+              {{ dns.enhanced_mode === 'fake-ip' ? tr('Fake-IP：先返回虚拟地址，连接时再解析，速度最快') : dns.enhanced_mode === 'redir-host' ? tr('Redir-Host：返回真实 IP 并记录映射，兼容性更好') : tr('Normal：标准解析，不做增强映射') }}
             </p>
           </div>
-          <Segmented v-model="dns.enhanced_mode" :options="MODES_DNS" size="sm" label="增强模式" data-testid="dns-enhanced-mode" />
+          <Segmented v-model="dns.enhanced_mode" :options="MODES_DNS" size="sm" :label="tr('增强模式')" data-testid="dns-enhanced-mode" />
         </div>
         <template v-for="item in CORE_DNS_LISTS" :key="item.key">
           <div class="setting-row stacked">
             <div>
               <strong>{{ item.title }}</strong>
-              <p class="muted small">{{ item.hint }}，每行一个</p>
+              <p class="muted small">{{ item.hint }}{{ tr('，每行一个') }}</p>
             </div>
             <textarea
               v-model="dnsText[item.key]"
@@ -2436,83 +2412,83 @@ const TABS = computed(() => [
         <details class="settings-fold">
           <summary>
             <Icon name="chevron-right" :size="14" />
-            <span>高级解析参数</span>
-            <span class="muted small">{{ dns.enhanced_mode === 'fake-ip' ? 'Fake-IP 地址池、监听端口、HTTP/3、缓存与分流解析' : '监听端口、HTTP/3、缓存算法与分流解析' }}</span>
+            <span>{{ tr('高级解析参数') }}</span>
+            <span class="muted small">{{ dns.enhanced_mode === 'fake-ip' ? tr('Fake-IP 地址池、监听端口、HTTP/3、缓存与分流解析') : tr('监听端口、HTTP/3、缓存算法与分流解析') }}</span>
           </summary>
           <div class="settings-fold-body">
             <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
               <div class="grow">
-                <strong>Fake-IP 地址段</strong>
-                <p class="muted small">虚拟地址池，不要与本地网络冲突</p>
+                <strong>{{ tr('Fake-IP 地址段') }}</strong>
+                <p class="muted small">{{ tr('虚拟地址池，不要与本地网络冲突') }}</p>
               </div>
-              <input v-model="dns.fake_ip_range" class="input sm mono" aria-label="Fake-IP 地址段" />
+              <input v-model="dns.fake_ip_range" class="input sm mono" :aria-label="tr('Fake-IP 地址段')" />
             </div>
             <div v-if="dns.enhanced_mode === 'fake-ip'" class="setting-row">
               <div class="grow">
-                <strong>过滤列表模式</strong>
+                <strong>{{ tr('过滤列表模式') }}</strong>
                 <p class="muted small">{{ FILTER_MODE_HINTS[dns.fake_ip_filter_mode] }}</p>
               </div>
               <Segmented
                 v-model="dns.fake_ip_filter_mode"
                 :options="FILTER_MODES_DNS"
                 size="sm"
-                label="过滤列表模式"
+                :label="tr('过滤列表模式')"
                 data-testid="dns-filter-mode"
               />
             </div>
             <div class="setting-row">
               <div class="grow">
-                <strong>DNS 监听地址</strong>
-                <p class="muted small">可选本地监听端口，例如 <code>127.0.0.1:1053</code>；留空则仅在内核内部处理</p>
+                <strong>{{ tr('DNS 监听地址') }}</strong>
+                <p class="muted small">{{ tr('可选本地监听端口，例如') }} <code>127.0.0.1:1053</code>{{ tr('；留空则仅在内核内部处理') }}</p>
               </div>
               <input
                 v-model="dns.listen"
                 class="input sm mono"
-                placeholder="留空不监听"
-                aria-label="DNS 监听地址"
+                :placeholder="tr('留空不监听')"
+                :aria-label="tr('DNS 监听地址')"
                 data-testid="dns-listen"
               />
             </div>
             <div class="setting-row">
               <div class="grow">
-                <strong>IPv6 解析</strong>
-                <p class="muted small">允许返回 AAAA 记录</p>
+                <strong>{{ tr('IPv6 解析') }}</strong>
+                <p class="muted small">{{ tr('允许返回 AAAA 记录') }}</p>
               </div>
-              <Toggle v-model="dns.ipv6" label="IPv6 解析" />
+              <Toggle v-model="dns.ipv6" :label="tr('IPv6 解析')" />
             </div>
             <div class="setting-row">
               <div class="grow">
-                <strong>DoH 优先 HTTP/3</strong>
-                <p class="muted small">加密 DNS 支持 QUIC 时优先使用 HTTP/3 连接（prefer-h3）</p>
+                <strong>{{ tr('DoH 优先 HTTP/3') }}</strong>
+                <p class="muted small">{{ tr('加密 DNS 支持 QUIC 时优先使用 HTTP/3 连接（prefer-h3）') }}</p>
               </div>
-              <Toggle v-model="dns.prefer_h3" label="DoH 优先 HTTP/3" data-testid="dns-prefer-h3" />
+              <Toggle v-model="dns.prefer_h3" :label="tr('DoH 优先 HTTP/3')" data-testid="dns-prefer-h3" />
             </div>
             <div class="setting-row">
               <div class="grow">
-                <strong>缓存算法</strong>
-                <p class="muted small">ARC 命中率更高，LRU 内存开销更稳定</p>
+                <strong>{{ tr('缓存算法') }}</strong>
+                <p class="muted small">{{ tr('ARC 命中率更高，LRU 内存开销更稳定') }}</p>
               </div>
-              <Segmented v-model="dns.cache_algorithm" :options="CACHE_ALGOS_DNS" size="sm" label="缓存算法" data-testid="dns-cache-algorithm" />
+              <Segmented v-model="dns.cache_algorithm" :options="CACHE_ALGOS_DNS" size="sm" :label="tr('缓存算法')" data-testid="dns-cache-algorithm" />
             </div>
             <div class="setting-row">
               <div class="grow">
-                <strong>遵循分流规则</strong>
-                <p class="muted small">DNS 查询也按分流规则走代理或直连（respect-rules）</p>
+                <strong>{{ tr('遵循分流规则') }}</strong>
+                <p class="muted small">{{ tr('DNS 查询也按分流规则走代理或直连（respect-rules）') }}</p>
               </div>
-              <Toggle v-model="dns.respect_rules" label="遵循分流规则" />
+              <Toggle v-model="dns.respect_rules" :label="tr('遵循分流规则')" />
             </div>
             <div class="setting-row">
               <div class="grow">
-                <strong>直连遵循解析策略</strong>
-                <p class="muted small">直连出站解析域名时优先匹配下方的域名解析策略（direct-nameserver-follow-policy）</p>
+                <strong>{{ tr('直连遵循解析策略') }}</strong>
+                <p class="muted small">{{ tr('直连出站解析域名时优先匹配下方的域名解析策略（direct-nameserver-follow-policy）') }}</p>
               </div>
-              <Toggle v-model="dns.direct_nameserver_follow_policy" label="直连遵循解析策略" data-testid="dns-direct-follow-policy" />
+              <Toggle v-model="dns.direct_nameserver_follow_policy" :label="tr('直连遵循解析策略')" data-testid="dns-direct-follow-policy" />
             </div>
             <template v-for="item in ADV_DNS_LISTS" :key="item.key">
               <div v-if="!item.fakeIpOnly || dns.enhanced_mode === 'fake-ip'" class="setting-row stacked">
                 <div>
                   <strong>{{ item.title }}</strong>
-                  <p class="muted small">{{ item.hint }}，每行一个</p>
+                  <p class="muted small">{{ item.hint }}{{ tr('，每行一个') }}</p>
                 </div>
                 <textarea
                   v-model="dnsText[item.key]"
@@ -2530,15 +2506,14 @@ const TABS = computed(() => [
       <section class="card" data-testid="dns-policy-card">
         <header class="card-head wrap-head">
           <div>
-            <h2>域名解析策略 <span v-if="Object.keys(dnsDraft.nameserver_policy).length" class="muted">{{ Object.keys(dnsDraft.nameserver_policy).length }}</span></h2>
-            <p class="muted small">按域名、通配符或规则集指定专属上游 DNS（nameserver-policy），避免国内外域名分流污染</p>
+            <h2>{{ tr('域名解析策略') }} <span v-if="Object.keys(dnsDraft.nameserver_policy).length" class="muted">{{ Object.keys(dnsDraft.nameserver_policy).length }}</span></h2>
+            <p class="muted small">{{ tr('按域名、通配符或规则集指定专属上游 DNS（nameserver-policy），避免国内外域名分流污染') }}</p>
           </div>
           <div class="head-actions">
             <button type="button" class="btn ghost sm" data-testid="preset-cn-policy" @click="addCnPolicyPreset">
-              <Icon name="plus" :size="14" />国内域名分流
-            </button>
+              <Icon name="plus" :size="14" />{{ tr('国内域名分流') }} </button>
             <button type="button" class="btn ghost sm" data-testid="toggle-policy-batch" @click="togglePolicyBatch">
-              {{ policyBatchMode ? '列表视图' : '批量编辑' }}
+              {{ policyBatchMode ? tr('列表视图') : tr('批量编辑') }}
             </button>
           </div>
         </header>
@@ -2547,8 +2522,8 @@ const TABS = computed(() => [
             <input
               v-model="newPolicyPattern"
               class="input sm mono kv-key"
-              placeholder="规则，如 geosite:cn 或 +.corp.local"
-              aria-label="解析策略匹配规则"
+              :placeholder="tr('规则，如 geosite:cn 或 +.corp.local')"
+              :aria-label="tr('解析策略匹配规则')"
               data-testid="policy-pattern-input"
               @keydown.enter.prevent="onPolicyPatternEnter"
             />
@@ -2556,8 +2531,8 @@ const TABS = computed(() => [
               ref="policyServersInput"
               v-model="newPolicyServers"
               class="input sm mono grow"
-              placeholder="DNS 服务器，多个用逗号分隔"
-              aria-label="解析策略 DNS 服务器"
+              :placeholder="tr('DNS 服务器，多个用逗号分隔')"
+              :aria-label="tr('解析策略 DNS 服务器')"
               data-testid="policy-servers-input"
               @keydown.enter.prevent="addPolicyRow"
             />
@@ -2568,68 +2543,66 @@ const TABS = computed(() => [
               data-testid="add-policy-btn"
               @click="addPolicyRow"
             >
-              <Icon name="plus" :size="14" />添加
-            </button>
+              <Icon name="plus" :size="14" />{{ tr('添加') }} </button>
           </div>
           <div v-if="policyRows.length" class="kv-list" data-testid="policy-list">
             <div v-for="(row, index) in policyRows" :key="index" class="kv-row">
-              <input v-model="row.pattern" class="input sm mono kv-key" placeholder="匹配规则" :aria-label="`策略规则 ${index + 1}`" />
-              <input v-model="row.servers" class="input sm mono grow" placeholder="DNS 服务器" :aria-label="`策略服务器 ${index + 1}`" />
-              <button type="button" class="icon-btn sm" title="删除策略" aria-label="删除策略" @click="policyRows.splice(index, 1)">
+              <input v-model="row.pattern" class="input sm mono kv-key" :placeholder="tr('匹配规则')" :aria-label="tr('策略规则 {0}', { 0: index + 1 })" />
+              <input v-model="row.servers" class="input sm mono grow" :placeholder="tr('DNS 服务器')" :aria-label="tr('策略服务器 {0}', { 0: index + 1 })" />
+              <button type="button" class="icon-btn sm" :title="tr('删除策略')" :aria-label="tr('删除策略')" @click="policyRows.splice(index, 1)">
                 <Icon name="trash" :size="14" />
               </button>
             </div>
           </div>
-          <p v-else class="muted small empty-hint">尚未配置专属域名解析策略，支持 <code>+.domain.com</code>、<code>geosite:cn</code>、<code>rule-set:name</code> 等格式。</p>
+          <p v-else class="muted small empty-hint">{{ tr('尚未配置专属域名解析策略，支持') }} <code>+.domain.com</code>、<code>geosite:cn</code>、<code>rule-set:name</code> {{ tr('等格式。') }}</p>
         </template>
         <div v-else class="setting-row stacked">
-          <p class="muted small">每行一条，格式：<code>规则 = DNS1, DNS2</code>（例如 <code>geosite:cn,private = https://doh.pub/dns-query, 223.5.5.5</code>）</p>
+          <p class="muted small">{{ tr('每行一条，格式：') }}<code>{{ tr('规则 = DNS1, DNS2') }}</code>{{ tr('（例如') }} <code>geosite:cn,private = https://doh.pub/dns-query, 223.5.5.5</code>）</p>
           <textarea
             v-model="policyBatchText"
             class="input list-input mono"
             rows="6"
             spellcheck="false"
-            aria-label="域名解析策略批量编辑"
+            :aria-label="tr('域名解析策略批量编辑')"
             data-testid="policy-batch-textarea"
             :aria-invalid="policyInvalid.length ? 'true' : undefined"
           />
           <p v-if="policyInvalid.length" class="field-error small" role="alert" data-testid="policy-batch-invalid">
-            <Icon name="alert" :size="13" /> 第 {{ policyInvalid.join('、') }} 行缺少“=”或 DNS 服务器，保存时会被忽略
-          </p>
+            <Icon name="alert" :size="13" /> {{ tr('第') }} {{ policyInvalid.join('、') }} {{ tr('行缺少“=”或 DNS 服务器，保存时会被忽略') }} </p>
         </div>
       </section>
 
       <section class="card" data-testid="dns-hosts-card">
         <header class="card-head wrap-head">
           <div>
-            <h2>Hosts 映射 <span v-if="Object.keys(dnsDraft.hosts).length" class="muted">{{ Object.keys(dnsDraft.hosts).length }}</span></h2>
-            <p class="muted small">静态域名解析与本机 Hosts 控制，支持 IP 列表与泛域名映射</p>
+            <h2>{{ tr('Hosts 映射') }} <span v-if="Object.keys(dnsDraft.hosts).length" class="muted">{{ Object.keys(dnsDraft.hosts).length }}</span></h2>
+            <p class="muted small">{{ tr('静态域名解析与本机 Hosts 控制，支持 IP 列表与泛域名映射') }}</p>
           </div>
           <button type="button" class="btn ghost sm" data-testid="toggle-host-batch" @click="toggleHostBatch">
-            {{ hostBatchMode ? '列表视图' : '批量编辑' }}
+            {{ hostBatchMode ? tr('列表视图') : tr('批量编辑') }}
           </button>
         </header>
         <div class="setting-row">
           <div class="grow">
-            <strong>使用 hosts</strong>
-            <p class="muted small">启用配置与下方自定义的静态域名映射（use-hosts）</p>
+            <strong>{{ tr('使用 hosts') }}</strong>
+            <p class="muted small">{{ tr('启用配置与下方自定义的静态域名映射（use-hosts）') }}</p>
           </div>
-          <Toggle v-model="dns.use_hosts" label="使用 hosts" />
+          <Toggle v-model="dns.use_hosts" :label="tr('使用 hosts')" />
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>读取系统 Hosts</strong>
-            <p class="muted small">同时读取操作系统 /etc/hosts 或 Windows hosts 文件（use-system-hosts）</p>
+            <strong>{{ tr('读取系统 Hosts') }}</strong>
+            <p class="muted small">{{ tr('同时读取操作系统 /etc/hosts 或 Windows hosts 文件（use-system-hosts）') }}</p>
           </div>
-          <Toggle v-model="dns.use_system_hosts" label="读取系统 Hosts" data-testid="dns-system-hosts" />
+          <Toggle v-model="dns.use_system_hosts" :label="tr('读取系统 Hosts')" data-testid="dns-system-hosts" />
         </div>
         <template v-if="!hostBatchMode">
           <div class="kv-add-row">
             <input
               v-model="newHostDomain"
               class="input sm mono kv-key"
-              placeholder="域名，如 router.local 或 *.dev.test"
-              aria-label="Hosts 域名"
+              :placeholder="tr('域名，如 router.local 或 *.dev.test')"
+              :aria-label="tr('Hosts 域名')"
               data-testid="host-domain-input"
               @keydown.enter.prevent="onHostDomainEnter"
             />
@@ -2637,8 +2610,8 @@ const TABS = computed(() => [
               ref="hostTargetInput"
               v-model="newHostTargets"
               class="input sm mono grow"
-              placeholder="IP 或目标域名，多个用逗号分隔"
-              aria-label="Hosts 目标地址"
+              :placeholder="tr('IP 或目标域名，多个用逗号分隔')"
+              :aria-label="tr('Hosts 目标地址')"
               data-testid="host-target-input"
               @keydown.enter.prevent="addHostRow"
             />
@@ -2649,66 +2622,64 @@ const TABS = computed(() => [
               data-testid="add-host-btn"
               @click="addHostRow"
             >
-              <Icon name="plus" :size="14" />添加
-            </button>
+              <Icon name="plus" :size="14" />{{ tr('添加') }} </button>
           </div>
           <div v-if="hostRows.length" class="kv-list" data-testid="hosts-list">
             <div v-for="(row, index) in hostRows" :key="index" class="kv-row">
-              <input v-model="row.domain" class="input sm mono kv-key" placeholder="域名" :aria-label="`Hosts 域名 ${index + 1}`" />
-              <input v-model="row.targets" class="input sm mono grow" placeholder="IP 或目标域名" :aria-label="`Hosts 地址 ${index + 1}`" />
-              <button type="button" class="icon-btn sm" title="删除映射" aria-label="删除映射" @click="hostRows.splice(index, 1)">
+              <input v-model="row.domain" class="input sm mono kv-key" :placeholder="tr('域名')" :aria-label="tr('Hosts 域名 {0}', { 0: index + 1 })" />
+              <input v-model="row.targets" class="input sm mono grow" :placeholder="tr('IP 或目标域名')" :aria-label="tr('Hosts 地址 {0}', { 0: index + 1 })" />
+              <button type="button" class="icon-btn sm" :title="tr('删除映射')" :aria-label="tr('删除映射')" @click="hostRows.splice(index, 1)">
                 <Icon name="trash" :size="14" />
               </button>
             </div>
           </div>
-          <p v-else class="muted small empty-hint">尚未添加自定义 Hosts 映射。</p>
+          <p v-else class="muted small empty-hint">{{ tr('尚未添加自定义 Hosts 映射。') }}</p>
         </template>
         <div v-else class="setting-row stacked">
-          <p class="muted small">支持 <code>域名 = IP1, IP2</code> 或标准系统 hosts 格式 <code>192.168.1.1 router.local</code></p>
+          <p class="muted small">{{ tr('支持') }} <code>{{ tr('域名 = IP1, IP2') }}</code> {{ tr('或标准系统 hosts 格式') }} <code>192.168.1.1 router.local</code></p>
           <textarea
             v-model="hostBatchText"
             class="input list-input mono"
             rows="6"
             spellcheck="false"
-            aria-label="Hosts 批量编辑"
+            :aria-label="tr('Hosts 批量编辑')"
             data-testid="host-batch-textarea"
             :aria-invalid="hostInvalid.length ? 'true' : undefined"
           />
           <p v-if="hostInvalid.length" class="field-error small" role="alert" data-testid="host-batch-invalid">
-            <Icon name="alert" :size="13" /> 第 {{ hostInvalid.join('、') }} 行缺少目标地址，保存时会被忽略
-          </p>
+            <Icon name="alert" :size="13" /> {{ tr('第') }} {{ hostInvalid.join('、') }} {{ tr('行缺少目标地址，保存时会被忽略') }} </p>
         </div>
       </section>
 
       <div v-if="dnsDirty" class="save-bar floating-save-bar">
-        <span class="muted small grow">有未保存的 DNS 修改{{ snap.kernel_running && snap.settings.dns_override ? '，保存后将平滑热重载生效' : '' }}</span>
+        <span class="muted small grow">{{ tr('有未保存的 DNS 修改') }}{{ snap.kernel_running && snap.settings.dns_override ? tr('，保存后将平滑热重载生效') : '' }}</span>
         <kbd v-if="!compact" class="palette-kbd save-kbd" aria-hidden="true">{{ saveKey }}</kbd>
-        <button type="button" class="btn ghost sm" @click="loadDns(snap.settings.dns)">撤销</button>
-        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-dns" @click="saveDns">保存</button>
+        <button type="button" class="btn ghost sm" @click="loadDns(snap.settings.dns)">{{ tr('撤销') }}</button>
+        <button type="button" class="btn primary sm" :disabled="store.busy.settings" data-testid="save-dns" @click="saveDns">{{ tr('保存') }}</button>
       </div>
 
       <section class="card">
-        <header class="card-head"><h2>缓存</h2></header>
+        <header class="card-head"><h2>{{ tr('缓存') }}</h2></header>
         <div class="setting-row">
           <div class="grow">
-            <strong>清除 FakeIP 缓存</strong>
-            <p class="muted small">虚拟地址映射错乱、换节点后网站仍打不开时使用</p>
+            <strong>{{ tr('清除 FakeIP 缓存') }}</strong>
+            <p class="muted small">{{ tr('虚拟地址映射错乱、换节点后网站仍打不开时使用') }}</p>
           </div>
-          <button type="button" class="btn sm" :disabled="!snap.kernel_running || store.busy['flush:fakeip']" @click="store.flushCache('fakeip')">清除</button>
+          <button type="button" class="btn sm" :disabled="!snap.kernel_running || store.busy['flush:fakeip']" @click="store.flushCache('fakeip')">{{ tr('清除') }}</button>
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>清除 DNS 缓存</strong>
-            <p class="muted small">让内核重新解析所有域名</p>
+            <strong>{{ tr('清除 DNS 缓存') }}</strong>
+            <p class="muted small">{{ tr('让内核重新解析所有域名') }}</p>
           </div>
-          <button type="button" class="btn sm" :disabled="!snap.kernel_running || store.busy['flush:dns']" @click="store.flushCache('dns')">清除</button>
+          <button type="button" class="btn sm" :disabled="!snap.kernel_running || store.busy['flush:dns']" @click="store.flushCache('dns')">{{ tr('清除') }}</button>
         </div>
         <div class="setting-row">
           <div class="grow">
-            <strong>DNS 查询</strong>
-            <p class="muted small">用内核当前的 DNS 配置解析域名，查看记录、TTL 与耗时</p>
+            <strong>{{ tr('DNS 查询') }}</strong>
+            <p class="muted small">{{ tr('用内核当前的 DNS 配置解析域名，查看记录、TTL 与耗时') }}</p>
           </div>
-          <button type="button" class="btn sm" data-testid="open-dns-query" @click="store.dnsQueryOpen.value = true">查询</button>
+          <button type="button" class="btn sm" data-testid="open-dns-query" @click="store.dnsQueryOpen.value = true">{{ tr('查询') }}</button>
         </div>
       </section>
     </template>
@@ -2718,13 +2689,11 @@ const TABS = computed(() => [
       <BackupSection :compact="compact" />
     </template>
 
-    <Modal v-if="confirmRestart" title="重启内核" @close="confirmRestart = false">
-      <p class="small" data-testid="restart-kernel-note">
-        内核会以当前生效配置重新启动，已建立的连接会中断；代理、TUN 与出站模式保持不变。
-      </p>
+    <Modal v-if="confirmRestart" :title="tr('重启内核')" @close="confirmRestart = false">
+      <p class="small" data-testid="restart-kernel-note"> {{ tr('内核会以当前生效配置重新启动，已建立的连接会中断；代理、TUN 与出站模式保持不变。') }} </p>
       <template #footer>
-        <button type="button" class="btn ghost" data-testid="cancel-restart-kernel" @click="confirmRestart = false">取消</button>
-        <button type="button" class="btn danger" data-testid="confirm-restart-kernel" @click="restartConfirmed">重启</button>
+        <button type="button" class="btn ghost" data-testid="cancel-restart-kernel" @click="confirmRestart = false">{{ tr('取消') }}</button>
+        <button type="button" class="btn danger" data-testid="confirm-restart-kernel" @click="restartConfirmed">{{ tr('重启') }}</button>
       </template>
     </Modal>
     <UwpLoopbackDialog v-if="uwpOpen" @close="uwpOpen = false" />

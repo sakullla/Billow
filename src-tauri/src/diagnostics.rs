@@ -35,6 +35,40 @@ pub struct LogView {
     pub level: String,
     pub message: String,
     pub time_ms: u64,
+    /// Structured kernel hint (`port` / `tun`) so views never parse Chinese text (T8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Which listener failed for a port hint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint_kind: Option<String>,
+}
+
+/// Classify a raw kernel log line by its English markers, never its Chinese text.
+pub fn log_hint(message: &str) -> (Option<String>, Option<String>) {
+    let lower = message.to_lowercase();
+    let in_use = lower.contains("only one usage of each socket address")
+        || lower.contains("address already in use")
+        || lower.contains("10048");
+    if in_use {
+        let kind = [
+            ("Start Mixed", "mixed"),
+            ("Start HTTP", "http"),
+            ("Start SOCKS", "socks"),
+            ("Start Redir", "redir"),
+            ("Start TProxy", "tproxy"),
+            ("RESTful API", "mixed"),
+        ]
+        .into_iter()
+        .find(|(marker, _)| message.contains(marker))
+        .map(|(_, kind)| kind.to_string());
+        if kind.is_some() {
+            return (Some("port".to_string()), kind);
+        }
+    }
+    if message.contains("Start TUN") || lower.contains("configure tun") {
+        return (Some("tun".to_string()), None);
+    }
+    (None, None)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
@@ -365,10 +399,13 @@ pub fn now_ms() -> u64 {
 }
 
 pub fn failure_log(message: &str) -> LogView {
+    let (hint, hint_kind) = log_hint(message);
     LogView {
         level: "error".to_string(),
         message: message.trim().to_string(),
         time_ms: now_ms(),
+        hint,
+        hint_kind,
     }
 }
 
@@ -435,10 +472,13 @@ pub fn push_logs(logs: &mut Vec<LogView>, incoming: impl IntoIterator<Item = Log
         if message.is_empty() {
             continue;
         }
+        let (hint, hint_kind) = log_hint(message);
         logs.push(LogView {
             level: line.level,
             message: message.to_string(),
             time_ms: if line.time_ms == 0 { now_ms() } else { line.time_ms },
+            hint,
+            hint_kind,
         });
     }
     let overflow = logs.len().saturating_sub(LOG_LIMIT);
@@ -1408,10 +1448,13 @@ pub fn parse_log_line(line: &str) -> Option<LogView> {
     if message.is_empty() {
         return None;
     }
+    let (hint, hint_kind) = log_hint(message);
     Some(LogView {
         level: level.to_string(),
         message: message.to_string(),
         time_ms: now_ms(),
+        hint,
+        hint_kind,
     })
 }
 
@@ -1615,10 +1658,13 @@ fn parse_log_json(line: &str) -> Option<LogView> {
     if message.is_empty() {
         return None;
     }
+    let (hint, hint_kind) = log_hint(message);
     Some(LogView {
         level: level.to_string(),
         message: message.to_string(),
         time_ms: now_ms(),
+        hint,
+        hint_kind,
     })
 }
 
@@ -2633,5 +2679,23 @@ rules:
         assert_eq!(dns_query_error(windows.into()), "DNS 查询超时");
         let refused = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
         assert_eq!(dns_query_error(refused.into()), "内核没有响应");
+    }
+
+    #[test]
+    fn kernel_log_hints_use_english_markers_instead_of_translated_text() {
+        // Windows/Unix port-conflict wording, each with the listener that failed.
+        assert_eq!(
+            log_hint("Start Mixed(http+socks) server error: listen tcp 127.0.0.1:7890: bind: address already in use"),
+            (Some("port".to_string()), Some("mixed".to_string()))
+        );
+        assert_eq!(
+            log_hint("Start TProxy server error: listen tcp 127.0.0.1:7893: bind: Only one usage of each socket address"),
+            (Some("port".to_string()), Some("tproxy".to_string()))
+        );
+        assert_eq!(
+            log_hint("Start TUN listening error: configure tun interface: Access is denied."),
+            (Some("tun".to_string()), None)
+        );
+        assert_eq!(log_hint("level=info msg=connected"), (None, None));
     }
 }

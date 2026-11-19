@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
@@ -27,7 +28,7 @@ const ordered = computed(() =>
 )
 const subscriptions = computed(() => snap.value.profiles.filter((item) => item.kind === 'subscription').length)
 
-const DUPLICATE_HINT = '该订阅已存在'
+const DUPLICATE_HINT = tr('该订阅已存在')
 const quickUrl = ref('')
 const quickError = ref<string | null>(null)
 const quickInputEl = ref<HTMLInputElement | null>(null)
@@ -38,7 +39,7 @@ async function importLocalFile(file: File | undefined) {
   const before = snap.value.profiles.length
   await store.addLocal(file.name.replace(/\.(ya?ml|txt)$/i, ''), await file.text())
   if (snap.value.profiles.length > before) {
-    store.toast(`已导入 ${file.name}`, 'success')
+    store.toast(tr('已导入 {0}', { 0: file.name }), 'success')
     const added = snap.value.profiles[snap.value.profiles.length - 1]
     if (!snap.value.active_id && added) void store.enable(added.id)
   }
@@ -71,10 +72,10 @@ async function pasteQuickUrl() {
       quickError.value = null
       quickInputEl.value?.focus()
     } else {
-      store.toast('剪贴板为空', 'info')
+      store.toast(tr('剪贴板为空'), 'info')
     }
   } catch {
-    store.toast('无法读取剪贴板，请手动粘贴', 'error')
+    store.toast(tr('无法读取剪贴板，请手动粘贴'), 'error')
   }
 }
 
@@ -104,9 +105,9 @@ async function quickImport() {
   await store.addSubscription(value)
   if (snap.value.profiles.length > before) {
     quickUrl.value = ''
-    store.toast('已添加订阅', 'success')
+    store.toast(tr('已添加订阅'), 'success')
   } else {
-    quickError.value = snap.value.input_error ?? '订阅没有添加'
+    quickError.value = snap.value.input_error ?? tr('订阅没有添加')
   }
 }
 
@@ -124,16 +125,16 @@ function closeProfileMenu(restoreFocus = false) {
 function menuItems(profile: ProfileItem): MenuItem[] {
   const items: MenuItem[] = []
   // Card clicks are pointer-only; the menu gives keyboard and screen-reader users the same switch.
-  if (!profile.current) items.push({ id: 'enable', label: '启用此配置', icon: 'check' })
+  if (!profile.current) items.push({ id: 'enable', get label() { return tr('启用此配置') }, icon: 'check' })
   items.push(
-    { id: 'edit', label: '编辑信息', icon: 'edit' },
-    { id: 'content', label: '编辑配置文件', icon: 'code' },
-    { id: 'override', label: '覆写', icon: 'layers', mark: profile.override_text.trim().length > 0 },
+    { id: 'edit', get label() { return tr('编辑信息') }, icon: 'edit' },
+    { id: 'content', get label() { return tr('编辑配置文件') }, icon: 'code' },
+    { id: 'override', get label() { return tr('覆写') }, icon: 'layers', mark: profile.override_text.trim().length > 0 },
   )
   // Quiet entry: only the profile that runs has a final config worth reading.
-  if (profile.current) items.push({ id: 'effective', label: '查看生效配置', icon: 'file' })
-  if (profile.kind === 'subscription') items.push({ id: 'copy', label: '复制链接', icon: 'copy' })
-  items.push({ id: 'remove', label: '删除', icon: 'trash', danger: true })
+  if (profile.current) items.push({ id: 'effective', get label() { return tr('查看生效配置') }, icon: 'file' })
+  if (profile.kind === 'subscription') items.push({ id: 'copy', get label() { return tr('复制链接') }, icon: 'copy' })
+  items.push({ id: 'remove', get label() { return tr('删除') }, icon: 'trash', danger: true })
   return items
 }
 
@@ -152,13 +153,13 @@ function selectMenuItem(profile: ProfileItem, item: MenuItem) {
 type EditFieldKey = 'name' | 'url' | 'interval' | 'age' | 'userAgent'
 const EDIT_FIELD_ORDER: readonly EditFieldKey[] = ['name', 'url', 'interval', 'age', 'userAgent']
 const EDIT_FIELD_LABELS: Record<EditFieldKey, string> = {
-  name: '名称',
-  url: '订阅链接',
-  interval: '自动更新',
-  age: 'age 私钥',
+  name: tr('名称'),
+  url: tr('订阅链接'),
+  interval: tr('自动更新'),
+  age: tr('age 私钥'),
   userAgent: 'User-Agent',
 }
-const AGE_KEY_FORMAT_ERROR = 'age 私钥格式不正确：每行一个以 AGE-SECRET-KEY-1 开头的私钥，# 开头的行视为注释'
+const AGE_KEY_FORMAT_ERROR = tr('age 私钥格式不正确：每行一个以 AGE-SECRET-KEY-1 开头的私钥，# 开头的行视为注释')
 
 const editingId = ref<string | null>(null)
 const editingFallback = ref<ProfileItem | null>(null)
@@ -197,9 +198,9 @@ const ageHint = computed(() => {
   const text = ageKey.value.trim()
   if (!text) return null
   if (/^age1[0-9a-z]+$/m.test(text) && !/AGE-SECRET-KEY-1/i.test(text)) {
-    return '这是公钥（age1…），请填写对应的私钥 AGE-SECRET-KEY-1…'
+    return tr('这是公钥（age1…），请填写对应的私钥 AGE-SECRET-KEY-1…')
   }
-  if (/-----BEGIN AGE ENCRYPTED FILE-----/.test(text)) return '这是加密后的内容，请填写解密用的私钥'
+  if (/-----BEGIN AGE ENCRYPTED FILE-----/.test(text)) return tr('这是加密后的内容，请填写解密用的私钥')
   return null
 })
 
@@ -211,22 +212,22 @@ function cleanProfileName(raw: string): string {
 
 function validateSubscriptionUrl(raw: string): string | null {
   const url = raw.trim()
-  if (!url) return '请填写订阅链接'
+  if (!url) return tr('请填写订阅链接')
   if (!/^https?:\/\//i.test(url) || /[\s\x00-\x1f\x7f]/.test(url)) {
-    return '请输入以 http:// 或 https:// 开头的有效订阅链接'
+    return tr('请输入以 http:// 或 https:// 开头的有效订阅链接')
   }
   try {
     const parsed = new URL(url)
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return '请输入以 http:// 或 https:// 开头的有效订阅链接'
+      return tr('请输入以 http:// 或 https:// 开头的有效订阅链接')
     }
     const host = parsed.hostname
     if (!host || (!host.includes('.') && host !== 'localhost' && !host.startsWith('['))) {
-      return '请输入有效的订阅链接域名或地址'
+      return tr('请输入有效的订阅链接域名或地址')
     }
     return null
   } catch {
-    return '请输入以 http:// 或 https:// 开头的有效订阅链接'
+    return tr('请输入以 http:// 或 https:// 开头的有效订阅链接')
   }
 }
 
@@ -245,7 +246,7 @@ function validateAgeInput(raw: string): string | null {
 
 function validateUserAgentInput(raw: string): string | null {
   if (raw.length > 256 || /[^\x20-\x7e]/.test(raw)) {
-    return 'User-Agent 只能包含可打印的 ASCII 字符，长度不能超过 256，不能含换行'
+    return tr('User-Agent 只能包含可打印的 ASCII 字符，长度不能超过 256，不能含换行')
   }
   return null
 }
@@ -258,12 +259,12 @@ function ageFailure(profile: ProfileItem): boolean {
   return profile.kind === 'subscription' && AGE_FAILURE.test(profile.failure ?? '')
 }
 const INTERVALS = [
-  { hours: 0, label: '不自动更新' },
-  { hours: 6, label: '每 6 小时' },
-  { hours: 12, label: '每 12 小时' },
-  { hours: 24, label: '每天' },
-  { hours: 72, label: '每 3 天' },
-  { hours: 168, label: '每周' },
+  { hours: 0, label: tr('不自动更新') },
+  { hours: 6, label: tr('每 6 小时') },
+  { hours: 12, label: tr('每 12 小时') },
+  { hours: 24, label: tr('每天') },
+  { hours: 72, label: tr('每 3 天') },
+  { hours: 168, label: tr('每周') },
 ]
 
 function clearEditTracking() {
@@ -366,7 +367,7 @@ async function saveEdit() {
   // Validate the whole form before submitting anything, including modified advanced options (R2).
   const preErrors: Partial<Record<EditFieldKey, string>> = {}
   if (!cleanProfileName(form.value.name)) {
-    preErrors.name = '请填写配置名称'
+    preErrors.name = tr('请填写配置名称')
   }
   if (profile.kind === 'subscription') {
     if (isFieldDirty('url', profile) || !form.value.url.trim()) {
@@ -400,7 +401,7 @@ async function saveEdit() {
       const result = await store.rename(id, form.value.name)
       const after = result?.profiles.find((item) => item.id === id)
       if (!result || result.input_error || after?.name !== expectedName) {
-        fieldErrors.name = result?.input_error || store.lastRunError.value || '名称未能保存'
+        fieldErrors.name = result?.input_error || store.lastRunError.value || tr('名称未能保存')
         saveAttemptFailed.value = true
         await focusEditField('name')
         return
@@ -413,7 +414,7 @@ async function saveEdit() {
       const result = await store.setSource(id, form.value.url)
       const after = result?.profiles.find((item) => item.id === id)
       if (!result || result.input_error || after?.source !== expectedUrl) {
-        fieldErrors.url = result?.input_error || store.lastRunError.value || '订阅链接未能保存'
+        fieldErrors.url = result?.input_error || store.lastRunError.value || tr('订阅链接未能保存')
         saveAttemptFailed.value = true
         await focusEditField('url')
         return
@@ -426,7 +427,7 @@ async function saveEdit() {
       const result = await store.setInterval(id, form.value.interval)
       const after = result?.profiles.find((item) => item.id === id)
       if (!result || result.input_error || after?.interval_hours !== expectedHours) {
-        fieldErrors.interval = result?.input_error || store.lastRunError.value || '自动更新间隔未能保存'
+        fieldErrors.interval = result?.input_error || store.lastRunError.value || tr('自动更新间隔未能保存')
         saveAttemptFailed.value = true
         await focusEditField('interval')
         return
@@ -438,7 +439,7 @@ async function saveEdit() {
       const clearing = ageClear.value
       const result = await store.setAgeKey(id, clearing ? '' : ageKey.value)
       if (!result || result.input_error) {
-        fieldErrors.age = result?.input_error || store.lastRunError.value || 'age 私钥未能保存'
+        fieldErrors.age = result?.input_error || store.lastRunError.value || tr('age 私钥未能保存')
         saveAttemptFailed.value = true
         advancedOpen.value = true
         await focusEditField('age')
@@ -462,7 +463,7 @@ async function saveEdit() {
       const result = await store.setUserAgent(id, form.value.userAgent)
       const after = result?.profiles.find((item) => item.id === id)
       if (!result || result.input_error || after?.user_agent !== expectedUa) {
-        fieldErrors.userAgent = result?.input_error || store.lastRunError.value || 'User-Agent 未能保存'
+        fieldErrors.userAgent = result?.input_error || store.lastRunError.value || tr('User-Agent 未能保存')
         saveAttemptFailed.value = true
         advancedOpen.value = true
         await focusEditField('userAgent')
@@ -477,11 +478,11 @@ async function saveEdit() {
     clearEditTracking()
     // A new key is only useful once the subscription is fetched again with it.
     if (needAgeRefresh) {
-      store.toast('已保存，正在用新私钥更新订阅', 'success')
+      store.toast(tr('已保存，正在用新私钥更新订阅'), 'success')
       void store.update(id)
       return
     }
-    store.toast('已保存', 'success')
+    store.toast(tr('已保存'), 'success')
   } finally {
     savingEdit.value = false
     if (
@@ -542,12 +543,12 @@ onMounted(async () => {
   const draft = yaml.value
   if (!draft) return
   if (draft.language === 'javascript') {
-    yamlError.value = '当前覆写是脚本，请在 main 中用 config.rules.unshift(...) 加入这些规则：\n' + request.append
+    yamlError.value = tr('当前覆写是脚本，请在 main 中用 config.rules.unshift(...) 加入这些规则：\n') + request.append
     return
   }
   const merged = mergeOverrideAppend(draft.text, request.append)
   if (!merged.changed) {
-    store.toast('该规则已在覆写列表中', 'info')
+    store.toast(tr('该规则已在覆写列表中'), 'info')
     return
   }
   draft.text = merged.text
@@ -661,7 +662,7 @@ async function saveYaml() {
   yamlError.value = null
   if (mode === 'content') {
     const result = await store.saveContent(profile.id, text)
-    const reason = result ? result.input_error : store.lastRunError.value ?? '配置没有保存'
+    const reason = result ? result.input_error : store.lastRunError.value ?? tr('配置没有保存')
     if (reason) {
       yamlError.value = reason
       return
@@ -671,14 +672,14 @@ async function saveYaml() {
   }
   const result = await store.saveOverride(profile.id, text)
   const after = result?.profiles.find((item) => item.id === profile.id)
-  const reason = result ? after?.override_error ?? null : store.lastRunError.value ?? '覆写没有保存'
+  const reason = result ? after?.override_error ?? null : store.lastRunError.value ?? tr('覆写没有保存')
   if (reason) {
     yamlError.value = reason
     return
   }
   yaml.value = null
   if (!after?.current) {
-    store.toast('覆写已保存，启用该配置时生效', 'success')
+    store.toast(tr('覆写已保存，启用该配置时生效'), 'success')
     return
   }
   // The active profile picks the override up right away (hot reload, connections stay).
@@ -686,7 +687,7 @@ async function saveYaml() {
   const failure = applied?.profiles.find((item) => item.id === profile.id)
   if (!applied) return
   if (failure?.override_error) store.toast(failure.override_error, 'error')
-  else if (!failure?.failure) store.toast('覆写已保存并生效', 'success')
+  else if (!failure?.failure) store.toast(tr('覆写已保存并生效'), 'success')
 }
 
 // Delete
@@ -702,9 +703,9 @@ async function copyLink(profile: ProfileItem) {
   menuFor.value = null
   try {
     await navigator.clipboard.writeText(profile.source)
-    store.toast('订阅链接已复制', 'success')
+    store.toast(tr('订阅链接已复制'), 'success')
   } catch {
-    store.toast('无法写入剪贴板', 'error')
+    store.toast(tr('无法写入剪贴板'), 'error')
   }
 }
 
@@ -716,11 +717,11 @@ function activate(profile: ProfileItem) {
 /** "正在更新 x/y" while running, then the kept result so a page switch loses nothing (R27). */
 const updateAllLabel = computed(() => {
   const progress = store.refreshProgress.value
-  if (store.busy.refreshAll) return `正在更新 ${Math.min(progress.done + 1, Math.max(progress.total, 1))}/${progress.total}`
+  if (store.busy.refreshAll) return tr('正在更新 {0}/{1}', { 0: Math.min(progress.done + 1, Math.max(progress.total, 1)), 1: progress.total })
   if (progress.total && progress.done >= progress.total) {
-    return progress.failed ? `已完成 ${progress.done}/${progress.total} · ${progress.failed} 个失败` : `已完成 ${progress.done}/${progress.total}`
+    return progress.failed ? tr('已完成 {0}/{1} · {2} 个失败', { 0: progress.done, 1: progress.total, 2: progress.failed }) : tr('已完成 {0}/{1}', { 0: progress.done, 1: progress.total })
   }
-  return '全部更新'
+  return tr('全部更新')
 })
 
 const failedSubscriptionIds = computed(() =>
@@ -740,12 +741,12 @@ const failedSubscriptionIds = computed(() =>
   >
     <div v-if="pageDragging" class="drop-banner" aria-hidden="true">
       <Icon name="download" :size="16" />
-      <span>释放即可导入 YAML 配置文件</span>
+      <span>{{ tr('释放即可导入 YAML 配置文件') }}</span>
     </div>
     <header class="page-head">
       <div>
-        <h1>配置</h1>
-        <p class="muted small meta-line"><span>{{ snap.profiles.length }} 份配置</span><span>同一时间启用一份</span></p>
+        <h1>{{ tr('配置') }}</h1>
+        <p class="muted small meta-line"><span>{{ snap.profiles.length }} {{ tr('份配置') }}</span><span>{{ tr('同一时间启用一份') }}</span></p>
       </div>
       <div class="head-actions">
         <button
@@ -755,8 +756,7 @@ const failedSubscriptionIds = computed(() =>
           data-testid="retry-failed-profiles"
           @click="store.refreshAll(failedSubscriptionIds)"
         >
-          <Icon name="refresh" :size="15" />
-          重试失败 ({{ failedSubscriptionIds.length }})
+          <Icon name="refresh" :size="15" /> {{ tr('重试失败 (') }}{{ failedSubscriptionIds.length }})
         </button>
         <button
           v-if="subscriptions"
@@ -772,8 +772,7 @@ const failedSubscriptionIds = computed(() =>
           {{ updateAllLabel }}
         </button>
         <button type="button" class="btn primary sm" data-testid="add-profile" @click="store.adding.value = true">
-          <Icon name="plus" :size="15" /> 添加
-        </button>
+          <Icon name="plus" :size="15" /> {{ tr('添加') }} </button>
       </div>
     </header>
 
@@ -783,7 +782,7 @@ const failedSubscriptionIds = computed(() =>
         ref="quickInputEl"
         v-model="quickUrl"
         type="url"
-        :placeholder="compact ? '粘贴订阅链接' : '粘贴订阅链接回车导入，或直接拖入 YAML 文件'"
+        :placeholder="compact ? tr('粘贴订阅链接') : tr('粘贴订阅链接回车导入，或直接拖入 YAML 文件')"
         spellcheck="false"
         :aria-invalid="quickError ? 'true' : undefined"
         :aria-describedby="quickError ? 'quick-import-error' : undefined"
@@ -793,29 +792,27 @@ const failedSubscriptionIds = computed(() =>
         <button
           type="button"
           class="btn ghost sm"
-          title="从剪贴板粘贴订阅链接"
+          :title="tr('从剪贴板粘贴订阅链接')"
           data-testid="quick-paste"
           @click="pasteQuickUrl"
         >
-          <Icon name="clipboard" :size="14" />粘贴
-        </button>
-        <label v-if="!compact" class="btn ghost sm quick-file-btn" title="选择本地 YAML 配置文件">
-          <Icon name="file" :size="14" />本地文件
-          <input type="file" accept=".yaml,.yml,.txt,text/yaml" hidden @change="onQuickFile" />
+          <Icon name="clipboard" :size="14" />{{ tr('粘贴') }} </button>
+        <label v-if="!compact" class="btn ghost sm quick-file-btn" :title="tr('选择本地 YAML 配置文件')">
+          <Icon name="file" :size="14" />{{ tr('本地文件') }} <input type="file" accept=".yaml,.yml,.txt,text/yaml" hidden @change="onQuickFile" />
         </label>
       </template>
       <button
         v-else
         type="button"
         class="icon-btn sm"
-        aria-label="清空输入"
-        title="清空"
+        :aria-label="tr('清空输入')"
+        :title="tr('清空')"
         data-testid="quick-clear"
         @click="quickUrl = ''; quickError = null; quickInputEl?.focus()"
       >
         <Icon name="x" :size="14" />
       </button>
-      <button type="submit" class="btn primary sm" :disabled="!quickUrl.trim() || store.busy.add">导入</button>
+      <button type="submit" class="btn primary sm" :disabled="!quickUrl.trim() || store.busy.add">{{ tr('导入') }}</button>
     </form>
     <p v-if="quickError" id="quick-import-error" class="field-error small" role="alert">{{ quickError }}</p>
 
@@ -823,11 +820,11 @@ const failedSubscriptionIds = computed(() =>
       v-if="!snap.profiles.length"
       variant="no-data"
       icon="layers"
-      title="还没有配置"
-      description="添加机场订阅链接，或导入本地 Clash / Mihomo 配置文件。"
+      :title="tr('还没有配置')"
+      :description="tr('添加机场订阅链接，或导入本地 Clash / Mihomo 配置文件。')"
     >
       <template #action>
-        <button type="button" class="btn primary sm" @click="store.adding.value = true"><Icon name="plus" :size="15" /> 添加配置</button>
+        <button type="button" class="btn primary sm" @click="store.adding.value = true"><Icon name="plus" :size="15" /> {{ tr('添加配置') }}</button>
       </template>
     </EmptyState>
 
@@ -847,12 +844,12 @@ const failedSubscriptionIds = computed(() =>
           <div class="grow min0">
             <div class="profile-name">
               <strong :title="profile.name">{{ profile.name }}</strong>
-              <span v-if="profile.current" class="tag accent">使用中</span>
-              <span v-else-if="compact" class="tag profile-touch-cue" aria-hidden="true">启用</span>
-              <span v-else class="profile-switch-hint" aria-hidden="true">点击启用</span>
+              <span v-if="profile.current" class="tag accent">{{ tr('使用中') }}</span>
+              <span v-else-if="compact" class="tag profile-touch-cue" aria-hidden="true">{{ tr('启用') }}</span>
+              <span v-else class="profile-switch-hint" aria-hidden="true">{{ tr('点击启用') }}</span>
             </div>
             <p class="muted small ellipsis">
-              {{ profile.kind === 'local' ? '本地文件' : hostOf(profile.source) }}
+              {{ profile.kind === 'local' ? tr('本地文件') : hostOf(profile.source) }}
             </p>
           </div>
           <span v-if="store.busy[`enable:${profile.id}`]" class="spinner sm" />
@@ -860,8 +857,8 @@ const failedSubscriptionIds = computed(() =>
             v-if="profile.kind === 'subscription'"
             type="button"
             class="icon-btn"
-            :title="store.busy[`update:${profile.id}`] ? '更新中' : '更新订阅'"
-            :aria-label="store.busy[`update:${profile.id}`] ? '更新中' : '更新订阅'"
+            :title="store.busy[`update:${profile.id}`] ? tr('更新中') : tr('更新订阅')"
+            :aria-label="store.busy[`update:${profile.id}`] ? tr('更新中') : tr('更新订阅')"
             :aria-busy="store.busy[`update:${profile.id}`] || undefined"
             :disabled="store.busy[`update:${profile.id}`]"
             @click.stop="store.update(profile.id)"
@@ -873,7 +870,7 @@ const failedSubscriptionIds = computed(() =>
             <button
               type="button"
               class="icon-btn"
-              aria-label="更多操作"
+              :aria-label="tr('更多操作')"
               aria-haspopup="menu"
               :aria-expanded="menuFor === profile.id"
               :data-menu-trigger="profile.id"
@@ -884,7 +881,7 @@ const failedSubscriptionIds = computed(() =>
             <Menu
               v-if="menuFor === profile.id"
               :items="menuItems(profile)"
-              label="配置操作"
+              :label="tr('配置操作')"
               @select="(item) => selectMenuItem(profile, item)"
               @close="closeProfileMenu(false)"
             />
@@ -904,11 +901,10 @@ const failedSubscriptionIds = computed(() =>
           <div class="usage-text small">
             <span v-if="usagePercent(profile.used, profile.total) != null" class="mono">
               {{ formatBytes(profile.used) }} / {{ formatBytes(profile.total) }}
-              <span v-if="profile.total != null && profile.used != null && profile.total > 0" class="muted">
-                · 剩 {{ formatBytes(Math.max(0, profile.total - profile.used)) }}
+              <span v-if="profile.total != null && profile.used != null && profile.total > 0" class="muted"> {{ tr('· 剩') }} {{ formatBytes(Math.max(0, profile.total - profile.used)) }}
               </span>
             </span>
-            <span v-else class="muted">不限流量</span>
+            <span v-else class="muted">{{ tr('不限流量') }}</span>
             <span
               v-if="profile.expire"
               :class="{
@@ -918,10 +914,10 @@ const failedSubscriptionIds = computed(() =>
             >
               {{
                 daysLeft(profile.expire) < 0
-                  ? '已过期'
+                  ? tr('已过期')
                   : daysLeft(profile.expire) <= 14
-                    ? `${formatDate(profile.expire)} 到期 · 剩 ${daysLeft(profile.expire)} 天`
-                    : `${formatDate(profile.expire)} 到期`
+                    ? tr('{0} 到期 · 剩 {1} 天', { 0: formatDate(profile.expire), 1: daysLeft(profile.expire) })
+                    : tr('{0} 到期', { 0: formatDate(profile.expire) })
               }}
             </span>
           </div>
@@ -929,19 +925,17 @@ const failedSubscriptionIds = computed(() =>
 
         <footer class="profile-foot small muted">
           <span><Icon name="clock" :size="13" />{{ formatRelative(profile.updated_ms ?? profile.last_success_ms) }}</span>
-          <span v-if="profile.proxy_count"><Icon name="globe" :size="13" />{{ profile.proxy_count }} 节点</span>
-          <span v-if="profile.interval_hours"><Icon name="refresh" :size="13" />{{ profile.interval_hours >= 24 && profile.interval_hours % 24 === 0 ? `${profile.interval_hours / 24} 天` : `${profile.interval_hours} 时` }}</span>
+          <span v-if="profile.proxy_count"><Icon name="globe" :size="13" />{{ profile.proxy_count }} {{ tr('节点') }}</span>
+          <span v-if="profile.interval_hours"><Icon name="refresh" :size="13" />{{ profile.interval_hours >= 24 && profile.interval_hours % 24 === 0 ? tr('{0} 天', { 0: profile.interval_hours / 24 }) : tr('{0} 时', { 0: profile.interval_hours }) }}</span>
           <button
             v-if="profile.override_text.trim()"
             type="button"
             class="tag tag-btn"
-            title="点击编辑覆写"
+            :title="tr('点击编辑覆写')"
             data-testid="quick-override"
             @click.stop="openYaml(profile, 'override')"
-          >
-            覆写
-          </button>
-          <span v-if="profile.age_recipients.length" class="tag" title="订阅内容使用 age 私钥解密"><Icon name="shield" :size="11" />age</span>
+          > {{ tr('覆写') }} </button>
+          <span v-if="profile.age_recipients.length" class="tag" :title="tr('订阅内容使用 age 私钥解密')"><Icon name="shield" :size="11" />age</span>
         </footer>
         <p v-if="profile.failure && store.profileUpdates[profile.id]?.state !== 'failure'" class="field-error small">
           <Icon name="alert" :size="13" /> {{ profile.failure }}
@@ -952,7 +946,7 @@ const failedSubscriptionIds = computed(() =>
             data-testid="age-fix"
             @click.stop="openEdit(profile, true)"
           >
-            {{ profile.age_recipients.length ? '更换私钥' : '填写私钥' }}
+            {{ profile.age_recipients.length ? tr('更换私钥') : tr('填写私钥') }}
           </button>
         </p>
         <p v-if="profile.override_error" class="field-error small">
@@ -962,9 +956,7 @@ const failedSubscriptionIds = computed(() =>
             class="btn ghost sm"
             data-testid="override-fix"
             @click.stop="openYaml(profile, 'override')"
-          >
-            修改覆写
-          </button>
+          > {{ tr('修改覆写') }} </button>
         </p>
         <div
           v-if="store.profileUpdates[profile.id]"
@@ -973,10 +965,10 @@ const failedSubscriptionIds = computed(() =>
           aria-live="polite"
         >
           <template v-if="store.profileUpdates[profile.id]?.state === 'updating'">
-            <span class="muted">更新中</span>
+            <span class="muted">{{ tr('更新中') }}</span>
           </template>
           <template v-else-if="store.profileUpdates[profile.id]?.state === 'success'">
-            <span class="text-ok"><Icon name="check" :size="13" /> 已更新</span>
+            <span class="text-ok"><Icon name="check" :size="13" /> {{ tr('已更新') }}</span>
           </template>
           <template v-else>
             <span class="field-error" role="alert"><Icon name="alert" :size="13" /> {{ store.profileUpdates[profile.id]?.reason }}</span>
@@ -987,9 +979,9 @@ const failedSubscriptionIds = computed(() =>
               data-testid="age-fix-update"
               @click.stop="openEdit(profile, true)"
             >
-              {{ profile.age_recipients.length ? '更换私钥' : '填写私钥' }}
+              {{ profile.age_recipients.length ? tr('更换私钥') : tr('填写私钥') }}
             </button>
-            <button v-else type="button" class="btn ghost sm" data-testid="retry-update" @click.stop="store.update(profile.id)">重试</button>
+            <button v-else type="button" class="btn ghost sm" data-testid="retry-update" @click.stop="store.update(profile.id)">{{ tr('重试') }}</button>
           </template>
         </div>
       </article>
@@ -997,7 +989,7 @@ const failedSubscriptionIds = computed(() =>
 
     <Modal
       v-if="editing"
-      title="编辑配置信息"
+      :title="tr('编辑配置信息')"
       :before-close="() => !savingEdit"
       :initial-focus="ageFocus ? () => ageInput : undefined"
       @close="closeEdit"
@@ -1012,19 +1004,19 @@ const failedSubscriptionIds = computed(() =>
         >
           <Icon name="alert" :size="15" />
           <div class="grow edit-save-summary-body">
-            <span v-if="partialSaveGroups.saved.length">已保存：{{ partialSaveGroups.saved.join('、') }}</span>
-            <span v-if="partialSaveGroups.failed.length">保存失败：{{ partialSaveGroups.failed.join('、') }}</span>
-            <span v-if="partialSaveGroups.pending.length">待保存：{{ partialSaveGroups.pending.join('、') }}</span>
-            <span class="muted">修正后再次点击保存，将仅提交尚未保存的修改。</span>
+            <span v-if="partialSaveGroups.saved.length">{{ tr('已保存：') }}{{ partialSaveGroups.saved.join('、') }}</span>
+            <span v-if="partialSaveGroups.failed.length">{{ tr('保存失败：') }}{{ partialSaveGroups.failed.join('、') }}</span>
+            <span v-if="partialSaveGroups.pending.length">{{ tr('待保存：') }}{{ partialSaveGroups.pending.join('、') }}</span>
+            <span class="muted">{{ tr('修正后再次点击保存，将仅提交尚未保存的修改。') }}</span>
           </div>
         </div>
 
         <label class="field">
           <span class="field-label-row">
-            <span>名称</span>
-            <span v-if="editFieldStatus('name') === 'saved'" class="tag ok sm" data-testid="field-state-name"><Icon name="check" :size="11" />已保存</span>
-            <span v-else-if="editFieldStatus('name') === 'failed'" class="tag danger sm" data-testid="field-state-name"><Icon name="alert" :size="11" />保存失败</span>
-            <span v-else-if="editFieldStatus('name') === 'pending'" class="tag warn sm" data-testid="field-state-name"><Icon name="clock" :size="11" />待保存</span>
+            <span>{{ tr('名称') }}</span>
+            <span v-if="editFieldStatus('name') === 'saved'" class="tag ok sm" data-testid="field-state-name"><Icon name="check" :size="11" />{{ tr('已保存') }}</span>
+            <span v-else-if="editFieldStatus('name') === 'failed'" class="tag danger sm" data-testid="field-state-name"><Icon name="alert" :size="11" />{{ tr('保存失败') }}</span>
+            <span v-else-if="editFieldStatus('name') === 'pending'" class="tag warn sm" data-testid="field-state-name"><Icon name="clock" :size="11" />{{ tr('待保存') }}</span>
           </span>
           <input
             ref="nameInput"
@@ -1044,10 +1036,10 @@ const failedSubscriptionIds = computed(() =>
         <template v-if="editing.kind === 'subscription'">
           <label class="field">
             <span class="field-label-row">
-              <span>订阅链接</span>
-              <span v-if="editFieldStatus('url') === 'saved'" class="tag ok sm" data-testid="field-state-url"><Icon name="check" :size="11" />已保存</span>
-              <span v-else-if="editFieldStatus('url') === 'failed'" class="tag danger sm" data-testid="field-state-url"><Icon name="alert" :size="11" />保存失败</span>
-              <span v-else-if="editFieldStatus('url') === 'pending'" class="tag warn sm" data-testid="field-state-url"><Icon name="clock" :size="11" />待保存</span>
+              <span>{{ tr('订阅链接') }}</span>
+              <span v-if="editFieldStatus('url') === 'saved'" class="tag ok sm" data-testid="field-state-url"><Icon name="check" :size="11" />{{ tr('已保存') }}</span>
+              <span v-else-if="editFieldStatus('url') === 'failed'" class="tag danger sm" data-testid="field-state-url"><Icon name="alert" :size="11" />{{ tr('保存失败') }}</span>
+              <span v-else-if="editFieldStatus('url') === 'pending'" class="tag warn sm" data-testid="field-state-url"><Icon name="clock" :size="11" />{{ tr('待保存') }}</span>
             </span>
             <input
               ref="urlInput"
@@ -1066,16 +1058,16 @@ const failedSubscriptionIds = computed(() =>
           </label>
           <div class="field" data-testid="profile-interval-field">
             <span class="field-label-row">
-              <span>自动更新</span>
-              <span v-if="editFieldStatus('interval') === 'saved'" class="tag ok sm" data-testid="field-state-interval"><Icon name="check" :size="11" />已保存</span>
-              <span v-else-if="editFieldStatus('interval') === 'failed'" class="tag danger sm" data-testid="field-state-interval"><Icon name="alert" :size="11" />保存失败</span>
-              <span v-else-if="editFieldStatus('interval') === 'pending'" class="tag warn sm" data-testid="field-state-interval"><Icon name="clock" :size="11" />待保存</span>
+              <span>{{ tr('自动更新') }}</span>
+              <span v-if="editFieldStatus('interval') === 'saved'" class="tag ok sm" data-testid="field-state-interval"><Icon name="check" :size="11" />{{ tr('已保存') }}</span>
+              <span v-else-if="editFieldStatus('interval') === 'failed'" class="tag danger sm" data-testid="field-state-interval"><Icon name="alert" :size="11" />{{ tr('保存失败') }}</span>
+              <span v-else-if="editFieldStatus('interval') === 'pending'" class="tag warn sm" data-testid="field-state-interval"><Icon name="clock" :size="11" />{{ tr('待保存') }}</span>
             </span>
             <SelectField
               :model-value="form.interval"
               :options="INTERVALS.map((option) => ({ value: option.hours, label: option.label }))"
               :sheet="compact"
-              label="自动更新"
+              :label="tr('自动更新')"
               class="field-select"
               @update:model-value="(value) => { form.interval = Number(value); onEditFieldChange('interval') }"
             />
@@ -1087,32 +1079,30 @@ const failedSubscriptionIds = computed(() =>
           <details class="form-fold" data-testid="profile-advanced" :open="advancedOpen || undefined" @toggle="advancedOpen = ($event.target as HTMLDetailsElement).open">
             <summary>
               <Icon name="chevron-right" :size="14" />
-              <span class="grow">高级选项</span>
-              <span v-if="editing.age_recipients.length && !ageClear" class="tag sm">已配置私钥</span>
-              <span v-if="form.userAgent.trim()" class="tag accent sm">已自定义 UA</span>
+              <span class="grow">{{ tr('高级选项') }}</span>
+              <span v-if="editing.age_recipients.length && !ageClear" class="tag sm">{{ tr('已配置私钥') }}</span>
+              <span v-if="form.userAgent.trim()" class="tag accent sm">{{ tr('已自定义 UA') }}</span>
             </summary>
             <div class="field age-field" data-testid="age-field">
               <span class="age-field-label field-label-row">
-                <span>age 私钥</span>
-                <span v-if="editFieldStatus('age') === 'saved'" class="tag ok sm" data-testid="field-state-age"><Icon name="check" :size="11" />已保存</span>
-                <span v-else-if="editFieldStatus('age') === 'failed'" class="tag danger sm" data-testid="field-state-age"><Icon name="alert" :size="11" />保存失败</span>
-                <span v-else-if="editFieldStatus('age') === 'pending'" class="tag warn sm" data-testid="field-state-age"><Icon name="clock" :size="11" />待保存</span>
+                <span>{{ tr('age 私钥') }}</span>
+                <span v-if="editFieldStatus('age') === 'saved'" class="tag ok sm" data-testid="field-state-age"><Icon name="check" :size="11" />{{ tr('已保存') }}</span>
+                <span v-else-if="editFieldStatus('age') === 'failed'" class="tag danger sm" data-testid="field-state-age"><Icon name="alert" :size="11" />{{ tr('保存失败') }}</span>
+                <span v-else-if="editFieldStatus('age') === 'pending'" class="tag warn sm" data-testid="field-state-age"><Icon name="clock" :size="11" />{{ tr('待保存') }}</span>
               </span>
               <div v-if="editing.age_recipients.length && !ageEditing" class="age-status" :class="{ clearing: ageClear }" data-testid="age-status">
                 <Icon :name="ageClear ? 'trash' : 'shield'" :size="15" />
                 <span class="grow min0">
-                  <template v-if="ageClear">保存后将清除私钥，加密订阅将无法更新</template>
-                  <template v-else>
-                    已配置 {{ editing.age_recipients.length }} 个 ·
-                    <span class="mono" :title="editing.age_recipients.join('\n')">{{ editing.age_recipients.map(shortKey).join('、') }}</span>
+                  <template v-if="ageClear">{{ tr('保存后将清除私钥，加密订阅将无法更新') }}</template>
+                  <template v-else> {{ tr('已配置') }} {{ editing.age_recipients.length }} {{ tr('个 ·') }} <span class="mono" :title="editing.age_recipients.join('\n')">{{ editing.age_recipients.map(shortKey).join('、') }}</span>
                   </template>
                 </span>
                 <template v-if="ageClear">
-                  <button type="button" class="btn ghost sm" data-testid="age-undo-clear" @click="ageClear = false; onEditFieldChange('age')">撤销</button>
+                  <button type="button" class="btn ghost sm" data-testid="age-undo-clear" @click="ageClear = false; onEditFieldChange('age')">{{ tr('撤销') }}</button>
                 </template>
                 <template v-else>
-                  <button type="button" class="btn ghost sm" data-testid="age-change" @click="changeAgeKey">更换</button>
-                  <button type="button" class="btn ghost sm danger-text" data-testid="age-clear" @click="ageClear = true; onEditFieldChange('age')">清除</button>
+                  <button type="button" class="btn ghost sm" data-testid="age-change" @click="changeAgeKey">{{ tr('更换') }}</button>
+                  <button type="button" class="btn ghost sm danger-text" data-testid="age-clear" @click="ageClear = true; onEditFieldChange('age')">{{ tr('清除') }}</button>
                 </template>
               </div>
               <template v-else>
@@ -1124,7 +1114,7 @@ const failedSubscriptionIds = computed(() =>
                   spellcheck="false"
                   autocomplete="off"
                   autocapitalize="off"
-                  placeholder="AGE-SECRET-KEY-1…  订阅内容经 age 加密时填写，可多行"
+                  :placeholder="tr('AGE-SECRET-KEY-1…  订阅内容经 age 加密时填写，可多行')"
                   :aria-invalid="ageErrorMessage ? 'true' : undefined"
                   :aria-describedby="ageErrorMessage ? 'edit-age-error age-help' : 'age-help'"
                   data-testid="age-input"
@@ -1135,9 +1125,7 @@ const failedSubscriptionIds = computed(() =>
                   type="button"
                   class="btn ghost sm age-cancel"
                   @click="ageEditing = false; ageKey = ''; onEditFieldChange('age')"
-                >
-                  保留原私钥
-                </button>
+                > {{ tr('保留原私钥') }} </button>
               </template>
               <p
                 v-if="ageErrorMessage"
@@ -1149,14 +1137,14 @@ const failedSubscriptionIds = computed(() =>
                 <Icon name="alert" :size="13" />
                 <span>{{ ageErrorMessage }}</span>
               </p>
-              <p id="age-help" class="muted small">私钥只保存在本机，用于在更新时解密订阅；界面只显示对应的公钥。</p>
+              <p id="age-help" class="muted small">{{ tr('私钥只保存在本机，用于在更新时解密订阅；界面只显示对应的公钥。') }}</p>
             </div>
             <label class="field">
               <span class="field-label-row">
                 <span>User-Agent</span>
-                <span v-if="editFieldStatus('userAgent') === 'saved'" class="tag ok sm" data-testid="field-state-userAgent"><Icon name="check" :size="11" />已保存</span>
-                <span v-else-if="editFieldStatus('userAgent') === 'failed'" class="tag danger sm" data-testid="field-state-userAgent"><Icon name="alert" :size="11" />保存失败</span>
-                <span v-else-if="editFieldStatus('userAgent') === 'pending'" class="tag warn sm" data-testid="field-state-userAgent"><Icon name="clock" :size="11" />待保存</span>
+                <span v-if="editFieldStatus('userAgent') === 'saved'" class="tag ok sm" data-testid="field-state-userAgent"><Icon name="check" :size="11" />{{ tr('已保存') }}</span>
+                <span v-else-if="editFieldStatus('userAgent') === 'failed'" class="tag danger sm" data-testid="field-state-userAgent"><Icon name="alert" :size="11" />{{ tr('保存失败') }}</span>
+                <span v-else-if="editFieldStatus('userAgent') === 'pending'" class="tag warn sm" data-testid="field-state-userAgent"><Icon name="clock" :size="11" />{{ tr('待保存') }}</span>
               </span>
               <input
                 ref="uaInput"
@@ -1175,13 +1163,13 @@ const failedSubscriptionIds = computed(() =>
                 <Icon name="alert" :size="13" />
                 <span>{{ fieldErrors.userAgent }}</span>
               </p>
-              <span id="profile-user-agent-help" class="muted small">留空使用默认值，下次更新订阅时生效。</span>
+              <span id="profile-user-agent-help" class="muted small">{{ tr('留空使用默认值，下次更新订阅时生效。') }}</span>
             </label>
           </details>
         </template>
       </form>
       <template #footer>
-        <button type="button" class="btn ghost" :disabled="savingEdit" @click="closeEdit">取消</button>
+        <button type="button" class="btn ghost" :disabled="savingEdit" @click="closeEdit">{{ tr('取消') }}</button>
         <button
           type="button"
           class="btn primary"
@@ -1191,7 +1179,7 @@ const failedSubscriptionIds = computed(() =>
           @click="saveEdit"
         >
           <span v-if="savingEdit" class="spinner xs" aria-hidden="true" />
-          {{ savingEdit ? '保存中' : '保存' }}
+          {{ savingEdit ? tr('保存中') : tr('保存') }}
         </button>
       </template>
     </Modal>
@@ -1199,12 +1187,12 @@ const failedSubscriptionIds = computed(() =>
     <Modal
       v-if="yaml"
       wide
-      :title="yaml.mode === 'content' ? `编辑 · ${yaml.profile.name}` : `覆写 · ${yaml.profile.name}`"
+      :title="yaml.mode === 'content' ? tr('编辑 · {0}', { 0: yaml.profile.name }) : tr('覆写 · {0}', { 0: yaml.profile.name })"
       :subtitle="yaml.mode === 'content'
-        ? (yaml.profile.kind === 'subscription' ? '订阅更新时会覆盖这里的修改；长期修改请使用覆写' : '保存后立即替换这份配置')
+        ? (yaml.profile.kind === 'subscription' ? tr('订阅更新时会覆盖这里的修改；长期修改请使用覆写') : tr('保存后立即替换这份配置'))
         : yaml.language === 'yaml'
-          ? '以 YAML 深度合并到配置之上，订阅更新后依然保留'
-          : '用 JavaScript 的 main(config) 修改配置并返回，订阅更新后依然保留'"
+          ? tr('以 YAML 深度合并到配置之上，订阅更新后依然保留')
+          : tr('用 JavaScript 的 main(config) 修改配置并返回，订阅更新后依然保留')"
       :before-close="beforeYamlClose"
       @close="yaml = null"
     >
@@ -1213,7 +1201,7 @@ const failedSubscriptionIds = computed(() =>
           :model-value="yaml.language"
           :options="OVERRIDE_LANGUAGES"
           size="sm"
-          label="覆写类型"
+          :label="tr('覆写类型')"
           data-testid="override-language"
           @update:model-value="chooseLanguage"
         />
@@ -1224,11 +1212,9 @@ const failedSubscriptionIds = computed(() =>
           data-testid="override-syntax"
           @click="syntaxOpen = !syntaxOpen"
         >
-          <Icon name="info" :size="14" />语法
-        </button>
+          <Icon name="info" :size="14" />{{ tr('语法') }} </button>
         <button v-if="!yaml.text.trim()" type="button" class="btn ghost sm" data-testid="override-template" @click="insertTemplate">
-          <Icon name="plus" :size="14" />插入示例
-        </button>
+          <Icon name="plus" :size="14" />{{ tr('插入示例') }} </button>
         <span class="grow" />
         <button
           type="button"
@@ -1237,26 +1223,25 @@ const failedSubscriptionIds = computed(() =>
           data-testid="override-preview"
           @click="runPreview"
         >
-          <span v-if="previewing" class="spinner xs" /><Icon v-else name="play" :size="14" />预览结果
-        </button>
+          <span v-if="previewing" class="spinner xs" /><Icon v-else name="play" :size="14" />{{ tr('预览结果') }} </button>
       </div>
       <div v-if="yaml.mode === 'override' && syntaxOpen" class="override-syntax small" data-testid="override-syntax-help">
         <template v-if="yaml.language === 'yaml'">
           <dl>
-            <div><dt><code>key: 值</code></dt><dd>深度合并：对象逐层合并，列表与其他值直接替换</dd></div>
-            <div><dt><code>+rules:</code></dt><dd>插入到原列表最前面（规则优先匹配）</dd></div>
-            <div><dt><code>rules+:</code></dt><dd>追加到原列表末尾</dd></div>
-            <div><dt><code>dns!:</code></dt><dd>整体替换该对象，不与原配置合并</dd></div>
-            <div><dt><code>&lt;+.a.com&gt;:</code></dt><dd>键名本身以 + 开头或结尾时用尖括号包裹，也可写 <code>+&lt;+.a.com&gt;</code></dd></div>
-            <div><dt><code>prepend-rules:</code></dt><dd>兼容 Clash Verge 写法（rules / proxies / proxy-groups 的 prepend- 与 append-）</dd></div>
+            <div><dt><code>{{ tr('key: 值') }}</code></dt><dd>{{ tr('深度合并：对象逐层合并，列表与其他值直接替换') }}</dd></div>
+            <div><dt><code>+rules:</code></dt><dd>{{ tr('插入到原列表最前面（规则优先匹配）') }}</dd></div>
+            <div><dt><code>rules+:</code></dt><dd>{{ tr('追加到原列表末尾') }}</dd></div>
+            <div><dt><code>dns!:</code></dt><dd>{{ tr('整体替换该对象，不与原配置合并') }}</dd></div>
+            <div><dt><code>&lt;+.a.com&gt;:</code></dt><dd>{{ tr('键名本身以 + 开头或结尾时用尖括号包裹，也可写') }} <code>+&lt;+.a.com&gt;</code></dd></div>
+            <div><dt><code>prepend-rules:</code></dt><dd>{{ tr('兼容 Clash Verge 写法（rules / proxies / proxy-groups 的 prepend- 与 append-）') }}</dd></div>
           </dl>
         </template>
         <template v-else>
           <dl>
-            <div><dt><code>main(config, profileName)</code></dt><dd>入口函数，修改 config 后返回；未返回时沿用修改后的 config</dd></div>
-            <div><dt><code>console.log()</code></dt><dd>输出显示在“预览结果”中</dd></div>
-            <div><dt>运行环境</dt><dd>独立沙箱，没有网络、文件与定时器；超过 10 秒自动中止</dd></div>
-            <div><dt>补全</dt><dd>输入 <code>config.</code> 列出配置项，Ctrl+Space 列出常用片段，Tab 接受并跳到下一处</dd></div>
+            <div><dt><code>main(config, profileName)</code></dt><dd>{{ tr('入口函数，修改 config 后返回；未返回时沿用修改后的 config') }}</dd></div>
+            <div><dt><code>console.log()</code></dt><dd>{{ tr('输出显示在“预览结果”中') }}</dd></div>
+            <div><dt>{{ tr('运行环境') }}</dt><dd>{{ tr('独立沙箱，没有网络、文件与定时器；超过 10 秒自动中止') }}</dd></div>
+            <div><dt>{{ tr('补全') }}</dt><dd>{{ tr('输入') }} <code>config.</code> {{ tr('列出配置项，Ctrl+Space 列出常用片段，Tab 接受并跳到下一处') }}</dd></div>
           </dl>
         </template>
       </div>
@@ -1268,9 +1253,9 @@ const failedSubscriptionIds = computed(() =>
         :names="knownNames"
         :override="yaml.mode === 'override'"
         :language="yaml.mode === 'override' ? yaml.language : 'yaml'"
-        :label="yaml.mode === 'content' ? '配置文件' : '覆写'"
+        :label="yaml.mode === 'content' ? tr('配置文件') : tr('覆写')"
         :placeholder="yaml.mode === 'override'
-          ? (yaml.language === 'yaml' ? '# 只写需要改的部分，例如：\n+rules:\n  - DOMAIN-SUFFIX,corp.example,DIRECT' : '// function main(config) { … return config }')
+          ? (yaml.language === 'yaml' ? tr('# 只写需要改的部分，例如：\n+rules:\n  - DOMAIN-SUFFIX,corp.example,DIRECT') : '// function main(config) { … return config }')
           : ''"
         :aria-invalid="yamlError ? 'true' : undefined"
         @update:model-value="onYamlInput"
@@ -1278,24 +1263,24 @@ const failedSubscriptionIds = computed(() =>
       />
       <section v-if="preview" class="override-preview" data-testid="override-preview-panel" aria-live="polite">
         <header>
-          <strong class="small">{{ preview.error ? '无法应用' : '合并结果' }}</strong>
-          <span v-if="!preview.error" class="muted small">保存前的预览，不影响当前连接</span>
+          <strong class="small">{{ preview.error ? tr('无法应用') : tr('合并结果') }}</strong>
+          <span v-if="!preview.error" class="muted small">{{ tr('保存前的预览，不影响当前连接') }}</span>
           <span class="grow" />
-          <button type="button" class="icon-btn sm" title="关闭预览" aria-label="关闭预览" @click="preview = null">
+          <button type="button" class="icon-btn sm" :title="tr('关闭预览')" :aria-label="tr('关闭预览')" @click="preview = null">
             <Icon name="x" :size="14" />
           </button>
         </header>
         <p v-if="preview.error" class="field-error small" role="alert"><Icon name="alert" :size="13" /> {{ preview.error }}</p>
-        <ol v-if="preview.logs.length" class="override-logs mono small" aria-label="脚本输出">
+        <ol v-if="preview.logs.length" class="override-logs mono small" :aria-label="tr('脚本输出')">
           <li v-for="(line, index) in preview.logs" :key="index">{{ line }}</li>
         </ol>
-        <YamlEditor v-if="!preview.error" class="editor preview-editor readonly" :model-value="preview.yaml" readonly label="合并结果" />
+        <YamlEditor v-if="!preview.error" class="editor preview-editor readonly" :model-value="preview.yaml" readonly :label="tr('合并结果')" />
       </section>
       <p v-if="yamlError" class="field-error editor-error" role="alert">{{ yamlError }}</p>
       <template #footer>
         <span class="muted small grow editor-meta">
-          <span>{{ yamlLines }} 行{{ yaml.dirty ? ' · 未保存' : '' }}</span>
-          <span class="editor-hint">· Ctrl+Space 补全 · Tab 接受 · {{ findShortcut }} 查找 · {{ saveShortcut }} 保存</span>
+          <span>{{ yamlLines }} {{ tr('行') }}{{ yaml.dirty ? tr(' · 未保存') : '' }}</span>
+          <span class="editor-hint">{{ tr('· Ctrl+Space 补全 · Tab 接受 ·') }} {{ findShortcut }} {{ tr('查找 ·') }} {{ saveShortcut }} {{ tr('保存') }}</span>
           <template v-if="yaml.profile.current">
             <span aria-hidden="true">·</span>
             <button
@@ -1303,37 +1288,37 @@ const failedSubscriptionIds = computed(() =>
               class="link-btn"
               data-testid="open-effective"
               @click="openEffective('yaml')"
-            >查看生效配置</button>
+            >{{ tr('查看生效配置') }}</button>
           </template>
         </span>
-        <button type="button" class="btn ghost" data-testid="cancel-editor" @click="requestYamlClose">取消</button>
+        <button type="button" class="btn ghost" data-testid="cancel-editor" @click="requestYamlClose">{{ tr('取消') }}</button>
         <button type="button" class="btn primary" :disabled="store.busy.content || store.busy.override" @click="saveYaml">
-          {{ yaml.mode === 'override' && yaml.profile.current ? '保存并生效' : '保存' }}
+          {{ yaml.mode === 'override' && yaml.profile.current ? tr('保存并生效') : tr('保存') }}
         </button>
       </template>
     </Modal>
 
-    <Modal v-if="languageSwitch" :title="`切换为 ${languageSwitch === 'javascript' ? 'JavaScript' : 'YAML'} 覆写？`" @close="languageSwitch = null">
-      <p>两种写法不能混用，切换后当前内容会被示例替换。需要保留的话，可以先复制出来。</p>
+    <Modal v-if="languageSwitch" :title="tr('切换为 {0} 覆写？', { 0: languageSwitch === 'javascript' ? 'JavaScript' : 'YAML' })" @close="languageSwitch = null">
+      <p>{{ tr('两种写法不能混用，切换后当前内容会被示例替换。需要保留的话，可以先复制出来。') }}</p>
       <template #footer>
-        <button type="button" class="btn ghost" @click="languageSwitch = null">取消</button>
-        <button type="button" class="btn danger" data-testid="confirm-language" @click="applyLanguage(languageSwitch)">替换内容</button>
+        <button type="button" class="btn ghost" @click="languageSwitch = null">{{ tr('取消') }}</button>
+        <button type="button" class="btn danger" data-testid="confirm-language" @click="applyLanguage(languageSwitch)">{{ tr('替换内容') }}</button>
       </template>
     </Modal>
 
-    <Modal v-if="discardOpen" title="放弃未保存的修改？" @close="keepEditing">
-      <p>关闭后，这次对「{{ yaml?.profile.name }}」的修改不会保存。</p>
+    <Modal v-if="discardOpen" :title="tr('放弃未保存的修改？')" @close="keepEditing">
+      <p>{{ tr('关闭后，这次对「') }}{{ yaml?.profile.name }}{{ tr('」的修改不会保存。') }}</p>
       <template #footer>
-        <button type="button" class="btn ghost" data-testid="keep-editing" @click="keepEditing">继续编辑</button>
-        <button type="button" class="btn danger" data-testid="discard-edits" @click="discardChanges">放弃修改</button>
+        <button type="button" class="btn ghost" data-testid="keep-editing" @click="keepEditing">{{ tr('继续编辑') }}</button>
+        <button type="button" class="btn danger" data-testid="discard-edits" @click="discardChanges">{{ tr('放弃修改') }}</button>
       </template>
     </Modal>
 
-    <Modal v-if="removing" title="删除配置" @close="removing = null">
-      <p>确定删除「{{ removing.name }}」？此操作无法撤销。</p>
+    <Modal v-if="removing" :title="tr('删除配置')" @close="removing = null">
+      <p>{{ tr('确定删除「') }}{{ removing.name }}{{ tr('」？此操作无法撤销。') }}</p>
       <template #footer>
-        <button type="button" class="btn ghost" @click="removing = null">取消</button>
-        <button type="button" class="btn danger" @click="confirmRemove">删除</button>
+        <button type="button" class="btn ghost" @click="removing = null">{{ tr('取消') }}</button>
+        <button type="button" class="btn danger" @click="confirmRemove">{{ tr('删除') }}</button>
       </template>
     </Modal>
   </div>

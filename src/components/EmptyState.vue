@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed } from 'vue'
 import Icon from './Icon.vue'
 
@@ -13,11 +14,11 @@ const props = defineProps<{
 }>()
 
 const DEFAULTS: Record<EmptyVariant, { icon: string; title: string; description: string; role?: 'status' | 'alert' }> = {
-  loading: { icon: 'refresh', title: '正在加载', description: '读取本地状态与内核信息。', role: 'status' },
-  unavailable: { icon: 'info', title: '当前不可用', description: '完成前置步骤后这里会显示内容。' },
-  'no-data': { icon: 'database', title: '还没有数据', description: '连接后或添加配置后会出现内容。' },
-  'no-match': { icon: 'search', title: '没有匹配结果', description: '换一个关键词，或清空当前筛选。' },
-  error: { icon: 'alert', title: '读取失败', description: '请重试；如果持续失败，请查看日志。', role: 'alert' },
+  loading: { icon: 'refresh', get title() { return tr('正在加载') }, get description() { return tr('读取本地状态与内核信息。') }, role: 'status' },
+  unavailable: { icon: 'info', get title() { return tr('当前不可用') }, description: tr('完成前置步骤后这里会显示内容。') },
+  'no-data': { icon: 'database', get title() { return tr('还没有数据') }, description: tr('连接后或添加配置后会出现内容。') },
+  'no-match': { icon: 'search', get title() { return tr('没有匹配结果') }, description: tr('换一个关键词，或清空当前筛选。') },
+  error: { icon: 'alert', get title() { return tr('读取失败') }, get description() { return tr('请重试；如果持续失败，请查看日志。') }, role: 'alert' },
 }
 
 const variant = computed(() => props.variant ?? 'no-data')

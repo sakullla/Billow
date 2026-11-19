@@ -1,6 +1,23 @@
+import { locale, tr } from './i18n'
 import type { ConnectionRow, NodeGroup, NodeItem } from './types'
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+
+/** Numbers follow the selected language (R42): grouping and decimal separators. */
+export function formatNumber(value: number, digits = 0): string {
+  return new Intl.NumberFormat(locale.value === 'en' ? 'en-US' : 'zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value)
+}
+
+/** Collation follows the selected language (R42): names sort as the reader expects. */
+export function compareText(a: string, b: string): number {
+  return a.localeCompare(b, locale.value === 'en' ? 'en-US' : 'zh-CN', {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
 
 /** 1536 → "1.5 KB". Whole bytes stay integers; larger units keep up to one or two decimals. */
 export function formatBytes(value: number | null | undefined): string {
@@ -11,9 +28,9 @@ export function formatBytes(value: number | null | undefined): string {
     size /= 1024
     unit += 1
   }
-  if (unit === 0) return `${Math.round(size)} B`
+  if (unit === 0) return `${formatNumber(Math.round(size))} B`
   const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2
-  return `${size.toFixed(digits)} ${UNITS[unit]}`
+  return `${formatNumber(size, digits)} ${UNITS[unit]}`
 }
 
 export function formatSpeed(value: number | null | undefined): string {
@@ -42,8 +59,12 @@ export function formatSpeedCompact(value: number | null | undefined): string {
 export function formatDate(seconds: number): string {
   const date = new Date(seconds * 1000)
   if (Number.isNaN(date.getTime())) return '—'
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  // Both languages use an unambiguous numeric date, but in their own order (R42).
+  return new Intl.DateTimeFormat(locale.value === 'en' ? 'en-US' : 'zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
 }
 
 export function formatClock(ms: number): string {
@@ -55,15 +76,15 @@ export function formatClock(ms: number): string {
 
 /** "刚刚", "5 分钟前", "3 小时前", "2 天前", or a date for older times. */
 export function formatRelative(ms: number | null | undefined, now = Date.now()): string {
-  if (!ms) return '从未'
+  if (!ms) return tr('从未')
   const diff = Math.max(0, now - ms)
   const minute = 60_000
   const hour = 60 * minute
   const day = 24 * hour
-  if (diff < minute) return '刚刚'
-  if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`
-  if (diff < day) return `${Math.floor(diff / hour)} 小时前`
-  if (diff < 30 * day) return `${Math.floor(diff / day)} 天前`
+  if (diff < minute) return tr('刚刚')
+  if (diff < hour) return tr('{0} 分钟前', { 0: Math.floor(diff / minute) })
+  if (diff < day) return tr('{0} 小时前', { 0: Math.floor(diff / hour) })
+  if (diff < 30 * day) return tr('{0} 天前', { 0: Math.floor(diff / day) })
   return formatDate(Math.floor(ms / 1000))
 }
 
@@ -76,12 +97,12 @@ export function formatDuration(fromIso: string, now = Date.now()): string {
   const start = Date.parse(fromIso)
   if (Number.isNaN(start)) return ''
   const seconds = Math.max(0, Math.floor((now - start) / 1000))
-  if (seconds < 60) return `${seconds} 秒`
+  if (seconds < 60) return tr('{0} 秒', { 0: seconds })
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分`
+  if (minutes < 60) return tr('{0} 分', { 0: minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 时 ${minutes % 60} 分`
-  return `${Math.floor(hours / 24)} 天`
+  if (hours < 24) return tr('{0} 时 {1} 分', { 0: hours, 1: minutes % 60 })
+  return tr('{0} 天', { 0: Math.floor(hours / 24) })
 }
 
 export type DelayTone = 'good' | 'fair' | 'poor' | 'fail' | 'none'
@@ -95,7 +116,7 @@ export function delayTone(delay: number | null, failed: boolean): DelayTone {
 }
 
 export function delayText(delay: number | null, failed: boolean): string {
-  if (failed) return '超时'
+  if (failed) return tr('超时')
   if (delay == null) return ''
   return `${delay} ms`
 }
@@ -119,23 +140,23 @@ const PROTOCOL_LABELS: Record<string, string> = {
   anytls: 'AnyTLS',
   ssh: 'SSH',
   mieru: 'Mieru',
-  direct: '直连',
-  reject: '拒绝',
-  select: '手选',
-  selector: '手选',
-  'url-test': '自动',
-  urltest: '自动',
-  fallback: '故障转移',
-  'load-balance': '负载均衡',
-  loadbalance: '负载均衡',
-  smart: '智能',
-  relay: '链式',
+  direct: tr('直连'),
+  reject: tr('拒绝'),
+  select: tr('手选'),
+  selector: tr('手选'),
+  'url-test': tr('自动'),
+  urltest: tr('自动'),
+  fallback: tr('故障转移'),
+  'load-balance': tr('负载均衡'),
+  loadbalance: tr('负载均衡'),
+  smart: tr('智能'),
+  relay: tr('链式'),
 }
 
 export function protocolLabel(type: string): string {
   const key = type.trim().toLowerCase()
   if (!key) return ''
-  return PROTOCOL_LABELS[key] ?? type
+  return tr(PROTOCOL_LABELS[key] ?? type)
 }
 
 export interface GroupStrategy {
@@ -149,10 +170,10 @@ export interface GroupStrategy {
 }
 
 const STRATEGIES: Record<string, GroupStrategy> = {
-  'url-test': { label: '自动', icon: 'url-test', hint: '内核定期测速，自动使用延迟最低的节点。', ordered: false },
-  fallback: { label: '故障转移', icon: 'fallback', hint: '按顺序使用第一个可用的节点；前面的节点恢复后自动切回。', ordered: true },
-  'load-balance': { label: '负载均衡', icon: 'load-balance', hint: '把连接分摊到多个节点，不固定使用某一个。', ordered: false },
-  smart: { label: '智能', icon: 'sparkles', hint: '根据历史连接质量为不同站点自动挑选节点。', ordered: false },
+  'url-test': { label: tr('自动'), icon: 'url-test', hint: tr('内核定期测速，自动使用延迟最低的节点。'), ordered: false },
+  fallback: { label: tr('故障转移'), icon: 'fallback', hint: tr('按顺序使用第一个可用的节点；前面的节点恢复后自动切回。'), ordered: true },
+  'load-balance': { label: tr('负载均衡'), icon: 'load-balance', hint: tr('把连接分摊到多个节点，不固定使用某一个。'), ordered: false },
+  smart: { label: tr('智能'), icon: 'sparkles', hint: tr('根据历史连接质量为不同站点自动挑选节点。'), ordered: false },
 }
 const STRATEGY_ALIASES: Record<string, string> = { urltest: 'url-test', loadbalance: 'load-balance' }
 
@@ -169,7 +190,8 @@ export function canPickNode(group: { kind: string; pinnable?: boolean }): boolea
 /** How an automatic group chooses its node; null for hand-picked groups. */
 export function groupStrategy(type: string): GroupStrategy | null {
   const key = type.trim().toLowerCase()
-  return STRATEGIES[STRATEGY_ALIASES[key] ?? key] ?? null
+  const strategy = STRATEGIES[STRATEGY_ALIASES[key] ?? key]
+  return strategy ? { ...strategy, label: tr(strategy.label), hint: tr(strategy.hint) } : null
 }
 
 /**
@@ -342,23 +364,23 @@ export function connectionRules(row: ConnectionRow, policy: string): GeneratedRu
   if (domain) {
     const root = registrableDomain(domain)
     if (root && domain.includes('.')) {
-      push('domain-suffix', root === domain ? '域名后缀' : '根域名后缀', `DOMAIN-SUFFIX,${root},${target}`)
+      push('domain-suffix', root === domain ? tr('域名后缀') : tr('根域名后缀'), `DOMAIN-SUFFIX,${root},${target}`)
     }
     if (domain !== root || !domain.includes('.')) {
-      push('domain', '精确域名', `DOMAIN,${domain},${target}`)
+      push('domain', tr('精确域名'), `DOMAIN,${domain},${target}`)
     } else {
-      push('domain', '精确域名', `DOMAIN,${domain},${target}`)
+      push('domain', tr('精确域名'), `DOMAIN,${domain},${target}`)
     }
   }
   const ipInfo = extractEndpointIp(row.destination) ?? extractEndpointIp(row.host)
   if (ipInfo && !isFakeIp(ipInfo.ip)) {
     const kind = ipInfo.v6 ? 'IP-CIDR6' : 'IP-CIDR'
     const mask = ipInfo.v6 ? '128' : '32'
-    push('ip-cidr', '目标 IP', `${kind},${ipInfo.ip}/${mask},${target},no-resolve`)
+    push('ip-cidr', tr('目标 IP'), `${kind},${ipInfo.ip}/${mask},${target},no-resolve`)
   }
   const proc = processBasename(row.process)
   if (proc) {
-    push('process', '进程名', `PROCESS-NAME,${proc},${target}`)
+    push('process', tr('进程名'), `PROCESS-NAME,${proc},${target}`)
   }
   return out
 }
@@ -380,7 +402,7 @@ export function isInfoNode(name: string): boolean {
 
 /** Group type label shared by the home cards and the proxy page (R1). */
 export function groupTypeLabel(group: { group_type: string; kind: string }): string {
-  return protocolLabel(group.group_type) || (group.kind === 'manual' ? '手选' : '自动')
+  return protocolLabel(group.group_type) || (group.kind === 'manual' ? tr('手选') : tr('自动'))
 }
 
 /**

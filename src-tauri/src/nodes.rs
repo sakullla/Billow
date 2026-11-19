@@ -2,6 +2,9 @@ use std::collections::BTreeMap;
 use std::io::{BufReader, Read};
 use std::time::Duration;
 
+/// Machine tag for a `dialer-proxy` hop. The UI translates it; config values stay English-free (T8).
+const CHAINED_TAG: &str = "chained";
+
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
@@ -126,7 +129,7 @@ fn add_proxy_metadata(catalog: &mut RuntimeCatalog, name: &str, item: &Controlle
         (item.tfo, "TFO"), (item.mptcp, "MPTCP")].into_iter()
         .filter(|(on, _)| *on == Some(true)).map(|(_, tag)| tag.to_string()).collect();
     if let Some(dialer) = item.dialer_proxy.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-        tags.push("链式".to_string());
+        tags.push(CHAINED_TAG.to_string());
         catalog.dialers.insert(name.to_string(), dialer.to_string());
     }
     if !tags.is_empty() { catalog.tags.insert(name.to_string(), tags); }
@@ -315,7 +318,7 @@ pub fn proxy_tags(item: &Value) -> Vec<String> {
         tags.push("MPTCP".to_string());
     }
     if mapping_get(item, "dialer-proxy").and_then(Value::as_str).is_some_and(|value| !value.is_empty()) {
-        tags.push("链式".to_string());
+        tags.push(CHAINED_TAG.to_string());
     }
     tags
 }
@@ -1424,7 +1427,7 @@ proxy-groups:
         assert_eq!(infos["a"].tags, ["UDP", "Reality", "gRPC", "Vision"]);
         assert_eq!(infos["b"].tags, ["UDP"]);
         assert_eq!(infos["c"].tags, ["UDP", "WS", "Mux", "TFO", "MPTCP"]);
-        assert_eq!(infos["d"].tags, ["TLS", "链式"]);
+        assert_eq!(infos["d"].tags, ["TLS", CHAINED_TAG]);
         assert_eq!(infos["e"].tags.is_empty(), true);
         assert_eq!(infos["G"].kind, "select");
         assert!(infos["G"].tags.is_empty());

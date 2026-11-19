@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 withDefaults(
   defineProps<{
     variant?: 'list' | 'card' | 'detail'
@@ -11,7 +12,7 @@ withDefaults(
 
 <template>
   <div class="skeleton" :class="variant" role="status" aria-busy="true" aria-live="polite">
-    <span class="sr-only">加载中</span>
+    <span class="sr-only">{{ tr('加载中') }}</span>
 
     <div v-if="variant === 'list'" class="sk-list" aria-hidden="true">
       <div v-for="row in rows" :key="row" class="sk-row">

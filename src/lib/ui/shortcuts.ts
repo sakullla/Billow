@@ -1,5 +1,5 @@
 import type { HotkeyBinding } from './hotkeys'
-import { t } from '../i18n'
+import { t, tr } from '../i18n'
 
 export type ShortcutId =
   | 'palette'
@@ -35,8 +35,8 @@ export interface ShortcutSpec {
 export const SHORTCUTS: readonly ShortcutSpec[] = [
   {
     id: 'palette',
-    label: '命令面板',
-    description: '搜索页面、设置分类与常用动作',
+    get label() { return tr('命令面板') },
+    get description() { return tr('搜索页面、设置分类与常用动作') },
     combo: 'mod+k',
     scope: 'global',
     // The palette opens from a search field too; `/` and `?` stay guarded.
@@ -44,16 +44,16 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
   },
   {
     id: 'sidebar',
-    label: '切换侧边栏',
-    description: '展开或收起桌面侧边栏',
+    get label() { return tr('切换侧边栏') },
+    get description() { return tr('展开或收起桌面侧边栏') },
     combo: 'mod+b',
     scope: 'global',
     allowInInput: true,
   },
   {
     id: 'pages',
-    label: '切换页面',
-    description: '按侧边栏顺序：首页、代理、配置、连接、规则、资源、日志',
+    get label() { return tr('切换页面') },
+    get description() { return tr('按侧边栏顺序：首页、代理、配置、连接、规则、资源、日志') },
     // Display form of the range; App binds mod+1 … mod+7 individually.
     combo: `mod+1…${PAGE_SHORTCUT_COUNT}`,
     scope: 'global',
@@ -61,30 +61,30 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
   },
   {
     id: 'settings',
-    label: '打开设置',
-    description: '跳转到设置页',
+    get label() { return tr('打开设置') },
+    get description() { return tr('跳转到设置页') },
     combo: 'mod+,',
     scope: 'global',
     allowInInput: true,
   },
   {
     id: 'search',
-    label: '聚焦搜索',
-    description: '把焦点移到当前页搜索框',
+    get label() { return tr('聚焦搜索') },
+    get description() { return tr('把焦点移到当前页搜索框') },
     combo: '/',
     scope: 'page',
   },
   {
     id: 'escape',
-    label: '关闭或清空',
-    description: '关闭最上层弹层，或清空当前搜索',
+    get label() { return tr('关闭或清空') },
+    get description() { return tr('关闭最上层弹层，或清空当前搜索') },
     combo: 'Escape',
     scope: 'overlay',
   },
   {
     id: 'help',
-    label: '快捷键说明',
-    description: '查看全部快捷键',
+    get label() { return tr('快捷键说明') },
+    get description() { return tr('查看全部快捷键') },
     combo: '?',
     scope: 'global',
   },

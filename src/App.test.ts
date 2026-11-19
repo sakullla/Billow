@@ -2390,6 +2390,8 @@ describe('App', () => {
       level: index % 5 === 0 ? 'error' : 'info',
       message: `line-${index}`,
       time_ms: 1000 + index,
+      hint: null,
+      hint_kind: null,
     }))
     demo.state = async () => ({ ...(await read.call(demo)), logs: logs.map((line) => ({ ...line })) })
     const wrapper = await mountWith(demo)
@@ -2402,7 +2404,7 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="log-count"]').text()).toBe('20 条')
     const frozenHeader = wrapper.find('.page-head p').text()
 
-    logs = [...logs, { level: 'error', message: 'new-line', time_ms: 2000 }]
+    logs = [...logs, { level: 'error', message: 'new-line', time_ms: 2000, hint: null, hint_kind: null }]
     await storeOf(wrapper).refresh()
     await flushPromises()
     expect(wrapper.find('[data-testid="log-count"]').text()).toBe('20 条')
@@ -3161,7 +3163,8 @@ describe('App', () => {
       if (!conflicted) return snap
       return {
         ...snap,
-        logs: [...snap.logs, { time_ms: Date.now(), level: 'error' as const, message: conflictMsg }],
+        failure_hint: 'port' as const,
+        logs: [...snap.logs, { time_ms: Date.now(), level: 'error' as const, message: conflictMsg, hint: 'port' as const, hint_kind: 'mixed' as const }],
       }
     }
 

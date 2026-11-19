@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, ref } from 'vue'
 import { DNS_QUERY_TYPES, isValidDnsName, type DnsQueryResult, type DnsQueryType } from '../lib/types'
 import Icon from './Icon.vue'
@@ -28,7 +29,7 @@ const input = ref<HTMLInputElement | null>(null)
 let generation = 0
 
 const typeOptions = DNS_QUERY_TYPES.map((type) => ({ value: type, label: type }))
-const blockedReason = computed(() => (props.running ? null : '内核没有运行，连接后才能查询'))
+const blockedReason = computed(() => (props.running ? null : tr('内核没有运行，连接后才能查询')))
 const canQuery = computed(() => props.running && !pending.value)
 
 function onInput() {
@@ -39,11 +40,11 @@ async function submit() {
   if (!canQuery.value) return
   const text = name.value.trim()
   if (!text) {
-    inputError.value = '请输入域名'
+    inputError.value = tr('请输入域名')
     return
   }
   if (!isValidDnsName(text)) {
-    inputError.value = '域名格式无效，例如 example.com'
+    inputError.value = tr('域名格式无效，例如 example.com')
     return
   }
   inputError.value = null
@@ -69,7 +70,7 @@ function setType(value: string | number) {
 </script>
 
 <template>
-  <Modal title="DNS 查询" subtitle="使用内核当前生效的 DNS 配置解析" :initial-focus="() => input" @close="emit('close')">
+  <Modal :title="tr('DNS 查询')" :subtitle="tr('使用内核当前生效的 DNS 配置解析')" :initial-focus="() => input" @close="emit('close')">
     <form class="dns-query" data-testid="dns-query-form" @submit.prevent="submit">
       <div class="dns-query-row">
         <input
@@ -82,7 +83,7 @@ function setType(value: string | number) {
           autocomplete="off"
           autocapitalize="off"
           enterkeyhint="search"
-          aria-label="域名"
+          :aria-label="tr('域名')"
           :aria-invalid="inputError ? 'true' : undefined"
           data-testid="dns-query-name"
           @input="onInput"
@@ -92,12 +93,12 @@ function setType(value: string | number) {
           :options="typeOptions"
           :sheet="compact"
           size="sm"
-          label="记录类型"
+          :label="tr('记录类型')"
           data-testid="dns-query-type"
           @update:model-value="setType"
         />
         <button type="submit" class="btn primary sm" :disabled="!canQuery" data-testid="dns-query-submit">
-          <Icon name="search" :size="14" />{{ pending ? '查询中' : '查询' }}
+          <Icon name="search" :size="14" />{{ pending ? tr('查询中') : tr('查询') }}
         </button>
       </div>
       <p v-if="blockedReason" class="muted small" role="status" data-testid="dns-query-blocked">
@@ -113,7 +114,7 @@ function setType(value: string | number) {
     </div>
     <section v-else-if="result" class="dns-query-result" aria-live="polite" data-testid="dns-query-result">
       <p class="muted small mono" data-testid="dns-query-meta">
-        {{ result.name || name.trim() }} · {{ result.qtype || qtype }} · 耗时 {{ result.elapsed_ms }} ms<template v-if="result.status !== null && result.status !== 0"> · 状态码 {{ result.status }}</template>
+        {{ result.name || name.trim() }} · {{ result.qtype || qtype }} {{ tr('· 耗时') }} {{ result.elapsed_ms }} ms<template v-if="result.status !== null && result.status !== 0"> {{ tr('· 状态码') }} {{ result.status }}</template>
       </p>
       <p v-if="result.error" class="field-error small" role="alert" data-testid="dns-query-error">
         <Icon name="alert" :size="13" /> {{ result.error }}
@@ -121,8 +122,8 @@ function setType(value: string | number) {
       <table v-if="result.answers.length" class="dns-query-table small">
         <thead>
           <tr>
-            <th>类型</th>
-            <th>值</th>
+            <th>{{ tr('类型') }}</th>
+            <th>{{ tr('值') }}</th>
             <th class="num">TTL</th>
           </tr>
         </thead>
@@ -130,7 +131,7 @@ function setType(value: string | number) {
           <tr v-for="(answer, index) in result.answers" :key="index" data-testid="dns-query-answer">
             <td class="mono">{{ answer.type }}</td>
             <td class="mono value">{{ answer.value }}</td>
-            <td class="mono num">{{ answer.ttl }} 秒</td>
+            <td class="mono num">{{ answer.ttl }} {{ tr('秒') }}</td>
           </tr>
         </tbody>
       </table>

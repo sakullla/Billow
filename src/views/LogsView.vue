@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
@@ -17,11 +18,11 @@ const snap = computed(() => store.snapshot.value)
 
 type Filter = 'all' | LogLevel
 const FILTERS: { id: Filter; label: string }[] = [
-  { id: 'all', label: '全部' },
-  { id: 'debug', label: '调试' },
-  { id: 'info', label: '信息' },
-  { id: 'warning', label: '警告' },
-  { id: 'error', label: '错误' },
+  { id: 'all', label: tr('全部') },
+  { id: 'debug', label: tr('调试') },
+  { id: 'info', label: tr('信息') },
+  { id: 'warning', label: tr('警告') },
+  { id: 'error', label: tr('错误') },
 ]
 const LABEL: Record<LogLevel, string> = { debug: 'DBG', info: 'INF', warning: 'WRN', error: 'ERR' }
 
@@ -38,10 +39,10 @@ const scroller = ref<HTMLElement | null>(null)
 /** Phones keep pause in reach and fold the rarer actions into one menu so the head stays one row. */
 const moreOpen = ref(false)
 const moreItems = computed<MenuItem[]>(() => [
-  { id: 'wrap', label: wrap.value ? '关闭自动换行' : '开启自动换行', icon: 'list' },
-  { id: 'copy', label: `复制 ${lines.value.length} 行`, icon: 'copy', disabled: !lines.value.length, reason: '没有日志' },
-  { id: 'export', label: '导出日志', icon: 'download', disabled: !lines.value.length, reason: '没有日志' },
-  { id: 'clear', label: '清空日志', icon: 'trash', danger: true, disabled: !snap.value.logs.length, reason: '没有日志' },
+  { id: 'wrap', label: wrap.value ? tr('关闭自动换行') : tr('开启自动换行'), icon: 'list' },
+  { id: 'copy', label: tr('复制 {0} 行', { 0: lines.value.length }), icon: 'copy', disabled: !lines.value.length, reason: tr('没有日志') },
+  { id: 'export', get label() { return tr('导出日志') }, icon: 'download', disabled: !lines.value.length, reason: tr('没有日志') },
+  { id: 'clear', get label() { return tr('清空日志') }, icon: 'trash', danger: true, disabled: !snap.value.logs.length, reason: tr('没有日志') },
 ])
 function onMore(item: MenuItem) {
   moreOpen.value = false
@@ -159,21 +160,21 @@ function textOf(line: LogLine) {
 }
 
 async function copyLine(line: LogLine) {
-  await store.copyText(textOf(line), '已复制这行日志')
+  await store.copyText(textOf(line), tr('已复制这行日志'))
 }
 
 async function copyFiltered() {
   if (!lines.value.length) return
-  await store.copyText(lines.value.map(textOf).join('\n'), `已复制 ${lines.value.length} 行日志`)
+  await store.copyText(lines.value.map(textOf).join('\n'), tr('已复制 {0} 行日志', { 0: lines.value.length }))
 }
 
 async function exportLogs() {
   if (!lines.value.length) return
   try {
     const path = await store.backend.exportLogs(lines.value.map(textOf).join('\n'))
-    store.toast(`已导出到 ${path}`, 'success')
+    store.toast(tr('已导出到 {0}', { 0: path }), 'success')
   } catch (err) {
-    store.toast(`导出失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    store.toast(tr('导出失败：{0}', { 0: err instanceof Error ? err.message : String(err) }), 'error')
   }
 }
 
@@ -182,7 +183,7 @@ async function clear() {
   const result = await store.clearLogs()
   frozen.value = []
   pausedAt.value = paused.value ? Date.now() : null
-  if (result) store.toast('日志已清空', 'success')
+  if (result) store.toast(tr('日志已清空'), 'success')
 }
 
 function resetFilters() {
@@ -195,19 +196,25 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
   for (let i = source.value.length - 1; i >= 0; i -= 1) {
     const line = source.value[i]!
     if (line.level !== 'error') continue
-    if (line.message.includes('更换混合端口') || (line.message.includes('端口') && line.message.includes('占用'))) {
-      // The backend names which listener failed (SOCKS / HTTP / redir / tproxy); the mixed port is the default.
-      const kind = /更换((?:SOCKS|HTTP|redir|tproxy) 端口)/.exec(line.message)?.[1] ?? '混合端口'
+    if (line.hint === 'port') {
+      const labels = {
+        mixed: '混合代理端口',
+        http: 'HTTP 端口',
+        socks: 'SOCKS 端口',
+        redir: 'redir 端口',
+        tproxy: 'tproxy 端口',
+      } as const
+      const kind = tr(labels[line.hint_kind ?? 'mixed'])
       return {
-        message: `本地监听端口冲突导致内核未能启动，可前往内核设置更换${kind === '混合端口' ? '混合代理端口' : kind}后重新连接。`,
-        label: `更换${kind}`,
+        message: tr('本地监听端口冲突导致内核未能启动，可前往内核设置更换{0}后重新连接。', { 0: kind }),
+        label: tr('更换{0}', { 0: kind }),
         tab: 'kernel',
       }
     }
-    if (line.message.includes('TUN 设置') || (line.message.includes('TUN') && line.message.includes('占用'))) {
+    if (line.hint === 'tun') {
       return {
-        message: '虚拟网卡冲突导致内核未能启动，可前往 TUN 设置调整或关闭其他 VPN 后重试。',
-        label: 'TUN 设置',
+        message: tr('虚拟网卡冲突导致内核未能启动，可前往 TUN 设置调整或关闭其他 VPN 后重试。'),
+        get label() { return tr('TUN 设置') },
         tab: 'tun',
       }
     }
@@ -220,17 +227,13 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
   <div class="page logs">
     <header class="page-head">
       <div>
-        <h1>日志</h1>
+        <h1>{{ tr('日志') }}</h1>
         <p class="muted small">
-          <span data-testid="log-count">{{ source.length }} 条</span>
-          <template v-if="isFiltered"> · 显示 {{ lines.length }} 条</template>
-          · {{ counts.warning }} 警告
-          · {{ counts.error }} 错误
-          <template v-if="paused"> · 暂停于 {{ formatClock(pausedAt ?? 0) }}</template>
+          <span data-testid="log-count">{{ source.length }} {{ tr('条') }}</span>
+          <template v-if="isFiltered"> {{ tr('· 显示') }} {{ lines.length }} {{ tr('条') }}</template>
+          · {{ counts.warning }} {{ tr('警告 ·') }} {{ counts.error }} {{ tr('错误') }} <template v-if="paused"> {{ tr('· 暂停于') }} {{ formatClock(pausedAt ?? 0) }}</template>
         </p>
-        <p v-if="paused" class="muted small log-status" role="status" aria-live="polite" data-testid="log-paused">
-          已暂停，新增 <strong data-testid="log-new">{{ newCount }}</strong> 条日志；<button type="button" class="link-btn" data-testid="log-resume-inline" @click="resume()">继续</button>后追平。
-        </p>
+        <p v-if="paused" class="muted small log-status" role="status" aria-live="polite" data-testid="log-paused"> {{ tr('已暂停，新增') }} <strong data-testid="log-new">{{ newCount }}</strong> {{ tr('条日志；') }}<button type="button" class="link-btn" data-testid="log-resume-inline" @click="resume()">{{ tr('继续') }}</button>{{ tr('后追平。') }} </p>
       </div>
       <div class="head-actions">
         <button
@@ -241,13 +244,13 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
           data-testid="pause-logs"
           @click="togglePause"
         >
-          <Icon :name="paused ? 'play' : 'pause'" :size="14" />{{ paused ? '继续' : '暂停' }}
+          <Icon :name="paused ? 'play' : 'pause'" :size="14" />{{ paused ? tr('继续') : tr('暂停') }}
         </button>
         <div v-if="props.compact" class="menu-anchor">
           <button
             type="button"
             class="icon-btn"
-            aria-label="更多日志操作"
+            :aria-label="tr('更多日志操作')"
             aria-haspopup="menu"
             :aria-expanded="moreOpen"
             data-testid="log-more"
@@ -255,23 +258,20 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
           >
             <Icon name="more" />
           </button>
-          <Menu v-if="moreOpen" :items="moreItems" label="日志操作" @select="onMore" @close="moreOpen = false" />
+          <Menu v-if="moreOpen" :items="moreItems" :label="tr('日志操作')" @select="onMore" @close="moreOpen = false" />
         </div>
         <template v-else>
           <label class="wrap-field small muted" data-testid="wrap-field">
-            <Toggle v-model="wrap" label="自动换行" />
-            自动换行
-          </label>
+            <Toggle v-model="wrap" :label="tr('自动换行')" /> {{ tr('自动换行') }} </label>
           <button
             type="button"
             class="btn ghost sm"
             :disabled="!lines.length"
-            :title="`复制当前 ${lines.length} 行日志`"
+            :title="tr('复制当前 {0} 行日志', { 0: lines.length })"
             data-testid="copy-logs"
             @click="copyFiltered"
           >
-            <Icon name="copy" :size="15" />复制
-          </button>
+            <Icon name="copy" :size="15" />{{ tr('复制') }} </button>
           <button
             type="button"
             class="btn ghost sm"
@@ -279,8 +279,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
             data-testid="export-logs"
             @click="exportLogs"
           >
-            <Icon name="download" :size="15" />导出
-          </button>
+            <Icon name="download" :size="15" />{{ tr('导出') }} </button>
           <button
             type="button"
             class="btn ghost sm danger-text"
@@ -288,8 +287,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
             data-testid="clear-logs"
             @click="confirmClear = true"
           >
-            <Icon name="trash" :size="15" />清空
-          </button>
+            <Icon name="trash" :size="15" />{{ tr('清空') }} </button>
         </template>
       </div>
     </header>
@@ -297,20 +295,20 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
     <div class="toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索日志" data-page-search />
+        <input v-model="query" type="search" :placeholder="tr('搜索日志')" data-page-search />
         <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
         <button
           v-if="query"
           type="button"
           class="icon-btn sm"
-          aria-label="清空搜索"
+          :aria-label="tr('清空搜索')"
           data-testid="clear-log-search"
           @click="query = ''"
         >
           <Icon name="x" :size="14" />
         </button>
       </div>
-      <Segmented v-model="filter" :options="filterOptions" size="sm" label="日志级别" />
+      <Segmented v-model="filter" :options="filterOptions" size="sm" :label="tr('日志级别')" />
     </div>
 
     <div v-if="conflictAction" class="banner error log-conflict" role="alert" data-testid="log-conflict">
@@ -333,7 +331,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
         :class="{ 'no-wrap': !wrap }"
         data-testid="log-scroll"
         role="region"
-        aria-label="日志内容"
+        :aria-label="tr('日志内容')"
         tabindex="0"
         @scroll="onScroll"
       >
@@ -342,11 +340,11 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
           compact
           :variant="source.length ? 'no-match' : 'no-data'"
           :icon="source.length ? undefined : 'terminal'"
-          :title="source.length ? '没有匹配的日志' : '暂无日志'"
-          :description="source.length ? '换一个关键词或级别，或清空当前筛选。' : '连接后内核输出会出现在这里。'"
+          :title="source.length ? tr('没有匹配的日志') : tr('暂无日志')"
+          :description="source.length ? tr('换一个关键词或级别，或清空当前筛选。') : tr('连接后内核输出会出现在这里。')"
         >
           <template v-if="source.length" #action>
-            <button type="button" class="btn ghost sm" data-testid="clear-log-filter" @click="resetFilters">清空筛选</button>
+            <button type="button" class="btn ghost sm" data-testid="clear-log-filter" @click="resetFilters">{{ tr('清空筛选') }}</button>
           </template>
         </EmptyState>
         <div
@@ -362,7 +360,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
           <button
             type="button"
             class="log-level mono"
-            :title="filter === entry.line.level ? '点击恢复全部级别' : `仅看 ${LABEL[entry.line.level]} 级别日志`"
+            :title="filter === entry.line.level ? tr('点击恢复全部级别') : tr('仅看 {0} 级别日志', { 0: LABEL[entry.line.level] })"
             data-testid="log-level-badge"
             @click="filter = filter === entry.line.level ? 'all' : entry.line.level"
           >{{ LABEL[entry.line.level] }}</button>
@@ -374,8 +372,8 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
           <button
             type="button"
             class="icon-btn sm log-copy"
-            :aria-label="`复制 ${formatClock(entry.line.time_ms)} 的这行日志`"
-            title="复制这行"
+            :aria-label="tr('复制 {0} 的这行日志', { 0: formatClock(entry.line.time_ms) })"
+            :title="tr('复制这行')"
             data-testid="copy-log-line"
             @click="copyLine(entry.line)"
           >
@@ -384,15 +382,14 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
         </div>
       </div>
       <button v-if="!follow" type="button" class="jump" data-testid="log-jump" @click="toBottom(true)">
-        <Icon name="down" :size="14" />最新
-      </button>
+        <Icon name="down" :size="14" />{{ tr('最新') }} </button>
     </div>
 
-    <Modal v-if="confirmClear" title="清空日志" @close="confirmClear = false">
-      <p class="small">将清空当前 {{ snap.logs.length }} 条日志，操作无法撤销。</p>
+    <Modal v-if="confirmClear" :title="tr('清空日志')" @close="confirmClear = false">
+      <p class="small">{{ tr('将清空当前') }} {{ snap.logs.length }} {{ tr('条日志，操作无法撤销。') }}</p>
       <template #footer>
-        <button type="button" class="btn ghost" data-testid="cancel-clear-logs" @click="confirmClear = false">取消</button>
-        <button type="button" class="btn danger" data-testid="confirm-clear-logs" @click="clear">清空日志</button>
+        <button type="button" class="btn ghost" data-testid="cancel-clear-logs" @click="confirmClear = false">{{ tr('取消') }}</button>
+        <button type="button" class="btn danger" data-testid="confirm-clear-logs" @click="clear">{{ tr('清空日志') }}</button>
       </template>
     </Modal>
   </div>

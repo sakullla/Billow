@@ -5,7 +5,9 @@ use std::sync::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 
 pub const TUN_DENIED: &str = "系统授权被拒绝";
-pub const TUN_AUTHORIZATION_FAILED: &str = "TUN 授权未完成";
+/// Machine sentinel for a cancelled TUN authorization prompt. ASCII on purpose:
+/// it is matched as a protocol token, never as user-visible text (T8).
+pub const TUN_AUTHORIZATION_FAILED: &str = "tun-authorization-failed";
 pub const VPN_DENIED: &str = "VPN 授权被拒绝";
 pub const NO_PROFILE: &str = "没有生效配置";
 pub const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
@@ -447,7 +449,7 @@ pub fn set_tun(model: &mut LinkModel, enabled: bool, tun: &mut dyn TunGrant) {
         let _ = tun.set_enabled(false);
         model.tun = false;
         model.tun_wanted = false;
-        if model.failure.as_deref() == Some(TUN_DENIED) {
+        if model.failure.as_deref() == Some(crate::i18n::tr(crate::i18n::Key::TunDenied)) {
             model.failure = None;
         }
         model.connected = model.system_proxy;
@@ -460,7 +462,7 @@ pub fn set_tun(model: &mut LinkModel, enabled: bool, tun: &mut dyn TunGrant) {
         model.tun = false;
         model.system_proxy = previous_proxy;
         model.connected = false;
-        model.failure = Some(TUN_DENIED.to_string());
+        model.failure = Some(crate::i18n::tr(crate::i18n::Key::TunDenied).to_string());
         return;
     }
     model.tun = true;
@@ -3523,7 +3525,8 @@ mod tests {
         tun.grant = windows_tun_granted(opened);
         let allowed = book.set_tun(true, &mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(allowed.tun && allowed.connected && allowed.system_proxy);
-        assert_eq!(allowed.failure.as_deref(), Some(TUN_DENIED));
+        // A successful TUN start clears the TUN failure it was shown for (T8).
+        assert_eq!(allowed.failure, None);
         assert_eq!(proxy.http.as_ref(), Some(&endpoint()));
     }
 
@@ -4134,6 +4137,7 @@ mod tests {
             upload: Some(1200),
             download: Some(3400),
             failure: Some("旧的失败原因".to_string()),
+            failure_hint: None,
         };
         let connecting = publisher
             .changed(AndroidStatus::of(&running, true, crate::i18n::Locale::ZhCn))
@@ -4171,6 +4175,7 @@ mod tests {
             upload: Some(2400),
             download: Some(6800),
             failure: Some(VPN_DENIED.to_string()),
+            failure_hint: None,
         };
         let failure = publisher
             .changed(AndroidStatus::of(&failed, false, crate::i18n::Locale::En))

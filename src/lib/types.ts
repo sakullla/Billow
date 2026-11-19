@@ -93,6 +93,10 @@ export interface LogLine {
   level: LogLevel
   message: string
   time_ms: number
+  /** Structured kernel hint, so views never decide by matching Chinese text (T8). */
+  hint?: 'port' | 'tun' | null
+  /** Which listener failed for a port hint. */
+  hint_kind?: 'mixed' | 'http' | 'socks' | 'redir' | 'tproxy' | null
 }
 
 export interface RuleRow {
@@ -414,6 +418,8 @@ export function normalizeExitIp(raw: unknown): ExitIpInfo | null {
   }
 }
 
+export type FailureHint = 'port' | 'tun'
+
 export interface Snapshot {
   profiles: ProfileItem[]
   active_id: string | null
@@ -424,6 +430,8 @@ export interface Snapshot {
   vpn: boolean
   pending_url: string | null
   failure: string | null
+  /** Structured settings shortcut for a failed action; null when no settings page applies (T8). */
+  failure_hint: FailureHint | null
   input_error: string | null
   connected: boolean
   platform: Platform
@@ -848,6 +856,7 @@ export function emptySnapshot(): Snapshot {
     vpn: false,
     pending_url: null,
     failure: null,
+    failure_hint: null,
     input_error: null,
     connected: false,
     platform: 'desktop',
@@ -1136,6 +1145,7 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
     vpn: Boolean(source.vpn),
     pending_url: optStr(source.pending_url),
     failure: optStr(source.failure),
+    failure_hint: source.failure_hint === 'port' || source.failure_hint === 'tun' ? source.failure_hint : null,
     input_error: optStr(source.input_error),
     connected: Boolean(source.connected),
     platform: source.platform === 'android' ? 'android' : 'desktop',
@@ -1175,7 +1185,15 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
     connections_error: optStr(source.connections_error),
     logs: list(source.logs).map((item) => {
       const line = obj(item)
-      return { level: normalizeLevel(line.level), message: str(line.message), time_ms: num(line.time_ms) ?? 0 }
+      return {
+        level: normalizeLevel(line.level),
+        message: str(line.message),
+        time_ms: num(line.time_ms) ?? 0,
+        hint: line.hint === 'port' || line.hint === 'tun' ? line.hint : null,
+        hint_kind: ['mixed', 'http', 'socks', 'redir', 'tproxy'].includes(str(line.hint_kind))
+          ? (str(line.hint_kind) as 'mixed' | 'http' | 'socks' | 'redir' | 'tproxy')
+          : null,
+      }
     }),
     upload: num(source.upload),
     download: num(source.download),

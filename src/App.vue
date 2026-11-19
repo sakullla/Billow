@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from './lib/i18n'
+
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ConfigViewer from './components/ConfigViewer.vue'
@@ -53,13 +54,13 @@ function toggleSidebar() {
 }
 const snap = computed(() => store.snapshot.value)
 const sideStatusWord = computed(() => {
-  if (store.connecting.value) return snap.value.connected ? '断开中…' : '连接中…'
-  return snap.value.connected ? '已连接' : '未连接'
+  if (store.connecting.value) return snap.value.connected ? tr('断开中…') : tr('连接中…')
+  return snap.value.connected ? tr('已连接') : tr('未连接')
 })
 const themeMeta = computed(() => {
-  if (store.theme.value === 'light') return { icon: 'sun', label: '浅色主题' }
-  if (store.theme.value === 'dark') return { icon: 'moon', label: '深色主题' }
-  return { icon: 'laptop', label: '跟随系统' }
+  if (store.theme.value === 'light') return { icon: 'sun', label: tr('浅色主题') }
+  if (store.theme.value === 'dark') return { icon: 'moon', label: tr('深色主题') }
+  return { icon: 'laptop', label: tr('跟随系统') }
 })
 
 const views = {
@@ -76,8 +77,8 @@ const views = {
 const view = computed(() => views[store.page.value])
 const mobilePages = PAGES.filter((page) => page.mobile)
 const navGroups = [
-  { id: 'core', label: '核心', pages: PAGES.filter((page) => page.group === 'core') },
-  { id: 'tools', label: '工具', pages: PAGES.filter((page) => page.group === 'tools') },
+  { id: 'core', get label() { return tr('核心') }, pages: PAGES.filter((page) => page.group === 'core') },
+  { id: 'tools', get label() { return tr('工具') }, pages: PAGES.filter((page) => page.group === 'tools') },
 ]
 const settingsPage = PAGES.find((page) => page.id === 'settings')!
 /** Sidebar order doubles as the mod+1 … mod+7 order. */
@@ -114,8 +115,8 @@ const showDesktopConnectionReturn = computed(() => !compact.value && hasConnecti
 /** The page a back press returns to; mirrors the top of the non-reactive page stack. */
 const backTo = ref<PageId | null>(null)
 const backLabel = computed(() => {
-  if (hasConnectionReturn.value) return '返回连接'
-  return PAGES.find((page) => page.id === backTo.value)?.label ?? '设置'
+  if (hasConnectionReturn.value) return tr('返回连接')
+  return PAGES.find((page) => page.id === backTo.value)?.label ?? tr('设置')
 })
 
 function goBack() {
@@ -179,7 +180,7 @@ async function submitUrl() {
   if (snap.value.profiles.length > before) {
     url.value = ''
     store.adding.value = false
-    store.toast('已添加订阅，点击即可启用', 'success')
+    store.toast(tr('已添加订阅，点击即可启用'), 'success')
     const added = snap.value.profiles[snap.value.profiles.length - 1]
     if (!snap.value.active_id && added) void store.enable(added.id)
   }
@@ -193,7 +194,7 @@ async function pasteUrl() {
       addErrorCleared.value = true
     }
   } catch {
-    store.toast('无法读取剪贴板，请手动粘贴', 'error')
+    store.toast(tr('无法读取剪贴板，请手动粘贴'), 'error')
   }
 }
 
@@ -204,7 +205,7 @@ async function addFile(file: File | undefined) {
   await store.addLocal(file.name.replace(/\.(ya?ml|txt)$/i, ''), await file.text())
   if (snap.value.profiles.length > before) {
     store.adding.value = false
-    store.toast(`已导入 ${file.name}`, 'success')
+    store.toast(tr('已导入 {0}', { 0: file.name }), 'success')
     const added = snap.value.profiles[snap.value.profiles.length - 1]
     if (!snap.value.active_id && added) void store.enable(added.id)
   }
@@ -267,7 +268,7 @@ function onPaletteNode(group: string, node: string) {
     return
   }
   void store.selectNode(group, node).then((res) => {
-    if (res) store.toast(`已切换「${group}」至 ${node}`, 'success')
+    if (res) store.toast(tr('已切换「{0}」至 {1}', { 0: group, 1: node }), 'success')
   })
 }
 
@@ -618,8 +619,8 @@ defineExpose({ store })
             v-if="!sidebarCollapsed"
             type="button"
             class="icon-btn sm theme-quick-btn"
-            :aria-label="`切换主题（当前：${themeMeta.label}）`"
-            :title="`切换主题（当前：${themeMeta.label}）`"
+            :aria-label="tr('切换主题（当前：{0}）', { 0: themeMeta.label })"
+            :title="tr('切换主题（当前：{0}）', { 0: themeMeta.label })"
             data-testid="sidebar-theme-toggle"
             @click="store.cycleTheme()"
           >
@@ -629,8 +630,8 @@ defineExpose({ store })
             type="button"
             class="icon-btn sm sidebar-toggle"
             :aria-expanded="!sidebarCollapsed"
-            :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
-            :title="`${sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} (${sidebarKey})`"
+            :aria-label="sidebarCollapsed ? tr('展开侧边栏') : tr('收起侧边栏')"
+            :title="`${sidebarCollapsed ? tr('展开侧边栏') : tr('收起侧边栏')} (${sidebarKey})`"
             data-testid="sidebar-toggle"
             @click="toggleSidebar"
           >
@@ -641,16 +642,16 @@ defineExpose({ store })
       <button
         type="button"
         class="side-search"
-        :title="sidebarCollapsed ? `搜索与命令 (${paletteKey})` : '搜索页面、设置与快捷动作'"
-        aria-label="搜索与命令"
+        :title="sidebarCollapsed ? tr('搜索与命令 ({0})', { 0: paletteKey }) : tr('搜索页面、设置与快捷动作')"
+        :aria-label="tr('搜索与命令')"
         data-testid="open-palette"
         @click="paletteOpen = true"
       >
         <Icon name="search" :size="15" />
-        <span class="side-search-label">搜索与命令</span>
+        <span class="side-search-label">{{ tr('搜索与命令') }}</span>
         <kbd class="palette-kbd">{{ paletteKey }}</kbd>
       </button>
-      <nav class="nav" aria-label="主导航">
+      <nav class="nav" :aria-label="tr('主导航')">
         <div v-for="group in navGroups" :key="group.id" class="nav-group" role="group" :aria-label="group.label">
           <p class="nav-group-label">{{ group.label }}</p>
           <button
@@ -678,13 +679,13 @@ defineExpose({ store })
           :class="{ active: store.page.value === settingsPage.id }"
           :aria-current="store.page.value === settingsPage.id ? 'page' : undefined"
           :aria-label="sidebarCollapsed ? settingsPage.label : undefined"
-          :title="`${settingsPage.label}${sidebarCollapsed && store.appUpdate.offer.value ? '（有更新）' : ''} (${settingsKey})`"
+          :title="`${settingsPage.label}${sidebarCollapsed && store.appUpdate.offer.value ? tr('（有更新）') : ''} (${settingsKey})`"
           :data-page="settingsPage.id"
           @click="store.go(settingsPage.id)"
         >
           <Icon :name="settingsPage.icon" />
           <span class="nav-item-label">{{ settingsPage.label }}</span>
-          <span v-if="store.appUpdate.offer.value" class="tag nav-update-tag">更新</span>
+          <span v-if="store.appUpdate.offer.value" class="tag nav-update-tag">{{ tr('更新') }}</span>
         </button>
         <div
           class="side-status"
@@ -697,7 +698,7 @@ defineExpose({ store })
             :class="{ clickable: store.page.value !== 'home' }"
             :role="store.page.value !== 'home' ? 'button' : undefined"
             :tabindex="store.page.value !== 'home' ? 0 : undefined"
-            :aria-label="store.page.value !== 'home' ? '返回首页' : undefined"
+            :aria-label="store.page.value !== 'home' ? tr('返回首页') : undefined"
             @click="store.page.value !== 'home' && store.go('home')"
             @keydown.enter.prevent="store.page.value !== 'home' && store.go('home')"
             @keydown.space.prevent="store.page.value !== 'home' && store.go('home')"
@@ -707,18 +708,18 @@ defineExpose({ store })
               <span>{{ sideStatusWord }}</span>
             </div>
             <div v-if="snap.connected" class="side-rates mono">
-              <span class="down" :title="`下载 ${formatSpeed(snap.download ?? 0)}`"><Icon name="down" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.download ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
-              <span class="up" :title="`上传 ${formatSpeed(snap.upload ?? 0)}`"><Icon name="up" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.upload ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
+              <span class="down" :title="tr('下载 {0}', { 0: formatSpeed(snap.download ?? 0) })"><Icon name="down" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.download ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
+              <span class="up" :title="tr('上传 {0}', { 0: formatSpeed(snap.upload ?? 0) })"><Icon name="up" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.upload ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
             </div>
-            <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? '还没有配置' }}</div>
+            <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? tr('还没有配置') }}</div>
           </div>
           <button
             v-if="store.hasProfiles.value"
             type="button"
             class="side-power"
             :disabled="store.connecting.value"
-            :aria-label="snap.connected ? '断开' : '连接'"
-            :title="sidebarCollapsed ? `${sideStatusWord}（点击${snap.connected ? '断开' : '连接'}）` : (snap.connected ? '断开' : '连接')"
+            :aria-label="snap.connected ? tr('断开') : tr('连接')"
+            :title="sidebarCollapsed ? tr('{0}（点击{1}）', { 0: sideStatusWord, 1: snap.connected ? tr('断开') : tr('连接') }) : (snap.connected ? tr('断开') : tr('连接'))"
             data-testid="side-power"
             @click="store.toggleConnection()"
           >
@@ -748,14 +749,14 @@ defineExpose({ store })
       <div v-else-if="showDesktopConnectionReturn" class="back-bar context-return-bar">
         <button type="button" class="back-btn" data-testid="connection-return" @click="goBack">
           <Icon name="chevron-left" :size="18" />
-          <span>返回连接</span>
+          <span>{{ tr('返回连接') }}</span>
         </button>
       </div>
       <component :is="view" v-if="store.loaded.value" :compact="compact" />
       <div v-else class="loading"><span class="spinner" /></div>
     </main>
 
-    <nav v-if="compact" class="tabbar" aria-label="主导航">
+    <nav v-if="compact" class="tabbar" :aria-label="tr('主导航')">
       <button
         v-for="item in mobilePages"
         :key="item.id"
@@ -775,7 +776,7 @@ defineExpose({ store })
             aria-hidden="true"
           />
         </span>
-        <span class="tab-label">{{ item.label }}<span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="update-dot" aria-label="有可用更新">•</span></span>
+        <span class="tab-label">{{ item.label }}<span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="update-dot" :aria-label="tr('有可用更新')">•</span></span>
       </button>
     </nav>
 
@@ -811,7 +812,7 @@ defineExpose({ store })
       @close="store.dnsQueryOpen.value = false"
     />
 
-    <Modal v-if="helpOpen" title="快捷键" subtitle="在应用内生效，输入框会保留自己的按键" @close="helpOpen = false">
+    <Modal v-if="helpOpen" :title="tr('快捷键')" :subtitle="tr('在应用内生效，输入框会保留自己的按键')" @close="helpOpen = false">
       <dl class="shortcut-list">
         <div v-for="shortcut in SHORTCUTS" :key="shortcut.id" class="shortcut-row">
           <dt><kbd class="palette-kbd">{{ shortcutKeyLabel(shortcut.combo) }}</kbd></dt>
@@ -823,7 +824,7 @@ defineExpose({ store })
       </dl>
     </Modal>
 
-    <Modal v-if="store.adding.value" title="添加配置" subtitle="订阅链接或 Clash / Mihomo YAML 文件" @close="store.adding.value = false">
+    <Modal v-if="store.adding.value" :title="tr('添加配置')" :subtitle="tr('订阅链接或 Clash / Mihomo YAML 文件')" @close="store.adding.value = false">
       <div
         class="add-modal-drop"
         :class="{ 'drop-over': dragging && addTab === 'url' }"
@@ -833,15 +834,13 @@ defineExpose({ store })
       >
         <div class="tabs-inline" role="tablist">
           <button type="button" role="tab" :class="{ active: addTab === 'url' }" :aria-selected="addTab === 'url'" @click="addTab = 'url'">
-            <Icon name="link" :size="16" /> 订阅链接
-          </button>
+            <Icon name="link" :size="16" /> {{ tr('订阅链接') }} </button>
           <button type="button" role="tab" :class="{ active: addTab === 'file' }" :aria-selected="addTab === 'file'" @click="addTab = 'file'">
-            <Icon name="file" :size="16" /> 本地文件
-          </button>
+            <Icon name="file" :size="16" /> {{ tr('本地文件') }} </button>
         </div>
         <form v-if="addTab === 'url'" class="stack" data-testid="add-url" @submit.prevent="submitUrl">
           <label class="field">
-            <span>订阅地址</span>
+            <span>{{ tr('订阅地址') }}</span>
             <div class="input-group">
               <!-- Phones open the sheet without the keyboard; paste or tap the field to type. -->
               <input
@@ -855,15 +854,13 @@ defineExpose({ store })
                 :autofocus="!compact"
                 @input="addErrorCleared = true"
               />
-              <button type="button" class="btn ghost" title="从剪贴板粘贴" data-testid="paste-url" @click="pasteUrl"><Icon name="clipboard" :size="16" />粘贴</button>
+              <button type="button" class="btn ghost" :title="tr('从剪贴板粘贴')" data-testid="paste-url" @click="pasteUrl"><Icon name="clipboard" :size="16" />{{ tr('粘贴') }}</button>
             </div>
           </label>
           <p v-if="snap.input_error && !addErrorCleared" class="field-error" role="alert">{{ snap.input_error }}</p>
-          <p class="muted small">添加后会下载订阅内容，并读取流量与到期信息；也可直接拖入 YAML 文件。</p>
+          <p class="muted small">{{ tr('添加后会下载订阅内容，并读取流量与到期信息；也可直接拖入 YAML 文件。') }}</p>
           <button type="submit" class="btn primary block" :disabled="!url.trim() || store.busy.add">
-            <span v-if="store.busy.add" class="spinner sm" />
-            添加订阅
-          </button>
+            <span v-if="store.busy.add" class="spinner sm" /> {{ tr('添加订阅') }} </button>
         </form>
         <div v-else class="stack">
           <label
@@ -874,8 +871,8 @@ defineExpose({ store })
             @drop.prevent="onDrop"
           >
             <Icon name="download" :size="28" />
-            <strong>拖入 YAML 配置文件</strong>
-            <span class="muted small">或点击选择文件</span>
+            <strong>{{ tr('拖入 YAML 配置文件') }}</strong>
+            <span class="muted small">{{ tr('或点击选择文件') }}</span>
             <input type="file" accept=".yaml,.yml,.txt,text/yaml" hidden @change="onFile" />
           </label>
           <p v-if="snap.input_error && !addErrorCleared" class="field-error" role="alert">{{ snap.input_error }}</p>
@@ -883,11 +880,11 @@ defineExpose({ store })
       </div>
     </Modal>
 
-    <Modal v-if="snap.pending_url" title="导入订阅" subtitle="来自外部链接的订阅，确认后才会添加" @close="store.cancelInstall()">
+    <Modal v-if="snap.pending_url" :title="tr('导入订阅')" :subtitle="tr('来自外部链接的订阅，确认后才会添加')" @close="store.cancelInstall()">
       <p class="url-box mono">{{ snap.pending_url }}</p>
       <template #footer>
-        <button type="button" class="btn ghost" @click="store.cancelInstall()">取消</button>
-        <button type="button" class="btn primary" @click="store.confirmInstall()">添加</button>
+        <button type="button" class="btn ghost" @click="store.cancelInstall()">{{ tr('取消') }}</button>
+        <button type="button" class="btn primary" @click="store.confirmInstall()">{{ tr('添加') }}</button>
       </template>
     </Modal>
 
@@ -899,7 +896,7 @@ defineExpose({ store })
           class="toast"
           :class="item.tone"
           :role="item.tone === 'error' ? 'alert' : 'status'"
-          title="点击关闭"
+          :title="tr('点击关闭')"
           @mouseenter="store.pauseToast(item.id)"
           @mouseleave="store.resumeToast(item.id)"
           @click="store.dismissToast(item.id)"

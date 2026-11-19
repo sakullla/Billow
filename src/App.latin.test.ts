@@ -1,0 +1,158 @@
+import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import App from './App.vue'
+import { createDemoBackend } from './lib/demo'
+import { applyLocale } from './lib/i18n'
+
+/**
+ * T8: the whole interface in English with the Latin demo (?demo=latin).
+ *
+ * Everything must be English except kernel log lines and kernel error text,
+ * which stay as the kernel reports them. The language names in the picker are
+ * also kept in their own language ("简体中文").
+ */
+
+const mounted: { unmount: () => void }[] = []
+
+async function settle(ms = 1000) {
+  await vi.advanceTimersByTimeAsync(ms)
+  await flushPromises()
+}
+
+async function mountApp(options: Parameters<typeof createDemoBackend>[0], width = 1200) {
+  vi.useFakeTimers()
+  const backend = createDemoBackend({ latin: true, systemLocale: 'en', ...options })
+  const wrapper = mount(App, { props: { backend, width }, attachTo: document.body })
+  mounted.push(wrapper)
+  await settle(50)
+  return wrapper
+}
+
+const CJK = /[\u3400-\u9fff]/
+
+/** Body text without the parts the requirement exempts (kernel logs and errors). */
+function visibleText(): string {
+  const clone = document.body.cloneNode(true) as HTMLElement
+  clone
+    .querySelectorAll(
+      [
+        '[data-testid="language-select"]',
+        '[data-testid="log-scroll"]',
+        '.cm-content',
+      ].join(','),
+    )
+    .forEach((node) => node.remove())
+  return clone.textContent ?? ''
+}
+
+function chineseSnippets(): string[] {
+  const text = visibleText().replace(/\s+/g, ' ')
+  const out = new Set<string>()
+  for (const match of text.matchAll(new RegExp(`.{0,24}${CJK.source}.{0,24}`, 'g'))) {
+    const snippet = match[0]?.trim()
+    if (snippet) out.add(snippet)
+  }
+  return [...out]
+}
+
+function expectEnglish(label: string) {
+  const snippets = chineseSnippets()
+  expect(snippets, `${label} still shows Chinese: ${snippets.join(' | ')}`).toEqual([])
+}
+
+afterEach(() => {
+  mounted.splice(0).forEach((wrapper) => wrapper.unmount())
+  applyLocale('zh-CN')
+  document.body.innerHTML = ''
+})
+
+vi.setConfig({ testTimeout: 40_000 })
+
+describe('T8 Latin demo', () => {
+  it('renders every page and settings tab without Chinese text', async () => {
+    const wrapper = await mountApp({})
+    const store = (wrapper.vm as unknown as { store: any }).store
+    const pages = ['home', 'proxies', 'profiles', 'connections', 'rules', 'resources', 'logs', 'settings']
+    for (const page of pages) {
+      store.go(page)
+      await settle(80)
+      expectEnglish(`page ${page}`)
+    }
+    for (const tab of ['general', 'proxy', 'kernel', 'tun', 'dns', 'backup']) {
+      store.go('settings')
+      store.settingsTab.value = tab
+      await settle(80)
+      expectEnglish(`settings ${tab}`)
+    }
+  })
+
+  it('renders the command palette, help, add-profile, config and DNS dialogs in English', async () => {
+    const wrapper = await mountApp({})
+    const body = () => new DOMWrapper(document.body)
+
+    await wrapper.find('[data-testid="open-palette"]').trigger('click')
+    await settle(20)
+    expectEnglish('command palette')
+
+    await body().find('[data-command="action:open-shortcuts"]').trigger('click')
+    await settle(20)
+    expectEnglish('shortcuts dialog')
+    await body().find('.modal-head button').trigger('click')
+    await settle(10)
+
+    await wrapper.find('[data-testid="open-palette"]').trigger('click')
+    await settle(20)
+    await body().find('[data-command="action:add-profile"]').trigger('click')
+    await settle(20)
+    expectEnglish('add profile dialog')
+    await body().find('.modal-head button').trigger('click')
+    await settle(10)
+
+    await wrapper.find('[data-testid="open-palette"]').trigger('click')
+    await settle(20)
+    await body().find('[data-command="action:open-config"]').trigger('click')
+    await settle(120)
+    expectEnglish('config viewer')
+    await body().find('.modal-head button').trigger('click')
+    await settle(10)
+
+    const store = (wrapper.vm as unknown as { store: any }).store
+    store.go('settings')
+    store.settingsTab.value = 'dns'
+    await settle(20)
+    await wrapper.find('[data-testid="open-dns-query"]').trigger('click')
+    await settle(20)
+    expectEnglish('DNS query dialog')
+  })
+
+  it('renders the traffic stats dialog in English', async () => {
+    const wrapper = await mountApp({})
+    const store = (wrapper.vm as unknown as { store: any }).store
+    store.go('settings')
+    store.settingsTab.value = 'general'
+    await settle(20)
+    await wrapper.find('[data-testid="open-traffic-stats"]').trigger('click')
+    await settle(120)
+    expectEnglish('traffic stats dialog')
+  })
+
+  it('renders the UWP tool and Android app list in English', async () => {
+    const windows = await mountApp({ os: 'windows' })
+    const windowsStore = (windows.vm as unknown as { store: any }).store
+    windowsStore.go('settings')
+    windowsStore.settingsTab.value = 'proxy'
+    await settle(20)
+    await windows.find('[data-testid="open-uwp-tool"]').trigger('click')
+    await settle(60)
+    expectEnglish('UWP dialog')
+    windows.unmount()
+    mounted.splice(0, mounted.length)
+    document.body.innerHTML = ''
+
+    const android = await mountApp({ platform: 'android' })
+    const androidStore = (android.vm as unknown as { store: any }).store
+    androidStore.go('apps')
+    await settle(80)
+    expectEnglish('apps page')
+  })
+})

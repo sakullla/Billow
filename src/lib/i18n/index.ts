@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import type { LanguagePreference, Locale } from '../types'
 import { EN } from './en'
+import { UI_EN } from './ui-en'
 import { ZH_CN, type MessageKey } from './zh-CN'
 
 /**
@@ -50,6 +51,19 @@ export function translate(
 /** The message in the current locale. Read inside a render function to stay reactive. */
 export function t(key: MessageKey, params: MessageParams = {}): string {
   return translate(locale.value, key, params)
+}
+
+/**
+ * Translate a Chinese source string through the UI catalog (T8). Chinese stays
+ * the base text, so an untranslated string renders exactly as written and an
+ * English entry is only an override. Reading `locale` here keeps templates
+ * reactive when the language changes.
+ */
+export function tr(text: string, params: Record<string, string | number | null | undefined> = {}): string {
+  const template = (locale.value === 'en' ? UI_EN[text] : undefined) ?? text
+  return template.replace(/\{(\w+)\}/g, (match, name: string) =>
+    name in params ? String(params[name] ?? '') : match,
+  )
 }
 
 /** Apply one locale to the dictionary and the document, without a restart. */

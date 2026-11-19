@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, onMounted, ref, shallowRef } from 'vue'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
@@ -65,9 +66,9 @@ const selectedCount = computed(() => apps.value.filter(isSelected).length)
 const unexemptedCount = computed(() => apps.value.length - selectedCount.value)
 
 const filterOptions = computed<{ id: Filter; label: string }[]>(() => [
-  { id: 'all', label: `全部 ${apps.value.length}` },
-  { id: 'exempted', label: `已豁免 ${selectedCount.value}` },
-  { id: 'unexempted', label: `未豁免 ${unexemptedCount.value}` },
+  { id: 'all', label: tr('全部 {0}', { 0: apps.value.length }) },
+  { id: 'exempted', label: tr('已豁免 {0}', { 0: selectedCount.value }) },
+  { id: 'unexempted', label: tr('未豁免 {0}', { 0: unexemptedCount.value }) },
 ])
 
 const visibleApps = computed(() => {
@@ -124,7 +125,7 @@ async function save() {
     const updated = await store.backend.saveUwpExemptions(families)
     apps.value = updated
     syncSelected(updated)
-    store.toast(`已保存 UWP 回环豁免（共 ${updated.filter((a) => a.exempted).length} 个应用）`, 'success')
+    store.toast(tr('已保存 UWP 回环豁免（共 {0} 个应用）', { 0: updated.filter((a) => a.exempted).length }), 'success')
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     error.value = reason
@@ -153,8 +154,8 @@ onMounted(() => {
 <template>
   <Modal
     wide
-    title="UWP 应用回环豁免"
-    subtitle="允许选中的 Windows 商店应用连接本机代理（127.0.0.1），保存时可能需要管理员授权"
+    :title="tr('UWP 应用回环豁免')"
+    :subtitle="tr('允许选中的 Windows 商店应用连接本机代理（127.0.0.1），保存时可能需要管理员授权')"
     :before-close="() => !saving"
     :initial-focus="() => searchEl"
     @close="emit('close')"
@@ -167,22 +168,22 @@ onMounted(() => {
             ref="searchEl"
             v-model="query"
             type="search"
-            placeholder="搜索应用名称或包名"
-            aria-label="搜索 UWP 应用"
+            :placeholder="tr('搜索应用名称或包名')"
+            :aria-label="tr('搜索 UWP 应用')"
             data-testid="uwp-search"
           />
           <button
             v-if="query"
             type="button"
             class="icon-btn sm"
-            aria-label="清空搜索"
+            :aria-label="tr('清空搜索')"
             data-testid="uwp-clear-search"
             @click="query = ''; searchEl?.focus()"
           >
             <Icon name="x" :size="14" />
           </button>
         </div>
-        <Segmented v-model="filter" :options="filterOptions" size="sm" label="按豁免状态筛选" data-testid="uwp-filter" />
+        <Segmented v-model="filter" :options="filterOptions" size="sm" :label="tr('按豁免状态筛选')" data-testid="uwp-filter" />
         <div class="uwp-actions">
           <button
             type="button"
@@ -191,14 +192,14 @@ onMounted(() => {
             data-testid="uwp-toggle-all"
             @click="toggleSelectVisible"
           >
-            {{ allVisibleSelected ? '取消全选' : '全选当前' }}
+            {{ allVisibleSelected ? tr('取消全选') : tr('全选当前') }}
           </button>
           <button
             type="button"
             class="icon-btn sm"
             :disabled="loading || saving"
-            aria-label="刷新列表"
-            title="刷新列表"
+            :aria-label="tr('刷新列表')"
+            :title="tr('刷新列表')"
             data-testid="uwp-refresh"
             @click="load"
           >
@@ -218,12 +219,12 @@ onMounted(() => {
         v-else-if="error && !apps.length"
         compact
         variant="error"
-        title="无法读取 UWP 应用"
+        :title="tr('无法读取 UWP 应用')"
         :description="error"
         data-testid="uwp-empty-error"
       >
         <template #action>
-          <button type="button" class="btn ghost sm" @click="load">重试</button>
+          <button type="button" class="btn ghost sm" @click="load">{{ tr('重试') }}</button>
         </template>
       </EmptyState>
 
@@ -232,19 +233,19 @@ onMounted(() => {
         compact
         variant="no-data"
         icon="layers"
-        title="未检测到 UWP 应用"
-        description="当前系统没有可配置本地回环豁免的 Windows 商店应用。"
+        :title="tr('未检测到 UWP 应用')"
+        :description="tr('当前系统没有可配置本地回环豁免的 Windows 商店应用。')"
       />
 
       <EmptyState
         v-else-if="!visibleApps.length"
         compact
         variant="no-match"
-        title="没有匹配的应用"
-        description="换一个关键词，或切换筛选条件。"
+        :title="tr('没有匹配的应用')"
+        :description="tr('换一个关键词，或切换筛选条件。')"
       >
         <template #action>
-          <button type="button" class="btn ghost sm" @click="clearFilters">清空筛选</button>
+          <button type="button" class="btn ghost sm" @click="clearFilters">{{ tr('清空筛选') }}</button>
         </template>
       </EmptyState>
 
@@ -275,9 +276,9 @@ onMounted(() => {
                 </template>
               </span>
             </span>
-            <span v-if="appChangeState(app) === 'add'" class="tag accent sm">待添加</span>
-            <span v-else-if="appChangeState(app) === 'remove'" class="tag warn sm">待移除</span>
-            <span v-else-if="app.exempted" class="tag ok sm">已豁免</span>
+            <span v-if="appChangeState(app) === 'add'" class="tag accent sm">{{ tr('待添加') }}</span>
+            <span v-else-if="appChangeState(app) === 'remove'" class="tag warn sm">{{ tr('待移除') }}</span>
+            <span v-else-if="app.exempted" class="tag ok sm">{{ tr('已豁免') }}</span>
           </button>
         </li>
       </ul>
@@ -285,13 +286,11 @@ onMounted(() => {
 
     <template #footer>
       <div class="uwp-foot-meta small muted">
-        <span>已选 {{ selectedCount }} / {{ apps.length }}</span>
-        <span v-if="diffCount > 0" class="uwp-dirty-badge" data-testid="uwp-dirty-count">已修改 {{ diffCount }} 项</span>
+        <span>{{ tr('已选') }} {{ selectedCount }} / {{ apps.length }}</span>
+        <span v-if="diffCount > 0" class="uwp-dirty-badge" data-testid="uwp-dirty-count">{{ tr('已修改') }} {{ diffCount }} {{ tr('项') }}</span>
       </div>
-      <button v-if="diffCount > 0" type="button" class="btn ghost sm" :disabled="saving" data-testid="uwp-reset" @click="resetDraft">
-        还原
-      </button>
-      <button type="button" class="btn ghost" :disabled="saving" @click="emit('close')">关闭</button>
+      <button v-if="diffCount > 0" type="button" class="btn ghost sm" :disabled="saving" data-testid="uwp-reset" @click="resetDraft"> {{ tr('还原') }} </button>
+      <button type="button" class="btn ghost" :disabled="saving" @click="emit('close')">{{ tr('关闭') }}</button>
       <button
         type="button"
         class="btn primary"
@@ -300,7 +299,7 @@ onMounted(() => {
         @click="save"
       >
         <span v-if="saving" class="spinner sm" aria-hidden="true" />
-        {{ saving ? '保存中…' : '保存修改' }}
+        {{ saving ? tr('保存中…') : tr('保存修改') }}
       </button>
     </template>
   </Modal>

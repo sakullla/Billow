@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { registerLayer } from '../lib/ui/focus'
 import Icon from './Icon.vue'
@@ -225,11 +226,11 @@ onBeforeUnmount(detachDesktopListeners)
       :class="[size, { open }]"
       aria-haspopup="dialog"
       :aria-expanded="open"
-      :aria-label="`${label}：${current?.label ?? '未选择'}`"
+      :aria-label="`${label}：${current?.label ?? tr('未选择')}`"
       v-bind="$attrs"
       @click="openPopover"
     >
-      <span class="select-trigger-text">{{ current?.label ?? '未选择' }}</span>
+      <span class="select-trigger-text">{{ current?.label ?? tr('未选择') }}</span>
       <span v-if="current?.hint" class="select-trigger-hint mono">{{ current.hint }}</span>
       <Icon name="chevron-down" :size="14" class="select-chevron" />
     </button>
@@ -239,15 +240,15 @@ onBeforeUnmount(detachDesktopListeners)
         <input
           v-model="filterQuery"
           type="search"
-          placeholder="搜索选项…"
-          aria-label="筛选选项"
+          :placeholder="tr('搜索选项…')"
+          :aria-label="tr('筛选选项')"
           data-testid="select-sheet-search"
         />
         <button
           v-if="filterQuery"
           type="button"
           class="icon-btn sm"
-          aria-label="清空"
+          :aria-label="tr('清空')"
           @click="filterQuery = ''"
         >
           <Icon name="x" :size="13" />
@@ -269,7 +270,7 @@ onBeforeUnmount(detachDesktopListeners)
           <span v-if="option.hint" class="option-hint">{{ option.hint }}</span>
           <Icon v-if="option.value === modelValue" name="check" :size="18" :stroke="2.4" class="option-check" />
         </button>
-        <p v-if="!visibleOptions.length" class="select-empty muted small">无匹配项</p>
+        <p v-if="!visibleOptions.length" class="select-empty muted small">{{ tr('无匹配项') }}</p>
       </div>
     </Modal>
   </template>
@@ -282,12 +283,12 @@ onBeforeUnmount(detachDesktopListeners)
       :class="[size, { open }]"
       aria-haspopup="listbox"
       :aria-expanded="open"
-      :aria-label="`${label}：${current?.label ?? '未选择'}`"
+      :aria-label="`${label}：${current?.label ?? tr('未选择')}`"
       v-bind="$attrs"
       @click="toggle"
       @keydown="onTriggerKeydown"
     >
-      <span class="select-trigger-text">{{ current?.label ?? '未选择' }}</span>
+      <span class="select-trigger-text">{{ current?.label ?? tr('未选择') }}</span>
       <span v-if="current?.hint" class="select-trigger-hint mono">{{ current.hint }}</span>
       <Icon name="chevron-down" :size="14" class="select-chevron" />
     </button>
@@ -310,15 +311,15 @@ onBeforeUnmount(detachDesktopListeners)
             ref="searchRef"
             v-model="filterQuery"
             type="search"
-            placeholder="搜索选项…"
-            aria-label="筛选下拉选项"
+            :placeholder="tr('搜索选项…')"
+            :aria-label="tr('筛选下拉选项')"
             data-testid="select-search"
           />
           <button
             v-if="filterQuery"
             type="button"
             class="icon-btn xs"
-            aria-label="清空"
+            :aria-label="tr('清空')"
             @click="filterQuery = ''; searchRef?.focus({ preventScroll: true })"
           >
             <Icon name="x" :size="12" />
@@ -343,7 +344,7 @@ onBeforeUnmount(detachDesktopListeners)
             <span class="select-option-label">{{ option.label }}</span>
             <span v-if="option.hint" class="select-option-hint mono">{{ option.hint }}</span>
           </button>
-          <p v-if="!visibleOptions.length" class="select-empty muted small">无匹配项</p>
+          <p v-if="!visibleOptions.length" class="select-empty muted small">{{ tr('无匹配项') }}</p>
         </div>
       </div>
     </Teleport>

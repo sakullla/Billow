@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { registerLayer } from '../lib/ui/focus'
 import Icon from './Icon.vue'
@@ -23,7 +24,7 @@ const props = withDefaults(
     /** Optional anchor to treat as part of the menu for outside clicks. */
     anchor?: HTMLElement | null
   }>(),
-  { label: '操作', align: 'end', anchor: null },
+  { get label() { return tr('操作') }, align: 'end', anchor: null },
 )
 const emit = defineEmits<{ select: [item: MenuItem]; close: [] }>()
 
@@ -42,7 +43,7 @@ function reasonId(index: number): string {
 }
 
 function reasonText(item: MenuItem): string | undefined {
-  return item.disabled ? (item.reason ?? '当前不可用') : undefined
+  return item.disabled ? (item.reason ?? tr('当前不可用')) : undefined
 }
 
 function focusItem(index: number) {
