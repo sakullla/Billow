@@ -449,7 +449,9 @@ mod tests {
         assert_eq!(normalize_combo("ctrl+alt+p").as_deref(), Some("Ctrl+Alt+P"));
         assert_eq!(normalize_combo(" Alt + Ctrl + KeyP ").as_deref(), Some("Ctrl+Alt+P"));
         assert_eq!(normalize_combo("Shift+f5").as_deref(), Some("Shift+F5"));
-        assert_eq!(normalize_combo("CmdOrCtrl+Space").as_deref(), Some("Ctrl+Space"));
+        // CmdOrCtrl is ⌘ (Super) on macOS and Ctrl everywhere else.
+        let cmd_or_ctrl = if cfg!(target_os = "macos") { "Super+Space" } else { "Ctrl+Space" };
+        assert_eq!(normalize_combo("CmdOrCtrl+Space").as_deref(), Some(cmd_or_ctrl));
         assert_eq!(normalize_combo("ctrl+alt+1").as_deref(), Some("Ctrl+Alt+1"));
         assert_eq!(normalize_combo("").as_deref(), Some(""));
         assert_eq!(normalize_combo("   ").as_deref(), Some(""));
