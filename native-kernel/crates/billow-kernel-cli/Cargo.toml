@@ -1,0 +1,19 @@
+[package]
+name = "billow-kernel-cli"
+description = "Standalone process entry for the Billow native Rust kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "billow-kernel"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+billow-kernel = { path = "../billow-kernel" }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+tracing.workspace = true
