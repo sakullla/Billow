@@ -53,6 +53,16 @@ async function hardwareBack() {
   await settle(30)
 }
 
+async function openPage(wrapper: Wrapper, page: string) {
+  const desktopBtn = wrapper.find(`.sidebar [data-page="${page}"]`)
+  if (desktopBtn.exists()) {
+    await desktopBtn.trigger('click')
+  } else {
+    storeOf(wrapper).go(page as Parameters<Store['go']>[0])
+  }
+  await settle(100)
+}
+
 afterEach(() => {
   mounted.splice(0).forEach((wrapper) => wrapper.unmount())
   applyInsets({ top: 0, right: 0, bottom: 0, left: 0, ime: 0 })
@@ -353,6 +363,299 @@ describe('Core workflow polish (R1–R2)', () => {
       expect(wrapper.find('[data-testid="rates"]').exists()).toBe(false)
       expect(wrapper.find('[data-testid="traffic-card"]').exists()).toBe(false)
       expect(wrapper.find('[data-testid="runtime"]').exists()).toBe(false)
+    })
+  })
+})
+
+describe('Core workflow polish (R3–R4)', () => {
+  describe('R3: ProxiesView ContextMenu, persisted hide-failed preference, and group-pill testing state', () => {
+    it('opens unified ContextMenu on desktop node right-click with select/pin, test, copy, and open-auto actions, and stays off on compact', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText },
+        configurable: true,
+      })
+      const { wrapper, backend } = await mountApp()
+      await connect(wrapper)
+      const selectSpy = vi.spyOn(backend, 'selectNode')
+      const testNodeSpy = vi.spyOn(backend, 'testNode')
+
+      await openPage(wrapper, 'proxies')
+
+      // Right-click unselected node in manual group -> select, test, copy
+      const jpNode = wrapper.find('[data-group-card="节点选择"] [data-node="日本 01"]')
+      expect(jpNode.exists()).toBe(true)
+      await jpNode.trigger('contextmenu')
+      await flushPromises()
+      const menu = () => body().find('[data-testid="context-menu"]')
+      expect(menu().exists()).toBe(true)
+      expect(menu().find('[data-menu-item="pick"]').text()).toContain('选择此节点')
+      expect(menu().find('[data-menu-item="pick"]').attributes('aria-disabled')).toBeUndefined()
+      expect(menu().find('[data-menu-item="test"]').attributes('aria-disabled')).toBeUndefined()
+      expect(menu().find('[data-menu-item="copy"]').text()).toContain('复制节点名称')
+      expect(menu().find('[data-menu-item="open-auto"]').exists()).toBe(false)
+
+      // Trigger pick via ContextMenu
+      await menu().find('[data-menu-item="pick"]').trigger('click')
+      await settle(400)
+      expect(selectSpy).toHaveBeenCalledWith('节点选择', '日本 01')
+      expect(menu().exists()).toBe(false)
+
+      // Right-click the now-selected node -> pick is disabled with reason; test & copy work
+      await wrapper.find('[data-group-card="节点选择"] [data-node="日本 01"]').trigger('contextmenu')
+      await flushPromises()
+      expect(menu().find('[data-menu-item="pick"]').attributes('aria-disabled')).toBe('true')
+      expect(menu().find('[data-menu-item="pick"]').text()).toContain('当前已选')
+      await menu().find('[data-menu-item="copy"]').trigger('click')
+      await flushPromises()
+      expect(writeText).toHaveBeenLastCalledWith('日本 01')
+
+      // Trigger single-node latency test via ContextMenu
+      await wrapper.find('[data-group-card="节点选择"] [data-node="日本 01"]').trigger('contextmenu')
+      await flushPromises()
+      await menu().find('[data-menu-item="test"]').trigger('click')
+      await settle(600)
+      expect(testNodeSpy).toHaveBeenCalledWith('日本 01')
+
+      // Right-click an auto-group entry (自动选择) -> shows open-auto and reveals the auto group
+      await wrapper.find('[data-group-card="节点选择"] [data-node="自动选择"]').trigger('contextmenu')
+      await flushPromises()
+      expect(menu().find('[data-menu-item="open-auto"]').text()).toContain('查看组策略与成员')
+      await menu().find('[data-menu-item="open-auto"]').trigger('click')
+      await settle(200)
+      expect(wrapper.find('[data-group-card="自动选择"]').exists()).toBe(true)
+      expect(wrapper.find('[data-group-card="自动选择"]').classes()).toContain('open')
+
+      // Disconnect -> test disabled with 未连接; auto-group pin disabled with 未连接
+      void storeOf(wrapper).disconnect()
+      await settle(1200)
+      await wrapper.find('[data-group-card="自动选择"] [data-node="香港 01"]').trigger('contextmenu')
+      await flushPromises()
+      expect(menu().find('[data-menu-item="pick"]').text()).toContain('固定此节点')
+      expect(menu().find('[data-menu-item="pick"]').attributes('aria-disabled')).toBe('true')
+      expect(menu().find('[data-menu-item="pick"]').text()).toContain('未连接')
+      expect(menu().find('[data-menu-item="test"]').attributes('aria-disabled')).toBe('true')
+      expect(menu().find('[data-menu-item="test"]').text()).toContain('未连接')
+
+      // English localization in ContextMenu
+      locale.value = 'en'
+      await flushPromises()
+      await wrapper.find('[data-group-card="节点选择"] [data-node="美国 01"]').trigger('contextmenu')
+      await flushPromises()
+      expect(menu().find('[data-menu-item="pick"]').text()).toContain('Select node')
+      expect(menu().find('[data-menu-item="copy"]').text()).toContain('Copy node name')
+      await menu().trigger('keydown', { key: 'Escape' })
+      await flushPromises()
+      expect(menu().exists()).toBe(false)
+
+      // Compact/mobile does not open desktop ContextMenu on contextmenu
+      const mobile = await mountApp({ platform: 'android' }, 390)
+      await openPage(mobile.wrapper, 'proxies')
+      await mobile.wrapper.find('[data-group-card="节点选择"] [data-node="日本 01"]').trigger('contextmenu')
+      await flushPromises()
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(false)
+    })
+
+    it('persists hide-failed preference, handles corrupt storage safely, and provides one-click reset when filters empty results', async () => {
+      // Corrupt localStorage falls back safely to false
+      localStorage.setItem('billow:proxy-hide-failed', '{not-json')
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      const store = storeOf(wrapper)
+
+      await openPage(wrapper, 'proxies')
+      // Inject failed nodes into snapshot
+      store.snapshot.value = {
+        ...store.snapshot.value,
+        node_catalog: store.snapshot.value.node_catalog.map((group) => ({
+          ...group,
+          nodes: group.nodes.map((node) =>
+            node.name.includes('新加坡') ? { ...node, delay_ms: null, failed: true } : node,
+          ),
+        })),
+      }
+      await flushPromises()
+
+      const hideChip = () => wrapper.find('[data-testid="hide-failed-nodes"]')
+      expect(hideChip().exists()).toBe(true)
+      expect(hideChip().attributes('aria-pressed')).toBe('false')
+
+      // Toggle on -> persists to localStorage
+      await hideChip().trigger('click')
+      await flushPromises()
+      expect(hideChip().attributes('aria-pressed')).toBe('true')
+      expect(localStorage.getItem('billow:proxy-hide-failed')).toBe('true')
+
+      // Switch away and come back -> restored from localStorage
+      await openPage(wrapper, 'home')
+      await openPage(wrapper, 'proxies')
+      expect(hideChip().attributes('aria-pressed')).toBe('true')
+
+      // Search for a timed-out node while hideFailed is active -> empty state with one-click reset
+      await wrapper.find('[data-testid="node-search"]').setValue('新加坡')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="no-match"]').exists()).toBe(true)
+      await wrapper.find('[data-testid="reset-proxy-filters"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="no-match"]').exists()).toBe(false)
+      expect(hideChip().attributes('aria-pressed')).toBe('false')
+      expect(localStorage.getItem('billow:proxy-hide-failed')).toBe('false')
+    })
+
+    it('reflects active single-group latency test state on group-pills', async () => {
+      const { wrapper, backend } = await mountApp()
+      await connect(wrapper)
+      await openPage(wrapper, 'proxies')
+
+      const gate = deferred<Snapshot>()
+      vi.spyOn(backend, 'testGroup').mockImplementationOnce(() => gate.promise)
+
+      const pill = () => wrapper.find('[data-testid="jump-group-节点选择"]')
+      expect(pill().exists()).toBe(true)
+      expect(pill().classes()).not.toContain('testing')
+
+      void storeOf(wrapper).testGroup('节点选择')
+      await flushPromises()
+      expect(pill().classes()).toContain('testing')
+      expect(pill().attributes('aria-busy')).toBe('true')
+      expect(pill().find('.group-pill-dot').exists()).toBe(true)
+
+      gate.resolve(storeOf(wrapper).snapshot.value)
+      await settle(200)
+      expect(pill().classes()).not.toContain('testing')
+      expect(pill().find('.group-pill-dot').exists()).toBe(false)
+    })
+  })
+
+  describe('R4: ProfilesView quick-import auto-enable, update-all label reset, card keyboard/context menu, and instant filter', () => {
+    it('auto-enables the first subscription added via quickImport when none is active, without preempting an active profile', async () => {
+      // First profile (no active_id): quickImport auto-enables it
+      const emptyApp = await mountApp({ profiles: false })
+      const enableSpyEmpty = vi.spyOn(emptyApp.backend, 'enable')
+      await openPage(emptyApp.wrapper, 'profiles')
+      const formEmpty = emptyApp.wrapper.find('.quick-import')
+      await formEmpty.find('input').setValue('https://first.example.com/sub.yaml')
+      await formEmpty.trigger('submit')
+      await settle(1000)
+      expect(enableSpyEmpty).toHaveBeenCalledTimes(1)
+      expect(storeOf(emptyApp.wrapper).snapshot.value.active_id).toBeTruthy()
+
+      // Existing active profile: quickImport adds without preempting active_id
+      const filledApp = await mountApp()
+      const enableSpyFilled = vi.spyOn(filledApp.backend, 'enable')
+      const prevActive = storeOf(filledApp.wrapper).snapshot.value.active_id
+      await openPage(filledApp.wrapper, 'profiles')
+      const formFilled = filledApp.wrapper.find('.quick-import')
+      await formFilled.find('input').setValue('https://second.example.com/sub.yaml')
+      await formFilled.trigger('submit')
+      await settle(800)
+      expect(enableSpyFilled).not.toHaveBeenCalled()
+      expect(storeOf(filledApp.wrapper).snapshot.value.active_id).toBe(prevActive)
+    })
+
+    it('resets update-all button label back to default after brief feedback while keeping retry-failed visible', async () => {
+      const { wrapper } = await mountApp({ failRefreshId: 'p2' })
+      await openPage(wrapper, 'profiles')
+
+      const updateAllBtn = () => wrapper.find('[data-testid="update-all-profiles"]')
+      expect(updateAllBtn().text()).toContain('全部更新')
+
+      await updateAllBtn().trigger('click')
+      await settle(2200)
+      // Brief summary right after completion
+      expect(updateAllBtn().text()).toContain('已完成 2/2')
+      expect(updateAllBtn().text()).toContain('1 个失败')
+      expect(wrapper.find('[data-testid="retry-failed-profiles"]').exists()).toBe(true)
+
+      // After brief feedback window, button returns to default label while retry-failed remains
+      await settle(4200)
+      expect(updateAllBtn().text()).toContain('全部更新')
+      expect(updateAllBtn().text()).not.toContain('已完成')
+      expect(wrapper.find('[data-testid="retry-failed-profiles"]').exists()).toBe(true)
+    })
+
+    it('supports keyboard focus/Enter/Space activation and desktop ContextMenu on profile cards', async () => {
+      const { wrapper, backend } = await mountApp()
+      const enableSpy = vi.spyOn(backend, 'enable')
+      await openPage(wrapper, 'profiles')
+
+      const p2Card = wrapper.find('[data-profile="p2"]')
+      expect(p2Card.attributes('tabindex')).toBe('0')
+
+      // Pressing Enter on a nested button does NOT trigger card activation
+      const p2Refresh = p2Card.find('button[title="更新订阅"]')
+      expect(p2Refresh.exists()).toBe(true)
+      await p2Refresh.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+      expect(enableSpy).not.toHaveBeenCalled()
+
+      // Pressing Enter on the card itself activates p2
+      await p2Card.trigger('keydown', { key: 'Enter' })
+      await settle(700)
+      expect(enableSpy).toHaveBeenCalledWith('p2')
+
+      // Pressing Space on p1 activates p1
+      const p1Card = wrapper.find('[data-profile="p1"]')
+      await p1Card.trigger('keydown', { key: ' ' })
+      await settle(700)
+      expect(enableSpy).toHaveBeenCalledWith('p1')
+
+      // Desktop right-click opens unified ContextMenu reusing menuItems
+      await p2Card.trigger('contextmenu')
+      await flushPromises()
+      const menu = () => body().find('[data-testid="context-menu"]')
+      expect(menu().exists()).toBe(true)
+      expect(menu().find('[data-menu-item="enable"]').exists()).toBe(true)
+      expect(menu().find('[data-menu-item="edit"]').exists()).toBe(true)
+      expect(menu().find('[data-menu-item="copy"]').exists()).toBe(true)
+      await menu().find('[data-menu-item="edit"]').trigger('click')
+      await flushPromises()
+      expect(body().find('[data-testid="profile-edit-name"]').exists()).toBe(true)
+      await body().find('.modal-head .icon-btn').trigger('click')
+      await flushPromises()
+
+      // Compact/mobile does not open desktop ContextMenu on card right-click
+      const mobile = await mountApp({ platform: 'android' }, 390)
+      await openPage(mobile.wrapper, 'profiles')
+      await mobile.wrapper.find('[data-profile="p2"]').trigger('contextmenu')
+      await flushPromises()
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(false)
+    })
+
+    it('filters multiple profiles by name or host and resets cleanly on no-match (zh-CN and en)', async () => {
+      const { wrapper } = await mountApp()
+      await openPage(wrapper, 'profiles')
+
+      const search = wrapper.find('[data-testid="profile-search"]')
+      expect(search.exists()).toBe(true)
+      expect(search.attributes('data-page-search')).toBeDefined()
+      const totalBefore = wrapper.findAll('[data-profile]').length
+      expect(totalBefore).toBeGreaterThan(1)
+
+      // Filter by subscription host
+      await search.setValue('sub.example.com')
+      await flushPromises()
+      const matchedByHost = wrapper.findAll('[data-profile]')
+      expect(matchedByHost.length).toBeGreaterThanOrEqual(1)
+      expect(matchedByHost.length).toBeLessThan(totalBefore)
+      expect(wrapper.find('[data-testid="profile-match-count"]').exists()).toBe(true)
+
+      // No match shows EmptyState with clear button
+      await search.setValue('no-such-profile-xyz')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="profiles-no-match"]').exists()).toBe(true)
+
+      // English localization check on no-match state
+      locale.value = 'en'
+      await flushPromises()
+      expect(wrapper.find('[data-testid="profiles-no-match"]').text()).toContain('No matching profiles')
+      expect(wrapper.find('[data-testid="clear-profile-filter"]').text()).toContain('Clear filters')
+
+      // Click clear filter -> restores all cards
+      await wrapper.find('[data-testid="clear-profile-filter"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="profiles-no-match"]').exists()).toBe(false)
+      expect(wrapper.findAll('[data-profile]')).toHaveLength(totalBefore)
     })
   })
 })

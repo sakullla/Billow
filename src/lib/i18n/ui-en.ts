@@ -1602,5 +1602,16 @@ export const UI_EN: Record<string, string> = {
   '节点切换失败': 'Failed to switch node',
   '前往代理页': 'Open Proxies',
   '点击切换「{0}」节点': 'Click to switch node in “{0}”',
+  '选择此节点': 'Select node',
+  '固定此节点': 'Pin node',
+  '当前已选': 'Selected',
+  '复制节点名称': 'Copy node name',
+  '查看组策略与成员': 'View group policy & members',
+  '节点操作': 'Node actions',
+  '重置筛选': 'Reset filters',
+  '筛选配置名称或域名': 'Filter profiles by name or domain',
+  '匹配 {0} / {1}': 'Matched {0} / {1}',
+  '没有匹配的配置': 'No matching profiles',
+  '换一个名称或域名关键词试试。': 'Try another name or domain keyword.',
 }
 

@@ -1107,8 +1107,11 @@ describe('UI/UX polish', () => {
       expect(matchedNodes).toHaveLength(1)
       expect(matchedNodes[0]!.findAll('.node-name mark').map((m) => m.text())).toEqual(['香港', 'IPLC'])
 
-      // Right-click on a node card copies its full name.
+      // Right-click on a node card opens ContextMenu and copies its full name via the copy item.
       await matchedNodes[0]!.trigger('contextmenu')
+      await flushPromises()
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(true)
+      await body().find('[data-testid="context-menu"] [data-menu-item="copy"]').trigger('click')
       await flushPromises()
       expect(writeText).toHaveBeenLastCalledWith(DEMO_LONG_NAMES[0])
       await wrapper.find('[data-testid="clear-search"]').trigger('click')

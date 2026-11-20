@@ -8586,4 +8586,48 @@ details.cfg-section[open] .cfg-fold-icon {
   }
 }
 
+/* R3: Group quick-jump pill testing pulse */
+@keyframes group-pill-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.42;
+    transform: scale(0.78);
+  }
+}
+
+.group-pill.testing {
+  border-color: color-mix(in srgb, var(--accent) 44%, transparent);
+  color: var(--accent-ink);
+}
+
+.group-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+  animation: group-pill-pulse 1.1s var(--ease) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group-pill-dot {
+    animation: none !important;
+  }
+}
+
+/* R4: Profiles filter bar & keyboard card focus cue */
+.profiles-toolbar {
+  position: static;
+  margin-bottom: var(--space-3);
+}
+
+@media (hover: hover) {
+  .profile:focus-visible .profile-switch-hint {
+    opacity: 1;
+  }
+}
+
 

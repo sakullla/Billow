@@ -1,6 +1,7 @@
 <script setup lang="ts">import { tr } from '../lib/i18n'
 
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
@@ -9,6 +10,7 @@ import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
 import YamlEditor from '../components/YamlEditor.vue'
 import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent } from '../lib/format'
+import { matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import { subscriptionUserAgent } from '../lib/subscription'
 import type { OverridePreview, ProfileItem } from '../lib/types'
@@ -19,13 +21,23 @@ import { overrideLanguage, scriptTemplate, yamlTemplate, type OverrideLanguage }
 const findShortcut = shortcutKeyLabel('mod+f').replace(/\s+/g, '')
 const saveShortcut = shortcutKeyLabel('mod+s').replace(/\s+/g, '')
 
-defineProps<{ compact?: boolean }>()
+const props = defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 
 const ordered = computed(() =>
   [...snap.value.profiles].sort((a, b) => Number(b.current) - Number(a.current)),
 )
+const profileQuery = ref('')
+const profileNeedle = computed(() => profileQuery.value.trim().toLowerCase())
+const profileQueryTokens = computed(() => splitQueryTokens(profileQuery.value))
+const filteredProfiles = computed(() => {
+  if (!profileQueryTokens.value.length) return ordered.value
+  return ordered.value.filter((profile) => {
+    const host = profile.kind === 'subscription' ? hostOf(profile.source) : ''
+    return matchesTokens(`${profile.name} ${host}`, profileQueryTokens.value)
+  })
+})
 const subscriptions = computed(() => snap.value.profiles.filter((item) => item.kind === 'subscription').length)
 
 const DUPLICATE_HINT = computed(() => tr('该订阅已存在'))
@@ -81,6 +93,7 @@ async function pasteQuickUrl() {
 
 /** Move focus and the viewport to the profile that already owns this link (R27). */
 async function focusProfileCard(id: string) {
+  if (profileQuery.value) profileQuery.value = ''
   await nextTick()
   const card = document.querySelector<HTMLElement>(`[data-profile="${id}"]`)
   if (!card) return
@@ -101,11 +114,14 @@ async function quickImport() {
     await focusProfileCard(existing.id)
     return
   }
-  const before = snap.value.profiles.length
+  const beforeIds = new Set(snap.value.profiles.map((item) => item.id))
+  const hadActive = Boolean(snap.value.active_id)
   await store.addSubscription(value)
-  if (snap.value.profiles.length > before) {
+  const added = snap.value.profiles.find((item) => !beforeIds.has(item.id))
+  if (added) {
     quickUrl.value = ''
     store.toast(tr('已添加订阅'), 'success')
+    if (!hadActive && !snap.value.active_id) void store.enable(added.id)
   } else {
     quickError.value = snap.value.input_error ?? tr('订阅没有添加')
   }
@@ -717,11 +733,76 @@ function activate(profile: ProfileItem) {
   void store.enable(profile.id)
 }
 
-/** "正在更新 x/y" while running, then the kept result so a page switch loses nothing (R27). */
+function onCardKeydown(event: KeyboardEvent, profile: ProfileItem) {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  const target = event.target as HTMLElement | null
+  if (target && target !== event.currentTarget && target.closest('button, a, input, select, textarea, [role="menuitem"], [role="button"]')) {
+    return
+  }
+  event.preventDefault()
+  activate(profile)
+}
+
+const ctxMenu = ref<{ x: number; y: number; profile: ProfileItem } | null>(null)
+
+function openProfileContextMenu(event: MouseEvent, profile: ProfileItem) {
+  if (props.compact) return
+  event.preventDefault()
+  menuFor.value = null
+  ctxMenu.value = { x: event.clientX, y: event.clientY, profile }
+}
+
+function onProfileContextSelect(item: MenuItem) {
+  const profile = ctxMenu.value?.profile
+  ctxMenu.value = null
+  if (!profile) return
+  selectMenuItem(profile, item)
+}
+
+const REFRESH_RESULT_MS = 4000
+const showRefreshResult = ref(false)
+let refreshResetTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearRefreshResetTimer() {
+  if (refreshResetTimer) {
+    clearTimeout(refreshResetTimer)
+    refreshResetTimer = null
+  }
+}
+
+function scheduleRefreshResultReset() {
+  clearRefreshResetTimer()
+  showRefreshResult.value = true
+  refreshResetTimer = setTimeout(() => {
+    refreshResetTimer = null
+    showRefreshResult.value = false
+  }, REFRESH_RESULT_MS)
+}
+
+watch(
+  () => [store.busy.refreshAll, store.refreshProgress.value.done, store.refreshProgress.value.total] as const,
+  ([busy, done, total]) => {
+    if (busy) {
+      clearRefreshResetTimer()
+      showRefreshResult.value = false
+      return
+    }
+    if (total > 0 && done >= total) {
+      scheduleRefreshResultReset()
+    }
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  clearRefreshResetTimer()
+})
+
+/** "正在更新 x/y" while running, then a brief summary before returning to "全部更新" (R4). */
 const updateAllLabel = computed(() => {
   const progress = store.refreshProgress.value
   if (store.busy.refreshAll) return tr('正在更新 {0}/{1}', { 0: Math.min(progress.done + 1, Math.max(progress.total, 1)), 1: progress.total })
-  if (progress.total && progress.done >= progress.total) {
+  if (showRefreshResult.value && progress.total && progress.done >= progress.total) {
     return progress.failed ? tr('已完成 {0}/{1} · {2} 个失败', { 0: progress.done, 1: progress.total, 2: progress.failed }) : tr('已完成 {0}/{1}', { 0: progress.done, 1: progress.total })
   }
   return tr('全部更新')
@@ -819,6 +900,33 @@ const failedSubscriptionIds = computed(() =>
     </form>
     <p v-if="quickError" id="quick-import-error" class="field-error small" role="alert">{{ quickError }}</p>
 
+    <div v-if="snap.profiles.length > 1 || profileQuery" class="toolbar profiles-toolbar" data-testid="profiles-toolbar">
+      <div class="search grow">
+        <Icon name="search" :size="16" />
+        <input
+          v-model="profileQuery"
+          type="search"
+          :placeholder="tr('筛选配置名称或域名')"
+          data-testid="profile-search"
+          data-page-search
+        />
+        <kbd v-if="!compact && !profileQuery" class="search-kbd" aria-hidden="true">/</kbd>
+        <button
+          v-if="profileQuery"
+          type="button"
+          class="icon-btn sm"
+          :aria-label="tr('清空筛选')"
+          data-testid="clear-profile-search"
+          @click="profileQuery = ''"
+        >
+          <Icon name="x" :size="14" />
+        </button>
+      </div>
+      <span v-if="profileNeedle && filteredProfiles.length > 0" class="toolbar-count small" data-testid="profile-match-count" aria-live="polite">
+        {{ tr('匹配 {0} / {1}', { 0: filteredProfiles.length, 1: ordered.length }) }}
+      </span>
+    </div>
+
     <EmptyState
       v-if="!snap.profiles.length"
       variant="no-data"
@@ -830,17 +938,31 @@ const failedSubscriptionIds = computed(() =>
         <button type="button" class="btn primary sm" @click="store.adding.value = true"><Icon name="plus" :size="15" /> {{ tr('添加配置') }}</button>
       </template>
     </EmptyState>
+    <EmptyState
+      v-else-if="!filteredProfiles.length"
+      compact
+      variant="no-match"
+      :title="tr('没有匹配的配置')"
+      :description="tr('换一个名称或域名关键词试试。')"
+      data-testid="profiles-no-match"
+    >
+      <template #action>
+        <button type="button" class="btn ghost sm" data-testid="clear-profile-filter" @click="profileQuery = ''">{{ tr('清空筛选') }}</button>
+      </template>
+    </EmptyState>
 
-    <div class="profile-grid">
+    <div v-else class="profile-grid">
       <article
-        v-for="profile in ordered"
+        v-for="profile in filteredProfiles"
         :key="profile.id"
         class="card profile"
         :class="{ current: profile.current, failed: profile.failure || profile.override_error, busy: store.busy[`enable:${profile.id}`] }"
         :data-profile="profile.id"
-        tabindex="-1"
+        tabindex="0"
         :aria-current="profile.current ? 'true' : undefined"
         @click="activate(profile)"
+        @keydown="onCardKeydown($event, profile)"
+        @contextmenu="openProfileContextMenu($event, profile)"
       >
         <header class="profile-head">
           <span class="sub-icon"><Icon :name="profile.kind === 'local' ? 'file' : 'link'" /></span>
@@ -1324,5 +1446,15 @@ const failedSubscriptionIds = computed(() =>
         <button type="button" class="btn danger" @click="confirmRemove">{{ tr('删除') }}</button>
       </template>
     </Modal>
+
+    <ContextMenu
+      v-if="ctxMenu"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :items="menuItems(ctxMenu.profile)"
+      :label="tr('配置操作')"
+      @select="onProfileContextSelect"
+      @close="ctxMenu = null"
+    />
   </div>
 </template>

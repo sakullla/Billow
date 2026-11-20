@@ -2,10 +2,12 @@
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChainPath from '../components/ChainPath.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import EmptyState from '../components/EmptyState.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
+import type { MenuItem } from '../components/Menu.vue'
 import Segmented from '../components/Segmented.vue'
 import { autoTypeLabel, canPickNode, compareText, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, protocolLabel, resolveChain, splitNodePrefix } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
@@ -144,9 +146,15 @@ if (!storedOpen && open.value.size > 0) persistOpen()
 watch(sort, (value) => writePref('proxy-sort', value))
 watch(view, (value) => writePref('proxy-view', value))
 
+function readBoolPref(key: string, fallback: boolean): boolean {
+  const value = readPref<unknown>(key, fallback)
+  return typeof value === 'boolean' ? value : fallback
+}
+
 const needle = computed(() => query.value.trim().toLowerCase())
 const queryTokens = computed(() => splitQueryTokens(query.value))
-const hideFailed = ref(false)
+const hideFailed = ref<boolean>(readBoolPref('proxy-hide-failed', false))
+watch(hideFailed, (value) => writePref('proxy-hide-failed', value))
 
 type ViewGroup = NodeGroup & { info?: NodeItem[] }
 
@@ -283,7 +291,11 @@ const groups = computed(() => {
       if (nodes === group.nodes) return group
       return info.length ? { ...group, nodes, info } : { ...group, nodes }
     })
-    .filter((group) => !needle.value || group.nodes.length > 0 || matchesTokens(group.name, queryTokens.value))
+    .filter((group) => {
+      if (needle.value) return group.nodes.length > 0 || matchesTokens(group.name, queryTokens.value)
+      if (hideFailed.value && failedNodeCount.value > 0) return group.nodes.length > 0
+      return true
+    })
 })
 
 const matchCount = computed(() =>
@@ -396,6 +408,65 @@ function nameParts(name: string) {
 
 function copyNodeName(node: NodeItem) {
   void store.copyText(node.name, tr('已复制节点名称：{0}', { 0: node.name }))
+}
+
+const ctxMenu = ref<{ x: number; y: number; items: MenuItem[]; group: NodeGroup; node: NodeItem } | null>(null)
+
+function openNodeContextMenu(event: MouseEvent, group: NodeGroup, node: NodeItem) {
+  if (props.compact) return
+  event.preventDefault()
+  const items: MenuItem[] = []
+  if (canPickNode(group)) {
+    const isAuto = group.kind === 'auto'
+    const busy = Boolean(store.busy[`select:${group.name}`])
+    const alreadyPicked = isAuto ? group.fixed === node.name : node.selected
+    const offlineAuto = isAuto && !snap.value.kernel_running
+    items.push({
+      id: 'pick',
+      label: isAuto ? tr('固定此节点') : tr('选择此节点'),
+      icon: 'check',
+      disabled: alreadyPicked || offlineAuto || busy,
+      reason: busy
+        ? tr('切换中')
+        : alreadyPicked
+          ? (isAuto ? tr('已固定') : tr('当前已选'))
+          : offlineAuto
+            ? tr('未连接')
+            : undefined,
+    })
+  }
+  const testBusy = store.testing.value || store.pendingTests.value.has(node.name)
+  items.push({
+    id: 'test',
+    label: tr('测试延迟'),
+    icon: 'zap',
+    disabled: !snap.value.kernel_running || testBusy,
+    reason: !snap.value.kernel_running ? tr('未连接') : testBusy ? tr('测速中') : undefined,
+  })
+  items.push({
+    id: 'copy',
+    label: tr('复制节点名称'),
+    icon: 'copy',
+  })
+  const nestedAuto = autoOf(node)
+  if (nestedAuto && !nestedAuto.hidden) {
+    items.push({
+      id: 'open-auto',
+      label: tr('查看组策略与成员'),
+      icon: 'chevron-right',
+    })
+  }
+  ctxMenu.value = { x: event.clientX, y: event.clientY, items, group, node }
+}
+
+function onNodeContextSelect(item: MenuItem) {
+  const target = ctxMenu.value
+  ctxMenu.value = null
+  if (!target) return
+  if (item.id === 'pick') pick(target.group, target.node)
+  else if (item.id === 'test') void store.testNode(target.node.name)
+  else if (item.id === 'copy') copyNodeName(target.node)
+  else if (item.id === 'open-auto') openAuto(target.node.name)
 }
 
 function pick(group: NodeGroup, node: NodeItem) {
@@ -822,10 +893,16 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           :key="group.name"
           type="button"
           class="group-pill"
-          :class="{ open: isOpen(group.name), focused: store.focusGroup.value === group.name }"
+          :class="{
+            open: isOpen(group.name),
+            focused: store.focusGroup.value === group.name,
+            testing: store.activeTest.value?.group === group.name,
+          }"
+          :aria-busy="store.activeTest.value?.group === group.name || undefined"
           :data-testid="`jump-group-${group.name}`"
           @click="jumpToGroup(group.name)"
         >
+          <span v-if="store.activeTest.value?.group === group.name" class="group-pill-dot" aria-hidden="true" />
           <span class="group-pill-name">{{ group.name }}</span>
           <span class="group-pill-count mono">{{ group.nodes.length }}</span>
         </button>
@@ -863,7 +940,12 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       data-testid="no-match"
     >
       <template #action>
-        <button type="button" class="btn ghost sm" @click="query = ''; hideFailed = false">{{ tr('清空搜索') }}</button>
+        <button
+          type="button"
+          class="btn ghost sm"
+          data-testid="reset-proxy-filters"
+          @click="query = ''; hideFailed = false"
+        >{{ hideFailed && !needle ? tr('重置筛选') : tr('清空筛选') }}</button>
       </template>
     </EmptyState>
 
@@ -983,7 +1065,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               'failed-node': nodeState(node).failed,
             }"
             :data-node="node.name"
-            @contextmenu.prevent="copyNodeName(node)"
+            @contextmenu="openNodeContextMenu($event, group, node)"
           >
             <button
               type="button"
@@ -1059,5 +1141,15 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         </template>
       </ProxyNodeGrid>
     </section>
+
+    <ContextMenu
+      v-if="ctxMenu"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :items="ctxMenu.items"
+      :label="tr('节点操作')"
+      @select="onNodeContextSelect"
+      @close="ctxMenu = null"
+    />
   </div>
 </template>
