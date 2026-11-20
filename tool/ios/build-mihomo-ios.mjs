@@ -52,14 +52,28 @@ function xcrun(...cmdArgs) {
   return execFileSync('xcrun', cmdArgs, { encoding: 'utf8' }).trim()
 }
 
+// Pin: goVersion is the release toolchain and goVersionPolicy states the
+// accepted range. GOOS=ios requires go1.26.0; the archive records which
+// toolchain linked it (logged below) so release builds use the pinned one.
 function goVersionAtLeast(current, minimum) {
-  const parse = (v) => v.replace(/^go/, '').split('.').map((n) => Number.parseInt(n, 10) || 0)
+  const parse = (v) => v.replace(/^go/, '').split(/[.-]/).map((n) => Number.parseInt(n, 10) || 0)
   const a = parse(current)
   const b = parse(minimum)
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0)
   }
   return true
+}
+
+function checkGo(current) {
+  const iosMinimum = 'go1.26.0'
+
+  if (!goVersionAtLeast(current, iosMinimum)) {
+    throw new Error(`go ${current} cannot target GOOS=ios (needs ${iosMinimum}+)`)
+  }
+  if (current !== pin.goVersion) {
+    console.warn(`go ${current} differs from the pinned ${pin.goVersion}; ${pin.goVersionPolicy ?? ''}`.trim())
+  }
 }
 
 async function download(url, file) {
@@ -92,9 +106,7 @@ function sha256(file) {
 async function main() {
   const opts = args(process.argv.slice(2))
   const go = execFileSync('go', ['version'], { encoding: 'utf8' }).split(' ')[2]
-  if (!goVersionAtLeast(go, pin.minimumGoVersion)) {
-    throw new Error(`go ${go} is older than required ${pin.minimumGoVersion} (GOOS=ios needs Go 1.26+)`)
-  }
+  checkGo(go)
 
   const outDir = path.join(externals, 'arm64', opts.platform)
   const archive = path.join(outDir, 'libmihomo_ios.a')

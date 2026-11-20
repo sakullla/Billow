@@ -48,14 +48,24 @@ done
 # creates it during a signed build, so provide it for the unsigned path too.
 mkdir -p "$root/Externals/arm64/device" "$root/Externals/arm64/simulator"
 (cd "$root" && xcodegen generate)
+# BillowRust's base configuration is rewritten by its "Resolve Rust kernel"
+# phase; xcodebuild needs the file to exist before any phase runs, so seed the
+# unlinked fallback first (the phase replaces it on every build).
+mkdir -p "$root/build/rust-kernel"
+(cd "$root" && sh network-extension/RustExtension/resolve-mihomo.sh)
 
 build_extensions() {
   local sdk=$1 dest=$2
   for target in BillowMihomo BillowRust; do
     echo "== xcodebuild $target ($sdk)"
-    (cd "$root" && xcodebuild build \
+    if (cd "$root" && xcodebuild build \
       -project billow.xcodeproj -scheme "$target" -configuration debug \
-      -sdk "$sdk" -destination "$dest" CODE_SIGNING_ALLOWED=NO -quiet)
+      -sdk "$sdk" -destination "$dest" CODE_SIGNING_ALLOWED=NO -quiet); then
+      echo "ok $target ($sdk)"
+    else
+      echo "failed $target ($sdk)" >&2
+      exit 1
+    fi
   done
 }
 

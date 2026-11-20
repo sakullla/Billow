@@ -9,7 +9,7 @@ in `project.yml`.
 | --- | --- | --- | --- |
 | `billow_iOS` | app | `app.billow.client` | Tauri `Sources/`, `network-extension/Host`, `network-extension/Shared` |
 | `BillowMihomo` | packet-tunnel extension | `app.billow.client.mihomo` | `network-extension/Shared`, `network-extension/MihomoExtension`, `libmihomo_ios.a` |
-| `BillowRust` | packet-tunnel extension (T7 placeholder) | `app.billow.client.rust` | `network-extension/Shared`, `network-extension/RustExtension` |
+| `BillowRust` | packet-tunnel extension (Rust kernel via libapp.a, T7 completes the kernel) | `app.billow.client.rust` | `network-extension/Shared`, `network-extension/RustExtension` |
 
 Both extensions are embedded and signed with the host and carry
 `com.apple.developer.networking.networkextension = packet-tunnel-provider`
@@ -61,6 +61,13 @@ which only works inside `npx tauri ios build` / `tauri ios dev`. Use
 - `packetFlow.readPackets/writePackets` in the iOS 27 SDK use `[Data]`;
   Swift owns one outstanding read (PacketPump) and writePackets is called
   synchronously from Go.
+- BillowRust's base configuration `build/rust-kernel/linked.xcconfig` is a
+  committed seed that the "Resolve Rust kernel" phase rewrites on every build
+  (xcodegen requires the file to exist before any phase runs).
+- Entitlements are static in the three `*.entitlements` files. Ad-hoc signing
+  (`CODE_SIGN_IDENTITY=-`) refuses them for device builds ("entitlements that
+  require signing with a development certificate"), which is the expected
+  behaviour without a Team.
 
 ## Data path (Mihomo extension)
 
@@ -94,13 +101,50 @@ Error codes (`BillowVPNError.domain`, `code`): 0 providerFailed,
 written to the App Group `status/<engine>.json` so the host can explain a
 start failure without a session.
 
-## Rust extension hand-off (T7)
+## Rust extension wiring (T7)
 
-`BILLOW_RUST_PLACEHOLDER` starts, validates the same App Group resources and
-fails with code 4 (`engineNotAvailable`) until T7 supplies
-`rust_tunnel_port_t` (`network-extension/RustExtension/include/billow_rust_bridge.h`)
-via `rustPort` in `BillowRustEngine.swift`. T7 also links its static library
-into `BillowRust` (project.yml `dependencies`/`OTHER_LDFLAGS`).
+BillowRust is startable in both states. Swift owns `startTunnel`, settings and
+`readPackets`; the Rust data plane is reached only through C shims, never
+through `@_silgen_name` (the linker rejects undefined Swift-referenced C
+symbols in an extension):
+
+```
+BillowRustEngine.swift
+  └─ RustKernelBridge.c            (compile-time switch BILLOW_RUST_KERNEL_LINKED)
+       ├─ unlinked: kernel_image_present()=0, start() returns -2
+       │            -> BillowVPNError.engineNotAvailable (code 4)
+       └─ linked:   calls the C ABI of libapp.a
+```
+
+1. `tool/ios/build.sh` (or the BillowRust "Resolve Rust kernel" phase via
+   `network-extension/RustExtension/resolve-mihomo.sh`) looks for
+   `src-tauri/gen/apple/Externals/arm64/rust/libapp.a` (override:
+   `BILLOW_RUST_KERNEL_ARCHIVE`). When the archive contains
+   `billow_ios_vpn_start` it is linked with `-force_load` and
+   `BILLOW_RUST_KERNEL_LINKED=1` is defined for C and Swift. No archive: the
+   extension builds and starts, then fails with code 4 and writes that status
+   to the App Group (`status/rust.json`), so the host engine selector can show
+   and test both engines.
+2. The kernel must implement the C ABI in
+   `network-extension/RustExtension/include/billow_ios_vpn.h`
+   (mirror of `src-tauri/src/ios_vpn.rs`):
+   `billow_ios_vpn_start(port, ctx, home, &err)`,
+   `billow_ios_vpn_drain(packets, maxCount, &count)`,
+   `billow_ios_vpn_write(packet, length)`, `billow_ios_vpn_stop()`,
+   `billow_ios_vpn_version(buf, size)`, `billow_ios_vpn_selected()`,
+   `billow_ios_vpn_free_error(err)`.
+   `billow_ios_vpn_selected()` returns 1 when the app state selects the Rust
+   kernel, 0 for Mihomo and -1 before any state exists (BillowRust reports
+   code 10 `hostNotReady` then).
+3. `home` is `<AppGroup>/versions/<active>/` with the validated `config.yaml`
+   and assets; Rust parses it there and keeps all state under that directory.
+4. Egress: the main route drains Rust output with `drain` (one record =
+   `[4-byte big-endian length][IP packet]`); the kernel wakeup route may call
+   the extension's write callback passed in `port->write` instead.
+5. Error/status parity: Rust must soft-link the extension's Swift glue so both
+   engines report `BillowVPNError.domain` codes and the same status JSON keys
+   listed in `Shared/BillowVPNError.swift` (T7 owns that binding; until then a
+   Rust start failure is reported as code 2 with the Rust message).
 
 For the reverse path (Rust packets into mihomo for fair switching), the
 Mihomo archive exports `GoMihomoLoopbackStart("127.0.0.1:<port>", fraction)`:

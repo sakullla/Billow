@@ -12,6 +12,10 @@ settingGroups:
     base:
       PRODUCT_NAME: Billow
       PRODUCT_BUNDLE_IDENTIFIER: app.billow.client
+      # Single source for host + extension bundle versions; keep in step with
+      # src-tauri/tauri.conf.json "version".
+      MARKETING_VERSION: 0.1.33
+      CURRENT_PROJECT_VERSION: 0.1.33
 targetTemplates:
   app:
     type: application
@@ -59,10 +63,16 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.1.33
-        CFBundleVersion: "0.1.33"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     entitlements:
       path: billow_iOS/billow_iOS.entitlements
+      # xcodegen writes this file from here on every generate.
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.app.billow.client
     dependencies:
       - target: BillowMihomo
         embed: true
@@ -76,7 +86,6 @@ targets:
         RUST_LOG: info
     settings:
       base:
-        ENABLE_BITCODE: false
         ARCHS: [arm64]
         VALID_ARCHS: arm64 
         LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
@@ -116,18 +125,20 @@ targets:
       - path: network-extension/Shared
       - path: network-extension/MihomoExtension
         excludes: ["Info.plist"]
-      - path: ../../../tool/ios/mihomo-resolv-stub.c
     info:
       path: network-extension/MihomoExtension/Info.plist
     entitlements:
       path: network-extension/MihomoExtension/BillowMihomo.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.app.billow.client
     settings:
       base:
         PRODUCT_NAME: BillowMihomo
         PRODUCT_BUNDLE_IDENTIFIER: app.billow.client.mihomo
         PRODUCT_MODULE_NAME: BillowMihomo
-        MARKETING_VERSION: 0.1.33
-        CURRENT_PROJECT_VERSION: 0.1.33
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: BILLOW_ENGINE_MIHOMO
         SWIFT_VERSION: "5.0"
         CODE_SIGN_ENTITLEMENTS: network-extension/MihomoExtension/BillowMihomo.entitlements
@@ -150,7 +161,7 @@ targets:
         # Explicit link line: the c-archive header cannot declare a module with
         # linkable=true through the generated header alone, so the library is
         # linked directly.
-        OTHER_LDFLAGS[sdk=iphonesimulator*]: $(inherited) -all_load -L$(SRCROOT)/Externals/arm64/simulator -lmihomo_ios
+        OTHER_LDFLAGS[sdk=iphonesimulator*]: $(inherited) -all_load -lmihomo_ios
     dependencies:
       - sdk: NetworkExtension.framework
       - sdk: CryptoKit.framework
@@ -166,14 +177,35 @@ targets:
       path: network-extension/RustExtension/Info.plist
     entitlements:
       path: network-extension/RustExtension/BillowRust.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.app.billow.client
+    # Finds libapp.a (tool/ios/build.sh copy) and rewrites
+    # build/rust-kernel/linked.xcconfig before the build description is
+    # created; without the archive the engineNotAvailable path is used.
+    preBuildScripts:
+      - name: Resolve Rust kernel
+        script: |
+          set -eu
+          sh "${SRCROOT}/network-extension/RustExtension/resolve-mihomo.sh"
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(SRCROOT)/network-extension/RustExtension/resolve-symbol.sh
+          - $(SRCROOT)/network-extension/RustExtension/resolve-mihomo.sh
+        outputFiles:
+          - $(SRCROOT)/build/rust-kernel/linked.xcconfig
     settings:
       base:
         PRODUCT_NAME: BillowRust
         PRODUCT_BUNDLE_IDENTIFIER: app.billow.client.rust
         PRODUCT_MODULE_NAME: BillowRust
-        MARKETING_VERSION: 0.1.33
-        CURRENT_PROJECT_VERSION: 0.1.33
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: BILLOW_ENGINE_RUST BILLOW_RUST_PLACEHOLDER
+        # The Rust kernel is wired through C shims (RustKernelBridge.c).
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: BILLOW_ENGINE_RUST
+        OTHER_SWIFT_FLAGS: $(inherited) $(BILLOW_RUST_KERNEL_SWIFT_FLAGS)
+        GCC_PREPROCESSOR_DEFINITIONS: $(inherited) $(BILLOW_RUST_KERNEL_DEFINES)
+        # Other link inputs come from build/rust-kernel/linked.xcconfig.
         SWIFT_OBJC_BRIDGING_HEADER: network-extension/RustExtension/BillowRust-Bridging-Header.h
         SWIFT_VERSION: "5.0"
         CODE_SIGN_ENTITLEMENTS: network-extension/RustExtension/BillowRust.entitlements
@@ -181,6 +213,9 @@ targets:
         SKIP_INSTALL: YES
         APPLICATION_EXTENSION_API_ONLY: YES
         ENABLE_BITCODE: false
+    configFiles:
+      debug: build/rust-kernel/linked.xcconfig
+      release: build/rust-kernel/linked.xcconfig
     dependencies:
       - sdk: NetworkExtension.framework
       - sdk: CryptoKit.framework

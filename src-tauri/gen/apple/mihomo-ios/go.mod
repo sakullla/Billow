@@ -141,4 +141,5 @@ require (
 	google.golang.org/protobuf v1.34.2 // indirect
 )
 
-replace github.com/metacubex/mihomo => /tmp/mihomo-probe/src/mihomo-0455d0d28c4526937380505153e65a843d8612e8
+// No replace directive: build-mihomo-ios.mjs points this module at the
+// sha256-verified checkout of the pinned commit (tool/ios/mihomo-ios.json).

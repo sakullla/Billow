@@ -19,7 +19,9 @@ enum BillowEngineIdentity {
         Bundle.main.bundleIdentifier ?? "unknown"
     }
 
-    /// Host fallback when NETunnelProviderProtocol carries no App Group.
+    /// The App Group from the entitlements (all three targets share
+    /// billow_iOS/BillowMihomo/BillowRust entitlements). Host fallback when
+    /// NETunnelProviderProtocol carries no App Group.
     static var defaultAppGroup: String {
         "group.app.billow.client"
     }

@@ -2,6 +2,10 @@
 
 #include "billow_mihomo_bridge.h"
 
+// libresolv compatibility for the Go runtime (definitions compiled once).
+#define BILLOW_IOS_STUB_IMPLEMENTATION
+#include "mihomo-resolv-stub.c"
+
 // Thin C shim over the Go exports of libmihomo_ios.a
 // (src-tauri/gen/apple/mihomo-ios/bridge.go, declared in
 // include/billow_mihomo_bridge.h). Swift entry points are in

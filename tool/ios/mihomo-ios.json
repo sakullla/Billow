@@ -9,10 +9,10 @@
     "cmfa"
   ],
   "archiveUrl": "https://codeload.github.com/MetaCubeX/mihomo/tar.gz/0455d0d28c4526937380505153e65a843d8612e8",
-  "minimumGoVersion": "go1.26.0",
   "ldflags": {
     "main.version": "v1.19.34"
   },
   "buildMode": "c-archive",
-  "moduleName": "billow_mihomo_bridge"
+  "moduleName": "billow_mihomo_bridge",
+  "goVersionPolicy": "toolchain Go >= go1.26.0 (GOOS=ios); the pinned goVersion is the release toolchain"
 }

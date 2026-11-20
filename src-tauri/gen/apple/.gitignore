@@ -1,5 +1,8 @@
 xcuserdata/
-build/
 Externals/
-# xcodebuild output (tool/ios/build.sh runs xcodegen + xcodebuild here)
-build/
+# xcodebuild output; the seed of build/rust-kernel/linked.xcconfig below is
+# rewritten by the BillowRust "Resolve Rust kernel" phase on every build.
+build/*
+!build/rust-kernel/
+build/rust-kernel/*
+!build/rust-kernel/linked.xcconfig

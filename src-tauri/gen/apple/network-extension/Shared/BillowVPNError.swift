@@ -19,6 +19,7 @@ enum BillowVPNError {
         case loopbackFailed = 7
         case unsupportedCommand = 8
         case tunnelSetupFailed = 9
+        case hostNotReady = 10
     }
 
     static func make(_ code: Code, _ detail: String, underlying: Error? = nil) -> NSError {

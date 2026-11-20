@@ -15,40 +15,45 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
     private var pathMonitor: NWPathMonitor?
     private var groupId: String?
     private var stopping = false
+    private var startCompleted = false
     private let commandQueue = DispatchQueue(label: "billow.mihomo.commands")
 
     override func startTunnel(options: [String: NSObject]?,
                               completionHandler: @escaping (Error?) -> Void) {
         stopping = false
+        startCompleted = false
         let proto = protocolConfiguration as? NETunnelProviderProtocol
         groupId = BillowEngineIdentity.appGroup(from: proto)
         guard let group = groupId, let store = AppGroupStore(groupId: group) else {
-            finishStart(error: BillowVPNError.make(.resourceInvalid,
-                                                   "App Group \(groupId ?? "?") unavailable (entitlement missing?)"),
-                        completionHandler: completionHandler)
+            completeStart(error: BillowVPNError.make(.resourceInvalid,
+                                                     "App Group \(groupId ?? "?") unavailable (entitlement missing?)"),
+                          completionHandler: completionHandler)
             return
         }
         let eng = BillowMihomoEngine(provider: self)
         engine = eng
+        // Loads config.yaml and starts the gVisor stack; completion may run on
+        // a background queue.
         eng.start(store: store, requestedVersion: proto?.requestedVersion) { [weak self] error in
             guard let self else {
                 completionHandler(BillowVPNError.make(.tunnelSetupFailed, "provider deallocated"))
                 return
             }
             if let error {
-                self.fail(error, completionHandler: completionHandler)
+                self.completeStart(error: error, completionHandler: completionHandler)
                 return
             }
-            if let version = eng.version, let (manifest, _) = try? store.validatedResources(version, expectedEngine: BillowEngineIdentity.engine) {
+            if let version = eng.version,
+               let (manifest, _) = try? store.validatedResources(version, expectedEngine: BillowEngineIdentity.engine) {
                 eng.startLoopback(manifest: manifest)
             }
             self.configureNetwork { [weak self] settingsError in
                 guard let self else { return }
                 if let settingsError {
-                    eng.shutdown()
-                    self.engine = nil
-                    self.fail(BillowVPNError.make(.tunnelSetupFailed, "setTunnelNetworkSettings: \(settingsError)",
-                                                  underlying: settingsError), completionHandler: completionHandler)
+                    self.completeStart(error: BillowVPNError.make(.tunnelSetupFailed,
+                                                                  "setTunnelNetworkSettings: \(settingsError)",
+                                                                  underlying: settingsError),
+                                       completionHandler: completionHandler)
                     return
                 }
                 let pump = PacketPump(flow: self.packetFlow, ingest: mihomoIngest) { [weak self] failure in
@@ -58,31 +63,17 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
                 pump.start()
                 eng.markRunning()
                 self.startPathMonitor()
-                self.publishStatus()
-                completionHandler(nil)
+                self.completeStart(error: nil, completionHandler: completionHandler)
             }
         }
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         log.info("stopTunnel reason=\(reason.rawValue)")
-        stopping = true
-        pathMonitor?.cancel()
-        pathMonitor = nil
-        pump?.stop()
-        pump = nil
-        engine?.shutdown()
-        engine = nil
+        teardown()
         publishStatus()
         completionHandler()
     }
-
-    override func sleep(completionHandler: @escaping () -> Void) {
-        // The stack keeps its NAT state; iOS suspends the extension anyway.
-        completionHandler()
-    }
-
-    override func wake() {}
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         commandQueue.async { [weak self] in
@@ -121,8 +112,8 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
                 if eng.networkChanged() {
                     // Restarting the tunnel is how Network Extension expects a
                     // path change the engine cannot follow to be handled.
-                    self.restartTunnel(error: BillowVPNError.make(.networkUnavailable,
-                                                                  "engine could not follow the new network path"))
+                    self.runtimeFailure(BillowVPNError.make(.networkUnavailable,
+                                                            "engine could not follow the new network path"))
                 }
             }
         }
@@ -192,33 +183,29 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Failure paths
 
-    private func fail(_ error: Error, completionHandler: @escaping (Error?) -> Void) {
-        let ns = error as NSError
-        let mapped = ns.domain == BillowVPNError.domain
-            ? ns
-            : BillowVPNError.make(BillowVPNError.classify(error), "\(error)", underlying: error)
-        log.error("startTunnel failed: \(mapped.localizedDescription)")
-        engine?.shutdown()
-        engine = nil
-        publishStatus(lastError: mapped)
-        completionHandler(mapped)
+    /// Completes start exactly once: the error is reported to the system (and
+    /// the App Group status) and the engine is torn down.
+    private func completeStart(error: Error?, completionHandler: (Error?) -> Void) {
+        guard !startCompleted else {
+            log.warning("startTunnel completed twice; ignoring \(error.map { "\($0)" } ?? "success")")
+            return
+        }
+        startCompleted = true
+        if let error {
+            let ns = error as NSError
+            let mapped = ns.domain == BillowVPNError.domain
+                ? ns
+                : BillowVPNError.make(BillowVPNError.classify(error), "\(error)", underlying: error)
+            teardown()
+            publishStatus(lastError: mapped)
+            completionHandler(mapped)
+            return
+        }
+        publishStatus()
+        completionHandler(nil)
     }
 
-    /// The pump saw an unrecoverable read/ingest failure.
-    private func handlePumpFailure(_ failure: NSError?) {
-        guard !stopping else { return }
-        let error = failure ?? BillowVPNError.make(.engineStopped, "packet pump stopped")
-        restartTunnel(error: error)
-    }
-
-    /// The engine cannot continue on a path change, or the pump failed: stop
-    /// the engine, report the error and ask the system to restart the tunnel by
-    /// asserting the reasserting state then cancelling settings. Network
-    /// Extension shows the error through NEVPNConnection.lastDisconnectError
-    /// only for provider-initiated stops, so the status file is refreshed too.
-    private func restartTunnel(error: NSError) {
-        guard !stopping else { return }
-        log.error("restarting tunnel: \(error.localizedDescription)")
+    private func teardown() {
         stopping = true
         pathMonitor?.cancel()
         pathMonitor = nil
@@ -226,24 +213,27 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
         pump = nil
         engine?.shutdown()
         engine = nil
-        publishStatus(lastError: error)
-        reasserting = true
-        let restart = { (completion: @escaping (Error?) -> Void) in
-            completion(BillowVPNError.make(.engineStopped, error.localizedDescription, underlying: error))
-        }
-        setTunnelNetworkSettings(nil) { _ in
-            restart { [weak self] failure in
-                guard let self else { return }
-                self.reasserting = false
-                self.stopping = false
-                self.fail(failure ?? error, completionHandler: { _ in })
-            }
-        }
     }
 
-    private func finishStart(error: Error, completionHandler: @escaping (Error?) -> Void) {
-        publishStatus(lastError: error as NSError)
-        completionHandler(error)
+    /// The pump saw an unrecoverable read/ingest failure after start.
+    private func handlePumpFailure(_ failure: NSError?) {
+        guard !stopping else { return }
+        let error = failure ?? BillowVPNError.make(.engineStopped, "packet pump stopped")
+        runtimeFailure(error)
+    }
+
+    /// Unrecoverable runtime error (path change the engine cannot follow, or
+    /// pump failure) after startTunnel succeeded. Start is already completed,
+    /// so this never calls a completion handler: the error is published to the
+    /// App Group and `cancelTunnelWithError` tells the system to stop the
+    /// tunnel and surface the error (NEVPNConnection.lastDisconnectError). The
+    /// system may restart the extension, which runs startTunnel again.
+    private func runtimeFailure(_ error: NSError) {
+        guard !stopping else { return }
+        log.error("runtime failure: \(error.localizedDescription)")
+        teardown()
+        publishStatus(lastError: error)
+        cancelTunnelWithError(error)
     }
 
     private func publishStatus(lastError: NSError? = nil) {

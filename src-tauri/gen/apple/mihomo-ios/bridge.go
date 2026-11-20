@@ -182,8 +182,9 @@ func loadConfig() error {
 func fail(errOut **C.char, format string, args ...any) C.int {
 	if errOut != nil {
 		*errOut = C.CString(fmt.Sprintf(format, args...))
+		return -1
 	}
-	return -1
+	return -3
 }
 
 var (
@@ -220,12 +221,15 @@ func GoMihomoStart(home *C.char, writeCB C.uintptr_t, checkNetworkCB C.uintptr_t
 		current.close()
 		current = nil
 	}
-	if writeCB == 0 {
-		return fail(errOut, "mihomo: missing write callback")
+	if home == nil {
+		return fail(errOut, "mihomo: empty home directory")
 	}
 	dir := C.GoString(home)
 	if dir == "" {
 		return fail(errOut, "mihomo: empty home directory")
+	}
+	if writeCB == 0 {
+		return fail(errOut, "mihomo: missing write callback")
 	}
 	Cst.SetHomeDir(dir)
 	if err := config.Init(dir); err != nil {
@@ -243,7 +247,11 @@ func GoMihomoStart(home *C.char, writeCB C.uintptr_t, checkNetworkCB C.uintptr_t
 		return fail(errOut, "mihomo: %v", err)
 	}
 	current = in
-	log.Infoln("[iOS] mihomo %s embedded, home=%s tun=%s", version, dir, in.tunnel.Address())
+	if in.tunnel != nil {
+		log.Infoln("[iOS] mihomo %s embedded, home=%s tun=%s", version, dir, in.tunnel.Address())
+	} else {
+		log.Infoln("[iOS] mihomo %s embedded, home=%s", version, dir)
+	}
 	return 0
 }
 
