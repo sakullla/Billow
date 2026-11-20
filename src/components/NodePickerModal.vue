@@ -11,6 +11,7 @@ import {
   delayText,
   delayTone,
   effectiveGroupDelay,
+  groupTypeLabel,
   isInfoNode,
   protocolLabel,
   resolveChain,
@@ -49,8 +50,27 @@ watch(
 const isSwitching = computed(
   () => switchingNode.value !== null || unfixing.value || Boolean(store.busy[`select:${props.group.name}`]),
 )
+const offlineAutoGroup = computed(() => !snap.value.kernel_running && props.group.kind !== 'manual')
+const rowDisabled = computed(() => isSwitching.value || offlineAutoGroup.value)
 
+const catalogByName = computed(() => new Map(snap.value.node_catalog.map((item) => [item.name, item])))
 const groupNames = computed(() => new Set(snap.value.node_catalog.map((item) => item.name)))
+
+function nestedGroupOf(node: NodeItem): NodeGroup | null {
+  return catalogByName.value.get(node.name) ?? null
+}
+
+function viaOf(node: NodeItem): string {
+  const chain = resolveChain(node.name, snap.value.node_catalog)
+  return chain[chain.length - 1] ?? catalogByName.value.get(node.name)?.now ?? ''
+}
+
+function tagLabel(node: NodeItem, tag: string): string {
+  if (tag === 'chained') {
+    return node.dialer_proxy ? tr('链式 · {0}', { 0: node.dialer_proxy }) : tr('链式')
+  }
+  return tag
+}
 
 const currentHops = computed(() => {
   const chain = resolveChain(props.group.name, snap.value.node_catalog)
@@ -87,7 +107,15 @@ const filteredNodes = computed(() => {
   return props.group.nodes.filter((node) => {
     if (!tokens.length && !node.selected && isInfoNode(node.name)) return false
     if (!tokens.length) return true
-    const haystack = `${node.name} ${node.node_type} ${protocolLabel(node.node_type)} ${node.tags.join(' ')}`
+    const haystack = [
+      node.name,
+      node.node_type,
+      protocolLabel(node.node_type),
+      node.dialer_proxy ?? '',
+      viaOf(node),
+      ...node.tags,
+      ...node.tags.map((tag) => tagLabel(node, tag)),
+    ].join(' ')
     return matchesTokens(haystack, tokens)
   })
 })
@@ -132,7 +160,7 @@ function initialFocus(): HTMLElement | null | undefined {
 }
 
 async function pickNode(node: NodeItem, fastestDelay?: number) {
-  if (!canPickNode(props.group) || isSwitching.value) return
+  if (!canPickNode(props.group) || isSwitching.value || offlineAutoGroup.value) return
   const alreadyNoop = props.group.kind === 'manual' ? isSelected(node) : props.group.fixed === node.name
   if (alreadyNoop) {
     failedNode.value = null
@@ -316,7 +344,7 @@ function openInProxies() {
       </div>
 
       <p v-if="!snap.kernel_running" class="muted small node-picker-offline" data-testid="node-picker-offline-hint">
-        {{ tr('未连接时无法测速或恢复自动，连接后可用。') }}
+        {{ offlineAutoGroup ? tr('内核没有运行，连接后才能固定节点、测速或恢复自动。') : tr('未连接时无法测速或恢复自动，连接后可用。') }}
       </p>
 
       <EmptyState
@@ -357,9 +385,11 @@ function openInProxies() {
             :class="{ active: isSelected(node), switching: switchingNode === node.name }"
             :data-picker-node="node.name"
             :data-testid="`picker-node-${node.name}`"
+            :disabled="offlineAutoGroup"
+            :title="offlineAutoGroup ? tr('内核没有运行，连接后才能固定节点') : undefined"
             :aria-current="isSelected(node) ? 'true' : undefined"
             :aria-busy="switchingNode === node.name || undefined"
-            :aria-disabled="isSwitching || undefined"
+            :aria-disabled="rowDisabled || undefined"
             :aria-describedby="failedNode?.name === node.name ? `picker-error-${index}` : undefined"
             @click="pickNode(node)"
           >
@@ -374,9 +404,24 @@ function openInProxies() {
                 <span v-if="group.fixed === node.name" class="tag accent sm">{{ tr('已固定') }}</span>
                 <span v-else-if="isSelected(node)" class="tag accent sm" data-testid="picker-current-tag">{{ tr('当前') }}</span>
               </span>
-              <span class="node-picker-meta muted small">
+              <span v-if="nestedGroupOf(node)" class="node-picker-meta muted small" data-testid="picker-node-via">
+                <span class="node-picker-strategy">{{ groupTypeLabel(nestedGroupOf(node)!) }}</span>
+                <span class="node-picker-via-target" :title="viaOf(node) || undefined">
+                  {{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? tr('→ 等待测速') : tr('→ 连接后显示') }}
+                </span>
+              </span>
+              <span v-else class="node-picker-meta muted small" data-testid="picker-node-meta">
                 <span v-if="protocolLabel(node.node_type)">{{ protocolLabel(node.node_type) }}</span>
-                <span v-for="tag in node.tags" :key="tag" class="udp">{{ tag }}</span>
+                <span
+                  v-for="tag in node.tags"
+                  :key="tag"
+                  class="udp"
+                  :class="{ chained: tag === 'chained' }"
+                >{{ tagLabel(node, tag) }}</span>
+                <span
+                  v-if="node.dialer_proxy && !node.tags.includes('chained')"
+                  class="udp chained"
+                >{{ tr('链式 · {0}', { 0: node.dialer_proxy }) }}</span>
               </span>
             </span>
 

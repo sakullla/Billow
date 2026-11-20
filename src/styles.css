@@ -8421,7 +8421,8 @@ details.cfg-section[open] .cfg-fold-icon {
   width: 100%;
 }
 
-.node-picker-row[aria-disabled='true']:not(.switching) {
+.node-picker-row[aria-disabled='true']:not(.switching),
+.node-picker-row:disabled {
   opacity: 0.62;
   cursor: not-allowed;
 }
@@ -8461,7 +8462,9 @@ details.cfg-section[open] .cfg-fold-icon {
 .node-picker-meta {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
 }
 
 .node-picker-meta .udp {
@@ -8472,6 +8475,18 @@ details.cfg-section[open] .cfg-fold-icon {
   background: var(--sunken);
   border: 1px solid var(--border);
   color: var(--text-2);
+}
+
+.node-picker-meta .udp.chained {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent-ink);
+}
+
+.node-picker-via-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .node-picker-side {

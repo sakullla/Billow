@@ -179,14 +179,21 @@ describe('Core workflow polish (R1–R2)', () => {
       expect(body().find('[data-testid="home-node-picker"]').exists()).toBe(false)
       expect(wrapper.find('[data-testid="groups-card"] [data-group="自动选择"] [data-testid="home-group-fixed"]').exists()).toBe(true)
 
-      // Reopen while disconnected -> test & unfix are disabled with explicit titles
+      // Reopen while disconnected -> test, unfix, and auto-group node rows are disabled with explicit titles
+      const selectSpy = vi.spyOn(backend, 'selectNode')
       await wrapper.find('[data-testid="power"]').trigger('click')
       await settle(1200)
       await wrapper.find('[data-testid="groups-card"] [data-group="自动选择"]').trigger('click')
       await flushPromises()
       expect(body().find('[data-testid="node-picker-test"]').attributes('disabled')).toBeDefined()
       expect(body().find('[data-testid="node-picker-unfix"]').attributes('disabled')).toBeDefined()
-      expect(body().find('[data-testid="node-picker-offline-hint"]').exists()).toBe(true)
+      expect(body().find('[data-testid="node-picker-offline-hint"]').text()).toContain('连接后才能固定节点')
+      const offlineAutoRow = body().find('[data-testid="picker-node-香港 01"]')
+      expect(offlineAutoRow.attributes('disabled')).toBeDefined()
+      expect(offlineAutoRow.attributes('title')).toContain('内核没有运行，连接后才能固定节点')
+      await offlineAutoRow.trigger('click')
+      await flushPromises()
+      expect(selectSpy).not.toHaveBeenCalled()
 
       // Close, reconnect, reopen and click 恢复自动
       await body().find('.modal-head .icon-btn').trigger('click')
@@ -216,6 +223,65 @@ describe('Core workflow polish (R1–R2)', () => {
       await hardwareBack()
       expect(body().find('[data-testid="home-node-picker"]').exists()).toBe(false)
       expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+    })
+
+    it('renders translated chained tag, nested policy group target, and matches dialer_proxy in search', async () => {
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      const store = storeOf(wrapper)
+
+      // Inject a chained node with dialer_proxy into 节点选择
+      store.snapshot.value = {
+        ...store.snapshot.value,
+        node_catalog: store.snapshot.value.node_catalog.map((group) =>
+          group.name === '节点选择'
+            ? {
+                ...group,
+                nodes: [
+                  ...group.nodes,
+                  {
+                    name: '落地专线 01',
+                    delay_ms: 88,
+                    failed: false,
+                    selected: false,
+                    node_type: 'vless',
+                    tags: ['UDP', 'chained'],
+                    dialer_proxy: '前置中转 HK',
+                  },
+                ],
+              }
+            : group,
+        ),
+      }
+      await flushPromises()
+
+      await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
+      await flushPromises()
+
+      // Nested policy group entry shows → target
+      const nestedRow = body().find('[data-testid="picker-node-自动选择"]')
+      expect(nestedRow.exists()).toBe(true)
+      const nestedVia = nestedRow.find('[data-testid="picker-node-via"]')
+      expect(nestedVia.exists()).toBe(true)
+      expect(nestedVia.text()).toContain('→')
+
+      // Chained node translates 'chained' tag (never renders raw 'chained')
+      const chainedRow = body().find('[data-testid="picker-node-落地专线 01"]')
+      expect(chainedRow.exists()).toBe(true)
+      expect(chainedRow.text()).toContain('链式 · 前置中转 HK')
+      expect(chainedRow.text()).not.toContain('chained')
+
+      // Search matches dialer_proxy
+      const search = body().find('[data-testid="node-picker-search"]')
+      await search.setValue('前置中转')
+      await flushPromises()
+      const filtered = body().findAll('[data-picker-node]')
+      expect(filtered.map((el) => el.attributes('data-picker-node'))).toEqual(['落地专线 01'])
+
+      // English localization translates chained tag as well
+      locale.value = 'en'
+      await flushPromises()
+      expect(body().find('[data-testid="picker-node-落地专线 01"]').text()).toContain('Chained · 前置中转 HK')
     })
   })
 
