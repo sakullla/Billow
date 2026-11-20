@@ -1,0 +1,2592 @@
+{
+  "format": "kernel-capability-index",
+  "version": 1,
+  "generatedFrom": "locked Mihomo source tree (static extraction)",
+  "engine": "mihomo",
+  "upstream": {
+    "repository": "MetaCubeX/mihomo",
+    "version": "v1.19.34",
+    "commit": "0455d0d28c4526937380505153e65a843d8612e8",
+    "archiveSha256": "db0cc4145fe4024e9c2386bd4768bf23a69c8789610d56d7243819e2f77c0cfe",
+    "treeSha256": "6c5b1ab2e42716fbd99fb549fc37cec1ded55e257b12b74cd3e25b415c294269",
+    "goDirective": "1.20",
+    "androidBuildTags": [
+      "with_gvisor",
+      "cmfa"
+    ],
+    "notes": [
+      "the desktop manifest pins only release binaries; the source identity here comes from the Android manifest and the observed archive checksum",
+      "static extraction reads declarations; it cannot prove runtime behaviour of a field, which is what the differential fixtures are for"
+    ],
+    "desktopVersion": "v1.19.34",
+    "androidCommit": "0455d0d28c4526937380505153e65a843d8612e8"
+  },
+  "configFields": [
+    {
+      "name": "port",
+      "goName": "Port",
+      "goType": "int",
+      "source": "config/config.go:405",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "socks-port",
+      "goName": "SocksPort",
+      "goType": "int",
+      "source": "config/config.go:406",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "redir-port",
+      "goName": "RedirPort",
+      "goType": "int",
+      "source": "config/config.go:407",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "tproxy-port",
+      "goName": "TProxyPort",
+      "goType": "int",
+      "source": "config/config.go:408",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "mixed-port",
+      "goName": "MixedPort",
+      "goType": "int",
+      "source": "config/config.go:409",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "ss-config",
+      "goName": "ShadowSocksConfig",
+      "goType": "string",
+      "source": "config/config.go:410",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "vmess-config",
+      "goName": "VmessConfig",
+      "goType": "string",
+      "source": "config/config.go:411",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "inbound-tfo",
+      "goName": "InboundTfo",
+      "goType": "bool",
+      "source": "config/config.go:412",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "inbound-mptcp",
+      "goName": "InboundMPTCP",
+      "goType": "bool",
+      "source": "config/config.go:413",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "authentication",
+      "goName": "Authentication",
+      "goType": "[]string",
+      "source": "config/config.go:414",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "skip-auth-prefixes",
+      "goName": "SkipAuthPrefixes",
+      "goType": "[]netip.Prefix",
+      "source": "config/config.go:415",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "lan-allowed-ips",
+      "goName": "LanAllowedIPs",
+      "goType": "[]netip.Prefix",
+      "source": "config/config.go:416",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "lan-disallowed-ips",
+      "goName": "LanDisAllowedIPs",
+      "goType": "[]netip.Prefix",
+      "source": "config/config.go:417",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "allow-lan",
+      "goName": "AllowLan",
+      "goType": "bool",
+      "source": "config/config.go:418",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "bind-address",
+      "goName": "BindAddress",
+      "goType": "string",
+      "source": "config/config.go:419",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "mode",
+      "goName": "Mode",
+      "goType": "T.TunnelMode",
+      "source": "config/config.go:420",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "unified-delay",
+      "goName": "UnifiedDelay",
+      "goType": "bool",
+      "source": "config/config.go:421",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "log-level",
+      "goName": "LogLevel",
+      "goType": "log.LogLevel",
+      "source": "config/config.go:422",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "ipv6",
+      "goName": "IPv6",
+      "goType": "bool",
+      "source": "config/config.go:423",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-controller",
+      "goName": "ExternalController",
+      "goType": "string",
+      "source": "config/config.go:424",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-controller-routing-mark",
+      "goName": "ExternalControllerRoutingMark",
+      "goType": "int",
+      "source": "config/config.go:425",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-controller-pipe",
+      "goName": "ExternalControllerPipe",
+      "goType": "string",
+      "source": "config/config.go:426",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-controller-unix",
+      "goName": "ExternalControllerUnix",
+      "goType": "string",
+      "source": "config/config.go:427",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-controller-tls",
+      "goName": "ExternalControllerTLS",
+      "goType": "string",
+      "source": "config/config.go:428",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-controller-cors",
+      "goName": "ExternalControllerCors",
+      "goType": "RawCors",
+      "source": "config/config.go:429",
+      "nested": {
+        "struct": "RawCors",
+        "fields": [
+          {
+            "name": "AllowOrigins",
+            "goType": "[]string",
+            "yaml": "allow-origins",
+            "json": "allow-origins",
+            "line": 217
+          },
+          {
+            "name": "AllowPrivateNetwork",
+            "goType": "bool",
+            "yaml": "allow-private-network",
+            "json": "allow-private-network",
+            "line": 218
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "external-ui",
+      "goName": "ExternalUI",
+      "goType": "string",
+      "source": "config/config.go:430",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-ui-url",
+      "goName": "ExternalUIURL",
+      "goType": "string",
+      "source": "config/config.go:431",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-ui-name",
+      "goName": "ExternalUIName",
+      "goType": "string",
+      "source": "config/config.go:432",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "external-doh-server",
+      "goName": "ExternalDohServer",
+      "goType": "string",
+      "source": "config/config.go:433",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "secret",
+      "goName": "Secret",
+      "goType": "string",
+      "source": "config/config.go:434",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "interface-name",
+      "goName": "Interface",
+      "goType": "string",
+      "source": "config/config.go:435",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "routing-mark",
+      "goName": "RoutingMark",
+      "goType": "int",
+      "source": "config/config.go:436",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "tunnels",
+      "goName": "Tunnels",
+      "goType": "[]LC.Tunnel",
+      "source": "config/config.go:437",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "geo-auto-update",
+      "goName": "GeoAutoUpdate",
+      "goType": "bool",
+      "source": "config/config.go:438",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "geo-update-interval",
+      "goName": "GeoUpdateInterval",
+      "goType": "int",
+      "source": "config/config.go:439",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "geodata-mode",
+      "goName": "GeodataMode",
+      "goType": "bool",
+      "source": "config/config.go:440",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "geodata-loader",
+      "goName": "GeodataLoader",
+      "goType": "string",
+      "source": "config/config.go:441",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "geosite-matcher",
+      "goName": "GeositeMatcher",
+      "goType": "string",
+      "source": "config/config.go:442",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "tcp-concurrent",
+      "goName": "TCPConcurrent",
+      "goType": "bool",
+      "source": "config/config.go:443",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "find-process-mode",
+      "goName": "FindProcessMode",
+      "goType": "process.FindProcessMode",
+      "source": "config/config.go:444",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "global-client-fingerprint",
+      "goName": "GlobalClientFingerprint",
+      "goType": "string",
+      "source": "config/config.go:445",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "global-ua",
+      "goName": "GlobalUA",
+      "goType": "string",
+      "source": "config/config.go:446",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "etag-support",
+      "goName": "ETagSupport",
+      "goType": "bool",
+      "source": "config/config.go:447",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "keep-alive-idle",
+      "goName": "KeepAliveIdle",
+      "goType": "int",
+      "source": "config/config.go:448",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "keep-alive-interval",
+      "goName": "KeepAliveInterval",
+      "goType": "int",
+      "source": "config/config.go:449",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "disable-keep-alive",
+      "goName": "DisableKeepAlive",
+      "goType": "bool",
+      "source": "config/config.go:450",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "proxy-providers",
+      "goName": "ProxyProvider",
+      "goType": "map[string]map[string]any",
+      "source": "config/config.go:452",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "rule-providers",
+      "goName": "RuleProvider",
+      "goType": "map[string]map[string]any",
+      "source": "config/config.go:453",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "proxies",
+      "goName": "Proxy",
+      "goType": "[]map[string]any",
+      "source": "config/config.go:454",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "proxy-groups",
+      "goName": "ProxyGroup",
+      "goType": "[]map[string]any",
+      "source": "config/config.go:455",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "rules",
+      "goName": "Rule",
+      "goType": "[]string",
+      "source": "config/config.go:456",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "sub-rules",
+      "goName": "SubRules",
+      "goType": "map[string][]string",
+      "source": "config/config.go:457",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "listeners",
+      "goName": "Listeners",
+      "goType": "[]map[string]any",
+      "source": "config/config.go:458",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "hosts",
+      "goName": "Hosts",
+      "goType": "map[string]any",
+      "source": "config/config.go:459",
+      "nested": null,
+      "rustMapping": null
+    },
+    {
+      "name": "dns",
+      "goName": "DNS",
+      "goType": "RawDNS",
+      "source": "config/config.go:460",
+      "nested": {
+        "struct": "RawDNS",
+        "fields": [
+          {
+            "name": "Enable",
+            "goType": "bool",
+            "yaml": "enable",
+            "json": "enable",
+            "line": 222
+          },
+          {
+            "name": "PreferH3",
+            "goType": "bool",
+            "yaml": "prefer-h3",
+            "json": "prefer-h3",
+            "line": 223
+          },
+          {
+            "name": "IPv6",
+            "goType": "bool",
+            "yaml": "ipv6",
+            "json": "ipv6",
+            "line": 224
+          },
+          {
+            "name": "IPv6Timeout",
+            "goType": "uint",
+            "yaml": "ipv6-timeout",
+            "json": "ipv6-timeout",
+            "line": 225
+          },
+          {
+            "name": "UseHosts",
+            "goType": "bool",
+            "yaml": "use-hosts",
+            "json": "use-hosts",
+            "line": 226
+          },
+          {
+            "name": "UseSystemHosts",
+            "goType": "bool",
+            "yaml": "use-system-hosts",
+            "json": "use-system-hosts",
+            "line": 227
+          },
+          {
+            "name": "RespectRules",
+            "goType": "bool",
+            "yaml": "respect-rules",
+            "json": "respect-rules",
+            "line": 228
+          },
+          {
+            "name": "NameServer",
+            "goType": "[]string",
+            "yaml": "nameserver",
+            "json": "nameserver",
+            "line": 229
+          },
+          {
+            "name": "Fallback",
+            "goType": "[]string",
+            "yaml": "fallback",
+            "json": "fallback",
+            "line": 230
+          },
+          {
+            "name": "FallbackFilter",
+            "goType": "RawFallbackFilter",
+            "yaml": "fallback-filter",
+            "json": "fallback-filter",
+            "line": 231
+          },
+          {
+            "name": "FallbackLazyQuery",
+            "goType": "bool",
+            "yaml": "fallback-lazy-query",
+            "json": "fallback-lazy-query",
+            "line": 232
+          },
+          {
+            "name": "Listen",
+            "goType": "string",
+            "yaml": "listen",
+            "json": "listen",
+            "line": 233
+          },
+          {
+            "name": "ListenRoutingMark",
+            "goType": "int",
+            "yaml": "listen-routing-mark",
+            "json": "listen-routing-mark",
+            "line": 234
+          },
+          {
+            "name": "EnhancedMode",
+            "goType": "C.DNSMode",
+            "yaml": "enhanced-mode",
+            "json": "enhanced-mode",
+            "line": 235
+          },
+          {
+            "name": "FakeIPRange",
+            "goType": "string",
+            "yaml": "fake-ip-range",
+            "json": "fake-ip-range",
+            "line": 236
+          },
+          {
+            "name": "FakeIPRange6",
+            "goType": "string",
+            "yaml": "fake-ip-range6",
+            "json": "fake-ip-range6",
+            "line": 237
+          },
+          {
+            "name": "FakeIPFilter",
+            "goType": "[]string",
+            "yaml": "fake-ip-filter",
+            "json": "fake-ip-filter",
+            "line": 238
+          },
+          {
+            "name": "FakeIPFilterMode",
+            "goType": "C.FilterMode",
+            "yaml": "fake-ip-filter-mode",
+            "json": "fake-ip-filter-mode",
+            "line": 239
+          },
+          {
+            "name": "FakeIPTTL",
+            "goType": "int",
+            "yaml": "fake-ip-ttl",
+            "json": "fake-ip-ttl",
+            "line": 240
+          },
+          {
+            "name": "DefaultNameserver",
+            "goType": "[]string",
+            "yaml": "default-nameserver",
+            "json": "default-nameserver",
+            "line": 241
+          },
+          {
+            "name": "CacheAlgorithm",
+            "goType": "string",
+            "yaml": "cache-algorithm",
+            "json": "cache-algorithm",
+            "line": 242
+          },
+          {
+            "name": "CacheMaxSize",
+            "goType": "int",
+            "yaml": "cache-max-size",
+            "json": "cache-max-size",
+            "line": 243
+          },
+          {
+            "name": "NameServerPolicy",
+            "goType": "*orderedmap.OrderedMap[string,",
+            "yaml": null,
+            "json": null,
+            "line": 244
+          },
+          {
+            "name": "ProxyServerNameserver",
+            "goType": "[]string",
+            "yaml": "proxy-server-nameserver",
+            "json": "proxy-server-nameserver",
+            "line": 245
+          },
+          {
+            "name": "ProxyServerNameserverPolicy",
+            "goType": "*orderedmap.OrderedMap[string,",
+            "yaml": null,
+            "json": null,
+            "line": 246
+          },
+          {
+            "name": "DirectNameServer",
+            "goType": "[]string",
+            "yaml": "direct-nameserver",
+            "json": "direct-nameserver",
+            "line": 247
+          },
+          {
+            "name": "DirectNameServerFollowPolicy",
+            "goType": "bool",
+            "yaml": "direct-nameserver-follow-policy",
+            "json": "direct-nameserver-follow-policy",
+            "line": 248
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "ntp",
+      "goName": "NTP",
+      "goType": "RawNTP",
+      "source": "config/config.go:461",
+      "nested": {
+        "struct": "RawNTP",
+        "fields": [
+          {
+            "name": "Enable",
+            "goType": "bool",
+            "yaml": "enable",
+            "json": "enable",
+            "line": 265
+          },
+          {
+            "name": "Server",
+            "goType": "string",
+            "yaml": "server",
+            "json": "server",
+            "line": 266
+          },
+          {
+            "name": "Port",
+            "goType": "int",
+            "yaml": "port",
+            "json": "port",
+            "line": 267
+          },
+          {
+            "name": "Interval",
+            "goType": "int",
+            "yaml": "interval",
+            "json": "interval",
+            "line": 268
+          },
+          {
+            "name": "DialerProxy",
+            "goType": "string",
+            "yaml": "dialer-proxy",
+            "json": "dialer-proxy",
+            "line": 269
+          },
+          {
+            "name": "WriteToSystem",
+            "goType": "bool",
+            "yaml": "write-to-system",
+            "json": "write-to-system",
+            "line": 270
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "tun",
+      "goName": "Tun",
+      "goType": "RawTun",
+      "source": "config/config.go:462",
+      "nested": {
+        "struct": "RawTun",
+        "fields": [
+          {
+            "name": "Enable",
+            "goType": "bool",
+            "yaml": "enable",
+            "json": "enable",
+            "line": 274
+          },
+          {
+            "name": "Device",
+            "goType": "string",
+            "yaml": "device",
+            "json": "device",
+            "line": 275
+          },
+          {
+            "name": "Stack",
+            "goType": "C.TUNStack",
+            "yaml": "stack",
+            "json": "stack",
+            "line": 276
+          },
+          {
+            "name": "DNSMode",
+            "goType": "string",
+            "yaml": "dns-mode",
+            "json": "dns-mode",
+            "line": 277
+          },
+          {
+            "name": "DNSHijack",
+            "goType": "[]string",
+            "yaml": "dns-hijack",
+            "json": "dns-hijack",
+            "line": 278
+          },
+          {
+            "name": "AutoRoute",
+            "goType": "bool",
+            "yaml": "auto-route",
+            "json": "auto-route",
+            "line": 279
+          },
+          {
+            "name": "AutoDetectInterface",
+            "goType": "bool",
+            "yaml": "auto-detect-interface",
+            "json": "auto-detect-interface",
+            "line": 280
+          },
+          {
+            "name": "MTU",
+            "goType": "uint32",
+            "yaml": "mtu",
+            "json": "mtu",
+            "line": 282
+          },
+          {
+            "name": "GSO",
+            "goType": "bool",
+            "yaml": "gso",
+            "json": "gso",
+            "line": 283
+          },
+          {
+            "name": "GSOMaxSize",
+            "goType": "uint32",
+            "yaml": "gso-max-size",
+            "json": "gso-max-size",
+            "line": 284
+          },
+          {
+            "name": "Inet6Address",
+            "goType": "[]netip.Prefix",
+            "yaml": "inet6-address",
+            "json": "inet6-address",
+            "line": 286
+          },
+          {
+            "name": "IPRoute2TableIndex",
+            "goType": "int",
+            "yaml": "iproute2-table-index",
+            "json": "iproute2-table-index",
+            "line": 287
+          },
+          {
+            "name": "IPRoute2RuleIndex",
+            "goType": "int",
+            "yaml": "iproute2-rule-index",
+            "json": "iproute2-rule-index",
+            "line": 288
+          },
+          {
+            "name": "AutoRedirect",
+            "goType": "bool",
+            "yaml": "auto-redirect",
+            "json": "auto-redirect",
+            "line": 289
+          },
+          {
+            "name": "AutoRedirectInputMark",
+            "goType": "uint32",
+            "yaml": "auto-redirect-input-mark",
+            "json": "auto-redirect-input-mark",
+            "line": 290
+          },
+          {
+            "name": "AutoRedirectOutputMark",
+            "goType": "uint32",
+            "yaml": "auto-redirect-output-mark",
+            "json": "auto-redirect-output-mark",
+            "line": 291
+          },
+          {
+            "name": "AutoRedirectIPRoute2FallbackRuleIndex",
+            "goType": "int",
+            "yaml": "auto-redirect-iproute2-fallback-rule-index",
+            "json": "auto-redirect-iproute2-fallback-rule-index",
+            "line": 292
+          },
+          {
+            "name": "LoopbackAddress",
+            "goType": "[]netip.Addr",
+            "yaml": "loopback-address",
+            "json": "loopback-address",
+            "line": 293
+          },
+          {
+            "name": "StrictRoute",
+            "goType": "bool",
+            "yaml": "strict-route",
+            "json": "strict-route",
+            "line": 294
+          },
+          {
+            "name": "RouteAddress",
+            "goType": "[]netip.Prefix",
+            "yaml": "route-address",
+            "json": "route-address",
+            "line": 295
+          },
+          {
+            "name": "RouteAddressSet",
+            "goType": "[]string",
+            "yaml": "route-address-set",
+            "json": "route-address-set",
+            "line": 296
+          },
+          {
+            "name": "RouteExcludeAddress",
+            "goType": "[]netip.Prefix",
+            "yaml": "route-exclude-address",
+            "json": "route-exclude-address",
+            "line": 297
+          },
+          {
+            "name": "RouteExcludeAddressSet",
+            "goType": "[]string",
+            "yaml": "route-exclude-address-set",
+            "json": "route-exclude-address-set",
+            "line": 298
+          },
+          {
+            "name": "IncludeInterface",
+            "goType": "[]string",
+            "yaml": "include-interface",
+            "json": "include-interface",
+            "line": 299
+          },
+          {
+            "name": "ExcludeInterface",
+            "goType": "[]string",
+            "yaml": "exclude-interface",
+            "json": "exclude-interface",
+            "line": 300
+          },
+          {
+            "name": "IncludeUID",
+            "goType": "[]uint32",
+            "yaml": "include-uid",
+            "json": "include-uid",
+            "line": 301
+          },
+          {
+            "name": "IncludeUIDRange",
+            "goType": "[]string",
+            "yaml": "include-uid-range",
+            "json": "include-uid-range",
+            "line": 302
+          },
+          {
+            "name": "ExcludeUID",
+            "goType": "[]uint32",
+            "yaml": "exclude-uid",
+            "json": "exclude-uid",
+            "line": 303
+          },
+          {
+            "name": "ExcludeUIDRange",
+            "goType": "[]string",
+            "yaml": "exclude-uid-range",
+            "json": "exclude-uid-range",
+            "line": 304
+          },
+          {
+            "name": "ExcludeSrcPort",
+            "goType": "[]uint16",
+            "yaml": "exclude-src-port",
+            "json": "exclude-src-port",
+            "line": 305
+          },
+          {
+            "name": "ExcludeSrcPortRange",
+            "goType": "[]string",
+            "yaml": "exclude-src-port-range",
+            "json": "exclude-src-port-range",
+            "line": 306
+          },
+          {
+            "name": "ExcludeDstPort",
+            "goType": "[]uint16",
+            "yaml": "exclude-dst-port",
+            "json": "exclude-dst-port",
+            "line": 307
+          },
+          {
+            "name": "ExcludeDstPortRange",
+            "goType": "[]string",
+            "yaml": "exclude-dst-port-range",
+            "json": "exclude-dst-port-range",
+            "line": 308
+          },
+          {
+            "name": "IncludeAndroidUser",
+            "goType": "[]int",
+            "yaml": "include-android-user",
+            "json": "include-android-user",
+            "line": 309
+          },
+          {
+            "name": "IncludePackage",
+            "goType": "[]string",
+            "yaml": "include-package",
+            "json": "include-package",
+            "line": 310
+          },
+          {
+            "name": "ExcludePackage",
+            "goType": "[]string",
+            "yaml": "exclude-package",
+            "json": "exclude-package",
+            "line": 311
+          },
+          {
+            "name": "IncludeMACAddress",
+            "goType": "[]string",
+            "yaml": "include-mac-address",
+            "json": "include-mac-address",
+            "line": 312
+          },
+          {
+            "name": "ExcludeMACAddress",
+            "goType": "[]string",
+            "yaml": "exclude-mac-address",
+            "json": "exclude-mac-address",
+            "line": 313
+          },
+          {
+            "name": "EndpointIndependentNat",
+            "goType": "bool",
+            "yaml": "endpoint-independent-nat",
+            "json": "endpoint-independent-nat",
+            "line": 314
+          },
+          {
+            "name": "UDPTimeout",
+            "goType": "int64",
+            "yaml": "udp-timeout",
+            "json": "udp-timeout",
+            "line": 315
+          },
+          {
+            "name": "ICMPTimeout",
+            "goType": "int64",
+            "yaml": "icmp-timeout",
+            "json": "icmp-timeout",
+            "line": 316
+          },
+          {
+            "name": "DisableICMPForwarding",
+            "goType": "bool",
+            "yaml": "disable-icmp-forwarding",
+            "json": "disable-icmp-forwarding",
+            "line": 317
+          },
+          {
+            "name": "CongestionController",
+            "goType": "string",
+            "yaml": "congestion-controller",
+            "json": "congestion-controller",
+            "line": 318
+          },
+          {
+            "name": "FileDescriptor",
+            "goType": "int",
+            "yaml": "file-descriptor",
+            "json": "file-descriptor",
+            "line": 319
+          },
+          {
+            "name": "Inet4RouteAddress",
+            "goType": "[]netip.Prefix",
+            "yaml": "inet4-route-address",
+            "json": "inet4-route-address",
+            "line": 321
+          },
+          {
+            "name": "Inet6RouteAddress",
+            "goType": "[]netip.Prefix",
+            "yaml": "inet6-route-address",
+            "json": "inet6-route-address",
+            "line": 322
+          },
+          {
+            "name": "Inet4RouteExcludeAddress",
+            "goType": "[]netip.Prefix",
+            "yaml": "inet4-route-exclude-address",
+            "json": "inet4-route-exclude-address",
+            "line": 323
+          },
+          {
+            "name": "Inet6RouteExcludeAddress",
+            "goType": "[]netip.Prefix",
+            "yaml": "inet6-route-exclude-address",
+            "json": "inet6-route-exclude-address",
+            "line": 324
+          },
+          {
+            "name": "RecvMsgX",
+            "goType": "bool",
+            "yaml": "recvmsgx",
+            "json": "recvmsgx",
+            "line": 327
+          },
+          {
+            "name": "SendMsgX",
+            "goType": "bool",
+            "yaml": "sendmsgx",
+            "json": "sendmsgx",
+            "line": 328
+          },
+          {
+            "name": "ProcessorsPerChannel",
+            "goType": "int",
+            "yaml": "processors-per-channel",
+            "json": "processors-per-channel",
+            "line": 331
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "tuic-server",
+      "goName": "TuicServer",
+      "goType": "RawTuicServer",
+      "source": "config/config.go:463",
+      "nested": {
+        "struct": "RawTuicServer",
+        "fields": [
+          {
+            "name": "Enable",
+            "goType": "bool",
+            "yaml": "enable",
+            "json": "enable",
+            "line": 335
+          },
+          {
+            "name": "Listen",
+            "goType": "string",
+            "yaml": "listen",
+            "json": "listen",
+            "line": 336
+          },
+          {
+            "name": "Token",
+            "goType": "[]string",
+            "yaml": "token",
+            "json": "token",
+            "line": 337
+          },
+          {
+            "name": "Users",
+            "goType": "map[string]string",
+            "yaml": "users",
+            "json": "users",
+            "line": 338
+          },
+          {
+            "name": "Certificate",
+            "goType": "string",
+            "yaml": "certificate",
+            "json": "certificate",
+            "line": 339
+          },
+          {
+            "name": "PrivateKey",
+            "goType": "string",
+            "yaml": "private-key",
+            "json": "private-key",
+            "line": 340
+          },
+          {
+            "name": "CongestionController",
+            "goType": "string",
+            "yaml": "congestion-controller",
+            "json": "congestion-controller",
+            "line": 341
+          },
+          {
+            "name": "MaxIdleTime",
+            "goType": "int",
+            "yaml": "max-idle-time",
+            "json": "max-idle-time",
+            "line": 342
+          },
+          {
+            "name": "AuthenticationTimeout",
+            "goType": "int",
+            "yaml": "authentication-timeout",
+            "json": "authentication-timeout",
+            "line": 343
+          },
+          {
+            "name": "ALPN",
+            "goType": "[]string",
+            "yaml": "alpn",
+            "json": "alpn",
+            "line": 344
+          },
+          {
+            "name": "MaxUdpRelayPacketSize",
+            "goType": "int",
+            "yaml": "max-udp-relay-packet-size",
+            "json": "max-udp-relay-packet-size",
+            "line": 345
+          },
+          {
+            "name": "CWND",
+            "goType": "int",
+            "yaml": "cwnd",
+            "json": "cwnd",
+            "line": 346
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "iptables",
+      "goName": "IPTables",
+      "goType": "RawIPTables",
+      "source": "config/config.go:464",
+      "nested": {
+        "struct": "RawIPTables",
+        "fields": [
+          {
+            "name": "Enable",
+            "goType": "bool",
+            "yaml": "enable",
+            "json": "enable",
+            "line": 350
+          },
+          {
+            "name": "InboundInterface",
+            "goType": "string",
+            "yaml": "inbound-interface",
+            "json": "inbound-interface",
+            "line": 351
+          },
+          {
+            "name": "Bypass",
+            "goType": "[]string",
+            "yaml": "bypass",
+            "json": "bypass",
+            "line": 352
+          },
+          {
+            "name": "DnsRedirect",
+            "goType": "bool",
+            "yaml": "dns-redirect",
+            "json": "dns-redirect",
+            "line": 353
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "experimental",
+      "goName": "Experimental",
+      "goType": "RawExperimental",
+      "source": "config/config.go:465",
+      "nested": {
+        "struct": "RawExperimental",
+        "fields": [
+          {
+            "name": "Fingerprints",
+            "goType": "[]string",
+            "yaml": "fingerprints",
+            "json": "fingerprints",
+            "line": 357
+          },
+          {
+            "name": "QUICGoDisableGSO",
+            "goType": "bool",
+            "yaml": "quic-go-disable-gso",
+            "json": "quic-go-disable-gso",
+            "line": 358
+          },
+          {
+            "name": "QUICGoDisableECN",
+            "goType": "bool",
+            "yaml": "quic-go-disable-ecn",
+            "json": "quic-go-disable-ecn",
+            "line": 359
+          },
+          {
+            "name": "IP4PEnable",
+            "goType": "bool",
+            "yaml": "dialer-ip4p-convert",
+            "json": "dialer-ip4p-convert",
+            "line": 360
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "profile",
+      "goName": "Profile",
+      "goType": "RawProfile",
+      "source": "config/config.go:466",
+      "nested": {
+        "struct": "RawProfile",
+        "fields": [
+          {
+            "name": "StoreSelected",
+            "goType": "bool",
+            "yaml": "store-selected",
+            "json": "store-selected",
+            "line": 364
+          },
+          {
+            "name": "StoreFakeIP",
+            "goType": "bool",
+            "yaml": "store-fake-ip",
+            "json": "store-fake-ip",
+            "line": 365
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "geox-url",
+      "goName": "GeoXUrl",
+      "goType": "RawGeoXUrl",
+      "source": "config/config.go:467",
+      "nested": {
+        "struct": "RawGeoXUrl",
+        "fields": [
+          {
+            "name": "GeoIp",
+            "goType": "string",
+            "yaml": "geoip",
+            "json": "geoip",
+            "line": 369
+          },
+          {
+            "name": "Mmdb",
+            "goType": "string",
+            "yaml": "mmdb",
+            "json": "mmdb",
+            "line": 370
+          },
+          {
+            "name": "ASN",
+            "goType": "string",
+            "yaml": "asn",
+            "json": "asn",
+            "line": 371
+          },
+          {
+            "name": "GeoSite",
+            "goType": "string",
+            "yaml": "geosite",
+            "json": "geosite",
+            "line": 372
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "sniffer",
+      "goName": "Sniffer",
+      "goType": "RawSniffer",
+      "source": "config/config.go:468",
+      "nested": {
+        "struct": "RawSniffer",
+        "fields": [
+          {
+            "name": "Enable",
+            "goType": "bool",
+            "yaml": "enable",
+            "json": "enable",
+            "line": 376
+          },
+          {
+            "name": "OverrideDest",
+            "goType": "bool",
+            "yaml": "override-destination",
+            "json": "override-destination",
+            "line": 377
+          },
+          {
+            "name": "Sniffing",
+            "goType": "[]string",
+            "yaml": "sniffing",
+            "json": "sniffing",
+            "line": 378
+          },
+          {
+            "name": "ForceDomain",
+            "goType": "[]string",
+            "yaml": "force-domain",
+            "json": "force-domain",
+            "line": 379
+          },
+          {
+            "name": "SkipSrcAddress",
+            "goType": "[]string",
+            "yaml": "skip-src-address",
+            "json": "skip-src-address",
+            "line": 380
+          },
+          {
+            "name": "SkipDstAddress",
+            "goType": "[]string",
+            "yaml": "skip-dst-address",
+            "json": "skip-dst-address",
+            "line": 381
+          },
+          {
+            "name": "SkipDomain",
+            "goType": "[]string",
+            "yaml": "skip-domain",
+            "json": "skip-domain",
+            "line": 382
+          },
+          {
+            "name": "Ports",
+            "goType": "[]string",
+            "yaml": "port-whitelist",
+            "json": "port-whitelist",
+            "line": 383
+          },
+          {
+            "name": "ForceDnsMapping",
+            "goType": "bool",
+            "yaml": "force-dns-mapping",
+            "json": "force-dns-mapping",
+            "line": 384
+          },
+          {
+            "name": "ParsePureIp",
+            "goType": "bool",
+            "yaml": "parse-pure-ip",
+            "json": "parse-pure-ip",
+            "line": 385
+          },
+          {
+            "name": "Sniff",
+            "goType": "map[string]RawSniffingConfig",
+            "yaml": "sniff",
+            "json": "sniff",
+            "line": 387
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "tls",
+      "goName": "TLS",
+      "goType": "RawTLS",
+      "source": "config/config.go:469",
+      "nested": {
+        "struct": "RawTLS",
+        "fields": [
+          {
+            "name": "Certificate",
+            "goType": "string",
+            "yaml": "certificate",
+            "json": "certificate",
+            "line": 396
+          },
+          {
+            "name": "PrivateKey",
+            "goType": "string",
+            "yaml": "private-key",
+            "json": "private-key",
+            "line": 397
+          },
+          {
+            "name": "ClientAuthType",
+            "goType": "string",
+            "yaml": "client-auth-type",
+            "json": "client-auth-type",
+            "line": 398
+          },
+          {
+            "name": "ClientAuthCert",
+            "goType": "string",
+            "yaml": "client-auth-cert",
+            "json": "client-auth-cert",
+            "line": 399
+          },
+          {
+            "name": "EchKey",
+            "goType": "string",
+            "yaml": "ech-key",
+            "json": "ech-key",
+            "line": 400
+          },
+          {
+            "name": "CustomTrustCert",
+            "goType": "[]string",
+            "yaml": "custom-certifactes",
+            "json": "custom-certifactes",
+            "line": 401
+          }
+        ]
+      },
+      "rustMapping": null
+    },
+    {
+      "name": "clash-for-android",
+      "goName": "ClashForAndroid",
+      "goType": "RawClashForAndroid",
+      "source": "config/config.go:471",
+      "nested": {
+        "struct": "RawClashForAndroid",
+        "fields": [
+          {
+            "name": "AppendSystemDNS",
+            "goType": "bool",
+            "yaml": "append-system-dns",
+            "json": "append-system-dns",
+            "line": 260
+          },
+          {
+            "name": "UiSubtitlePattern",
+            "goType": "string",
+            "yaml": "ui-subtitle-pattern",
+            "json": "ui-subtitle-pattern",
+            "line": 261
+          }
+        ]
+      },
+      "rustMapping": null
+    }
+  ],
+  "proxies": [
+    {
+      "type": "ss",
+      "constructor": "outbound.NewShadowSocks",
+      "source": "adapter/parser.go:30",
+      "rustMapping": null
+    },
+    {
+      "type": "ssr",
+      "constructor": "outbound.NewShadowSocksR",
+      "source": "adapter/parser.go:37",
+      "rustMapping": null
+    },
+    {
+      "type": "socks5",
+      "constructor": "outbound.NewSocks5",
+      "source": "adapter/parser.go:44",
+      "rustMapping": null
+    },
+    {
+      "type": "http",
+      "constructor": "outbound.NewHttp",
+      "source": "adapter/parser.go:51",
+      "rustMapping": null
+    },
+    {
+      "type": "vmess",
+      "constructor": "outbound.NewVmess",
+      "source": "adapter/parser.go:58",
+      "rustMapping": null
+    },
+    {
+      "type": "vless",
+      "constructor": "outbound.NewVless",
+      "source": "adapter/parser.go:65",
+      "rustMapping": null
+    },
+    {
+      "type": "snell",
+      "constructor": "outbound.NewSnell",
+      "source": "adapter/parser.go:72",
+      "rustMapping": null
+    },
+    {
+      "type": "trojan",
+      "constructor": "outbound.NewTrojan",
+      "source": "adapter/parser.go:79",
+      "rustMapping": null
+    },
+    {
+      "type": "hysteria",
+      "constructor": "outbound.NewHysteria",
+      "source": "adapter/parser.go:86",
+      "rustMapping": null
+    },
+    {
+      "type": "hysteria2",
+      "constructor": "outbound.NewHysteria2",
+      "source": "adapter/parser.go:93",
+      "rustMapping": null
+    },
+    {
+      "type": "wireguard",
+      "constructor": "outbound.NewWireGuard",
+      "source": "adapter/parser.go:100",
+      "rustMapping": null
+    },
+    {
+      "type": "tuic",
+      "constructor": "outbound.NewTuic",
+      "source": "adapter/parser.go:107",
+      "rustMapping": null
+    },
+    {
+      "type": "shadowquic",
+      "constructor": "outbound.NewShadowQuic",
+      "source": "adapter/parser.go:114",
+      "rustMapping": null
+    },
+    {
+      "type": "gost-relay",
+      "constructor": "outbound.NewGostRelay",
+      "source": "adapter/parser.go:121",
+      "rustMapping": null
+    },
+    {
+      "type": "direct",
+      "constructor": "outbound.NewDirectWithOption",
+      "source": "adapter/parser.go:128",
+      "rustMapping": null
+    },
+    {
+      "type": "dns",
+      "constructor": "outbound.NewDnsWithOption",
+      "source": "adapter/parser.go:135",
+      "rustMapping": null
+    },
+    {
+      "type": "reject",
+      "constructor": "outbound.NewRejectWithOption",
+      "source": "adapter/parser.go:142",
+      "rustMapping": null
+    },
+    {
+      "type": "rematch",
+      "constructor": "outbound.NewRematch",
+      "source": "adapter/parser.go:149",
+      "rustMapping": null
+    },
+    {
+      "type": "ssh",
+      "constructor": "outbound.NewSsh",
+      "source": "adapter/parser.go:156",
+      "rustMapping": null
+    },
+    {
+      "type": "mieru",
+      "constructor": "outbound.NewMieru",
+      "source": "adapter/parser.go:163",
+      "rustMapping": null
+    },
+    {
+      "type": "anytls",
+      "constructor": "outbound.NewAnyTLS",
+      "source": "adapter/parser.go:170",
+      "rustMapping": null
+    },
+    {
+      "type": "sudoku",
+      "constructor": "outbound.NewSudoku",
+      "source": "adapter/parser.go:177",
+      "rustMapping": null
+    },
+    {
+      "type": "masque",
+      "constructor": "outbound.NewMasque",
+      "source": "adapter/parser.go:184",
+      "rustMapping": null
+    },
+    {
+      "type": "trusttunnel",
+      "constructor": "outbound.NewTrustTunnel",
+      "source": "adapter/parser.go:191",
+      "rustMapping": null
+    },
+    {
+      "type": "openvpn",
+      "constructor": "outbound.NewOpenVPN",
+      "source": "adapter/parser.go:198",
+      "rustMapping": null
+    },
+    {
+      "type": "tailscale",
+      "constructor": "outbound.NewTailscale",
+      "source": "adapter/parser.go:205",
+      "rustMapping": null
+    },
+    {
+      "type": "zerotier",
+      "constructor": "outbound.NewZeroTier",
+      "source": "adapter/parser.go:212",
+      "rustMapping": null
+    },
+    {
+      "type": "easytier",
+      "constructor": "outbound.NewEasyTier",
+      "source": "adapter/parser.go:219",
+      "rustMapping": null
+    }
+  ],
+  "listeners": [
+    {
+      "type": "socks",
+      "constructor": "IN.NewSocks",
+      "source": "listener/parse.go:23",
+      "rustMapping": null
+    },
+    {
+      "type": "http",
+      "constructor": "IN.NewHTTP",
+      "source": "listener/parse.go:30",
+      "rustMapping": null
+    },
+    {
+      "type": "tproxy",
+      "constructor": "IN.NewTProxy",
+      "source": "listener/parse.go:37",
+      "rustMapping": null
+    },
+    {
+      "type": "redir",
+      "constructor": "IN.NewRedir",
+      "source": "listener/parse.go:44",
+      "rustMapping": null
+    },
+    {
+      "type": "mixed",
+      "constructor": "IN.NewMixed",
+      "source": "listener/parse.go:51",
+      "rustMapping": null
+    },
+    {
+      "type": "tunnel",
+      "constructor": "IN.NewTunnel",
+      "source": "listener/parse.go:58",
+      "rustMapping": null
+    },
+    {
+      "type": "tun",
+      "constructor": "IN.NewTun",
+      "source": "listener/parse.go:65",
+      "rustMapping": null
+    },
+    {
+      "type": "shadowsocks",
+      "constructor": "IN.NewShadowSocks",
+      "source": "listener/parse.go:75",
+      "rustMapping": null
+    },
+    {
+      "type": "snell",
+      "constructor": "IN.NewSnell",
+      "source": "listener/parse.go:82",
+      "rustMapping": null
+    },
+    {
+      "type": "vmess",
+      "constructor": "IN.NewVmess",
+      "source": "listener/parse.go:89",
+      "rustMapping": null
+    },
+    {
+      "type": "vless",
+      "constructor": "IN.NewVless",
+      "source": "listener/parse.go:96",
+      "rustMapping": null
+    },
+    {
+      "type": "trojan",
+      "constructor": "IN.NewTrojan",
+      "source": "listener/parse.go:103",
+      "rustMapping": null
+    },
+    {
+      "type": "hysteria2",
+      "constructor": "IN.NewHysteria2",
+      "source": "listener/parse.go:110",
+      "rustMapping": null
+    },
+    {
+      "type": "hysteria2-realm",
+      "constructor": "IN.DefaultHysteria2RealmServerOption",
+      "source": "listener/parse.go:117",
+      "rustMapping": null
+    },
+    {
+      "type": "tuic",
+      "constructor": "IN.NewTuic",
+      "source": "listener/parse.go:124",
+      "rustMapping": null
+    },
+    {
+      "type": "shadowquic",
+      "constructor": "IN.NewShadowQuic",
+      "source": "listener/parse.go:137",
+      "rustMapping": null
+    },
+    {
+      "type": "anytls",
+      "constructor": "IN.NewAnyTLS",
+      "source": "listener/parse.go:150",
+      "rustMapping": null
+    },
+    {
+      "type": "mieru",
+      "constructor": "IN.NewMieru",
+      "source": "listener/parse.go:157",
+      "rustMapping": null
+    },
+    {
+      "type": "sudoku",
+      "constructor": "IN.NewSudoku",
+      "source": "listener/parse.go:164",
+      "rustMapping": null
+    },
+    {
+      "type": "trusttunnel",
+      "constructor": "IN.NewTrustTunnel",
+      "source": "listener/parse.go:171",
+      "rustMapping": null
+    }
+  ],
+  "groups": [
+    {
+      "type": "url-test",
+      "constructor": null,
+      "source": "adapter/outboundgroup/parser.go:188",
+      "rustMapping": null
+    },
+    {
+      "type": "select",
+      "constructor": null,
+      "source": "adapter/outboundgroup/parser.go:195",
+      "rustMapping": null
+    },
+    {
+      "type": "fallback",
+      "constructor": null,
+      "source": "adapter/outboundgroup/parser.go:202",
+      "rustMapping": null
+    },
+    {
+      "type": "load-balance",
+      "constructor": null,
+      "source": "adapter/outboundgroup/parser.go:209",
+      "rustMapping": null
+    },
+    {
+      "type": "relay",
+      "constructor": null,
+      "source": "adapter/outboundgroup/parser.go:216",
+      "rustMapping": null
+    }
+  ],
+  "rules": [
+    {
+      "type": "DOMAIN",
+      "source": "rules/parser.go:18",
+      "rustMapping": null
+    },
+    {
+      "type": "DOMAIN-SUFFIX",
+      "source": "rules/parser.go:20",
+      "rustMapping": null
+    },
+    {
+      "type": "DOMAIN-KEYWORD",
+      "source": "rules/parser.go:22",
+      "rustMapping": null
+    },
+    {
+      "type": "DOMAIN-REGEX",
+      "source": "rules/parser.go:24",
+      "rustMapping": null
+    },
+    {
+      "type": "DOMAIN-WILDCARD",
+      "source": "rules/parser.go:26",
+      "rustMapping": null
+    },
+    {
+      "type": "GEOSITE",
+      "source": "rules/parser.go:28",
+      "rustMapping": null
+    },
+    {
+      "type": "GEOIP",
+      "source": "rules/parser.go:30",
+      "rustMapping": null
+    },
+    {
+      "type": "SRC-GEOIP",
+      "source": "rules/parser.go:33",
+      "rustMapping": null
+    },
+    {
+      "type": "IP-ASN",
+      "source": "rules/parser.go:35",
+      "rustMapping": null
+    },
+    {
+      "type": "SRC-IP-ASN",
+      "source": "rules/parser.go:38",
+      "rustMapping": null
+    },
+    {
+      "type": "IP-CIDR",
+      "source": "rules/parser.go:40",
+      "rustMapping": null
+    },
+    {
+      "type": "IP-CIDR6",
+      "source": "rules/parser.go:40",
+      "rustMapping": null
+    },
+    {
+      "type": "SRC-IP-CIDR",
+      "source": "rules/parser.go:43",
+      "rustMapping": null
+    },
+    {
+      "type": "IP-SUFFIX",
+      "source": "rules/parser.go:45",
+      "rustMapping": null
+    },
+    {
+      "type": "SRC-IP-SUFFIX",
+      "source": "rules/parser.go:48",
+      "rustMapping": null
+    },
+    {
+      "type": "SRC-PORT",
+      "source": "rules/parser.go:50",
+      "rustMapping": null
+    },
+    {
+      "type": "DST-PORT",
+      "source": "rules/parser.go:52",
+      "rustMapping": null
+    },
+    {
+      "type": "IN-PORT",
+      "source": "rules/parser.go:54",
+      "rustMapping": null
+    },
+    {
+      "type": "DSCP",
+      "source": "rules/parser.go:56",
+      "rustMapping": null
+    },
+    {
+      "type": "PROCESS-NAME",
+      "source": "rules/parser.go:58",
+      "rustMapping": null
+    },
+    {
+      "type": "PROCESS-PATH",
+      "source": "rules/parser.go:60",
+      "rustMapping": null
+    },
+    {
+      "type": "PROCESS-NAME-REGEX",
+      "source": "rules/parser.go:62",
+      "rustMapping": null
+    },
+    {
+      "type": "PROCESS-PATH-REGEX",
+      "source": "rules/parser.go:64",
+      "rustMapping": null
+    },
+    {
+      "type": "PROCESS-NAME-WILDCARD",
+      "source": "rules/parser.go:66",
+      "rustMapping": null
+    },
+    {
+      "type": "PROCESS-PATH-WILDCARD",
+      "source": "rules/parser.go:68",
+      "rustMapping": null
+    },
+    {
+      "type": "NETWORK",
+      "source": "rules/parser.go:70",
+      "rustMapping": null
+    },
+    {
+      "type": "UID",
+      "source": "rules/parser.go:72",
+      "rustMapping": null
+    },
+    {
+      "type": "IN-TYPE",
+      "source": "rules/parser.go:74",
+      "rustMapping": null
+    },
+    {
+      "type": "IN-USER",
+      "source": "rules/parser.go:76",
+      "rustMapping": null
+    },
+    {
+      "type": "IN-NAME",
+      "source": "rules/parser.go:78",
+      "rustMapping": null
+    },
+    {
+      "type": "REMATCH-NAME",
+      "source": "rules/parser.go:80",
+      "rustMapping": null
+    },
+    {
+      "type": "SUB-RULE",
+      "source": "rules/parser.go:82",
+      "rustMapping": null
+    },
+    {
+      "type": "AND",
+      "source": "rules/parser.go:84",
+      "rustMapping": null
+    },
+    {
+      "type": "OR",
+      "source": "rules/parser.go:86",
+      "rustMapping": null
+    },
+    {
+      "type": "NOT",
+      "source": "rules/parser.go:88",
+      "rustMapping": null
+    },
+    {
+      "type": "RULE-SET",
+      "source": "rules/parser.go:90",
+      "rustMapping": null
+    },
+    {
+      "type": "MATCH",
+      "source": "rules/parser.go:93",
+      "rustMapping": null
+    }
+  ],
+  "platforms": {
+    "desktopTargets": [
+      "darwin-aarch64",
+      "darwin-x86_64",
+      "windows-aarch64",
+      "windows-x86_64",
+      "windows-i686",
+      "linux-aarch64",
+      "linux-x86_64",
+      "linux-i686",
+      "linux-armv7"
+    ],
+    "androidBuildTags": [
+      "with_gvisor",
+      "cmfa"
+    ],
+    "buildTags": [
+      {
+        "expression": "!(android && cmfa)",
+        "locations": [
+          "dns/system_common.go"
+        ]
+      },
+      {
+        "expression": "!(darwin || linux)",
+        "locations": [
+          "listener/sing_tun/tun_name_other.go"
+        ]
+      },
+      {
+        "expression": "!(windows || linux || darwin)",
+        "locations": [
+          "ntp/ntp/time_stub.go"
+        ]
+      },
+      {
+        "expression": "!386 && !amd64 && !arm64 && !arm64be && !mipsle && !mips",
+        "locations": [
+          "hub/executor/concurrent_load_limit.go"
+        ]
+      },
+      {
+        "expression": "!android",
+        "locations": [
+          "component/iface/anet/interface.go"
+        ]
+      },
+      {
+        "expression": "!android || cmfa",
+        "locations": [
+          "listener/sing_tun/server_notandroid.go"
+        ]
+      },
+      {
+        "expression": "!cmfa",
+        "locations": [
+          "constant/features/cmfa_stub.go"
+        ]
+      },
+      {
+        "expression": "!darwin",
+        "locations": [
+          "test/util_other_test.go"
+        ]
+      },
+      {
+        "expression": "!darwin && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !solaris && !windows",
+        "locations": [
+          "common/sockopt/reuse_other.go"
+        ]
+      },
+      {
+        "expression": "!darwin && !linux && !freebsd",
+        "locations": [
+          "listener/redir/tcp_other.go"
+        ]
+      },
+      {
+        "expression": "!darwin && !linux && !freebsd && !openbsd && !windows",
+        "locations": [
+          "component/memory/memory_falllback.go"
+        ]
+      },
+      {
+        "expression": "!darwin && !linux && !windows && (!freebsd || !amd64)",
+        "locations": [
+          "component/process/process_other.go"
+        ]
+      },
+      {
+        "expression": "!go1.21",
+        "locations": [
+          "common/contextutils/afterfunc_go120.go",
+          "common/contextutils/withoutcancel_go120.go",
+          "component/mptcp/mptcp_go120.go",
+          "transport/tuic/congestion/minmax_go120.go",
+          "transport/tuic/congestion_v2/minmax_go120.go",
+          "transport/vmess/websocket_go120.go"
+        ]
+      },
+      {
+        "expression": "!go1.22",
+        "locations": [
+          "common/once/once_go120.go"
+        ]
+      },
+      {
+        "expression": "!go1.23",
+        "locations": [
+          "component/keepalive/tcp_keepalive_go122.go"
+        ]
+      },
+      {
+        "expression": "!go1.24",
+        "locations": [
+          "common/maphash/comparable_go120.go"
+        ]
+      },
+      {
+        "expression": "!linux",
+        "locations": [
+          "common/sockopt/mark_other.go",
+          "component/dialer/mark_nonlinux.go",
+          "listener/sing_tun/redirect_stub.go",
+          "listener/tproxy/setsockopt_other.go",
+          "listener/tproxy/udp_other.go"
+        ]
+      },
+      {
+        "expression": "!linux && !darwin && !windows",
+        "locations": [
+          "component/dialer/bind_others.go"
+        ]
+      },
+      {
+        "expression": "!linux && !windows && !darwin",
+        "locations": [
+          "transport/hysteria/pmtud_fix/unavail.go"
+        ]
+      },
+      {
+        "expression": "!linux || no_fake_tcp",
+        "locations": [
+          "transport/hysteria/conns/faketcp/tcp_stub.go"
+        ]
+      },
+      {
+        "expression": "!no_easytier",
+        "locations": [
+          "adapter/outbound/easytier.go",
+          "constant/features/no_easytier_stub.go"
+        ]
+      },
+      {
+        "expression": "!no_fake_tcp",
+        "locations": [
+          "constant/features/no_fake_tcp_stub.go"
+        ]
+      },
+      {
+        "expression": "!no_tailscale",
+        "locations": [
+          "constant/features/no_tailscale_stub.go"
+        ]
+      },
+      {
+        "expression": "!no_zerotier",
+        "locations": [
+          "adapter/outbound/zerotier.go",
+          "constant/features/no_zerotier_stub.go"
+        ]
+      },
+      {
+        "expression": "!windows",
+        "locations": [
+          "adapter/inbound/listen_notwindows.go",
+          "common/cmd/cmd_other.go",
+          "common/net/packet/packet_posix.go",
+          "component/power/event_other.go",
+          "dns/system_posix.go",
+          "listener/sing_tun/server_notwindows.go"
+        ]
+      },
+      {
+        "expression": "!with_gvisor",
+        "locations": [
+          "constant/features/with_gvisor_stub.go"
+        ]
+      },
+      {
+        "expression": "!with_gvisor || no_tailscale",
+        "locations": [
+          "adapter/outbound/tailscale_stub.go"
+        ]
+      },
+      {
+        "expression": "!with_low_memory",
+        "locations": [
+          "common/pool/buffer_standard.go",
+          "constant/features/low_memory_stub.go"
+        ]
+      },
+      {
+        "expression": "386 || amd64 || arm64 || arm64be",
+        "locations": [
+          "hub/executor/concurrent_load_unlimit.go"
+        ]
+      },
+      {
+        "expression": "android && !cmfa",
+        "locations": [
+          "listener/sing_tun/server_android.go"
+        ]
+      },
+      {
+        "expression": "android && cgo",
+        "locations": [
+          "android_tz.go"
+        ]
+      },
+      {
+        "expression": "android && cmfa",
+        "locations": [
+          "dns/patch_android.go",
+          "hub/route/patch_android.go"
+        ]
+      },
+      {
+        "expression": "cmfa",
+        "locations": [
+          "constant/features/cmfa.go"
+        ]
+      },
+      {
+        "expression": "darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris",
+        "locations": [
+          "common/sockopt/reuse_unix.go"
+        ]
+      },
+      {
+        "expression": "go1.21",
+        "locations": [
+          "common/contextutils/afterfunc_go121.go",
+          "common/contextutils/withoutcancel_go121.go",
+          "component/mptcp/mptcp_go121.go",
+          "transport/tuic/congestion/minmax_go121.go",
+          "transport/tuic/congestion_v2/minmax_go121.go",
+          "transport/vmess/websocket_go121.go"
+        ]
+      },
+      {
+        "expression": "go1.22",
+        "locations": [
+          "common/once/once_go122.go"
+        ]
+      },
+      {
+        "expression": "go1.23",
+        "locations": [
+          "component/keepalive/tcp_keepalive_go123.go"
+        ]
+      },
+      {
+        "expression": "go1.23 && unix",
+        "locations": [
+          "component/keepalive/tcp_keepalive_go123_unix.go"
+        ]
+      },
+      {
+        "expression": "go1.23 && windows",
+        "locations": [
+          "component/keepalive/tcp_keepalive_go123_windows.go"
+        ]
+      },
+      {
+        "expression": "go1.24",
+        "locations": [
+          "common/maphash/comparable_go124.go"
+        ]
+      },
+      {
+        "expression": "linux",
+        "locations": [
+          "component/dialer/mark_linux.go",
+          "listener/tproxy/setsockopt_linux.go",
+          "listener/tproxy/udp_linux.go"
+        ]
+      },
+      {
+        "expression": "linux && !386",
+        "locations": [
+          "listener/redir/tcp_linux_other.go"
+        ]
+      },
+      {
+        "expression": "linux && !no_fake_tcp",
+        "locations": [
+          "transport/hysteria/conns/faketcp/tcp_linux.go"
+        ]
+      },
+      {
+        "expression": "linux || darwin",
+        "locations": [
+          "ntp/ntp/time_unix.go"
+        ]
+      },
+      {
+        "expression": "linux || windows || darwin",
+        "locations": [
+          "transport/hysteria/pmtud_fix/avail.go"
+        ]
+      },
+      {
+        "expression": "mips || mipsle",
+        "locations": [
+          "hub/executor/concurrent_load_single.go"
+        ]
+      },
+      {
+        "expression": "no_easytier",
+        "locations": [
+          "adapter/outbound/easytier_stub.go",
+          "constant/features/no_easytier.go"
+        ]
+      },
+      {
+        "expression": "no_fake_tcp",
+        "locations": [
+          "constant/features/no_fake_tcp.go"
+        ]
+      },
+      {
+        "expression": "no_tailscale",
+        "locations": [
+          "constant/features/no_tailscale.go"
+        ]
+      },
+      {
+        "expression": "no_zerotier",
+        "locations": [
+          "adapter/outbound/zerotier_stub.go",
+          "constant/features/no_zerotier.go"
+        ]
+      },
+      {
+        "expression": "windows",
+        "locations": [
+          "common/cmd/cmd_windows.go",
+          "common/net/packet/packet_windows.go",
+          "dns/system_windows.go"
+        ]
+      },
+      {
+        "expression": "with_gvisor",
+        "locations": [
+          "constant/features/with_gvisor.go"
+        ]
+      },
+      {
+        "expression": "with_gvisor && !no_tailscale",
+        "locations": [
+          "adapter/outbound/tailscale.go"
+        ]
+      },
+      {
+        "expression": "with_low_memory",
+        "locations": [
+          "common/pool/buffer_low_memory.go",
+          "constant/features/low_memory.go"
+        ]
+      }
+    ],
+    "byFileSuffix": {
+      "386": [
+        "component/memory/memory_freebsd_386.go",
+        "component/memory/memory_openbsd_386.go",
+        "listener/redir/tcp_linux_386.go"
+      ],
+      "amd64": [
+        "component/memory/memory_freebsd_amd64.go",
+        "component/memory/memory_openbsd_amd64.go",
+        "component/process/process_freebsd_amd64.go"
+      ],
+      "android": [
+        "component/iface/anet/interface_android.go",
+        "component/iface/anet/netlink_android.go",
+        "dns/patch_android.go",
+        "hub/route/patch_android.go",
+        "listener/sing_tun/server_android.go"
+      ],
+      "arm64": [
+        "component/memory/memory_freebsd_arm64.go",
+        "component/memory/memory_openbsd_arm64.go"
+      ],
+      "darwin": [
+        "component/dialer/bind_darwin.go",
+        "component/memory/memory_darwin.go",
+        "component/process/process_darwin.go",
+        "listener/redir/tcp_darwin.go",
+        "listener/sing_tun/tun_name_darwin.go"
+      ],
+      "freebsd": [
+        "component/memory/memory_freebsd.go",
+        "listener/redir/tcp_freebsd.go"
+      ],
+      "linux": [
+        "common/sockopt/mark_linux.go",
+        "component/dialer/bind_linux.go",
+        "component/dialer/mark_linux.go",
+        "component/memory/memory_linux.go",
+        "component/process/process_linux.go",
+        "listener/redir/tcp_linux.go",
+        "listener/sing_tun/redirect_linux.go",
+        "listener/sing_tun/tun_name_linux.go",
+        "listener/tproxy/setsockopt_linux.go",
+        "listener/tproxy/udp_linux.go",
+        "transport/hysteria/conns/faketcp/tcp_linux.go"
+      ],
+      "openbsd": [
+        "component/memory/memory_openbsd.go"
+      ],
+      "other": [
+        "common/cmd/cmd_other.go",
+        "common/sockopt/mark_other.go",
+        "common/sockopt/reuse_other.go",
+        "component/power/event_other.go",
+        "component/process/process_other.go",
+        "listener/redir/tcp_linux_other.go",
+        "listener/redir/tcp_other.go",
+        "listener/sing_tun/tun_name_other.go",
+        "listener/tproxy/setsockopt_other.go",
+        "listener/tproxy/udp_other.go"
+      ],
+      "posix": [
+        "common/net/packet/packet_posix.go",
+        "dns/system_posix.go"
+      ],
+      "unix": [
+        "common/sockopt/reuse_unix.go",
+        "component/keepalive/tcp_keepalive_go123_unix.go",
+        "ntp/ntp/time_unix.go"
+      ],
+      "windows": [
+        "adapter/inbound/listen_windows.go",
+        "common/cmd/cmd_windows.go",
+        "common/net/packet/packet_windows.go",
+        "common/sockopt/reuse_windows.go",
+        "component/ca/fix_windows.go",
+        "component/dialer/bind_windows.go",
+        "component/dialer/tfo_windows.go",
+        "component/keepalive/tcp_keepalive_go123_windows.go",
+        "component/memory/memory_windows.go",
+        "component/power/event_windows.go",
+        "component/process/process_windows.go",
+        "component/resolver/hosts/hosts_windows.go",
+        "constant/features/version_windows.go",
+        "dns/system_windows.go",
+        "listener/sing_tun/server_windows.go",
+        "ntp/ntp/time_windows.go"
+      ]
+    },
+    "gated": [
+      {
+        "kind": "protocol",
+        "name": "ss",
+        "tag": "!darwin && !linux && !windows && (!freebsd || !amd64)"
+      },
+      {
+        "kind": "protocol",
+        "name": "vmess",
+        "tag": "!go1.21"
+      },
+      {
+        "kind": "protocol",
+        "name": "hysteria",
+        "tag": "!linux && !windows && !darwin"
+      },
+      {
+        "kind": "protocol",
+        "name": "tuic",
+        "tag": "!go1.21"
+      },
+      {
+        "kind": "protocol",
+        "name": "direct",
+        "tag": "!linux"
+      },
+      {
+        "kind": "protocol",
+        "name": "dns",
+        "tag": "!(android && cmfa)"
+      },
+      {
+        "kind": "protocol",
+        "name": "tailscale",
+        "tag": "!no_tailscale"
+      },
+      {
+        "kind": "protocol",
+        "name": "zerotier",
+        "tag": "!no_zerotier"
+      },
+      {
+        "kind": "protocol",
+        "name": "easytier",
+        "tag": "!no_easytier"
+      }
+    ]
+  },
+  "unmapped": [
+    {
+      "kind": "config-field",
+      "name": "tunnels",
+      "goType": "[]LC.Tunnel",
+      "source": "config/config.go:437",
+      "reason": "free-form shape; keys are defined by another parser and are indexed there"
+    },
+    {
+      "kind": "config-field",
+      "name": "proxy-providers",
+      "goType": "map[string]map[string]any",
+      "source": "config/config.go:452",
+      "reason": "free-form shape; keys are defined by another parser and are indexed there"
+    },
+    {
+      "kind": "config-field",
+      "name": "rule-providers",
+      "goType": "map[string]map[string]any",
+      "source": "config/config.go:453",
+      "reason": "free-form shape; keys are defined by another parser and are indexed there"
+    },
+    {
+      "kind": "config-field",
+      "name": "proxies",
+      "goType": "[]map[string]any",
+      "source": "config/config.go:454",
+      "reason": "free-form shape; keys are defined by another parser and are indexed there"
+    },
+    {
+      "kind": "config-field",
+      "name": "proxy-groups",
+      "goType": "[]map[string]any",
+      "source": "config/config.go:455",
+      "reason": "free-form shape; keys are defined by another parser and are indexed there"
+    },
+    {
+      "kind": "config-field",
+      "name": "listeners",
+      "goType": "[]map[string]any",
+      "source": "config/config.go:458",
+      "reason": "free-form shape; keys are defined by another parser and are indexed there"
+    },
+    {
+      "kind": "config-field",
+      "name": "hosts",
+      "goType": "map[string]any",
+      "source": "config/config.go:459",
+      "reason": "free-form shape; keys are defined by another parser and are indexed there"
+    },
+    {
+      "kind": "mapping",
+      "name": "*",
+      "reason": "no Rust implementation exists at T1; every entry is unmapped until a later task records its coverage"
+    }
+  ],
+  "coverage": {
+    "mapped": 0,
+    "total": 155,
+    "note": "T1 records the baseline only. A later task must fill rustMapping and update this count; unmapped entries must not be reported as compatible."
+  }
+}

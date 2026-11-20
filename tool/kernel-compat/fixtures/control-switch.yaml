@@ -1,0 +1,34 @@
+# Control case: a SELECTOR starts on DIRECT and its tagged child; the runner switches the
+# group to the tagged parent through the allocated controller and re-sends a tagged request.
+mixed-port: 0
+mode: rule
+log-level: debug
+# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the
+# harness source explicitly so the same fixture is meaningful for both kernels.
+allow-lan: true
+lan-allowed-ips:
+  - 0.0.0.0/0
+  - "::/0"
+external-controller: 127.0.0.1:0
+proxies:
+  - {name: "tagged-parent", type: direct}
+  - {name: "tagged-child", type: direct}
+proxy-groups:
+  - {name: Compat, type: select, proxies: ["tagged-parent", "tagged-child"], interval: 0}
+rules:
+  - MATCH,Compat
+x-kernel-compat:
+  requests:
+    - {id: p, method: forward, value-of: false}
+    - {id: c, method: forward, value-of: true}
+  control:
+    - {method: PUT, path: /proxies/Compat, body: {name: "tagged-parent"}, expect-status: 204}
+  expect:
+    accept: true
+    proxyAccepted: true
+    echoSawMarkers: 2
+    markersSent: 2
+    control:
+      p: "tagged-parent"
+      c: "tagged-child"
+      selector: "tagged-parent"

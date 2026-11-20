@@ -1,0 +1,20 @@
+# Positive case: a plain forward request (no CONNECT) to the tagged host. The pinned HTTP
+# inbound hands the request to the tunnel with the tagged domain as the destination, the rule
+# selects DIRECT, and the echo must report the tag. This is the Rust kernel's expected path.
+mixed-port: 0
+mode: rule
+log-level: debug
+allow-lan: true
+lan-allowed-ips:
+  - 0.0.0.0/0
+  - "::/0"
+rules:
+  - MATCH,DIRECT
+x-kernel-compat:
+  requests:
+    - {id: a, method: forward, value-of: true}
+  expect:
+    accept: true
+    proxyAccepted: true
+    echoSawMarkers: 1
+    markersSent: 1

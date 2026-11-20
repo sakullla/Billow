@@ -1,0 +1,23 @@
+# Coverage probe, not a pass claim: a valid configuration that uses a hosts entry, a
+# selector group and a tagged forward request (the config shape the pinned desktop kernel
+# accepts). Engines that do not implement one of these keys reject the whole file; the report
+# records that rejection with the engine's own reason as "not implemented (T4/T5 scope)".
+mixed-port: 0
+mode: rule
+log-level: debug
+hosts:
+  "static.probe.invalid": 127.0.0.1
+proxies:
+  - {name: probe-direct, type: direct}
+proxy-groups:
+  - {name: Probe, type: select, proxies: [probe-direct]}
+rules:
+  - MATCH,Probe
+x-kernel-compat:
+  requests:
+    - {id: a, method: forward, forward-host: static.probe.invalid, value-of: true}
+  expect:
+    accept: true
+    proxyAccepted: true
+    echoSawMarkers: 1
+    markersSent: 1

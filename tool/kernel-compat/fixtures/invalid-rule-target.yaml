@@ -1,0 +1,10 @@
+# Fault case: the rule names a proxy that does not exist. Both kernels must reject the config.
+mixed-port: 0
+mode: rule
+rules:
+  - MATCH,NO-SUCH-PROXY
+x-kernel-compat:
+  requests:
+    - {id: c, value-of: true}
+  expect:
+    accept: false

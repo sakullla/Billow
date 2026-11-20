@@ -1,0 +1,22 @@
+# Negative case: a domain rule sends the tag host to REJECT. Both kernels must accept the
+# config and fail the request the same way; the echo must receive nothing.
+mixed-port: 0
+mode: rule
+log-level: debug
+# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the
+# harness source explicitly so the same fixture is meaningful for both kernels.
+allow-lan: true
+lan-allowed-ips:
+  - 0.0.0.0/0
+  - "::/0"
+rules:
+  - DOMAIN-SUFFIX,probe.invalid,REJECT
+  - MATCH,DIRECT
+x-kernel-compat:
+  requests:
+    - {id: b, method: forward, value-of: true}
+  expect:
+    accept: true
+    proxyAccepted: false
+    echoSawMarkers: 0
+    markersSent: 1

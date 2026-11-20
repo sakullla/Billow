@@ -1,0 +1,20 @@
+# Positive case for CONNECT-only engines: the tagged CONNECT names the loopback echo
+# address and port, the MATCH rule selects DIRECT, and the echo receives the
+# tunneled request. No proxy, DNS or hosts entry is involved, so both the pinned kernel and
+# the current Rust slice accept this file. The tag travels in the tunneled request body and
+# must come back from the echo unchanged.
+mixed-port: 0
+mode: rule
+log-level: debug
+rules:
+  - MATCH,DIRECT
+x-kernel-compat:
+  requests:
+    - {id: a, method: connect, connect-host: 127.0.0.1, connect-port: 18080, value-of: true}
+    # The reference probe always relays to the running echo, whatever authority it was given.
+    - {id: r, method: forward, forward-host: 127.0.0.1, connect-port: 18080, reference-only: true, value-of: true}
+  expect:
+    accept: true
+    proxyAccepted: true
+    echoSawMarkers: 1
+    markersSent: 1

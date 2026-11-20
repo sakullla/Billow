@@ -1,0 +1,21 @@
+# Positive case: one tagged HTTP CONNECT through the mixed inbound. The tag host is mapped by
+# `hosts` to the loopback echo, the rule selects DIRECT, and the echo must report the tag.
+mixed-port: 0
+mode: rule
+log-level: debug
+# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the
+# harness source explicitly so the same fixture is meaningful for both kernels.
+allow-lan: true
+lan-allowed-ips:
+  - 0.0.0.0/0
+  - "::/0"
+rules:
+  - MATCH,DIRECT
+x-kernel-compat:
+  requests:
+    - {id: a, value-of: true}
+  expect:
+    accept: true
+    proxyAccepted: true
+    echoSawMarkers: 1
+    markersSent: 1
