@@ -5,6 +5,7 @@ import BrandMark from '../components/BrandMark.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
+import NodePickerModal from '../components/NodePickerModal.vue'
 import Segmented from '../components/Segmented.vue'
 import Toggle from '../components/Toggle.vue'
 import TrafficChart from '../components/TrafficChart.vue'
@@ -96,7 +97,18 @@ function openProfileOverride(id: string) {
 const profileSheetOpen = ref(false)
 const switchingProfileId = ref<string | null>(null)
 const sheetFailure = ref<{ id: string; reason: string } | null>(null)
+const pickerGroupName = ref<string | null>(null)
+const pickerGroup = computed(() =>
+  pickerGroupName.value ? snap.value.node_catalog.find((group) => group.name === pickerGroupName.value) ?? null : null,
+)
 const welcomeDragging = ref(false)
+
+function openNodePicker(groupName: string) {
+  pickerGroupName.value = groupName
+}
+function closeNodePicker() {
+  pickerGroupName.value = null
+}
 const orderedProfiles = computed(() =>
   [...snap.value.profiles].sort((a, b) => Number(b.current) - Number(a.current)),
 )
@@ -399,7 +411,7 @@ onBeforeUnmount(() => {
           </span>
           <div class="hero-pills-right">
             <button
-              v-if="!compact && !store.isAndroid.value && snap.mixed_port"
+              v-if="!store.isAndroid.value && snap.mixed_port"
               type="button"
               class="hero-port-btn mono"
               :class="{ copied: portCopied }"
@@ -436,8 +448,8 @@ onBeforeUnmount(() => {
                 type="button"
                 class="hero-node-pill"
                 data-testid="hero-node-pill"
-                :title="tr('点击前往「{0}」切换节点', { 0: primaryGroup.name })"
-                @click="store.go('proxies', primaryGroup.name)"
+                :title="tr('点击切换「{0}」节点', { 0: primaryGroup.name })"
+                @click="openNodePicker(primaryGroup.name)"
               >
                 <Icon name="globe" :size="14" class="hero-node-icon" />
                 <span v-if="!compact" class="hero-node-group">{{ primaryGroup.name }}</span>
@@ -471,18 +483,20 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div v-if="snap.connected" class="hero-rates" data-testid="rates">
-            <div class="rate down">
-              <span class="rate-label"><Icon name="down" :size="13" />{{ tr('下载') }}</span>
-              <span class="rate-value">{{ formatSpeed(snap.download ?? 0) }}</span>
-              <span v-if="snap.download_total != null" class="rate-total">{{ tr('本次') }} {{ formatBytes(snap.download_total) }}</span>
+          <Transition name="hero-reveal">
+            <div v-if="snap.connected" class="hero-rates" data-testid="rates">
+              <div class="rate down">
+                <span class="rate-label"><Icon name="down" :size="13" />{{ tr('下载') }}</span>
+                <span class="rate-value">{{ formatSpeed(snap.download ?? 0) }}</span>
+                <span v-if="snap.download_total != null" class="rate-total">{{ tr('本次') }} {{ formatBytes(snap.download_total) }}</span>
+              </div>
+              <div class="rate up">
+                <span class="rate-label"><Icon name="up" :size="13" />{{ tr('上传') }}</span>
+                <span class="rate-value">{{ formatSpeed(snap.upload ?? 0) }}</span>
+                <span v-if="snap.upload_total != null" class="rate-total">{{ tr('本次') }} {{ formatBytes(snap.upload_total) }}</span>
+              </div>
             </div>
-            <div class="rate up">
-              <span class="rate-label"><Icon name="up" :size="13" />{{ tr('上传') }}</span>
-              <span class="rate-value">{{ formatSpeed(snap.upload ?? 0) }}</span>
-              <span v-if="snap.upload_total != null" class="rate-total">{{ tr('本次') }} {{ formatBytes(snap.upload_total) }}</span>
-            </div>
-          </div>
+          </Transition>
 
           <div class="hero-action" data-testid="home-action">
             <button
@@ -503,33 +517,37 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="snap.connected" class="hero-chart" data-testid="traffic-card">
-          <TrafficChart
-            :up="store.traffic.value.up"
-            :down="store.traffic.value.down"
-            :height="compact ? 52 : 84"
-            :collecting="store.trafficSamples.value < MIN_CHART_SAMPLES"
-          >
-            <!-- History lives one click away from the live chart, but only once recording is on (R43). -->
-            <template v-if="store.app.value?.traffic_history" #head-end>
-              <button type="button" class="chart-link" data-testid="open-traffic-stats" @click="store.openTrafficStats">
-                {{ t('settings.traffic.open') }}<Icon name="chevron-right" :size="12" />
-              </button>
-            </template>
-          </TrafficChart>
-        </div>
-
-        <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
-          <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">
-            <dt>{{ item.label }}</dt>
-            <dd>
-              <button v-if="item.key === 'connections'" type="button" class="runtime-link" @click="store.go('connections')">
-                {{ item.value }}<Icon name="chevron-right" :size="13" />
-              </button>
-              <template v-else>{{ item.value }}</template>
-            </dd>
+        <Transition name="hero-reveal">
+          <div v-if="snap.connected" class="hero-chart" data-testid="traffic-card">
+            <TrafficChart
+              :up="store.traffic.value.up"
+              :down="store.traffic.value.down"
+              :height="compact ? 52 : 84"
+              :collecting="store.trafficSamples.value < MIN_CHART_SAMPLES"
+            >
+              <!-- History lives one click away from the live chart, but only once recording is on (R43). -->
+              <template v-if="store.app.value?.traffic_history" #head-end>
+                <button type="button" class="chart-link" data-testid="open-traffic-stats" @click="store.openTrafficStats">
+                  {{ t('settings.traffic.open') }}<Icon name="chevron-right" :size="12" />
+                </button>
+              </template>
+            </TrafficChart>
           </div>
-        </dl>
+        </Transition>
+
+        <Transition name="hero-reveal">
+          <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
+            <div v-for="item in runtime" :key="item.key" class="runtime-item" :data-testid="`runtime-${item.key}`">
+              <dt>{{ item.label }}</dt>
+              <dd>
+                <button v-if="item.key === 'connections'" type="button" class="runtime-link" @click="store.go('connections')">
+                  {{ item.value }}<Icon name="chevron-right" :size="13" />
+                </button>
+                <template v-else>{{ item.value }}</template>
+              </dd>
+            </div>
+          </dl>
+        </Transition>
       </section>
 
       <div class="home-columns">
@@ -691,7 +709,22 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <p v-else class="muted small">{{ tr('本地或无流量统计信息') }}</p>
-              <p v-if="profile.failure" class="field-error"><Icon name="alert" :size="13" /> {{ tr(profile.failure) }}</p>
+              <p v-if="profile.failure" class="field-error home-profile-failure" role="alert">
+                <Icon name="alert" :size="13" />
+                <span class="grow">{{ tr(profile.failure) }}</span>
+                <button
+                  v-if="profile.kind === 'subscription'"
+                  type="button"
+                  class="btn ghost sm"
+                  :disabled="updateBusy"
+                  :aria-busy="updateBusy || undefined"
+                  data-testid="home-profile-retry"
+                  @click="store.update(profile.id)"
+                >
+                  <span v-if="updateBusy" class="spinner xs" aria-hidden="true" />
+                  {{ updateBusy ? tr('更新中') : tr('重试') }}
+                </button>
+              </p>
               <p v-if="profile.override_error" class="field-error">
                 <Icon name="alert" :size="13" /> {{ tr(profile.override_error) }}
                 <button type="button" class="btn ghost sm" data-testid="home-override-fix" @click="openProfileOverride(profile.id)">{{ tr('修改覆写') }}</button>
@@ -800,7 +833,7 @@ onBeforeUnmount(() => {
                 type="button"
                 class="group-row"
                 :data-group="group.name"
-                @click="store.go('proxies', group.name)"
+                @click="openNodePicker(group.name)"
               >
                 <template v-if="compact">
                   <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="20" /></span>
@@ -952,6 +985,12 @@ onBeforeUnmount(() => {
         <button type="button" class="btn primary" :disabled="isSheetSwitching" @click="addFromSheet"><Icon name="plus" :size="15" />{{ tr('添加新配置') }}</button>
       </template>
     </Modal>
+    <NodePickerModal
+      v-if="pickerGroup"
+      :group="pickerGroup"
+      :compact="compact"
+      @close="closeNodePicker"
+    />
     <TrafficStatsDialog v-if="store.trafficStatsOpen.value" @close="store.trafficStatsOpen.value = false" />
   </div>
 </template>

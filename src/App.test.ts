@@ -1035,6 +1035,9 @@ describe('App', () => {
     await flushPromises()
     await wrapper.find('[data-testid="groups-card"] [data-group="节点选择"]').trigger('click')
     await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
+    await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
     expect(main.scrollTop).toBe(0)
   })
@@ -1401,6 +1404,9 @@ describe('App', () => {
       await flushPromises()
       await second.wrapper.find('[data-testid="groups-card"] [data-group="流媒体"]').trigger('click')
       await flushPromises()
+      expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+      document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
+      await flushPromises()
       const target = second.wrapper.find('[data-group-card="流媒体"]').element as HTMLElement
       expect(target.style.scrollMarginTop).toBe('95px')
       expect(scroll.targets).toContain('流媒体')
@@ -1421,6 +1427,9 @@ describe('App', () => {
     try {
       const { wrapper } = await mountApp({}, 390)
       await wrapper.find('[data-testid="groups-card"] [data-group="OpenAI"]').trigger('click')
+      await flushPromises()
+      expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+      document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
       await flushPromises()
       const card = () => wrapper.find('[data-group-card="OpenAI"]')
       expect(card().classes()).toEqual(expect.arrayContaining(['open', 'located']))
@@ -1586,6 +1595,9 @@ describe('App', () => {
     expect(homeTile('故障转移').find('[data-testid="home-group-fixed"]').exists()).toBe(false)
     expect(homeTile('节点选择').find('[data-testid="home-group-fixed"]').exists()).toBe(false)
     await homeTile('自动选择').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
     await settle(100)
     expect(autoCard().find('[data-node="日本 01"]').classes()).toContain('selected')
 
@@ -3262,10 +3274,14 @@ describe('App', () => {
     await settle(1500)
     expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(true)
 
-    // Tapping the active node capsule jumps directly to its group on ProxiesView
+    // Tapping the active node capsule opens the in-place node picker, which links to ProxiesView
     const nodePill = wrapper.find('[data-testid="hero-node-pill"]')
     expect(nodePill.exists()).toBe(true)
     await nodePill.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
     expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(true)
@@ -3480,10 +3496,14 @@ describe('App', () => {
     expect(enableSpy).toHaveBeenCalledWith('p2')
     expect(wrapper.find('.main').attributes('data-page')).toBe('home')
 
-    // Desktop Home active node capsule jumps directly to the outbound group
+    // Desktop Home active node capsule opens the in-place node picker, which links to ProxiesView
     const nodePill = wrapper.find('[data-testid="hero-node-pill"]')
     expect(nodePill.exists()).toBe(true)
     await nodePill.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
 

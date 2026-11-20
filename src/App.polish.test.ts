@@ -75,6 +75,9 @@ describe('UI/UX polish', () => {
 
     await card().trigger('click')
     await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
+    await flushPromises()
     expect(store.page.value).toBe('proxies')
   })
 

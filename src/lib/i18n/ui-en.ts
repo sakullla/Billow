@@ -1593,5 +1593,13 @@ export const UI_EN: Record<string, string> = {
   '找到 {0} 项': '{0} found',
   '已恢复默认设置': 'Defaults restored',
   '已全部恢复为跟随配置': 'Everything follows the profile again',
+  '选择后立即切换，无需离开首页': 'Pick a node to switch immediately without leaving Home',
+  '未连接时无法测速或恢复自动，连接后可用。': 'Latency tests and resume automatic require an active connection.',
+  '没有可选节点': 'No nodes available',
+  '当前代理组暂无可切换的节点。': 'This proxy group has no switchable nodes yet.',
+  '切换中': 'Switching',
+  '节点切换失败': 'Failed to switch node',
+  '前往代理页': 'Open Proxies',
+  '点击切换「{0}」节点': 'Click to switch node in “{0}”',
 }
 

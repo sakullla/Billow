@@ -8333,3 +8333,242 @@ details.cfg-section[open] .cfg-fold-icon {
   padding: 0 12px;
 }
 
+/* ───────────── Core Workflow Polish: Home Node Picker & Hero Transitions (R1–R2) ───────────── */
+
+.node-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.node-picker-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--sunken) 80%, transparent);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+
+.node-picker-summary-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.node-picker-summary-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.node-picker-chain {
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.node-picker-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.node-picker-search {
+  width: 100%;
+}
+
+.node-picker-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.node-picker-offline {
+  margin: -2px 2px 0;
+}
+
+.node-picker-list {
+  gap: 6px;
+  max-height: min(52vh, 380px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.node-picker-item {
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.node-picker-item.failed {
+  border-color: color-mix(in srgb, var(--poor) 35%, var(--border));
+  background: color-mix(in srgb, var(--poor-soft) 35%, var(--surface));
+}
+
+.node-picker-item.switching {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+}
+
+.node-picker-row {
+  width: 100%;
+}
+
+.node-picker-row[aria-disabled='true']:not(.switching) {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.node-picker-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+.node-picker-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.node-picker-name {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.node-picker-name mark {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.node-picker-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.node-picker-meta .udp {
+  font-size: 10px;
+  font-weight: 650;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+
+.node-picker-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.node-picker-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.node-picker-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px var(--space-3) 10px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.node-picker-error .icon {
+  flex: none;
+}
+
+.compact .node-picker-list {
+  max-height: min(48vh, 340px);
+}
+
+.compact .node-picker-error .btn.sm {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+/* R2: Home subscription inline failure retry & compact desktop port copy pill */
+.home-profile-failure {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.home-profile-failure .icon {
+  flex: none;
+}
+
+.home-profile-failure .btn.sm {
+  flex: none;
+}
+
+.compact .hero-pills-right {
+  flex-wrap: nowrap;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.compact .hero-port-btn {
+  padding: 0 8px;
+}
+
+.compact .hero-profile-pill {
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* R2: Smooth connected state reveal transitions on Home hero */
+.hero-reveal-enter-active,
+.hero-reveal-leave-active {
+  transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease);
+}
+
+.hero-reveal-enter-from,
+.hero-reveal-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-reveal-enter-active,
+  .hero-reveal-leave-active {
+    transition: none;
+  }
+  .hero-reveal-enter-from,
+  .hero-reveal-leave-to {
+    transform: none;
+  }
+}
+
+
