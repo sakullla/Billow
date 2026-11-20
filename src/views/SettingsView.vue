@@ -1395,6 +1395,23 @@ const TABS = computed(() => [
               @update:model-value="store.setAutoExitIp"
             />
           </div>
+          <!-- Traffic history is opt-in; the same switch is in the stats dialog (R43). -->
+          <div v-if="app" class="nav-row static" data-testid="traffic-history-setting">
+            <span class="nav-row-icon slate"><Icon name="activity" /></span>
+            <div class="grow min0">
+              <span class="nav-row-title">{{ t('settings.traffic.title') }}</span>
+              <p class="muted small">{{ t('settings.traffic.retention', { days: store.trafficStats.value?.retention_days ?? 90 }) }}</p>
+              <button type="button" class="btn ghost sm" data-testid="open-traffic-stats" @click="store.openTrafficStats">
+                <Icon name="activity" :size="14" />{{ t('settings.traffic.open') }}
+              </button>
+            </div>
+            <Toggle
+              :model-value="app.traffic_history"
+              :label="t('settings.traffic.record')"
+              data-testid="traffic-history-toggle"
+              @update:model-value="store.setTrafficRecording"
+            />
+          </div>
         </section>
 
         <p class="settings-group-label">{{ tr('外观与启动') }}</p>
@@ -1533,22 +1550,6 @@ const TABS = computed(() => [
             <Toggle :model-value="currentSettings.close_connections_on_switch" :label="tr('切换节点后重连')" data-testid="close-on-node-switch"
               @update:model-value="(on) => save({ close_connections_on_switch: on })" />
           </div>
-          <div v-if="app" class="nav-row static" data-testid="traffic-history-setting">
-            <span class="nav-row-icon slate"><Icon name="activity" /></span>
-            <div class="grow min0">
-              <span class="nav-row-title">{{ t('settings.traffic.title') }}</span>
-              <p class="muted small">{{ t('settings.traffic.retention', { days: store.trafficStats.value?.retention_days ?? 90 }) }}</p>
-              <button type="button" class="btn ghost sm" data-testid="open-traffic-stats" @click="store.openTrafficStats">
-                <Icon name="activity" :size="14" />{{ t('settings.traffic.open') }}
-              </button>
-            </div>
-            <Toggle
-              :model-value="app.traffic_history"
-              :label="t('settings.traffic.record')"
-              data-testid="traffic-history-toggle"
-              @update:model-value="store.setTrafficRecording"
-            />
-          </div>
           <details class="nav-fold" data-testid="subscription-settings" :open="Boolean(snap.settings.subscription_user_agent) || undefined">
             <summary class="nav-row">
               <span class="nav-row-icon violet"><Icon name="link" /></span>
@@ -1590,7 +1591,7 @@ const TABS = computed(() => [
       </template>
 
       <template v-else>
-      <!-- Network: options that query third-party services through the proxy (R40). -->
+      <!-- Network: third-party lookups (R40) and traffic history recording (R43). -->
       <section v-if="app" class="card" data-testid="settings-network">
         <header class="card-head"><h2>{{ tr('网络') }}</h2></header>
         <!-- Automatic exit IP queries are off by default and name the services used (R40). -->
@@ -1606,19 +1607,8 @@ const TABS = computed(() => [
             @update:model-value="store.setAutoExitIp"
           />
         </div>
-      </section>
-
-      <section class="card" data-testid="node-switch-settings">
-        <div class="setting-row">
-          <div class="grow">
-            <strong>{{ tr('切换节点后重连') }}</strong>
-            <p class="muted small">{{ tr('关闭经过当前代理组的旧连接，让应用重连新节点。下载、视频或通话可能中断；关闭后仅新连接使用新节点。') }}</p>
-          </div>
-          <Toggle :model-value="currentSettings.close_connections_on_switch" :label="tr('切换节点后重连')" data-testid="close-on-node-switch"
-            @update:model-value="(on) => save({ close_connections_on_switch: on })" />
-        </div>
         <!-- Traffic history is opt-in; the same switch is in the stats dialog (R43). -->
-        <div v-if="app" class="setting-row" data-testid="traffic-history-setting">
+        <div class="setting-row" data-testid="traffic-history-setting">
           <div class="grow">
             <strong>{{ t('settings.traffic.title') }}</strong>
             <p class="muted small">{{ t('settings.traffic.detail', { days: store.trafficStats.value?.retention_days ?? 90 }) }}</p>
@@ -1632,6 +1622,17 @@ const TABS = computed(() => [
             data-testid="traffic-history-toggle"
             @update:model-value="store.setTrafficRecording"
           />
+        </div>
+      </section>
+
+      <section class="card" data-testid="node-switch-settings">
+        <div class="setting-row">
+          <div class="grow">
+            <strong>{{ tr('切换节点后重连') }}</strong>
+            <p class="muted small">{{ tr('关闭经过当前代理组的旧连接，让应用重连新节点。下载、视频或通话可能中断；关闭后仅新连接使用新节点。') }}</p>
+          </div>
+          <Toggle :model-value="currentSettings.close_connections_on_switch" :label="tr('切换节点后重连')" data-testid="close-on-node-switch"
+            @update:model-value="(on) => save({ close_connections_on_switch: on })" />
         </div>
       </section>
 

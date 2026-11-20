@@ -192,7 +192,7 @@ describe('Exit IP lookup (R40)', () => {
     expect(wrapper.find('[data-testid="exit-ip-card"]').exists()).toBe(false)
   })
 
-  it('puts the setting under Network in desktop settings and names the services', async () => {
+  it('puts the Network settings (exit IP and traffic history) in the desktop Network card', async () => {
     const { wrapper } = await mountApp()
     const store = storeOf(wrapper)
     store.openSettings('general')
@@ -206,9 +206,17 @@ describe('Exit IP lookup (R40)', () => {
     expect(setting.text()).toContain('ipinfo.io')
     expect(setting.find('[data-testid="auto-exit-ip-toggle"]').attributes('aria-checked')).toBe('false')
     expect(wrapper.find('[data-testid="node-switch-settings"] [data-testid="auto-exit-ip-setting"]').exists()).toBe(false)
+
+    // Traffic history lives under Network too (R43): off by default, stats entry reachable, no duplicate row.
+    const traffic = network.find('[data-testid="traffic-history-setting"]')
+    expect(traffic.exists()).toBe(true)
+    expect(traffic.find('[data-testid="traffic-history-toggle"]').attributes('aria-checked')).toBe('false')
+    expect(traffic.find('[data-testid="open-traffic-stats"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="node-switch-settings"] [data-testid="traffic-history-setting"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="traffic-history-setting"]')).toHaveLength(1)
   })
 
-  it('puts the setting in the phone Network group instead of proxy behaviour', async () => {
+  it('puts the Network settings on the phone Network group instead of proxy behaviour', async () => {
     const { wrapper } = await mountApp({}, 390)
     const store = storeOf(wrapper)
     store.go('settings')
@@ -222,7 +230,13 @@ describe('Exit IP lookup (R40)', () => {
     expect(setting.text()).toContain('ipinfo.io')
     expect(setting.find('[data-testid="auto-exit-ip-toggle"]').attributes('aria-checked')).toBe('false')
     expect(wrapper.find('[data-testid="node-switch-settings"] [data-testid="auto-exit-ip-setting"]').exists()).toBe(false)
-    // The R43 traffic row stays in its current group until T6 moves it.
-    expect(wrapper.find('[data-testid="node-switch-settings"] [data-testid="traffic-history-setting"]').exists()).toBe(true)
+
+    // Traffic history moved into the phone Network group (R43), still off by default and reachable.
+    const traffic = network.find('[data-testid="traffic-history-setting"]')
+    expect(traffic.exists()).toBe(true)
+    expect(traffic.find('[data-testid="traffic-history-toggle"]').attributes('aria-checked')).toBe('false')
+    expect(traffic.find('[data-testid="open-traffic-stats"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="node-switch-settings"] [data-testid="traffic-history-setting"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="traffic-history-setting"]')).toHaveLength(1)
   })
 })
