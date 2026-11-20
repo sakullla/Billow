@@ -448,15 +448,28 @@ describe('Core workflow polish (R3–R4)', () => {
       await flushPromises()
       expect(menu().exists()).toBe(false)
 
-      // Compact/mobile does not open desktop ContextMenu on contextmenu
+      // Compact/mobile suppresses browser default contextmenu AND does not open desktop ContextMenu
       const mobile = await mountApp({ platform: 'android' }, 390)
       await openPage(mobile.wrapper, 'proxies')
-      await mobile.wrapper.find('[data-group-card="节点选择"] [data-node="日本 01"]').trigger('contextmenu')
+      const mobileNodeEl = mobile.wrapper.find('[data-group-card="节点选择"] [data-node="日本 01"]').element
+      const mobileCtxEvent = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+      mobileNodeEl.dispatchEvent(mobileCtxEvent)
       await flushPromises()
+      expect(mobileCtxEvent.defaultPrevented).toBe(true)
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(false)
+
+      // Wide Android tablet (not compact, but Android) also suppresses default menu and does not open desktop ContextMenu
+      const tablet = await mountApp({ platform: 'android' }, 1024)
+      await openPage(tablet.wrapper, 'proxies')
+      const tabletNodeEl = tablet.wrapper.find('[data-group-card="节点选择"] [data-node="日本 01"]').element
+      const tabletCtxEvent = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+      tabletNodeEl.dispatchEvent(tabletCtxEvent)
+      await flushPromises()
+      expect(tabletCtxEvent.defaultPrevented).toBe(true)
       expect(body().find('[data-testid="context-menu"]').exists()).toBe(false)
     })
 
-    it('persists hide-failed preference, handles corrupt storage safely, and provides one-click reset when filters empty results', async () => {
+    it('persists hide-failed preference across transient zero failures, keeps single-group empty prompt, and resets filters', async () => {
       // Corrupt localStorage falls back safely to false
       localStorage.setItem('billow:proxy-hide-failed', '{not-json')
       const { wrapper } = await mountApp()
@@ -464,16 +477,24 @@ describe('Core workflow polish (R3–R4)', () => {
       const store = storeOf(wrapper)
 
       await openPage(wrapper, 'proxies')
-      // Inject failed nodes into snapshot
-      store.snapshot.value = {
+      const makeSnapshotWithFailures = (failStreamAll = false) => ({
         ...store.snapshot.value,
-        node_catalog: store.snapshot.value.node_catalog.map((group) => ({
-          ...group,
-          nodes: group.nodes.map((node) =>
-            node.name.includes('新加坡') ? { ...node, delay_ms: null, failed: true } : node,
-          ),
-        })),
-      }
+        node_catalog: store.snapshot.value.node_catalog.map((group) => {
+          if (failStreamAll && group.name === '流媒体') {
+            return {
+              ...group,
+              nodes: group.nodes.map((node) => ({ ...node, selected: false, delay_ms: null, failed: true })),
+            }
+          }
+          return {
+            ...group,
+            nodes: group.nodes.map((node) =>
+              node.name.includes('新加坡') ? { ...node, delay_ms: null, failed: true } : node,
+            ),
+          }
+        }),
+      })
+      store.snapshot.value = makeSnapshotWithFailures(false)
       await flushPromises()
 
       const hideChip = () => wrapper.find('[data-testid="hide-failed-nodes"]')
@@ -486,7 +507,37 @@ describe('Core workflow polish (R3–R4)', () => {
       expect(hideChip().attributes('aria-pressed')).toBe('true')
       expect(localStorage.getItem('billow:proxy-hide-failed')).toBe('true')
 
-      // Switch away and come back -> restored from localStorage
+      // Transient zero failed nodes (e.g. delays cleared on reconnect/switch) MUST NOT overwrite saved preference
+      store.snapshot.value = {
+        ...store.snapshot.value,
+        node_catalog: store.snapshot.value.node_catalog.map((group) => ({
+          ...group,
+          nodes: group.nodes.map((node) => ({ ...node, failed: false, delay_ms: 80 })),
+        })),
+      }
+      await flushPromises()
+      expect(localStorage.getItem('billow:proxy-hide-failed')).toBe('true')
+
+      // When failures reappear (including all nodes in 流媒体 timed out), preference is still active and 流媒体 is not swallowed
+      store.snapshot.value = makeSnapshotWithFailures(true)
+      await flushPromises()
+      expect(hideChip().attributes('aria-pressed')).toBe('true')
+      expect(wrapper.find('[data-group-card="流媒体"]').exists()).toBe(true)
+      await wrapper.find('[data-testid="group-toggle-流媒体"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-group-card="流媒体"] [data-testid="group-hidden-failed"]').exists()).toBe(true)
+      expect(wrapper.find('[data-group-card="流媒体"] [data-testid="show-failed-nodes"]').exists()).toBe(true)
+
+      // One-click recovery inside the group disables hideFailed and restores nodes
+      await wrapper.find('[data-group-card="流媒体"] [data-testid="show-failed-nodes"]').trigger('click')
+      await flushPromises()
+      expect(hideChip().attributes('aria-pressed')).toBe('false')
+      expect(wrapper.find('[data-group-card="流媒体"] [data-testid="group-hidden-failed"]').exists()).toBe(false)
+      expect(wrapper.findAll('[data-group-card="流媒体"] .node').length).toBeGreaterThan(0)
+
+      // Turn back on, switch away and come back -> restored from localStorage
+      await hideChip().trigger('click')
+      await flushPromises()
       await openPage(wrapper, 'home')
       await openPage(wrapper, 'proxies')
       expect(hideChip().attributes('aria-pressed')).toBe('true')
@@ -572,6 +623,12 @@ describe('Core workflow polish (R3–R4)', () => {
       expect(updateAllBtn().text()).toContain('全部更新')
       expect(updateAllBtn().text()).not.toContain('已完成')
       expect(wrapper.find('[data-testid="retry-failed-profiles"]').exists()).toBe(true)
+
+      // Leaving and returning to Profiles MUST NOT replay the expired completion summary
+      await openPage(wrapper, 'home')
+      await openPage(wrapper, 'profiles')
+      expect(updateAllBtn().text()).toContain('全部更新')
+      expect(updateAllBtn().text()).not.toContain('已完成')
     })
 
     it('supports keyboard focus/Enter/Space activation and desktop ContextMenu on profile cards', async () => {

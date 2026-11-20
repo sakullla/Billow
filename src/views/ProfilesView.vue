@@ -1,3 +1,7 @@
+<script lang="ts">
+const refreshResultWindow = new WeakMap<object, number>()
+</script>
+
 <script setup lang="ts">import { tr } from '../lib/i18n'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
@@ -746,7 +750,13 @@ function onCardKeydown(event: KeyboardEvent, profile: ProfileItem) {
 const ctxMenu = ref<{ x: number; y: number; profile: ProfileItem } | null>(null)
 
 function openProfileContextMenu(event: MouseEvent, profile: ProfileItem) {
-  if (props.compact) return
+  if (
+    props.compact ||
+    store.isAndroid.value ||
+    (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true)
+  ) {
+    return
+  }
   event.preventDefault()
   menuFor.value = null
   ctxMenu.value = { x: event.clientX, y: event.clientY, profile }
@@ -770,25 +780,43 @@ function clearRefreshResetTimer() {
   }
 }
 
-function scheduleRefreshResultReset() {
+function scheduleRefreshResultReset(durationMs = REFRESH_RESULT_MS) {
   clearRefreshResetTimer()
   showRefreshResult.value = true
   refreshResetTimer = setTimeout(() => {
     refreshResetTimer = null
     showRefreshResult.value = false
-  }, REFRESH_RESULT_MS)
+  }, durationMs)
 }
 
 watch(
   () => [store.busy.refreshAll, store.refreshProgress.value.done, store.refreshProgress.value.total] as const,
-  ([busy, done, total]) => {
+  ([busy, done, total], prev) => {
     if (busy) {
       clearRefreshResetTimer()
+      refreshResultWindow.delete(store)
       showRefreshResult.value = false
       return
     }
     if (total > 0 && done >= total) {
-      scheduleRefreshResultReset()
+      const wasBusy = prev?.[0] === true
+      if (wasBusy) {
+        refreshResultWindow.set(store, Date.now() + REFRESH_RESULT_MS)
+        scheduleRefreshResultReset(REFRESH_RESULT_MS)
+        return
+      }
+      const expiresAt = refreshResultWindow.get(store)
+      if (expiresAt === undefined) {
+        refreshResultWindow.set(store, Date.now() + REFRESH_RESULT_MS)
+        scheduleRefreshResultReset(REFRESH_RESULT_MS)
+        return
+      }
+      const remaining = expiresAt - Date.now()
+      if (remaining > 0) {
+        scheduleRefreshResultReset(remaining)
+      } else {
+        showRefreshResult.value = false
+      }
     }
   },
   { immediate: true },

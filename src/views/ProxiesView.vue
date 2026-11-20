@@ -156,7 +156,7 @@ const queryTokens = computed(() => splitQueryTokens(query.value))
 const hideFailed = ref<boolean>(readBoolPref('proxy-hide-failed', false))
 watch(hideFailed, (value) => writePref('proxy-hide-failed', value))
 
-type ViewGroup = NodeGroup & { info?: NodeItem[] }
+type ViewGroup = NodeGroup & { info?: NodeItem[]; hiddenFailedCount?: number }
 
 /** Info text without the provider's leading 【tag】 prefix. */
 function infoText(name: string): string {
@@ -281,21 +281,24 @@ const groups = computed(() => {
     .filter((group) => !autoHidden(group))
     .map((group): ViewGroup => {
       let nodes = needle.value ? group.nodes.filter(matches) : group.nodes
-      if (hideFailed.value) {
+      const beforeHideFailed = nodes.length
+      if (hideFailed.value && failedNodeCount.value > 0) {
         nodes = nodes.filter((node) => node.selected || !nodeState(node).failed)
       }
+      const hiddenFailedCount = beforeHideFailed - nodes.length
       nodes = sorted(nodes)
       // Quota/expiry pseudo-nodes leave the grid unless selected or searched for (R11).
       const info = needle.value ? [] : nodes.filter((node) => !node.selected && isInfoNode(node.name))
       if (info.length) nodes = nodes.filter((node) => !info.includes(node))
-      if (nodes === group.nodes) return group
-      return info.length ? { ...group, nodes, info } : { ...group, nodes }
+      if (nodes === group.nodes && hiddenFailedCount === 0) return group
+      return {
+        ...group,
+        nodes,
+        ...(info.length ? { info } : {}),
+        ...(hiddenFailedCount > 0 ? { hiddenFailedCount } : {}),
+      }
     })
-    .filter((group) => {
-      if (needle.value) return group.nodes.length > 0 || matchesTokens(group.name, queryTokens.value)
-      if (hideFailed.value && failedNodeCount.value > 0) return group.nodes.length > 0
-      return true
-    })
+    .filter((group) => !needle.value || group.nodes.length > 0 || matchesTokens(group.name, queryTokens.value))
 })
 
 const matchCount = computed(() =>
@@ -375,10 +378,6 @@ const failedNodeCount = computed(() => {
   return count
 })
 
-watch(failedNodeCount, (count) => {
-  if (count === 0) hideFailed.value = false
-})
-
 function groupHealthText(group: NodeGroup): string {
   let tested = 0
   let ok = 0
@@ -412,9 +411,17 @@ function copyNodeName(node: NodeItem) {
 
 const ctxMenu = ref<{ x: number; y: number; items: MenuItem[]; group: NodeGroup; node: NodeItem } | null>(null)
 
+function isTouchOrCompact(): boolean {
+  return (
+    Boolean(props.compact) ||
+    store.isAndroid.value ||
+    (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true)
+  )
+}
+
 function openNodeContextMenu(event: MouseEvent, group: NodeGroup, node: NodeItem) {
-  if (props.compact) return
   event.preventDefault()
+  if (isTouchOrCompact()) return
   const items: MenuItem[] = []
   if (canPickNode(group)) {
     const isAuto = group.kind === 'auto'
@@ -692,7 +699,7 @@ onBeforeUnmount(() => {
 const denseLabel = computed(() => tr('双列视图'))
 const denseIcon = 'grid'
 
-const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card' || hideFailed.value)
+const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card' || (hideFailed.value && failedNodeCount.value > 0))
 </script>
 
 <template>
@@ -1051,7 +1058,20 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           </p>
         </template>
         <template #default="{ nodes: visibleNodes }">
-          <p v-if="!group.nodes.length" class="muted small">
+          <div
+            v-if="!group.nodes.length && group.hiddenFailedCount"
+            class="group-empty-filter small muted"
+            data-testid="group-hidden-failed"
+          >
+            <span>{{ tr('当前已开启「隐藏超时」，已隐藏该组全部 {0} 个超时节点。', { 0: group.hiddenFailedCount }) }}</span>
+            <button
+              type="button"
+              class="btn ghost sm"
+              data-testid="show-failed-nodes"
+              @click="hideFailed = false"
+            >{{ tr('显示超时节点') }}</button>
+          </div>
+          <p v-else-if="!group.nodes.length" class="muted small">
             {{ needle ? tr('没有匹配的节点') : snap.kernel_running ? tr('该组暂时没有可用节点，请检查资源页中的订阅源状态。') : tr('连接后加载订阅源节点。') }}
           </p>
           <div
@@ -1065,7 +1085,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               'failed-node': nodeState(node).failed,
             }"
             :data-node="node.name"
-            @contextmenu="openNodeContextMenu($event, group, node)"
+            @contextmenu.prevent="openNodeContextMenu($event, group, node)"
           >
             <button
               type="button"
