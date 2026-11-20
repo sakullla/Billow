@@ -24,7 +24,7 @@ const exporting = ref(false)
 const exported = ref<string | null>(null)
 const localError = ref<string | null>(null)
 
-type PendingRestore = { kind: 'local'; name: string; text: string } | { kind: 'remote'; name: string }
+type PendingRestore = { kind: 'local'; name: string; file: File } | { kind: 'remote'; name: string }
 const pending = ref<PendingRestore | null>(null)
 const restoring = ref(false)
 
@@ -74,18 +74,12 @@ function pickFile() {
   fileInput.value?.click()
 }
 
-async function onFile(event: Event) {
+function onFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   // Let the same file be picked again after a cancelled confirmation.
   input.value = ''
-  if (!file) return
-  try {
-    const text = await file.text()
-    pending.value = { kind: 'local', name: file.name, text }
-  } catch (error) {
-    localError.value = t('backup.readError', { reason: reason(error) })
-  }
+  if (file) pending.value = { kind: 'local', name: file.name, file }
 }
 
 /** Save the account first so the test uses exactly what is on screen. */
@@ -171,8 +165,19 @@ async function confirmRestore() {
   if (!target || restoring.value) return
   restoring.value = true
   try {
-    if (target.kind === 'local') await store.restoreBackup(target.text)
-    else await store.restoreRemoteBackup(target.name)
+    if (target.kind === 'local') {
+      let text: string
+      try {
+        text = await target.file.text()
+      } catch (error) {
+        pending.value = null
+        localError.value = t('backup.readError', { reason: reason(error) })
+        return
+      }
+      await store.restoreBackup(text)
+    } else {
+      await store.restoreRemoteBackup(target.name)
+    }
     pending.value = null
     exported.value = null
   } finally {

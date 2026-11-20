@@ -55,6 +55,7 @@ async function setup(initial: TrafficHistoryView) {
     },
   }
   const store = createStore(backend)
+  store.openTrafficStats()
   const Harness = defineComponent({
     setup() {
       provide(STORE, store)
@@ -82,6 +83,31 @@ async function click(testid: string) {
 }
 
 describe('TrafficStatsDialog (R43)', () => {
+  it('windows a large node breakdown and keeps the last row and full totals accessible', async () => {
+    const entries = Array.from({ length: 5000 }, (_, i) => ({
+      ...ENTRIES[0]!, node: `Node ${i}`, upload: i + 1, download: i + 1,
+    }))
+    await setup(view({ entries }))
+    const total = find('[data-testid="traffic-total-all"]').textContent
+    find('[data-testid="traffic-grouping"] [data-value="node"]').click()
+    await flushPromises()
+
+    const rendered = () => [...document.querySelectorAll<HTMLElement>('[data-testid="traffic-row"]')]
+    expect(rendered().length).toBeLessThan(80)
+    expect(rendered()[0]!.dataset.key).toBe('node:Node 4999')
+    expect(find('.traffic-table').getAttribute('aria-rowcount')).toBe('5001')
+    const scroller = find('.modal-body')
+    scroller.scrollTop = 5000 * 44
+    scroller.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(rendered().at(-1)?.dataset.key).toBe('node:Node 0')
+    expect(rendered().at(-1)?.getAttribute('aria-rowindex')).toBe('5001')
+    expect(find('[data-testid="traffic-total-all"]').textContent).toBe(total)
+    find('[data-testid="traffic-grouping"] [data-value="profile"]').click()
+    await flushPromises()
+    expect(rendered().map(row => row.dataset.key)).toEqual(['profile:配置 A'])
+  })
+
   it('says recording is off and turns it on from the empty state', async () => {
     const { store } = await setup(view({ enabled: false, entries: [] }))
     expect(find('[data-testid="traffic-off"]').textContent).toContain('未开启流量记录')

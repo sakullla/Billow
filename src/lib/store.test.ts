@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectScope } from 'vue'
 import { createDemoBackend } from './demo'
 import { createStore } from './store'
-import { emptySnapshot, type Snapshot } from './types'
+import { emptySnapshot, type Snapshot, type TrafficHistoryView } from './types'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -77,6 +77,33 @@ describe('store lifecycle', () => {
     expect(store.refreshProgress.value).toEqual({ done: 1, total: 1, failed: 0 })
   })
 
+  it('releases feedback for a deleted subscription and discards its late update', async () => {
+    const { backend, state, store } = setup()
+    const adding = backend.addSubscription('https://example.org/sub')
+    await vi.runAllTimersAsync()
+    const initial = await adding
+    const id = initial.profiles.find((profile) => profile.source === 'https://example.org/sub')!.id
+    state.mockResolvedValue(initial)
+    await store.start()
+
+    const download = deferred<Snapshot>()
+    vi.spyOn(backend, 'refresh').mockReturnValue(download.promise)
+    const update = store.update(id)
+    await Promise.resolve()
+    expect(store.profileUpdates[id]?.state).toBe('updating')
+
+    const removed = { ...initial, profiles: initial.profiles.filter((profile) => profile.id !== id) }
+    vi.spyOn(backend, 'remove').mockResolvedValue(removed)
+    await store.remove(id)
+    expect(store.profileUpdates[id]).toBeUndefined()
+    expect(store.busy[`update:${id}`]).toBeUndefined()
+
+    download.resolve(initial)
+    await update
+    expect(store.snapshot.value.profiles.some((profile) => profile.id === id)).toBe(false)
+    expect(store.profileUpdates[id]).toBeUndefined()
+  })
+
   it('preserves unaffected groups and log rows when one group changes', async () => {
     const { store, state } = setup()
     const catalog: Snapshot['node_catalog'] = ['a', 'b'].map((name) => ({ name, kind: 'manual', now: '',
@@ -128,6 +155,29 @@ describe('store lifecycle', () => {
     expect(store.snapshot.value.installed).toBe(initial.installed)
     expect(store.snapshot.value.excluded).toBe(initial.excluded)
     expect(store.snapshot.value.node_catalog[0]!.nodes[0]!.tags).toEqual(['UDP'])
+  })
+
+  it('publishes changes to group pinning, visibility and structured log hints on poll', async () => {
+    const { store, state } = setup()
+    const initial = emptySnapshot()
+    initial.node_catalog = [{ name: 'Auto', kind: 'auto', now: 'a', sort: 'default',
+      group_type: 'url-test', icon: null, nodes: [], pinnable: true, hidden: false, fixed: null }]
+    initial.logs = [{ time_ms: 1, level: 'error', message: 'listen', hint: 'port', hint_kind: 'socks' }]
+    state.mockResolvedValue(initial)
+    await store.start()
+    const changed = structuredClone(initial)
+    Object.assign(changed.node_catalog[0]!, { hidden: true, fixed: 'a' })
+    changed.logs[0]!.hint_kind = 'mixed'
+    state.mockResolvedValue(changed)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.snapshot.value.node_catalog[0]).toMatchObject({ hidden: true, fixed: 'a' })
+    expect(store.snapshot.value.logs[0]?.hint_kind).toBe('mixed')
+
+    const next = structuredClone(changed)
+    next.node_catalog[0]!.pinnable = false
+    state.mockResolvedValue(next)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.snapshot.value.node_catalog[0]?.pinnable).toBe(false)
   })
 
   it('suspends polling while hidden and refreshes immediately on return', async () => {
@@ -229,5 +279,60 @@ describe('store lifecycle', () => {
     store.stop()
     expect(vi.getTimerCount()).toBe(0)
     expect(store.toasts.value).toHaveLength(0)
+  })
+})
+
+describe('traffic history reads', () => {
+  it('coalesces rapid range changes and discards the superseded result', async () => {
+    const { store, backend } = setup()
+    const today = await backend.trafficHistory('today')
+    const first = deferred<TrafficHistoryView>()
+    const last = deferred<TrafficHistoryView>()
+    const read = vi.spyOn(backend, 'trafficHistory')
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(last.promise)
+
+    store.openTrafficStats()
+    void store.loadTrafficStats('today')
+    await Promise.resolve()
+    void store.loadTrafficStats('7d')
+    const latest = store.loadTrafficStats('30d')
+    expect(read.mock.calls).toEqual([['today', null, null]])
+
+    first.resolve(today)
+    await Promise.resolve()
+    expect(read.mock.calls).toEqual([['today', null, null], ['30d', null, null]])
+    expect(store.trafficStats.value).toBeNull()
+    expect(store.trafficStatsBusy.value).toBe(true)
+
+    const month = { ...today, from: '2026-11-01' }
+    last.resolve(month)
+    expect(await latest).toBe(month)
+    expect(store.trafficStats.value).toBe(month)
+    expect(store.trafficStatsBusy.value).toBe(false)
+  })
+
+  it('releases loaded rows and drops reads that complete after closing', async () => {
+    const { store, backend } = setup()
+    const today = await backend.trafficHistory('today')
+    const read = vi.spyOn(backend, 'trafficHistory').mockResolvedValue(today)
+    await store.setTrafficRecording(true)
+    expect(read).not.toHaveBeenCalled()
+
+    store.openTrafficStats()
+    await store.loadTrafficStats()
+    expect(store.trafficStats.value).toBe(today)
+
+    const next = deferred<TrafficHistoryView>()
+    read.mockReturnValueOnce(next.promise)
+    const inFlight = store.loadTrafficStats('7d')
+    await Promise.resolve()
+    store.releaseTrafficStats()
+    expect(store.trafficStats.value).toBeNull()
+    expect(store.trafficStatsBusy.value).toBe(false)
+    next.resolve(today)
+    expect(await inFlight).toBeUndefined()
+    expect(store.trafficStats.value).toBeNull()
+    expect(store.trafficStatsRange.value.range).toBe('7d')
   })
 })

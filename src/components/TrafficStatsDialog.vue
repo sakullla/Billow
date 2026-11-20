@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DailyBars from './DailyBars.vue'
 import EmptyState from './EmptyState.vue'
 import Icon from './Icon.vue'
@@ -8,6 +8,7 @@ import Segmented from './Segmented.vue'
 import { formatBytes } from '../lib/format'
 import { t } from '../lib/i18n'
 import { useStore } from '../lib/store'
+import { useVirtualList } from '../lib/ui/virtual'
 import { localDateKey, shiftDateKey, type TrafficGrouping, type TrafficRange } from '../lib/types'
 
 /**
@@ -80,15 +81,52 @@ const rows = computed<GroupRow[]>(() => {
     .sort((left, right) => right.upload + right.download - (left.upload + left.download))
 })
 
+const tableBody = ref<HTMLTableSectionElement | null>(null)
+const rowHeight = ref(44)
+const windowed = computed(() => rows.value.length > 80)
+const list = useVirtualList(computed(() => rows.value.length), () => rowHeight.value)
+const visibleRows = computed(() => windowed.value
+  ? rows.value.slice(list.window.value.start, list.window.value.end)
+  : rows.value)
+
+watch([tableBody, rows], ([body], _, onCleanup) => {
+  if (!body || !windowed.value) return
+  const scroller = body.closest<HTMLElement>('.modal-body')
+  if (!scroller) return
+  let contentTop = 0
+  const onScroll = () => list.measure(scroller, contentTop)
+  const measure = () => {
+    const row = body.querySelector<HTMLElement>('tr[data-key]')
+    const height = row?.getBoundingClientRect().height
+    if (height) rowHeight.value = height
+    const top = body.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+    contentTop = scroller.scrollTop + top - scroller.clientTop
+    onScroll()
+  }
+  measure()
+  scroller.addEventListener('scroll', onScroll, { passive: true })
+  const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+  observer?.observe(scroller)
+  observer?.observe(body)
+  onCleanup(() => {
+    observer?.disconnect()
+    scroller.removeEventListener('scroll', onScroll)
+  })
+}, { flush: 'post' })
+
 const totals = computed(() =>
-  rows.value.reduce(
-    (sum, row) => ({ upload: sum.upload + row.upload, download: sum.download + row.download }),
-    { upload: 0, download: 0 },
-  ),
+  rows.value.reduce((sum, row) => {
+    sum.upload += row.upload
+    sum.download += row.download
+    return sum
+  }, { upload: 0, download: 0 }),
 )
 
 /** Width of each row's share bar, relative to the largest row so small rows stay visible. */
-const topRow = computed(() => Math.max(1, ...rows.value.map((row) => row.upload + row.download)))
+const topRow = computed(() => {
+  const first = rows.value[0]
+  return first ? Math.max(1, first.upload + first.download) : 1
+})
 function rowShare(row: GroupRow): string {
   return `${Math.max(1.5, ((row.upload + row.download) / topRow.value) * 100)}%`
 }
@@ -157,6 +195,7 @@ async function clearAll() {
 onMounted(() => {
   void load()
 })
+onBeforeUnmount(store.releaseTrafficStats)
 </script>
 
 
@@ -243,7 +282,7 @@ onMounted(() => {
 
           <DailyBars v-if="showsDaily" :days="days" />
 
-          <table class="traffic-table small">
+          <table class="traffic-table small" :aria-rowcount="rows.length + 1">
             <thead>
               <tr>
                 <th>{{ groupingLabel }}</th>
@@ -252,8 +291,12 @@ onMounted(() => {
                 <th class="num">{{ t('traffic.total') }}</th>
               </tr>
             </thead>
-            <tbody>
-              <tr v-for="row in rows" :key="row.key" data-testid="traffic-row" :data-key="row.key">
+            <tbody ref="tableBody">
+              <tr v-if="windowed && list.offset.value" aria-hidden="true">
+                <td class="traffic-spacer" colspan="4" :style="{ height: list.offset.value + 'px' }" />
+              </tr>
+              <tr v-for="(row, index) in visibleRows" :key="row.key" data-testid="traffic-row" :data-key="row.key"
+                :aria-rowindex="(windowed ? list.window.value.start : 0) + index + 2">
                 <td class="traffic-label">
                   <span class="traffic-label-text" :class="{ muted: row.key.endsWith(':direct') }" :title="row.label">{{ row.label }}</span>
                   <span class="traffic-share" aria-hidden="true"><span :style="{ width: rowShare(row) }" /></span>
@@ -261,6 +304,9 @@ onMounted(() => {
                 <td class="num mono">{{ formatBytes(row.download) }}</td>
                 <td class="num mono">{{ formatBytes(row.upload) }}</td>
                 <td class="num mono strong">{{ formatBytes(row.upload + row.download) }}</td>
+              </tr>
+              <tr v-if="windowed && list.tail.value" aria-hidden="true">
+                <td class="traffic-spacer" colspan="4" :style="{ height: list.tail.value + 'px' }" />
               </tr>
             </tbody>
           </table>
@@ -432,6 +478,11 @@ onMounted(() => {
 .traffic-table th:first-child,
 .traffic-table td:first-child {
   padding-left: 0;
+}
+
+.traffic-table td.traffic-spacer {
+  padding: 0;
+  border: 0;
 }
 
 .traffic-table th:last-child,

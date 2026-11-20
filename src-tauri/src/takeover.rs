@@ -1524,6 +1524,7 @@ pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeTunFd(
 // ---------------------------------------------------------------------------
 
 /// The three states the Quick Settings tile shows.
+#[cfg(any(target_os = "android", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkState {
     Disconnected,
@@ -1531,9 +1532,9 @@ pub enum LinkState {
     Connected,
 }
 
+#[cfg(any(target_os = "android", test))]
 impl LinkState {
     /// The key `BillowStatus` in Kotlin understands.
-    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
     pub fn key(self) -> &'static str {
         match self {
             Self::Disconnected => "disconnected",
@@ -1547,6 +1548,7 @@ impl LinkState {
 ///
 /// `language` carries the effective UI language from T1, so all three render
 /// their own text in the language the app is set to instead of the system one.
+#[cfg(any(target_os = "android", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AndroidStatus {
     pub state: LinkState,
@@ -1559,6 +1561,7 @@ pub struct AndroidStatus {
     pub reason: Option<String>,
 }
 
+#[cfg(any(target_os = "android", test))]
 impl AndroidStatus {
     pub fn of(link: &crate::profile::LinkStatus, connecting: bool, locale: crate::i18n::Locale) -> Self {
         let state = if connecting {
@@ -1587,11 +1590,13 @@ impl AndroidStatus {
 }
 
 /// Remembers the last published status so an unchanged one stays in Rust.
+#[cfg(any(target_os = "android", test))]
 #[derive(Debug, Default)]
 pub struct StatusPublisher {
     last: Option<AndroidStatus>,
 }
 
+#[cfg(any(target_os = "android", test))]
 impl StatusPublisher {
     /// `Some` means the tile, widget or notification must be told; `None` means
     /// nothing they render has changed.
@@ -1604,9 +1609,11 @@ impl StatusPublisher {
     }
 }
 
+#[cfg(target_os = "android")]
 static STATUS: Mutex<StatusPublisher> = Mutex::new(StatusPublisher { last: None });
 
 /// Push a status to Kotlin when it changed. Returns whether it was sent.
+#[cfg(target_os = "android")]
 pub fn publish_status(next: AndroidStatus) -> bool {
     let changed = match STATUS.lock() {
         Ok(mut publisher) => publisher.changed(next),
@@ -1615,12 +1622,9 @@ pub fn publish_status(next: AndroidStatus) -> bool {
     let Some(status) = changed else {
         return false;
     };
-    #[cfg(target_os = "android")]
     if let Err(error) = android_push_status(&status) {
         eprintln!("Billow status was not published: {error}");
     }
-    #[cfg(not(target_os = "android"))]
-    let _ = status;
     true
 }
 
@@ -1697,35 +1701,38 @@ fn android_push_status(status: &AndroidStatus) -> Result<(), String> {
     let mut env = vm
         .attach_current_thread()
         .map_err(|_| "Android 桥接不可用".to_string())?;
-    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
-    let status_class = android_class(&mut env, &context, "app.billow.client.BillowStatus")?;
-    let state = env.new_string(status.state.key()).map_err(|error| error.to_string())?;
-    let profile = env
-        .new_string(status.profile.clone().unwrap_or_default())
-        .map_err(|error| error.to_string())?;
-    let language = env.new_string(status.language).map_err(|error| error.to_string())?;
-    let reason = env
-        .new_string(status.reason.clone().unwrap_or_default())
-        .map_err(|error| error.to_string())?;
-    env.call_static_method(
-        status_class,
-        "publish",
-        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;JJLjava/lang/String;Ljava/lang/String;)V",
-        &[
-            jni::objects::JValue::Object(&context),
-            jni::objects::JValue::Object(&state),
-            jni::objects::JValue::Object(&profile),
-            jni::objects::JValue::Long(status.upload.unwrap_or(0) as i64),
-            jni::objects::JValue::Long(status.download.unwrap_or(0) as i64),
-            jni::objects::JValue::Object(&language),
-            jni::objects::JValue::Object(&reason),
-        ],
-    )
+    // A caller can already be attached to the JVM. Bound local references to
+    // this publish even when dropping the attach guard will not detach it.
+    env.with_local_frame(16, |env| -> jni::errors::Result<Result<(), String>> {
+        let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+        let status_class = match android_class(env, &context, "app.billow.client.BillowStatus") {
+            Ok(class) => class,
+            Err(error) => return Ok(Err(error)),
+        };
+        let state = env.new_string(status.state.key())?;
+        let profile = env.new_string(status.profile.as_deref().unwrap_or_default())?;
+        let language = env.new_string(status.language)?;
+        let reason = env.new_string(status.reason.as_deref().unwrap_or_default())?;
+        env.call_static_method(
+            status_class,
+            "publish",
+            "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;JJLjava/lang/String;Ljava/lang/String;)V",
+            &[
+                jni::objects::JValue::Object(&context),
+                jni::objects::JValue::Object(&state),
+                jni::objects::JValue::Object(&profile),
+                jni::objects::JValue::Long(status.upload.unwrap_or(0) as i64),
+                jni::objects::JValue::Long(status.download.unwrap_or(0) as i64),
+                jni::objects::JValue::Object(&language),
+                jni::objects::JValue::Object(&reason),
+            ],
+        )?;
+        Ok(Ok(()))
+    })
     .map_err(|error| {
         let _ = env.exception_clear();
         error.to_string()
-    })?;
-    Ok(())
+    })?
 }
 
 /// Real HTTP/HTTPS/PAC system proxy. Unit tests use [`MemoryProxy`] instead.

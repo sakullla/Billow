@@ -6,7 +6,7 @@
 //! own, and there is no automatic-sync setting anywhere (R45).
 
 use std::fs;
-use std::io::Read;
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -118,9 +118,17 @@ fn newer_app_version(file: &str, current: &str) -> bool {
 
 /// Write a backup next to the other exports and return its full path.
 pub fn export(directory: &Path, file: &BackupFile, now_ms: u64) -> Result<PathBuf, String> {
-    fs::create_dir_all(directory).map_err(|_| i18n::tr(Key::BackupExportFailed).to_string())?;
+    let write_error = |_| i18n::tr(Key::BackupExportFailed).to_string();
+    fs::create_dir_all(directory).map_err(write_error)?;
     let path = directory.join(local_file_name(now_ms));
-    fs::write(&path, to_text(file)?).map_err(|_| i18n::tr(Key::BackupExportFailed).to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(write_error)?;
+    {
+        let mut writer = BufWriter::new(temporary.as_file_mut());
+        serde_json::to_writer_pretty(&mut writer, file)
+            .map_err(|_| i18n::tr(Key::BackupExportFailed).to_string())?;
+        writer.flush().map_err(write_error)?;
+    }
+    temporary.persist(&path).map_err(|err| write_error(err.error))?;
     Ok(path)
 }
 
@@ -332,21 +340,12 @@ fn transport(error: ureq::Error) -> String {
     }
 }
 
-fn drain(response: ureq::Response) {
-    let mut reader = response.into_reader().take(MAX_BODY);
-    let mut sink = Vec::new();
-    let _ = reader.read_to_end(&mut sink);
-}
-
 /// Make sure the folder exists. A server that refuses MKCOL because the folder
 /// is already there (405) or because it is not allowed to create it is fine: the
 /// PROPFIND that follows decides whether the folder is usable.
 fn ensure_directory(agent: &ureq::Agent, directory: &str, account: &WebDavAccount) -> Result<(), String> {
     match request(agent, "MKCOL", directory, account).call() {
-        Ok(response) => {
-            drain(response);
-            Ok(())
-        }
+        Ok(_) => Ok(()),
         Err(ureq::Error::Status(status, _)) if status == 401 || status == 403 => {
             Err(status_error(status))
         }
@@ -366,12 +365,11 @@ pub fn test_connection(account: &WebDavAccount) -> Result<(), String> {
     let directory = account.directory()?;
     let agent = agent();
     ensure_directory(&agent, &directory, account)?;
-    let response = request(&agent, "PROPFIND", &directory, account)
+    request(&agent, "PROPFIND", &directory, account)
         .set("Depth", "0")
         .set("Content-Type", "application/xml; charset=utf-8")
         .send_string(PROPFIND_BODY)
         .map_err(transport)?;
-    drain(response);
     Ok(())
 }
 
@@ -382,11 +380,10 @@ pub fn upload(account: &WebDavAccount, text: &str, now_ms: u64) -> Result<String
     ensure_directory(&agent, &directory, account)?;
     let name = remote_file_name(&device_name(), now_ms);
     let url = format!("{directory}{name}");
-    let response = request(&agent, "PUT", &url, account)
+    request(&agent, "PUT", &url, account)
         .set("Content-Type", "application/json; charset=utf-8")
         .send_string(text)
         .map_err(transport)?;
-    drain(response);
     Ok(name)
 }
 
@@ -1098,9 +1095,11 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let path = export(&directory, &sample_file(), 1_700_000_000_000).unwrap();
+        let file = sample_file();
+        let path = export(&directory, &file, 1_700_000_000_000).unwrap();
         assert!(path.ends_with("billow-backup-20231114-221320.json"), "{}", path.display());
         let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text, to_text(&file).unwrap());
         assert_eq!(parse(&text, "0.1.33").unwrap().profiles.profiles.len(), 1);
         let _ = fs::remove_dir_all(&directory);
     }

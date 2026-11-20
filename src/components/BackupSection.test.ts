@@ -51,12 +51,14 @@ async function click(testid: string) {
 /** The file picker cannot be driven, so hand the change handler a readable file. */
 async function chooseFile(text: string, name = 'billow-backup-test.json') {
   const input = find<HTMLInputElement>('[data-testid="backup-file"]')
+  const read = vi.fn(async () => text)
   Object.defineProperty(input, 'files', {
     configurable: true,
-    value: [{ name, text: async () => text }] as unknown as FileList,
+    value: [{ name, text: read }] as unknown as FileList,
   })
   input.dispatchEvent(new Event('change', { bubbles: true }))
   await flushPromises()
+  return read
 }
 
 interface BackupShape {
@@ -114,7 +116,7 @@ describe('BackupSection', () => {
     const { store } = await setup()
     const before = store.snapshot.value.profiles.map((profile) => profile.name)
 
-    await chooseFile(backupText({ names: ['来自文件'] }))
+    const cancelled = await chooseFile(backupText({ names: ['来自文件'] }))
     expect(document.querySelector('[data-testid="backup-confirm-restore"]')).not.toBeNull()
     expect(find('[data-testid="backup-confirm-file"]').textContent).toContain('billow-backup-test.json')
     expect(find('[data-testid="backup-confirm-warning"]').textContent).toContain('敏感信息')
@@ -123,13 +125,16 @@ describe('BackupSection', () => {
     await click('backup-confirm-cancel')
     expect(document.querySelector('[data-testid="backup-confirm-restore"]')).toBeNull()
     expect(store.snapshot.value.profiles.map((profile) => profile.name)).toEqual(before)
+    expect(cancelled).not.toHaveBeenCalled()
 
-    await chooseFile(backupText({ names: ['来自文件'] }))
+    const confirmed = await chooseFile(backupText({ names: ['来自文件'] }))
+    expect(confirmed).not.toHaveBeenCalled()
     await click('backup-confirm-restore')
     await vi.waitFor(() => {
       expect(store.snapshot.value.profiles.map((profile) => profile.name)).toEqual(['来自文件'])
     })
     expect(store.snapshot.value.active_id).toBe('p1')
+    expect(confirmed).toHaveBeenCalledTimes(1)
   })
 
   it('refuses a backup from a newer version and keeps the current state', async () => {

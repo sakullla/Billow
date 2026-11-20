@@ -34,8 +34,6 @@ object BillowStatus {
     private const val PREFS = "billow-status"
     private const val KEY_STATE = "state"
     private const val KEY_PROFILE = "profile"
-    private const val KEY_UP = "up"
-    private const val KEY_DOWN = "down"
     private const val KEY_LANGUAGE = "language"
     private const val KEY_REASON = "reason"
     private const val KEY_ANNOUNCED = "reason-announced"
@@ -56,14 +54,15 @@ object BillowStatus {
     @Volatile
     var service: BillowVpnService? = null
 
+    @Synchronized
     fun current(context: Context): Status {
         cached?.let { return it }
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val status = Status(
             prefs.getString(KEY_STATE, DISCONNECTED) ?: DISCONNECTED,
             prefs.getString(KEY_PROFILE, "") ?: "",
-            prefs.getLong(KEY_UP, 0L),
-            prefs.getLong(KEY_DOWN, 0L),
+            0L,
+            0L,
             prefs.getString(KEY_LANGUAGE, defaultLanguage()) ?: defaultLanguage(),
             prefs.getString(KEY_REASON, "") ?: "",
         )
@@ -106,6 +105,7 @@ object BillowStatus {
      * so nothing here touches a view.
      */
     @JvmStatic
+    @Synchronized
     fun publish(
         context: Context,
         state: String,
@@ -118,18 +118,25 @@ object BillowStatus {
         val previous = current(context)
         val status = Status(state, profile, up, down, language, reason)
         cached = status
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString(KEY_STATE, status.state)
-            .putString(KEY_PROFILE, status.profile)
-            .putLong(KEY_UP, status.up)
-            .putLong(KEY_DOWN, status.down)
-            .putString(KEY_LANGUAGE, status.language)
-            .putString(KEY_REASON, status.reason)
-            .apply()
-        refreshTile(context)
+        // Only the widget displays volatile rates. Persist fields that are still
+        // meaningful after a process restart and update the other surfaces when
+        // the fields they show change.
+        val stateChanged = previous.state != state
+        val languageChanged = previous.language != language
+        val profileChanged = previous.profile != profile
+        val reasonChanged = previous.reason != reason
+        if (stateChanged || languageChanged || profileChanged || reasonChanged) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(KEY_STATE, status.state)
+                .putString(KEY_PROFILE, status.profile)
+                .putString(KEY_LANGUAGE, status.language)
+                .putString(KEY_REASON, status.reason)
+                .apply()
+        }
+        if (stateChanged || languageChanged) refreshTile(context)
         BillowWidgetProvider.refresh(context)
-        service?.render(status)
-        announceFailure(context, previous.state, status)
+        if (stateChanged || profileChanged || languageChanged) service?.render(status)
+        if (stateChanged || reasonChanged) announceFailure(context, previous.state, status)
     }
 
     fun ensureChannel(context: Context, channel: String, name: String, importance: Int) {

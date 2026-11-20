@@ -64,6 +64,16 @@ struct ProfileStore {
 /// and the stats dialog share it; nothing here depends on a window existing.
 struct TrafficStore {
     history: Mutex<traffic_history::TrafficHistory>,
+    enabled: std::sync::Condvar,
+}
+
+impl TrafficStore {
+    fn set_enabled(&self, enabled: bool) {
+        lock_traffic(&self.history).set_enabled(enabled);
+        if enabled {
+            self.enabled.notify_one();
+        }
+    }
 }
 
 fn lock(state: &Mutex<ShellState>) -> std::sync::MutexGuard<'_, ShellState> {
@@ -299,13 +309,15 @@ fn prepare_traffic_history(app: &tauri::App) {
                 .join("traffic-history.json")
         }
     };
-    let mut history = traffic_history::TrafficHistory::open(path);
-    // Drop expired days even if the user never opens the dialog this session.
-    history.prune(&traffic_history::today());
+    let mut history = traffic_history::TrafficHistory::new(path);
     history.set_enabled(enabled);
-    history.save_if_dirty();
+    if enabled {
+        history.prune(&traffic_history::today());
+        history.save_if_dirty();
+    }
     app.manage(TrafficStore {
         history: Mutex::new(history),
+        enabled: std::sync::Condvar::new(),
     });
 }
 
@@ -336,33 +348,33 @@ fn spawn_traffic_recorder(app: &AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
         let mut profile: Option<String> = None;
+        let store = handle.state::<TrafficStore>();
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            let enabled = {
-                let store = handle.state::<Store>();
-                lock(&store.state).traffic_history
-            };
-            // Mirror the stored switch before sampling, so a sample that races a
-            // switch-off is dropped by `record` itself instead of adding bytes.
             {
-                let store = handle.state::<TrafficStore>();
-                lock_traffic(&store.history).set_enabled(enabled);
+                let history = lock_traffic(&store.history);
+                if !history.enabled() {
+                    profile = None;
+                    let _history = store
+                        .enabled
+                        .wait_while(history, |history| !history.enabled())
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
             }
-            if !enabled {
-                profile = None;
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if !lock_traffic(&store.history).enabled() {
                 continue;
             }
             let context = with_profile(&handle, |session| {
-                (
-                    session.book.is_connected(),
-                    session.book.active_profile(),
-                    ProfileBook::controller_of(&mut session.runtime),
-                )
+                if !session.book.is_connected() {
+                    return None;
+                }
+                let (id, name) = session.book.active_profile()?;
+                Some((id, name, ProfileBook::controller_of(&mut session.runtime)))
             });
-            let (connected, active, endpoint) = context;
-            let Some((id, name)) = active.filter(|_| connected) else {
-                reset_traffic_baselines(&handle);
-                profile = None;
+            let Some((id, name, endpoint)) = context else {
+                if profile.take().is_some() {
+                    reset_traffic_baselines(&handle);
+                }
                 continue;
             };
             if profile.as_deref() != Some(id.as_str()) {
@@ -375,14 +387,23 @@ fn spawn_traffic_recorder(app: &AppHandle) {
                 // The kernel is between restarts; keep the table for the next read.
                 continue;
             };
+            let revision = {
+                let history = lock_traffic(&store.history);
+                if !history.enabled() {
+                    continue;
+                }
+                history.sample_revision()
+            };
             let Ok(connections) = diagnostics::fetch_connection_traffic(&endpoint) else {
                 // A failed read is not "no connections": keeping the baselines
                 // avoids counting the same bytes twice when it recovers.
                 continue;
             };
             let date = traffic_history::today();
-            let store = handle.state::<TrafficStore>();
-            lock_traffic(&store.history).record(&date, &name, &connections);
+            let mut history = lock_traffic(&store.history);
+            if history.sample_revision() == revision {
+                history.record(&date, &name, &connections);
+            }
         }
     });
 }
@@ -1092,20 +1113,10 @@ fn dns_query(app: AppHandle, name: String, qtype: String) -> diagnostics::DnsQue
 /// the network call runs without the session lock.
 #[tauri::command(async)]
 fn exit_ip(app: AppHandle) -> Result<diagnostics::ExitIp, String> {
-    let proxy = with_session_raw(&app, |session| {
-        let snapshot = session.book.snapshot();
-        if !snapshot.connected {
-            return None;
-        }
-        snapshot
-            .mixed_port
-            .and_then(|port| u16::try_from(port).ok())
-            .filter(|port| *port > 0)
-            .map(|port| format!("http://127.0.0.1:{port}"))
-    });
-    let Some(proxy) = proxy else {
+    let Some(port) = with_profile(&app, |session| session.book.connected_mixed_port()) else {
         return Err(i18n::tr(i18n::Key::ExitIpNotConnected).to_string());
     };
+    let proxy = format!("http://127.0.0.1:{port}");
     diagnostics::query_exit_ip(&proxy, std::time::Duration::from_secs(8))
 }
 
@@ -1435,6 +1446,9 @@ fn restore_backup_text(app: AppHandle, text: String) -> Result<ProfileSnapshot, 
         let store = app.state::<Store>();
         let mut state = lock(&store.state);
         *state = shell_after.clone();
+        if let Some(traffic) = app.try_state::<TrafficStore>() {
+            traffic.set_enabled(state.traffic_history);
+        }
     }
     // Restored bindings have to work at once instead of waiting for the next
     // launch, and the recorder mirrors the restored switch immediately. The file
@@ -1453,9 +1467,6 @@ fn restore_backup_text(app: AppHandle, text: String) -> Result<ProfileSnapshot, 
         }
     }
     hotkeys::prepare(&app);
-    if let Some(store) = app.try_state::<TrafficStore>() {
-        lock_traffic(&store.history).set_enabled(shell_after.traffic_history);
-    }
     i18n::apply_preference(&shell_after.language);
     apply_native_theme(&app, &shell_after.theme);
     refresh_tray(&app, &restored);
@@ -1681,27 +1692,29 @@ struct TrafficHistoryView {
 
 /// Rows for the selected range. The dialog groups them by profile, group or node;
 /// the daily bars use the same rows so the totals always agree.
-#[tauri::command]
+#[tauri::command(async)]
 fn traffic_history(
     app: AppHandle,
     range: String,
     from: Option<String>,
     to: Option<String>,
 ) -> TrafficHistoryView {
-    let enabled = {
-        let store = app.state::<Store>();
-        lock(&store.state).traffic_history
-    };
     let today = traffic_history::today();
     let (start, end) = traffic_history::range_bounds(&range, from.as_deref(), to.as_deref(), &today);
-    let entries = {
+    let (enabled, entries) = {
         let store = app.state::<TrafficStore>();
         let mut history = lock_traffic(&store.history);
         // The stats view is the one place that always sees the clock, so expired
         // days are dropped here even while recording is off.
+        history.load_if_needed();
         history.prune(&today);
-        history.save_if_dirty();
-        history.entries(&start, &end)
+        let enabled = history.enabled();
+        let entries = history.entries(&start, &end);
+        if !enabled {
+            history.save_if_dirty();
+            history.release_if_idle();
+        }
+        (enabled, entries)
     };
     TrafficHistoryView {
         enabled,
@@ -1713,28 +1726,22 @@ fn traffic_history(
     }
 }
 
-/// Turn recording on or off (R43). Off keeps every existing row and stops the
-/// sampler on the next tick; the recorder mirrors this flag as well.
-#[tauri::command]
+/// Turn recording on or off (R43). Off keeps the recorded rows on disk.
+#[tauri::command(async)]
 fn set_traffic_history(app: AppHandle, enabled: bool) -> AppInfo {
-    let changed = {
+    {
         let store = app.state::<Store>();
         let mut state = lock(&store.state);
-        let changed = state.traffic_history != enabled;
-        if changed {
+        if state.traffic_history != enabled {
             state.traffic_history = enabled;
             persist(&app, &state);
+            app.state::<TrafficStore>().set_enabled(enabled);
         }
-        changed
-    };
-    if changed {
-        let store = app.state::<TrafficStore>();
-        lock_traffic(&store.history).set_enabled(enabled);
     }
     app_info(app)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn clear_traffic_history(app: AppHandle) {
     let store = app.state::<TrafficStore>();
     lock_traffic(&store.history).clear();
@@ -2295,6 +2302,7 @@ fn android_app() -> Option<AppHandle> {
 
 /// Push what the tile, the widget and the notification show (R41). Cheap enough
 /// for a two-second ticker: an unchanged status never crosses into Kotlin.
+#[cfg(target_os = "android")]
 fn publish_android(app: &AppHandle) {
     let link = with_profile(app, |session| {
         session.book.refresh_link_rates(&mut session.runtime);
@@ -2302,16 +2310,16 @@ fn publish_android(app: &AppHandle) {
     });
     // A tap that is connecting shows 连接中 instead of the state of the kernel
     // it is about to replace.
-    #[cfg(target_os = "android")]
     let connecting = ANDROID_CONNECTING.load(Ordering::SeqCst);
-    #[cfg(not(target_os = "android"))]
-    let connecting = false;
     takeover::publish_status(takeover::AndroidStatus::of(
         &link,
         connecting,
         i18n::locale(),
     ));
 }
+
+#[cfg(not(target_os = "android"))]
+fn publish_android(_app: &AppHandle) {}
 
 /// The tile and the widget keep showing the two rates while no window exists,
 /// so the publish loop lives in Rust, not in the page (R41).
@@ -2553,8 +2561,6 @@ pub fn run() {
             prepare_shell(app);
             prepare_kernel(app);
             prepare_profiles(app);
-            // The history loads before the recorder starts, so the first sample
-            // already lands in the file the stats dialog reads (R43).
             prepare_traffic_history(app);
             spawn_auto_update(app.handle());
             #[cfg(desktop)]

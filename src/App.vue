@@ -460,7 +460,13 @@ let releaseLayerWatch: (() => void) | null = null
 let releaseInsets: (() => void) | null = null
 let releaseTray: (() => void) | null = null
 let unmounted = false
+const MAX_PAGE_HISTORY = 100
 const pageStack: PageId[] = []
+
+function rememberPage(page: PageId) {
+  if (pageStack.length === MAX_PAGE_HISTORY) pageStack.shift()
+  pageStack.push(page)
+}
 
 function pushHistory(state: BillowHistoryState) {
   try {
@@ -490,7 +496,7 @@ function recordPageHistory(prev: PageId, next: PageId) {
     ignorePageHistory = false
     return
   }
-  if (prev !== next) pageStack.push(prev)
+  if (prev !== next) rememberPage(prev)
   ensureGuard()
 }
 
@@ -503,7 +509,7 @@ watch(
   (next, prev) => {
     if (!compact.value || store.page.value !== 'settings' || !historyReady) return
     if (prev === 'home' && next !== 'home') {
-      pageStack.push('settings')
+      rememberPage('settings')
       ensureGuard()
     }
   },
@@ -587,7 +593,7 @@ onMounted(async () => {
   document.addEventListener('contextmenu', onGlobalContextMenu)
   releaseLayerWatch = onLayerChange(handleLayerDepth)
   await store.start()
-  initHistory()
+  if (!unmounted) initHistory()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)

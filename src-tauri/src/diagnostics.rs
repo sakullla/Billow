@@ -596,55 +596,56 @@ pub fn read_connections(text: &str) -> ConnectionsReading {
 
 /// One connection's counters for the traffic history (R43). Unlike the
 /// `/connections` view this keeps every row and does not drop entries by host.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ConnectionTraffic {
+    #[serde(default, deserialize_with = "traffic_id")]
     pub id: String,
+    #[serde(default, deserialize_with = "traffic_chains")]
     pub chains: Vec<String>,
+    #[serde(default, deserialize_with = "traffic_counter")]
     pub upload: u64,
+    #[serde(default, deserialize_with = "traffic_counter")]
     pub download: u64,
+}
+
+fn traffic_id<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
+    let value = serde_json::Value::deserialize(decoder)?;
+    Ok(clean_token(value.as_str().unwrap_or(""), 80))
+}
+
+fn traffic_chains<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<Vec<String>, D::Error> {
+    let value = serde_json::Value::deserialize(decoder)?;
+    Ok(value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn traffic_counter<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<u64, D::Error> {
+    let value = serde_json::Value::deserialize(decoder)?;
+    Ok(json_u64(Some(&value)).unwrap_or(0))
 }
 
 /// Parse the counters the history accumulates. `None` means the body was not a
 /// controller response, so the caller must not treat it as "no connections".
 pub fn connection_traffic_from_body(text: &str) -> Option<Vec<ConnectionTraffic>> {
-    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    if !value.is_object() {
+    if !text.trim_start().starts_with('{') {
         return None;
     }
-    let list = value.get("connections").and_then(serde_json::Value::as_array);
-    let Some(list) = list else {
-        // A valid response for an empty kernel writes `"connections": []`; an
-        // object without the key is not something the kernel does.
-        return None;
-    };
-    let mut rows = Vec::with_capacity(list.len());
-    for item in list {
-        // Without an id two connections cannot be told apart, and the delta would
-        // be attributed to the wrong row.
-        let id = clean_token(item.get("id").and_then(serde_json::Value::as_str).unwrap_or(""), 80);
-        if id.is_empty() {
-            continue;
-        }
-        let chains: Vec<String> = item
-            .get("chains")
-            .and_then(serde_json::Value::as_array)
-            .map(|chains| {
-                chains
-                    .iter()
-                    .filter_map(|chain| chain.as_str())
-                    .map(|name| name.trim().to_string())
-                    .filter(|name| !name.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-        rows.push(ConnectionTraffic {
-            id,
-            chains,
-            upload: json_u64(item.get("upload")).unwrap_or(0),
-            download: json_u64(item.get("download")).unwrap_or(0),
-        });
+    #[derive(Deserialize)]
+    struct Sample {
+        connections: Vec<ConnectionTraffic>,
     }
-    Some(rows)
+
+    // Serde skips metadata and other fields which the recorder never uses.
+    let mut sample = serde_json::from_str::<Sample>(text).ok()?;
+    sample.connections.retain(|row| !row.id.is_empty());
+    Some(sample.connections)
 }
 
 /// Read every connection's counters for one history sample.
@@ -659,11 +660,15 @@ pub fn fetch_connection_traffic(endpoint: &ControllerEndpoint) -> Result<Vec<Con
         .map_err(|_| CONNECTIONS_ERROR.to_string())?;
     let mut body = String::new();
     // The history needs every row, so the cap only protects against a runaway body.
+    const MAX_SAMPLE_BYTES: usize = 8_000_000;
     response
         .into_reader()
-        .take(8_000_000)
+        .take((MAX_SAMPLE_BYTES + 1) as u64)
         .read_to_string(&mut body)
         .map_err(|_| CONNECTIONS_ERROR.to_string())?;
+    if body.len() > MAX_SAMPLE_BYTES {
+        return Err(CONNECTIONS_ERROR.to_string());
+    }
     connection_traffic_from_body(&body).ok_or_else(|| CONNECTIONS_ERROR.to_string())
 }
 
@@ -1756,10 +1761,17 @@ mod tests {
         let rows = connection_traffic_from_body(&odd).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "keep");
+        let mixed = r#"{"connections":[{"id":" id ","upload":-1,"download":"unknown",
+            "chains":[" exit ",null," "," group "],"metadata":{"ignored":[1,2,3]}}]}"#;
+        let rows = connection_traffic_from_body(mixed).unwrap();
+        assert_eq!(rows[0].id, "id");
+        assert_eq!(rows[0].chains, ["exit", "group"]);
+        assert_eq!((rows[0].upload, rows[0].download), (0, 0));
         assert_eq!(connection_traffic_from_body(r#"{"connections":[]}"#), Some(Vec::new()));
         // A failed or truncated read must not look like "no traffic".
         assert_eq!(connection_traffic_from_body("{not json"), None);
         assert_eq!(connection_traffic_from_body(r#"{"uploadTotal":1}"#), None);
+        assert_eq!(connection_traffic_from_body("[[]]"), None);
     }
 
     /// Reads one proxied HTTP request head and returns its request line.

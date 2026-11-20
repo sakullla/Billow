@@ -1,22 +1,35 @@
-import { locale, tr } from './i18n'
+import { locale, tr, type Locale } from './i18n'
 import type { ConnectionRow, NodeGroup, NodeItem } from './types'
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+const intlLocale = { en: 'en-US', 'zh-CN': 'zh-CN' } as const
+const numbers: Record<Locale, Intl.NumberFormat[]> = { en: [], 'zh-CN': [] }
+const collators: Partial<Record<Locale, Intl.Collator>> = {}
+const dates: Partial<Record<Locale, Intl.DateTimeFormat>> = {}
 
 /** Numbers follow the selected language (R42): grouping and decimal separators. */
 export function formatNumber(value: number, digits = 0): string {
-  return new Intl.NumberFormat(locale.value === 'en' ? 'en-US' : 'zh-CN', {
+  const current = locale.value
+  const cache = numbers[current]
+  if (cache[digits]) return cache[digits].format(value)
+  const formatter = new Intl.NumberFormat(intlLocale[current], {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
-  }).format(value)
+  })
+  // Byte and rate displays use only these precisions. Other callers can still
+  // request any precision Intl supports without growing the shared cache.
+  if (Number.isInteger(digits) && digits >= 0 && digits <= 2) cache[digits] = formatter
+  return formatter.format(value)
 }
 
 /** Collation follows the selected language (R42): names sort as the reader expects. */
 export function compareText(a: string, b: string): number {
-  return a.localeCompare(b, locale.value === 'en' ? 'en-US' : 'zh-CN', {
+  const current = locale.value
+  const collator = collators[current] ??= new Intl.Collator(intlLocale[current], {
     numeric: true,
     sensitivity: 'base',
   })
+  return collator.compare(a, b)
 }
 
 /** 1536 → "1.5 KB". Whole bytes stay integers; larger units keep up to one or two decimals. */
@@ -60,11 +73,13 @@ export function formatDate(seconds: number): string {
   const date = new Date(seconds * 1000)
   if (Number.isNaN(date.getTime())) return '—'
   // Both languages use an unambiguous numeric date, but in their own order (R42).
-  return new Intl.DateTimeFormat(locale.value === 'en' ? 'en-US' : 'zh-CN', {
+  const current = locale.value
+  const formatter = dates[current] ??= new Intl.DateTimeFormat(intlLocale[current], {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(date)
+  })
+  return formatter.format(date)
 }
 
 export function formatClock(ms: number): string {

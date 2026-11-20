@@ -142,6 +142,10 @@ export function applyTheme(preference: ThemePreference) {
   else root.setAttribute('data-theme', preference)
 }
 
+function reuseEqual<T>(previous: T, incoming: T): T {
+  return previous === incoming || JSON.stringify(previous) === JSON.stringify(incoming) ? previous : incoming
+}
+
 export function createStore(backend: Backend) {
   // Backend snapshots are replaced as a whole; large lists need no deep proxies.
   const snapshot = shallowRef<Snapshot>(emptySnapshot())
@@ -178,6 +182,8 @@ export function createStore(backend: Backend) {
     from: null,
     to: null,
   })
+  let pendingTrafficStats: typeof trafficStatsRange.value | null = null
+  let trafficStatsLoad: Promise<TrafficHistoryView | undefined> | null = null
   const loaded = ref(false)
   const busy = reactive<Record<string, boolean>>({})
   const toasts = ref<Toast[]>([])
@@ -244,6 +250,7 @@ export function createStore(backend: Backend) {
   const autoExitIp = computed(() => app.value?.auto_exit_ip ?? false)
   /** Which exit the proxy currently uses: profile, outbound mode and node choices (R40). */
   const exitIpSignature = computed(() => {
+    if (!autoExitIp.value) return ''
     const groups = snapshot.value.node_catalog
     if (groups.length === 0) return ''
     return (
@@ -361,7 +368,8 @@ export function createStore(backend: Backend) {
    */
   async function queryExitIp(again = false) {
     // The card is the only manual entry point and it exists only while on (R40).
-    if (!autoExitIp.value || exitIpBusy.value || !snapshot.value.connected) return undefined
+    if (stopped || !autoExitIp.value || exitIpBusy.value || !snapshot.value.connected) return undefined
+    const session = generation
     const signature = exitIpSignature.value
     exitIpBusy.value = true
     exitIpError.value = null
@@ -369,19 +377,21 @@ export function createStore(backend: Backend) {
       const result = await backend.exitIp()
       // Turning the option off while the request was in flight hides the card and
       // drops the answer instead of keeping a result nobody asked for (R40).
-      if (!autoExitIp.value) return result
+      if (!isCurrent(session) || !autoExitIp.value) return result
       exitIp.value = result
       // A switch while the request was in flight already makes this answer old.
       exitIpStale.value = signature !== exitIpSignature.value
       return result
     } catch (error) {
-      exitIpError.value = error instanceof Error ? error.message : String(error)
+      if (isCurrent(session) && autoExitIp.value) {
+        exitIpError.value = error instanceof Error ? error.message : String(error)
+      }
       return undefined
     } finally {
       exitIpBusy.value = false
       // One follow-up at most: a switch that arrived during the request needs a
       // fresh answer, but a service that keeps changing must not loop.
-      if (!again && autoExitIp.value && snapshot.value.connected && exitIp.value && signature !== exitIpSignature.value) {
+      if (!again && isCurrent(session) && autoExitIp.value && snapshot.value.connected && exitIp.value && signature !== exitIpSignature.value) {
         void queryExitIp(true)
       }
     }
@@ -400,22 +410,55 @@ export function createStore(backend: Backend) {
    * Read the aggregated traffic history (R43). A failed read keeps the previous
    * rows on screen and only reports the reason.
    */
-  async function loadTrafficStats(
+  function loadTrafficStats(
     range: TrafficRange = trafficStatsRange.value.range,
     from: string | null = trafficStatsRange.value.from,
     to: string | null = trafficStatsRange.value.to,
   ) {
-    trafficStatsRange.value = { range, from, to }
+    const request = { range, from, to }
+    trafficStatsRange.value = request
+    pendingTrafficStats = request
     trafficStatsBusy.value = true
     trafficStatsError.value = null
-    try {
-      trafficStats.value = await backend.trafficHistory(range, from, to)
-      return trafficStats.value
-    } catch (error) {
-      trafficStatsError.value = error instanceof Error ? error.message : String(error)
-      return undefined
-    } finally {
-      trafficStatsBusy.value = false
+
+    if (trafficStatsLoad) return trafficStatsLoad
+    trafficStatsLoad = readTrafficStats()
+    return trafficStatsLoad
+  }
+
+  async function readTrafficStats() {
+    // Only keep one native read in flight. Range changes replace the queued read.
+    // Yield once so trafficStatsLoad is set even if no request ends up running.
+    await Promise.resolve()
+    let result: TrafficHistoryView | undefined
+    while (pendingTrafficStats) {
+      const request = pendingTrafficStats
+      try {
+        const view = await backend.trafficHistory(request.range, request.from, request.to)
+        if (pendingTrafficStats !== request) continue
+        trafficStats.value = view
+        result = view
+      } catch (error) {
+        if (pendingTrafficStats !== request) continue
+        trafficStatsError.value = error instanceof Error ? error.message : String(error)
+      }
+      pendingTrafficStats = null
+    }
+    trafficStatsLoad = null
+    trafficStatsBusy.value = false
+    return result
+  }
+
+  function releaseTrafficStats() {
+    pendingTrafficStats = null
+    trafficStats.value = null
+    trafficStatsError.value = null
+    trafficStatsBusy.value = false
+  }
+
+  function refreshOpenTrafficStats() {
+    if (!stopped && trafficStatsOpen.value) {
+      return loadTrafficStats()
     }
   }
 
@@ -428,7 +471,7 @@ export function createStore(backend: Backend) {
   async function setTrafficRecording(enabled: boolean) {
     try {
       app.value = await backend.setTrafficRecording(enabled)
-      await loadTrafficStats()
+      await refreshOpenTrafficStats()
       toast(enabled ? t('traffic.recordStarted') : t('traffic.recordStopped'), 'success')
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), 'error')
@@ -438,19 +481,20 @@ export function createStore(backend: Backend) {
   async function clearTrafficHistory() {
     try {
       await backend.clearTrafficHistory()
-      await loadTrafficStats()
+      await refreshOpenTrafficStats()
       toast(t('traffic.cleared'), 'success')
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), 'error')
     }
   }
 
-  function apply(next: Snapshot) {
+  function shareCatalog(previous: NodeGroup[], incoming: NodeGroup[]) {
     // Polling changes traffic every second, but usually leaves the node catalog intact.
     // Preserve its identity so proxy cards do not sort/render again on every tick.
-    const previous = snapshot.value.node_catalog
+    if (previous === incoming) return previous
     const sameGroup = (a: NodeGroup, b: NodeGroup) =>
-      a.name === b.name && a.kind === b.kind && a.now === b.now && a.sort === b.sort &&
+      a === b || a.name === b.name && a.kind === b.kind && a.now === b.now && a.sort === b.sort &&
+      a.pinnable === b.pinnable && a.fixed === b.fixed && a.hidden === b.hidden &&
       a.group_type === b.group_type && a.icon === b.icon && a.nodes.length === b.nodes.length &&
       a.nodes.every((node, index) => {
         const other = b.nodes[index]!
@@ -459,62 +503,71 @@ export function createStore(backend: Backend) {
           (node.dialer_proxy ?? null) === (other.dialer_proxy ?? null) &&
           node.tags.length === other.tags.length && node.tags.every((tag, i) => tag === other.tags[i])
       })
+    if (incoming.length === previous.length && incoming.every((group, i) => sameGroup(group, previous[i]!))) {
+      return previous
+    }
+    if (!previous.length || !incoming.length) return incoming
     const byName = new Map(previous.map((group) => [group.name, group]))
     let reused = false
-    const catalog = next.node_catalog.map((group) => {
+    const catalog = incoming.map((group) => {
       const old = byName.get(group.name)
-      if (!old || (old !== group && !sameGroup(old, group))) return group
+      if (!old || !sameGroup(old, group)) return group
       reused = true
       return old
     })
-    if (catalog.length === previous.length && catalog.every((group, index) => group === previous[index])) {
-      next = { ...next, node_catalog: previous }
-    } else if (reused) {
-      next = { ...next, node_catalog: catalog }
-    }
+    return reused ? catalog : incoming
+  }
+
+  function apply(incoming: Snapshot) {
+    const next = { ...incoming, node_catalog: shareCatalog(snapshot.value.node_catalog, incoming.node_catalog) }
     const logs = snapshot.value.logs
     if (logs.length === next.logs.length && logs.every((line, index) => {
       const other = next.logs[index]!
-      return line.time_ms === other.time_ms && line.level === other.level && line.message === other.message
+      return line.time_ms === other.time_ms && line.level === other.level && line.message === other.message &&
+        line.hint === other.hint && line.hint_kind === other.hint_kind
     })) {
-      next = { ...next, logs }
+      next.logs = logs
     }
     const installed = snapshot.value.installed
     if (installed.length === next.installed.length && installed.every((app, index) => {
       const other = next.installed[index]!
       return app.package_name === other.package_name && app.name === other.name && app.system === other.system
-    })) next = { ...next, installed }
+    })) next.installed = installed
     for (const key of ['excluded', 'included'] as const) {
       const previous = snapshot.value[key]
       if (previous.length === next[key].length && previous.every((pkg, i) => pkg === next[key][i])) {
-        next = { ...next, [key]: previous }
+        next[key] = previous
       }
     }
     const prevSettings = snapshot.value.settings
     if (prevSettings !== next.settings) {
-      let nextSettings = next.settings
-      if (JSON.stringify(prevSettings.tun) === JSON.stringify(nextSettings.tun)) {
-        nextSettings = { ...nextSettings, tun: prevSettings.tun }
-      }
-      if (JSON.stringify(prevSettings.dns) === JSON.stringify(nextSettings.dns)) {
-        nextSettings = { ...nextSettings, dns: prevSettings.dns }
-      }
-      if (JSON.stringify(prevSettings.system_proxy) === JSON.stringify(nextSettings.system_proxy)) {
-        nextSettings = { ...nextSettings, system_proxy: prevSettings.system_proxy }
-      }
-      if (JSON.stringify(prevSettings.geo_urls) === JSON.stringify(nextSettings.geo_urls)) {
-        nextSettings = { ...nextSettings, geo_urls: prevSettings.geo_urls }
-      }
-      if (JSON.stringify(prevSettings) === JSON.stringify(nextSettings)) {
-        nextSettings = prevSettings
-      }
-      if (nextSettings !== next.settings) {
-        next = { ...next, settings: nextSettings }
+      if (JSON.stringify(prevSettings) === JSON.stringify(next.settings)) {
+        next.settings = prevSettings
+      } else {
+        const settings = next.settings
+        next.settings = {
+          ...settings,
+          tun: reuseEqual(prevSettings.tun, settings.tun),
+          dns: reuseEqual(prevSettings.dns, settings.dns),
+          system_proxy: reuseEqual(prevSettings.system_proxy, settings.system_proxy),
+          geo_urls: reuseEqual(prevSettings.geo_urls, settings.geo_urls),
+        }
       }
     }
-    const prevConfigValues = snapshot.value.config_values
-    if (prevConfigValues !== next.config_values && JSON.stringify(prevConfigValues) === JSON.stringify(next.config_values)) {
-      next = { ...next, config_values: prevConfigValues }
+    next.config_values = reuseEqual(snapshot.value.config_values, next.config_values)
+    const previousProfiles = snapshot.value.profiles
+    if (previousProfiles.length !== next.profiles.length ||
+      previousProfiles.some((profile, index) => profile.id !== next.profiles[index]?.id)) {
+      const ids = new Set(next.profiles.map((profile) => profile.id))
+      for (const id in profileUpdates) {
+        if (!ids.has(id)) delete profileUpdates[id]
+      }
+      for (const id of pendingUpdates.keys()) {
+        if (!ids.has(id)) {
+          pendingUpdates.delete(id)
+          delete busy[`update:${id}`]
+        }
+      }
     }
     if (Boolean(next.connected) !== Boolean(snapshot.value.connected)) {
       connectionSessionId.value += 1
@@ -712,6 +765,7 @@ export function createStore(backend: Backend) {
       result = await backend.refresh(id)
       if (!current()) return false
       apply(result)
+      if (!current()) return false
     } catch (error) {
       if (!current()) return false
       console.error(error)
@@ -949,6 +1003,7 @@ export function createStore(backend: Backend) {
     activeTest.value = null
     pendingTests.value = new Set()
     appUpdate.stop()
+    releaseTrafficStats()
     stopped = true
     generation += 1
     starting = null
@@ -1367,6 +1422,7 @@ export function createStore(backend: Backend) {
     trafficStatsError,
     trafficStatsRange,
     loadTrafficStats,
+    releaseTrafficStats,
     openTrafficStats,
     setTrafficRecording,
     clearTrafficHistory,

@@ -26,12 +26,14 @@ class BillowWidgetProvider : AppWidgetProvider() {
         if (intent.action == ACTION_TOGGLE) {
             val pending = goAsync()
             BillowShortcuts.tap(false) { result ->
-                if (result != BillowShortcuts.HANDLED) {
-                    // Without a profile or the VPN permission the app has to
-                    // continue the tap; the widget only switches the connection.
-                    context.startActivity(BillowShortcuts.launchIntent(context, true))
+                try {
+                    if (result != BillowShortcuts.HANDLED) {
+                        // The activity continues taps that require a profile or VPN permission.
+                        context.startActivity(BillowShortcuts.launchIntent(context, true))
+                    }
+                } finally {
+                    pending.finish()
                 }
-                pending.finish()
             }
             return
         }

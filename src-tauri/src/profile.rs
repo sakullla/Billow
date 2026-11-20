@@ -885,6 +885,7 @@ pub struct ProfileSnapshot {
     pub notice: Option<String>,
 }
 
+#[cfg(any(target_os = "android", test))]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LinkStatus {
     pub connected: bool,
@@ -2664,9 +2665,19 @@ impl ProfileBook {
         self.connected
     }
 
+    pub fn connected_mixed_port(&self) -> Option<u16> {
+        if !self.connected {
+            return None;
+        }
+        self.mixed_port
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port > 0)
+    }
+
     /// The connection state, the running profile's name and the two rates the
     /// Android tile and widget render (R41). Cheap: no connections or logs are
     /// cloned, so a background ticker can read it while no window exists.
+    #[cfg(any(target_os = "android", test))]
     pub fn link_status(&self) -> LinkStatus {
         LinkStatus {
             connected: self.connected,
@@ -2680,6 +2691,7 @@ impl ProfileBook {
 
     /// Refresh only the two rates, for the tile's and widget's two-second ticker
     /// (R41). The samples themselves come from the kernel's traffic watch.
+    #[cfg(any(target_os = "android", test))]
     pub fn refresh_link_rates(&mut self, kernel: &mut dyn KernelLaunch) {
         if !self.connected {
             self.upload = None;
