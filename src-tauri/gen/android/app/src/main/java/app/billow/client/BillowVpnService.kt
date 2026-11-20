@@ -82,7 +82,7 @@ class BillowVpnService : VpnService() {
             else -> view.getString(R.string.state_disconnected)
         }
         return BillowStatus.builder(this, BillowStatus.VPN_CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setSmallIcon(R.drawable.ic_stat_billow)
             .setContentTitle(view.getString(R.string.notify_title))
             .setContentText(text)
             .setContentIntent(BillowStatus.openApp(this, 0))

@@ -1,10 +1,10 @@
 <script setup lang="ts">import { tr } from '../lib/i18n'
 
 import { onBeforeUnmount, onMounted, ref } from 'vue'
+import BrandMark from './BrandMark.vue'
 import { closeWindow, minimizeWindow, toggleMaximizeWindow, watchMaximized, type WindowChrome } from '../lib/ui/windowChrome'
 
 const props = defineProps<{ chrome: Exclude<WindowChrome, null>; brand?: boolean }>()
-const appIcon = `${import.meta.env.BASE_URL}icon.png`
 
 const maximized = ref(false)
 let release: (() => void) | null = null
@@ -26,7 +26,7 @@ onBeforeUnmount(() => {
   <!-- The strip itself is the drag handle; double-click maximizes (Tauri drag region). -->
   <header class="titlebar" :class="chrome" data-tauri-drag-region data-testid="titlebar">
     <span v-if="brand" class="titlebar-brand" data-tauri-drag-region>
-      <img :src="appIcon" alt="" />
+      <BrandMark size="xs" />
       <span>Billow</span>
     </span>
     <div v-if="chrome === 'windows'" class="caption-buttons">

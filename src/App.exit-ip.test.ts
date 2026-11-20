@@ -81,7 +81,8 @@ describe('Exit IP lookup (R40)', () => {
 
     expect(exitSpy).toHaveBeenCalledTimes(1)
     expect(card().find('[data-testid="exit-ip-value"]').text()).toBe('203.0.113.42')
-    expect(card().find('[data-testid="exit-ip-region"]').text()).toContain('地区')
+    expect(card().find('[data-testid="exit-ip-region"]').text()).toBe('Hong Kong')
+    expect(card().find('[data-testid="exit-ip-region"]').attributes('title')).toContain('地区')
     expect(card().find('[data-testid="exit-ip-isp"]').text()).toContain('AS15169 Google LLC')
     const meta = card().find('[data-testid="exit-ip-meta"]').text()
     expect(meta).toContain('ip.sb')
@@ -192,15 +193,15 @@ describe('Exit IP lookup (R40)', () => {
     expect(wrapper.find('[data-testid="exit-ip-card"]').exists()).toBe(false)
   })
 
-  it('puts the Network settings (exit IP and traffic history) in the desktop Network card', async () => {
+  it('puts exit IP and traffic history together under 数据与备份 → 隐私与统计 on desktop', async () => {
     const { wrapper } = await mountApp()
     const store = storeOf(wrapper)
-    store.openSettings('general')
+    store.openSettings('backup')
     await flushPromises()
 
     const network = wrapper.find('[data-testid="settings-network"]')
     expect(network.exists()).toBe(true)
-    expect(network.text()).toContain('网络')
+    expect(network.text()).toContain('隐私与统计')
     const setting = network.find('[data-testid="auto-exit-ip-setting"]')
     expect(setting.text()).toContain('ip.sb')
     expect(setting.text()).toContain('ipinfo.io')
@@ -216,10 +217,13 @@ describe('Exit IP lookup (R40)', () => {
     expect(wrapper.findAll('[data-testid="traffic-history-setting"]')).toHaveLength(1)
   })
 
-  it('puts the Network settings on the phone Network group instead of proxy behaviour', async () => {
+  it('reaches the same group on the phone through the 数据与备份 category', async () => {
     const { wrapper } = await mountApp({}, 390)
     const store = storeOf(wrapper)
     store.go('settings')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="open-backup"]').trigger('click')
     await flushPromises()
 
     const network = wrapper.find('[data-testid="settings-network"]')
@@ -231,7 +235,7 @@ describe('Exit IP lookup (R40)', () => {
     expect(setting.find('[data-testid="auto-exit-ip-toggle"]').attributes('aria-checked')).toBe('false')
     expect(wrapper.find('[data-testid="node-switch-settings"] [data-testid="auto-exit-ip-setting"]').exists()).toBe(false)
 
-    // Traffic history moved into the phone Network group (R43), still off by default and reachable.
+    // Traffic history sits beside it (R43), still off by default and reachable.
     const traffic = network.find('[data-testid="traffic-history-setting"]')
     expect(traffic.exists()).toBe(true)
     expect(traffic.find('[data-testid="traffic-history-toggle"]').attributes('aria-checked')).toBe('false')

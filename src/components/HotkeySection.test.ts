@@ -59,7 +59,7 @@ describe('HotkeySection', () => {
       expect(find(`[data-testid="hotkey-combo-${action}"]`).textContent).toBe('未绑定')
       expect(document.querySelector(`[data-testid="hotkey-clear-${action}"]`)).toBeNull()
     }
-    expect(find('[data-testid="hotkey-hint"]').textContent).toContain('至少包含一个修饰键')
+    expect(find('[data-testid="hotkey-hint"]').textContent).toContain('Ctrl、Alt 或 Shift')
   })
 
   it('records Ctrl+Alt+P for system proxy and shows it in the row', async () => {
@@ -82,12 +82,16 @@ describe('HotkeySection', () => {
     await setup()
     await click('hotkey-record-connect')
     await press({ key: 'Control', code: 'ControlLeft', ctrlKey: true })
+    // Still waiting: the key cap keeps prompting and nothing is bound yet.
     expect(find('[data-testid="hotkey-record-connect"]').textContent).toContain('请按下组合键')
-    expect(find('[data-testid="hotkey-combo-connect"]').textContent).toBe('未绑定')
+    expect(document.querySelector('[data-testid="hotkey-clear-connect"]')).toBeNull()
 
     // A printable key on its own would hijack ordinary typing.
     await press({ key: 'p', code: 'KeyP' })
     expect(find('[data-testid="hotkey-error"]').textContent).toContain('请先按住')
+    expect(document.querySelector('[data-testid="hotkey-clear-connect"]')).toBeNull()
+    // Esc leaves recording without binding anything.
+    await press({ key: 'Escape', code: 'Escape' })
     expect(find('[data-testid="hotkey-combo-connect"]').textContent).toBe('未绑定')
   })
 
@@ -155,7 +159,9 @@ describe('HotkeySection', () => {
     expect(find('[data-testid="hotkey-unavailable"]').textContent).toContain('Wayland')
     expect((find('[data-testid="hotkey-record-connect"]') as HTMLButtonElement).disabled).toBe(true)
     await click('hotkey-record-connect')
-    expect(find('[data-testid="hotkey-record-connect"]').textContent).toContain('录入')
+    // Clicking a disabled key cap never starts recording.
+    expect(find('[data-testid="hotkey-record-connect"]').textContent).not.toContain('请按下组合键')
+    expect(find('[data-testid="hotkey-combo-connect"]').textContent).toBe('未绑定')
   })
 
   it('shows a stored binding that the system refused at startup as inactive', async () => {

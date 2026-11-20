@@ -1,4 +1,8 @@
-"""Derive the web and Android assets after `tauri icon assets/icon-manifest.json`."""
+"""Derive the tray, web and Android assets after `tauri icon assets/icon-manifest.json`.
+
+The in-app logo (public/brand-mark.png) is written by generate_app_icons.py;
+the UI draws the theme-aware tile behind it, so it is not derived here.
+"""
 from pathlib import Path
 import shutil
 from PIL import Image
@@ -8,10 +12,7 @@ root = Path(__file__).resolve().parents[1]
 build_tray_icon(root)
 public = root / "public"
 public.mkdir(exist_ok=True)
-with Image.open(root / "assets/icon.png") as image:
-    image.resize((128, 128), Image.Resampling.LANCZOS).save(public / "icon.png")
-desktop_icon = root / "assets/icon-desktop.png"
-with Image.open(desktop_icon if desktop_icon.exists() else root / "assets/icon.png") as image:
+with Image.open(root / "assets/icon-desktop.png") as image:
     image.save(public / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)])
 android = root / "src-tauri/icons/android"
 if android.exists():

@@ -17,6 +17,8 @@ export type OverviewSource = 'billow' | 'override' | 'profile' | 'default'
 export interface OverviewTarget {
   page: PageId
   tab?: SettingsTab
+  /** Row to scroll to and highlight (`data-setting` id). */
+  focus?: string
 }
 
 export interface OverviewRow {
@@ -52,6 +54,7 @@ interface Field {
 }
 
 const KERNEL: OverviewTarget = { page: 'settings', tab: 'kernel' }
+const at = (tab: SettingsTab, focus?: string): OverviewTarget => ({ page: 'settings', tab, focus })
 const DNS: OverviewTarget = { page: 'settings', tab: 'dns' }
 const TUN: OverviewTarget = { page: 'settings', tab: 'tun' }
 const RESOURCES: OverviewTarget = { page: 'resources' }
@@ -149,16 +152,16 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
     id: 'inbound',
     get title() { return tr('入站') },
     fields: [
-      { path: 'mixed-port', get label() { return tr('混合端口') }, to: KERNEL },
-      { path: 'port', get label() { return tr('HTTP 端口') }, format: port, to: KERNEL },
-      { path: 'socks-port', get label() { return tr('SOCKS5 端口') }, format: port, to: KERNEL },
-      { path: 'redir-port', get label() { return tr('透明代理端口') }, format: port, to: KERNEL },
-      { path: 'tproxy-port', get label() { return tr('TProxy 端口') }, format: port, to: KERNEL },
-      { path: 'allow-lan', get label() { return tr('局域网连接') }, get fallback() { return tr('关闭') }, to: KERNEL },
+      { path: 'mixed-port', get label() { return tr('混合端口') }, to: at('network', 'mixed-port') },
+      { path: 'port', get label() { return tr('HTTP 端口') }, format: port, to: at('network', 'extra-ports') },
+      { path: 'socks-port', get label() { return tr('SOCKS5 端口') }, format: port, to: at('network', 'extra-ports') },
+      { path: 'redir-port', get label() { return tr('透明代理端口') }, format: port, to: at('network', 'extra-ports') },
+      { path: 'tproxy-port', get label() { return tr('TProxy 端口') }, format: port, to: at('network', 'extra-ports') },
+      { path: 'allow-lan', get label() { return tr('局域网连接') }, get fallback() { return tr('关闭') }, to: at('network', 'allow-lan') },
       { path: 'bind-address', get label() { return tr('监听地址') } },
-      { path: 'lan-allowed-ips', get label() { return tr('允许的来源') }, to: KERNEL },
+      { path: 'lan-allowed-ips', get label() { return tr('允许的来源') }, to: at('network', 'lan-access') },
       { path: 'lan-disallowed-ips', get label() { return tr('禁止的来源') } },
-      { path: 'authentication', get label() { return tr('访问认证') }, format: users, to: KERNEL },
+      { path: 'authentication', get label() { return tr('访问认证') }, format: users, to: at('network', 'lan-access') },
       { path: 'skip-auth-prefixes', get label() { return tr('免认证来源') } },
     ],
   },
@@ -168,11 +171,11 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
     fields: [
       { path: 'mode', get label() { return tr('出站模式') }, get fallback() { return tr('规则') }, to: { page: 'home' } },
       { path: 'global-client-fingerprint', get label() { return tr('全局 TLS 指纹') }, format: removedFingerprint },
-      { path: 'keep-alive-interval', get label() { return tr('TCP 保活间隔') }, format: seconds, to: KERNEL },
+      { path: 'keep-alive-interval', get label() { return tr('TCP 保活间隔') }, format: seconds, to: at('network', 'keep-alive') },
       { path: 'keep-alive-idle', get label() { return tr('TCP 保活空闲') }, format: seconds },
-      { path: 'disable-keep-alive', get label() { return tr('关闭 TCP 保活') }, to: KERNEL },
-      { path: 'interface-name', get label() { return tr('出口网卡') }, to: KERNEL },
-      { path: 'routing-mark', get label() { return tr('路由标记') }, to: KERNEL },
+      { path: 'disable-keep-alive', get label() { return tr('关闭 TCP 保活') }, to: at('network', 'keep-alive') },
+      { path: 'interface-name', get label() { return tr('出口网卡') }, to: at('network', 'extra-ports') },
+      { path: 'routing-mark', get label() { return tr('路由标记') }, to: at('network', 'extra-ports') },
     ],
   },
   {
@@ -180,17 +183,17 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
     title: 'DNS',
     fields: [
       { path: 'dns.enable', get label() { return tr('内置 DNS') }, get fallback() { return tr('关闭') }, to: DNS },
-      { path: 'dns.enhanced-mode', get label() { return tr('域名映射') }, to: DNS },
-      { path: 'dns.listen', get label() { return tr('监听地址') }, to: DNS },
-      { path: 'dns.nameserver', get label() { return tr('主 DNS') }, to: DNS },
-      { path: 'dns.default-nameserver', get label() { return tr('引导 DNS') }, to: DNS },
-      { path: 'dns.fallback', get label() { return tr('备用 DNS') }, to: DNS },
-      { path: 'dns.proxy-server-nameserver', get label() { return tr('节点域名解析') }, to: DNS },
-      { path: 'dns.nameserver-policy', get label() { return tr('解析策略') }, format: entries, to: DNS },
-      { path: 'dns.fake-ip-range', get label() { return tr('Fake-IP 地址段') }, to: DNS },
-      { path: 'dns.fake-ip-filter-mode', get label() { return tr('Fake-IP 过滤模式') }, format: filterMode, to: DNS },
-      { path: 'dns.respect-rules', get label() { return tr('遵循分流规则') }, to: DNS },
-      { path: 'hosts', label: 'Hosts', format: entries, to: DNS },
+      { path: 'dns.enhanced-mode', get label() { return tr('域名映射') }, to: at('dns', 'dns-mode') },
+      { path: 'dns.listen', get label() { return tr('监听地址') }, to: at('dns', 'dns-listen') },
+      { path: 'dns.nameserver', get label() { return tr('主 DNS') }, to: at('dns', 'dns-nameserver') },
+      { path: 'dns.default-nameserver', get label() { return tr('引导 DNS') }, to: at('dns', 'dns-default-nameserver') },
+      { path: 'dns.fallback', get label() { return tr('备用 DNS') }, to: at('dns', 'dns-fallback') },
+      { path: 'dns.proxy-server-nameserver', get label() { return tr('节点域名解析') }, to: at('dns', 'dns-proxy-nameserver') },
+      { path: 'dns.nameserver-policy', get label() { return tr('解析策略') }, format: entries, to: at('dns', 'dns-policy') },
+      { path: 'dns.fake-ip-range', get label() { return tr('Fake-IP 地址段') }, to: at('dns', 'dns-fake-ip-range') },
+      { path: 'dns.fake-ip-filter-mode', get label() { return tr('Fake-IP 过滤模式') }, format: filterMode, to: at('dns', 'dns-filter-mode') },
+      { path: 'dns.respect-rules', get label() { return tr('遵循分流规则') }, to: at('dns', 'dns-respect-rules') },
+      { path: 'hosts', label: 'Hosts', format: entries, to: at('dns', 'dns-hosts') },
     ],
   },
   {
@@ -199,29 +202,29 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
     desktopOnly: true,
     fields: [
       { path: 'tun.enable', get label() { return tr('TUN 模式') }, get fallback() { return tr('关闭') }, to: TUN },
-      { path: 'tun.stack', get label() { return tr('协议栈') }, get fallback() { return tr('内核默认（Mips）') }, to: TUN },
+      { path: 'tun.stack', get label() { return tr('协议栈') }, get fallback() { return tr('内核默认（Mips）') }, to: at('tun', 'tun-stack') },
       { path: 'tun.dns-mode', get label() { return tr('系统 DNS') }, format: tunDns },
-      { path: 'tun.auto-route', get label() { return tr('自动路由') }, to: TUN },
-      { path: 'tun.strict-route', get label() { return tr('严格路由') }, to: TUN },
-      { path: 'tun.dns-hijack', get label() { return tr('DNS 劫持') }, to: TUN },
-      { path: 'tun.mtu', label: 'MTU', to: TUN },
-      { path: 'tun.device', get label() { return tr('网卡名称') }, to: TUN },
-      { path: 'tun.route-address', get label() { return tr('只走 TUN 的地址') }, to: TUN },
-      { path: 'tun.route-exclude-address', get label() { return tr('不走 TUN 的地址') }, to: TUN },
+      { path: 'tun.auto-route', get label() { return tr('自动路由') }, to: at('tun', 'tun-auto-route') },
+      { path: 'tun.strict-route', get label() { return tr('严格路由') }, to: at('tun', 'tun-strict-route') },
+      { path: 'tun.dns-hijack', get label() { return tr('DNS 劫持') }, to: at('tun', 'tun-dns-hijack') },
+      { path: 'tun.mtu', label: 'MTU', to: at('tun', 'tun-mtu') },
+      { path: 'tun.device', get label() { return tr('网卡名称') }, to: at('tun', 'tun-device') },
+      { path: 'tun.route-address', get label() { return tr('只走 TUN 的地址') }, to: at('tun', 'tun-route-include') },
+      { path: 'tun.route-exclude-address', get label() { return tr('不走 TUN 的地址') }, to: at('tun', 'tun-route-exclude') },
     ],
   },
   {
     id: 'sniff',
     get title() { return tr('嗅探与 GEO') },
     fields: [
-      { path: 'sniffer.enable', get label() { return tr('域名嗅探') }, get fallback() { return tr('关闭') }, to: KERNEL },
+      { path: 'sniffer.enable', get label() { return tr('域名嗅探') }, get fallback() { return tr('关闭') }, to: at('behavior', 'sniffer') },
       { path: 'sniffer.sniff', get label() { return tr('嗅探协议') }, format: sniffs },
-      { path: 'sniffer.sniff.HTTP.ports', get label() { return tr('HTTP 嗅探端口') }, to: KERNEL },
-      { path: 'sniffer.sniff.TLS.ports', get label() { return tr('TLS 嗅探端口') }, to: KERNEL },
-      { path: 'sniffer.sniff.QUIC.ports', get label() { return tr('QUIC 嗅探端口') }, to: KERNEL },
-      { path: 'sniffer.force-domain', get label() { return tr('强制嗅探域名') }, to: KERNEL },
-      { path: 'sniffer.skip-domain', get label() { return tr('跳过嗅探域名') }, to: KERNEL },
-      { path: 'sniffer.override-destination', get label() { return tr('嗅探结果覆盖目标') }, to: KERNEL },
+      { path: 'sniffer.sniff.HTTP.ports', get label() { return tr('HTTP 嗅探端口') }, to: at('behavior', 'sniffer-options') },
+      { path: 'sniffer.sniff.TLS.ports', get label() { return tr('TLS 嗅探端口') }, to: at('behavior', 'sniffer-options') },
+      { path: 'sniffer.sniff.QUIC.ports', get label() { return tr('QUIC 嗅探端口') }, to: at('behavior', 'sniffer-options') },
+      { path: 'sniffer.force-domain', get label() { return tr('强制嗅探域名') }, to: at('behavior', 'sniffer-options') },
+      { path: 'sniffer.skip-domain', get label() { return tr('跳过嗅探域名') }, to: at('behavior', 'sniffer-options') },
+      { path: 'sniffer.override-destination', get label() { return tr('嗅探结果覆盖目标') }, to: at('behavior', 'sniffer-options') },
       { path: 'geodata-mode', get label() { return tr('GeoIP 格式') }, format: geodata, fallback: 'mmdb', to: RESOURCES },
       { path: 'geodata-loader', get label() { return tr('GEO 加载方式') }, format: loader, get fallback() { return tr('低内存') }, to: RESOURCES },
       { path: 'geo-auto-update', get label() { return tr('自动更新 GEO') }, to: RESOURCES },
@@ -233,11 +236,11 @@ const SECTIONS: { id: string; title: string; fields: Field[]; desktopOnly?: bool
     id: 'misc',
     get title() { return tr('运行') },
     fields: [
-      { path: 'log-level', get label() { return tr('日志级别') }, get fallback() { return tr('信息') }, to: KERNEL },
-      { path: 'ipv6', label: 'IPv6', get fallback() { return tr('开启') }, to: KERNEL },
-      { path: 'unified-delay', get label() { return tr('统一延迟') }, get fallback() { return tr('关闭') }, to: KERNEL },
-      { path: 'tcp-concurrent', get label() { return tr('TCP 并发') }, get fallback() { return tr('关闭') }, to: KERNEL },
-      { path: 'find-process-mode', get label() { return tr('进程匹配') }, get fallback() { return tr('自动') }, to: KERNEL },
+      { path: 'log-level', get label() { return tr('日志级别') }, get fallback() { return tr('信息') }, to: at('kernel', 'log-level') },
+      { path: 'ipv6', label: 'IPv6', get fallback() { return tr('开启') }, to: at('network', 'ipv6') },
+      { path: 'unified-delay', get label() { return tr('统一延迟') }, get fallback() { return tr('关闭') }, to: at('behavior', 'unified-delay') },
+      { path: 'tcp-concurrent', get label() { return tr('TCP 并发') }, get fallback() { return tr('关闭') }, to: at('network', 'tcp-concurrent') },
+      { path: 'find-process-mode', get label() { return tr('进程匹配') }, get fallback() { return tr('自动') }, to: at('behavior', 'process-mode') },
       { path: 'global-ua', get label() { return tr('外部资源 UA') } },
       { path: 'etag-support', get label() { return tr('ETag 缓存') } },
     ],

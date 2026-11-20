@@ -25,7 +25,21 @@ import {
 } from './types'
 
 export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings' | 'apps'
-export type SettingsTab = 'general' | 'proxy' | 'kernel' | 'tun' | 'dns' | 'backup'
+/**
+ * Settings categories. `home` is the phone's category list; desktop shows the
+ * general page for it, so it is always a valid landing tab.
+ */
+export type SettingsTab =
+  | 'home'
+  | 'general'
+  | 'proxy'
+  | 'tun'
+  | 'network'
+  | 'behavior'
+  | 'dns'
+  | 'kernel'
+  | 'backup'
+  | 'about'
 export type ConfigViewTab = 'overview' | 'yaml'
 
 const CONFIG_TAB_KEY = 'billow.configTab'
@@ -141,7 +155,9 @@ export function createStore(backend: Backend) {
   const focusProvider = ref<{ kind: 'proxy' | 'rule'; name: string } | null>(null)
   const connectionReturn = ref<ConnectionReturnState | null>(null)
   const connectionSessionId = ref(0)
-  const settingsTab = ref<SettingsTab>('general')
+  const settingsTab = ref<SettingsTab>('home')
+  /** A row (`data-setting` id) the settings page should scroll to and highlight once shown. */
+  const settingsFocus = ref<string | null>(null)
   /** Text another page asks the profiles page to append to a profile's 覆写 editor (unsaved). */
   const overrideRequest = ref<{ id: string; append: string } | null>(null)
   /** The DNS query dialog, opened from the DNS settings tab or the palette (R31). */
@@ -948,8 +964,9 @@ export function createStore(backend: Backend) {
     toasts.value = []
   }
 
-  function openSettings(tab: SettingsTab) {
+  function openSettings(tab: SettingsTab, focus?: string) {
     settingsTab.value = tab
+    settingsFocus.value = focus ?? null
     go('settings')
   }
 
@@ -1172,6 +1189,7 @@ export function createStore(backend: Backend) {
     connectionReturn,
     connectionSessionId,
     settingsTab,
+    settingsFocus,
     overrideRequest,
     dnsQueryOpen,
     openSettings,
@@ -1357,7 +1375,12 @@ export function createStore(backend: Backend) {
       act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? tr('FakeIP 缓存已清除') : tr('DNS 缓存已清除')),
     restartKernel,
     gcKernel,
-    saveSettings: (settings: KernelSettings) => act('settings', () => backend.saveSettings(settings), tr('内核设置已保存')),
+    /**
+     * `quiet` skips the success toast for rows that apply in place and show their
+     * own state; `message` replaces it, e.g. for a reset.
+     */
+    saveSettings: (settings: KernelSettings, options?: { quiet?: boolean; message?: string }) =>
+      act('settings', () => backend.saveSettings(settings), options?.message ?? (options?.quiet ? undefined : tr('内核设置已保存'))),
     async openUwpTool() {
       const ok = await run('uwp', async () => {
         await backend.openUwpTool()

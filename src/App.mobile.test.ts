@@ -44,30 +44,41 @@ afterEach(() => {
 })
 
 describe('phone layout', () => {
-  it('keeps the whole general settings page in grouped list rows', async () => {
+  it('lists categories with their state, and keeps each category in grouped list rows', async () => {
     const { wrapper, backend } = await mountPhone()
     storeOf(wrapper).go('settings')
     await flushPromises()
 
-    const behavior = wrapper.find('[data-testid="node-switch-settings"]')
-    expect(behavior.classes()).toContain('settings-list')
-    // The subscription User-Agent folds into the same list as a row with its current value.
-    const fold = behavior.find('[data-testid="subscription-settings"]')
-    expect(fold.element.tagName).toBe('DETAILS')
-    expect(fold.find('summary .nav-row-value').text()).toBe('默认')
+    // The root is a list of categories; each says what is on without opening it.
+    expect(wrapper.find('[data-testid="open-network"] .srow-value').text()).toBe(':7890')
+    expect(wrapper.find('[data-testid="open-dns"] .srow-value').text()).toBe('跟随配置')
+    expect(wrapper.findAll('.page.settings > section.card')).toHaveLength(0)
+
+    await wrapper.find('[data-testid="open-behavior"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.settings-subhead h1').text()).toBe('代理与测速')
+    // The subscription User-Agent is a row in the same grouped list, marked once customised.
+    const row = wrapper.find('[data-testid="subscription-settings"]')
+    expect(row.classes()).toContain('srow')
+    expect(row.find('.srow-badge').exists()).toBe(false)
 
     const save = vi.spyOn(backend, 'saveSettings')
-    const input = fold.find('[data-testid="global-subscription-user-agent"]')
+    const input = row.find('[data-testid="global-subscription-user-agent"]')
+    await input.trigger('focus')
     await input.setValue('phone-client/1')
     await input.trigger('blur')
     await settle(300)
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ subscription_user_agent: 'phone-client/1' }))
-    expect(fold.find('summary .nav-row-value').text()).toBe('已自定义')
+    expect(wrapper.find('[data-testid="subscription-settings"] .srow-badge').text()).toBe('已自定义')
 
-    // Update status sits in the about group as a row; the version is not repeated in a separate card.
+    // Update status sits in the about page as a row under the version hero.
+    await wrapper.find('[data-testid="settings-back"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="open-about"]').trigger('click')
+    await flushPromises()
     const about = wrapper.find('[data-testid="settings-about"]')
-    expect(about.find('[data-testid="app-update"]').classes()).toContain('update-row')
-    expect(wrapper.findAll('.page.settings > section.card:not(.settings-list):not(.tool-grid)')).toHaveLength(0)
+    expect(about.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="app-update"]').classes()).toContain('update-row')
   })
 
   it('folds rarer log actions into one menu so the header stays on one row', async () => {

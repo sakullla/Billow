@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import App from './App.vue'
@@ -792,10 +792,10 @@ describe('App', () => {
     await flushPromises()
     expect(wrapper.find('.settings-subhead h1').text()).toBe('DNS')
     expect(wrapper.find('[data-testid="dns-settings"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-network"]').exists()).toBe(false)
     await wrapper.find('[data-testid="settings-back"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="open-network"]').text()).toContain(':7890')
     expect(wrapper.find('[data-testid="open-tun"]').text()).toContain('关闭')
   })
 
@@ -807,10 +807,10 @@ describe('App', () => {
     expect(tunCard.exists()).toBe(true)
     // The default leaves the stack to the kernel (Mips on mihomo v1.19.32+).
     expect(tunCard.find('[data-value=""]').attributes('aria-checked')).toBe('true')
+    // Choices apply at once; there is no separate save step.
     await tunCard.find('[data-value="gvisor"]').trigger('click')
-    await wrapper.find('[data-testid="save-tun"]').trigger('click')
     await settle(600)
-    expect(wrapper.find('[data-testid="save-tun"]').exists()).toBe(false)
+    expect(storeOf(wrapper).snapshot.value.settings.tun.stack).toBe('gvisor')
     expect(wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').attributes('aria-checked')).toBe('true')
   })
 
@@ -825,12 +825,12 @@ describe('App', () => {
     await toggle.trigger('click')
     await settle(600)
     expect(wrapper.find('[data-testid="dns-override"]').attributes('aria-checked')).toBe('true')
+    expect(storeOf(wrapper).snapshot.value.settings.dns_override).toBe(true)
     expect(wrapper.text()).toContain('Fake-IP 过滤')
-    await wrapper.find('[data-testid="dns-settings"] [data-value="redir-host"]').trigger('click')
-    expect(wrapper.text()).not.toContain('Fake-IP 过滤')
-    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    await wrapper.find('[data-testid="dns-enhanced-mode"] [data-value="redir-host"]').trigger('click')
     await settle(600)
-    expect(wrapper.find('[data-testid="save-dns"]').exists()).toBe(false)
+    expect(storeOf(wrapper).snapshot.value.settings.dns.enhanced_mode).toBe('redir-host')
+    expect(wrapper.text()).not.toContain('Fake-IP 过滤')
   })
 
   it('lists proxy and rule providers once connected', async () => {
@@ -1731,7 +1731,8 @@ describe('App', () => {
 
   it('lets users keep long-lived connections when switching nodes', async () => {
     const { wrapper, backend } = await mountApp()
-    await openPage(wrapper, 'settings')
+    storeOf(wrapper).openSettings('behavior')
+    await flushPromises()
     const save = vi.spyOn(backend, 'saveSettings')
     const toggle = wrapper.find('[data-testid="close-on-node-switch"]')
     expect(toggle.attributes('aria-checked')).toBe('true')
@@ -3091,11 +3092,12 @@ describe('App', () => {
   it('preserves kernel port, TUN and DNS input drafts across polling ticks without resetting', async () => {
     const { wrapper, backend } = await mountApp()
     const saveSpy = vi.spyOn(backend, 'saveSettings')
+    const body = new DOMWrapper(document.body)
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
 
     await openPage(wrapper, 'settings')
-    await wrapper.find('[data-testid="settings-tabs"] [data-value="kernel"]').trigger('click')
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
     await flushPromises()
 
     const portInput = wrapper.find('[data-testid="mixed-port-input"]')
@@ -3114,32 +3116,34 @@ describe('App', () => {
     expect((portInput.element as HTMLInputElement).value).toBe('7891')
     expect(wrapper.find('[data-testid="save-port"]').exists()).toBe(false)
 
-    // TUN drafts survive polling ticks too.
+    // A focused TUN field survives polling ticks too, and commits when it loses focus.
     await wrapper.find('[data-testid="settings-tabs"] [data-value="tun"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').trigger('click')
     const mtuInput = wrapper.find('input[aria-label="MTU"]')
+    await mtuInput.trigger('focus')
     await mtuInput.setValue('1420')
     await settle(3500)
     expect((mtuInput.element as HTMLInputElement).value).toBe('1420')
     expect(wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').attributes('aria-checked')).toBe('true')
-    expect(wrapper.find('[data-testid="save-tun"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="save-tun"]').trigger('click')
+    await mtuInput.trigger('blur')
     await settle(600)
     expect(saveSpy).toHaveBeenCalledWith(
       expect.objectContaining({ tun: expect.objectContaining({ stack: 'gvisor', mtu: 1420 }) }),
     )
 
-    // DNS drafts survive polling ticks too.
+    // The DNS server editor keeps its draft while the snapshot keeps refreshing.
     await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[data-testid="dns-settings"] [data-value="redir-host"]').trigger('click')
-    const nsInput = wrapper.find('textarea[aria-label="主 DNS 服务器"]')
+    await wrapper.find('[data-testid="dns-enhanced-mode"] [data-value="redir-host"]').trigger('click')
+    await settle(600)
+    await wrapper.find('[data-testid="open-dns-nameserver"]').trigger('click')
+    await flushPromises()
+    const nsInput = body.find('[data-testid="dns-nameserver-input"]')
     await nsInput.setValue('https://1.1.1.1/dns-query')
     await settle(3500)
     expect((nsInput.element as HTMLTextAreaElement).value).toBe('https://1.1.1.1/dns-query')
-    expect(wrapper.find('[data-testid="save-dns"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    await body.find('[data-testid="dns-nameserver-save"]').trigger('click')
     await settle(600)
     expect(saveSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3300,16 +3304,30 @@ describe('App', () => {
     expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
     expect(wrapper.find('[data-testid="proxy-settings"]').exists()).toBe(true)
 
-    await wrapper.find('[data-testid="proxy-host-input"]').setValue('127.0.0.2')
+    const body = new DOMWrapper(document.body)
+    // Each row applies on its own: the host on blur, the mode on click.
+    const host = wrapper.find('[data-testid="proxy-host-input"]')
+    await host.trigger('focus')
+    await host.setValue('127.0.0.2')
+    await host.trigger('blur')
+    await settle(300)
     await wrapper.find('[data-testid="proxy-mode"] [data-value="pac"]').trigger('click')
-    expect(wrapper.find('[data-testid="pac-script-input"]').exists()).toBe(true)
-
-    await wrapper.find('[data-testid="bypass-add-input"]').setValue('*.corp.internal')
-    await wrapper.find('[data-testid="bypass-add-btn"]').trigger('click')
+    await settle(300)
+    await wrapper.find('[data-testid="open-pac"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="bypass-list"]').text()).toContain('*.corp.internal')
+    expect(body.find('[data-testid="pac-script-input"]').exists()).toBe(true)
+    await body.find('[data-testid="editor-cancel"]').trigger('click')
+    await flushPromises()
 
-    await wrapper.find('[data-testid="save-proxy"]').trigger('click')
+    // The bypass list is edited in its own dialog and saved together.
+    await wrapper.find('[data-testid="open-bypass"]').trigger('click')
+    await flushPromises()
+    await body.find('[data-testid="bypass-add-input"]').setValue('*.corp.internal')
+    await body.find('[data-testid="bypass-add-btn"]').trigger('click')
+    await flushPromises()
+    expect(body.find('[data-testid="bypass-list"]').text()).toContain('*.corp.internal')
+
+    await body.find('[data-testid="save-bypass"]').trigger('click')
     await settle(500)
     expect(saveSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3320,54 +3338,69 @@ describe('App', () => {
         }),
       }),
     )
-    expect(wrapper.find('[data-testid="save-proxy"]').exists()).toBe(false)
+    expect(body.find('[data-testid="save-bypass"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-bypass"]').text()).toContain('24')
   })
 
   it('saves complete DNS overrides including filter mode, nameserver-policy and custom hosts', async () => {
     const { wrapper, backend } = await mountApp()
     const saveSpy = vi.spyOn(backend, 'saveSettings')
+    const body = new DOMWrapper(document.body)
+    const lastDns = () => saveSpy.mock.calls.at(-1)![0].dns
 
     await wrapper.find('.sidebar [data-page="settings"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
     await flushPromises()
 
+    // Advanced rows apply one at a time; each save builds on the previous one.
     await wrapper.find('[data-testid="dns-filter-mode"] [data-value="whitelist"]').trigger('click')
-    await wrapper.find('[data-testid="dns-listen"]').setValue('127.0.0.1:1053')
+    await settle(300)
+    const listen = wrapper.find('[data-testid="dns-listen"]')
+    await listen.trigger('focus')
+    await listen.setValue('127.0.0.1:1053')
+    await listen.trigger('blur')
+    await settle(300)
     await wrapper.find('[data-testid="dns-prefer-h3"]').trigger('click')
+    await settle(300)
     await wrapper.find('[data-testid="dns-cache-algorithm"] [data-value="arc"]').trigger('click')
-
-    // Add CN preset + custom policy
-    await wrapper.find('[data-testid="preset-cn-policy"]').trigger('click')
-    await wrapper.find('[data-testid="policy-pattern-input"]').setValue('+.corp.local')
-    await wrapper.find('[data-testid="policy-servers-input"]').setValue('10.0.0.53')
-    await wrapper.find('[data-testid="add-policy-btn"]').trigger('click')
-
-    // Add custom host mapping and toggle system hosts
+    await settle(300)
     await wrapper.find('[data-testid="dns-system-hosts"]').trigger('click')
-    await wrapper.find('[data-testid="host-domain-input"]').setValue('router.local')
-    await wrapper.find('[data-testid="host-target-input"]').setValue('192.168.1.1')
-    await wrapper.find('[data-testid="add-host-btn"]').trigger('click')
+    await settle(300)
 
-    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    // Policy: CN preset + a custom entry, saved from its dialog.
+    await wrapper.find('[data-testid="open-dns-policy"]').trigger('click')
+    await flushPromises()
+    await body.find('[data-testid="preset-cn-policy"]').trigger('click')
+    await body.find('[data-testid="policy-pattern-input"]').setValue('+.corp.local')
+    await body.find('[data-testid="policy-servers-input"]').setValue('10.0.0.53')
+    await body.find('[data-testid="add-policy-btn"]').trigger('click')
+    await body.find('[data-testid="save-dns-policy"]').trigger('click')
     await settle(500)
 
-    expect(saveSpy).toHaveBeenCalledWith(
+    // Hosts: one mapping, saved from its dialog.
+    await wrapper.find('[data-testid="open-dns-hosts"]').trigger('click')
+    await flushPromises()
+    await body.find('[data-testid="host-domain-input"]').setValue('router.local')
+    await body.find('[data-testid="host-target-input"]').setValue('192.168.1.1')
+    await body.find('[data-testid="add-host-btn"]').trigger('click')
+    await body.find('[data-testid="save-dns-hosts"]').trigger('click')
+    await settle(500)
+
+    expect(lastDns()).toEqual(
       expect.objectContaining({
-        dns: expect.objectContaining({
-          listen: '127.0.0.1:1053',
-          fake_ip_filter_mode: 'whitelist',
-          prefer_h3: true,
-          cache_algorithm: 'arc',
-          use_system_hosts: false,
-          nameserver_policy: {
-            'geosite:cn,private': ['https://doh.pub/dns-query', '223.5.5.5'],
-            '+.corp.local': ['10.0.0.53'],
-          },
-          hosts: {
-            'router.local': ['192.168.1.1'],
-          },
-        }),
+        listen: '127.0.0.1:1053',
+        fake_ip_filter_mode: 'whitelist',
+        prefer_h3: true,
+        cache_algorithm: 'arc',
+        use_system_hosts: false,
+        nameserver_policy: {
+          'geosite:cn,private': ['https://doh.pub/dns-query', '223.5.5.5'],
+          '+.corp.local': ['10.0.0.53'],
+        },
+        hosts: {
+          'router.local': ['192.168.1.1'],
+        },
       }),
     )
   })

@@ -150,7 +150,7 @@ describe('BackupSection', () => {
     await type('webdav-password', 'bad')
 
     expect((find('[data-testid="webdav-upload"]') as HTMLButtonElement).disabled).toBe(true)
-    expect(find('[data-testid="backup-webdav"]').textContent).toContain('尚未测试连接')
+    expect(find('[data-testid="webdav-status"]').textContent).toContain('未测试')
 
     await click('webdav-test')
     await vi.waitFor(() => {

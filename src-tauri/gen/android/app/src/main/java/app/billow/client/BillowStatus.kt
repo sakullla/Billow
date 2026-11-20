@@ -186,7 +186,7 @@ object BillowStatus {
             NotificationManager.IMPORTANCE_DEFAULT,
         )
         val notification = builder(context, ALERTS_CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setSmallIcon(R.drawable.ic_stat_billow)
             .setContentTitle(view.getString(R.string.notify_failed))
             .setContentText(status.reason)
             .setStyle(Notification.BigTextStyle().bigText(status.reason))

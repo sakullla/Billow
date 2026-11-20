@@ -41,6 +41,15 @@ function comboText(action: HotkeyAction): string {
   return combo ? shortcutKeyLabel(combo) : t('hotkey.empty')
 }
 
+function isBound(action: HotkeyAction): boolean {
+  return Boolean(bindingFor(action)?.combo)
+}
+
+function inactiveReason(action: HotkeyAction): string | null {
+  const binding = bindingFor(action)
+  return binding && !binding.active && binding.error ? binding.error : null
+}
+
 async function load() {
   try {
     settings.value = await store.backend.hotkeySettings()
@@ -126,94 +135,171 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="card" data-testid="hotkey-settings">
-    <header v-if="!compact" class="card-head">
-      <h2>{{ t('settings.hotkey.title') }}</h2>
-      <span class="muted small">{{ t('settings.hotkey.detail') }}</span>
+  <section class="hotkey-section" data-testid="hotkey-settings">
+    <header v-if="!compact" class="hotkey-head">
+      <h3>{{ t('settings.hotkey.title') }}</h3>
+      <p class="muted small">{{ t('settings.hotkey.detail') }}</p>
     </header>
 
-    <p v-if="unavailable" class="muted small hotkey-note" data-testid="hotkey-unavailable">
+    <p v-if="unavailable" class="hotkey-note warn small" data-testid="hotkey-unavailable">
       <Icon name="alert" :size="14" />
       <span>{{ t('hotkey.unavailable', { reason: settings?.reason ?? '' }) }}</span>
     </p>
 
-    <div
-      v-for="action in ACTIONS"
-      :key="action.id"
-      class="setting-row"
-      :class="{ disabled: unavailable }"
-      :data-testid="`hotkey-row-${action.id}`"
-    >
-      <div class="grow">
-        <strong>{{ action.label() }}</strong>
-        <p v-if="bindingFor(action.id) && !bindingFor(action.id)!.active && bindingFor(action.id)!.error" class="field-error small" :data-testid="`hotkey-inactive-${action.id}`">
-          {{ t('hotkey.inactive', { reason: bindingFor(action.id)!.error ?? '' }) }}
-        </p>
-      </div>
-      <div class="hotkey-actions">
-        <kbd class="hotkey-combo" :data-testid="`hotkey-combo-${action.id}`">{{ comboText(action.id) }}</kbd>
+    <ul class="hotkey-list" :class="{ disabled: unavailable }">
+      <li v-for="action in ACTIONS" :key="action.id" class="hotkey-row" :data-testid="`hotkey-row-${action.id}`">
+        <div class="grow min0">
+          <span class="hotkey-label">{{ action.label() }}</span>
+          <p v-if="inactiveReason(action.id)" class="field-error small" :data-testid="`hotkey-inactive-${action.id}`">
+            {{ t('hotkey.inactive', { reason: inactiveReason(action.id) ?? '' }) }}
+          </p>
+        </div>
+        <!-- One control per action: the key cap shows the binding and records a new one when clicked. -->
         <button
           type="button"
-          class="btn ghost sm"
-          :class="{ recording: recording === action.id }"
+          class="hotkey-cap"
+          :class="{ recording: recording === action.id, bound: isBound(action.id) }"
           :disabled="unavailable || busy"
+          :aria-pressed="recording === action.id"
+          :aria-label="`${action.label()}: ${recording === action.id ? t('hotkey.recording') : comboText(action.id)}`"
+          :title="recording === action.id ? t('hotkey.recordingHint') : t('hotkey.record')"
           :data-testid="`hotkey-record-${action.id}`"
           @click="startRecording(action.id)"
         >
-          <Icon name="keyboard" :size="15" />{{ recording === action.id ? t('hotkey.recording') : t('hotkey.record') }}
+          <span v-if="recording === action.id" class="hotkey-cap-text">{{ t('hotkey.recording') }}</span>
+          <kbd v-else class="hotkey-cap-text" :data-testid="`hotkey-combo-${action.id}`">{{ comboText(action.id) }}</kbd>
         </button>
         <button
-          v-if="bindingFor(action.id)"
+          v-if="isBound(action.id)"
           type="button"
-          class="btn ghost sm"
+          class="icon-btn sm"
           :disabled="busy"
+          :title="t('hotkey.clear')"
+          :aria-label="`${t('hotkey.clear')}: ${action.label()}`"
           :data-testid="`hotkey-clear-${action.id}`"
           @click="clear(action.id)"
         >
-          {{ t('hotkey.clear') }}
+          <Icon name="x" :size="14" />
         </button>
-      </div>
-    </div>
+        <span v-else class="hotkey-clear-slot" aria-hidden="true" />
+      </li>
+    </ul>
 
     <p v-if="error" class="field-error small hotkey-note" role="alert" data-testid="hotkey-error">
       <Icon name="alert" :size="14" /><span>{{ error }}</span>
     </p>
-    <p v-if="!unavailable" class="muted small hotkey-note" data-testid="hotkey-hint">{{ t('hotkey.hint') }}</p>
+    <p v-else-if="!unavailable" class="muted small hotkey-note" data-testid="hotkey-hint">{{ t('hotkey.hint') }}</p>
   </section>
 </template>
 
 <style scoped>
-.hotkey-actions {
+.hotkey-section {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
+  flex-direction: column;
+  gap: 6px;
 }
-.hotkey-combo {
-  min-width: 84px;
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.hotkey-head h3 {
+  font-size: var(--text-md);
+  font-weight: 680;
+  color: var(--text);
+}
+.hotkey-head p {
+  margin-top: 2px;
+}
+.hotkey-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.hotkey-list.disabled {
+  opacity: 0.55;
+}
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 0;
+}
+.hotkey-row + .hotkey-row {
+  border-top: 1px solid var(--border);
+}
+.hotkey-label {
+  font-size: var(--text-md);
+  font-weight: 560;
+  color: var(--text);
+}
+.hotkey-row .field-error {
+  margin-top: 2px;
+}
+.hotkey-cap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 128px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--border-input);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.hotkey-cap.bound {
+  border-style: solid;
+  border-color: var(--border-input);
+  background: var(--sunken);
+  color: var(--text);
+  font-weight: 600;
+}
+.hotkey-cap:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.hotkey-cap.recording {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: hotkey-pulse 1.4s ease-in-out infinite;
+}
+.hotkey-cap:disabled {
+  cursor: not-allowed;
+}
+.hotkey-cap-text {
   font: inherit;
-  font-size: 12px;
-  text-align: center;
-  background: var(--surface-2, transparent);
+  white-space: nowrap;
+}
+.hotkey-clear-slot {
+  width: 28px;
+  flex: none;
 }
 .hotkey-note {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: flex-start;
-  padding: 0 20px 12px;
-  margin: 0;
+  margin: 2px 0 0;
+}
+.hotkey-note.warn {
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--fair-soft);
+  color: var(--fair-ink);
 }
 .hotkey-note span {
   flex: 1;
 }
-.setting-row.disabled {
-  opacity: 0.6;
+@keyframes hotkey-pulse {
+  50% {
+    box-shadow: 0 0 0 5px var(--accent-soft);
+  }
 }
-.recording {
-  color: var(--accent-ink, inherit);
+@media (prefers-reduced-motion: reduce) {
+  .hotkey-cap.recording {
+    animation: none;
+  }
 }
 </style>

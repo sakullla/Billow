@@ -157,18 +157,21 @@ const label = computed(() =>
 <template>
   <div class="chart-wrap">
     <!-- One header row: the legend, swapped for the hovered sample's readout, so nothing ever stacks. -->
-    <div class="chart-head" aria-hidden="true">
-      <div v-if="inspected" class="chart-readout mono" data-testid="chart-tooltip">
+    <div class="chart-head">
+      <div v-if="inspected" class="chart-readout mono" aria-hidden="true" data-testid="chart-tooltip">
         <span class="muted">{{ inspected.when }}</span>
         <span class="down">↓ {{ formatSpeed(inspected.downVal) }}</span>
         <span class="up">↑ {{ formatSpeed(inspected.upVal) }}</span>
       </div>
       <!-- Same order as the rate cards above: download first (R2). -->
-      <div v-else class="legend" data-testid="chart-legend">
+      <div v-else class="legend" aria-hidden="true" data-testid="chart-legend">
         <span class="legend-item down">{{ tr('下载') }}</span>
         <span class="legend-item up">{{ tr('上传') }}</span>
       </div>
-      <span v-if="!collecting && highest > 0" class="chart-peak" :title="tr('最近一分钟内的最高速率（下载或上传）')" data-testid="chart-peak"> {{ tr('峰值') }} {{ formatSpeed(highest) }}
+      <span class="chart-head-end">
+        <span v-if="!collecting && highest > 0" class="chart-peak" aria-hidden="true" :title="tr('最近一分钟内的最高速率（下载或上传）')" data-testid="chart-peak"> {{ tr('峰值') }} {{ formatSpeed(highest) }}
+        </span>
+        <slot name="head-end" />
       </span>
     </div>
     <div

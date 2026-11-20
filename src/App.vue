@@ -5,6 +5,7 @@ import CommandPalette from './components/CommandPalette.vue'
 import ConfigViewer from './components/ConfigViewer.vue'
 import DnsQueryDialog from './components/DnsQueryDialog.vue'
 import HotkeySection from './components/HotkeySection.vue'
+import BrandMark from './components/BrandMark.vue'
 import Icon from './components/Icon.vue'
 import Modal from './components/Modal.vue'
 import TitleBar from './components/TitleBar.vue'
@@ -29,7 +30,6 @@ import SettingsView from './views/SettingsView.vue'
 const props = defineProps<{ backend?: Backend; width?: number; chrome?: WindowChrome }>()
 /** Custom title bar on Windows (undecorated) and macOS (overlay traffic lights). */
 const chrome = props.chrome !== undefined ? props.chrome : detectChrome()
-const appIcon = `${import.meta.env.BASE_URL}icon.png`
 
 const store = createStore(props.backend ?? createBackend())
 provide(STORE, store)
@@ -240,9 +240,9 @@ function onTrayNavigate(target: string) {
   store.go(resolvePage(target))
 }
 
-function onPaletteSettings(tab: string) {
+function onPaletteSettings(tab: string, focus?: string) {
   paletteOpen.value = false
-  store.openSettings(tab as SettingsTab)
+  store.openSettings(tab as SettingsTab, focus)
 }
 
 function onPaletteProfile(id: string) {
@@ -502,7 +502,7 @@ watch(
   () => store.settingsTab.value,
   (next, prev) => {
     if (!compact.value || store.page.value !== 'settings' || !historyReady) return
-    if (prev === 'general' && next !== 'general') {
+    if (prev === 'home' && next !== 'home') {
       pageStack.push('settings')
       ensureGuard()
     }
@@ -515,7 +515,7 @@ provide('settingsBack', () => {
     window.history.back()
     return
   }
-  store.settingsTab.value = 'general'
+  store.settingsTab.value = 'home'
 })
 
 /** Layer depth is the single source of truth; never infer it from popstate state. */
@@ -536,8 +536,8 @@ function onPopState() {
   }
   const previous = pageStack.pop()
   backTo.value = pageStack[pageStack.length - 1] ?? null
-  if (previous === 'settings' && store.page.value === 'settings' && store.settingsTab.value !== 'general') {
-    store.settingsTab.value = 'general'
+  if (previous === 'settings' && store.page.value === 'settings' && store.settingsTab.value !== 'home') {
+    store.settingsTab.value = 'home'
     if (pageStack.length > 0 || layerDepth() > 0) ensureGuard()
     return
   }
@@ -613,7 +613,7 @@ defineExpose({ store })
       <!-- macOS: the traffic lights sit here; the strip still moves the window. -->
       <div v-if="chrome === 'macos'" class="sidebar-drag" data-tauri-drag-region />
       <div class="brand" :data-tauri-drag-region="chrome ? '' : undefined">
-        <span class="brand-mark"><img :src="appIcon" alt="" /></span>
+        <BrandMark />
         <span class="brand-name">Billow</span>
         <div class="brand-actions" @mousedown.stop>
           <button
@@ -813,17 +813,22 @@ defineExpose({ store })
       @close="store.dnsQueryOpen.value = false"
     />
 
-    <Modal v-if="helpOpen" :title="tr('快捷键')" :subtitle="tr('在应用内生效，输入框会保留自己的按键')" @close="helpOpen = false">
-      <dl class="shortcut-list">
-        <div v-for="shortcut in SHORTCUTS" :key="shortcut.id" class="shortcut-row">
-          <dt><kbd class="palette-kbd">{{ shortcutKeyLabel(shortcut.combo) }}</kbd></dt>
-          <dd>
-            <strong>{{ shortcut.label }}</strong>
-            <p class="muted small">{{ shortcut.description }}</p>
-          </dd>
-        </div>
-      </dl>
-      <HotkeySection v-if="!isAndroid" />
+    <Modal v-if="helpOpen" :title="tr('快捷键')" @close="helpOpen = false">
+      <div class="shortcut-sheet" :class="{ 'has-global': !isAndroid }">
+        <section class="shortcut-group">
+          <header class="shortcut-group-head">
+            <h3>{{ tr('应用内') }}</h3>
+            <p class="muted small">{{ tr('在应用内生效，输入框会保留自己的按键') }}</p>
+          </header>
+          <dl class="shortcut-list">
+            <div v-for="shortcut in SHORTCUTS" :key="shortcut.id" class="shortcut-row" :title="shortcut.description">
+              <dt><kbd class="palette-kbd">{{ shortcutKeyLabel(shortcut.combo) }}</kbd></dt>
+              <dd>{{ shortcut.label }}</dd>
+            </div>
+          </dl>
+        </section>
+        <HotkeySection v-if="!isAndroid" />
+      </div>
     </Modal>
 
     <Modal v-if="store.adding.value" :title="tr('添加配置')" :subtitle="tr('订阅链接或 Clash / Mihomo YAML 文件')" @close="store.adding.value = false">

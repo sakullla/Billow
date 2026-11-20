@@ -100,7 +100,7 @@ function close() {
 
 function follow(to: OverviewTarget) {
   close()
-  if (to.tab) store.openSettings(to.tab)
+  if (to.tab) store.openSettings(to.tab, to.focus)
   else store.go(to.page)
 }
 

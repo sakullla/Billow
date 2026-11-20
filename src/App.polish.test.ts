@@ -481,8 +481,10 @@ describe('UI/UX polish', () => {
       await body().findAll('.modal button').find((button) => button.text() === '保存')!.trigger('click')
       await settle(300)
       expect(storeOf(wrapper).snapshot.value.profiles[0]!.user_agent).toBe('')
-      await openPage(wrapper, 'settings')
+      storeOf(wrapper).openSettings('behavior')
+      await flushPromises()
       const global = wrapper.find('[data-testid="global-subscription-user-agent"]')
+      await global.trigger('focus')
       await global.setValue('global-client/3')
       await global.trigger('blur')
       await settle(300)
@@ -764,20 +766,23 @@ describe('UI/UX polish', () => {
       await body().find('[data-testid="cancel-editor"]').trigger('click')
       await flushPromises()
 
-      // Settings: Ctrl+S commits dirty proxy changes and clear-bypass empties the list.
+      // Settings editors: Ctrl+S saves the open dialog; clear-bypass empties the list.
       store.openSettings('proxy')
       await flushPromises()
-      await wrapper.find('[data-testid="add-default-bypass"]').trigger('click')
-      expect(wrapper.findAll('[data-testid="bypass-list"] li').length).toBeGreaterThan(0)
-      await wrapper.find('[data-testid="clear-bypass"]').trigger('click')
-      expect(wrapper.find('[data-testid="bypass-list"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="open-bypass"]').trigger('click')
+      await flushPromises()
+      await body().find('[data-testid="add-default-bypass"]').trigger('click')
+      expect(body().findAll('[data-testid="bypass-list"] li').length).toBeGreaterThan(0)
+      await body().find('[data-testid="clear-bypass"]').trigger('click')
+      expect(body().find('[data-testid="bypass-list"]').exists()).toBe(false)
 
-      await wrapper.find('[data-testid="proxy-host-input"]').setValue('127.0.0.2')
-      expect(wrapper.find('[data-testid="save-proxy"]').exists()).toBe(true)
+      await body().find('[data-testid="bypass-add-input"]').setValue('*.corp.internal')
+      await body().find('[data-testid="bypass-add-btn"]').trigger('click')
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }))
       await settle(400)
       expect(saveSpy).toHaveBeenCalled()
-      expect(store.snapshot.value.settings.system_proxy.host).toBe('127.0.0.2')
+      expect(store.snapshot.value.settings.system_proxy.bypass).toEqual(['*.corp.internal'])
+      expect(body().find('[data-testid="save-bypass"]').exists()).toBe(false)
     })
 
     it('resolves nested group latency on Home & Proxies and uses full-width mobile group rows', async () => {

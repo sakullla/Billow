@@ -142,7 +142,7 @@ describe('T8 Latin demo', () => {
     const wrapper = await mountApp({})
     const store = (wrapper.vm as unknown as { store: any }).store
     store.go('settings')
-    store.settingsTab.value = 'general'
+    store.settingsTab.value = 'backup'
     await settle(20)
     await wrapper.find('[data-testid="open-traffic-stats"]').trigger('click')
     await settle(120)

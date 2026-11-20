@@ -90,14 +90,15 @@ describe('TrafficStatsDialog (R43)', () => {
 
     await click('traffic-enable')
     expect(store.app.value?.traffic_history).toBe(true)
-    // Once the switch is on the controls and the (still empty) summary appear.
+    // Once the switch is on the controls appear, with an empty state instead of zero totals.
     expect(document.querySelector('[data-testid="traffic-off"]')).toBeNull()
-    expect(find('[data-testid="traffic-totals"]')).toBeTruthy()
+    expect(find('[data-testid="traffic-range"]')).toBeTruthy()
+    expect(document.querySelector('[data-testid="traffic-totals"]')).toBeNull()
     expect(find('[data-testid="traffic-empty"]').textContent).toContain('没有记录')
   })
 
   it('keeps earlier rows readable and clearable after recording is turned off', async () => {
-    const { cleared } = await setup(view({ enabled: false }))
+    const { cleared } = await setup(view({ enabled: false, from: '2026-11-14' }))
     // The off banner names the switch, but the rows are still there (R43).
     expect(find('[data-testid="traffic-off"]').textContent).toContain('未开启流量记录')
     expect(document.querySelectorAll('[data-testid="traffic-row"]').length).toBe(3)
@@ -114,7 +115,7 @@ describe('TrafficStatsDialog (R43)', () => {
   })
 
   it('groups the same rows by profile, group or node and keeps the totals', async () => {
-    await setup(view())
+    await setup(view({ from: '2026-11-14' }))
     // Default grouping: by profile, with DIRECT bytes on their own 直连 row.
     const profileRows = () => [...document.querySelectorAll<HTMLElement>('[data-testid="traffic-row"]')]
     expect(profileRows().map((row) => row.dataset.key)).toEqual([
@@ -148,6 +149,12 @@ describe('TrafficStatsDialog (R43)', () => {
     await flushPromises()
     expect(profileRows().map((row) => row.dataset.key)).toContain('group:节点选择')
     expect(profileRows().map((row) => row.dataset.key)).toContain('group:direct')
+  })
+
+  it('skips the daily chart for a one-day range, where there is nothing to compare', async () => {
+    await setup(view())
+    expect(document.querySelectorAll('[data-testid="traffic-row"]').length).toBe(3)
+    expect(document.querySelector('[data-testid="traffic-daily-bars"]')).toBeNull()
   })
 
   it('switches ranges, keeps custom inside the retention window and clears everything', async () => {

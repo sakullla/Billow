@@ -1,6 +1,7 @@
 <script setup lang="ts">import { tr } from '../lib/i18n'
 
 import { computed } from 'vue'
+import BrandMark from './BrandMark.vue'
 import Icon from './Icon.vue'
 import { useStore } from '../lib/store'
 
@@ -11,7 +12,6 @@ const store = useStore()
 const update = store.appUpdate
 const status = update.status
 const offer = update.offer
-const appIcon = `${import.meta.env.BASE_URL}icon.png`
 const percent = computed(() => update.total.value
   ? Math.min(100, Math.round(update.downloaded.value / update.total.value * 100)) : null)
 const description = computed(() => {
@@ -29,7 +29,7 @@ const description = computed(() => {
 <template>
   <div v-if="variant === 'row'" class="update-row" data-testid="app-update">
     <div class="nav-row static">
-      <span class="brand-mark nav-row-brand"><img :src="appIcon" alt="" /></span>
+      <BrandMark class="nav-row-brand" />
       <div class="grow min0" aria-live="polite">
         <span class="nav-row-title">Billow <span class="muted mono update-version">v{{ store.app.value?.version ?? '—' }}</span></span>
         <p class="small" :class="offer || status === 'ready' ? 'update-fresh' : 'muted'">{{ description }}</p>

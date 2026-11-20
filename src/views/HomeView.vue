@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import ChainPath from '../components/ChainPath.vue'
+import BrandMark from '../components/BrandMark.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
@@ -28,7 +29,6 @@ import { t, tr } from '../lib/i18n'
 import type { Mode, NodeGroup, ProfileItem } from '../lib/types'
 
 defineProps<{ compact?: boolean }>()
-const appIcon = `${import.meta.env.BASE_URL}icon.png`
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const profile = computed(() => store.current.value)
@@ -197,10 +197,10 @@ const expireDays = computed(() => (profile.value?.expire ? daysLeft(profile.valu
 
 /** Home failure banner: the store owns it so a retry clears it even when the backend keeps the reason. */
 const failureText = computed(() => store.lastActionError.value)
-const failureSettingsAction = computed<{ label: string; tab: 'kernel' | 'tun' } | null>(() => {
+const failureSettingsAction = computed<{ label: string; tab: 'network' | 'tun'; focus?: string } | null>(() => {
   if (!failureText.value) return null
   const hint = snap.value.failure_hint
-  if (hint === 'port') return { get label() { return tr('更换端口') }, tab: 'kernel' }
+  if (hint === 'port') return { get label() { return tr('更换端口') }, tab: 'network', focus: 'mixed-port' }
   if (hint === 'tun') return { get label() { return tr('TUN 设置') }, tab: 'tun' }
   return null
 })
@@ -347,7 +347,7 @@ onBeforeUnmount(() => {
         type="button"
         class="btn ghost sm"
         data-testid="failure-open-settings"
-        @click="store.openSettings(failureSettingsAction.tab)"
+        @click="store.openSettings(failureSettingsAction.tab, failureSettingsAction.focus)"
       >
         {{ failureSettingsAction.label }}
       </button>
@@ -371,7 +371,7 @@ onBeforeUnmount(() => {
       @drop.prevent="onWelcomeDrop"
     >
       <div class="welcome-emblem">
-        <span class="brand-mark lg"><img :src="appIcon" alt="" /></span>
+        <BrandMark size="lg" />
       </div>
       <h1 class="status-word" data-testid="status">{{ tr('欢迎使用 Billow') }}</h1>
       <p class="hero-sub muted">{{ tr('轻量、纯净的现代网络代理客户端，导入一份配置即可开始') }}</p>
@@ -504,18 +504,19 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="snap.connected" class="hero-chart" data-testid="traffic-card">
-          <!-- The stats dialog opens from the traffic area and the settings section (R43). -->
-          <div class="hero-chart-head">
-            <button type="button" class="btn ghost sm" data-testid="open-traffic-stats" @click="store.openTrafficStats">
-              <Icon name="activity" :size="13" />{{ t('settings.traffic.open') }}
-            </button>
-          </div>
           <TrafficChart
             :up="store.traffic.value.up"
             :down="store.traffic.value.down"
             :height="compact ? 52 : 84"
             :collecting="store.trafficSamples.value < MIN_CHART_SAMPLES"
-          />
+          >
+            <!-- History lives one click away from the live chart, but only once recording is on (R43). -->
+            <template v-if="store.app.value?.traffic_history" #head-end>
+              <button type="button" class="chart-link" data-testid="open-traffic-stats" @click="store.openTrafficStats">
+                {{ t('settings.traffic.open') }}<Icon name="chevron-right" :size="12" />
+              </button>
+            </template>
+          </TrafficChart>
         </div>
 
         <dl v-if="snap.connected && runtime.length" class="runtime" data-testid="runtime">
@@ -700,52 +701,59 @@ onBeforeUnmount(() => {
           </section>
 
           <!-- Exit IP (R40): absent while auto-query is off, so nothing is requested. -->
-          <section v-if="store.autoExitIp.value" class="card" data-testid="exit-ip-card">
+          <section v-if="store.autoExitIp.value" class="card exit-ip-card" :class="{ stale: store.exitIpStale.value }" data-testid="exit-ip-card">
             <header class="card-head">
-              <h2>{{ t('exitIp.title') }}</h2>
-              <div class="card-head-actions">
-                <span v-if="store.exitIpStale.value" class="tag sm warn" data-testid="exit-ip-stale">
-                  {{ t('exitIp.changed') }}
-                </span>
-                <button
-                  v-if="store.exitIp.value"
-                  type="button"
-                  class="btn ghost sm"
-                  :disabled="!snap.connected || store.exitIpBusy.value"
-                  data-testid="exit-ip-refresh"
-                  @click="store.queryExitIp()"
-                >
-                  <span v-if="store.exitIpBusy.value" class="spinner xs" aria-hidden="true" />
-                  <Icon v-else name="refresh" :size="14" />
-                  {{ store.exitIpBusy.value ? t('exitIp.querying') : t('exitIp.refresh') }}
-                </button>
-              </div>
+              <h2>
+                {{ t('exitIp.title') }}
+                <span v-if="store.exitIpStale.value" class="tag sm warn" data-testid="exit-ip-stale">{{ t('exitIp.changed') }}</span>
+              </h2>
+              <button
+                v-if="store.exitIp.value"
+                type="button"
+                class="btn ghost sm"
+                :class="{ 'accent-text': store.exitIpStale.value }"
+                :disabled="!snap.connected || store.exitIpBusy.value"
+                :aria-busy="store.exitIpBusy.value || undefined"
+                data-testid="exit-ip-refresh"
+                @click="store.queryExitIp()"
+              >
+                <span v-if="store.exitIpBusy.value" class="spinner xs" aria-hidden="true" />
+                <Icon v-else name="refresh" :size="14" />
+                {{ store.exitIpBusy.value ? t('exitIp.querying') : t('exitIp.refresh') }}
+              </button>
             </header>
-            <div v-if="store.exitIp.value" class="sub-head" data-testid="exit-ip-result">
+            <div v-if="store.exitIp.value" class="sub-head exit-ip-result" data-testid="exit-ip-result">
               <span class="sub-icon"><Icon name="globe" /></span>
               <div class="grow min0">
-                <strong class="mono" data-testid="exit-ip-value">{{ store.exitIp.value.ip }}</strong>
-                <p class="muted small" data-testid="exit-ip-region">
-                  {{ t('exitIp.region', { region: store.exitIp.value.region || '—' }) }}
+                <button
+                  type="button"
+                  class="exit-ip-value mono"
+                  :title="t('exitIp.copy')"
+                  data-testid="exit-ip-copy"
+                  @click="store.copyText(store.exitIp.value.ip, t('exitIp.copied'))"
+                >
+                  <span data-testid="exit-ip-value">{{ store.exitIp.value.ip }}</span><Icon name="copy" :size="12" class="exit-ip-copy-icon" />
+                </button>
+                <p class="muted small ellipsis exit-ip-line">
+                  <span data-testid="exit-ip-region" :title="t('exitIp.region', { region: store.exitIp.value.region || '—' })">{{ store.exitIp.value.region || '—' }}</span>
+                  <span aria-hidden="true"> · </span>
+                  <span data-testid="exit-ip-isp" :title="t('exitIp.isp', { isp: store.exitIp.value.isp || '—' })">{{ store.exitIp.value.isp || '—' }}</span>
                 </p>
               </div>
             </div>
-            <p v-if="store.exitIp.value" class="muted small" data-testid="exit-ip-isp">
-              {{ t('exitIp.isp', { isp: store.exitIp.value.isp || '—' }) }}
-            </p>
-            <p v-if="store.exitIp.value" class="muted small" data-testid="exit-ip-meta">
+            <p v-if="store.exitIp.value" class="muted small exit-ip-meta" data-testid="exit-ip-meta">
               {{ t('exitIp.meta', { service: store.exitIp.value.service, time: formatClock(store.exitIp.value.time_ms) }) }}
             </p>
-            <p v-if="store.exitIpError.value" class="field-error" role="alert" data-testid="exit-ip-error">
+            <p v-if="store.exitIpError.value" class="field-error small exit-ip-note" role="alert" data-testid="exit-ip-error">
               <Icon name="alert" :size="13" />{{ tr(store.exitIpError.value) }}
             </p>
-            <p v-if="!snap.connected" class="muted small" data-testid="exit-ip-offline">
+            <p v-if="!snap.connected" class="muted small exit-ip-note" data-testid="exit-ip-offline">
               {{ t('exitIp.offline') }}
             </p>
             <button
               v-if="!store.exitIp.value"
               type="button"
-              class="btn sm block"
+              class="btn sm block exit-ip-query"
               :disabled="!snap.connected || store.exitIpBusy.value"
               :aria-busy="store.exitIpBusy.value || undefined"
               data-testid="exit-ip-query"
@@ -949,10 +957,69 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* The stats entry sits above the live chart so it does not compete with the rates. */
-.hero-chart-head {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 4px;
+.exit-ip-result {
+  margin-bottom: 0;
+}
+
+.exit-ip-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  font-size: var(--text-lg);
+  font-weight: 650;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0 4px;
+  margin: 0 -4px;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.exit-ip-value > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exit-ip-value:hover {
+  background: var(--hover);
+}
+
+.exit-ip-copy-icon {
+  flex: none;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.exit-ip-value:hover .exit-ip-copy-icon,
+.exit-ip-value:focus-visible .exit-ip-copy-icon {
+  opacity: 1;
+}
+
+.exit-ip-line {
+  margin-top: 2px;
+}
+
+.exit-ip-card.stale .exit-ip-value,
+.exit-ip-card.stale .exit-ip-line {
+  opacity: 0.6;
+}
+
+.exit-ip-meta {
+  margin-top: 10px;
+  font-size: var(--text-xs);
+}
+
+.exit-ip-note {
+  margin-top: 8px;
+}
+
+.exit-ip-query {
+  margin-top: 10px;
+}
+
+.accent-text {
+  color: var(--accent-ink);
 }
 </style>

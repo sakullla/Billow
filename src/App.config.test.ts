@@ -35,13 +35,30 @@ type Wrapper = Awaited<ReturnType<typeof mountApp>>['wrapper']
 const body = () => new DOMWrapper(document.body)
 const storeOf = (wrapper: Wrapper) => (wrapper.vm as unknown as { store: Store }).store
 
-async function openKernelSettings(wrapper: Wrapper) {
-  storeOf(wrapper).openSettings('kernel')
+async function openPane(wrapper: Wrapper, tab: Parameters<Store['openSettings']>[0]) {
+  storeOf(wrapper).openSettings(tab)
+  await flushPromises()
+}
+
+const openKernelSettings = (wrapper: Wrapper) => openPane(wrapper, 'kernel')
+
+/** Opens an editor dialog from its settings row; the dialog renders into <body>. */
+async function openEditor(wrapper: Wrapper, testid: string) {
+  await wrapper.find(`[data-testid="${testid}"]`).trigger('click')
   await flushPromises()
 }
 
 function rowWith(wrapper: Wrapper, title: string) {
-  return wrapper.findAll('.setting-row').find((row) => row.find('strong').text().startsWith(title))!
+  return wrapper.findAll('.srow').find((row) => row.find('.srow-title').exists() && row.find('.srow-title').text().startsWith(title))!
+}
+
+/** 全部跟随配置 lives on the kernel page behind a confirmation. */
+async function resetAllOverrides(wrapper: Wrapper) {
+  await openKernelSettings(wrapper)
+  await wrapper.find('[data-testid="reset-overrides"]').trigger('click')
+  await flushPromises()
+  await body().find('[data-testid="confirm-reset-overrides"]').trigger('click')
+  await settle(400)
 }
 
 async function pickSelect(wrapper: Wrapper, selector: string, value: string) {
@@ -63,10 +80,11 @@ afterEach(() => {
 describe('effective config viewer', () => {
   it('R22: opens from kernel settings with each value labelled by where it comes from', async () => {
     const { wrapper } = await mountApp()
-    await openKernelSettings(wrapper)
+    await openPane(wrapper, 'network')
     await rowWith(wrapper, '局域网连接').find('[role="switch"]').trigger('click')
     await settle(400)
 
+    await openKernelSettings(wrapper)
     await wrapper.find('[data-testid="settings-open-config"]').trigger('click')
     await settle(300)
     const lan = body().find('.cfg-row[data-path="allow-lan"]')
@@ -134,8 +152,9 @@ describe('effective config viewer', () => {
 describe('LAN sharing', () => {
   it('R23: stays out of sight until 局域网连接 is on, then shows where to point other devices', async () => {
     const { wrapper } = await mountApp()
-    await openKernelSettings(wrapper)
+    await openPane(wrapper, 'network')
     expect(wrapper.find('[data-testid="lan-block"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-lan-access"]').exists()).toBe(false)
 
     await rowWith(wrapper, '局域网连接').find('[role="switch"]').trigger('click')
     await settle(400)
@@ -144,58 +163,64 @@ describe('LAN sharing', () => {
 
   it('R23: saves a user and an allow-list, and refuses half-filled or unreadable input', async () => {
     const { wrapper, saved } = await mountApp()
-    await openKernelSettings(wrapper)
+    await openPane(wrapper, 'network')
     await rowWith(wrapper, '局域网连接').find('[role="switch"]').trigger('click')
     await settle(400)
     const before = saved.length
+    await openEditor(wrapper, 'open-lan-access')
 
-    await wrapper.find('[data-testid="lan-user"]').setValue('alice')
-    await wrapper.find('[data-testid="save-lan"]').trigger('click')
+    await body().find('[data-testid="lan-user"]').setValue('alice')
+    await body().find('[data-testid="save-lan"]').trigger('click')
     await flushPromises()
     expect(saved.length).toBe(before)
-    expect(body().findAll('.toast').map((toast) => toast.text()).join('\n')).toContain('用户名和密码需要同时填写')
+    expect(body().find('[data-testid="lan-error"]').text()).toContain('用户名和密码需要同时填写')
 
-    await wrapper.find('[data-testid="lan-pass"]').setValue('s3cret')
-    await wrapper.find('[data-testid="lan-ips"]').setValue('192.168.1.0/24, phone')
-    await wrapper.find('[data-testid="save-lan"]').trigger('click')
+    await body().find('[data-testid="lan-pass"]').setValue('s3cret')
+    await body().find('[data-testid="lan-ips"]').setValue('192.168.1.0/24, phone')
+    await body().find('[data-testid="save-lan"]').trigger('click')
     await flushPromises()
     expect(saved.length).toBe(before)
     expect(body().text()).toContain('无法识别「phone」')
 
-    await wrapper.find('[data-testid="lan-ips"]').setValue('192.168.1.0/24，10.0.0.8')
-    await wrapper.find('[data-testid="save-lan"]').trigger('click')
+    await body().find('[data-testid="lan-ips"]').setValue('192.168.1.0/24，10.0.0.8')
+    await body().find('[data-testid="save-lan"]').trigger('click')
     await settle(400)
     const last = saved[saved.length - 1]!
     expect(last.lan_auth).toEqual(['alice:s3cret'])
     expect(last.lan_allowed_ips).toEqual(['192.168.1.0/24', '10.0.0.8'])
-    expect(wrapper.find('[data-testid="save-lan"]').exists()).toBe(false)
-    expect(wrapper.find('.lan-label .tag').text()).toBe('已开启')
+    expect(body().find('[data-testid="save-lan"]').exists()).toBe(false)
+    expect(rowWith(wrapper, '访问控制').find('.srow-badge').text()).toBe('已开启')
+    expect(rowWith(wrapper, '访问控制').text()).toContain('需要密码 · 限 2 个地址')
   })
 
   it('R23: 撤销 restores the saved values', async () => {
-    const { wrapper } = await mountApp()
-    await openKernelSettings(wrapper)
+    const { wrapper, saved } = await mountApp()
+    await openPane(wrapper, 'network')
     await rowWith(wrapper, '局域网连接').find('[role="switch"]').trigger('click')
     await settle(400)
-    await wrapper.find('[data-testid="lan-ips"]').setValue('10.0.0.0/8')
-    await wrapper.find('[data-testid="undo-lan"]').trigger('click')
+    const before = saved.length
+    await openEditor(wrapper, 'open-lan-access')
+    await body().find('[data-testid="lan-ips"]').setValue('10.0.0.0/8')
+    await body().find('[data-testid="undo-lan"]').trigger('click')
     await flushPromises()
-    expect((wrapper.find('[data-testid="lan-ips"]').element as HTMLInputElement).value).toBe('')
-    expect(wrapper.find('[data-testid="save-lan"]').exists()).toBe(false)
+    expect(body().find('[data-testid="save-lan"]').exists()).toBe(false)
+    expect(saved.length).toBe(before)
+    await openEditor(wrapper, 'open-lan-access')
+    expect((body().find('[data-testid="lan-ips"]').element as HTMLInputElement).value).toBe('')
   })
 })
 
 describe('options aligned with mihomo v1.19.34', () => {
   it('R24: TCP keep-alive follows the profile until chosen, and stays off the phone', async () => {
     const { wrapper, saved } = await mountApp()
-    await openKernelSettings(wrapper)
+    await openPane(wrapper, 'network')
     expect(wrapper.text()).not.toContain('TLS 客户端指纹')
     expect(rowWith(wrapper, 'TCP 保活').text()).toContain('配置未设置，默认 15 秒')
 
     await pickSelect(wrapper, '[data-testid="keep-alive-select"]', '0')
     await settle(400)
     expect(saved[saved.length - 1]!.keep_alive_interval).toBe(0)
-    expect(rowWith(wrapper, 'TCP 保活').find('.tag').text()).toBe('已覆盖')
+    expect(rowWith(wrapper, 'TCP 保活').find('.srow-badge').text()).toBe('已覆盖')
 
     await pickSelect(wrapper, '[data-testid="keep-alive-select"]', '')
     await settle(400)
@@ -204,18 +229,16 @@ describe('options aligned with mihomo v1.19.34', () => {
     // 全部跟随配置 clears the newer options too.
     await pickSelect(wrapper, '[data-testid="keep-alive-select"]', '60')
     await settle(400)
-    const reset = wrapper.findAll('button').find((button) => button.text() === '全部跟随配置')!
-    await reset.trigger('click')
-    await settle(400)
+    await resetAllOverrides(wrapper)
     const last = saved[saved.length - 1]!
     expect(last.keep_alive_interval).toBeNull()
     expect(last.lan_auth).toEqual([])
 
     const phone = await mountApp({ platform: 'android' }, 390)
-    storeOf(phone.wrapper).openSettings('kernel')
+    storeOf(phone.wrapper).openSettings('network')
     await flushPromises()
     expect(phone.wrapper.find('[data-testid="keep-alive-select"]').exists()).toBe(false)
-    expect(phone.wrapper.find('.settings-fold summary').text()).not.toContain('保活')
+    expect(phone.wrapper.text()).not.toContain('保活')
   })
 
   it('R25: GEO files load low-memory by default and the loader can be pinned', async () => {
@@ -264,11 +287,8 @@ describe('options aligned with mihomo v1.19.34', () => {
     const mode = wrapper.find('[data-testid="dns-filter-mode"]')
     expect(mode.exists()).toBe(true)
     await mode.find('[data-value="rule"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.text()).toContain('MATCH,fake-ip')
-    const save = wrapper.findAll('button').find((button) => button.text() === '保存' && !button.attributes('disabled'))!
-    await save.trigger('click')
     await settle(400)
+    expect(wrapper.text()).toContain('MATCH,fake-ip')
     expect(saved[saved.length - 1]!.dns.fake_ip_filter_mode).toBe('rule')
   })
 })
@@ -282,18 +302,19 @@ describe('batch editors', () => {
   it('keeps batch-edited DNS policies when switching back to the list, including YAML and #suffix servers', async () => {
     const { wrapper, saved } = await mountApp()
     await openDns(wrapper)
-    await wrapper.find('[data-testid="toggle-policy-batch"]').trigger('click')
-    await wrapper.find('[data-testid="policy-batch-textarea"]').setValue(
+    await openEditor(wrapper, 'open-dns-policy')
+    await body().find('[data-testid="toggle-policy-batch"]').trigger('click')
+    await body().find('[data-testid="policy-batch-textarea"]').setValue(
       "+.corp.example = 180.76.76.76, 223.5.5.5\n'+.e6yun.com': [180.76.76.76]\ngeosite:cn = https://doh.pub/dns-query#DIRECT # note",
     )
-    await wrapper.find('[data-testid="toggle-policy-batch"]').trigger('click')
-    const values = wrapper.findAll('[data-testid="policy-list"] input').map((input) => (input.element as HTMLInputElement).value)
+    await body().find('[data-testid="toggle-policy-batch"]').trigger('click')
+    const values = body().findAll('[data-testid="policy-list"] input').map((input) => (input.element as HTMLInputElement).value)
     expect(values).toEqual([
       '+.corp.example', '180.76.76.76, 223.5.5.5',
       '+.e6yun.com', '180.76.76.76',
       'geosite:cn', 'https://doh.pub/dns-query#DIRECT',
     ])
-    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    await body().find('[data-testid="save-dns-policy"]').trigger('click')
     await settle(400)
     expect(saved.at(-1)?.dns.nameserver_policy['+.e6yun.com']).toEqual(['180.76.76.76'])
   })
@@ -301,21 +322,23 @@ describe('batch editors', () => {
   it('refuses to leave batch mode while a line cannot be read', async () => {
     const { wrapper } = await mountApp()
     await openDns(wrapper)
-    await wrapper.find('[data-testid="toggle-policy-batch"]').trigger('click')
-    await wrapper.find('[data-testid="policy-batch-textarea"]').setValue('+.ok.com = 1.1.1.1\n+.missing.com')
-    expect(wrapper.find('[data-testid="policy-batch-invalid"]').text()).toContain('第 2 行')
-    await wrapper.find('[data-testid="toggle-policy-batch"]').trigger('click')
-    expect(wrapper.find('[data-testid="policy-batch-textarea"]').exists()).toBe(true)
+    await openEditor(wrapper, 'open-dns-policy')
+    await body().find('[data-testid="toggle-policy-batch"]').trigger('click')
+    await body().find('[data-testid="policy-batch-textarea"]').setValue('+.ok.com = 1.1.1.1\n+.missing.com')
+    expect(body().find('[data-testid="policy-batch-invalid"]').text()).toContain('第 2 行')
+    await body().find('[data-testid="toggle-policy-batch"]').trigger('click')
+    expect(body().find('[data-testid="policy-batch-textarea"]').exists()).toBe(true)
   })
 
   it('keeps batch-edited bypass entries when switching back to the list', async () => {
     const { wrapper } = await mountApp()
     storeOf(wrapper).openSettings('proxy')
     await flushPromises()
-    await wrapper.find('[data-testid="toggle-bypass-batch"]').trigger('click')
-    await wrapper.find('[data-testid="bypass-batch-textarea"]').setValue('localhost\ng7e6ai.com;*.corp.local')
-    await wrapper.find('[data-testid="toggle-bypass-batch"]').trigger('click')
-    expect(wrapper.findAll('[data-testid="bypass-list"] li').map((item) => item.text())).toEqual(['localhost', 'g7e6ai.com', '*.corp.local'])
+    await openEditor(wrapper, 'open-bypass')
+    await body().find('[data-testid="toggle-bypass-batch"]').trigger('click')
+    await body().find('[data-testid="bypass-batch-textarea"]').setValue('localhost\ng7e6ai.com;*.corp.local')
+    await body().find('[data-testid="toggle-bypass-batch"]').trigger('click')
+    expect(body().findAll('[data-testid="bypass-list"] li').map((item) => item.text())).toEqual(['localhost', 'g7e6ai.com', '*.corp.local'])
   })
 })
 
@@ -360,16 +383,20 @@ describe('TUN route addresses (R32)', () => {
   it('saves 不走 TUN 的地址 into the running config, refuses an unreadable entry and is cleared by both resets', async () => {
     const { wrapper, backend, saved } = await mountApp()
     await openTun(wrapper)
-    const exclude = () => wrapper.find('textarea[data-testid="tun-route-exclude-address"]')
-    expect(exclude().exists()).toBe(true)
-    expect(wrapper.find('textarea[data-testid="tun-route-address"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="open-tun-route-exclude"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="open-tun-route-include"]').exists()).toBe(true)
+    const editExclude = async (value: string) => {
+      await openEditor(wrapper, 'open-tun-route-exclude')
+      await body().find('[data-testid="tun-route-exclude-address-input"]').setValue(value)
+      await body().find('[data-testid="tun-route-exclude-address-save"]').trigger('click')
+      await settle(400)
+    }
 
-    await exclude().setValue('192.168.0.0/16')
-    await wrapper.find('[data-testid="save-tun"]').trigger('click')
-    await settle(400)
+    await editExclude('192.168.0.0/16')
     expect(saved.at(-1)!.tun.route_exclude_address).toEqual(['192.168.0.0/16'])
     expect(saved.at(-1)!.tun.route_address).toBeNull()
-    expect(rowWith(wrapper, '不走 TUN 的地址').find('.tag').text()).toBe('已覆盖')
+    expect(rowWith(wrapper, '不走 TUN 的地址').find('.srow-badge').text()).toBe('已覆盖')
+    expect(rowWith(wrapper, '不走 TUN 的地址').text()).toContain('192.168.0.0/16')
     const overview = await overviewOf(backend)
     expect((overview.effective.tun as Record<string, unknown>)['route-exclude-address']).toEqual(['192.168.0.0/16'])
     storeOf(wrapper).openConfig('overview')
@@ -380,32 +407,27 @@ describe('TUN route addresses (R32)', () => {
     await body().find('.modal-foot .btn.primary').trigger('click')
     await flushPromises()
 
+    // An unreadable entry keeps the dialog open and names the line.
     const count = saved.length
-    await exclude().setValue('300.1.1.0/24')
-    await wrapper.find('[data-testid="save-tun"]').trigger('click')
-    await settle(400)
+    await editExclude('300.1.1.0/24')
     expect(saved.length).toBe(count)
-    expect(wrapper.find('[data-testid="tun-error"]').text()).toContain('「300.1.1.0/24」')
+    expect(body().find('[data-testid="tun-route-exclude-address-error"]').text()).toContain('「300.1.1.0/24」')
     const unchanged = await overviewOf(backend)
     expect((unchanged.effective.tun as Record<string, unknown>)['route-exclude-address']).toEqual(['192.168.0.0/16'])
-
-    // TUN 恢复默认 clears the draft; saving drops the override.
-    const restore = wrapper.findAll('button').find((button) => button.text() === '恢复默认')!
-    await restore.trigger('click')
+    await body().find('[data-testid="editor-cancel"]').trigger('click')
     await flushPromises()
-    expect((exclude().element as HTMLTextAreaElement).value).toBe('')
-    await wrapper.find('[data-testid="save-tun"]').trigger('click')
+
+    // TUN 恢复默认 drops the override.
+    await wrapper.find('[data-testid="reset-tun"]').trigger('click')
+    await flushPromises()
+    await body().find('[data-testid="confirm-reset-tun"]').trigger('click')
     await settle(400)
     expect(saved.at(-1)!.tun.route_exclude_address).toBeNull()
 
     // 全部跟随配置 on the kernel page clears it too.
-    await exclude().setValue('10.0.0.0/8')
-    await wrapper.find('[data-testid="save-tun"]').trigger('click')
-    await settle(400)
+    await editExclude('10.0.0.0/8')
     expect(saved.at(-1)!.tun.route_exclude_address).toEqual(['10.0.0.0/8'])
-    await openKernelSettings(wrapper)
-    await wrapper.findAll('button').find((button) => button.text() === '全部跟随配置')!.trigger('click')
-    await settle(400)
+    await resetAllOverrides(wrapper)
     expect(saved.at(-1)!.tun.route_exclude_address).toBeNull()
     expect(saved.at(-1)!.tun.route_address).toBeNull()
   })
@@ -413,8 +435,8 @@ describe('TUN route addresses (R32)', () => {
   it('stays out of sight on Android', async () => {
     const { wrapper } = await mountApp({ platform: 'android' }, 390)
     await openTun(wrapper)
-    expect(wrapper.find('[data-testid="tun-route-exclude-address"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="tun-route-address"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-tun-route-exclude"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-tun-route-include"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('不走 TUN 的地址')
   })
 })
@@ -422,33 +444,37 @@ describe('TUN route addresses (R32)', () => {
 describe('sniffer details (R33)', () => {
   it('shows the profile value while following, and a fold with per-protocol ports only while sniffing is on', async () => {
     const { wrapper, backend, saved } = await mountApp()
-    await openKernelSettings(wrapper)
+    await openPane(wrapper, 'behavior')
     // The demo profile enables sniffing, so following it shows the switch on.
     expect(rowWith(wrapper, '域名嗅探').find('[role="switch"]').attributes('aria-checked')).toBe('true')
     expect(wrapper.find('[data-testid="sniff-advanced"]').exists()).toBe(true)
-    expect(rowWith(wrapper, 'TLS 端口').text()).toContain('配置中为 443')
+    await openEditor(wrapper, 'sniff-advanced')
+    const tls = () => body().find('[data-testid="sniff-ports-tls"]')
+    // Following the profile shows its value as the placeholder.
+    expect(tls().attributes('placeholder')).toBe('443')
 
-    await wrapper.find('[data-testid="sniff-ports-tls"]').setValue('443,8443')
-    await wrapper.find('[data-testid="save-sniff"]').trigger('click')
+    await tls().setValue('443,8443')
+    await body().find('[data-testid="save-sniff"]').trigger('click')
     await settle(400)
     expect(saved.at(-1)!.sniff_ports).toEqual({ http: null, tls: ['443', '8443'], quic: null })
-    expect(rowWith(wrapper, 'TLS 端口').find('.tag').text()).toBe('已覆盖')
+    expect(rowWith(wrapper, '嗅探选项').text()).toContain('已自定义')
     const overview = await overviewOf(backend)
     const sniff = (overview.effective.sniffer as { sniff: Record<string, { ports: unknown }> }).sniff
     expect(sniff.TLS!.ports).toEqual([443, 8443])
     expect(sniff.HTTP!.ports).toEqual([80])
 
     const count = saved.length
-    await wrapper.find('[data-testid="sniff-ports-tls"]').setValue('70000')
-    await wrapper.find('[data-testid="save-sniff"]').trigger('click')
+    await openEditor(wrapper, 'sniff-advanced')
+    await tls().setValue('70000')
+    await body().find('[data-testid="save-sniff"]').trigger('click')
     await settle(400)
     expect(saved.length).toBe(count)
-    expect(wrapper.find('[data-testid="sniff-error"]').text()).toContain('「70000」')
+    expect(body().find('[data-testid="sniff-error"]').text()).toContain('「70000」')
     expect(((await overviewOf(backend)).effective.sniffer as { sniff: Record<string, { ports: unknown }> }).sniff.TLS!.ports).toEqual([443, 8443])
-    await wrapper.find('[data-testid="undo-sniff"]').trigger('click')
+    await body().find('[data-testid="undo-sniff"]').trigger('click')
     await flushPromises()
 
-    // Off hides the fold but keeps what was saved, so turning it back on restores the ports.
+    // Off hides the options but keeps what was saved, so turning it back on restores the ports.
     await rowWith(wrapper, '域名嗅探').find('[role="switch"]').trigger('click')
     await settle(400)
     expect(saved.at(-1)!.sniffer).toBe(false)
@@ -457,25 +483,31 @@ describe('sniffer details (R33)', () => {
     expect((await overviewOf(backend)).effective.sniffer).toEqual({ enable: false })
     await rowWith(wrapper, '域名嗅探').find('[role="switch"]').trigger('click')
     await settle(400)
-    expect((wrapper.find('[data-testid="sniff-ports-tls"]').element as HTMLInputElement).value).toBe('443, 8443')
+    await openEditor(wrapper, 'sniff-advanced')
+    expect((tls().element as HTMLInputElement).value).toBe('443, 8443')
+    await body().find('[data-testid="undo-sniff"]').trigger('click')
+    await flushPromises()
 
     // 全部跟随配置 clears the details along with the switch.
-    await wrapper.findAll('button').find((button) => button.text() === '全部跟随配置')!.trigger('click')
-    await settle(400)
+    await resetAllOverrides(wrapper)
     expect(saved.at(-1)!.sniffer).toBeNull()
     expect(saved.at(-1)!.sniff_ports).toEqual({ http: null, tls: null, quic: null })
   })
 })
 
 describe('extra listeners, outbound interface and routing mark (R34)', () => {
+  const net = (testid: string) => body().find(`[data-testid="${testid}"]`)
+
   it('saves a SOCKS port into the running config, lists it for LAN devices and refuses a clash with the mixed port', async () => {
     const { wrapper, backend, saved } = await mountApp()
-    await openKernelSettings(wrapper)
-    await wrapper.find('[data-testid="port-socks_port"]').setValue('7891')
-    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await openPane(wrapper, 'network')
+    await openEditor(wrapper, 'open-extra-ports')
+    await net('port-socks_port').setValue('7891')
+    await net('save-net').trigger('click')
     await settle(400)
     expect(saved.at(-1)!.socks_port).toBe(7891)
     expect((await overviewOf(backend)).effective['socks-port']).toBe(7891)
+    expect(rowWith(wrapper, '更多端口与出口').text()).toContain('已自定义 1 项')
 
     await rowWith(wrapper, '局域网连接').find('[role="switch"]').trigger('click')
     await settle(400)
@@ -483,13 +515,14 @@ describe('extra listeners, outbound interface and routing mark (R34)', () => {
     expect(wrapper.find('[data-testid="lan-extra-address"]').text()).toContain('192.168.1.23:7891')
 
     const count = saved.length
-    await wrapper.find('[data-testid="port-http_port"]').setValue('7890')
-    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await openEditor(wrapper, 'open-extra-ports')
+    await net('port-http_port').setValue('7890')
+    await net('save-net').trigger('click')
     await settle(400)
     expect(saved.length).toBe(count)
-    expect(wrapper.find('[data-testid="net-error"]').text()).toContain('HTTP 端口 7890 与混合端口重复')
+    expect(net('net-error').text()).toContain('HTTP 端口 7890 与混合端口重复')
     expect((await overviewOf(backend)).effective.port).toBeUndefined()
-    await wrapper.find('[data-testid="undo-net"]').trigger('click')
+    await net('undo-net').trigger('click')
     await flushPromises()
 
     storeOf(wrapper).openConfig('overview')
@@ -501,17 +534,17 @@ describe('extra listeners, outbound interface and routing mark (R34)', () => {
     await flushPromises()
 
     // An interface name with a space is refused; 全部跟随配置 clears every new item.
-    await wrapper.find('[data-testid="interface-choice"] [data-value="custom"]').trigger('click')
-    await wrapper.find('[data-testid="interface-name"]').setValue('Wi Fi')
-    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await openEditor(wrapper, 'open-extra-ports')
+    await net('interface-choice').find('[data-value="custom"]').trigger('click')
+    await net('interface-name').setValue('Wi Fi')
+    await net('save-net').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="net-error"]').text()).toContain('不能包含空格')
-    await wrapper.find('[data-testid="interface-name"]').setValue('en0')
-    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    expect(net('net-error').text()).toContain('不能包含空格')
+    await net('interface-name').setValue('en0')
+    await net('save-net').trigger('click')
     await settle(400)
     expect(saved.at(-1)!.interface_name).toBe('en0')
-    await wrapper.findAll('button').find((button) => button.text() === '全部跟随配置')!.trigger('click')
-    await settle(400)
+    await resetAllOverrides(wrapper)
     const last = saved.at(-1)!
     expect([last.socks_port, last.http_port, last.redir_port, last.tproxy_port, last.interface_name, last.routing_mark]).toEqual([
       null, null, null, null, null, null,
@@ -520,30 +553,35 @@ describe('extra listeners, outbound interface and routing mark (R34)', () => {
 
   it('warns on a saved port that later equals the mixed port in effect', async () => {
     const { wrapper, saved } = await mountApp()
-    await openKernelSettings(wrapper)
-    await wrapper.find('[data-testid="port-socks_port"]').setValue('7891')
-    await wrapper.find('[data-testid="save-net"]').trigger('click')
+    await openPane(wrapper, 'network')
+    await openEditor(wrapper, 'open-extra-ports')
+    await net('port-socks_port').setValue('7891')
+    await net('save-net').trigger('click')
     await settle(400)
     expect(saved.at(-1)!.socks_port).toBe(7891)
-    expect(wrapper.find('[data-testid="port-clash-socks_port"]').exists()).toBe(false)
+    expect(rowWith(wrapper, '更多端口与出口').text()).not.toContain('端口冲突')
 
     // Another profile brings its own mixed-port 7891; the saved SOCKS port now collides.
     const snapshot = storeOf(wrapper).snapshot
     snapshot.value = { ...snapshot.value, mixed_port: 7891 }
     await flushPromises()
-    const warning = wrapper.find('[data-testid="port-clash-socks_port"]')
+    expect(rowWith(wrapper, '更多端口与出口').text()).toContain('端口冲突')
+    await openEditor(wrapper, 'open-extra-ports')
+    const warning = net('port-clash-socks_port')
     expect(warning.exists()).toBe(true)
     expect(warning.text()).toContain('与当前混合端口 7891 相同')
-    expect(wrapper.find('[data-testid="port-clash-http_port"]').exists()).toBe(false)
+    expect(net('port-clash-http_port').exists()).toBe(false)
   })
 
   it('shows each item only on the platforms mihomo supports it', async () => {
     const visible = async (options: Parameters<typeof createDemoBackend>[0], width = 1200) => {
       const { wrapper } = await mountApp(options, width)
       await settle(50)
-      await openKernelSettings(wrapper)
-      const has = (id: string) => wrapper.find(`[data-testid="${id}"]`).exists()
-      return {
+      await openPane(wrapper, 'network')
+      const entry = wrapper.find('[data-testid="open-extra-ports"]')
+      if (entry.exists()) await openEditor(wrapper, 'open-extra-ports')
+      const has = (id: string) => net(id).exists()
+      const result = {
         socks: has('port-socks_port'),
         http: has('port-http_port'),
         redir: has('port-redir_port'),
@@ -551,6 +589,11 @@ describe('extra listeners, outbound interface and routing mark (R34)', () => {
         iface: has('interface-choice'),
         mark: has('routing-mark'),
       }
+      if (entry.exists()) {
+        await net('undo-net').trigger('click')
+        await flushPromises()
+      }
+      return result
     }
     expect(await visible({ os: 'windows' })).toEqual({ socks: true, http: true, redir: false, tproxy: false, iface: true, mark: false })
     expect(await visible({ os: 'macos' })).toEqual({ socks: true, http: true, redir: true, tproxy: false, iface: true, mark: false })

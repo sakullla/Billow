@@ -191,7 +191,7 @@ function resetFilters() {
   filter.value = 'all'
 }
 
-const conflictAction = computed<{ message: string; label: string; tab: 'kernel' | 'tun' } | null>(() => {
+const conflictAction = computed<{ message: string; label: string; tab: 'network' | 'tun'; focus?: string } | null>(() => {
   if (snap.value.connected) return null
   for (let i = source.value.length - 1; i >= 0; i -= 1) {
     const line = source.value[i]!
@@ -206,9 +206,10 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
       } as const
       const kind = tr(labels[line.hint_kind ?? 'mixed'])
       return {
-        message: tr('本地监听端口冲突导致内核未能启动，可前往内核设置更换{0}后重新连接。', { 0: kind }),
+        message: tr('本地监听端口冲突导致内核未能启动，可前往网络设置更换{0}后重新连接。', { 0: kind }),
         label: tr('更换{0}', { 0: kind }),
-        tab: 'kernel',
+        tab: 'network',
+        focus: line.hint_kind && line.hint_kind !== 'mixed' ? 'extra-ports' : 'mixed-port',
       }
     }
     if (line.hint === 'tun') {
@@ -318,7 +319,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'kernel' 
         type="button"
         class="btn ghost sm"
         data-testid="logs-open-settings"
-        @click="store.openSettings(conflictAction.tab)"
+        @click="store.openSettings(conflictAction.tab, conflictAction.focus)"
       >
         <Icon name="sliders" :size="14" />{{ conflictAction.label }}
       </button>

@@ -83,18 +83,21 @@ describe('R42 compact language row', () => {
     await settle(50)
     await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
     await flushPromises()
+    await wrapper.find('[data-testid="open-general"]').trigger('click')
+    await flushPromises()
 
-    const row = wrapper.find('[data-testid="language-row"]')
+    const row = wrapper.find('[data-testid="language-setting"]')
     expect(row.exists()).toBe(true)
-    expect(row.find('.nav-row-title').text()).toBe('Language')
+    expect(row.find('.srow-title').text()).toBe('Language')
 
     // Labels are never shortened to fit; the control moves to its own line instead.
     const labels = row.findAll('[data-testid="language-select"] .segment').map((segment) => segment.text())
     expect(labels).toEqual(['Follow system', '简体中文', 'English'])
 
-    // Contract for the scoped phone-row CSS (stacked control line). happy-dom has no layout,
-    // so the measured 360-412px rendering itself is verified in the browser.
-    expect(row.classes()).toContain('language-row')
-    expect(row.find('[data-testid="language-select"]').classes()).toContain('language-row-control')
+    // Contract for the phone-row CSS: a segmented control directly inside .srow-control
+    // drops to its own full-width line. happy-dom has no layout, so the measured
+    // 360-412px rendering itself is verified in the browser.
+    expect(wrapper.find('.settings-phone').exists()).toBe(true)
+    expect(row.find('.srow-control > [data-testid="language-select"]').exists()).toBe(true)
   })
 })

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import DailyBars from './DailyBars.vue'
+import EmptyState from './EmptyState.vue'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import Segmented from './Segmented.vue'
@@ -86,8 +87,18 @@ const totals = computed(() =>
   ),
 )
 
+/** Width of each row's share bar, relative to the largest row so small rows stay visible. */
+const topRow = computed(() => Math.max(1, ...rows.value.map((row) => row.upload + row.download)))
+function rowShare(row: GroupRow): string {
+  return `${Math.max(1.5, ((row.upload + row.download) / topRow.value) * 100)}%`
+}
+
+const groupingLabel = computed(
+  () => groupingOptions.value.find((option) => option.id === grouping.value)?.label ?? '',
+)
+
 /** Every day of the range, including empty ones, so the bar chart keeps its axis. */
-const days = computed(() => {
+const days = computed<{ date: string; upload: number; download: number }[]>(() => {
   const current = view.value
   if (!current) return []
   const sums = new Map<string, { upload: number; download: number }>()
@@ -106,6 +117,11 @@ const days = computed(() => {
   }
   return out
 })
+
+/** A one-day range has nothing to compare, so the daily chart only shows for longer ranges. */
+const showsDaily = computed(
+  () => days.value.length > 1 && days.value.some((day) => day.upload > 0 || day.download > 0),
+)
 
 function load(): Promise<unknown> {
   return store.loadTrafficStats(range.value, from.value || null, to.value || null)
@@ -143,8 +159,9 @@ onMounted(() => {
 })
 </script>
 
+
 <template>
-  <Modal :title="t('traffic.title')" :subtitle="t('traffic.subtitle')" wide @close="emit('close')">
+  <Modal :title="t('traffic.title')" wide @close="emit('close')">
     <div class="traffic-stats" data-testid="traffic-stats">
       <p v-if="store.trafficStatsError.value" class="field-error small" role="alert" data-testid="traffic-error">
         <Icon name="alert" :size="13" />
@@ -155,13 +172,13 @@ onMounted(() => {
       <template v-if="view && (enabled || view.entries.length)">
         <!-- Recording is off but earlier rows exist: they stay readable and clearable. -->
         <div v-if="!enabled" class="traffic-off-banner" data-testid="traffic-off">
-          <span class="traffic-off-icon sm"><Icon name="pause" :size="16" /></span>
-          <div class="grow min0">
+          <Icon name="pause" :size="15" class="muted" />
+          <span class="grow min0 small">
             <strong>{{ t('traffic.off') }}</strong>
-            <p class="muted small">{{ t('traffic.offDetail') }}</p>
-          </div>
-          <button type="button" class="btn primary sm" :disabled="busy" data-testid="traffic-enable" @click="enable">
-            <Icon name="play" :size="14" />{{ t('traffic.enable') }}
+            <span class="muted"> · {{ t('traffic.offShort') }}</span>
+          </span>
+          <button type="button" class="btn ghost sm accent-text" :disabled="busy" data-testid="traffic-enable" @click="enable">
+            {{ t('traffic.enable') }}
           </button>
         </div>
 
@@ -169,7 +186,7 @@ onMounted(() => {
           <Segmented
             :model-value="range"
             :options="rangeOptions"
-            :label="t('traffic.title')"
+            :label="t('traffic.rangeLabel')"
             size="sm"
             data-testid="traffic-range"
             @update:model-value="chooseRange"
@@ -177,7 +194,7 @@ onMounted(() => {
           <Segmented
             :model-value="grouping"
             :options="groupingOptions"
-            :label="t('traffic.group.profile')"
+            :label="t('traffic.groupingLabel')"
             size="sm"
             data-testid="traffic-grouping"
             @update:model-value="(value) => (grouping = value)"
@@ -185,117 +202,124 @@ onMounted(() => {
         </div>
 
         <div v-if="range === 'custom'" class="traffic-dates" data-testid="traffic-custom">
-          <label class="field">
-            <span>{{ t('traffic.from') }}</span>
-            <input
-              v-model="from"
-              class="input"
-              type="date"
-              :min="minDate"
-              :max="today"
-              data-testid="traffic-from"
-              @change="applyCustom"
-            />
-          </label>
-          <label class="field">
-            <span>{{ t('traffic.to') }}</span>
-            <input
-              v-model="to"
-              class="input"
-              type="date"
-              :min="minDate"
-              :max="today"
-              data-testid="traffic-to"
-              @change="applyCustom"
-            />
-          </label>
-          <p class="muted small traffic-retention">
-            {{ t('settings.traffic.retention', { days: retention }) }}
-          </p>
+          <input
+            v-model="from"
+            class="input"
+            type="date"
+            :min="minDate"
+            :max="to || today"
+            :aria-label="t('traffic.from')"
+            data-testid="traffic-from"
+            @change="applyCustom"
+          />
+          <span class="muted" aria-hidden="true">–</span>
+          <input
+            v-model="to"
+            class="input"
+            type="date"
+            :min="from || minDate"
+            :max="today"
+            :aria-label="t('traffic.to')"
+            data-testid="traffic-to"
+            @change="applyCustom"
+          />
         </div>
 
-        <div class="traffic-totals" data-testid="traffic-totals">
-          <div class="traffic-total">
-            <span class="muted small">{{ t('traffic.download') }}</span>
-            <strong class="mono" data-testid="traffic-total-download">{{ formatBytes(totals.download) }}</strong>
+        <template v-if="rows.length">
+          <div class="traffic-summary" data-testid="traffic-totals">
+            <div class="traffic-summary-main">
+              <span class="muted small">{{ t('traffic.total') }}</span>
+              <strong class="traffic-summary-value" data-testid="traffic-total-all">{{ formatBytes(totals.upload + totals.download) }}</strong>
+            </div>
+            <div class="traffic-summary-split small">
+              <span class="traffic-dot down" aria-hidden="true" />
+              <span class="muted">{{ t('traffic.download') }}</span>
+              <span class="mono" data-testid="traffic-total-download">{{ formatBytes(totals.download) }}</span>
+              <span class="traffic-dot up" aria-hidden="true" />
+              <span class="muted">{{ t('traffic.upload') }}</span>
+              <span class="mono" data-testid="traffic-total-upload">{{ formatBytes(totals.upload) }}</span>
+            </div>
           </div>
-          <div class="traffic-total">
-            <span class="muted small">{{ t('traffic.upload') }}</span>
-            <strong class="mono" data-testid="traffic-total-upload">{{ formatBytes(totals.upload) }}</strong>
-          </div>
-          <div class="traffic-total">
-            <span class="muted small">{{ t('traffic.total') }}</span>
-            <strong class="mono" data-testid="traffic-total-all">{{ formatBytes(totals.upload + totals.download) }}</strong>
-          </div>
-        </div>
 
-        <section class="traffic-section">
-          <h3>{{ t('traffic.daily') }}</h3>
-          <DailyBars v-if="days.some((day) => day.upload > 0 || day.download > 0)" :days="days" />
-          <p v-else class="muted small" data-testid="traffic-empty">{{ t('traffic.empty') }}</p>
-        </section>
+          <DailyBars v-if="showsDaily" :days="days" />
 
-        <table v-if="rows.length" class="traffic-table small">
-          <thead>
-            <tr>
-              <th>{{ grouping === 'profile' ? t('traffic.group.profile') : grouping === 'group' ? t('traffic.group.group') : t('traffic.group.node') }}</th>
-              <th class="num">{{ t('traffic.upload') }}</th>
-              <th class="num">{{ t('traffic.download') }}</th>
-              <th class="num">{{ t('traffic.total') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in rows" :key="row.key" data-testid="traffic-row" :data-key="row.key">
-              <td class="traffic-label">
-                <span v-if="row.label === t('traffic.direct')" class="tag sm">{{ row.label }}</span>
-                <span v-else>{{ row.label }}</span>
-              </td>
-              <td class="num mono">{{ formatBytes(row.upload) }}</td>
-              <td class="num mono">{{ formatBytes(row.download) }}</td>
-              <td class="num mono">{{ formatBytes(row.upload + row.download) }}</td>
-            </tr>
-          </tbody>
-        </table>
+          <table class="traffic-table small">
+            <thead>
+              <tr>
+                <th>{{ groupingLabel }}</th>
+                <th class="num">{{ t('traffic.download') }}</th>
+                <th class="num">{{ t('traffic.upload') }}</th>
+                <th class="num">{{ t('traffic.total') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in rows" :key="row.key" data-testid="traffic-row" :data-key="row.key">
+                <td class="traffic-label">
+                  <span class="traffic-label-text" :class="{ muted: row.key.endsWith(':direct') }" :title="row.label">{{ row.label }}</span>
+                  <span class="traffic-share" aria-hidden="true"><span :style="{ width: rowShare(row) }" /></span>
+                </td>
+                <td class="num mono">{{ formatBytes(row.download) }}</td>
+                <td class="num mono">{{ formatBytes(row.upload) }}</td>
+                <td class="num mono strong">{{ formatBytes(row.upload + row.download) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
 
-        <footer class="traffic-actions">
-          <div v-if="!confirmingClear">
-            <button
-              type="button"
-              class="btn ghost sm danger"
-              :disabled="busy || (!rows.length && !view.entries.length)"
-              data-testid="traffic-clear"
-              @click="confirmingClear = true"
-            >
-              <Icon name="trash" :size="14" />{{ t('traffic.clear') }}
-            </button>
-          </div>
-          <div v-else class="traffic-confirm" role="alertdialog" data-testid="traffic-clear-confirm-box">
-            <span class="small">{{ t('traffic.clearConfirm') }}</span>
-            <button type="button" class="btn ghost sm" data-testid="traffic-clear-cancel" @click="confirmingClear = false">
-              {{ t('traffic.clearCancel') }}
-            </button>
-            <button type="button" class="btn danger sm" data-testid="traffic-clear-confirm" @click="clearAll">
-              {{ t('traffic.clearConfirmAction') }}
-            </button>
-          </div>
-        </footer>
+        <EmptyState
+          v-else
+          compact
+          icon="activity"
+          :title="t('traffic.empty')"
+          :description="enabled ? t('traffic.emptyDetail') : t('traffic.offShort')"
+          data-testid="traffic-empty"
+        />
       </template>
 
       <!-- Fresh install (or a cleared view while recording is off): how to start. -->
-      <div v-else-if="view" class="traffic-off" data-testid="traffic-off">
-        <span class="traffic-off-icon"><Icon name="pause" :size="20" /></span>
-        <strong>{{ t('traffic.off') }}</strong>
-        <p class="muted small">{{ t('traffic.offDetail') }}</p>
-        <button type="button" class="btn primary sm" :disabled="busy" data-testid="traffic-enable" @click="enable">
-          <Icon name="play" :size="14" />{{ t('traffic.enable') }}
-        </button>
-        <p class="muted small" data-testid="traffic-retention">
-          {{ t('settings.traffic.retention', { days: retention }) }}
-        </p>
-      </div>
+      <EmptyState
+        v-else-if="view"
+        icon="activity"
+        :title="t('traffic.off')"
+        :description="t('traffic.offDetail')"
+        data-testid="traffic-off"
+      >
+        <template #action>
+          <button type="button" class="btn primary sm" :disabled="busy" data-testid="traffic-enable" @click="enable">
+            {{ t('traffic.enable') }}
+          </button>
+        </template>
+      </EmptyState>
 
-      <p v-else class="muted small" data-testid="traffic-loading">{{ t('traffic.loading') }}</p>
+      <EmptyState v-else variant="loading" compact :title="t('traffic.loading')" description="" data-testid="traffic-loading" />
     </div>
+
+    <template v-if="view && (enabled || view.entries.length)" #footer>
+      <div v-if="!confirmingClear" class="traffic-foot">
+        <span class="muted small" data-testid="traffic-retention">{{ t('settings.traffic.retention', { days: retention }) }}</span>
+        <button
+          v-if="view.entries.length"
+          type="button"
+          class="btn ghost sm danger-text"
+          :disabled="busy"
+          data-testid="traffic-clear"
+          @click="confirmingClear = true"
+        >
+          <Icon name="trash" :size="14" />{{ t('traffic.clear') }}
+        </button>
+      </div>
+      <div v-else class="traffic-foot" role="alertdialog" data-testid="traffic-clear-confirm-box">
+        <span class="small">{{ t('traffic.clearConfirm') }}</span>
+        <span class="traffic-foot-actions">
+          <button type="button" class="btn ghost sm" data-testid="traffic-clear-cancel" @click="confirmingClear = false">
+            {{ t('traffic.clearCancel') }}
+          </button>
+          <button type="button" class="btn danger sm" data-testid="traffic-clear-confirm" @click="clearAll">
+            {{ t('traffic.clearConfirmAction') }}
+          </button>
+        </span>
+      </div>
+    </template>
   </Modal>
 </template>
 
@@ -303,49 +327,20 @@ onMounted(() => {
 .traffic-stats {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-}
-
-.traffic-off {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 26px 16px;
-  text-align: center;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
+  gap: 16px;
 }
 
 .traffic-off-banner {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+  padding: 6px 6px 6px 12px;
+  border-radius: var(--radius-control);
+  background: var(--sunken);
 }
 
-.traffic-off-banner p {
-  margin: 2px 0 0;
-}
-
-.traffic-off-icon.sm {
-  width: 30px;
-  height: 30px;
-  flex: none;
-}
-
-.traffic-off-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  color: var(--muted);
-  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+.accent-text {
+  color: var(--accent-ink);
 }
 
 .traffic-controls {
@@ -357,90 +352,164 @@ onMounted(() => {
 
 .traffic-dates {
   display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: -6px;
+}
+
+.traffic-dates .input {
+  width: auto;
+  min-width: 0;
+  flex: 0 1 170px;
+}
+
+.traffic-summary {
+  display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 8px 20px;
 }
 
-.traffic-dates .field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.traffic-retention {
-  margin: 0 0 4px;
-}
-
-.traffic-totals {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.traffic-total {
+.traffic-summary-main {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2, rgba(127, 127, 127, 0.06));
 }
 
-.traffic-total strong {
-  font-size: 16px;
+.traffic-summary-value {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
-.traffic-section {
+.traffic-summary-split {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 3px;
 }
 
-.traffic-section h3 {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
-  font-weight: 500;
+.traffic-summary-split .mono {
+  margin-right: 10px;
+  color: var(--text);
+}
+
+.traffic-summary-split .mono:last-child {
+  margin-right: 0;
+}
+
+.traffic-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.traffic-dot.down {
+  background: var(--data-down);
+}
+
+.traffic-dot.up {
+  background: var(--data-up);
 }
 
 .traffic-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .traffic-table th,
 .traffic-table td {
-  padding: 7px 8px;
+  padding: 8px 6px;
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
 
+.traffic-table th:first-child,
+.traffic-table td:first-child {
+  padding-left: 0;
+}
+
+.traffic-table th:last-child,
+.traffic-table td:last-child {
+  padding-right: 0;
+}
+
+.traffic-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
 .traffic-table th {
-  font-weight: 500;
+  font-weight: 560;
   color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.traffic-table th:first-child {
+  width: 46%;
 }
 
 .traffic-table .num {
   text-align: right;
   white-space: nowrap;
+  color: var(--text-2);
+}
+
+.traffic-table .num.strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .traffic-label {
-  word-break: break-word;
+  min-width: 0;
 }
 
-.traffic-actions {
-  display: flex;
-  justify-content: flex-end;
+.traffic-label-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 560;
 }
 
-.traffic-confirm {
+.traffic-share {
+  display: block;
+  height: 3px;
+  margin-top: 5px;
+  border-radius: 2px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+.traffic-share > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--data-down);
+  opacity: 0.7;
+}
+
+.traffic-foot {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  justify-content: flex-end;
+  width: 100%;
+}
+
+.traffic-foot-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Phone sheets stretch footer buttons; this footer keeps its quiet, compact actions. */
+.traffic-foot .btn {
+  flex: none;
 }
 </style>

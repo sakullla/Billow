@@ -116,7 +116,7 @@ describe('config overview', () => {
       tun: { enable: false, 'route-exclude-address': ['192.168.0.0/16'] },
     }
     const sections = buildOverview(overview({ profile, prepared: profile, effective }))
-    expect(rowOf(sections, 'socks-port')).toMatchObject({ value: '7891', source: 'billow', to: { page: 'settings', tab: 'kernel' } })
+    expect(rowOf(sections, 'socks-port')).toMatchObject({ value: '7891', source: 'billow', to: { page: 'settings', tab: 'network', focus: 'extra-ports' } })
     expect(rowOf(sections, 'redir-port')).toMatchObject({ value: '关闭', source: 'billow' })
     expect(rowOf(sections, 'sniffer.sniff.TLS.ports')).toMatchObject({ value: '443、8443', source: 'billow', before: '443' })
     expect(rowOf(sections, 'sniffer.skip-domain')).toMatchObject({ value: 'a.example', source: 'billow' })
