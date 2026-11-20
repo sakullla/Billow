@@ -58,6 +58,15 @@ const sideStatusWord = computed(() => {
   if (store.connecting.value) return snap.value.connected ? tr('断开中…') : tr('连接中…')
   return snap.value.connected ? tr('已连接') : tr('未连接')
 })
+const sideModeLabel = computed(() => {
+  if (snap.value.mode === 'global') return tr('全局')
+  if (snap.value.mode === 'direct') return tr('直连')
+  return tr('规则')
+})
+const sideMetaText = computed(() => {
+  const profileName = store.current.value?.name
+  return profileName ? `${sideModeLabel.value} · ${profileName}` : sideModeLabel.value
+})
 const themeMeta = computed(() => {
   if (store.theme.value === 'light') return { icon: 'sun', label: tr('浅色主题') }
   if (store.theme.value === 'dark') return { icon: 'moon', label: tr('深色主题') }
@@ -681,6 +690,17 @@ defineExpose({ store })
       </nav>
       <div class="side-foot">
         <button
+          v-if="sidebarCollapsed"
+          type="button"
+          class="nav-item side-theme-btn"
+          :aria-label="tr('切换主题（当前：{0}）', { 0: themeMeta.label })"
+          :title="tr('切换主题（当前：{0}）', { 0: themeMeta.label })"
+          data-testid="sidebar-theme-toggle"
+          @click="store.cycleTheme()"
+        >
+          <Icon :name="themeMeta.icon" :size="16" />
+        </button>
+        <button
           type="button"
           class="nav-item"
           :class="{ active: store.page.value === settingsPage.id }"
@@ -697,7 +717,7 @@ defineExpose({ store })
         <div
           class="side-status"
           :class="{ on: snap.connected && !store.connecting.value, pending: store.connecting.value }"
-          :title="sidebarCollapsed ? `${sideStatusWord}${snap.connected ? ` · ↓${formatSpeed(snap.download ?? 0)} ↑${formatSpeed(snap.upload ?? 0)}` : ''}` : undefined"
+          :title="sidebarCollapsed ? `${sideStatusWord}${snap.connected ? ` · ${sideMetaText} · ↓${formatSpeed(snap.download ?? 0)} ↑${formatSpeed(snap.upload ?? 0)}` : ''}` : undefined"
           data-testid="side-status"
         >
           <div
@@ -714,10 +734,20 @@ defineExpose({ store })
               <span class="dot" />
               <span>{{ sideStatusWord }}</span>
             </div>
-            <div v-if="snap.connected" class="side-rates mono">
-              <span class="down" :title="tr('下载 {0}', { 0: formatSpeed(snap.download ?? 0) })"><Icon name="down" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.download ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
-              <span class="up" :title="tr('上传 {0}', { 0: formatSpeed(snap.upload ?? 0) })"><Icon name="up" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.upload ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
-            </div>
+            <template v-if="snap.connected">
+              <div class="side-rates mono">
+                <span class="down" :title="tr('下载 {0}', { 0: formatSpeed(snap.download ?? 0) })"><Icon name="down" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.download ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
+                <span class="up" :title="tr('上传 {0}', { 0: formatSpeed(snap.upload ?? 0) })"><Icon name="up" :size="11" /><em class="side-rate-num">{{ formatSpeedCompact(snap.upload ?? 0) }}</em><small class="side-rate-unit" aria-hidden="true">/s</small></span>
+              </div>
+              <div
+                class="side-status-meta ellipsis"
+                :title="sideMetaText"
+                data-testid="side-status-meta"
+              >
+                <span class="side-mode-badge">{{ sideModeLabel }}</span>
+                <span v-if="store.current.value?.name" class="side-profile-name ellipsis">{{ store.current.value.name }}</span>
+              </div>
+            </template>
             <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? tr('还没有配置') }}</div>
           </div>
           <button
@@ -760,7 +790,45 @@ defineExpose({ store })
         </button>
       </div>
       <component :is="view" v-if="store.loaded.value" :compact="compact" />
-      <div v-else class="loading"><span class="spinner" /></div>
+      <div
+        v-else
+        class="page home app-skeleton"
+        role="status"
+        aria-busy="true"
+        aria-live="polite"
+        data-testid="app-loading-skeleton"
+      >
+        <span class="sr-only">{{ tr('正在加载应用状态') }}</span>
+        <div class="app-skeleton-hero card" aria-hidden="true">
+          <div class="app-skeleton-hero-top">
+            <span class="sk-bar sk-pill" />
+            <span class="sk-bar sk-pill sm" />
+          </div>
+          <div class="app-skeleton-hero-main">
+            <div class="sk-lines">
+              <span class="sk-bar sk-lg sk-w-40" />
+              <span class="sk-bar sk-w-60" />
+            </div>
+            <span class="sk-bar sk-power" />
+          </div>
+          <div class="app-skeleton-hero-foot">
+            <span class="sk-bar sk-w-25" />
+            <span class="sk-bar sk-w-30" />
+          </div>
+        </div>
+        <div class="app-skeleton-bento" aria-hidden="true">
+          <div class="sk-card">
+            <span class="sk-bar sk-w-35" />
+            <span class="sk-bar sk-w-80" />
+            <span class="sk-bar sk-w-55" />
+          </div>
+          <div class="sk-card">
+            <span class="sk-bar sk-w-40" />
+            <span class="sk-bar sk-w-60" />
+            <span class="sk-bar sk-w-45" />
+          </div>
+        </div>
+      </div>
     </main>
 
     <nav v-if="compact" class="tabbar" :aria-label="tr('主导航')">
@@ -788,7 +856,7 @@ defineExpose({ store })
     </nav>
 
     <CommandPalette
-      v-if="paletteOpen"
+      :open="paletteOpen"
       :platform="isAndroid ? 'android' : 'desktop'"
       :connected="snap.connected"
       :kernel-running="snap.kernel_running"
@@ -819,7 +887,7 @@ defineExpose({ store })
       @close="store.dnsQueryOpen.value = false"
     />
 
-    <Modal v-if="helpOpen" :title="tr('快捷键')" @close="helpOpen = false">
+    <Modal :open="helpOpen" :title="tr('快捷键')" @close="helpOpen = false">
       <div class="shortcut-sheet" :class="{ 'has-global': !isAndroid }">
         <section class="shortcut-group">
           <header class="shortcut-group-head">
@@ -837,7 +905,7 @@ defineExpose({ store })
       </div>
     </Modal>
 
-    <Modal v-if="store.adding.value" :title="tr('添加配置')" :subtitle="tr('订阅链接或 Clash / Mihomo YAML 文件')" @close="store.adding.value = false">
+    <Modal :open="store.adding.value" :title="tr('添加配置')" :subtitle="tr('订阅链接或 Clash / Mihomo YAML 文件')" @close="store.adding.value = false">
       <div
         class="add-modal-drop"
         :class="{ 'drop-over': dragging && addTab === 'url' }"
@@ -893,7 +961,7 @@ defineExpose({ store })
       </div>
     </Modal>
 
-    <Modal v-if="snap.pending_url" :title="tr('导入订阅')" :subtitle="tr('来自外部链接的订阅，确认后才会添加')" @close="store.cancelInstall()">
+    <Modal :open="Boolean(snap.pending_url)" :title="tr('导入订阅')" :subtitle="tr('来自外部链接的订阅，确认后才会添加')" @close="store.cancelInstall()">
       <p class="url-box mono">{{ snap.pending_url }}</p>
       <template #footer>
         <button type="button" class="btn ghost" @click="store.cancelInstall()">{{ tr('取消') }}</button>

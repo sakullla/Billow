@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useId, watch } from 'vue'
+import { computed, defineComponent, nextTick, ref, useId, watch, type PropType } from 'vue'
 import { autoTypeLabel, delayText, groupTypeLabel, isInfoNode, listedGroups, protocolLabel } from '../lib/format'
 import { t, tr } from '../lib/i18n'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
@@ -34,6 +34,7 @@ export interface PaletteAction {
 
 const props = withDefaults(
   defineProps<{
+    open?: boolean
     pages?: readonly PalettePage[]
     settings?: readonly PaletteSetting[]
     /** Override the built-in action list; it must not add destructive actions. */
@@ -53,8 +54,9 @@ const props = withDefaults(
     platform?: 'desktop' | 'android'
   }>(),
   {
+    open: true,
     pages: () =>
-      PAGES.map((page) => ({ id: page.id, label: page.label, icon: page.icon })),
+      PAGES.map((page) => ({ id: page.id, get label() { return page.label }, icon: page.icon })),
     settings: () => [
       { id: 'general', get label() { return tr('通用设置') }, get description() { return tr('外观、启动与快捷键') }, icon: 'sliders' },
       { id: 'proxy', get label() { return tr('系统代理设置') }, get description() { return tr('代理主机、PAC 模式与绕过列表') }, icon: 'monitor' },
@@ -469,96 +471,138 @@ watch(active, () => {
   })
 })
 
-useFocusTrap(() => panel.value, {
-  onClose: () => emit('close'),
-  initialFocus: () => inputEl.value ?? getFocusable(panel.value)[0] ?? null,
+const PaletteTrap = defineComponent({
+  name: 'PaletteTrap',
+  props: {
+    getPanel: { type: Function as PropType<() => HTMLElement | null>, required: true },
+    onClose: { type: Function as PropType<() => void>, required: true },
+    initialFocus: { type: Function as PropType<() => HTMLElement | null | undefined>, required: true },
+  },
+  setup(trapProps) {
+    useFocusTrap(trapProps.getPanel, {
+      onClose: trapProps.onClose,
+      initialFocus: trapProps.initialFocus,
+    })
+    return () => null
+  },
 })
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) {
+      query.value = ''
+      active.value = 0
+    }
+  },
+)
+
+function requestClose() {
+  if (!props.open) return
+  emit('close')
+}
+
+function getPanel(): HTMLElement | null {
+  return panel.value
+}
+
+function resolveInitialFocus(): HTMLElement | null {
+  return inputEl.value ?? getFocusable(panel.value)[0] ?? null
+}
 </script>
 
 <template>
   <Teleport to="body">
-    <div class="overlay palette-overlay" @mousedown.self="emit('close')">
-      <section
-        ref="panel"
-        class="palette"
-        role="dialog"
-        aria-modal="true"
-        :aria-labelledby="titleId"
-        @keydown="onKeydown"
-      >
-        <h2 :id="titleId" class="sr-only">{{ tr('命令面板') }}</h2>
-        <div class="palette-search">
-          <Icon name="search" :size="16" />
-          <input
-            ref="inputEl"
-            v-model="query"
-            type="search"
-            role="combobox"
-            aria-autocomplete="list"
-            aria-expanded="true"
-            :aria-controls="listId"
-            :aria-activedescendant="activeEntry?.key"
-            :aria-label="tr('搜索命令')"
-            :placeholder="tr('搜索页面、设置、节点或动作')"
-            autocomplete="off"
-            spellcheck="false"
-            @input="active = 0"
-          />
-          <button
-            v-if="query"
-            type="button"
-            class="icon-btn sm"
-            :aria-label="tr('清空搜索')"
-            data-testid="palette-clear"
-            @click="query = ''; inputEl?.focus()"
-          >
-            <Icon name="x" :size="14" />
-          </button>
-          <kbd class="palette-kbd">{{ paletteKey }}</kbd>
-          <button type="button" class="icon-btn sm" :aria-label="tr('关闭')" @click="emit('close')">
-            <Icon name="x" :size="15" />
-          </button>
-        </div>
-
-        <div :id="listId" class="palette-list" role="listbox" :aria-label="tr('命令')">
-          <div v-for="group in groups" :key="group.id" class="palette-group" role="group" :aria-label="group.label">
-            <p class="palette-group-label" aria-hidden="true">{{ group.label }}</p>
-            <div
-              v-for="entry in group.entries"
-              :id="entry.key"
-              :key="entry.key"
-              class="palette-option"
-              :class="{ active: activeEntry?.index === entry.index, disabled: entry.disabled }"
-              role="option"
-              :aria-selected="activeEntry?.index === entry.index"
-              :aria-disabled="entry.disabled ? 'true' : undefined"
-              :aria-describedby="entry.disabled && entry.reason ? reasonId(entry) : undefined"
-              :data-command="entry.key"
-              @mousedown.prevent
-              @mousemove="setActive(entry.index)"
-              @click="choose(entry)"
+    <Transition name="overlay-fade" appear>
+      <div v-if="open" class="overlay palette-overlay" @mousedown.self="requestClose">
+        <section
+          ref="panel"
+          class="palette"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="titleId"
+          @keydown="onKeydown"
+        >
+          <h2 :id="titleId" class="sr-only">{{ tr('命令面板') }}</h2>
+          <div class="palette-search">
+            <Icon name="search" :size="16" />
+            <input
+              ref="inputEl"
+              v-model="query"
+              type="search"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="true"
+              :aria-controls="listId"
+              :aria-activedescendant="activeEntry?.key"
+              :aria-label="tr('搜索命令')"
+              :placeholder="tr('搜索页面、设置、节点或动作')"
+              autocomplete="off"
+              spellcheck="false"
+              @input="active = 0"
+            />
+            <button
+              v-if="query"
+              type="button"
+              class="icon-btn sm"
+              :aria-label="tr('清空搜索')"
+              data-testid="palette-clear"
+              @click="query = ''; inputEl?.focus()"
             >
-              <Icon v-if="entry.icon" :name="entry.icon" :size="16" />
-              <span class="palette-label">
-                <template v-for="(part, idx) in highlightTokens(entry.label, query)" :key="idx">
-                  <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
-                </template>
-              </span>
-              <span v-if="entry.disabled && entry.reason" :id="reasonId(entry)" class="palette-reason">
-                {{ entry.reason }}
-              </span>
-              <span v-else-if="entry.hint" class="palette-hint" :class="{ current: entry.hint === tr('当前') || entry.hint.endsWith(tr('· 当前')) }">{{ entry.hint }}</span>
-            </div>
+              <Icon name="x" :size="14" />
+            </button>
+            <kbd class="palette-kbd">{{ paletteKey }}</kbd>
+            <button type="button" class="icon-btn sm" :aria-label="tr('关闭')" @click="requestClose">
+              <Icon name="x" :size="15" />
+            </button>
           </div>
-          <p v-if="!groups.length" class="palette-empty">{{ tr('没有匹配的命令') }}</p>
-        </div>
 
-        <footer class="palette-foot">
-          <span>{{ tr('↑↓ 选择') }}</span>
-          <span>{{ tr('Enter 执行') }}</span>
-          <span>{{ tr('Esc 关闭') }}</span>
-        </footer>
-      </section>
-    </div>
+          <div :id="listId" class="palette-list" role="listbox" :aria-label="tr('命令')">
+            <div v-for="group in groups" :key="group.id" class="palette-group" role="group" :aria-label="group.label">
+              <p class="palette-group-label" aria-hidden="true">{{ group.label }}</p>
+              <div
+                v-for="entry in group.entries"
+                :id="entry.key"
+                :key="entry.key"
+                class="palette-option"
+                :class="{ active: activeEntry?.index === entry.index, disabled: entry.disabled }"
+                role="option"
+                :aria-selected="activeEntry?.index === entry.index"
+                :aria-disabled="entry.disabled ? 'true' : undefined"
+                :aria-describedby="entry.disabled && entry.reason ? reasonId(entry) : undefined"
+                :data-command="entry.key"
+                @mousedown.prevent
+                @mousemove="setActive(entry.index)"
+                @click="choose(entry)"
+              >
+                <Icon v-if="entry.icon" :name="entry.icon" :size="16" />
+                <span class="palette-label">
+                  <template v-for="(part, idx) in highlightTokens(entry.label, query)" :key="idx">
+                    <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                  </template>
+                </span>
+                <span v-if="entry.disabled && entry.reason" :id="reasonId(entry)" class="palette-reason">
+                  {{ entry.reason }}
+                </span>
+                <span v-else-if="entry.hint" class="palette-hint" :class="{ current: entry.hint === tr('当前') || entry.hint.endsWith(tr('· 当前')) }">{{ entry.hint }}</span>
+              </div>
+            </div>
+            <p v-if="!groups.length" class="palette-empty">{{ tr('没有匹配的命令') }}</p>
+          </div>
+
+          <footer class="palette-foot">
+            <span>{{ tr('↑↓ 选择') }}</span>
+            <span>{{ tr('Enter 执行') }}</span>
+            <span>{{ tr('Esc 关闭') }}</span>
+          </footer>
+        </section>
+      </div>
+    </Transition>
   </Teleport>
+  <PaletteTrap
+    v-if="open"
+    :get-panel="getPanel"
+    :on-close="requestClose"
+    :initial-focus="resolveInitialFocus"
+  />
 </template>

@@ -5,6 +5,7 @@ import { createDemoBackend } from './lib/demo'
 import { locale } from './lib/i18n'
 import type { Store } from './lib/store'
 import type { Snapshot } from './lib/types'
+import { layerDepth } from './lib/ui/focus'
 import { applyInsets } from './lib/ui/insets'
 
 function deferred<T>() {
@@ -713,6 +714,160 @@ describe('Core workflow polish (R3–R4)', () => {
       await flushPromises()
       expect(wrapper.find('[data-testid="profiles-no-match"]').exists()).toBe(false)
       expect(wrapper.findAll('[data-profile]')).toHaveLength(totalBefore)
+    })
+  })
+})
+
+describe('Core workflow polish (R5–R6)', () => {
+  describe('R5: Global shell transitions, structured startup skeleton, and sidebar theme/status visibility', () => {
+    it('renders structured startup skeleton while !store.loaded on desktop and mobile (zh-CN and en), then transitions to Home', async () => {
+      vi.useFakeTimers()
+      const gate = deferred<Snapshot>()
+      const baseBackend = createDemoBackend()
+      const initialSnap = await baseBackend.state()
+      const delayedBackend = {
+        ...baseBackend,
+        state: vi.fn(() => gate.promise),
+      }
+
+      const wrapper = mount(App, { props: { backend: delayedBackend, width: 1200 }, attachTo: document.body })
+      mounted.push(wrapper)
+      await flushPromises()
+
+      const skeleton = wrapper.find('[data-testid="app-loading-skeleton"]')
+      expect(skeleton.exists()).toBe(true)
+      expect(skeleton.attributes('role')).toBe('status')
+      expect(skeleton.attributes('aria-busy')).toBe('true')
+      expect(skeleton.text()).toContain('正在加载应用状态')
+      expect(wrapper.find('.loading .spinner').exists()).toBe(false)
+      expect(skeleton.find('.app-skeleton-hero').exists()).toBe(true)
+      expect(skeleton.findAll('.app-skeleton-bento .sk-card')).toHaveLength(2)
+
+      // English localization on loading skeleton
+      locale.value = 'en'
+      await flushPromises()
+      expect(skeleton.text()).toContain('Loading application state')
+
+      // Resolve initial snapshot -> skeleton disappears and Home mounts
+      gate.resolve(initialSnap)
+      await settle(100)
+      expect(wrapper.find('[data-testid="app-loading-skeleton"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="power"]').exists()).toBe(true)
+    })
+
+    it('keeps sidebar theme toggle available when collapsed and shows status, speeds, outbound mode, and profile when connected', async () => {
+      const { wrapper } = await mountApp({}, 1200)
+      const store = storeOf(wrapper)
+
+      // Collapse sidebar -> theme toggle remains accessible in .side-foot and cycles light/dark themes
+      await wrapper.find('[data-testid="sidebar-toggle"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('.sidebar').classes()).toContain('collapsed')
+
+      const collapsedThemeBtns = wrapper.findAll('[data-testid="sidebar-theme-toggle"]')
+      expect(collapsedThemeBtns).toHaveLength(1)
+      expect(wrapper.find('.side-foot [data-testid="sidebar-theme-toggle"]').exists()).toBe(true)
+      expect(store.theme.value).toBe('system')
+
+      await collapsedThemeBtns[0]!.trigger('click')
+      await flushPromises()
+      expect(store.theme.value).toBe('light')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+
+      await wrapper.find('[data-testid="sidebar-theme-toggle"]').trigger('click')
+      await flushPromises()
+      expect(store.theme.value).toBe('dark')
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+
+      // Expand sidebar again -> exactly one theme toggle in header
+      await wrapper.find('[data-testid="sidebar-toggle"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('.sidebar').classes()).not.toContain('collapsed')
+      expect(wrapper.findAll('[data-testid="sidebar-theme-toggle"]')).toHaveLength(1)
+
+      // Disconnected: no side-status-meta row
+      expect(wrapper.find('[data-testid="side-status-meta"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="side-status"]').text()).toContain('未连接')
+
+      // Connected: shows status, live rates, outbound mode, and active profile name
+      await connect(wrapper)
+      const sideStatus = wrapper.find('[data-testid="side-status"]')
+      const meta = wrapper.find('[data-testid="side-status-meta"]')
+      expect(sideStatus.text()).toContain('已连接')
+      expect(sideStatus.find('.side-rates .down').exists()).toBe(true)
+      expect(sideStatus.find('.side-rates .up').exists()).toBe(true)
+      expect(meta.exists()).toBe(true)
+      expect(meta.text()).toContain('规则')
+      expect(meta.text()).toContain(store.current.value!.name)
+      expect(meta.attributes('title')).toContain('规则')
+      expect(meta.attributes('title')).toContain(store.current.value!.name)
+
+      // Switching outbound mode updates sidebar status meta in zh-CN and English
+      void store.setMode('global')
+      await settle(400)
+      expect(wrapper.find('[data-testid="side-status-meta"]').text()).toContain('全局')
+
+      void store.setMode('direct')
+      await settle(400)
+      expect(wrapper.find('[data-testid="side-status-meta"]').text()).toContain('直连')
+
+      locale.value = 'en'
+      await flushPromises()
+      expect(wrapper.find('[data-testid="side-status-meta"]').text()).toContain('Direct')
+      expect(wrapper.find('[data-testid="side-status-meta"]').text()).toContain(store.current.value!.name)
+    })
+
+    it('preserves layerDepth, focus restoration, and Android hardware back across Modal, CommandPalette, Menu, and ContextMenu transitions', async () => {
+      const { wrapper } = await mountApp({}, 1200)
+      expect(layerDepth()).toBe(0)
+
+      // 1. CommandPalette open -> layerDepth 1 -> Escape closes cleanly, restores focus, layerDepth 0
+      const paletteBtn = wrapper.find('[data-testid="open-palette"]')
+      ;(paletteBtn.element as HTMLElement).focus()
+      await paletteBtn.trigger('click')
+      await flushPromises()
+      expect(layerDepth()).toBe(1)
+      expect(body().find('.palette').exists()).toBe(true)
+
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await flushPromises()
+      expect(layerDepth()).toBe(0)
+      expect(body().find('.palette').exists()).toBe(false)
+      expect(document.activeElement).toBe(paletteBtn.element)
+
+      // 2. Modal (add-profile) open -> layerDepth 1 -> close button restores layerDepth 0
+      await openPage(wrapper, 'profiles')
+      await wrapper.find('[data-testid="add-profile"]').trigger('click')
+      await flushPromises()
+      expect(layerDepth()).toBe(1)
+      expect(body().find('.modal').exists()).toBe(true)
+      await body().find('.modal-head .icon-btn').trigger('click')
+      await flushPromises()
+      expect(layerDepth()).toBe(0)
+      expect(body().find('.modal').exists()).toBe(false)
+
+      // 3. ContextMenu on profile card -> layerDepth 1 -> Escape closes cleanly, layerDepth 0
+      await wrapper.find('[data-profile="p2"]').trigger('contextmenu')
+      await flushPromises()
+      expect(layerDepth()).toBe(1)
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(true)
+      await body().find('[data-testid="context-menu"]').trigger('keydown', { key: 'Escape' })
+      await flushPromises()
+      expect(layerDepth()).toBe(0)
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(false)
+
+      // 4. Android compact bottom sheet Modal + hardware back -> layerDepth returns to 0 without leaving page
+      const mobile = await mountApp({ platform: 'android' }, 390)
+      await openPage(mobile.wrapper, 'profiles')
+      await mobile.wrapper.find('[data-testid="add-profile"]').trigger('click')
+      await flushPromises()
+      expect(layerDepth()).toBe(1)
+      expect(body().find('.modal').exists()).toBe(true)
+
+      await hardwareBack()
+      expect(layerDepth()).toBe(0)
+      expect(body().find('.modal').exists()).toBe(false)
+      expect(mobile.wrapper.find('.main').attributes('data-page')).toBe('profiles')
     })
   })
 })

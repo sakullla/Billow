@@ -1615,5 +1615,6 @@ export const UI_EN: Record<string, string> = {
   '换一个名称或域名关键词试试。': 'Try another name or domain keyword.',
   '当前已开启「隐藏超时」，已隐藏该组全部 {0} 个超时节点。': '“Hide timed-out” is on; all {0} timed-out nodes in this group are hidden.',
   '显示超时节点': 'Show timed-out nodes',
+  '正在加载应用状态': 'Loading application state',
 }
 

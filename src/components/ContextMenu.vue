@@ -7,12 +7,13 @@ import type { MenuItem } from './Menu.vue'
 
 const props = withDefaults(
   defineProps<{
+    open?: boolean
     x: number
     y: number
     items: readonly MenuItem[]
     label?: string
   }>(),
-  { label: tr('快捷操作') },
+  { open: true, label: tr('快捷操作') },
 )
 const emit = defineEmits<{ select: [item: MenuItem]; close: [] }>()
 
@@ -20,6 +21,29 @@ const root = ref<HTMLElement | null>(null)
 const active = ref(0)
 const pos = ref({ left: props.x, top: props.y })
 let releaseLayer: (() => void) | null = null
+let mounted = false
+
+function cleanupListeners() {
+  document.removeEventListener('mousedown', onPointerOutside)
+  window.removeEventListener('scroll', onDismissScroll, true)
+  window.removeEventListener('resize', close)
+  releaseLayer?.()
+  releaseLayer = null
+}
+
+function activateMenu() {
+  if (!mounted || !props.open) return
+  pos.value = { left: props.x, top: props.y }
+  document.addEventListener('mousedown', onPointerOutside)
+  window.addEventListener('scroll', onDismissScroll, true)
+  window.addEventListener('resize', close)
+  releaseLayer?.()
+  releaseLayer = registerLayer(close)
+  void nextTick(() => {
+    clampToViewport()
+    focusItem(0)
+  })
+}
 
 const menuStyle = computed(() => ({
   left: `${pos.value.left}px`,
@@ -66,11 +90,13 @@ function move(step: number) {
 }
 
 function close() {
+  cleanupListeners()
   emit('close')
 }
 
 function choose(item: MenuItem) {
   if (item.disabled) return
+  cleanupListeners()
   emit('select', item)
   close()
 }
@@ -117,57 +143,61 @@ watch(
   },
 )
 
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!mounted) return
+    if (isOpen) activateMenu()
+    else cleanupListeners()
+  },
+  { flush: 'sync' },
+)
+
 onMounted(() => {
-  document.addEventListener('mousedown', onPointerOutside)
-  window.addEventListener('scroll', onDismissScroll, true)
-  window.addEventListener('resize', close)
-  releaseLayer = registerLayer(close)
-  void nextTick(() => {
-    clampToViewport()
-    focusItem(0)
-  })
+  mounted = true
+  if (props.open) activateMenu()
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', onPointerOutside)
-  window.removeEventListener('scroll', onDismissScroll, true)
-  window.removeEventListener('resize', close)
-  releaseLayer?.()
-  releaseLayer = null
+  mounted = false
+  cleanupListeners()
 })
 </script>
 
 <template>
   <Teleport to="body">
-    <div
-      ref="root"
-      class="menu context-menu"
-      :style="menuStyle"
-      role="menu"
-      :aria-label="label"
-      data-focus-portal
-      data-testid="context-menu"
-      @contextmenu.prevent
-      @keydown="onKeydown"
-    >
-      <button
-        v-for="(item, index) in items"
-        :key="item.id"
-        type="button"
-        role="menuitem"
-        class="menu-item"
-        :class="{ danger: item.danger, disabled: item.disabled }"
-        :tabindex="index === active ? 0 : -1"
-        :aria-disabled="item.disabled ? 'true' : undefined"
-        :data-menu-item="item.id"
-        @click="choose(item)"
-        @focus="active = index"
+    <Transition name="menu-pop" appear>
+      <div
+        v-if="open"
+        ref="root"
+        class="menu context-menu"
+        :style="menuStyle"
+        role="menu"
+        :aria-label="label"
+        data-focus-portal
+        data-testid="context-menu"
+        @contextmenu.prevent
+        @keydown="onKeydown"
       >
-        <Icon v-if="item.icon" :name="item.icon" :size="15" />
-        <span class="menu-label">{{ item.label }}</span>
-        <span v-if="item.mark" class="dot-mark" />
-        <span v-if="item.disabled && item.reason" class="menu-reason">{{ item.reason }}</span>
-      </button>
-    </div>
+        <button
+          v-for="(item, index) in items"
+          :key="item.id"
+          type="button"
+          role="menuitem"
+          class="menu-item"
+          :class="{ danger: item.danger, disabled: item.disabled }"
+          :tabindex="index === active ? 0 : -1"
+          :aria-disabled="item.disabled ? 'true' : undefined"
+          :data-menu-item="item.id"
+          @click="choose(item)"
+          @focus="active = index"
+        >
+          <Icon v-if="item.icon" :name="item.icon" :size="15" />
+          <span class="menu-label">{{ item.label }}</span>
+          <span v-if="item.mark" class="dot-mark" />
+          <span v-if="item.disabled && item.reason" class="menu-reason">{{ item.reason }}</span>
+        </button>
+      </div>
+    </Transition>
   </Teleport>
 </template>
