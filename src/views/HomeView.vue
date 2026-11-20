@@ -905,7 +905,7 @@ onBeforeUnmount(() => {
     </div>
 
     <Modal
-      v-if="profileSheetOpen"
+      :open="profileSheetOpen"
       :title="tr('切换配置')"
       :subtitle="tr('选择后立即启用，无需离开首页')"
       :before-close="() => !isSheetSwitching"
@@ -986,7 +986,7 @@ onBeforeUnmount(() => {
       </template>
     </Modal>
     <NodePickerModal
-      v-if="pickerGroup"
+      :open="Boolean(pickerGroup)"
       :group="pickerGroup"
       :compact="compact"
       @close="closeNodePicker"

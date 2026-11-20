@@ -44,6 +44,7 @@ function cleanupListeners() {
 
 function activateMenu() {
   if (!mounted || !props.open) return
+  active.value = 0
   above.value = false
   const focused = document.activeElement
   const anchorEl = props.anchor ?? root.value?.closest<HTMLElement>('.menu-anchor') ?? null
@@ -56,6 +57,7 @@ function activateMenu() {
   releaseLayer?.()
   releaseLayer = registerLayer(() => close(true))
   void nextTick(() => {
+    if (!mounted || !props.open) return
     const el = root.value
     if (el && typeof window !== 'undefined') {
       const rect = el.getBoundingClientRect()
@@ -152,15 +154,20 @@ watch(
 watch(
   () => props.open,
   (isOpen) => {
-    if (!mounted) return
-    if (isOpen) {
-      activateMenu()
-    } else {
-      cleanupListeners()
-      trigger = null
-    }
+    if (!mounted || isOpen) return
+    cleanupListeners()
+    trigger = null
   },
   { flush: 'sync' },
+)
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!mounted || !isOpen) return
+    activateMenu()
+  },
+  { flush: 'post' },
 )
 
 onMounted(() => {

@@ -846,7 +846,39 @@ describe('Core workflow polish (R5–R6)', () => {
       expect(layerDepth()).toBe(0)
       expect(body().find('.modal').exists()).toBe(false)
 
-      // 3. ContextMenu on profile card -> layerDepth 1 -> Escape closes cleanly, layerDepth 0
+      // 3. Profile card more Menu (:open driven) -> open, ArrowDown, Escape restores focus & layerDepth, reopen resets active to 0
+      const menuTrigger = wrapper.find('[data-menu-trigger="p2"]')
+      ;(menuTrigger.element as HTMLElement).focus()
+      await menuTrigger.trigger('click')
+      await flushPromises()
+      expect(layerDepth()).toBe(1)
+      const cardMenu = () => wrapper.find('[data-profile="p2"] [role="menu"]')
+      expect(cardMenu().exists()).toBe(true)
+      const firstItems = cardMenu().findAll('[role="menuitem"]')
+      expect(document.activeElement).toBe(firstItems[0]!.element)
+
+      await cardMenu().trigger('keydown', { key: 'ArrowDown' })
+      await flushPromises()
+      expect(document.activeElement).toBe(firstItems[1]!.element)
+
+      await cardMenu().trigger('keydown', { key: 'Escape' })
+      await flushPromises()
+      expect(layerDepth()).toBe(0)
+      expect(cardMenu().exists()).toBe(false)
+      expect(document.activeElement).toBe(menuTrigger.element)
+
+      // Reopen resets active index to 0 and outside click dismisses cleanly
+      await menuTrigger.trigger('click')
+      await flushPromises()
+      expect(layerDepth()).toBe(1)
+      expect(cardMenu().exists()).toBe(true)
+      expect(document.activeElement).toBe(cardMenu().findAll('[role="menuitem"]')[0]!.element)
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      await flushPromises()
+      expect(layerDepth()).toBe(0)
+      expect(cardMenu().exists()).toBe(false)
+
+      // 4. ContextMenu on profile card -> layerDepth 1 -> Escape closes cleanly, layerDepth 0
       await wrapper.find('[data-profile="p2"]').trigger('contextmenu')
       await flushPromises()
       expect(layerDepth()).toBe(1)
@@ -856,7 +888,7 @@ describe('Core workflow polish (R5–R6)', () => {
       expect(layerDepth()).toBe(0)
       expect(body().find('[data-testid="context-menu"]').exists()).toBe(false)
 
-      // 4. Android compact bottom sheet Modal + hardware back -> layerDepth returns to 0 without leaving page
+      // 5. Android compact bottom sheet Modal + hardware back -> layerDepth returns to 0 without leaving page
       const mobile = await mountApp({ platform: 'android' }, 390)
       await openPage(mobile.wrapper, 'profiles')
       await mobile.wrapper.find('[data-testid="add-profile"]').trigger('click')

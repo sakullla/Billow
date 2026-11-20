@@ -33,6 +33,7 @@ function cleanupListeners() {
 
 function activateMenu() {
   if (!mounted || !props.open) return
+  active.value = 0
   pos.value = { left: props.x, top: props.y }
   document.addEventListener('mousedown', onPointerOutside)
   window.addEventListener('scroll', onDismissScroll, true)
@@ -40,6 +41,7 @@ function activateMenu() {
   releaseLayer?.()
   releaseLayer = registerLayer(close)
   void nextTick(() => {
+    if (!mounted || !props.open) return
     clampToViewport()
     focusItem(0)
   })
@@ -135,8 +137,10 @@ function onDismissScroll(event: Event) {
 watch(
   () => [props.x, props.y, props.items.length] as const,
   () => {
+    if (!props.open) return
     pos.value = { left: props.x, top: props.y }
     void nextTick(() => {
+      if (!mounted || !props.open) return
       clampToViewport()
       focusItem(0)
     })
@@ -146,11 +150,19 @@ watch(
 watch(
   () => props.open,
   (isOpen) => {
-    if (!mounted) return
-    if (isOpen) activateMenu()
-    else cleanupListeners()
+    if (!mounted || isOpen) return
+    cleanupListeners()
   },
   { flush: 'sync' },
+)
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!mounted || !isOpen) return
+    activateMenu()
+  },
+  { flush: 'post' },
 )
 
 onMounted(() => {

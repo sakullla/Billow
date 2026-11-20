@@ -23,14 +23,19 @@ import type { NodeGroup, NodeItem } from '../lib/types'
 
 const BUILTIN_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
 
-const props = defineProps<{
-  group: NodeGroup
-  compact?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    open?: boolean
+    group: NodeGroup | null
+    compact?: boolean
+  }>(),
+  { open: true },
+)
 const emit = defineEmits<{ close: [] }>()
 
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
+const modalOpen = computed(() => props.open && Boolean(props.group))
 
 const query = ref('')
 const switchingNode = ref<string | null>(null)
@@ -38,19 +43,24 @@ const unfixing = ref(false)
 const failedNode = ref<{ name: string; reason: string } | null>(null)
 
 watch(
-  () => props.group.name,
-  () => {
-    query.value = ''
-    switchingNode.value = null
-    unfixing.value = false
-    failedNode.value = null
+  () => [props.open, props.group?.name] as const,
+  ([isOpen], prev) => {
+    if (isOpen || (prev && prev[1] !== props.group?.name)) {
+      query.value = ''
+      switchingNode.value = null
+      unfixing.value = false
+      failedNode.value = null
+    }
   },
 )
 
 const isSwitching = computed(
-  () => switchingNode.value !== null || unfixing.value || Boolean(store.busy[`select:${props.group.name}`]),
+  () =>
+    switchingNode.value !== null ||
+    unfixing.value ||
+    Boolean(props.group && store.busy[`select:${props.group.name}`]),
 )
-const offlineAutoGroup = computed(() => !snap.value.kernel_running && props.group.kind !== 'manual')
+const offlineAutoGroup = computed(() => Boolean(props.group) && !snap.value.kernel_running && props.group!.kind !== 'manual')
 const rowDisabled = computed(() => isSwitching.value || offlineAutoGroup.value)
 
 const catalogByName = computed(() => new Map(snap.value.node_catalog.map((item) => [item.name, item])))
@@ -73,21 +83,26 @@ function tagLabel(node: NodeItem, tag: string): string {
 }
 
 const currentHops = computed(() => {
-  const chain = resolveChain(props.group.name, snap.value.node_catalog)
-  return chain.length ? chain : props.group.now ? [props.group.now] : []
+  const group = props.group
+  if (!group) return []
+  const chain = resolveChain(group.name, snap.value.node_catalog)
+  return chain.length ? chain : group.now ? [group.now] : []
 })
 
 const currentDelay = computed(() => {
   const none = { text: '—', tone: 'none' }
-  if (!snap.value.connected) return none
-  const state = effectiveGroupDelay(props.group, snap.value.node_catalog, store.testResults.value)
+  const group = props.group
+  if (!group || !snap.value.connected) return none
+  const state = effectiveGroupDelay(group, snap.value.node_catalog, store.testResults.value)
   if (!state.target || (!state.failed && state.delay == null)) return none
   return { text: delayText(state.delay, state.failed), tone: delayTone(state.delay, state.failed) }
 })
 
 const subtitle = computed(() => {
-  if (props.group.fixed) return tr('当前已固定为 {0}。', { 0: props.group.fixed })
-  if (props.group.kind !== 'manual') return tr('点选后固定使用该节点，可随时恢复自动')
+  const group = props.group
+  if (!group) return ''
+  if (group.fixed) return tr('当前已固定为 {0}。', { 0: group.fixed })
+  if (group.kind !== 'manual') return tr('点选后固定使用该节点，可随时恢复自动')
   return tr('选择后立即切换，无需离开首页')
 })
 
@@ -97,14 +112,16 @@ function nodeState(node: NodeItem): { delay: number | null; failed: boolean } {
 }
 
 function isSelected(node: NodeItem): boolean {
-  return node.selected || props.group.now === node.name
+  return node.selected || props.group?.now === node.name
 }
 
 const queryTokens = computed(() => splitQueryTokens(query.value))
 
 const filteredNodes = computed(() => {
+  const group = props.group
+  if (!group) return []
   const tokens = queryTokens.value
-  return props.group.nodes.filter((node) => {
+  return group.nodes.filter((node) => {
     if (!tokens.length && !node.selected && isInfoNode(node.name)) return false
     if (!tokens.length) return true
     const haystack = [
@@ -121,9 +138,10 @@ const filteredNodes = computed(() => {
 })
 
 const fastestCandidate = computed<{ node: NodeItem; delay: number } | null>(() => {
-  if (!canPickNode(props.group) || !snap.value.kernel_running) return null
+  const group = props.group
+  if (!group || !canPickNode(group) || !snap.value.kernel_running) return null
   let best: { node: NodeItem; delay: number } | null = null
-  for (const node of props.group.nodes) {
+  for (const node of group.nodes) {
     if (groupNames.value.has(node.name)) continue
     if (BUILTIN_POLICIES.has(node.name.toUpperCase()) || isInfoNode(node.name)) continue
     const state = nodeState(node)
@@ -133,14 +151,14 @@ const fastestCandidate = computed<{ node: NodeItem; delay: number } | null>(() =
     }
   }
   if (!best) return null
-  if (props.group.kind === 'manual' ? isSelected(best.node) : props.group.fixed === best.node.name || (!props.group.fixed && isSelected(best.node))) {
+  if (group.kind === 'manual' ? isSelected(best.node) : group.fixed === best.node.name || (!group.fixed && isSelected(best.node))) {
     return null
   }
   return best
 })
 
 const testingGroup = computed(
-  () => store.activeTest.value?.group === props.group.name || Boolean(store.busy[`test:${props.group.name}`]),
+  () => Boolean(props.group) && (store.activeTest.value?.group === props.group!.name || Boolean(store.busy[`test:${props.group!.name}`])),
 )
 const testDisabled = computed(() => !snap.value.kernel_running || store.testing.value || isSwitching.value)
 const unfixDisabled = computed(() => !snap.value.kernel_running || isSwitching.value)
@@ -151,17 +169,20 @@ function requestClose() {
 }
 
 function initialFocus(): HTMLElement | null | undefined {
+  const group = props.group
+  if (!group) return undefined
   if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true) {
     return undefined
   }
-  const activeName = props.group.fixed || props.group.now || filteredNodes.value[0]?.name
+  const activeName = group.fixed || group.now || filteredNodes.value[0]?.name
   if (!activeName) return undefined
   return document.querySelector<HTMLElement>(`[data-picker-node="${CSS.escape(activeName)}"]`)
 }
 
 async function pickNode(node: NodeItem, fastestDelay?: number) {
-  if (!canPickNode(props.group) || isSwitching.value || offlineAutoGroup.value) return
-  const alreadyNoop = props.group.kind === 'manual' ? isSelected(node) : props.group.fixed === node.name
+  const group = props.group
+  if (!group || !canPickNode(group) || isSwitching.value || offlineAutoGroup.value) return
+  const alreadyNoop = group.kind === 'manual' ? isSelected(node) : group.fixed === node.name
   if (alreadyNoop) {
     failedNode.value = null
     emit('close')
@@ -173,12 +194,12 @@ async function pickNode(node: NodeItem, fastestDelay?: number) {
   const beforeFailure = snap.value.failure
   const beforeNodesError = snap.value.nodes_error
   try {
-    const result = await store.selectNode(props.group.name, node.name)
-    const afterGroup = result?.node_catalog.find((item) => item.name === props.group.name)
+    const result = await store.selectNode(group.name, node.name)
+    const afterGroup = result?.node_catalog.find((item) => item.name === group.name)
     const afterNode = afterGroup?.nodes.find((item) => item.name === node.name)
     const targetActive = Boolean(
       afterGroup &&
-        (props.group.kind === 'manual'
+        (group.kind === 'manual'
           ? afterGroup.now === node.name || afterNode?.selected
           : afterGroup.fixed === node.name || afterGroup.now === node.name || afterNode?.selected),
     )
@@ -214,14 +235,15 @@ function pickFastest() {
 }
 
 async function unfix() {
-  if (!props.group.fixed || unfixDisabled.value) return
+  const group = props.group
+  if (!group || !group.fixed || unfixDisabled.value) return
   unfixing.value = true
   failedNode.value = null
   const beforeFailure = snap.value.failure
   const beforeNodesError = snap.value.nodes_error
   try {
-    const result = await store.unfixGroup(props.group.name)
-    const afterGroup = result?.node_catalog.find((item) => item.name === props.group.name)
+    const result = await store.unfixGroup(group.name)
+    const afterGroup = result?.node_catalog.find((item) => item.name === group.name)
     const newErr =
       (result?.nodes_error && result.nodes_error !== beforeNodesError ? result.nodes_error : null) ||
       (result?.failure && result.failure !== beforeFailure ? result.failure : null)
@@ -234,21 +256,23 @@ async function unfix() {
 }
 
 function openInProxies() {
-  if (isSwitching.value) return
+  const group = props.group
+  if (!group || isSwitching.value) return
   emit('close')
-  store.go('proxies', props.group.name)
+  store.go('proxies', group.name)
 }
 </script>
 
 <template>
   <Modal
-    :title="group.name"
+    :open="modalOpen"
+    :title="group?.name ?? ''"
     :subtitle="subtitle"
     :before-close="() => !isSwitching"
     :initial-focus="initialFocus"
     @close="requestClose"
   >
-    <div class="node-picker" data-testid="home-node-picker" :data-group="group.name">
+    <div v-if="group" class="node-picker" data-testid="home-node-picker" :data-group="group.name">
       <div class="node-picker-summary">
         <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="18" /></span>
         <div class="node-picker-summary-body">

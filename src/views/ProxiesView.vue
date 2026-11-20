@@ -1163,10 +1163,10 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
     </section>
 
     <ContextMenu
-      v-if="ctxMenu"
-      :x="ctxMenu.x"
-      :y="ctxMenu.y"
-      :items="ctxMenu.items"
+      :open="Boolean(ctxMenu)"
+      :x="ctxMenu?.x ?? 0"
+      :y="ctxMenu?.y ?? 0"
+      :items="ctxMenu?.items ?? []"
       :label="tr('节点操作')"
       @select="onNodeContextSelect"
       @close="ctxMenu = null"

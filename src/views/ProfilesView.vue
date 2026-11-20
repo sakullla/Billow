@@ -1032,7 +1032,7 @@ const failedSubscriptionIds = computed(() =>
               <Icon name="more" />
             </button>
             <Menu
-              v-if="menuFor === profile.id"
+              :open="menuFor === profile.id"
               :items="menuItems(profile)"
               :label="tr('配置操作')"
               @select="(item) => selectMenuItem(profile, item)"
@@ -1141,13 +1141,13 @@ const failedSubscriptionIds = computed(() =>
     </div>
 
     <Modal
-      v-if="editing"
+      :open="Boolean(editing)"
       :title="tr('编辑配置信息')"
       :before-close="() => !savingEdit"
       :initial-focus="ageFocus ? () => ageInput : undefined"
       @close="closeEdit"
     >
-      <form class="stack" novalidate @submit.prevent="saveEdit">
+      <form v-if="editing" class="stack" novalidate @submit.prevent="saveEdit">
         <div
           v-if="saveAttemptFailed && (partialSaveGroups.saved.length || partialSaveGroups.pending.length)"
           class="banner warn small edit-save-summary"
@@ -1338,18 +1338,19 @@ const failedSubscriptionIds = computed(() =>
     </Modal>
 
     <Modal
-      v-if="yaml"
+      :open="Boolean(yaml)"
       wide
-      :title="yaml.mode === 'content' ? tr('编辑 · {0}', { 0: yaml.profile.name }) : tr('覆写 · {0}', { 0: yaml.profile.name })"
-      :subtitle="yaml.mode === 'content'
+      :title="yaml ? (yaml.mode === 'content' ? tr('编辑 · {0}', { 0: yaml.profile.name }) : tr('覆写 · {0}', { 0: yaml.profile.name })) : ''"
+      :subtitle="yaml ? (yaml.mode === 'content'
         ? (yaml.profile.kind === 'subscription' ? tr('订阅更新时会覆盖这里的修改；长期修改请使用覆写') : tr('保存后立即替换这份配置'))
         : yaml.language === 'yaml'
           ? tr('以 YAML 深度合并到配置之上，订阅更新后依然保留')
-          : tr('用 JavaScript 的 main(config) 修改配置并返回，订阅更新后依然保留')"
+          : tr('用 JavaScript 的 main(config) 修改配置并返回，订阅更新后依然保留')) : ''"
       :before-close="beforeYamlClose"
       @close="yaml = null"
     >
-      <div v-if="yaml.mode === 'override'" class="override-bar">
+      <template v-if="yaml">
+        <div v-if="yaml.mode === 'override'" class="override-bar">
         <Segmented
           :model-value="yaml.language"
           :options="OVERRIDE_LANGUAGES"
@@ -1429,37 +1430,44 @@ const failedSubscriptionIds = computed(() =>
         </ol>
         <YamlEditor v-if="!preview.error" class="editor preview-editor readonly" :model-value="preview.yaml" readonly :label="tr('合并结果')" />
       </section>
-      <p v-if="yamlError" class="field-error editor-error" role="alert">{{ tr(yamlError) }}</p>
+        <p v-if="yamlError" class="field-error editor-error" role="alert">{{ tr(yamlError) }}</p>
+      </template>
       <template #footer>
-        <span class="muted small grow editor-meta">
-          <span>{{ yamlLines }} {{ tr('行') }}{{ yaml.dirty ? tr(' · 未保存') : '' }}</span>
-          <span class="editor-hint">{{ tr('· Ctrl+Space 补全 · Tab 接受 ·') }} {{ findShortcut }} {{ tr('查找 ·') }} {{ saveShortcut }} {{ tr('保存') }}</span>
-          <template v-if="yaml.profile.current">
-            <span aria-hidden="true">·</span>
-            <button
-              type="button"
-              class="link-btn"
-              data-testid="open-effective"
-              @click="openEffective('yaml')"
-            >{{ tr('查看生效配置') }}</button>
-          </template>
-        </span>
-        <button type="button" class="btn ghost" data-testid="cancel-editor" @click="requestYamlClose">{{ tr('取消') }}</button>
-        <button type="button" class="btn primary" :disabled="store.busy.content || store.busy.override" @click="saveYaml">
-          {{ yaml.mode === 'override' && yaml.profile.current ? tr('保存并生效') : tr('保存') }}
-        </button>
+        <template v-if="yaml">
+          <span class="muted small grow editor-meta">
+            <span>{{ yamlLines }} {{ tr('行') }}{{ yaml.dirty ? tr(' · 未保存') : '' }}</span>
+            <span class="editor-hint">{{ tr('· Ctrl+Space 补全 · Tab 接受 ·') }} {{ findShortcut }} {{ tr('查找 ·') }} {{ saveShortcut }} {{ tr('保存') }}</span>
+            <template v-if="yaml.profile.current">
+              <span aria-hidden="true">·</span>
+              <button
+                type="button"
+                class="link-btn"
+                data-testid="open-effective"
+                @click="openEffective('yaml')"
+              >{{ tr('查看生效配置') }}</button>
+            </template>
+          </span>
+          <button type="button" class="btn ghost" data-testid="cancel-editor" @click="requestYamlClose">{{ tr('取消') }}</button>
+          <button type="button" class="btn primary" :disabled="store.busy.content || store.busy.override" @click="saveYaml">
+            {{ yaml.mode === 'override' && yaml.profile.current ? tr('保存并生效') : tr('保存') }}
+          </button>
+        </template>
       </template>
     </Modal>
 
-    <Modal v-if="languageSwitch" :title="tr('切换为 {0} 覆写？', { 0: languageSwitch === 'javascript' ? 'JavaScript' : 'YAML' })" @close="languageSwitch = null">
+    <Modal
+      :open="Boolean(languageSwitch)"
+      :title="languageSwitch ? tr('切换为 {0} 覆写？', { 0: languageSwitch === 'javascript' ? 'JavaScript' : 'YAML' }) : ''"
+      @close="languageSwitch = null"
+    >
       <p>{{ tr('两种写法不能混用，切换后当前内容会被示例替换。需要保留的话，可以先复制出来。') }}</p>
       <template #footer>
         <button type="button" class="btn ghost" @click="languageSwitch = null">{{ tr('取消') }}</button>
-        <button type="button" class="btn danger" data-testid="confirm-language" @click="applyLanguage(languageSwitch)">{{ tr('替换内容') }}</button>
+        <button type="button" class="btn danger" data-testid="confirm-language" @click="languageSwitch && applyLanguage(languageSwitch)">{{ tr('替换内容') }}</button>
       </template>
     </Modal>
 
-    <Modal v-if="discardOpen" :title="tr('放弃未保存的修改？')" @close="keepEditing">
+    <Modal :open="discardOpen" :title="tr('放弃未保存的修改？')" @close="keepEditing">
       <p>{{ tr('关闭后，这次对「') }}{{ yaml?.profile.name }}{{ tr('」的修改不会保存。') }}</p>
       <template #footer>
         <button type="button" class="btn ghost" data-testid="keep-editing" @click="keepEditing">{{ tr('继续编辑') }}</button>
@@ -1467,8 +1475,8 @@ const failedSubscriptionIds = computed(() =>
       </template>
     </Modal>
 
-    <Modal v-if="removing" :title="tr('删除配置')" @close="removing = null">
-      <p>{{ tr('确定删除「') }}{{ removing.name }}{{ tr('」？此操作无法撤销。') }}</p>
+    <Modal :open="Boolean(removing)" :title="tr('删除配置')" @close="removing = null">
+      <p>{{ tr('确定删除「') }}{{ removing?.name }}{{ tr('」？此操作无法撤销。') }}</p>
       <template #footer>
         <button type="button" class="btn ghost" @click="removing = null">{{ tr('取消') }}</button>
         <button type="button" class="btn danger" @click="confirmRemove">{{ tr('删除') }}</button>
@@ -1476,10 +1484,10 @@ const failedSubscriptionIds = computed(() =>
     </Modal>
 
     <ContextMenu
-      v-if="ctxMenu"
-      :x="ctxMenu.x"
-      :y="ctxMenu.y"
-      :items="menuItems(ctxMenu.profile)"
+      :open="Boolean(ctxMenu)"
+      :x="ctxMenu?.x ?? 0"
+      :y="ctxMenu?.y ?? 0"
+      :items="ctxMenu ? menuItems(ctxMenu.profile) : []"
       :label="tr('配置操作')"
       @select="onProfileContextSelect"
       @close="ctxMenu = null"
