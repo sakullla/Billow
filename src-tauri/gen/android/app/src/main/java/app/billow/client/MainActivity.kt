@@ -17,10 +17,12 @@ class MainActivity : TauriActivity() {
     /** Latest insets in CSS pixels; read by the page on load and pushed on every change. */
     @Volatile private var insetsJson = "{\"top\":0,\"right\":0,\"bottom\":0,\"left\":0,\"ime\":0}"
     private var webView: WebView? = null
+    private var insetsTarget: View? = null
     /** A tile or widget tap that still has to reach Rust (R41). */
     private var pendingTap = false
     private var tapAttempts = 0
     private var tapping = false
+    private val tapRetry = Runnable { runPendingTap() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         pendingTap = takeTap(intent)
@@ -30,9 +32,8 @@ class MainActivity : TauriActivity() {
         requestNotificationPermission()
     }
 
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent == null) return
         setIntent(intent)
         if (takeTap(intent)) {
             pendingTap = true
@@ -52,6 +53,17 @@ class MainActivity : TauriActivity() {
         runPendingTap()
     }
 
+    override fun onDestroy() {
+        pendingTap = false
+        window.decorView.removeCallbacks(tapRetry)
+        insetsTarget?.let { ViewCompat.setOnApplyWindowInsetsListener(it, null) }
+        insetsTarget = null
+        webView?.removeJavascriptInterface("BillowInsets")
+        webView?.removeJavascriptInterface("BillowApps")
+        webView = null
+        super.onDestroy()
+    }
+
     /**
      * A tile tap that needed the app continues here (R41). Rust keeps the tap
      * until its runtime is up, so a cold start still reaches the same toggle,
@@ -61,6 +73,7 @@ class MainActivity : TauriActivity() {
         if (!pendingTap || tapping) return
         tapping = true
         BillowShortcuts.tap(true) { result ->
+            if (isDestroyed) return@tap
             tapping = false
             when (result) {
                 BillowShortcuts.HANDLED, BillowShortcuts.OPEN_APP -> pendingTap = false
@@ -69,7 +82,7 @@ class MainActivity : TauriActivity() {
                     if (tapAttempts > TAP_ATTEMPTS) {
                         pendingTap = false
                     } else {
-                        window.decorView.postDelayed({ runPendingTap() }, TAP_RETRY_MS)
+                        window.decorView.postDelayed(tapRetry, TAP_RETRY_MS)
                     }
                 }
             }
@@ -94,6 +107,7 @@ class MainActivity : TauriActivity() {
         // The WebView is attached to the content frame only after this callback, so
         // the listener and the IME padding live on that frame instead.
         val target: View = window.decorView.findViewById<ViewGroup>(android.R.id.content)
+        insetsTarget = target
         ViewCompat.setOnApplyWindowInsetsListener(target) { view, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
@@ -117,7 +131,9 @@ class MainActivity : TauriActivity() {
     private fun push() {
         val view = webView ?: return
         val script = "window.__billowInsets&&window.__billowInsets($insetsJson)"
-        view.post { view.evaluateJavascript(script, null) }
+        view.post {
+            if (view === webView) view.evaluateJavascript(script, null)
+        }
     }
 
     private inner class InsetsBridge {
@@ -150,13 +166,17 @@ class MainActivity : TauriActivity() {
                 val drawable = packageManager.getApplicationIcon(packageName)
                 val size = (40 * resources.displayMetrics.density).toInt().coerceIn(48, 128)
                 val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
-                val canvas = android.graphics.Canvas(bitmap)
-                drawable.setBounds(0, 0, size, size)
-                drawable.draw(canvas)
-                val out = java.io.ByteArrayOutputStream()
-                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
-                bitmap.recycle()
-                "data:image/png;base64," + android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+                try {
+                    val canvas = android.graphics.Canvas(bitmap)
+                    drawable.setBounds(0, 0, size, size)
+                    drawable.draw(canvas)
+                    val out = java.io.ByteArrayOutputStream()
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                    "data:image/png;base64," +
+                        android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+                } finally {
+                    bitmap.recycle()
+                }
             } catch (_: Exception) {
                 ""
             }
