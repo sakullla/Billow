@@ -206,18 +206,21 @@ async function mountAppShell(platform: 'desktop' | 'android', width: number) {
 }
 
 describe('hotkey settings placement (R39)', () => {
-  it('shows the section on desktop and binds nothing yet', async () => {
+  it('keeps the bindings in the secondary shortcut sheet, not on the settings page', async () => {
     const wrapper = await mountAppShell('desktop', 1200)
-    const section = wrapper.find('[data-testid="hotkey-settings"]')
-    expect(section.exists()).toBe(true)
-    expect(section.text()).toContain('全局快捷键')
-    expect(wrapper.find('[data-testid="hotkey-combo-proxy"]').text()).toBe('未绑定')
-    expect(wrapper.findAll('[data-testid^="hotkey-row-"]')).toHaveLength(7)
+    expect(document.querySelector('[data-testid="hotkey-settings"]')).toBeNull()
+    await wrapper.find('[data-testid="settings-shortcuts"]').trigger('click')
+    await flushPromises()
+    const section = document.querySelector('[data-testid="hotkey-settings"]') as HTMLElement | null
+    expect(section).not.toBeNull()
+    expect(section!.textContent).toContain('全局快捷键')
+    expect(document.querySelector('[data-testid="hotkey-combo-proxy"]')!.textContent).toBe('未绑定')
+    expect(document.querySelectorAll('[data-testid^="hotkey-row-"]')).toHaveLength(7)
   })
 
-  it('hides the section on Android', async () => {
-    const wrapper = await mountAppShell('android', 390)
-    expect(wrapper.find('[data-testid="hotkey-settings"]').exists()).toBe(false)
+  it('hides the secondary hotkey section on Android', async () => {
+    await mountAppShell('android', 390)
+    expect(document.querySelector('[data-testid="hotkey-settings"]')).toBeNull()
     expect(document.body.textContent).not.toContain('全局快捷键')
   })
 })

@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } f
 import CommandPalette from './components/CommandPalette.vue'
 import ConfigViewer from './components/ConfigViewer.vue'
 import DnsQueryDialog from './components/DnsQueryDialog.vue'
+import HotkeySection from './components/HotkeySection.vue'
 import Icon from './components/Icon.vue'
 import Modal from './components/Modal.vue'
 import TitleBar from './components/TitleBar.vue'
@@ -822,6 +823,7 @@ defineExpose({ store })
           </dd>
         </div>
       </dl>
+      <HotkeySection v-if="!isAndroid" />
     </Modal>
 
     <Modal v-if="store.adding.value" :title="tr('添加配置')" :subtitle="tr('订阅链接或 Clash / Mihomo YAML 文件')" @close="store.adding.value = false">
