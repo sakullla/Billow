@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/MetaCubeX/mihomo",
+  "version": "v1.19.34",
+  "commit": "0455d0d28c4526937380505153e65a843d8612e8",
+  "sha256": "db0cc4145fe4024e9c2386bd4768bf23a69c8789610d56d7243819e2f77c0cfe",
+  "goVersion": "go1.26.11",
+  "tags": [
+    "with_gvisor",
+    "cmfa"
+  ],
+  "archiveUrl": "https://codeload.github.com/MetaCubeX/mihomo/tar.gz/0455d0d28c4526937380505153e65a843d8612e8",
+  "minimumGoVersion": "go1.26.0",
+  "ldflags": {
+    "main.version": "v1.19.34"
+  },
+  "buildMode": "c-archive",
+  "moduleName": "billow_mihomo_bridge"
+}

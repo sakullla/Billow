@@ -1,0 +1,911 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		02CA7F321EF0B10D992F6547 /* PacketPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50313A98AB45C858B7B91678 /* PacketPump.swift */; };
+		058B27BDE1928E2A5F8DCC63 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 289E477ADF17F5E0868EB4F5 /* UIKit.framework */; };
+		1577CA80C3498A042EFF5DA8 /* AppGroupStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC6FE73D4535D2EA6EAFECF /* AppGroupStore.swift */; };
+		168103DE99FC07FB825E5F93 /* ResourcesInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE5FE030EDBD91E9DFC9AC53 /* ResourcesInstaller.swift */; };
+		1E29C5FC06320A50EDD7BE6B /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 417BBE9F22947E6DAC93B7D4 /* NetworkExtension.framework */; };
+		2C73BA96A292F7A6BE79F618 /* BillowMobileEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19528B745CBAC7959D50D578 /* BillowMobileEntry.swift */; };
+		31548BF5861DEB52C8CEA91B /* AppGroupStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC6FE73D4535D2EA6EAFECF /* AppGroupStore.swift */; };
+		3AAA530D265B279BFB140BB9 /* RustTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2437F30E22B856AD38E168B5 /* RustTunnelProvider.swift */; };
+		3C3F28AE8DD64FE65CC3CE45 /* ProviderSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4824EF26364F70FAB695957E /* ProviderSupport.swift */; };
+		4573809226047AF3265B0855 /* ProviderSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4824EF26364F70FAB695957E /* ProviderSupport.swift */; };
+		59020AAE53C8C0AB6B35347B /* BillowRustEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8EFF7C2A9E6DF22C5B277AE /* BillowRustEngine.swift */; };
+		62AA82DA55ECB6D3AF40528B /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 639101A03E95773B7355CC12 /* WebKit.framework */; };
+		6481506E20C0292992EB6C73 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 647120AC6A2A119565922910 /* assets */; };
+		67E6604D98495F40FE13F96A /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA9CC54DC0B8CB653577E9D6 /* Logger.swift */; };
+		6B53C4961D604C6199F716A6 /* BillowMihomoEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20B2E194D7566141D48E5A15 /* BillowMihomoEngine.swift */; };
+		6B88BAFF16880CF11007CF5A /* BillowVPNIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05BD8E17232E9E58D3E4142A /* BillowVPNIntents.swift */; };
+		6FA770968EE685C281458140 /* BillowMihomoBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 1BA7BA72AA037F7D80570A5A /* BillowMihomoBridge.m */; };
+		7252E7058B772C40D87FB3CF /* BillowRustBridge.c in Sources */ = {isa = PBXBuildFile; fileRef = ABC676E6E962B4231DD248D5 /* BillowRustBridge.c */; };
+		72946A6C968DD732AF109F1E /* PacketPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50313A98AB45C858B7B91678 /* PacketPump.swift */; };
+		7615C2511D20F3D0C79A2E8D /* BillowVPNError.swift in Sources */ = {isa = PBXBuildFile; fileRef = C83822028DD84DB0390EAE5E /* BillowVPNError.swift */; };
+		775545B5D3D47A7761356F91 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 325BD6D802130C9117B205AC /* Metal.framework */; };
+		7B0EF6C310514D480D125978 /* AppGroupStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC6FE73D4535D2EA6EAFECF /* AppGroupStore.swift */; };
+		7B6F6C1D28452669F7D670CD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2F2FD759EBC46EAEE3A91990 /* Assets.xcassets */; };
+		808B8ED436F38178A4F3961B /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 417BBE9F22947E6DAC93B7D4 /* NetworkExtension.framework */; };
+		80BF9C8A28FB03611E4BE9C0 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1D4FEFB2A3A50605099A5E49 /* Security.framework */; };
+		9011BDEB207375120C38DD1A /* PacketPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50313A98AB45C858B7B91678 /* PacketPump.swift */; };
+		9192C5F40EF4F65BD2E3AF8B /* BillowVPNManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0479B7D91C4527267909197 /* BillowVPNManager.swift */; };
+		94A38092ACA3C5275FDE9AF9 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 670F461C1558B3CA640322D9 /* LaunchScreen.storyboard */; };
+		9D16D78CD4255C79D1B0F346 /* BillowVPNError.swift in Sources */ = {isa = PBXBuildFile; fileRef = C83822028DD84DB0390EAE5E /* BillowVPNError.swift */; };
+		A282E9318E9E93ED55D3B660 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C5E8AB570441D213559F0C2 /* CoreGraphics.framework */; };
+		A93305940C62B52421519585 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA9CC54DC0B8CB653577E9D6 /* Logger.swift */; };
+		BC18A72844B0348E89CEBF81 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA9CC54DC0B8CB653577E9D6 /* Logger.swift */; };
+		BFED5738C0D6B0E160692EEB /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 598FEA96E2D71D137B1E8C9D /* main.mm */; };
+		C311D5DCB098C12C91F637A1 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EEB6226954CB6D4FA7EE3BB3 /* CryptoKit.framework */; };
+		C4BEE252A29AC85092E04641 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 0E6CC23C814C9679D931F42A /* libapp.a */; };
+		C867C6A09FB0BEDC830A419E /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 63040C3DBFA7FDCB6B7EDA65 /* MetalKit.framework */; };
+		C89D577EA24E69CB1CFF7083 /* mihomo-resolv-stub.c in Sources */ = {isa = PBXBuildFile; fileRef = D5BDF562C15DAC2629DED557 /* mihomo-resolv-stub.c */; };
+		CA505DABD887B4D242127E1E /* ProviderSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4824EF26364F70FAB695957E /* ProviderSupport.swift */; };
+		CBE8ED4ECE76C88492038673 /* BillowVPNError.swift in Sources */ = {isa = PBXBuildFile; fileRef = C83822028DD84DB0390EAE5E /* BillowVPNError.swift */; };
+		D3A9ACCA19457947D2C418DE /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EEB6226954CB6D4FA7EE3BB3 /* CryptoKit.framework */; };
+		D8D8F474CB6DAD3A5CD4A44C /* MihomoTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E74A128077B7BC80D0F57EE7 /* MihomoTunnelProvider.swift */; };
+		DB08FC0B68A9380587FD97A9 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0D801BCFEA53F342ADF22D3C /* QuartzCore.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		05BD8E17232E9E58D3E4142A /* BillowVPNIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillowVPNIntents.swift; sourceTree = "<group>"; };
+		06D93340D4D4AA20A2D7E150 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		08A184FFDC6E9A40EAF14FF2 /* BillowRust.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BillowRust.entitlements; sourceTree = "<group>"; };
+		0D801BCFEA53F342ADF22D3C /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		0E6CC23C814C9679D931F42A /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		166ADC405B9E5B4AAA1C7016 /* profile.rs */ = {isa = PBXFileReference; path = profile.rs; sourceTree = "<group>"; };
+		18AF8AABC6B2D812EB33FBDF /* shell.rs */ = {isa = PBXFileReference; path = shell.rs; sourceTree = "<group>"; };
+		19528B745CBAC7959D50D578 /* BillowMobileEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillowMobileEntry.swift; sourceTree = "<group>"; };
+		19F998F6222139728D180020 /* tray.rs */ = {isa = PBXFileReference; path = tray.rs; sourceTree = "<group>"; };
+		1BA7BA72AA037F7D80570A5A /* BillowMihomoBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BillowMihomoBridge.m; sourceTree = "<group>"; };
+		1D4FEFB2A3A50605099A5E49 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		20B2E194D7566141D48E5A15 /* BillowMihomoEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillowMihomoEngine.swift; sourceTree = "<group>"; };
+		21B6DCF34B325B7F6C23E4E2 /* packed.rs */ = {isa = PBXFileReference; path = packed.rs; sourceTree = "<group>"; };
+		2437F30E22B856AD38E168B5 /* RustTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustTunnelProvider.swift; sourceTree = "<group>"; };
+		289E477ADF17F5E0868EB4F5 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		2F2FD759EBC46EAEE3A91990 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		313734F72B3755379DF7086F /* diagnostics.rs */ = {isa = PBXFileReference; path = diagnostics.rs; sourceTree = "<group>"; };
+		325BD6D802130C9117B205AC /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		32A842F98ADDC8438D86F7AC /* bundled_geo.rs */ = {isa = PBXFileReference; path = bundled_geo.rs; sourceTree = "<group>"; };
+		34761D8E456387892CFF139B /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		417BBE9F22947E6DAC93B7D4 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		432D444C8B6443F9FAC23D33 /* elevation.rs */ = {isa = PBXFileReference; path = elevation.rs; sourceTree = "<group>"; };
+		4824EF26364F70FAB695957E /* ProviderSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderSupport.swift; sourceTree = "<group>"; };
+		4A158744592A50E143C70252 /* nodes.rs */ = {isa = PBXFileReference; path = nodes.rs; sourceTree = "<group>"; };
+		4D9A495FE69A721989E1A962 /* win_process.rs */ = {isa = PBXFileReference; path = win_process.rs; sourceTree = "<group>"; };
+		50313A98AB45C858B7B91678 /* PacketPump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketPump.swift; sourceTree = "<group>"; };
+		598FEA96E2D71D137B1E8C9D /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		5A0EDCE5ED9110183781C7F0 /* kernel.rs */ = {isa = PBXFileReference; path = kernel.rs; sourceTree = "<group>"; };
+		5F45DFDC00C91264D5F7C776 /* resources.rs */ = {isa = PBXFileReference; path = resources.rs; sourceTree = "<group>"; };
+		63040C3DBFA7FDCB6B7EDA65 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		639101A03E95773B7355CC12 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		647120AC6A2A119565922910 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		670F461C1558B3CA640322D9 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		6DC6FE73D4535D2EA6EAFECF /* AppGroupStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroupStore.swift; sourceTree = "<group>"; };
+		729D19EAF483E61ADA7A42F2 /* BillowMihomo.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = BillowMihomo.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		77B07DA60E8D223EBA57FD4E /* BillowRust-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BillowRust-Bridging-Header.h"; sourceTree = "<group>"; };
+		7C5E8AB570441D213559F0C2 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		87EDE8CCBD012D57F2367947 /* billow_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = billow_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		90A0554C8350E65AD18758C8 /* billow_mihomo_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = billow_mihomo_bridge.h; sourceTree = "<group>"; };
+		9121CDB96A7A5DC2B9524A9E /* age_key.rs */ = {isa = PBXFileReference; path = age_key.rs; sourceTree = "<group>"; };
+		9AE2017EB62321AA1F72E341 /* mrs.rs */ = {isa = PBXFileReference; path = mrs.rs; sourceTree = "<group>"; };
+		A0479B7D91C4527267909197 /* BillowVPNManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillowVPNManager.swift; sourceTree = "<group>"; };
+		A1D83B0B0BBD655B1D1A5C78 /* billow_rust_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = billow_rust_bridge.h; sourceTree = "<group>"; };
+		A528804F9B66738AF1E98A10 /* app_update.rs */ = {isa = PBXFileReference; path = app_update.rs; sourceTree = "<group>"; };
+		A872FD3F143767AB8BF6EE7F /* takeover.rs */ = {isa = PBXFileReference; path = takeover.rs; sourceTree = "<group>"; };
+		A8EFF7C2A9E6DF22C5B277AE /* BillowRustEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillowRustEngine.swift; sourceTree = "<group>"; };
+		ABC676E6E962B4231DD248D5 /* BillowRustBridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = BillowRustBridge.c; sourceTree = "<group>"; };
+		AE5FE030EDBD91E9DFC9AC53 /* ResourcesInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourcesInstaller.swift; sourceTree = "<group>"; };
+		BFE06578702E7AA1BCEF22E9 /* billow_mihomo_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = billow_mihomo_bridge.h; sourceTree = "<group>"; };
+		C83822028DD84DB0390EAE5E /* BillowVPNError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BillowVPNError.swift; sourceTree = "<group>"; };
+		CDA586951269A80EC7AFF3A3 /* billow_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = billow_iOS.entitlements; sourceTree = "<group>"; };
+		CEF5DBB11E87ACB269A2F7D6 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		D5BDF562C15DAC2629DED557 /* mihomo-resolv-stub.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "mihomo-resolv-stub.c"; sourceTree = "<group>"; };
+		DDF19416F4EA0D65E8E5A525 /* BillowRust.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = BillowRust.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5F19F81FC84780F2E8D81E8 /* BillowMihomo.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BillowMihomo.entitlements; sourceTree = "<group>"; };
+		E74A128077B7BC80D0F57EE7 /* MihomoTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MihomoTunnelProvider.swift; sourceTree = "<group>"; };
+		EEB6226954CB6D4FA7EE3BB3 /* CryptoKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CryptoKit.framework; path = System/Library/Frameworks/CryptoKit.framework; sourceTree = SDKROOT; };
+		F63B47331183E04EA3534A6F /* override_engine.rs */ = {isa = PBXFileReference; path = override_engine.rs; sourceTree = "<group>"; };
+		F6D5653DA66F6412EA7E9D2A /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		FA9CC54DC0B8CB653577E9D6 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0A49207FDE2D7ABA5F63FB5A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C4BEE252A29AC85092E04641 /* libapp.a in Frameworks */,
+				A282E9318E9E93ED55D3B660 /* CoreGraphics.framework in Frameworks */,
+				775545B5D3D47A7761356F91 /* Metal.framework in Frameworks */,
+				C867C6A09FB0BEDC830A419E /* MetalKit.framework in Frameworks */,
+				DB08FC0B68A9380587FD97A9 /* QuartzCore.framework in Frameworks */,
+				80BF9C8A28FB03611E4BE9C0 /* Security.framework in Frameworks */,
+				058B27BDE1928E2A5F8DCC63 /* UIKit.framework in Frameworks */,
+				62AA82DA55ECB6D3AF40528B /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		982CA57E248CD7B8CB487938 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1E29C5FC06320A50EDD7BE6B /* NetworkExtension.framework in Frameworks */,
+				D3A9ACCA19457947D2C418DE /* CryptoKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E06628D7DBFDD6E7388BAC8B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				808B8ED436F38178A4F3961B /* NetworkExtension.framework in Frameworks */,
+				C311D5DCB098C12C91F637A1 /* CryptoKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1DCF3026617D2A6FB7FD5687 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				989D78D047AAEFC67AB48CDC /* billow_mihomo_bridge */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+		27660D4368E60D259DA42E32 /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+				C661D1D0B62453F33C8F00E8 /* arm64 */,
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		368788B6200899A7C7933D37 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				BFE06578702E7AA1BCEF22E9 /* billow_mihomo_bridge.h */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+		3CA38D98DCB2F7BF4C7EF061 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				49F4834BCF47317C21FDBC14 /* billow */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		442C432019AC13BAB3D1EE8F /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				7C5E8AB570441D213559F0C2 /* CoreGraphics.framework */,
+				EEB6226954CB6D4FA7EE3BB3 /* CryptoKit.framework */,
+				0E6CC23C814C9679D931F42A /* libapp.a */,
+				325BD6D802130C9117B205AC /* Metal.framework */,
+				63040C3DBFA7FDCB6B7EDA65 /* MetalKit.framework */,
+				417BBE9F22947E6DAC93B7D4 /* NetworkExtension.framework */,
+				0D801BCFEA53F342ADF22D3C /* QuartzCore.framework */,
+				1D4FEFB2A3A50605099A5E49 /* Security.framework */,
+				289E477ADF17F5E0868EB4F5 /* UIKit.framework */,
+				639101A03E95773B7355CC12 /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		44FED010DFA6BA0FF107ECB8 /* Host */ = {
+			isa = PBXGroup;
+			children = (
+				19528B745CBAC7959D50D578 /* BillowMobileEntry.swift */,
+				05BD8E17232E9E58D3E4142A /* BillowVPNIntents.swift */,
+				A0479B7D91C4527267909197 /* BillowVPNManager.swift */,
+				AE5FE030EDBD91E9DFC9AC53 /* ResourcesInstaller.swift */,
+			);
+			name = Host;
+			path = "network-extension/Host";
+			sourceTree = "<group>";
+		};
+		49F4834BCF47317C21FDBC14 /* billow */ = {
+			isa = PBXGroup;
+			children = (
+				598FEA96E2D71D137B1E8C9D /* main.mm */,
+				C7B65A66944F6E62CDE06925 /* bindings */,
+			);
+			path = billow;
+			sourceTree = "<group>";
+		};
+		5909D70D1FA474962AD7199D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				87EDE8CCBD012D57F2367947 /* billow_iOS.app */,
+				729D19EAF483E61ADA7A42F2 /* BillowMihomo.appex */,
+				DDF19416F4EA0D65E8E5A525 /* BillowRust.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		5FD65208DA8CB7F1D23888BE /* MihomoExtension */ = {
+			isa = PBXGroup;
+			children = (
+				E5F19F81FC84780F2E8D81E8 /* BillowMihomo.entitlements */,
+				1BA7BA72AA037F7D80570A5A /* BillowMihomoBridge.m */,
+				20B2E194D7566141D48E5A15 /* BillowMihomoEngine.swift */,
+				E74A128077B7BC80D0F57EE7 /* MihomoTunnelProvider.swift */,
+				368788B6200899A7C7933D37 /* include */,
+			);
+			name = MihomoExtension;
+			path = "network-extension/MihomoExtension";
+			sourceTree = "<group>";
+		};
+		6CD3DC5B7AE48D9EAA7218DC /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				6DC6FE73D4535D2EA6EAFECF /* AppGroupStore.swift */,
+				C83822028DD84DB0390EAE5E /* BillowVPNError.swift */,
+				FA9CC54DC0B8CB653577E9D6 /* Logger.swift */,
+				50313A98AB45C858B7B91678 /* PacketPump.swift */,
+				4824EF26364F70FAB695957E /* ProviderSupport.swift */,
+			);
+			name = Shared;
+			path = "network-extension/Shared";
+			sourceTree = "<group>";
+		};
+		736C408947551A1C6B3309BF /* RustExtension */ = {
+			isa = PBXGroup;
+			children = (
+				77B07DA60E8D223EBA57FD4E /* BillowRust-Bridging-Header.h */,
+				08A184FFDC6E9A40EAF14FF2 /* BillowRust.entitlements */,
+				ABC676E6E962B4231DD248D5 /* BillowRustBridge.c */,
+				A8EFF7C2A9E6DF22C5B277AE /* BillowRustEngine.swift */,
+				2437F30E22B856AD38E168B5 /* RustTunnelProvider.swift */,
+				FB2A4EFF04F536D4F8949A47 /* include */,
+			);
+			name = RustExtension;
+			path = "network-extension/RustExtension";
+			sourceTree = "<group>";
+		};
+		989D78D047AAEFC67AB48CDC /* billow_mihomo_bridge */ = {
+			isa = PBXGroup;
+			children = (
+				90A0554C8350E65AD18758C8 /* billow_mihomo_bridge.h */,
+			);
+			path = billow_mihomo_bridge;
+			sourceTree = "<group>";
+		};
+		B0D95279E94D65FD55C8397D /* ios */ = {
+			isa = PBXGroup;
+			children = (
+				D5BDF562C15DAC2629DED557 /* mihomo-resolv-stub.c */,
+			);
+			name = ios;
+			path = ../../../tool/ios;
+			sourceTree = "<group>";
+		};
+		B62EE67080FFF33C3975AD83 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				9121CDB96A7A5DC2B9524A9E /* age_key.rs */,
+				A528804F9B66738AF1E98A10 /* app_update.rs */,
+				32A842F98ADDC8438D86F7AC /* bundled_geo.rs */,
+				313734F72B3755379DF7086F /* diagnostics.rs */,
+				432D444C8B6443F9FAC23D33 /* elevation.rs */,
+				5A0EDCE5ED9110183781C7F0 /* kernel.rs */,
+				F6D5653DA66F6412EA7E9D2A /* lib.rs */,
+				CEF5DBB11E87ACB269A2F7D6 /* main.rs */,
+				9AE2017EB62321AA1F72E341 /* mrs.rs */,
+				4A158744592A50E143C70252 /* nodes.rs */,
+				F63B47331183E04EA3534A6F /* override_engine.rs */,
+				21B6DCF34B325B7F6C23E4E2 /* packed.rs */,
+				166ADC405B9E5B4AAA1C7016 /* profile.rs */,
+				5F45DFDC00C91264D5F7C776 /* resources.rs */,
+				18AF8AABC6B2D812EB33FBDF /* shell.rs */,
+				A872FD3F143767AB8BF6EE7F /* takeover.rs */,
+				19F998F6222139728D180020 /* tray.rs */,
+				4D9A495FE69A721989E1A962 /* win_process.rs */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		C661D1D0B62453F33C8F00E8 /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+				D53B59DAB5A2F17F24520B78 /* device */,
+			);
+			path = arm64;
+			sourceTree = "<group>";
+		};
+		C7B65A66944F6E62CDE06925 /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				34761D8E456387892CFF139B /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+		D53B59DAB5A2F17F24520B78 /* device */ = {
+			isa = PBXGroup;
+			children = (
+				1DCF3026617D2A6FB7FD5687 /* include */,
+			);
+			path = device;
+			sourceTree = "<group>";
+		};
+		E466624CAD9C08C1A7D56FF6 /* billow_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				CDA586951269A80EC7AFF3A3 /* billow_iOS.entitlements */,
+				06D93340D4D4AA20A2D7E150 /* Info.plist */,
+			);
+			path = billow_iOS;
+			sourceTree = "<group>";
+		};
+		F6DEA188490066BCF78C5382 = {
+			isa = PBXGroup;
+			children = (
+				647120AC6A2A119565922910 /* assets */,
+				2F2FD759EBC46EAEE3A91990 /* Assets.xcassets */,
+				670F461C1558B3CA640322D9 /* LaunchScreen.storyboard */,
+				E466624CAD9C08C1A7D56FF6 /* billow_iOS */,
+				27660D4368E60D259DA42E32 /* Externals */,
+				44FED010DFA6BA0FF107ECB8 /* Host */,
+				B0D95279E94D65FD55C8397D /* ios */,
+				5FD65208DA8CB7F1D23888BE /* MihomoExtension */,
+				736C408947551A1C6B3309BF /* RustExtension */,
+				6CD3DC5B7AE48D9EAA7218DC /* Shared */,
+				3CA38D98DCB2F7BF4C7EF061 /* Sources */,
+				B62EE67080FFF33C3975AD83 /* src */,
+				442C432019AC13BAB3D1EE8F /* Frameworks */,
+				5909D70D1FA474962AD7199D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FB2A4EFF04F536D4F8949A47 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				A1D83B0B0BBD655B1D1A5C78 /* billow_rust_bridge.h */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2D1E2401446D0E07D094FCAA /* BillowRust */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 291B82694F46BE88707C1C86 /* Build configuration list for PBXNativeTarget "BillowRust" */;
+			buildPhases = (
+				AF7346E1F045195A649F86CB /* Sources */,
+				E06628D7DBFDD6E7388BAC8B /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BillowRust;
+			packageProductDependencies = (
+			);
+			productName = BillowRust;
+			productReference = DDF19416F4EA0D65E8E5A525 /* BillowRust.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		3825DA6B27F40E84500392C1 /* BillowMihomo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 27CF0080B94F0C7D02647C59 /* Build configuration list for PBXNativeTarget "BillowMihomo" */;
+			buildPhases = (
+				D13E018B58F99A23F811019B /* Sources */,
+				982CA57E248CD7B8CB487938 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BillowMihomo;
+			packageProductDependencies = (
+			);
+			productName = BillowMihomo;
+			productReference = 729D19EAF483E61ADA7A42F2 /* BillowMihomo.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		C91A3EC2165CDF76109EC30A /* billow_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0E6AA5D33BE014D5DAE70469 /* Build configuration list for PBXNativeTarget "billow_iOS" */;
+			buildPhases = (
+				6644E6B6C3ADB234D636B97B /* Build Rust Code */,
+				AEAF97D5C31A530D67FFE479 /* Sources */,
+				7E4AD88FDE816DCEE4F4A062 /* Resources */,
+				0A49207FDE2D7ABA5F63FB5A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = billow_iOS;
+			packageProductDependencies = (
+			);
+			productName = billow_iOS;
+			productReference = 87EDE8CCBD012D57F2367947 /* billow_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		236F54A1900D5C8428580966 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = A3174BBC1CA5AED6F85BA5A4 /* Build configuration list for PBXProject "billow" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = F6DEA188490066BCF78C5382;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5909D70D1FA474962AD7199D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C91A3EC2165CDF76109EC30A /* billow_iOS */,
+				3825DA6B27F40E84500392C1 /* BillowMihomo */,
+				2D1E2401446D0E07D094FCAA /* BillowRust */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		7E4AD88FDE816DCEE4F4A062 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7B6F6C1D28452669F7D670CD /* Assets.xcassets in Resources */,
+				94A38092ACA3C5275FDE9AF9 /* LaunchScreen.storyboard in Resources */,
+				6481506E20C0292992EB6C73 /* assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		6644E6B6C3ADB234D636B97B /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "npm run -- tauri ios xcode-script -v --platform \"${PLATFORM_DISPLAY_NAME:?}\" --sdk-root \"${SDKROOT:?}\" --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration \"${CONFIGURATION:?}\" ${FORCE_COLOR} ${ARCHS:?}\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AEAF97D5C31A530D67FFE479 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7B0EF6C310514D480D125978 /* AppGroupStore.swift in Sources */,
+				2C73BA96A292F7A6BE79F618 /* BillowMobileEntry.swift in Sources */,
+				CBE8ED4ECE76C88492038673 /* BillowVPNError.swift in Sources */,
+				6B88BAFF16880CF11007CF5A /* BillowVPNIntents.swift in Sources */,
+				9192C5F40EF4F65BD2E3AF8B /* BillowVPNManager.swift in Sources */,
+				BC18A72844B0348E89CEBF81 /* Logger.swift in Sources */,
+				9011BDEB207375120C38DD1A /* PacketPump.swift in Sources */,
+				4573809226047AF3265B0855 /* ProviderSupport.swift in Sources */,
+				168103DE99FC07FB825E5F93 /* ResourcesInstaller.swift in Sources */,
+				BFED5738C0D6B0E160692EEB /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AF7346E1F045195A649F86CB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1577CA80C3498A042EFF5DA8 /* AppGroupStore.swift in Sources */,
+				7252E7058B772C40D87FB3CF /* BillowRustBridge.c in Sources */,
+				59020AAE53C8C0AB6B35347B /* BillowRustEngine.swift in Sources */,
+				9D16D78CD4255C79D1B0F346 /* BillowVPNError.swift in Sources */,
+				A93305940C62B52421519585 /* Logger.swift in Sources */,
+				72946A6C968DD732AF109F1E /* PacketPump.swift in Sources */,
+				3C3F28AE8DD64FE65CC3CE45 /* ProviderSupport.swift in Sources */,
+				3AAA530D265B279BFB140BB9 /* RustTunnelProvider.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D13E018B58F99A23F811019B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				31548BF5861DEB52C8CEA91B /* AppGroupStore.swift in Sources */,
+				6FA770968EE685C281458140 /* BillowMihomoBridge.m in Sources */,
+				6B53C4961D604C6199F716A6 /* BillowMihomoEngine.swift in Sources */,
+				7615C2511D20F3D0C79A2E8D /* BillowVPNError.swift in Sources */,
+				67E6604D98495F40FE13F96A /* Logger.swift in Sources */,
+				D8D8F474CB6DAD3A5CD4A44C /* MihomoTunnelProvider.swift in Sources */,
+				02CA7F321EF0B10D992F6547 /* PacketPump.swift in Sources */,
+				CA505DABD887B4D242127E1E /* ProviderSupport.swift in Sources */,
+				C89D577EA24E69CB1CFF7083 /* mihomo-resolv-stub.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		25D0E656C44FBC5713AD487C /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = billow_iOS/billow_iOS.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = billow_iOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = app.billow.client;
+				PRODUCT_NAME = Billow;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+		58F917A750121D701E7D9D2D /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = billow_iOS/billow_iOS.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = billow_iOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = app.billow.client;
+				PRODUCT_NAME = Billow;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+		6F0A89F49ADC7491944F1055 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "network-extension/RustExtension/BillowRust.entitlements";
+				CURRENT_PROJECT_VERSION = 0.1.33;
+				ENABLE_BITCODE = NO;
+				INFOPLIST_FILE = "network-extension/RustExtension/Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.33;
+				PRODUCT_BUNDLE_IDENTIFIER = app.billow.client.rust;
+				PRODUCT_MODULE_NAME = BillowRust;
+				PRODUCT_NAME = BillowRust;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "BILLOW_ENGINE_RUST BILLOW_RUST_PLACEHOLDER";
+				SWIFT_OBJC_BRIDGING_HEADER = "network-extension/RustExtension/BillowRust-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = debug;
+		};
+		73EA4645BE53582723CB9892 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				"ARCHS[sdk=iphonesimulator*]" = arm64;
+				CODE_SIGN_ENTITLEMENTS = "network-extension/MihomoExtension/BillowMihomo.entitlements";
+				CURRENT_PROJECT_VERSION = 0.1.33;
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				INFOPLIST_FILE = "network-extension/MihomoExtension/Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Externals/arm64/device",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Externals/arm64/simulator",
+				);
+				MARKETING_VERSION = 0.1.33;
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = "$(inherited) -all_load -L$(SRCROOT)/Externals/arm64/device -lmihomo_ios";
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "$(inherited) -all_load -L$(SRCROOT)/Externals/arm64/simulator -lmihomo_ios";
+				PRODUCT_BUNDLE_IDENTIFIER = app.billow.client.mihomo;
+				PRODUCT_MODULE_NAME = BillowMihomo;
+				PRODUCT_NAME = BillowMihomo;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = BILLOW_ENGINE_MIHOMO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = debug;
+		};
+		A6105970067B75B81F9F1956 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				"ARCHS[sdk=iphonesimulator*]" = arm64;
+				CODE_SIGN_ENTITLEMENTS = "network-extension/MihomoExtension/BillowMihomo.entitlements";
+				CURRENT_PROJECT_VERSION = 0.1.33;
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				INFOPLIST_FILE = "network-extension/MihomoExtension/Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Externals/arm64/device",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Externals/arm64/simulator",
+				);
+				MARKETING_VERSION = 0.1.33;
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = "$(inherited) -all_load -L$(SRCROOT)/Externals/arm64/device -lmihomo_ios";
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = "$(inherited) -all_load -L$(SRCROOT)/Externals/arm64/simulator -lmihomo_ios";
+				PRODUCT_BUNDLE_IDENTIFIER = app.billow.client.mihomo;
+				PRODUCT_MODULE_NAME = BillowMihomo;
+				PRODUCT_NAME = BillowMihomo;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = BILLOW_ENGINE_MIHOMO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = release;
+		};
+		CA80539F2229C9F66C123C77 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+		DDCFE1CC82A14B143A242E18 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "network-extension/RustExtension/BillowRust.entitlements";
+				CURRENT_PROJECT_VERSION = 0.1.33;
+				ENABLE_BITCODE = NO;
+				INFOPLIST_FILE = "network-extension/RustExtension/Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.33;
+				PRODUCT_BUNDLE_IDENTIFIER = app.billow.client.rust;
+				PRODUCT_MODULE_NAME = BillowRust;
+				PRODUCT_NAME = BillowRust;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "BILLOW_ENGINE_RUST BILLOW_RUST_PLACEHOLDER";
+				SWIFT_OBJC_BRIDGING_HEADER = "network-extension/RustExtension/BillowRust-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = release;
+		};
+		F9D261DCBE6626C53C1979FE /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0E6AA5D33BE014D5DAE70469 /* Build configuration list for PBXNativeTarget "billow_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				58F917A750121D701E7D9D2D /* debug */,
+				25D0E656C44FBC5713AD487C /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		27CF0080B94F0C7D02647C59 /* Build configuration list for PBXNativeTarget "BillowMihomo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				73EA4645BE53582723CB9892 /* debug */,
+				A6105970067B75B81F9F1956 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		291B82694F46BE88707C1C86 /* Build configuration list for PBXNativeTarget "BillowRust" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6F0A89F49ADC7491944F1055 /* debug */,
+				DDCFE1CC82A14B143A242E18 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		A3174BBC1CA5AED6F85BA5A4 /* Build configuration list for PBXProject "billow" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F9D261DCBE6626C53C1979FE /* debug */,
+				CA80539F2229C9F66C123C77 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 236F54A1900D5C8428580966 /* Project object */;
+}

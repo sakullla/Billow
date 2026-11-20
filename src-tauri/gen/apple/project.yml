@@ -1,0 +1,186 @@
+name: billow
+options:
+  bundleIdPrefix: app.billow.client
+  deploymentTarget:
+    iOS: 15.0
+fileGroups: [../../src]
+configs:
+  debug: debug
+  release: release
+settingGroups:
+  app:
+    base:
+      PRODUCT_NAME: Billow
+      PRODUCT_BUNDLE_IDENTIFIER: app.billow.client
+targetTemplates:
+  app:
+    type: application
+    sources:
+      - path: Sources
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      groups: [app]
+targets:
+  billow_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+      # Host-side VPN management (T6/T7 call BillowVPNManager from Tauri).
+      - path: network-extension/Host
+      - path: network-extension/Shared
+      # Exclude built static libs: regenerating with xcodegen after a build
+      # otherwise turns the per-configuration libapp.a copies into colliding
+      # resources ("Multiple commands produce …/libapp.a"). They are linked
+      # via LIBRARY_SEARCH_PATHS, never bundled as resources.
+      - path: Externals
+        excludes: ["**/*.a"]
+      - path: billow_iOS
+      - path: assets
+        buildPhase: resources
+        type: folder
+      - path: LaunchScreen.storyboard
+    info:
+      path: billow_iOS/Info.plist
+      properties:
+        LSRequiresIPhoneOS: true
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleShortVersionString: 0.1.33
+        CFBundleVersion: "0.1.33"
+    entitlements:
+      path: billow_iOS/billow_iOS.entitlements
+    dependencies:
+      - target: BillowMihomo
+        embed: true
+        codeSign: true
+      - target: BillowRust
+        embed: true
+        codeSign: true
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      base:
+        ENABLE_BITCODE: false
+        ARCHS: [arm64]
+        VALID_ARCHS: arm64 
+        LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+      groups: [app]
+    dependencies:
+      - framework: libapp.a
+        embed: false
+      - sdk: CoreGraphics.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: UIKit.framework
+      - sdk: WebKit.framework
+    preBuildScripts:
+      - script: |
+          npm run -- tauri ios xcode-script -v --platform "${PLATFORM_DISPLAY_NAME:?}" --sdk-root "${SDKROOT:?}" --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration "${CONFIGURATION:?}" ${FORCE_COLOR} ${ARCHS:?}
+        name: Build Rust Code
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
+          - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a
+
+  # ---------------------------------------------------------------------------
+  # Packet Tunnel extensions (iOS). One per engine; both ship in the host so
+  # NETunnelProviderProtocol.providerBundleIdentifier can select either.
+  # Neither target links libapp.a nor runs "Build Rust Code".
+  # ---------------------------------------------------------------------------
+  BillowMihomo:
+    type: app-extension
+    scheme: {}
+    platform: iOS
+    sources:
+      - path: network-extension/Shared
+      - path: network-extension/MihomoExtension
+        excludes: ["Info.plist"]
+      - path: ../../../tool/ios/mihomo-resolv-stub.c
+    info:
+      path: network-extension/MihomoExtension/Info.plist
+    entitlements:
+      path: network-extension/MihomoExtension/BillowMihomo.entitlements
+    settings:
+      base:
+        PRODUCT_NAME: BillowMihomo
+        PRODUCT_BUNDLE_IDENTIFIER: app.billow.client.mihomo
+        PRODUCT_MODULE_NAME: BillowMihomo
+        MARKETING_VERSION: 0.1.33
+        CURRENT_PROJECT_VERSION: 0.1.33
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: BILLOW_ENGINE_MIHOMO
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_ENTITLEMENTS: network-extension/MihomoExtension/BillowMihomo.entitlements
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_BITCODE: false
+        ARCHS[sdk=iphonesimulator*]: arm64
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+        # The Go archive is a c-archive of package main; -all_load keeps its
+        # package init and exported trampolines, -ObjC keeps ObjC categories.
+        OTHER_LDFLAGS[sdk=iphoneos*]: $(inherited) -all_load -L$(SRCROOT)/Externals/arm64/device -lmihomo_ios
+        # Built by: node tool/ios/build-mihomo-ios.mjs --platform device|simulator
+        LIBRARY_SEARCH_PATHS[sdk=iphoneos*]:
+          - $(inherited)
+          - $(SRCROOT)/Externals/arm64/device
+        LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]:
+          - $(inherited)
+          - $(SRCROOT)/Externals/arm64/simulator
+        # Explicit link line: the c-archive header cannot declare a module with
+        # linkable=true through the generated header alone, so the library is
+        # linked directly.
+        OTHER_LDFLAGS[sdk=iphonesimulator*]: $(inherited) -all_load -L$(SRCROOT)/Externals/arm64/simulator -lmihomo_ios
+    dependencies:
+      - sdk: NetworkExtension.framework
+      - sdk: CryptoKit.framework
+  BillowRust:
+    type: app-extension
+    scheme: {}
+    platform: iOS
+    sources:
+      - path: network-extension/Shared
+      - path: network-extension/RustExtension
+        excludes: ["Info.plist"]
+    info:
+      path: network-extension/RustExtension/Info.plist
+    entitlements:
+      path: network-extension/RustExtension/BillowRust.entitlements
+    settings:
+      base:
+        PRODUCT_NAME: BillowRust
+        PRODUCT_BUNDLE_IDENTIFIER: app.billow.client.rust
+        PRODUCT_MODULE_NAME: BillowRust
+        MARKETING_VERSION: 0.1.33
+        CURRENT_PROJECT_VERSION: 0.1.33
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: BILLOW_ENGINE_RUST BILLOW_RUST_PLACEHOLDER
+        SWIFT_OBJC_BRIDGING_HEADER: network-extension/RustExtension/BillowRust-Bridging-Header.h
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_ENTITLEMENTS: network-extension/RustExtension/BillowRust.entitlements
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_BITCODE: false
+    dependencies:
+      - sdk: NetworkExtension.framework
+      - sdk: CryptoKit.framework
