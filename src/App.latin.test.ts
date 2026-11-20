@@ -88,6 +88,17 @@ describe('T8 Latin demo', () => {
     }
   })
 
+  it('renders the merged shortcut dialog in English', async () => {
+    const wrapper = await mountApp({})
+    const store = (wrapper.vm as unknown as { store: any }).store
+    store.go('settings')
+    store.settingsTab.value = 'general'
+    await settle(40)
+    await wrapper.find('[data-testid="settings-shortcuts"]').trigger('click')
+    await settle(40)
+    expectEnglish('shortcut dialog')
+  })
+
   it('renders the command palette, help, add-profile, config and DNS dialogs in English', async () => {
     const wrapper = await mountApp({})
     const body = () => new DOMWrapper(document.body)
