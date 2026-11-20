@@ -98,7 +98,7 @@ final class BillowMihomoEngine {
                 return
             }
             embeddedVersion = String(cString: versionBuf)
-            DispatchQueue.main.async { [self] in
+            DispatchQueue.main.async {
                 completion(nil)
             }
         }

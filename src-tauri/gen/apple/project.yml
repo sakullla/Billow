@@ -16,6 +16,8 @@ settingGroups:
       # src-tauri/tauri.conf.json "version".
       MARKETING_VERSION: 0.1.33
       CURRENT_PROJECT_VERSION: 0.1.33
+      # Keep bitcode off for the host as before (iOS 15 arm64 only).
+      ENABLE_BITCODE: false
 targetTemplates:
   app:
     type: application
@@ -65,6 +67,11 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # The packet tunnel talks to 127.0.0.1 (tunnelRemoteAddress) and hands
+        # DNS to the stack at 198.18.0.1; plain HTTP to those needs ATS local
+        # networking enabled for the host and both extensions.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: billow_iOS/billow_iOS.entitlements
       # xcodegen writes this file from here on every generate.
@@ -127,6 +134,9 @@ targets:
         excludes: ["Info.plist"]
     info:
       path: network-extension/MihomoExtension/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: network-extension/MihomoExtension/BillowMihomo.entitlements
       properties:
@@ -175,6 +185,9 @@ targets:
         excludes: ["Info.plist"]
     info:
       path: network-extension/RustExtension/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: network-extension/RustExtension/BillowRust.entitlements
       properties:

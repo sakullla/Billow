@@ -23,6 +23,13 @@
 # command below (see tool/ios/verify-device.md).
 #
 # --sign signs with the identity of DEVELOPMENT_TEAM and exports the IPA.
+#
+# Linked-branch check (T7): point the resolver at any archive exporting the
+# billow_ios_vpn_* ABI and the Rust extension links it instead of reporting
+# engineNotAvailable:
+#   BILLOW_RUST_KERNEL_ARCHIVE=/path/libapp.a tool/ios/build.sh --platform device
+# The resolver prints "BillowRust: linking Rust kernel <path>" and
+# build/rust-kernel/linked.xcconfig carries the -force_load line.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -52,7 +59,8 @@ mkdir -p "$root/Externals/arm64/device" "$root/Externals/arm64/simulator"
 # phase; xcodebuild needs the file to exist before any phase runs, so seed the
 # unlinked fallback first (the phase replaces it on every build).
 mkdir -p "$root/build/rust-kernel"
-(cd "$root" && sh network-extension/RustExtension/resolve-mihomo.sh)
+(cd "$root" && SRCROOT="$PWD" SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
+  sh network-extension/RustExtension/resolve-mihomo.sh)
 
 build_extensions() {
   local sdk=$1 dest=$2

@@ -70,8 +70,11 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         log.info("stopTunnel reason=\(reason.rawValue)")
+        // Keep the last structured state (engine, version, start time) in the
+        // status file, marked as not running.
+        let snapshot = engine?.status()
         teardown()
-        publishStatus()
+        publishStatus(snapshot: snapshot, running: false)
         completionHandler()
     }
 
@@ -196,8 +199,9 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
             let mapped = ns.domain == BillowVPNError.domain
                 ? ns
                 : BillowVPNError.make(BillowVPNError.classify(error), "\(error)", underlying: error)
+            let snapshot = engine?.status()
             teardown()
-            publishStatus(lastError: mapped)
+            publishStatus(snapshot: snapshot, lastError: mapped)
             completionHandler(mapped)
             return
         }
@@ -231,13 +235,20 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
     private func runtimeFailure(_ error: NSError) {
         guard !stopping else { return }
         log.error("runtime failure: \(error.localizedDescription)")
+        // Snapshot first: teardown() drops the engine, and the status file must
+        // still name the engine, version, start time and error code.
+        let snapshot = engine?.status()
         teardown()
-        publishStatus(lastError: error)
+        publishStatus(snapshot: snapshot, lastError: error)
         cancelTunnelWithError(error)
     }
 
-    private func publishStatus(lastError: NSError? = nil) {
-        let status = engine?.status() ?? ProviderStatus(
+    /// Writes status/<engine>.json. `snapshot` is the structured engine state
+    /// taken *before* teardown; without it the file would only carry the
+    /// error and the host could not tell which version/engine failed.
+    private func publishStatus(snapshot: ProviderStatus? = nil, lastError: NSError? = nil,
+                               running: Bool? = nil) {
+        var status = snapshot ?? engine?.status() ?? ProviderStatus(
             extensionId: BillowEngineIdentity.bundleId,
             engine: BillowEngineIdentity.engine,
             embeddedVersion: nil,
@@ -249,11 +260,14 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
             errorCode: nil,
             startedAt: nil
         )
-        var merged = status
-        if let lastError {
-            merged.lastError = lastError.localizedDescription
-            merged.errorCode = lastError.code
+        if let running {
+            status.running = running
         }
-        ProviderSupport.writeStatus(merged, groupId: groupId)
+        if let lastError {
+            status.lastError = lastError.localizedDescription
+            status.errorCode = lastError.code
+            status.running = false
+        }
+        ProviderSupport.writeStatus(status, groupId: groupId)
     }
 }

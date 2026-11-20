@@ -119,7 +119,12 @@ BillowRustEngine.swift
 1. `tool/ios/build.sh` (or the BillowRust "Resolve Rust kernel" phase via
    `network-extension/RustExtension/resolve-mihomo.sh`) looks for
    `src-tauri/gen/apple/Externals/arm64/rust/libapp.a` (override:
-   `BILLOW_RUST_KERNEL_ARCHIVE`). When the archive contains
+   `BILLOW_RUST_KERNEL_ARCHIVE`). To exercise the linked branch before the
+   real kernel exists:
+   `BILLOW_RUST_KERNEL_ARCHIVE=/path/libapp.a tool/ios/build.sh --platform device`
+   prints `BillowRust: linking Rust kernel <path>` and writes
+   `OTHER_LDFLAGS = $(inherited) -force_load "<path>"` into
+   `build/rust-kernel/linked.xcconfig`. When the archive contains
    `billow_ios_vpn_start` it is linked with `-force_load` and
    `BILLOW_RUST_KERNEL_LINKED=1` is defined for C and Swift. No archive: the
    extension builds and starts, then fails with code 4 and writes that status

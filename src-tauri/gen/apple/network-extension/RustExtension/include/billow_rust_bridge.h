@@ -8,27 +8,11 @@
 extern "C" {
 #endif
 
-// Port layout shared with the libapp.a C ABI (include/billow_ios_vpn.h).
-//   start(ctx, home) loads the App Group directory; 0 on success.
-//   write(ctx, packet, length) hands one egress IP packet to NEPacketTunnelFlow.
-//   stop(ctx) releases kernel resources.
-typedef struct rust_tunnel_port {
-    int32_t (*start)(void *ctx, const char *home);
-    int64_t (*write)(void *ctx, void *packet, uint32_t length);
-    void (*stop)(void *ctx);
-} rust_tunnel_port_t;
+// rust_tunnel_port_t and the libapp.a entry points live in one contract header
+// so the layout cannot depend on include order.
+#include "billow_ios_vpn.h"
 
-
-// Engine operations implemented in libapp.a (src-tauri/src/ios_vpn.rs),
-// declared by src-tauri/include/billow_ios_vpn.h and re-declared here for the
-// extension's bridging header.
-//   billow_ios_vpn_start(port, ctx, home, error) -> 0 or negative
-//   billow_ios_vpn_drain(packets, maxCount, produced) -> 0, -1, -2 (nil)
-//   billow_ios_vpn_write(packet, length) -> 0, -1
-//   billow_ios_vpn_stop()
-//   billow_ios_vpn_version(buf, size) -> length
-//   billow_ios_vpn_selected() -> 1 when the active engine of the app state is
-//       the Rust kernel; 0 for Mihomo; -1 when no profile state is loaded.
+// The libapp.a entry points (billow_ios_vpn_*) are declared there.
 
 // C-side egress callback type (RustKernelBridge.c).
 typedef int64_t (*billow_rust_write_fn)(void *ctx, void *packet, uint32_t length);

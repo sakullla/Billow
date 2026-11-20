@@ -78,8 +78,11 @@ final class RustTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         log.info("stopTunnel reason=\(reason.rawValue)")
+        // Keep the last structured state (engine, version, start time) in the
+        // status file, marked as not running.
+        let snapshot = engine?.status
         teardown()
-        publishStatus()
+        publishStatus(snapshot: snapshot, running: false)
         completionHandler()
     }
 
@@ -159,8 +162,11 @@ final class RustTunnelProvider: NEPacketTunnelProvider {
     private func handleRuntimeFailure(_ error: NSError) {
         guard !stopping else { return }
         log.error("runtime failure: \(error.localizedDescription)")
+        // Snapshot first: teardown() drops the engine and the status file must
+        // still carry the structured state and the error code.
+        let snapshot = engine?.status
         teardown()
-        publishStatus(lastError: error)
+        publishStatus(snapshot: snapshot, lastError: error)
         cancelTunnelWithError(error)
     }
 
@@ -182,8 +188,11 @@ final class RustTunnelProvider: NEPacketTunnelProvider {
         return try? JSONSerialization.data(withJSONObject: body)
     }
 
-    private func publishStatus(lastError: NSError? = nil) {
-        var status = engine?.status ?? ProviderStatus(
+    /// Writes status/rust.json. `snapshot` is the structured engine state
+    /// taken before teardown so a failure still names the engine/version.
+    private func publishStatus(snapshot: ProviderStatus? = nil, lastError: NSError? = nil,
+                               running: Bool? = nil) {
+        var status = snapshot ?? engine?.status ?? ProviderStatus(
             extensionId: BillowEngineIdentity.bundleId,
             engine: BillowEngineIdentity.engine,
             embeddedVersion: BillowRustEngine.rustEngineVersion(),
@@ -195,9 +204,13 @@ final class RustTunnelProvider: NEPacketTunnelProvider {
             errorCode: nil,
             startedAt: nil
         )
+        if let running {
+            status.running = running
+        }
         if let lastError {
             status.lastError = lastError.localizedDescription
             status.errorCode = lastError.code
+            status.running = false
         }
         ProviderSupport.writeStatus(status, groupId: groupId)
     }
