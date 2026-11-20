@@ -531,17 +531,20 @@ pub fn controller_from_yaml(yaml: &str) -> Option<ControllerEndpoint> {
     })
 }
 
+const MODE_FAILED: &str = "模式没有切换";
+const MODE_READ_TIMEOUT: Duration = Duration::from_millis(5000);
+
 pub fn patch_mode(endpoint: &ControllerEndpoint, mode: &str) -> Result<(), String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
-        return Err("模式没有切换".to_string());
+        return Err(MODE_FAILED.to_string());
     }
     let mode = match mode {
         "rule" | "global" | "direct" => mode,
-        _ => return Err("模式没有切换".to_string()),
+        _ => return Err(MODE_FAILED.to_string()),
     };
     let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
     let body = format!("{{\"mode\":\"{mode}\"}}");
-    let agent = agent(Duration::from_millis(800));
+    let agent = agent(MODE_READ_TIMEOUT);
     let request = agent
         .patch(&url)
         .set("Content-Type", "application/json")
@@ -553,7 +556,25 @@ pub fn patch_mode(endpoint: &ControllerEndpoint, mode: &str) -> Result<(), Strin
     };
     match request.send_string(&body) {
         Ok(_) => Ok(()),
-        Err(_) => Err("模式没有切换".to_string()),
+        Err(ureq::Error::Status(code, response)) => {
+            let reason = with_reason(MODE_FAILED, response);
+            if reason == MODE_FAILED {
+                Err(format!("{MODE_FAILED}（HTTP {code}）"))
+            } else {
+                Err(reason)
+            }
+        }
+        Err(ureq::Error::Transport(error)) => {
+            let detail = error
+                .message()
+                .map(str::trim)
+                .filter(|msg| !msg.is_empty())
+                .map(|msg| msg.chars().take(160).collect::<String>());
+            match detail {
+                Some(detail) => Err(format!("{MODE_FAILED}：{detail}")),
+                None => Err(format!("{MODE_FAILED}：{:?}", error.kind())),
+            }
+        }
     }
 }
 
@@ -1447,5 +1468,27 @@ proxy-groups:
         let seen = handle.join().unwrap();
         assert!(seen[0].contains("PUT /configs?force=true HTTP/1.1"));
         assert!(seen[0].contains("mixed-port: 7890"));
+    }
+
+    #[test]
+    fn patch_mode_sends_json_and_surfaces_controller_error_reason() {
+        let (port, handle) = serve(vec![
+            http_response("204 No Content", ""),
+            http_response("400 Bad Request", r#"{"message":"invalid mode"}"#),
+            http_response("500 Internal Server Error", ""),
+        ]);
+        let endpoint = ControllerEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+            secret: CONTROLLER_SECRET.to_string(),
+        };
+        patch_mode(&endpoint, "global").unwrap();
+        let err_json = patch_mode(&endpoint, "direct").unwrap_err();
+        assert_eq!(err_json, "模式没有切换：invalid mode");
+        let err_status = patch_mode(&endpoint, "rule").unwrap_err();
+        assert_eq!(err_status, "模式没有切换（HTTP 500）");
+        let seen = handle.join().unwrap();
+        assert!(seen[0].starts_with("PATCH /configs HTTP/1.1"));
+        assert!(seen[0].contains(r#"{"mode":"global"}"#));
     }
 }
