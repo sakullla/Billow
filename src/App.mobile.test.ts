@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
@@ -44,6 +46,21 @@ afterEach(() => {
 })
 
 describe('phone layout', () => {
+  it('keeps list ends reachable above the dock and inside the picker sheet (R8)', () => {
+    // Layout is absent in happy-dom, so guard the rules that create the clearance.
+    const css = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(css.length, 'raw stylesheet').toBeGreaterThan(1000)
+    const rule = (selector: string) => {
+      const at = css.lastIndexOf(`${selector} {`)
+      expect(at, selector).toBeGreaterThan(-1)
+      return css.slice(at, css.indexOf('}', at))
+    }
+    expect(rule('.compact .page')).toMatch(/padding-bottom:\s*calc\(var\(--tabbar-h\) \+ var\(--safe-bottom\)/)
+    // The picker list scrolls with the sheet body, never in a nested box that could clip its last row.
+    expect(rule('.node-picker-list')).not.toMatch(/max-height|overflow/)
+    expect(css).not.toMatch(/\.compact \.node-picker-list\s*\{[^}]*max-height/)
+  })
+
   it('keeps a quiet, tappable latency slot on untested proxy rows', async () => {
     const { wrapper, backend } = await mountPhone({ platform: 'android' })
     await connect(wrapper)

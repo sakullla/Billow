@@ -661,6 +661,13 @@ body {
   border-color: transparent;
   box-shadow: none;
 }
+/* List rows mark the choice like the Home picker: tint plus accent name, no check (R1, R2). */
+.shell:not(.compact) .page.proxies .nodes.list .node.selected .node-check {
+  display: none;
+}
+.shell:not(.compact) .page.proxies .nodes.list .node.selected .node-name {
+  color: var(--accent-ink);
+}
 
 /* ───────────── 8. Connections table ───────────── */
 .table-card,
