@@ -589,6 +589,187 @@
     "sudoku": {
       "status": "unimplemented",
       "reason": "~13.6k lines of custom crypto/KIP/multiplexing; T11 deferred it pending a split into its own task"
+    },
+    "tuic": {
+      "status": "partial",
+      "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token) and one TCP stream per session; the legacy v4 token (BLAKE3 TKN) is rejected, the UDP relay modes are not wired into the engine, and one QUIC connection is created per dial instead of the pinned pool.",
+      "options": [
+        "server",
+        "port",
+        "uuid",
+        "password",
+        "ip",
+        "sni",
+        "skip-cert-verify",
+        "alpn",
+        "disable-sni",
+        "heartbeat-interval",
+        "request-timeout",
+        "dialer-proxy"
+      ],
+      "udp": "not implemented: the engine's UDP association has no TUIC datagram/uni-stream relay; UDP traffic routed to TUIC is dropped and logged",
+      "notImplemented": [
+        "token (v4 / BLAKE3 TKN)",
+        "udp-relay-mode: quic",
+        "udp-over-stream",
+        "reduce-rtt",
+        "fast-open",
+        "congestion-controller",
+        "cwnd",
+        "bbr-profile",
+        "recv-window-conn",
+        "recv-window",
+        "disable-mtu-discovery",
+        "max-datagram-frame-size",
+        "max-udp-relay-packet-size",
+        "ech-opts",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "client-fingerprint",
+        "ip-version",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark"
+      ],
+      "evidence": [
+        "src/outbound/tuic.rs::tests::address_encoding_uses_tuic_type_numbers",
+        "src/outbound/tuic.rs::tests::empty_domain_is_rejected",
+        "tests/quic_peers.rs::tuic_v5_domain_target_roundtrip",
+        "tests/quic_peers.rs::tuic_v5_ip_target_roundtrip",
+        "tests/quic_peers.rs::tuic_v5_wrong_password_fails_without_forwarding",
+        "tests/quic_peers.rs::tuic_v5_legacy_token_is_rejected_at_load",
+        "tests/quic_peers.rs::tuic_v5_unimplemented_options_are_named",
+        "tests/mihomo_peers.rs::tuic_v5_outbound_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::tuic_v5_wrong_password_never_reaches_the_sink",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_tuic"
+      ]
+    },
+    "hysteria": {
+      "status": "partial",
+      "reason": "Hysteria v1 over QUIC: TCP with the binary control hello (auth/auth-str, up/down) and one stream per session; port hopping, the XPlus obfuscator, the faketcp/wechat transports and UDP datagrams are rejected by name.",
+      "options": [
+        "server",
+        "port",
+        "up",
+        "down",
+        "up-speed",
+        "down-speed",
+        "auth",
+        "auth-str",
+        "sni",
+        "skip-cert-verify",
+        "alpn",
+        "dialer-proxy"
+      ],
+      "udp": "not implemented: the engine has no Hysteria UDP session relay; `udp` traffic routed to Hysteria is dropped and logged",
+      "notImplemented": [
+        "ports",
+        "hop-interval",
+        "obfs (XPlus)",
+        "protocol: faketcp",
+        "protocol: wechat",
+        "recv-window-conn",
+        "recv-window",
+        "disable-mtu-discovery",
+        "fast-open",
+        "ech-opts",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "client-fingerprint",
+        "ip-version",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark"
+      ],
+      "evidence": [
+        "src/outbound/hysteria.rs::tests::base64_matches_the_standard_alphabet",
+        "src/outbound/hysteria.rs::tests::speed_validation_matches_the_pinned_regex",
+        "tests/quic_peers.rs::hysteria_v1_tcp_roundtrip_and_target",
+        "tests/quic_peers.rs::hysteria_v1_wrong_auth_fails_without_forwarding",
+        "tests/quic_peers.rs::hysteria_v1_base64_auth_roundtrip",
+        "tests/quic_peers.rs::hysteria_v1_unsupported_options_are_named",
+        "tests/quic_peers.rs::hysteria_v1_requires_valid_rates"
+      ]
+    },
+    "hysteria2": {
+      "status": "partial",
+      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233) and one TCP stream per session with the 0x401 request frame; port hopping, Salamander/Gecko obfuscation, realm and UDP are rejected by name.",
+      "options": [
+        "server",
+        "port",
+        "password",
+        "up",
+        "down",
+        "sni",
+        "skip-cert-verify",
+        "alpn",
+        "handshake-timeout",
+        "dialer-proxy"
+      ],
+      "udp": "not implemented: the engine has no Hysteria2 UDP session relay; `udp` traffic routed to Hysteria2 is dropped and logged",
+      "notImplemented": [
+        "ports",
+        "hop-interval",
+        "obfs (Salamander/Gecko)",
+        "realm-opts",
+        "udp-mtu",
+        "cwnd",
+        "bbr-profile",
+        "initial-stream-receive-window",
+        "max-stream-receive-window",
+        "initial-connection-receive-window",
+        "max-connection-receive-window",
+        "ech-opts",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "client-fingerprint",
+        "ip-version",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark"
+      ],
+      "evidence": [
+        "src/outbound/h3.rs::tests::varint_round_trip",
+        "src/outbound/h3.rs::tests::field_section_round_trip_with_literals",
+        "src/outbound/h3.rs::tests::static_table_index_is_the_qpack_order",
+        "src/outbound/h3.rs::tests::huffman_decodes_a_known_string",
+        "src/outbound/hysteria2.rs::tests::tcp_request_frame_has_the_pinned_layout",
+        "tests/mihomo_peers.rs::hysteria2_outbound_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::hysteria2_wrong_password_never_reaches_the_sink"
+      ]
+    },
+    "shadowquic": {
+      "status": "unimplemented",
+      "reason": "the pinned client (transport/shadowquic + jls-tls) needs JLS, a custom TLS extension and a modified QUIC stack; rustls/quinn cannot express it and no JLS crate is in the offline cargo cache"
+    },
+    "wireguard": {
+      "status": "unimplemented",
+      "reason": "the pinned outbound terminates WireGuard (Noise IK, cookie, transport keys) and exposes TCP/UDP through a gVisor netstack; the Rust kernel has no WireGuard transport or IP stack (device/TUN ownership is T6/T7) and no boringtun/wireguard crate is in the offline cargo cache"
+    },
+    "tailscale": {
+      "status": "unimplemented",
+      "reason": "the pinned outbound (with_gvisor) embeds the tailscale.com control plane and a gVisor netstack; device/TUN ownership is T6/T7 and no Rust tailscale stack is available offline"
+    },
+    "zerotier": {
+      "status": "unimplemented",
+      "reason": "the pinned outbound wraps zerotier-go (identity, planet, control protocol, crypto) plus a gVisor netstack; device/TUN ownership is T6/T7 and no Rust zerotier stack is available offline"
+    },
+    "easytier": {
+      "status": "unimplemented",
+      "reason": "the pinned outbound embeds the easytier-go host/instance (peer discovery, encryption, KCP/QUIC proxies) plus a netstack; device/TUN ownership is T6/T7 and no Rust easytier stack is available offline"
+    },
+    "openvpn": {
+      "status": "unimplemented",
+      "reason": "the pinned outbound implements OpenVPN (TLS control channel, data ciphers, tls-auth/tls-crypt) and exposes TCP/UDP through a gVisor netstack; device/TUN ownership is T6/T7 and no Rust OpenVPN stack is available offline"
     }
   },
   "listeners": {
@@ -698,47 +879,35 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4's goal is 'complete the proxy protocols at the pinned version'. This slice has 9 implemented outbound types (ss, socks5, http, trojan, vless, anytls, vmess, snell, trusttunnel), 3 partial ones delivered by T11 (gost-relay: TCP/TLS/auth/forward; ssh: password/key/host-key/direct-tcpip; ssr: stream ciphers + origin/plain), and 16 unimplemented ones. Every unimplemented type is rejected by name at load time (never ignored). T11/T9 own the remaining non-QUIC families (mieru, masque, sudoku); T10 owns the QUIC and device families (hysteria, hysteria2, tuic, shadowquic, wireguard, tailscale, zerotier, easytier, openvpn); T5 integrates both and owns the built-in direct/dns/reject/rematch adapters. T5 depends on T9 and T10.",
+    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC) and leaves shadowquic (JLS-TLS) and the device families wireguard/tailscale/zerotier/easytier/openvpn explicitly rejected by name, with device/TUN ownership in T6/T7. T9 owns mieru/masque/sudoku; T5 owns the built-in direct/dns/reject/rematch adapters.",
     "entries": {
       "mieru": {
         "owner": "T9",
         "reason": "the pinned outbound wraps the external enfein/mieru v3.39.0 module (encrypted underlay, padding, handshake modes, multiplexing); no Rust port exists in this tree. Decision needed: vendor/port the module or keep it explicitly deferred."
       },
-      "hysteria": {
-        "owner": "T10",
-        "reason": "QUIC-based, needs a QUIC stack"
-      },
-      "hysteria2": {
-        "owner": "T10",
-        "reason": "QUIC-based, congestion control and UDP relay"
-      },
-      "tuic": {
-        "owner": "T10",
-        "reason": "QUIC-based, needs a QUIC stack"
-      },
       "shadowquic": {
         "owner": "T10",
-        "reason": "QUIC-based"
+        "reason": "QUIC + JLS-TLS (custom TLS extension); rustls/quinn cannot express it, no JLS crate offline"
       },
       "wireguard": {
         "owner": "T10",
-        "reason": "device/TUN ownership overlaps the takeover model"
+        "reason": "WireGuard Noise IK/transport plus an IP stack; device/TUN ownership is T6/T7, no wireguard crate offline"
       },
       "tailscale": {
         "owner": "T10",
-        "reason": "WireGuard-based mesh with its own control plane"
+        "reason": "tailscale.com control plane + gVisor netstack; device/TUN ownership is T6/T7, no Rust stack offline"
       },
       "zerotier": {
         "owner": "T10",
-        "reason": "mesh VPN with its own device ownership"
+        "reason": "zerotier-go control/crypto + gVisor netstack; device/TUN ownership is T6/T7, no Rust stack offline"
       },
       "easytier": {
         "owner": "T10",
-        "reason": "mesh VPN with its own device ownership"
+        "reason": "easytier-go host/instance + netstack; device/TUN ownership is T6/T7, no Rust stack offline"
       },
       "openvpn": {
         "owner": "T10",
-        "reason": "openvpn3 transport with its own device handling"
+        "reason": "OpenVPN control/data channels + gVisor netstack; device/TUN ownership is T6/T7, no Rust stack offline"
       },
       "masque": {
         "owner": "T9",
@@ -801,5 +970,13 @@
     "global": [
       "any key no proxy type declares (a typo or a newer option)"
     ]
+  },
+  "quicProfile": {
+    "crate": "quinn 0.11.12 (quinn-proto 0.11.19, quinn-udp 0.5.16)",
+    "features": "default-features = false, runtime-tokio + rustls-ring + log",
+    "tls": "rustls 0.23, TLS 1.3 only, ALPN per family (h3 for TUIC/Hysteria2, hysteria for Hysteria v1)",
+    "offlineSource": "local cargo registry cache; no h3/qpack/JLS/wireguard crate is cached",
+    "memory": "one Endpoint + one Connection per dial; transport windows capped to stream receive 512 KiB, connection receive 2 MiB, send 2 MiB, datagram buffers 64 KiB (quinn defaults: 1.25 MB / VarInt::MAX / 10 MB / ~1 MB). T7 must measure the whole iOS extension against the 40,000,000-byte budget; this task records the dependency and the caps, not a device measurement.",
+    "platform": "macOS arm64 loopback and pinned-Mihomo runs; Linux/Android/iOS compile from the same code path; Windows compiles but no run is recorded"
   }
 }

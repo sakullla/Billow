@@ -12,15 +12,20 @@
 
 pub mod anytls;
 pub mod gost_relay;
+pub mod h3;
 pub mod http;
+pub mod hysteria;
+pub mod hysteria2;
 pub mod shadowsocks;
 pub mod snell;
 pub mod ssh;
 pub mod ssr;
 pub mod socks5;
+pub mod quic;
 pub mod tls;
 pub mod trojan;
 pub mod trusttunnel;
+pub mod tuic;
 pub mod udp;
 pub mod vless;
 pub mod vmess;
@@ -358,6 +363,18 @@ async fn dial_inner(
         Protocol::Ssr(p) => {
             refuse_chain(via, "ssr")?;
             ssr::dial(p, target).await
+        }
+        Protocol::Tuic(p) => {
+            refuse_chain(via, "tuic")?;
+            tuic::dial(p, target, tls, timeout).await
+        }
+        Protocol::Hysteria(p) => {
+            refuse_chain(via, "hysteria")?;
+            hysteria::dial(p, target, tls, timeout).await
+        }
+        Protocol::Hysteria2(p) => {
+            refuse_chain(via, "hysteria2")?;
+            hysteria2::dial(p, target, tls, timeout).await
         }
     }
 }
