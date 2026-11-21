@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 184, enabled cases: 212, problems: 0
+# no-op cases: 204, enabled cases: 241, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
@@ -188,6 +188,26 @@ noop    hysteria2 udp-mtu                      rust=accept mihomo=accept
 noop    hysteria2 cwnd                         rust=accept mihomo=accept
 noop    hysteria2 bbr-profile                  rust=accept mihomo=accept
 noop    hysteria2 realm-opts                   rust=accept mihomo=accept
+noop    mieru   udp                          rust=accept mihomo=accept
+noop    mieru   tfo                          rust=accept mihomo=accept
+noop    mieru   mptcp                        rust=accept mihomo=accept
+noop    mieru   interface-name               rust=accept mihomo=accept
+noop    mieru   routing-mark                 rust=accept mihomo=accept
+noop    mieru   ip-version                   rust=accept mihomo=accept
+noop    sudoku  udp                          rust=accept mihomo=accept
+noop    sudoku  tfo                          rust=accept mihomo=accept
+noop    sudoku  mptcp                        rust=accept mihomo=accept
+noop    sudoku  interface-name               rust=accept mihomo=accept
+noop    sudoku  routing-mark                 rust=accept mihomo=accept
+noop    sudoku  ip-version                   rust=accept mihomo=accept
+noop    mieru   multiplexing                 rust=accept mihomo=accept
+noop    mieru   handshake-mode               rust=accept mihomo=accept
+noop    mieru   handshake-mode               rust=accept mihomo=accept
+noop    sudoku  multiplex                    rust=accept mihomo=accept
+noop    sudoku  http-mask-mode               rust=accept mihomo=accept
+noop    sudoku  httpmask                     rust=accept mihomo=accept
+noop    sudoku  enable-pure-downlink         rust=accept mihomo=accept
+noop    sudoku  http-mask                    rust=accept mihomo=accept
 enabled socks5  udp                          rust=reject mihomo=accept
 enabled socks5  fingerprint                  rust=reject mihomo=accept
 enabled socks5  certificate                  rust=reject mihomo=reject
@@ -334,6 +354,19 @@ enabled ssr     tfo                          rust=reject mihomo=accept
 enabled ssr     mptcp                        rust=reject mihomo=accept
 enabled ssr     interface-name               rust=reject mihomo=accept
 enabled ssr     routing-mark                 rust=reject mihomo=accept
+enabled mieru   udp                          rust=reject mihomo=accept
+enabled mieru   traffic-pattern              rust=reject mihomo=reject
+enabled mieru   tfo                          rust=reject mihomo=accept
+enabled mieru   mptcp                        rust=reject mihomo=accept
+enabled mieru   interface-name               rust=reject mihomo=accept
+enabled mieru   routing-mark                 rust=reject mihomo=accept
+enabled mieru   ip-version                   rust=reject mihomo=accept
+enabled sudoku  udp                          rust=reject mihomo=accept
+enabled sudoku  tfo                          rust=reject mihomo=accept
+enabled sudoku  mptcp                        rust=reject mihomo=accept
+enabled sudoku  interface-name               rust=reject mihomo=accept
+enabled sudoku  routing-mark                 rust=reject mihomo=accept
+enabled sudoku  ip-version                   rust=reject mihomo=accept
 enabled tuic    token                        rust=reject mihomo=accept
 enabled tuic    udp-relay-mode               rust=reject mihomo=accept
 enabled tuic    reduce-rtt                   rust=reject mihomo=accept
@@ -400,3 +433,19 @@ enabled hysteria2 tfo                          rust=reject mihomo=accept
 enabled hysteria2 mptcp                        rust=reject mihomo=accept
 enabled hysteria2 interface-name               rust=reject mihomo=accept
 enabled hysteria2 routing-mark                 rust=reject mihomo=accept
+enabled mieru   udp                          rust=reject mihomo=accept
+enabled mieru   multiplexing                 rust=reject mihomo=accept
+enabled mieru   traffic-pattern              rust=reject mihomo=reject
+enabled mieru   tfo                          rust=reject mihomo=accept
+enabled mieru   mptcp                        rust=reject mihomo=accept
+enabled mieru   interface-name               rust=reject mihomo=accept
+enabled mieru   routing-mark                 rust=reject mihomo=accept
+enabled mieru   ip-version                   rust=reject mihomo=accept
+enabled sudoku  udp                          rust=reject mihomo=accept
+enabled sudoku  http-mask-mode               rust=reject mihomo=accept
+enabled sudoku  multiplex                    rust=reject mihomo=accept
+enabled sudoku  tfo                          rust=reject mihomo=accept
+enabled sudoku  mptcp                        rust=reject mihomo=accept
+enabled sudoku  interface-name               rust=reject mihomo=accept
+enabled sudoku  routing-mark                 rust=reject mihomo=accept
+enabled sudoku  ip-version                   rust=reject mihomo=accept

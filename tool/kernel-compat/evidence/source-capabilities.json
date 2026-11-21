@@ -1779,24 +1779,22 @@
       "constructor": "outbound.NewShadowSocksR",
       "source": "adapter/parser.go:37",
       "rustMapping": {
-        "status": "partial",
-        "reason": "all pinned stream ciphers plus `protocol: origin` and `obfs: plain`; the SSR protocol/obfs plugins (auth_sha1_v4, auth_aes128_*, auth_chain_*, http_simple, http_post, random_head, tls1.2_ticket_*) are rejected by name. Framing is verified against an independent Go server built from the pinned shadowstream package.",
+        "status": "implemented",
+        "reason": "every pinned stream cipher plus every protocol plugin (origin, auth_sha1_v4, auth_aes128_md5, auth_aes128_sha1, auth_chain_a, auth_chain_b), every obfs plugin (plain, http_simple, http_post, random_head, tls1.2_ticket_auth, tls1.2_ticket_fastauth) and the UDP association. The wire format is checked against an independent Go peer built from the pinned packages (`tool/kernel-compat/peers/ssr-plugins`), which also runs the pinned client packages against itself. random_head locates the peer head by scanning the CRC from the longest candidate: the pinned CRC check is not unique for every length (crc32(head[:n-1]) can match the four bytes at n-1), and an ascending scan occasionally took the head one byte short and misaligned the cipher stream.",
         "options": [
           "server",
           "port",
           "password",
           "cipher (rc4-md5, aes-128/192/256-cfb, aes-128/192/256-ctr, chacha20, chacha20-ietf, xchacha20, none)",
-          "protocol: origin",
-          "protocol-param (ignored by origin)",
-          "obfs: plain",
-          "obfs-param (ignored by plain)",
+          "protocol: origin/auth_sha1_v4/auth_aes128_md5/auth_aes128_sha1/auth_chain_a/auth_chain_b",
+          "protocol-param (user id and key; the plugin's own parsing)",
+          "obfs: plain/http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth",
+          "obfs-param (http host/body, tls SNI)",
+          "udp (the pinned cipher.PacketConn + protocol.PacketConn association; no obfs layer, as in the pinned outbound)",
           "dialer-proxy"
         ],
-        "udp": "not implemented: `udp: true` is rejected (no UDP association); `udp: false` loads",
+        "udp": "implemented: `udp: true` opens the pinned association (IV || cipher(protocol packet), SOCKS5 address inside, no obfs). Every protocol is verified against the Go peer and a wrong password is rejected. Limit inherited from the pinned client: `auth_aes128_*` datagrams are sealed with the derived user key but opened with the cipher key, so a `protocol-param` breaks the UDP path in both directions; the UDP tests therefore use no protocol-param (TCP with `protocol-param` is covered).",
         "notImplemented": [
-          "protocol: auth_sha1_v4/auth_aes128_md5/auth_aes128_sha1/auth_chain_a/auth_chain_b",
-          "obfs: http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth",
-          "udp: true",
           "ip-version",
           "tfo",
           "mptcp",
@@ -1804,16 +1802,28 @@
           "routing-mark"
         ],
         "evidence": [
+          "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_an_ssr_plugin",
+          "src/outbound/ssr/obfs.rs::tests::random_head_length_picks_the_real_boundary",
           "src/outbound/ssr.rs::tests::stream_ciphers_match_the_pinned_go_vectors",
-          "src/outbound/ssr.rs::tests::cfb_roundtrips_across_chunk_boundaries",
-          "src/outbound/ssr.rs::tests::ctr_and_rc4_roundtrip",
+          "src/outbound/ssr.rs::dial_wire_tests::origin_plain_writes_the_iv_then_the_address_and_payload",
+          "src/outbound/ssr/protocol.rs::tests::crc32_and_adler32_match_the_go_reference_values",
+          "src/outbound/ssr/protocol.rs::tests::hmac_md5_matches_rfc_2202_case_1",
+          "src/outbound/ssr/protocol.rs::tests::hmac_sha1_matches_rfc_2202_case_1",
+          "src/outbound/ssr/protocol.rs::tests::xor_shift_sequence_matches_the_pinned_generator",
+          "src/outbound/ssr/protocol.rs::tests::chain_b_padding_schedule_matches_the_pinned_generator",
+          "src/outbound/ssr/obfs.rs::tests::http_head_carries_the_url_encoded_first_chunk",
+          "src/outbound/ssr/obfs.rs::tests::tls_hello_has_the_pinned_record_and_handshake_headers",
           "tests/protocols.rs::ssr_outbound_origin_plain_relays_with_aes_256_cfb",
           "tests/protocols.rs::ssr_outbound_rc4_md5_and_dummy_ciphers_relay",
           "tests/protocols.rs::ssr_outbound_wrong_password_never_reaches_the_target",
           "tests/config.rs::ssr_options_are_strict",
-          "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssr",
           "tests/independent_peers.rs::ssr_go_server_relays_the_client_frames",
-          "tests/independent_peers.rs::ssr_go_server_rejects_a_wrong_password"
+          "tests/independent_peers.rs::ssr_plugin_matrix_relays_with_every_protocol_and_obfs",
+          "tests/independent_peers.rs::ssr_plugin_wrong_password_never_relays",
+          "tests/independent_peers.rs::ssr_plugin_protocol_param_and_large_payloads",
+          "tests/independent_peers.rs::ssr_udp_reaches_the_echo_for_every_protocol",
+          "tests/independent_peers.rs::ssr_udp_wrong_password_never_reaches_the_echo",
+          "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssr"
         ]
       }
     },
@@ -2288,8 +2298,8 @@
       "constructor": "outbound.NewGostRelay",
       "source": "adapter/parser.go:121",
       "rustMapping": {
-        "status": "partial",
-        "reason": "TCP relay with optional TLS, username/password authentication and `forward`; the UDP association and smux multiplexing the pinned type also declares are rejected by name.",
+        "status": "implemented",
+        "reason": "TCP relay with optional TLS, username/password authentication, `forward`, the UDP association and the version-1 smux session. The controlled peer is the loopback relay v2 server in tests/protocols.rs, written from transport/gost/relay.go; the smux frame layout is pinned by a unit test. The controlled peer is also driven by the pinned `gost.NewRelayDialer` (`tool/kernel-compat/peers/gost-relay-harness`, with mux and UDP), so the UDP association and the smux session are not only checked against our own client.",
         "options": [
           "server",
           "port",
@@ -2299,12 +2309,12 @@
           "skip-cert-verify",
           "username",
           "password",
+          "udp (one association bound to one target; `length(u16 BE) || payload` frames)",
+          "mux (smux DefaultConfig version 1, keep-alive disabled, one stream per dial)",
           "dialer-proxy"
         ],
-        "udp": "not implemented: `udp: true` is rejected (no UDP association); `udp: false` loads",
+        "udp": "implemented: `udp: true` opens the pinned association (command 0x81, network feature 1, address feature = the bound target); a server that refuses it produces no reply and no DIRECT fallback",
         "notImplemented": [
-          "udp: true",
-          "mux: true",
           "name-cert-verify",
           "fingerprint",
           "certificate",
@@ -2317,14 +2327,22 @@
           "routing-mark"
         ],
         "evidence": [
+          "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_gost_relay_mux",
+          "tests/protocols.rs::gost_relay_pinned_dialer_accepts_the_controlled_peer",
           "src/outbound/gost_relay.rs::tests::ipv4_request_layout_matches_the_pinned_encoder",
           "src/outbound/gost_relay.rs::tests::domain_and_auth_features_follow_the_pinned_order",
+          "src/outbound/gost_relay.rs::tests::udp_request_sets_the_flag_and_the_udp_network",
           "src/outbound/gost_relay.rs::tests::forward_omits_the_address_feature",
+          "src/outbound/smux.rs::tests::a_frame_header_matches_the_pinned_layout",
           "tests/protocols.rs::gost_relay_outbound_relays_to_the_address_feature_target",
           "tests/protocols.rs::gost_relay_outbound_sends_user_auth_and_forward_omits_the_address",
           "tests/protocols.rs::gost_relay_outbound_wrong_credentials_never_reach_the_target",
           "tests/protocols.rs::gost_relay_outbound_rejects_a_bad_response_version",
           "tests/protocols.rs::gost_relay_outbound_over_tls_relays_and_verifies_the_certificate",
+          "tests/protocols.rs::gost_relay_udp_relays_datagrams_to_the_bound_target",
+          "tests/protocols.rs::gost_relay_udp_without_the_option_is_refused_by_the_server",
+          "tests/protocols.rs::gost_relay_mux_relays_over_one_smux_stream",
+          "tests/protocols.rs::gost_relay_mux_and_udp_share_the_smux_session",
           "tests/config.rs::gost_relay_options_are_strict",
           "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_gost_relay"
         ]
@@ -2409,8 +2427,44 @@
       "constructor": "outbound.NewMieru",
       "source": "adapter/parser.go:163",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "the pinned outbound wraps the external enfein/mieru v3.39.0 module; T11 deferred it pending a vendor/port decision"
+        "status": "partial",
+        "reason": "TCP single sessions are implemented; the UDP transport, `udp: true` (UDP associate), the multiplexing levels and `traffic-pattern` are rejected at load with the reason recorded (T13 scope)",
+        "options": [
+          "server",
+          "port",
+          "port-range",
+          "transport",
+          "username",
+          "password",
+          "multiplexing",
+          "handshake-mode",
+          "dialer-proxy"
+        ],
+        "udp": "not implemented: `udp: true` (the UDP-associate wrapper) is rejected; TCP sessions only",
+        "notImplemented": [
+          "transport: UDP",
+          "udp: true",
+          "multiplexing: MULTIPLEXING_LOW/MIDDLE/HIGH",
+          "traffic-pattern",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "ip-version"
+        ],
+        "notes": [
+          "the mieru module is GPL-3.0, so the client is an independent implementation of docs/protocol.md (PBKDF2-SHA256 time salt, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, one TCP session per underlay); no mieru code is vendored or linked",
+          "handshake-mode values load: HANDSHAKE_NO_WAIT only defers the same handshake, and the kernel dials eagerly",
+          "port-range picks a random member per dial (up to four tries) because any port in the range is a valid server endpoint"
+        ],
+        "evidence": [
+          "tests/mihomo_peers.rs::mieru_tcp_session_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::mieru_port_range_session_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::mieru_wrong_password_never_reaches_the_sink",
+          "tests/mihomo_peers.rs::mieru_closed_peer_port_never_reaches_the_sink",
+          "src/outbound/mieru.rs::tests::key_derivation_matches_the_pinned_protocol",
+          "crates/billow-kernel-cli/tests/cli.rs::process_loads_t13_outbounds"
+        ]
       }
     },
     {
@@ -2462,8 +2516,54 @@
       "constructor": "outbound.NewSudoku",
       "source": "adapter/parser.go:177",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "~13.6k lines of custom crypto/KIP/multiplexing; T11 deferred it pending a split into its own task"
+        "status": "partial",
+        "reason": "TCP sessions with the legacy HTTP mask, both downlink codecs, the record layer and the KIP handshake are implemented; the HTTP tunnel modes (stream/poll/auto/ws), `multiplex: on` (session mux) and `udp: true` (UoT) are rejected at load with the reason recorded (T13 scope)",
+        "options": [
+          "server",
+          "port",
+          "key",
+          "aead-method",
+          "padding-min",
+          "padding-max",
+          "table-type",
+          "custom-table",
+          "custom-tables",
+          "enable-pure-downlink",
+          "http-mask",
+          "http-mask-mode",
+          "path-root",
+          "multiplex",
+          "httpmask",
+          "dialer-proxy"
+        ],
+        "udp": "not implemented: `udp: true` (the UoT association) is rejected; TCP sessions only",
+        "notImplemented": [
+          "udp: true",
+          "http-mask-mode: stream/poll/auto/ws",
+          "multiplex: on",
+          "http-mask-tls (no effect without a tunnel mode)",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "ip-version"
+        ],
+        "notes": [
+          "wire-compatible port of the pinned transport/sudoku: Go's math/rand shuffle (rnsSource + rngCooked) reproduces the 288-grid table order, both pure and packed codecs, the record layer (chacha20-poly1305, aes-128-gcm, none) and the KIP X25519/HKDF handshake",
+          "the HTTP tunnel modes are a mihomo extension (split-stream/poll/WebSocket) and are rejected by name; the legacy header mask is the default and is implemented, as is disable-http-mask",
+          "table rotation (custom-tables) picks one table per connection and sends the KIP table hint so the probing server resolves it"
+        ],
+        "evidence": [
+          "tests/mihomo_peers.rs::sudoku_tcp_session_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side",
+          "tests/mihomo_peers.rs::sudoku_directional_table_reaches_the_receiving_side",
+          "tests/mihomo_peers.rs::sudoku_custom_table_pattern_reaches_the_receiving_side",
+          "tests/mihomo_peers.rs::sudoku_rotating_custom_tables_reach_the_receiving_side",
+          "tests/mihomo_peers.rs::sudoku_wrong_key_never_reaches_the_sink",
+          "tests/mihomo_peers.rs::sudoku_mismatched_table_type_never_reaches_the_sink",
+          "tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation",
+          "src/outbound/sudoku/table.rs::pinned_vectors::the_pinned_encoder_output_decodes_with_our_table"
+        ]
       }
     },
     {
@@ -3692,7 +3792,7 @@
     {
       "kind": "rust-scope",
       "name": "*",
-      "reason": "Every proxy type outside the six implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it (T9 non-QUIC, T10 QUIC/device, T5 built-ins)."
+      "reason": "Every proxy type outside the implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it (T9 non-QUIC, T10 QUIC/device, T5 built-ins)."
     },
     {
       "kind": "rust-scope",
@@ -3703,6 +3803,11 @@
       "kind": "rust-scope",
       "name": "*",
       "reason": "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it."
+    },
+    {
+      "kind": "rust-scope",
+      "name": "*",
+      "reason": "T12 closed the SSR plugin layers (every pinned protocol/obfs plus the UDP association) and the gost-relay UDP association and smux session; the remaining SSR/gost-relay options are the transport knobs Mihomo accepts and ignores (ip-version/tfo/mptcp/interface-name/routing-mark) and gost-relay's certificate pinning knobs."
     }
   ],
   "rust": {
@@ -3726,9 +3831,9 @@
     "note": "rustMapping on each entry comes from that file; partial entries name the options they reject, unimplemented entries are rejected at load time and are never compatible."
   },
   "coverage": {
-    "mapped": 22,
+    "mapped": 24,
     "partial": 13,
-    "unimplemented": 120,
+    "unimplemented": 118,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }

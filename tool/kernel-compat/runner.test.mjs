@@ -150,7 +150,14 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   for (const type of ['ssh', 'tuic', 'hysteria', 'hysteria2']) {
     assert.equal(mapping.proxies[type]?.status, 'partial', `${type} is partially implemented with the gaps named`)
   }
-  for (const type of ['mieru', 'masque', 'sudoku', 'shadowquic', 'wireguard', 'tailscale', 'zerotier', 'easytier', 'openvpn']) {
+  // T13 delivered the TCP slice of both families; the rejected pieces are
+  // named in their `reason`/`notImplemented` lists, so neither is claimed in
+  // full.
+  for (const type of ['mieru', 'sudoku']) {
+    assert.equal(mapping.proxies[type]?.status, 'partial', `${type} is implemented for TCP with its gaps named`)
+    assert.match(mapping.proxies[type]?.reason ?? '', /rejected at load/, `${type} names the rejected pieces`)
+  }
+  for (const type of ['masque', 'shadowquic', 'wireguard', 'tailscale', 'zerotier', 'easytier', 'openvpn']) {
     assert.notEqual(mapping.proxies[type]?.status, 'implemented', `${type} must not be claimed`)
   }
   assert.ok(mapping.platform.verified.length > 0)

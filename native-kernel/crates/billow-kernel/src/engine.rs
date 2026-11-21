@@ -1105,6 +1105,8 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
         crate::proxies::Protocol::Tuic(_) => "tuic (udp: false)",
         crate::proxies::Protocol::Hysteria(_) => "hysteria (udp: false)",
         crate::proxies::Protocol::Hysteria2(_) => "hysteria2 (udp: false)",
+        crate::proxies::Protocol::Mieru(_) => "mieru (udp: false)",
+        crate::proxies::Protocol::Sudoku(_) => "sudoku (udp: false)",
     }
 }
 

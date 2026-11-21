@@ -407,3 +407,32 @@ fn process_loads_t9_outbounds() {
     assert!(stdout.contains("sh=ssh"), "{stdout}");
     assert!(stdout.contains("sr=ssr"), "{stdout}");
 }
+
+/// T13 families in the shipped process: mieru and sudoku load from the same
+/// configuration surface as the library, appear in the identity line, and a
+/// tunnel routed to them fails with the inbound reply when the server port is
+/// closed (they never fall back to DIRECT). The successful paths run against
+/// the pinned Mihomo listeners in `mihomo_peers.rs`.
+#[test]
+fn process_loads_t13_outbounds() {
+    let mieru_port = free_port();
+    let sudoku_port = free_port();
+    let port = free_port();
+    let kernel = KernelProcess::start_body(
+        &format!(
+            "proxies:\n  - {{name: mi, type: mieru, server: 127.0.0.1, port: {mieru_port}, transport: TCP, username: u, password: p}}\n  - {{name: su, type: sudoku, server: 127.0.0.1, port: {sudoku_port}, key: \"cli-key\"}}\nrules:\n  - 'MATCH,mi'\n"
+        ),
+        port,
+    );
+    let proxy: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let (mut tunnel, status) = http_connect(proxy, "127.0.0.1:9").unwrap();
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    let _ = tunnel.write_all(b"unused");
+    drop(tunnel);
+    let mut kernel = kernel;
+    let output = kernel.sigint();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("mi=mieru"), "{stdout}");
+    assert!(stdout.contains("su=sudoku"), "{stdout}");
+}

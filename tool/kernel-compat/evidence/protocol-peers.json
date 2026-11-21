@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 41,
-    "passed": 41,
+    "cases": 57,
+    "passed": 57,
     "failed": 0
   },
   "families": {
@@ -289,6 +289,46 @@
       "command": "native-kernel/crates/billow-kernel/tests/quic_peers.rs",
       "peer": "controlled quinn server implementing transport/hysteria/core/protocol.go (control hello + per-session request/response)",
       "notes": "Hysteria v1 has no Mihomo listener in the pinned v1.19.34 tree (only hysteria2/tuic/shadowquic listeners), so the recipe's locked-Mihomo-peer requirement cannot be met for this family. The peer is a controlled quinn server written from the pinned transport/hysteria/core/protocol.go (ClientHello/ServerHello and per-session request/response); TCP, auth-str and base64 auth are covered, while port hopping/XPlus/faketcp/wechat/UDP are rejected by name. This is recorded as a T10 gap in t10-feasibility.json (hysteriaPeerGap), not a pass against Mihomo."
+    },
+    "mieru": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "mieru_tcp_session_reaches_the_receiving_side_through_mihomo",
+          "mieru_port_range_session_reaches_the_receiving_side_through_mihomo",
+          "mieru_idle_session_survives_the_heartbeat"
+        ],
+        "negative": [
+          "mieru_wrong_password_never_reaches_the_sink",
+          "mieru_closed_peer_port_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: mieru (transport: TCP, users: {alice: \"...\"}); the peer runs the GPL-3.0 enfein/mieru v3.39.0 server module inside the pinned binary",
+      "notes": "the kernel's mieru client is an independent implementation of the published TCP protocol (no mieru code vendored or linked). A wrong password is answered with silence (the peer drains the connection for up to a minute), so the client bounds the wait for the session reply and the kernel reports 502. TCP sessions only: `transport: UDP`, `udp: true`, mieru multiplexing and traffic-pattern are rejected at load with the reason recorded."
+    },
+    "sudoku": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "sudoku_tcp_session_reaches_the_receiving_side_through_mihomo",
+          "sudoku_without_the_http_mask_reaches_the_receiving_side",
+          "sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side",
+          "sudoku_directional_table_reaches_the_receiving_side",
+          "sudoku_custom_table_pattern_reaches_the_receiving_side",
+          "sudoku_rotating_custom_tables_reach_the_receiving_side",
+          "sudoku_aes_128_gcm_record_layer_reaches_the_receiving_side",
+          "sudoku_unencrypted_record_layer_reaches_the_receiving_side",
+          "sudoku_private_key_material_matches_the_public_key_peer"
+        ],
+        "negative": [
+          "sudoku_wrong_key_never_reaches_the_sink",
+          "sudoku_mismatched_table_type_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: sudoku with the default (entropy table, pure downlink, legacy HTTP mask) and the configured variants (prefer_ascii, up_ascii_down_entropy, custom-table(s), enable-pure-downlink: false, disable-http-mask, aead-method)",
+      "notes": "wire-compatible port of the pinned transport/sudoku: the table shuffle uses Go's math/rand (rngSource + rngCooked), so the 288-grid order matches; both pure and packed downlink codecs, the record layer (chacha20-poly1305/aes-128-gcm/none) and the KIP X25519/HKDF handshake are covered. `tool/kernel-compat/peers/sudoku-vectors` is the locked Go codec used by `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` to check both directions (pinned encode -> Rust decode, Rust encode -> pinned decode, with and without padding) for entropy/ascii/directional/custom tables. HTTP tunnel modes (`stream`/`poll`/`ws`), `multiplex: on` and UoT are rejected at load with the reason recorded."
     }
   },
   "loopbackOnlyEvidence": {
@@ -338,7 +378,7 @@
       "passed": 14,
       "failed": 0
     },
-    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server. `result` counts the 14 test functions in family-peers.sh (gost 5, ssh 4, ssr Rust 3, ssr independent Go 2).",
+    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server; the Sudoku section builds the locked Go codec (`peers/sudoku-vectors`) and runs the Rust-vs-Go differential test. `result` counts the 14 test functions in family-peers.sh (gost 5, ssh 4, ssr Rust 3, ssr independent Go 2); the Sudoku differential is `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation`.",
     "cli": "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs drives one success tunnel through the real CLI process for gost-relay, ssh and ssr."
   },
   "t11": {
@@ -363,8 +403,35 @@
       "gost-relay: UDP and smux are rejected at load time; only the TCP relay (plain/TLS) is implemented.",
       "ssh: private-key file paths are rejected (inline PEM only) and each dial opens its own SSH client; Mihomo reuses one client per proxy.",
       "ssr: only `protocol: origin` and `obfs: plain`; the auth_*/tls1.2_ticket_*/http_simple plugin layers are rejected by name.",
-      "mieru, masque and sudoku remain unimplemented with the decisions in rust-mapping.json#familiesNotImplemented."
+      "mieru and sudoku were delivered by T13 (single-session TCP slice); masque remains unimplemented with the decisions in rust-mapping.json#familiesNotImplemented."
     ]
+  },
+  "t13": {
+    "date": "2026-11-22",
+    "delivered": [
+      "mieru (TCP single session: PBKDF2 time salt, XChaCha20-Poly1305 implicit nonce, session/data segments, ack heartbeat)",
+      "sudoku (TCP: math/rand table shuffle, record layer, KIP X25519/HKDF handshake, legacy HTTP mask, pure and packed downlink, table rotation)"
+    ],
+    "run": {
+      "command": "tool/kernel-compat/peer-tests.sh",
+      "result": "57 passed, 0 failed",
+      "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
+    },
+    "codecRun": {
+      "command": "tool/kernel-compat/family-peers.sh",
+      "result": "pinned Sudoku table hint/padding pool matched; Rust-vs-Go codec differential passed",
+      "log": "tool/kernel-compat/evidence/family-peers-run.log"
+    },
+    "splitDecisions": {
+      "mieru": "transport UDP, `udp: true`, multiplexing levels and traffic-pattern are rejected at load; TCP single session only (handshake-mode values load, NO_WAIT merely defers the same handshake)",
+      "sudoku": "HTTP tunnel modes (stream/poll/auto/ws, a mihomo extension), `multiplex: on` (Sudoku session mux) and `udp: true` (UoT) are rejected at load; the legacy mask, single-target sessions and both downlink codecs are implemented"
+    },
+    "license": {
+      "mieru": "the enfein/mieru v3.39.0 module is GPL-3.0; no mieru source is vendored or linked, the client follows the published docs/protocol.md and is verified only against the pinned binary",
+      "sudoku": "the locked transport/sudoku is MIT; Go's math/rand rngCooked table is reproduced from the Go standard library (BSD-3-Clause) with its copyright notice in src/outbound/sudoku/go_rand.rs",
+      "crates": "curve25519-dalek/x25519-dalek are BSD-3-Clause and MIT-compatible with the workspace MIT license"
+    },
+    "platform": "macos-aarch64 for the recorded peer runs; the code paths are platform-neutral Rust and compile for the other targets."
   },
   "t10": {
     "status": "partial",

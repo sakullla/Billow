@@ -3,7 +3,7 @@
   "version": 3,
   "engine": "rust",
   "kernel": "billow-kernel",
-  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,engine.rs,outbound/*.rs} and tests/{config,protocols,mihomo_peers}.rs",
+  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,engine.rs,outbound/*.rs,outbound/sudoku/*.rs} and tests/{config,protocols,mihomo_peers}.rs",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -597,16 +597,98 @@
       ]
     },
     "mieru": {
-      "status": "unimplemented",
-      "reason": "the pinned outbound wraps the external enfein/mieru v3.39.0 module; T11 deferred it pending a vendor/port decision"
+      "status": "partial",
+      "reason": "TCP single sessions are implemented; the UDP transport, `udp: true` (UDP associate), the multiplexing levels and `traffic-pattern` are rejected at load with the reason recorded (T13 scope)",
+      "options": [
+        "server",
+        "port",
+        "port-range",
+        "transport",
+        "username",
+        "password",
+        "multiplexing",
+        "handshake-mode",
+        "dialer-proxy"
+      ],
+      "udp": "not implemented: `udp: true` (the UDP-associate wrapper) is rejected; TCP sessions only",
+      "notImplemented": [
+        "transport: UDP",
+        "udp: true",
+        "multiplexing: MULTIPLEXING_LOW/MIDDLE/HIGH",
+        "traffic-pattern",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version"
+      ],
+      "notes": [
+        "the mieru module is GPL-3.0, so the client is an independent implementation of docs/protocol.md (PBKDF2-SHA256 time salt, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, one TCP session per underlay); no mieru code is vendored or linked",
+        "handshake-mode values load: HANDSHAKE_NO_WAIT only defers the same handshake, and the kernel dials eagerly",
+        "port-range picks a random member per dial (up to four tries) because any port in the range is a valid server endpoint"
+      ],
+      "evidence": [
+        "tests/mihomo_peers.rs::mieru_tcp_session_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::mieru_port_range_session_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::mieru_wrong_password_never_reaches_the_sink",
+        "tests/mihomo_peers.rs::mieru_closed_peer_port_never_reaches_the_sink",
+        "src/outbound/mieru.rs::tests::key_derivation_matches_the_pinned_protocol",
+        "crates/billow-kernel-cli/tests/cli.rs::process_loads_t13_outbounds"
+      ]
     },
     "masque": {
       "status": "unimplemented",
       "reason": "HTTP/3 CONNECT-IP/CONNECT-UDP needs the QUIC stack and an IP stack aligned with T10/T7; T11 deferred it"
     },
     "sudoku": {
-      "status": "unimplemented",
-      "reason": "~13.6k lines of custom crypto/KIP/multiplexing; T11 deferred it pending a split into its own task"
+      "status": "partial",
+      "reason": "TCP sessions with the legacy HTTP mask, both downlink codecs, the record layer and the KIP handshake are implemented; the HTTP tunnel modes (stream/poll/auto/ws), `multiplex: on` (session mux) and `udp: true` (UoT) are rejected at load with the reason recorded (T13 scope)",
+      "options": [
+        "server",
+        "port",
+        "key",
+        "aead-method",
+        "padding-min",
+        "padding-max",
+        "table-type",
+        "custom-table",
+        "custom-tables",
+        "enable-pure-downlink",
+        "http-mask",
+        "http-mask-mode",
+        "path-root",
+        "multiplex",
+        "httpmask",
+        "dialer-proxy"
+      ],
+      "udp": "not implemented: `udp: true` (the UoT association) is rejected; TCP sessions only",
+      "notImplemented": [
+        "udp: true",
+        "http-mask-mode: stream/poll/auto/ws",
+        "multiplex: on",
+        "http-mask-tls (no effect without a tunnel mode)",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version"
+      ],
+      "notes": [
+        "wire-compatible port of the pinned transport/sudoku: Go's math/rand shuffle (rnsSource + rngCooked) reproduces the 288-grid table order, both pure and packed codecs, the record layer (chacha20-poly1305, aes-128-gcm, none) and the KIP X25519/HKDF handshake",
+        "the HTTP tunnel modes are a mihomo extension (split-stream/poll/WebSocket) and are rejected by name; the legacy header mask is the default and is implemented, as is disable-http-mask",
+        "table rotation (custom-tables) picks one table per connection and sends the KIP table hint so the probing server resolves it"
+      ],
+      "evidence": [
+        "tests/mihomo_peers.rs::sudoku_tcp_session_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side",
+        "tests/mihomo_peers.rs::sudoku_directional_table_reaches_the_receiving_side",
+        "tests/mihomo_peers.rs::sudoku_custom_table_pattern_reaches_the_receiving_side",
+        "tests/mihomo_peers.rs::sudoku_rotating_custom_tables_reach_the_receiving_side",
+        "tests/mihomo_peers.rs::sudoku_wrong_key_never_reaches_the_sink",
+        "tests/mihomo_peers.rs::sudoku_mismatched_table_type_never_reaches_the_sink",
+        "tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation",
+        "src/outbound/sudoku/table.rs::pinned_vectors::the_pinned_encoder_output_decodes_with_our_table"
+      ]
     },
     "tuic": {
       "status": "partial",
@@ -896,12 +978,8 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC) and leaves shadowquic (JLS-TLS) and the device families wireguard/tailscale/zerotier/easytier/openvpn explicitly rejected by name, with device/TUN ownership in T6/T7. T9 owns mieru/masque/sudoku; T5 owns the built-in direct/dns/reject/rematch adapters.",
+    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC) and leaves shadowquic (JLS-TLS) and the device families wireguard/tailscale/zerotier/easytier/openvpn explicitly rejected by name, with device/TUN ownership in T6/T7. T13 added mieru (TCP sessions) and sudoku (TCP, legacy HTTP mask). T9 owns masque; T5 owns the built-in direct/dns/reject/rematch adapters.",
     "entries": {
-      "mieru": {
-        "owner": "T9",
-        "reason": "the pinned outbound wraps the external enfein/mieru v3.39.0 module (encrypted underlay, padding, handshake modes, multiplexing); no Rust port exists in this tree. Decision needed: vendor/port the module or keep it explicitly deferred."
-      },
       "shadowquic": {
         "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
         "reason": "QUIC + JLS-TLS (custom TLS extension); rustls/quinn cannot express it, no JLS crate offline. T10 rejects it by name; a JLS/QUIC dependency decision is needed before implementation."
@@ -929,10 +1007,6 @@
       "masque": {
         "owner": "T9",
         "reason": "HTTP/3 CONNECT-IP/CONNECT-UDP with an IP stack (or HTTP/2 capsules); the QUIC/IP-stack dependency profile overlaps T10 and is not in the workspace MSRV 1.85 profile. Decision needed: align the QUIC stack with T10/T7 memory measurements before implementing."
-      },
-      "sudoku": {
-        "owner": "T9",
-        "reason": "13.6k lines of custom crypto/KIP/HTTP-mask/multiplexing in the pinned tree. Decision needed: split into its own task or explicitly defer; a partial port would not be wire-compatible."
       },
       "direct": {
         "owner": "T5",

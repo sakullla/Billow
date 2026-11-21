@@ -16,10 +16,12 @@ pub mod h3;
 pub mod http;
 pub mod hysteria;
 pub mod hysteria2;
+pub mod mieru;
 pub mod shadowsocks;
 pub mod snell;
 pub mod socks5;
 pub mod smux;
+pub mod sudoku;
 pub mod ssh;
 pub mod ssr;
 pub mod quic;
@@ -376,6 +378,14 @@ async fn dial_inner(
         Protocol::Hysteria2(p) => {
             refuse_chain(via, "hysteria2")?;
             hysteria2::dial(p, target, tls, timeout).await
+        }
+        Protocol::Mieru(p) => {
+            refuse_chain(via, "mieru")?;
+            mieru::dial(p, target).await
+        }
+        Protocol::Sudoku(p) => {
+            refuse_chain(via, "sudoku")?;
+            sudoku::dial(p, target).await
         }
     }
 }

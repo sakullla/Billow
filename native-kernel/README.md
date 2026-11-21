@@ -4,7 +4,7 @@ An embeddable proxy engine plus a standalone process entry. No Tauri or other
 GUI dependency; the library crate also builds as a `staticlib` so the iOS
 Network Extension (T3/T7) can link it directly.
 
-Status after T10: one mixed inbound on the configured address (TCP CONNECT,
+Status: one mixed inbound on the configured address (TCP CONNECT,
 SOCKS5 and SOCKS5 `UDP ASSOCIATE`), a strict subset of the clash
 configuration, `DIRECT`/`REJECT` and the protocol outbounds below with their
 transports and UDP associations. T9 added `vmess` (AEAD header), `snell`
@@ -14,12 +14,15 @@ host-key pinning, `direct-tcpip`) and `ssr` (every pinned stream cipher,
 protocol plugin and obfs plugin, plus the UDP association). T12 completed the
 SSR plugin layers and the gost-relay UDP association and smux session. T10
 added the QUIC families `tuic` (v5 `uuid`/`password`), `hysteria` (v1) and
-`hysteria2` (HTTP/3 auth + TCP), all over `quinn` 0.11; `shadowquic` (JLS-TLS) and the device families
+`hysteria2` (HTTP/3 auth + TCP), all over `quinn` 0.11. T13 added `mieru`
+(single-session TCP, an independent implementation of the published protocol)
+and `sudoku` (TCP with the legacy HTTP mask, the pure and packed downlink
+codecs and the KIP handshake). `shadowquic` (JLS-TLS) and the device families
 (`wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn`) are rejected by
 name, with device/TUN ownership assigned to T6/T7. The T10 families are
 partial: their gaps are named in [Not implemented](#not-implemented) and in
-`tool/kernel-compat/evidence/rust-mapping.json`. `mieru`, `masque` and
-`sudoku` remain rejected by name with the decisions recorded below.
+`tool/kernel-compat/evidence/rust-mapping.json`. `masque` remains rejected by
+name with the decision recorded below.
 **Not implemented yet** (rejected with
 `[unsupported]`, never ignored): DNS and `hosts`, proxy groups and providers,
 the control API (`external-controller`, `proxy-providers`, rules beyond the
@@ -38,15 +41,18 @@ native-kernel/
     │   ├── src/config.rs           # strict YAML/geosite parsing
     │   ├── src/proxies.rs          # strict `proxies:` option tables
     │   ├── src/outbound/           # socks5, http, ss, trojan, vless, anytls, vmess, snell,
-    │   │                           # trusttunnel, gost-relay, ssh, ssr + tls, ws, h2
-    │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid
+    │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, sudoku/
+    │   │                           # (codec, record, kip, table, go_rand) + tls, ws, h2
+    │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid,
+    │   │                           # sudoku key-material canonicalisation
     │   ├── src/rules.rs            # rule set evaluation
     │   ├── src/inbound.rs          # SOCKS5 + HTTP CONNECT handshake, authentication
     │   ├── src/engine.rs           # listener, sessions, bounded relay, lifecycle
     │   ├── src/identity.rs         # uuid / pid / version / listener / config digest
     │   ├── examples/embed.rs       # embedding example
-    │   └── tests/                  # config, protocols (loopback peers), sessions,
-    │                               # mihomo_peers (pinned Mihomo), common/ helpers
+    │   └── tests/                  # config, protocols (loopback peers + sudoku codec
+    │                               # vectors), sessions, mihomo_peers (pinned Mihomo),
+    │                               # cli/family args, common/ helpers
     └── billow-kernel-cli/          # binary `billow-kernel`
         └── tests/cli.rs            # drives the real process: inbound, outbound, restart
 ```
@@ -141,6 +147,17 @@ identities of the servers are logged as the session exit.
 | `tuic` | QUIC (`quinn` 0.11, TLS 1.3, ALPN `h3`), v5 `uuid`/`password` authentication via the TLS exporter, one TCP stream per dial, `ip`/`sni`/`skip-cert-verify`/`disable-sni`/`heartbeat-interval`/`request-timeout` (bounds the auth/Connect stream operations) | no | `listeners: type: tuic` (users map), wrong password; controlled `quinn` peer for the default suite |
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
+| `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
+| `sudoku` | table obfuscation (Go `math/rand` shuffle, entropy/ASCII/directional/custom layouts, `custom-tables` rotation with the KIP hint), record layer (`chacha20-poly1305`, `aes-128-gcm`, `none`), KIP X25519/HKDF handshake, pure and packed downlink, legacy HTTP mask (`http-mask`, `path-root`, `disable-http-mask`) | no | `listeners: type: sudoku` across entropy/ASCII/directional/custom/rotating tables, packed downlink, all three AEAD methods, with and without the HTTP mask, wrong key, mismatched table type; plus the locked Go codec vectors in both directions |
+
+The mieru module the pinned outbound wraps is GPL-3.0: this repository contains
+no mieru source, links no mieru code and derives nothing from its
+implementation beyond the published protocol description (`docs/protocol.md`
+in that module) and wire observations against the pinned binary, which is used
+only as the controlled peer. The Sudoku port reimplements the locked
+`transport/sudoku` (Mihomo's MIT) and reproduces Go's `math/rand` generator
+from the Go standard library (BSD-3-Clause, with its copyright notice kept in
+`src/outbound/sudoku/go_rand.rs`).
 
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
@@ -183,20 +200,27 @@ the association ends with its control connection or after
 
 ### Protocol families outside this slice
 
-The pinned parser lists 28 outbound types. Eleven are implemented
+The pinned parser lists 28 outbound types. Thirteen are implemented
 (`ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`, `vmess`, `snell`,
-`trusttunnel`, `gost-relay`, `ssr`) and one is partial (`ssh`, which opens one
-client per dial and rejects private-key file paths). The rest are rejected by
-name at load time, so no configuration is silently reduced:
+`trusttunnel`, `gost-relay`, `ssr`, `mieru`, `sudoku`) and one is partial
+(`ssh`, which opens one client per dial and rejects private-key file paths).
+The rest are rejected by name at load time, so no configuration is silently
+reduced:
 
 | families | why not here | task / decision |
 | --- | --- | --- |
-| `mieru` | the pinned outbound wraps the external `enfein/mieru` v3.39.0 module (encrypted underlay, padding, handshake modes, multiplexing); no Rust port exists in this tree | **T11 deferred**: vendor/port the module or keep it explicitly deferred; a partial port would not be wire-compatible |
-| `masque` | HTTP/3 CONNECT-IP/CONNECT-UDP with an IP stack (or HTTP/2 capsules); the QUIC/IP-stack dependency profile overlaps T10 | **T11 deferred**: align the QUIC stack with T10/T7 before implementing (the 40 MB budget is measured there) |
-| `sudoku` | 13.6k lines of custom crypto/KIP/HTTP-mask/multiplexing in the pinned tree | **T11 deferred**: split into its own task or explicitly defer; a partial port would not be wire-compatible |
+| `masque` | HTTP/3 CONNECT-IP/CONNECT-UDP with an IP stack (or HTTP/2 capsules); the QUIC/IP-stack dependency profile overlaps T10 | **T14**: align the QUIC stack with T10/T7 before implementing (the 40 MB budget is measured there) |
 | `shadowquic` | QUIC with JLS, a custom TLS extension; the pinned client uses `jls-tls` + a modified `jls-quic-go`. `rustls`/`quinn` cannot express the extension and no JLS crate is in the offline cache | **T10 rejected by name**; implement only with a JLS-capable TLS/QUIC stack |
 | `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols that terminate a tunnel and expose TCP/UDP through an IP stack (gVisor in the pinned build); device/TUN ownership is T6/T7, and no WireGuard/mesh/OpenVPN crate is in the offline cache | **T10 rejected by name**; device/TUN ownership is T6/T7, the transport would be a separate task |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
+
+T13's families are implemented in the single-session TCP slice: `mieru` is an
+independent implementation of the published protocol (the module is GPL-3.0,
+so no mieru code is vendored or linked; only the pinned binary runs it as a
+peer), and `sudoku` reproduces the locked `transport/sudoku` wire format,
+including Go's `math/rand` shuffle that orders the 288-grid table (the seeds
+table is reproduced from Go's BSD-3-Clause `math/rand`). Their rejected pieces
+are named in [Not implemented](#not-implemented).
 
 The remaining gaps are named in [Not implemented](#not-implemented):
 `ssh` rejects private-key file paths and opens one SSH client per dial;
@@ -244,7 +268,11 @@ quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, congestion/window tuning;
 `protocol: faketcp|wechat`, `fast-open`, receive-window/MTU tuning;
 `hysteria2` `ports`/`hop-interval`, `obfs` (Salamander/Gecko), `realm-opts`,
 `up` (the pinned Brutal TX-rate cap; quinn has no Brutal controller),
-`udp-mtu`, congestion/window tuning. `shadowquic` and the device families are
+`udp-mtu`, congestion/window tuning. `mieru` rejects `transport: UDP`,
+`udp: true`, the multiplexing levels (one session per underlay) and
+`traffic-pattern` (padding/nonce/low-entropy shaping); `sudoku` rejects the
+HTTP tunnel modes (`stream`/`poll`/`ws`, a mihomo extension over the protocol),
+`multiplex: on` (the session mux) and `udp: true` (UoT). `shadowquic` and the device families are
 rejected as whole types with the missing stack named (JLS-TLS, WireGuard
 Noise/IP stack, mesh control planes, OpenVPN), never loaded as if compatible.
 `udp: false` is accepted for a family that has no UDP association because it
@@ -458,6 +486,25 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   same file now drives TUIC, Hysteria v1 and Hysteria2 through the real
   `billow-kernel` process as well.
 
+  T13 added 16 cases (5 mieru, 11 sudoku): both families dial the
+  `listeners: type: mieru|sudoku`
+  endpoint, the sudoku cases cover the table layouts (entropy, ASCII,
+  directional, custom, rotation), the packed downlink and all three record
+  AEAD methods, and the negative cases are a wrong key/password and a
+  mismatched sudoku table type plus the private-key/public-key pair.
+  `tool/kernel-compat/peer-tests.sh` now runs 57 cases in total. The sudoku
+  wire format is additionally checked in both directions against the locked Go
+  codec:
+  `tool/kernel-compat/peers/sudoku-vectors` builds the table from
+  `transport/sudoku` and prints the pinned pure/packed encodings and the table
+  hint; `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation`
+  (run by `family-peers.sh`) compares the hint, decodes the pinned bytes and
+  feeds its own encoder (with and without padding) to the pinned decoder for
+  entropy/ASCII/directional/custom tables. mieru has no Go vector tool because
+  the module is GPL-3.0: the client is written from `docs/protocol.md` and is
+  only verified against the pinned server, with the locally computed
+  PBKDF2/time-salt vectors in `src/outbound/mieru.rs`.
+
   Observed host behaviour: starting the peer for many cases in one test process
   occasionally ends with a case where the kernel established the tunnel but the
   sink received nothing (the peer's own log shows its listener up and no
@@ -478,10 +525,10 @@ The immutable coordination inputs are in `docs/coordination/`: `t11-handoff.md`
 (this subset), `t12-handoff.md` (SSR plugin layers and gost UDP/smux),
 `t13-handoff.md` (mieru and sudoku) and `t14-handoff.md` (masque). They are
 Owner material and are not modified by the kernel tasks. The concrete blockers
-and next steps for the three deferred families are in
-`tool/kernel-compat/evidence/t11-feasibility.json`; the current
-`03-execution-plan.md`/`00-state.yaml` still list them under T11, so the
-Owner/Runtime must reconcile that with the T13/T14 handoffs.
+and next steps for the families still deferred by T10 are in
+`tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers the
+two families delivered here (mieru and sudoku), and the only family left
+without an implementation from the T9 list is `masque` (T14).
 
 ## Controlled verification commands
 
@@ -497,8 +544,9 @@ node tool/kernel-compat/runner.mjs \
 node --test tool/kernel-compat/runner.test.mjs
 
 # controlled peers for the families with no Mihomo listener (gost-relay, ssh,
-# ssr), the independent Go SSR peers (including the pinned-client cross-check)
-# and the pinned SSR cipher vectors; needs `go`
+# ssr), the independent Go SSR peers (including the pinned-client cross-check),
+# the pinned SSR cipher vectors and the locked Sudoku codec vectors (the pinned
+# table/encoders plus the Rust-vs-Go differential test); needs `go`
 tool/kernel-compat/family-peers.sh
 ```
 

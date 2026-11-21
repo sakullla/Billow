@@ -982,11 +982,11 @@ fn ssr_options_are_strict() {
 }
 
 #[test]
-fn deferred_t11_families_name_their_decision() {
+fn deferred_families_name_their_decision() {
     for (kind, needle) in [
-        ("mieru", "enfein/mieru"),
         ("masque", "QUIC stack"),
-        ("sudoku", "split into its own task"),
+        ("shadowquic", "JLS"),
+        ("wireguard", "WireGuard"),
     ] {
         let yaml = format!("proxies:\n  - {{name: p, type: {kind}, server: x, port: 1}}\nrules: ['MATCH,p']\n");
         let e = proxy_err(&yaml);
@@ -994,4 +994,89 @@ fn deferred_t11_families_name_their_decision() {
         assert!(e.contains("is not implemented"), "{kind}: {e}");
         assert!(e.contains(needle), "{kind}: {e}");
     }
+}
+
+#[test]
+fn mieru_options_are_strict() {
+    // The TCP stream is implemented; both port shapes and both handshake
+    // modes (the mode only changes when the handshake runs) load.
+    for body in [
+        "port: 2999, transport: TCP, username: u, password: p".to_string(),
+        "port-range: 2090-2099, transport: TCP, username: u, password: p".to_string(),
+        "port: 2999, transport: TCP, username: u, password: p, handshake-mode: HANDSHAKE_NO_WAIT".to_string(),
+        "port: 2999, transport: TCP, username: u, password: p, multiplexing: MULTIPLEXING_OFF".to_string(),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: m, type: mieru, server: x, {body}}}\nrules: ['MATCH,m']\n");
+        load_config(&yaml, "t").unwrap_or_else(|e| panic!("{body}: {e}"));
+    }
+    for (body, needle) in [
+        (
+            "port: 2999, transport: UDP, username: u, password: p",
+            "transport' value 'UDP'",
+        ),
+        (
+            "port: 2999, transport: TCP, username: u, password: p, udp: true",
+            "option 'udp' is not implemented",
+        ),
+        (
+            "port: 2999, transport: TCP, username: u, password: p, multiplexing: MULTIPLEXING_LOW",
+            "multiplexing' value 'MULTIPLEXING_LOW'",
+        ),
+        (
+            "port: 2999, transport: TCP, username: u, password: p, traffic-pattern: AbCd",
+            "traffic-pattern' value 'AbCd'",
+        ),
+        (
+            "port: 2999, port-range: 2000-2100, transport: TCP, username: u, password: p",
+            "cannot both be set",
+        ),
+        (
+            "transport: TCP, username: u, password: p",
+            "either 'port' or 'port-range'",
+        ),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: m, type: mieru, server: x, {body}}}\nrules: ['MATCH,m']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(needle), "{body}: {e}");
+    }
+    let e = proxy_err("proxies:\n  - {name: m, type: mieru, server: x, port: 1, transport: TCP}\nrules: ['MATCH,m']\n");
+    assert!(e.contains("missing required option 'username'"), "{e}");
+}
+
+#[test]
+fn sudoku_options_are_strict() {
+    for body in [
+        "key: k".to_string(),
+        "key: k, table-type: prefer_ascii, enable-pure-downlink: false".to_string(),
+        "key: k, table-type: up_ascii_down_entropy".to_string(),
+        "key: k, custom-table: xpxvvpvv".to_string(),
+        "key: k, custom-tables: [\"xpxvvpvv\", \"vxpvxvvp\"]".to_string(),
+        "key: k, aead-method: none, padding-min: 0, padding-max: 0".to_string(),
+        "key: k, httpmask: {disable: true}, multiplex: off".to_string(),
+        "key: k, httpmask: {disable: false, mode: legacy, path-root: aabbcc}".to_string(),
+        "key: k, http-mask: false, multiplex: auto".to_string(),
+        // TLS/host only shape the HTTP tunnel modes, which the legacy mask
+        // does not use (Mihomo ignores them there as well).
+        "key: k, http-mask-tls: true, http-mask-host: example.org".to_string(),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: s, type: sudoku, server: x, port: 1, {body}}}\nrules: ['MATCH,s']\n");
+        load_config(&yaml, "t").unwrap_or_else(|e| panic!("{body}: {e}"));
+    }
+    for (body, needle) in [
+        ("key: k, http-mask-mode: stream", "http-mask-mode' value 'stream'"),
+        ("key: k, httpmask: {mode: ws}", "http-mask-mode' value 'ws'"),
+        ("key: k, multiplex: on", "multiplex' value 'on'"),
+        ("key: k, udp: true", "option 'udp' is not implemented"),
+        ("key: k, table-type: prefer_magic", "table-type' value 'prefer_magic'"),
+        ("key: k, custom-table: xxxvvvpp", "custom table pattern"),
+        ("key: k, aead-method: rc4", "aead-method' value 'rc4'"),
+        ("key: k, padding-min: 30, padding-max: 20", "padding-max' must be >="),
+        ("key: k, path-root: a/b", "path-root' must be a single path segment"),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: s, type: sudoku, server: x, port: 1, {body}}}\nrules: ['MATCH,s']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(needle), "{body}: {e}");
+    }
+    let e = proxy_err("proxies:\n  - {name: s, type: sudoku, server: x, port: 1}\nrules: ['MATCH,s']\n");
+    assert!(e.contains("missing required option 'key'"), "{e}");
 }

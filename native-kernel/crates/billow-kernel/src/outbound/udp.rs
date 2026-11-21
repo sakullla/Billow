@@ -458,6 +458,8 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {    match pr
         crate::proxies::Protocol::Tuic(_) => "tuic",
         crate::proxies::Protocol::Hysteria(_) => "hysteria",
         crate::proxies::Protocol::Hysteria2(_) => "hysteria2",
+        crate::proxies::Protocol::Mieru(_) => "mieru",
+        crate::proxies::Protocol::Sudoku(_) => "sudoku",
     }
 }
 

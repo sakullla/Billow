@@ -2,7 +2,8 @@
 //!
 //! The kernel (Rust) is the client: its mixed inbound gets a tagged request,
 //! a rule selects one configured proxy, and that proxy *is* a Mihomo listener
-//! (`listeners:` socks / http / shadowsocks / trojan / vless / anytls) which
+//! (`listeners:` socks / http / shadowsocks / trojan / vless / anytls / vmess /
+//! snell / trusttunnel / tuic / hysteria2 / mieru / sudoku) which
 //! forwards to a controlled sink. Each test reads what the sink actually
 //! received and the negative cases (wrong credentials, untrusted certificate,
 //! protocol mismatch) must not reach it.
@@ -1870,5 +1871,403 @@ fn hysteria2_unreachable_target_is_refused() {
         // the kernel reports as a 502 instead of a tunnel.
         let (status, _) = connect(running.proxy, "127.0.0.1:1", b"must-not-arrive");
         assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// mieru (T13): the peer is the pinned `listeners: type: mieru` endpoint, which
+// runs the GPL-3.0 mieru v3.39.0 server module. The kernel's mieru client is an
+// independent implementation of the published TCP protocol.
+// ---------------------------------------------------------------------------
+
+const MIERU_USER: &str = "alice";
+const MIERU_PASSWORD: &str = "mieru-secret-123";
+
+fn mieru_listener(port: u16) -> String {
+    format!(
+        "  - {{name: in-mieru, type: mieru, listen: 127.0.0.1, port: {port}, transport: TCP, users: {{{MIERU_USER}: \"{MIERU_PASSWORD}\"}}}}\n"
+    )
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn mieru_tcp_session_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = mieru_listener(port);
+    with_peer("mieru-tcp", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: mieru, server: 127.0.0.1, port: {port}, transport: TCP, username: {MIERU_USER}, password: \"{MIERU_PASSWORD}\"}}\n"
+        ));
+        let marker = "marker-mieru-tcp-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("mieru-tcp", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn mieru_port_range_session_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    // A one-member range exercises the `port-range` path deterministically:
+    // neighbouring ephemeral ports may belong to another test's listener, and
+    // a range must not depend on which of its members happen to be free.
+    let listeners = mieru_listener(port);
+    with_peer("mieru-port-range", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: mieru, server: 127.0.0.1, port-range: \"{port}-{port}\", transport: TCP, username: {MIERU_USER}, password: \"{MIERU_PASSWORD}\"}}\n"
+        ));
+        let marker = "marker-mieru-port-range-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("mieru-port-range", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+/// Read the CONNECT status line with a longer deadline than `connect`, for a
+/// peer that answers a failure by staying silent instead of closing.
+fn connect_status_with_deadline(proxy: SocketAddr, target: &str, deadline: Duration) -> String {
+    let mut stream = TcpStream::connect_timeout(&proxy, Duration::from_secs(5)).expect("connect");
+    stream.set_read_timeout(Some(deadline)).ok();
+    let _ = stream.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes());
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => head.push(byte[0]),
+        }
+    }
+    String::from_utf8_lossy(&head)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The client sends the `ackClientToServer` heartbeat after five seconds
+/// without writing (the pinned client does the same, and it is what keeps a
+/// session outside the listener's `tcp-idle-timeout`). An idle tunnel must
+/// survive the heartbeat and still carry the tagged bytes afterwards.
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn mieru_idle_session_survives_the_heartbeat() {
+    let port = free_port();
+    let listeners = mieru_listener(port);
+    with_peer("mieru-heartbeat", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: mieru, server: 127.0.0.1, port: {port}, transport: TCP, username: {MIERU_USER}, password: \"{MIERU_PASSWORD}\"}}\n"
+        ));
+        let marker = "marker-mieru-heartbeat";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || {
+                // Long enough for two heartbeat intervals.
+                std::thread::sleep(Duration::from_secs(6));
+                expect_marker("mieru-heartbeat", sink, marker)
+            },
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn mieru_wrong_password_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = mieru_listener(port);
+    with_peer("mieru-wrong-password", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: mieru, server: 127.0.0.1, port: {port}, transport: TCP, username: {MIERU_USER}, password: wrong-password}}\n"
+        ));
+        let status = connect_status_with_deadline(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            Duration::from_secs(15),
+        );
+        assert_eq!(
+            status, "HTTP/1.1 502 Bad Gateway",
+            "a wrong password is answered with silence, so the kernel reports the bounded mieru handshake timeout"
+        );
+        expect_not_reached("mieru-wrong-password", sink);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn mieru_closed_peer_port_never_reaches_the_sink() {
+    // No listener is started on `closed`: the underlay connect fails before
+    // any segment is written, so nothing can reach the sink.
+    let closed = free_port();
+    let sink = Sink::start();
+    let (running, _) = start_kernel(&format!(
+        "  - {{name: p0, type: mieru, server: 127.0.0.1, port: {closed}, transport: TCP, username: {MIERU_USER}, password: \"{MIERU_PASSWORD}\"}}\n"
+    ));
+    let (status, _) = connect(
+        running.proxy,
+        &format!("127.0.0.1:{}", sink.port),
+        b"must-not-arrive",
+    );
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !sink.received().contains("must-not-arrive"),
+        "mieru-closed-peer: the tag must not reach the sink"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// sudoku (T13): the peer is the pinned `listeners: type: sudoku` endpoint
+// (`transport/sudoku`: table obfuscation, record layer, KIP handshake). The
+// kernel's client is an independent port of the same wire format.
+// ---------------------------------------------------------------------------
+
+const SUDOKU_KEY: &str = "test-key-123";
+
+fn sudoku_listener(port: u16, extra: &str) -> String {
+    listener(
+        "sudoku",
+        port,
+        &format!(", key: \"{SUDOKU_KEY}\"{extra}"),
+    )
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_tcp_session_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, "");
+    with_peer("sudoku-tcp", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\"}}\n"
+        ));
+        let marker = "marker-sudoku-tcp-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-tcp", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_without_the_http_mask_reaches_the_receiving_side() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, ", disable-http-mask: true");
+    with_peer("sudoku-no-mask", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", http-mask: false}}\n"
+        ));
+        let marker = "marker-sudoku-no-mask";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-no-mask", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side() {
+    let port = free_port();
+    let listeners = sudoku_listener(
+        port,
+        ", table-type: prefer_ascii, enable-pure-downlink: false, padding-min: 2, padding-max: 7",
+    );
+    with_peer("sudoku-ascii-packed", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", table-type: prefer_ascii, enable-pure-downlink: false, padding-min: 2, padding-max: 7}}\n"
+        ));
+        let marker = "marker-sudoku-ascii-packed";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-ascii-packed", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_directional_table_reaches_the_receiving_side() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, ", table-type: up_ascii_down_entropy");
+    with_peer("sudoku-directional", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", table-type: up_ascii_down_entropy}}\n"
+        ));
+        let marker = "marker-sudoku-directional";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-directional", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_custom_table_pattern_reaches_the_receiving_side() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, ", custom-table: xpxvvpvv");
+    with_peer("sudoku-custom-table", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", custom-table: xpxvvpvv}}\n"
+        ));
+        let marker = "marker-sudoku-custom-table";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-custom-table", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_aes_128_gcm_record_layer_reaches_the_receiving_side() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, ", aead-method: aes-128-gcm");
+    with_peer("sudoku-aes-gcm", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", aead-method: aes-128-gcm}}\n"
+        ));
+        let marker = "marker-sudoku-aes-gcm";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-aes-gcm", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_unencrypted_record_layer_reaches_the_receiving_side() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, ", aead-method: none");
+    with_peer("sudoku-none", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", aead-method: none}}\n"
+        ));
+        let marker = "marker-sudoku-none";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-none", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_rotating_custom_tables_reach_the_receiving_side() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, ", custom-tables: [\"xpxvvpvv\", \"vxpvxvvp\"]");
+    with_peer("sudoku-rotation", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", custom-tables: [\"xpxvvpvv\", \"vxpvxvvp\"]}}\n"
+        ));
+        let marker = "marker-sudoku-rotation";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-rotation", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_wrong_key_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, "");
+    with_peer("sudoku-wrong-key", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: wrong-key}}\n"
+        ));
+        let status = connect_status_with_deadline(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            Duration::from_secs(15),
+        );
+        assert_eq!(
+            status, "HTTP/1.1 502 Bad Gateway",
+            "the peer rejects the handshake, so the kernel reports a failed dial"
+        );
+        expect_not_reached("sudoku-wrong-key", sink);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_mismatched_table_type_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, ", table-type: prefer_ascii");
+    with_peer("sudoku-wrong-table", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", table-type: prefer_entropy}}\n"
+        ));
+        let status = connect_status_with_deadline(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            Duration::from_secs(15),
+        );
+        assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+        expect_not_reached("sudoku-wrong-table", sink);
+    });
+}
+
+/// Sudoku's ED25519-style key material: the client configures a split private
+/// key, the server the public point, and both canonicalise to the same seed
+/// (which also selects the table). The values come from the pinned
+/// `sudoku.GenKeyPair` (`tool/kernel-compat/peers/sudoku-vectors -op keypair`).
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_private_key_material_matches_the_public_key_peer() {
+    const PRIVATE: &str = "b8b31447340b4075285104902992bee510a56b81d87db697e52fd3184d9f440cae6e44c1c6d9bf4d20a5ed01089f5ec3e3b09a1137fa357a3847cbd7aa6f5e0d";
+    const PUBLIC: &str = "32b3e97af0b5d5a31a3b9adc1872ea4944ffe259ec3982d37c535511fdb5f5e2";
+    let port = free_port();
+    let listeners = listener("sudoku", port, &format!(", key: \"{PUBLIC}\""));
+    with_peer("sudoku-keypair", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{PRIVATE}\"}}\n"
+        ));
+        let marker = "marker-sudoku-keypair";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-keypair", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
     });
 }

@@ -17,8 +17,8 @@ chain_b sizes=[105 116 299 426 982 1219] sizes2=[45 76 85 85 136 275 482 558 818
 -- pinned client packages against the plugin peer (every protocol x obfs) --
 pinned client accepted 36 protocol/obfs combinations
 == Rust client against the same Go peer (matrix, auth failure, large payloads, UDP) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
-     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-762088087e1c228d)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-b97bced21904935c)
 
 running 7 tests
 test ssr_go_server_rejects_a_wrong_password ... ok
@@ -34,29 +34,39 @@ ok
 test ssr_udp_reaches_the_echo_for_every_protocol ... ok
 test ssr_udp_wrong_password_never_reaches_the_echo ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.18s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.05s
 
 == CLI process: SSR plugin tunnel ==
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
-     Running tests/family_cli.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/family_cli-83ae5d3fa9e78d9e)
+     Running tests/family_cli.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/family_cli-baa29d462cee1f0a)
 
 running 1 test
 test cli_process_tunnels_through_an_ssr_plugin ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.50s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.52s
 
 == pinned gost relay dialer against the controlled peer ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-f9f450e82c6593cb)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-fe5a19f96bfee11f)
 
 running 1 test
 test gost_relay_pinned_dialer_accepts_the_controlled_peer ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.25s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.52s
+
+== pinned Sudoku table/codec vectors (Go, locked transport/sudoku) ==
+pinned Sudoku table hint and padding pool match
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-fe5a19f96bfee11f)
+
+running 1 test
+test sudoku_codec_matches_the_pinned_implementation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 1.87s
 
 == controlled Rust peers (gost-relay incl. udp/mux, ssh, ssr origin/plain) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-f9f450e82c6593cb)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-fe5a19f96bfee11f)
 
 running 10 tests
 test gost_relay_mux_and_udp_share_the_smux_session ... ok
@@ -70,10 +80,10 @@ test gost_relay_pinned_dialer_accepts_the_controlled_peer ... ignored, needs the
 test gost_relay_udp_relays_datagrams_to_the_bound_target ... ok
 test gost_relay_udp_without_the_option_is_refused_by_the_server ... ok
 
-test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 39 filtered out; finished in 1.93s
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 40 filtered out; finished in 2.41s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-f9f450e82c6593cb)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-fe5a19f96bfee11f)
 
 running 4 tests
 test ssh_outbound_password_auth_relays_direct_tcpip ... ok
@@ -81,15 +91,15 @@ test ssh_outbound_pinned_host_key_must_match_the_server ... ok
 test ssh_outbound_public_key_auth_relays_direct_tcpip ... ok
 test ssh_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.73s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 0.86s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-f9f450e82c6593cb)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-fe5a19f96bfee11f)
 
 running 3 tests
 test ssr_outbound_origin_plain_relays_with_aes_256_cfb ... ok
 test ssr_outbound_rc4_md5_and_dummy_ciphers_relay ... ok
 test ssr_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 2.95s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 3.03s
 
