@@ -1604,6 +1604,8 @@ export const UI_EN: Record<string, string> = {
   '切换中': 'Switching',
   '节点切换失败': 'Failed to switch node',
   '前往代理页': 'Open Proxies',
+  '代理页': 'Proxies',
+  '在代理页查看该组全部节点与选项': 'See every node and option for this group on Proxies',
   '点击切换「{0}」节点': 'Click to switch node in “{0}”',
   '选择此节点': 'Select node',
   '固定此节点': 'Pin node',

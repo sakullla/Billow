@@ -8051,7 +8051,7 @@ details.cfg-section[open] .cfg-fold-icon {
 .page.proxies .node-select {
   gap: 2px;
 }
-.page.proxies .node-name {
+:is(.page.proxies, .node-picker) .node-name {
   font-size: 13.5px;
   font-weight: 560;
   line-height: 1.35;
@@ -8065,12 +8065,12 @@ details.cfg-section[open] .cfg-fold-icon {
   color: var(--text-3);
   font-weight: 500;
 }
-.page.proxies .node-meta {
+:is(.page.proxies, .node-picker) .node-meta {
   font-size: 11.5px;
   color: var(--text-3);
   line-height: 1.4;
 }
-.page.proxies .node-type,
+:is(.page.proxies, .node-picker) .node-type,
 .page.proxies .node.selected .node-type {
   display: inline;
   padding: 0;
@@ -8079,14 +8079,14 @@ details.cfg-section[open] .cfg-fold-icon {
   font-size: 11.5px;
   font-weight: 600;
 }
-.page.proxies .node-type.strategy {
+:is(.page.proxies, .node-picker) .node-type.strategy {
   color: var(--accent-ink);
 }
-.page.proxies .node-tag.udp {
+:is(.page.proxies, .node-picker) .node-tag.udp {
   color: var(--text-3);
   font-weight: 500;
 }
-.page.proxies .node-tag::before {
+:is(.page.proxies, .node-picker) .node-tag::before {
   margin: 0 5px;
   color: var(--border-strong);
 }
@@ -8191,7 +8191,7 @@ details.cfg-section[open] .cfg-fold-icon {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.page.proxies .node-tag.chained {
+:is(.page.proxies, .node-picker) .node-tag.chained {
   background: transparent;
   color: var(--fair-ink);
   font-weight: 560;
@@ -8338,54 +8338,99 @@ details.cfg-section[open] .cfg-fold-icon {
 .node-picker {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: 6px;
+}
+
+/* One scroll area: the summary + toolbar stay pinned while the list scrolls under them (R3). */
+.node-picker-head {
+  position: sticky;
+  top: -10px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: -10px -22px 0;
+  padding: 10px 22px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.modal-body:has(> .node-picker) {
+  padding-bottom: calc(14px + var(--safe-bottom));
 }
 
 .node-picker-summary {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  min-height: 48px;
+  padding: 6px 6px 6px 8px;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--sunken) 80%, transparent);
+  background: var(--sunken);
   border: 1px solid var(--border);
   min-width: 0;
 }
-
-.node-picker-summary-body {
-  flex: 1 1 auto;
-  min-width: 0;
+.node-picker-summary .group-row-icon {
+  width: 30px;
+  height: 30px;
 }
-
-.node-picker-summary-head {
+.node-picker-summary-body {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 6px;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
-
+.node-picker-summary-body .tag {
+  flex: none;
+}
 .node-picker-chain {
+  flex: 1 1 0;
   min-width: 0;
   font-size: var(--text-sm);
   font-weight: 600;
 }
+.node-picker-summary > .delay {
+  flex: none;
+}
+.node-picker-unfix,
+.node-picker-open {
+  flex: none;
+  gap: 2px;
+  padding: 0 8px;
+}
+.node-picker-open {
+  color: var(--text-2);
+}
 
 .node-picker-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.node-picker-search {
-  width: 100%;
-}
-
-.node-picker-actions {
-  display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+}
+.node-picker-toolbar .node-picker-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 40px;
+  margin-bottom: 0;
+}
+.node-picker-toolbar .btn.node-picker-tool {
+  flex: none;
+  gap: 5px;
+  height: 40px;
+  min-height: 0;
+  padding: 0 12px;
+  border-radius: 13px;
+  background: var(--sunken);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.node-picker-toolbar .btn.node-picker-tool:hover:not(:disabled) {
+  background: var(--hover);
+}
+.node-picker-toolbar .btn.node-picker-tool.group-fastest {
+  color: var(--good-ink);
 }
 
 .node-picker-offline {
@@ -8393,34 +8438,51 @@ details.cfg-section[open] .cfg-fold-icon {
 }
 
 .node-picker-list {
-  gap: 6px;
-  max-height: min(52vh, 380px);
-  overflow-y: auto;
-  padding-right: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 -8px;
 }
-
 .node-picker-item {
   display: flex;
   flex-direction: column;
-  border-radius: 14px;
-  border: 1px solid transparent;
-  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+  border-radius: 10px;
+  transition: background var(--dur-fast) var(--ease);
 }
-
+.node-picker-item.active {
+  background: var(--accent-soft);
+}
 .node-picker-item.failed {
-  border-color: color-mix(in srgb, var(--poor) 35%, var(--border));
-  background: color-mix(in srgb, var(--poor-soft) 35%, var(--surface));
+  background: color-mix(in srgb, var(--poor-soft) 45%, transparent);
 }
-
 .node-picker-item.switching {
-  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
 }
 
 .node-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
+  min-height: 52px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--dur-fast) var(--ease);
 }
-
+.node-picker-row:active:not(:disabled):not(.active) {
+  background: var(--hover);
+}
+@media (hover: hover) {
+  .node-picker-row:hover:not(:disabled):not(.active) {
+    background: var(--hover);
+  }
+}
+.node-picker-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .node-picker-row[aria-disabled='true']:not(.switching),
 .node-picker-row:disabled {
   opacity: 0.62;
@@ -8433,67 +8495,45 @@ details.cfg-section[open] .cfg-fold-icon {
   gap: 2px;
   min-width: 0;
   flex: 1 1 auto;
-  text-align: left;
 }
-
 .node-picker-title-row {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
-
-.node-picker-name {
-  white-space: normal;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-height: 1.35;
-  word-break: break-word;
+.node-picker-title-row .tag {
+  flex: none;
 }
-
-.node-picker-name mark {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  color: inherit;
-  border-radius: 3px;
-  padding: 0 2px;
-}
-
-.node-picker-meta {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
+.node-picker .node-picker-name {
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-
-.node-picker-meta .udp {
-  font-size: 10px;
-  font-weight: 650;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: var(--sunken);
-  border: 1px solid var(--border);
-  color: var(--text-2);
-}
-
-.node-picker-meta .udp.chained {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+.node-picker-row.active .node-picker-name {
   color: var(--accent-ink);
+  font-weight: 650;
 }
-
-.node-picker-via-target {
+.node-picker-row.active .node-prefix {
+  color: color-mix(in srgb, var(--accent-ink) 70%, var(--text-3));
+}
+.node-picker .node-meta {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.node-picker-side {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
+/* Latency pill sized like the proxy page rows; tint comes from redesign.css (R1). */
+.node-picker-row > .delay,
+.node-picker-summary > .delay {
+  min-width: 52px;
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11.5px;
 }
 
 .node-picker-state {
@@ -8513,19 +8553,17 @@ details.cfg-section[open] .cfg-fold-icon {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px var(--space-3) 10px;
+  padding: 0 10px 8px;
   line-height: 1.45;
   word-break: break-word;
 }
-
 .node-picker-error .icon {
   flex: none;
 }
 
-.compact .node-picker-list {
-  max-height: min(48vh, 340px);
+.compact .node-picker-head {
+  gap: 8px;
 }
-
 .compact .node-picker-error .btn.sm {
   min-height: 36px;
   padding: 0 12px;

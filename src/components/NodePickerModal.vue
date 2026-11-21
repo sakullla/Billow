@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import ChainPath from './ChainPath.vue'
 import EmptyState from './EmptyState.vue'
 import GroupIcon from './GroupIcon.vue'
@@ -15,6 +15,7 @@ import {
   isInfoNode,
   protocolLabel,
   resolveChain,
+  splitNodePrefix,
 } from '../lib/format'
 import { tr } from '../lib/i18n'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
@@ -52,6 +53,37 @@ watch(
       failedNode.value = null
     }
   },
+)
+
+/**
+ * Long groups open with the active row in view. Scrolling (not focusing) keeps touch
+ * screens from popping the keyboard or painting a focus ring (R4).
+ */
+watch(
+  modalOpen,
+  async (isOpen) => {
+    if (!isOpen) return
+    await nextTick()
+    const group = props.group
+    const activeName = group?.fixed || group?.now
+    if (!activeName || query.value) return
+    const run = () => {
+      const row = document.querySelector<HTMLElement>(
+        `[data-testid="node-picker-list"] [data-picker-node="${CSS.escape(activeName)}"]`,
+      )
+      const scroller = row?.closest<HTMLElement>('.modal-body')
+      if (!row || !scroller) return
+      const head = scroller.querySelector<HTMLElement>('.node-picker-head')
+      const view = scroller.getBoundingClientRect()
+      const rect = row.getBoundingClientRect()
+      const top = view.top + (head?.offsetHeight ?? 0)
+      if (rect.top >= top && rect.bottom <= view.bottom) return
+      row.scrollIntoView({ block: 'center' })
+    }
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+    else run()
+  },
+  { flush: 'post' },
 )
 
 const isSwitching = computed(
@@ -116,6 +148,11 @@ function isSelected(node: NodeItem): boolean {
 }
 
 const queryTokens = computed(() => splitQueryTokens(query.value))
+
+function nameParts(name: string) {
+  const { prefix, rest } = splitNodePrefix(name)
+  return { prefix: prefix ? highlightTokens(prefix, query.value) : [], rest: highlightTokens(rest, query.value) }
+}
 
 const filteredNodes = computed(() => {
   const group = props.group
@@ -298,10 +335,10 @@ function onSearchKeydown(event: KeyboardEvent) {
     @close="requestClose"
   >
     <div v-if="group" class="node-picker" data-testid="home-node-picker" :data-group="group.name">
-      <div class="node-picker-summary">
-        <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="18" /></span>
-        <div class="node-picker-summary-body">
-          <div class="node-picker-summary-head">
+      <div class="node-picker-head" data-testid="node-picker-head">
+        <div class="node-picker-summary">
+          <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="18" /></span>
+          <div class="node-picker-summary-body">
             <span v-if="autoTypeLabel(group)" class="tag sm">{{ autoTypeLabel(group) }}</span>
             <span v-if="group.fixed" class="tag sm accent" data-testid="node-picker-fixed-tag">{{ tr('已固定') }}</span>
             <ChainPath
@@ -313,74 +350,16 @@ function onSearchKeydown(event: KeyboardEvent) {
             />
             <span v-else class="muted small">{{ tr('未选择节点') }}</span>
           </div>
-        </div>
-        <span
-          v-if="currentDelay.tone !== 'none'"
-          class="delay mono"
-          :class="currentDelay.tone"
-          data-testid="node-picker-current-delay"
-        >{{ currentDelay.text }}</span>
-      </div>
-
-      <div class="node-picker-toolbar">
-        <label class="search node-picker-search">
-          <Icon name="search" :size="15" />
-          <input
-            v-model="query"
-            type="search"
-            :placeholder="tr('搜索节点、协议或 UDP')"
-            :aria-label="tr('搜索节点、协议或 UDP')"
-            :disabled="isSwitching"
-            data-testid="node-picker-search"
-            @keydown="onSearchKeydown"
-          />
-          <button
-            v-if="query"
-            type="button"
-            class="icon-btn xs"
-            :aria-label="tr('清空筛选')"
-            data-testid="node-picker-search-clear"
-            @click="query = ''"
-          >
-            <Icon name="x" :size="13" />
-          </button>
-        </label>
-
-        <div class="node-picker-actions">
-          <button
-            type="button"
-            class="btn ghost sm"
-            :disabled="testDisabled"
-            :aria-busy="testingGroup || undefined"
-            :title="snap.kernel_running ? tr('测试该组延迟') : tr('连接后才能测速')"
-            data-testid="node-picker-test"
-            @click="store.testGroup(group.name)"
-          >
-            <span v-if="testingGroup" class="spinner xs" aria-hidden="true" />
-            <Icon v-else name="zap" :size="14" />
-            <template v-if="testingGroup && store.testProgress.value.total > 0">
-              {{ tr('测速中 ({0}/{1})', { 0: store.testProgress.value.tested, 1: store.testProgress.value.total }) }}
-            </template>
-            <template v-else>{{ testingGroup ? tr('测速中') : tr('测速') }}</template>
-          </button>
-
-          <button
-            v-if="fastestCandidate"
-            type="button"
-            class="btn ghost sm group-fastest"
-            :disabled="isSwitching"
-            :title="tr('切换至当前最快的节点：{0} ({1})', { 0: fastestCandidate.node.name, 1: delayText(fastestCandidate.delay, false) })"
-            data-testid="node-picker-fastest"
-            @click="pickFastest"
-          >
-            <Icon name="zap" :size="13" />
-            {{ compact ? tr('最快') : tr('选最快') }}
-          </button>
-
+          <span
+            v-if="currentDelay.tone !== 'none'"
+            class="delay mono"
+            :class="currentDelay.tone"
+            data-testid="node-picker-current-delay"
+          >{{ currentDelay.text }}</span>
           <button
             v-if="group.fixed"
             type="button"
-            class="btn ghost sm"
+            class="btn ghost sm node-picker-unfix"
             :disabled="unfixDisabled"
             :aria-busy="unfixing || undefined"
             :title="snap.kernel_running ? tr('解除固定，由组策略重新选择节点') : tr('内核没有运行')"
@@ -390,12 +369,79 @@ function onSearchKeydown(event: KeyboardEvent) {
             <span v-if="unfixing" class="spinner xs" aria-hidden="true" />
             {{ tr('恢复自动') }}
           </button>
+          <button
+            type="button"
+            class="btn ghost sm node-picker-open"
+            :disabled="isSwitching"
+            :aria-label="tr('前往代理页')"
+            :title="tr('在代理页查看该组全部节点与选项')"
+            data-testid="node-picker-open-proxies"
+            @click="openInProxies"
+          >
+            <span>{{ tr('代理页') }}</span><Icon name="chevron-right" :size="14" />
+          </button>
         </div>
-      </div>
 
-      <p v-if="!snap.kernel_running" class="muted small node-picker-offline" data-testid="node-picker-offline-hint">
-        {{ offlineAutoGroup ? tr('内核没有运行，连接后才能固定节点、测速或恢复自动。') : tr('未连接时无法测速或恢复自动，连接后可用。') }}
-      </p>
+        <div class="node-picker-toolbar">
+          <label class="search node-picker-search">
+            <Icon name="search" :size="15" />
+            <input
+              v-model="query"
+              type="search"
+              :placeholder="tr('搜索节点、协议或 UDP')"
+              :aria-label="tr('搜索节点、协议或 UDP')"
+              :disabled="isSwitching"
+              data-testid="node-picker-search"
+              @keydown="onSearchKeydown"
+            />
+            <button
+              v-if="query"
+              type="button"
+              class="icon-btn xs"
+              :aria-label="tr('清空筛选')"
+              data-testid="node-picker-search-clear"
+              @click="query = ''"
+            >
+              <Icon name="x" :size="13" />
+            </button>
+          </label>
+
+          <button
+            type="button"
+            class="btn ghost sm node-picker-tool"
+            :disabled="testDisabled"
+            :aria-busy="testingGroup || undefined"
+            :aria-label="testingGroup ? tr('测速中') : tr('测试该组延迟')"
+            :title="snap.kernel_running ? tr('测试该组延迟') : tr('连接后才能测速')"
+            data-testid="node-picker-test"
+            @click="store.testGroup(group.name)"
+          >
+            <span v-if="testingGroup" class="spinner xs" aria-hidden="true" />
+            <Icon v-else name="zap" :size="14" />
+            <span v-if="testingGroup && store.testProgress.value.total > 0" class="mono">
+              {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}
+            </span>
+            <span v-else>{{ tr('测速') }}</span>
+          </button>
+
+          <button
+            v-if="fastestCandidate"
+            type="button"
+            class="btn ghost sm node-picker-tool group-fastest"
+            :disabled="isSwitching"
+            :title="tr('切换至当前最快的节点：{0} ({1})', { 0: fastestCandidate.node.name, 1: delayText(fastestCandidate.delay, false) })"
+            data-testid="node-picker-fastest"
+            @click="pickFastest"
+          >
+            <Icon name="zap" :size="13" />
+            {{ tr('最快') }}
+          </button>
+        </div>
+
+        <p v-if="!snap.kernel_running" class="muted small node-picker-offline" data-testid="node-picker-offline-hint">
+          {{ offlineAutoGroup ? tr('内核没有运行，连接后才能固定节点、测速或恢复自动。') : tr('未连接时无法测速或恢复自动，连接后可用。') }}
+        </p>
+      </div>
 
       <EmptyState
         v-if="!filteredNodes.length && queryTokens.length"
@@ -417,7 +463,7 @@ function onSearchKeydown(event: KeyboardEvent) {
         :description="tr('当前代理组暂无可切换的节点。')"
         data-testid="node-picker-empty"
       />
-      <div v-else class="option-list node-picker-list" data-testid="node-picker-list">
+      <div v-else class="node-picker-list" data-testid="node-picker-list">
         <div
           v-for="(node, index) in filteredNodes"
           :key="node.name"
@@ -431,12 +477,12 @@ function onSearchKeydown(event: KeyboardEvent) {
         >
           <button
             type="button"
-            class="option-row node-picker-row"
+            class="node-picker-row"
             :class="{ active: isSelected(node), switching: switchingNode === node.name }"
             :data-picker-node="node.name"
             :data-testid="`picker-node-${node.name}`"
             :disabled="offlineAutoGroup"
-            :title="offlineAutoGroup ? tr('内核没有运行，连接后才能固定节点') : undefined"
+            :title="offlineAutoGroup ? tr('内核没有运行，连接后才能固定节点') : node.name"
             :aria-current="isSelected(node) ? 'true' : undefined"
             :aria-busy="switchingNode === node.name || undefined"
             :aria-disabled="rowDisabled || undefined"
@@ -445,32 +491,32 @@ function onSearchKeydown(event: KeyboardEvent) {
           >
             <span class="node-picker-body">
               <span class="node-picker-title-row">
-                <span class="option-label node-picker-name" :title="node.name">
-                  <template v-for="(part, partIdx) in highlightTokens(node.name, query)" :key="partIdx">
-                    <mark v-if="part.hit">{{ part.text }}</mark>
-                    <template v-else>{{ part.text }}</template>
+                <span class="node-name node-picker-name">
+                  <span v-if="nameParts(node.name).prefix.length" class="node-prefix"><template v-for="(part, partIdx) in nameParts(node.name).prefix" :key="partIdx"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
+                  <template v-for="(part, partIdx) in nameParts(node.name).rest" :key="`r${partIdx}`">
+                    <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
                   </template>
                 </span>
                 <span v-if="group.fixed === node.name" class="tag accent sm">{{ tr('已固定') }}</span>
-                <span v-else-if="isSelected(node)" class="tag accent sm" data-testid="picker-current-tag">{{ tr('当前') }}</span>
+                <span v-else-if="isSelected(node)" class="sr-only" data-testid="picker-current-tag">{{ tr('当前') }}</span>
               </span>
-              <span v-if="nestedGroupOf(node)" class="node-picker-meta muted small" data-testid="picker-node-via">
-                <span class="node-picker-strategy">{{ groupTypeLabel(nestedGroupOf(node)!) }}</span>
-                <span class="node-picker-via-target" :title="viaOf(node) || undefined">
+              <span v-if="nestedGroupOf(node)" class="node-meta node-via" data-testid="picker-node-via">
+                <span class="node-type strategy">{{ groupTypeLabel(nestedGroupOf(node)!) }}</span>
+                <span class="node-via-target" :title="viaOf(node) || undefined">
                   {{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? tr('→ 等待测速') : tr('→ 连接后显示') }}
                 </span>
               </span>
-              <span v-else class="node-picker-meta muted small" data-testid="picker-node-meta">
-                <span v-if="protocolLabel(node.node_type)">{{ protocolLabel(node.node_type) }}</span>
+              <span v-else class="node-meta" data-testid="picker-node-meta">
+                <span v-if="protocolLabel(node.node_type)" class="node-type">{{ protocolLabel(node.node_type) }}</span>
                 <span
                   v-for="tag in node.tags"
                   :key="tag"
-                  class="udp"
-                  :class="{ chained: tag === 'chained' }"
+                  class="node-tag"
+                  :class="{ udp: tag === 'UDP', chained: tag === 'chained' }"
                 >{{ tagLabel(node, tag) }}</span>
                 <span
                   v-if="node.dialer_proxy && !node.tags.includes('chained')"
-                  class="udp chained"
+                  class="node-tag chained"
                 >{{ tr('链式 · {0}', { 0: node.dialer_proxy }) }}</span>
               </span>
             </span>
@@ -484,14 +530,11 @@ function onSearchKeydown(event: KeyboardEvent) {
               <span class="spinner xs" aria-hidden="true" />
               <span>{{ tr('切换中') }}</span>
             </span>
-            <span v-else class="node-picker-side">
-              <span
-                v-if="delayText(nodeState(node).delay, nodeState(node).failed)"
-                class="delay mono"
-                :class="delayTone(nodeState(node).delay, nodeState(node).failed)"
-              >{{ delayText(nodeState(node).delay, nodeState(node).failed) }}</span>
-              <Icon v-if="isSelected(node)" name="check" :size="17" class="option-check" aria-hidden="true" />
-            </span>
+            <span
+              v-else-if="delayText(nodeState(node).delay, nodeState(node).failed)"
+              class="delay mono"
+              :class="delayTone(nodeState(node).delay, nodeState(node).failed)"
+            >{{ delayText(nodeState(node).delay, nodeState(node).failed) }}</span>
           </button>
 
           <div
@@ -514,17 +557,5 @@ function onSearchKeydown(event: KeyboardEvent) {
         </div>
       </div>
     </div>
-
-    <template #footer>
-      <button
-        type="button"
-        class="btn ghost"
-        :disabled="isSwitching"
-        data-testid="node-picker-open-proxies"
-        @click="openInProxies"
-      >
-        {{ tr('前往代理页') }}<Icon name="chevron-right" :size="14" />
-      </button>
-    </template>
   </Modal>
 </template>

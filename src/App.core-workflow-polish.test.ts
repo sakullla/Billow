@@ -256,7 +256,7 @@ describe('Core workflow polish (R1–R2)', () => {
       await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
       await flushPromises()
       expect(body().find('[data-testid="home-node-picker"]').exists()).toBe(true)
-      expect(body().find('[data-testid="node-picker-open-proxies"]').text()).toContain('Open Proxies')
+      expect(body().find('[data-testid="node-picker-open-proxies"]').attributes('aria-label')).toBe('Open Proxies')
 
       await hardwareBack()
       expect(body().find('[data-testid="home-node-picker"]').exists()).toBe(false)
@@ -320,6 +320,72 @@ describe('Core workflow polish (R1–R2)', () => {
       locale.value = 'en'
       await flushPromises()
       expect(body().find('[data-testid="picker-node-落地专线 01"]').text()).toContain('Chained · 前置中转 HK')
+    })
+  })
+
+  describe('Node picker layout (UI/UX R2–R4)', () => {
+    it('marks the current node once, keeps actions in the pinned head, and drops the footer', async () => {
+      const { wrapper } = await mountApp({}, 390)
+      await connect(wrapper)
+      await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
+      await flushPromises()
+
+      const current = body().find('[data-picker-node][aria-current="true"]')
+      expect(current.attributes('data-picker-node')).toBe('香港 01')
+      // The 当前 marker stays for screen readers only; no visible badge or check icon.
+      expect(current.find('[data-testid="picker-current-tag"]').classes()).toContain('sr-only')
+      expect(current.find('.option-check').exists()).toBe(false)
+      expect(current.find('.node-picker-name').attributes('style') ?? '').not.toContain('line-clamp')
+
+      // Search, test and open-proxies live in the sticky head; the sheet has no footer bar.
+      const head = body().find('[data-testid="node-picker-head"]')
+      expect(head.find('.node-picker-toolbar [data-testid="node-picker-search"]').exists()).toBe(true)
+      expect(head.find('.node-picker-toolbar [data-testid="node-picker-test"]').exists()).toBe(true)
+      expect(head.find('.node-picker-summary [data-testid="node-picker-open-proxies"]').exists()).toBe(true)
+      expect(body().find('.modal-foot').exists()).toBe(false)
+
+      // Protocol and capability tags use the proxy page's row vocabulary.
+      const meta = current.find('[data-testid="picker-node-meta"]')
+      expect(meta.classes()).toContain('node-meta')
+      expect(meta.find('.node-type').exists()).toBe(true)
+      expect(meta.findAll('.node-tag').map((tag) => tag.text())).toContain('UDP')
+    })
+
+    it('scrolls the active node into view on open without moving focus on touch screens', async () => {
+      const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+        matches: query.includes('coarse'),
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }) as MediaQueryList)
+      const original = HTMLElement.prototype.getBoundingClientRect
+      const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains('modal-body')) return { top: 0, bottom: 600, left: 0, right: 390, width: 390, height: 600, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+        if (this.dataset.pickerNode === '香港 01') return { top: 1800, bottom: 1852, left: 0, right: 390, width: 390, height: 52, x: 0, y: 1800, toJSON: () => ({}) } as DOMRect
+        return original.call(this)
+      })
+      const scrolled: string[] = []
+      const proto = HTMLElement.prototype as HTMLElement & { scrollIntoView: (arg?: ScrollIntoViewOptions) => void }
+      const previous = proto.scrollIntoView
+      proto.scrollIntoView = function (this: HTMLElement) {
+        scrolled.push(this.dataset.pickerNode ?? '')
+      }
+      try {
+        const { wrapper } = await mountApp({ platform: 'android' }, 390)
+        await connect(wrapper)
+        await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
+        await settle(50)
+        expect(scrolled).toEqual(['香港 01'])
+        expect(document.activeElement?.getAttribute('data-picker-node')).toBeNull()
+      } finally {
+        proto.scrollIntoView = previous
+        rect.mockRestore()
+        matchMedia.mockRestore()
+      }
     })
   })
 
