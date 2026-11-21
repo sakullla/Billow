@@ -52,6 +52,10 @@ pub enum ConfigError {
     InvalidValue(String),
     #[error("unsupported configuration: {0}")]
     Unsupported(String),
+    /// A referenced item (a `dialer-proxy` target) does not exist in the
+    /// configuration: Mihomo also rejects such a file.
+    #[error("configuration error: {0}")]
+    ConfigFailed(String),
 }
 
 impl ConfigError {
@@ -61,6 +65,7 @@ impl ConfigError {
             ConfigError::Invalid(_) => "invalid_yaml",
             ConfigError::InvalidValue(_) => "invalid_value",
             ConfigError::Unsupported(_) => "unsupported",
+            ConfigError::ConfigFailed(_) => "invalid_value",
         }
     }
 }
@@ -102,6 +107,8 @@ impl fmt::Display for Matcher {
 pub enum Action {
     Direct,
     Reject,
+    /// Index into [`Config::proxies`].
+    Proxy(usize),
 }
 
 impl Action {
@@ -109,6 +116,8 @@ impl Action {
         match self {
             Action::Direct => "DIRECT",
             Action::Reject => "REJECT",
+            // The name is not known here; callers with a Config use `Proxy::name`.
+            Action::Proxy(_) => "PROXY",
         }
     }
 }
@@ -125,6 +134,14 @@ pub struct Config {
     /// Rule-less configuration goes straight to DIRECT like Mihomo does.
     pub empty_rules: bool,
     pub rules_source: RulesSource,
+    /// Protocol outbounds usable as a rule target (DIRECT/REJECT stay built in).
+    pub proxies: Vec<crate::proxies::Proxy>,
+    /// Global `authentication: ["user:pass", ...]` accepted by the inbound.
+    pub inbound_users: Vec<(String, String)>,
+    /// Extra root certificates (`tls.custom-cert` or the `custom-cert` directory
+    /// of `tls.certificate`) used to verify outbound TLS instead of / besides
+    /// the platform store.
+    pub tls_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
     /// Kept so the identity survives a reload that is rejected.
     pub digest: String,
 }
@@ -150,10 +167,31 @@ impl Config {
 
     /// Honest label of what this configuration enables; used by identity output.
     pub fn feature_summary(&self) -> String {
+        let protocols = if self.proxies.is_empty() {
+            "none".to_string()
+        } else {
+            self.proxies
+                .iter()
+                .map(|p| format!("{}={}", p.name, p.type_name()))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         format!(
-            "mixed-inbound(tcp,http-connect,socks5); rules=inline({} entries); outbounds=DIRECT,REJECT; protocols=none; dns=none",
+            "mixed-inbound(tcp,http-connect,socks5); rules=inline({} entries); outbounds=DIRECT,REJECT; protocols={protocols}; dns=none",
             self.rules.len()
         )
+    }
+
+    /// Display name of a rule action (proxy names come from the list).
+    pub fn action_name(&self, action: Action) -> String {
+        match action {
+            Action::Direct | Action::Reject => action.as_str().to_string(),
+            Action::Proxy(index) => self
+                .proxies
+                .get(index)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "<missing proxy>".to_string()),
+        }
     }
 }
 
@@ -182,6 +220,9 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     let mut warnings = Vec::new();
 
     let mut rules_value = None;
+    let mut proxies_value = None;
+    let mut authentication = Vec::new();
+    let mut tls_roots: Vec<rustls_pki_types::CertificateDer<'static>> = Vec::new();
     let mut listen_port: Option<u16> = None;
     let mut requested_port: Option<u16> = None;
     let mut allow_lan: Option<bool> = None;
@@ -244,6 +285,9 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
                 log_level = Some(s);
             }
             "rules" => rules_value = Some(value),
+            "proxies" => proxies_value = Some(value),
+            "authentication" => authentication = parse_authentication(value, path)?,
+            "tls" => tls_roots = parse_tls(value, path)?,
             _ => {
                 return Err(ConfigError::Unsupported(format!(
                     "top-level key '{key}' is not implemented by the Rust kernel slice"
@@ -275,9 +319,14 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         }
     }
 
+    let proxies = match proxies_value {
+        None => Vec::new(),
+        Some(value) => crate::proxies::parse_proxies(value)?,
+    };
+
     let (rules, rules_source) = match rules_value {
         None => (Vec::new(), RulesSource::None),
-        Some(value) => (parse_rules(value, path)?, RulesSource::Inline),
+        Some(value) => (parse_rules(value, path, &proxies)?, RulesSource::Inline),
     };
 
     let config = Config {
@@ -288,12 +337,19 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         empty_rules: rules.is_empty() && rules_source == RulesSource::None,
         rules,
         rules_source,
+        proxies,
+        inbound_users: authentication,
+        tls_roots,
         digest,
     };
     Ok(LoadedConfig { config, warnings })
 }
 
-fn parse_rules(value: &serde_yaml::Value, path: &str) -> Result<Vec<Rule>, ConfigError> {
+fn parse_rules(
+    value: &serde_yaml::Value,
+    path: &str,
+    proxies: &[crate::proxies::Proxy],
+) -> Result<Vec<Rule>, ConfigError> {
     let seq = value
         .as_sequence()
         .ok_or_else(|| ConfigError::Invalid(format!("{path}: rules must be a list")))?;
@@ -305,12 +361,13 @@ fn parse_rules(value: &serde_yaml::Value, path: &str) -> Result<Vec<Rule>, Confi
                 kind_of(item)
             ))
         })?;
-        rules.push(parse_rule(line).map_err(|e| {
+        rules.push(parse_rule_with_proxies(line, proxies).map_err(|e| {
             let prefix = format!("rules[{index}] ('{line}')");
             match e {
                 ConfigError::Unsupported(m) => ConfigError::Unsupported(format!("{prefix}: {m}")),
                 ConfigError::InvalidValue(m) => ConfigError::InvalidValue(format!("{prefix}: {m}")),
                 ConfigError::Invalid(m) => ConfigError::Invalid(format!("{path}: {prefix}: {m}")),
+                ConfigError::ConfigFailed(m) => ConfigError::ConfigFailed(format!("{prefix}: {m}")),
             }
         })?);
     }
@@ -332,6 +389,14 @@ fn parse_rules(value: &serde_yaml::Value, path: &str) -> Result<Vec<Rule>, Confi
 /// Parse one clash rule line such as `DOMAIN-SUFFIX,example.com,REJECT` or
 /// `IP-CIDR,10.0.0.0/8,DIRECT,no-resolve`.
 pub fn parse_rule(line: &str) -> Result<Rule, ConfigError> {
+    parse_rule_with_proxies(line, &[])
+}
+
+/// Like [`parse_rule`] but resolves a rule outbound against the configured proxy names.
+pub fn parse_rule_with_proxies(
+    line: &str,
+    proxies: &[crate::proxies::Proxy],
+) -> Result<Rule, ConfigError> {
     // Fields may be quoted (`'REJECT'`); split before unquoting and trim each field.
     let mut parts: Vec<String> = line
         .split(',')
@@ -367,7 +432,7 @@ pub fn parse_rule(line: &str) -> Result<Rule, ConfigError> {
             }
             Ok(Rule {
                 matcher: Matcher::Match,
-                action: parse_action(&parts[1])?,
+                action: parse_action_with(&parts[1], proxies)?,
                 no_resolve,
             })
         }
@@ -385,7 +450,7 @@ pub fn parse_rule(line: &str) -> Result<Rule, ConfigError> {
             };
             Ok(Rule {
                 matcher,
-                action: parse_action(&parts[2])?,
+                action: parse_action_with(&parts[2], proxies)?,
                 no_resolve,
             })
         }
@@ -406,7 +471,7 @@ pub fn parse_rule(line: &str) -> Result<Rule, ConfigError> {
             }
             Ok(Rule {
                 matcher: Matcher::IpCidr(network),
-                action: parse_action(&parts[2])?,
+                action: parse_action_with(&parts[2], proxies)?,
                 no_resolve,
             })
         }
@@ -414,17 +479,130 @@ pub fn parse_rule(line: &str) -> Result<Rule, ConfigError> {
     }
 }
 
-fn parse_action(raw: &str) -> Result<Action, ConfigError> {
+fn parse_action_with(raw: &str, proxies: &[crate::proxies::Proxy]) -> Result<Action, ConfigError> {
     match raw {
         "DIRECT" => Ok(Action::Direct),
         "REJECT" => Ok(Action::Reject),
         "" => Err(ConfigError::InvalidValue(
             "missing outbound in rule".to_string(),
         )),
-        other => Err(ConfigError::Unsupported(format!(
-            "outbound '{other}' (only DIRECT/REJECT can be honoured by this slice)"
-        ))),
+        other => match proxies.iter().position(|p| p.name == other) {
+            Some(index) => Ok(Action::Proxy(index)),
+            // A named outbound that is not a configured proxy (groups, providers,
+            // REJECT-DROP, built-ins of other tasks) is outside this task's scope.
+            None => Err(ConfigError::Unsupported(format!(
+                "outbound '{other}' is not a configured proxy and proxy groups are not implemented (DIRECT and REJECT are built in)"
+            ))),
+        },
     }
+}
+
+/// `tls: {custom-cert: [pem...]}` or `tls: {certificate: <dir>}`: extra root
+/// certificates for outbound TLS. Other `RawTLS` fields are not implemented.
+fn parse_tls(
+    value: &serde_yaml::Value,
+    path: &str,
+) -> Result<Vec<rustls_pki_types::CertificateDer<'static>>, ConfigError> {
+    let map = value
+        .as_mapping()
+        .ok_or_else(|| ConfigError::InvalidValue(format!("{path}: tls must be a mapping")))?;
+    let base = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
+    let mut pems = Vec::new();
+    let resolve = |raw: &str| -> std::path::PathBuf {
+        let candidate = std::path::PathBuf::from(raw);
+        match (&base, candidate.is_absolute()) {
+            (Some(dir), false) if !dir.as_os_str().is_empty() => dir.join(candidate),
+            _ => candidate,
+        }
+    };
+    for (key, item) in map {
+        match key.as_str() {
+            Some("custom-cert") => {
+                let list = item.as_sequence().ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("{path}: tls.custom-cert must be a list of PEM strings"))
+                })?;
+                for entry in list {
+                    let raw = entry.as_str().ok_or_else(|| {
+                        ConfigError::InvalidValue(format!("{path}: tls.custom-cert entries must be strings"))
+                    })?;
+                    let text = if raw.contains("-----BEGIN") {
+                        raw.to_string()
+                    } else {
+                        std::fs::read_to_string(resolve(raw)).map_err(|e| {
+                            ConfigError::InvalidValue(format!("{path}: tls.custom-cert {}: {e}", resolve(raw).display()))
+                        })?
+                    };
+                    pems.push(text);
+                }
+            }
+            Some("certificate") => {
+                let raw = item.as_str().ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("{path}: tls.certificate must be a directory or PEM string"))
+                })?;
+                let dir = if raw.contains("-----BEGIN") {
+                    return Err(ConfigError::Unsupported(format!(
+                        "{path}: tls.certificate as an inline PEM is not implemented; list PEM files under tls.custom-cert"
+                    )));
+                } else {
+                    resolve(raw)
+                };
+                let entries = std::fs::read_dir(&dir).map_err(|e| {
+                    ConfigError::InvalidValue(format!("{path}: tls.certificate directory {}: {e}", dir.display()))
+                })?;
+                for entry in entries.flatten() {
+                    let file = entry.path();
+                    if file.is_file() {
+                        if let Ok(text) = std::fs::read_to_string(&file) {
+                            if text.contains("-----BEGIN CERTIFICATE-----") {
+                                pems.push(text);
+                            }
+                        }
+                    }
+                }
+            }
+            Some(other) => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{path}: tls.{other} is not implemented (only custom-cert and certificate are honoured)"
+                )))
+            }
+            None => return Err(ConfigError::InvalidValue(format!("{path}: tls keys must be strings"))),
+        }
+    }
+    let mut roots = Vec::new();
+    for pem in pems {
+        roots.extend(crate::outbound::tls::parse_pem_certs(&pem)?);
+    }
+    Ok(roots)
+}
+
+/// `authentication: ["user:pass", ...]` (Mihomo `authentication []string`).
+fn parse_authentication(
+    value: &serde_yaml::Value,
+    path: &str,
+) -> Result<Vec<(String, String)>, ConfigError> {
+    let seq = value.as_sequence().ok_or_else(|| {
+        ConfigError::InvalidValue(format!(
+            "{path}: authentication must be a list of user:pass"
+        ))
+    })?;
+    let mut users = Vec::with_capacity(seq.len());
+    for (index, item) in seq.iter().enumerate() {
+        let line = item.as_str().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{path}: authentication[{index}] must be a string"))
+        })?;
+        let (user, pass) = line.split_once(':').ok_or_else(|| {
+            ConfigError::InvalidValue(format!(
+                "{path}: authentication[{index}] must be 'user:password'"
+            ))
+        })?;
+        if user.is_empty() || pass.is_empty() || user.len() > 255 || pass.len() > 255 {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: authentication[{index}] needs a non-empty user and password of at most 255 bytes"
+            )));
+        }
+        users.push((user.to_string(), pass.to_string()));
+    }
+    Ok(users)
 }
 
 fn parse_port(value: &serde_yaml::Value, path: &str, key: &str) -> Result<u16, ConfigError> {
@@ -462,6 +640,11 @@ fn parse_string(value: &serde_yaml::Value, path: &str, key: &str) -> Result<Stri
             "{path}: {key} must be a string, found {value:?}"
         ))),
     }
+}
+
+/// Human-readable YAML kind, used by the proxy parser's error text too.
+pub(crate) fn kind_name(value: &serde_yaml::Value) -> &'static str {
+    kind_of(value)
 }
 
 fn kind_of(value: &serde_yaml::Value) -> &'static str {

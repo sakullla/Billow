@@ -1,5 +1,5 @@
-//! Mixed inbound: one TCP port that speaks SOCKS5 (RFC 1928, no-auth only)
-//! and HTTP CONNECT on the same listener.
+//! Mixed inbound: one TCP port that speaks SOCKS5 (RFC 1928, optional
+//! RFC 1929 username/password) and HTTP CONNECT on the same listener.
 //!
 //! Either way the handshake ends in a [`Request`] that the engine evaluates
 //! against the rule set before dialling (DIRECT) or refusing (REJECT).
@@ -19,6 +19,8 @@ pub struct Request {
     pub host: String,
     pub port: u16,
     pub protocol: Protocol,
+    /// HTTP CONNECT headers (lowercased names), empty for SOCKS5.
+    pub headers: Vec<(String, String)>,
 }
 
 impl Request {
@@ -44,14 +46,39 @@ impl Protocol {
 
 /// Handshake failure. `status` is what the engine maps to the reply the
 /// client receives and `code` is a stable metric/log tag.
+/// Credentials accepted on the mixed inbound (global `authentication` or a
+/// listener-level `users` list). `None` means no authentication is configured.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InboundAuth {
+    pub users: Vec<(String, String)>,
+}
+
+impl InboundAuth {
+    pub fn none() -> Self {
+        InboundAuth { users: Vec::new() }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        !self.users.is_empty()
+    }
+
+    fn accepts(&self, username: &[u8], password: &[u8]) -> bool {
+        self.users
+            .iter()
+            .any(|(u, p)| u.as_bytes() == username && p.as_bytes() == password)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HandshakeError {
     #[error("client closed during handshake")]
     Closed,
     #[error("SOCKS5: unsupported request {0}")]
     SocksUnsupported(&'static str),
-    #[error("SOCKS5: no no-auth method offered")]
+    #[error("SOCKS5: no acceptable authentication method offered")]
     SocksAuthRequired,
+    #[error("SOCKS5: username/password authentication failed")]
+    SocksAuthFailed,
     #[error("first byte is neither SOCKS5 (0x05) nor an HTTP method: 0x{0:02x}")]
     UnknownProtocol(u8),
     #[error("unsupported protocol: {0}")]
@@ -73,6 +100,7 @@ impl HandshakeError {
             HandshakeError::Closed => "closed",
             HandshakeError::SocksUnsupported(_) => "socks_unsupported",
             HandshakeError::SocksAuthRequired => "socks_auth_required",
+            HandshakeError::SocksAuthFailed => "socks_auth_failed",
             HandshakeError::UnknownProtocol(_) => "unknown_protocol",
             HandshakeError::UnsupportedProtocol(_) => "unsupported_protocol",
             HandshakeError::BadHttp(_) => "bad_http",
@@ -99,6 +127,7 @@ pub fn socks_reply_code(err: &HandshakeError) -> u8 {
         HandshakeError::SocksUnsupported("command") => 0x07,
         HandshakeError::SocksUnsupported(_) => 0x08,
         HandshakeError::SocksAuthRequired => 0x07,
+        HandshakeError::SocksAuthFailed => 0x01,
         HandshakeError::UnknownProtocol(_)
         | HandshakeError::UnsupportedProtocol(_)
         | HandshakeError::BadHttp(_) => 0x07,
@@ -106,8 +135,21 @@ pub fn socks_reply_code(err: &HandshakeError) -> u8 {
     }
 }
 
-/// Read the request without writing any bytes yet.
+/// Read the request without writing any bytes yet (no inbound authentication).
 pub async fn accept_request<S>(stream: &mut S) -> Result<Request, HandshakeError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    accept_request_with_auth(stream, &InboundAuth::none()).await
+}
+
+/// Like [`accept_request`], enforcing SOCKS5 username/password when `auth`
+/// lists users. HTTP CONNECT authentication is checked by the engine after
+/// the head is parsed (it needs the `Proxy-Authorization` header).
+pub async fn accept_request_with_auth<S>(
+    stream: &mut S,
+    auth: &InboundAuth,
+) -> Result<Request, HandshakeError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -116,7 +158,7 @@ where
         return Err(HandshakeError::Closed);
     }
     if first[0] == 0x05 {
-        return socks5_request(stream).await;
+        return socks5_request(stream, auth).await;
     }
     if first[0].is_ascii_uppercase() {
         match http_connect_request(stream, first[0]).await {
@@ -145,15 +187,100 @@ where
                 .await
         }
         Protocol::HttpConnect => {
-            let line = format!(
-                "HTTP/1.1 200 Connection Established\r\nProxy-Agent: billow-kernel\r\n\r\n"
-            );
-            stream.write_all(line.as_bytes()).await
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: billow-kernel\r\n\r\n")
+                .await
         }
     }
 }
 
 /// Reply failure and shut the write side down. Best effort: the client may be gone.
+/// HTTP CONNECT authentication check: no users -> allow; otherwise a
+/// `Proxy-Authorization: Basic base64(user:pass)` line matching one user.
+pub fn http_authorized(request: &Request, auth: &InboundAuth) -> bool {
+    if !auth.is_enabled() {
+        return true;
+    }
+    let Some(value) = request
+        .headers
+        .iter()
+        .find(|(name, _)| name == "proxy-authorization")
+        .map(|(_, value)| value)
+    else {
+        return false;
+    };
+    let Some(token) = value
+        .strip_prefix("Basic ")
+        .or_else(|| value.strip_prefix("basic "))
+    else {
+        return false;
+    };
+    let Some(decoded) = base64_decode(token.trim()) else {
+        return false;
+    };
+    match decoded
+        .iter()
+        .position(|b| *b == b':')
+        .map(|at| (&decoded[..at], &decoded[at + 1..]))
+    {
+        Some((user, pass)) => auth.accepts(user, pass),
+        None => false,
+    }
+}
+
+/// Reply `407 Proxy Authentication Required` for an unauthenticated CONNECT and close.
+pub async fn reply_http_auth_required<S>(stream: &mut S)
+where
+    S: AsyncWrite + Unpin,
+{
+    let _ = stream
+        .write_all(
+            b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"billow\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+    let _ = stream.shutdown().await;
+}
+
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn value(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a') as u32 + 26),
+            b'0'..=b'9' => Some((c - b'0') as u32 + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes: Vec<u8> = input
+        .bytes()
+        .filter(|c| *c != b'\r' && *c != b'\n')
+        .collect();
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let pad = chunk.iter().rev().take_while(|c| **c == b'=').count();
+        if pad > 2 {
+            return None;
+        }
+        let mut triple = 0u32;
+        for (i, c) in chunk.iter().enumerate() {
+            let v = if *c == b'=' { 0 } else { value(*c)? };
+            triple |= v << (18 - 6 * i);
+        }
+        out.push((triple >> 16) as u8);
+        if pad < 2 {
+            out.push((triple >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(triple as u8);
+        }
+    }
+    Some(out)
+}
+
 pub async fn reply_failure<S>(stream: &mut S, protocol: Protocol, code: u8)
 where
     S: AsyncWrite + Unpin,
@@ -179,7 +306,7 @@ fn http_error(status: &str) -> String {
     format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nProxy-Agent: billow-kernel\r\nConnection: close\r\n\r\n")
 }
 
-async fn socks5_request<S>(stream: &mut S) -> Result<Request, HandshakeError>
+async fn socks5_request<S>(stream: &mut S, auth: &InboundAuth) -> Result<Request, HandshakeError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -192,12 +319,21 @@ where
     }
     let mut methods = vec![0u8; n_methods];
     stream.read_exact(&mut methods).await?;
-    if !methods.contains(&0x00) {
-        // Only no-auth is offered by this slice; refuse anything else explicitly.
-        let _ = stream.write_all(&[0x05, 0xff]).await;
-        return Err(HandshakeError::SocksAuthRequired);
+    if auth.is_enabled() {
+        if !methods.contains(&0x02) {
+            let _ = stream.write_all(&[0x05, 0xff]).await;
+            return Err(HandshakeError::SocksAuthRequired);
+        }
+        stream.write_all(&[0x05, 0x02]).await?;
+        sock5_authenticate(stream, auth).await?;
+    } else {
+        if !methods.contains(&0x00) {
+            // No-auth is the only method this listener offers.
+            let _ = stream.write_all(&[0x05, 0xff]).await;
+            return Err(HandshakeError::SocksAuthRequired);
+        }
+        stream.write_all(&[0x05, 0x00]).await?;
     }
-    stream.write_all(&[0x05, 0x00]).await?;
 
     let mut request = [0u8; 4];
     stream.read_exact(&mut request).await?;
@@ -219,7 +355,37 @@ where
         host,
         port: u16::from_be_bytes(port),
         protocol: Protocol::Socks5,
+        headers: Vec::new(),
     })
+}
+
+/// RFC 1929 username/password sub-negotiation.
+async fn sock5_authenticate<S>(stream: &mut S, auth: &InboundAuth) -> Result<(), HandshakeError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut version = [0u8; 1];
+    stream.read_exact(&mut version).await?;
+    if version[0] != 0x01 {
+        let _ = stream.write_all(&[0x01, 0x01]).await;
+        return Err(HandshakeError::SocksAuthFailed);
+    }
+    let mut len = [0u8; 1];
+    stream.read_exact(&mut len).await?;
+    let mut username = vec![0u8; len[0] as usize];
+    stream.read_exact(&mut username).await?;
+    stream.read_exact(&mut len).await?;
+    let mut password = vec![0u8; len[0] as usize];
+    stream.read_exact(&mut password).await?;
+    let ok = len[0] > 0 && auth.accepts(&username, &password);
+    let _ = stream
+        .write_all(&[0x01, if ok { 0x00 } else { 0x01 }])
+        .await;
+    if ok {
+        Ok(())
+    } else {
+        Err(HandshakeError::SocksAuthFailed)
+    }
 }
 
 async fn read_socks_address<S>(stream: &mut S, atyp: u8) -> Result<String, HandshakeError>
@@ -305,10 +471,20 @@ where
         )));
     }
     let (host, port) = parse_authority(target)?;
+    // Re-collect the header lines (the iterator above consumed nothing else).
+    let headers = text
+        .split('\n')
+        .skip(1)
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| l.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect();
     Ok(Request {
         host,
         port,
         protocol: Protocol::HttpConnect,
+        headers,
     })
 }
 

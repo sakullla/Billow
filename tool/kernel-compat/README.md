@@ -1,9 +1,10 @@
 # Kernel compatibility harness
 
-Differential entry point for T1 (R2): it reads the shipped-kernel manifests, locks the
-matching Mihomo v1.19.34 source, indexes its configuration surface, and runs the same fixture
-against two explicitly provided kernel executables while recording what a controlled local
-endpoint actually received.
+Differential entry point for R2: it reads the shipped-kernel manifests, locks the matching
+Mihomo v1.19.34 source, indexes its configuration surface, and runs the same fixture against
+two explicitly provided kernel executables while recording what a controlled local endpoint
+actually received. Since T4 the index also carries the Rust kernel's own coverage statement
+per upstream entry, and the protocol families have real-peer evidence next to it.
 
 ## Commands
 
@@ -60,6 +61,38 @@ kernel slice`); that is the coverage gap for T4/T5, never a pass. The Rust CLI a
 HTTP CONNECT (a forward GET is rejected with `405`/`unsupported_protocol`), so fixtures for it
 use `method: connect`.
 
+## Rust coverage and real-peer evidence
+
+Two checked-in files describe what the Rust kernel does with the pinned version:
+
+- `evidence/rust-mapping.json` — one status per upstream entry (`implemented`, `partial`,
+  `unimplemented`), with the options it accepts, the options it rejects and the test that
+  observes the behaviour. `capability.mjs` merges it into `source-capabilities.json` as
+  `rustMapping` on every config field, protocol, listener, group and rule, and into
+  `coverage` (`mapped` counts only `implemented` entries; `partial` names what is missing).
+  An entry without a Rust statement is `unimplemented`, never compatible.
+- `evidence/protocol-peers.json` (with `protocol-peers-run.log`) — the controlled real-peer
+  matrix: each family, its positive and negative cases, the exact test command, the peer
+  binary identity and the platform condition. It is produced by
+  `native-kernel/tests/mihomo_peers.rs` (ignored by default):
+
+  ```sh
+  KC_MIHOMO_BIN=tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 \
+    cargo test --manifest-path native-kernel/Cargo.toml --locked \
+    --test mihomo_peers -- --ignored --test-threads=1
+  ```
+
+  A family without a passing peer case is not recorded as verified. The log is the last
+  complete passing run; the same command occasionally ends a case with the tunnel
+  established but nothing received (the peer's log shows its listener up and no connection)
+  after many cases in one test process, so the suite is run serially and rerun once in that
+  case — a rerun is never recorded as a first-attempt pass.
+
+`runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
+the pinned source, every `implemented`/`partial` claim must cite at least one test, every
+`partial` claim must say what is missing, and every family in the peer matrix must have a
+positive and a negative case with the peer command.
+
 ## Fixture knobs
 
 - `connect` (default) tunnels GET through HTTP CONNECT; `forward` sends a plain absolute-form
@@ -103,10 +136,18 @@ requests on the mixed inbound through a hosts-mapped DIRECT exit, an address-rou
 accepted by both engines, REJECT, selector switching through the control API, and unknown
 proxy targets. A valid configuration using `hosts`, `proxies`/`proxy-groups`, `lan-allowed-ips`
 and a forward request (`fixtures/full-config.yaml`) is accepted by Mihomo and rejected by the
-current Rust slice with `[unsupported]`; the report keeps that difference as an open gap.
+Rust kernel with `[unsupported]` because `hosts` (T5) is still missing; the report keeps that
+difference as an open gap.
 
-Not covered: SOCKS5 inbound and UDP, remote proxy peers and handshakes, DNS answer contents,
-rule families beyond the fixtures, TUN/system-proxy takeover, other platforms, and the Rust
-side until a kernel executable is provided by a later task. The capability index also keeps
-every free-form field and platform-only construct under `unmapped`; T1 records the baseline,
-so no entry is claimed as compatible.
+The fixtures are about the inbound/rules/config surface. Protocol outbounds are verified
+against the same pinned binary in `native-kernel/tests/mihomo_peers.rs` and summarised in
+`evidence/protocol-peers.json`, because a fixture would need a real proxy peer, not just the
+echo endpoint. Current gaps, recorded rather than hidden:
+
+- `hosts`, DNS answer contents, `proxy-groups`, providers, the full controller and rule
+  families beyond the fixtures are T5; the capability index lists every one of them as
+  `unimplemented` for the Rust kernel.
+- SOCKS5/HTTP inbound UDP (`UDP ASSOCIATE`), TUN/system-proxy takeover and every platform
+  other than macOS arm64 are not covered by these runs.
+- The capability index keeps every free-form field and platform-only construct under
+  `unmapped`; those entries are never reported as compatible.

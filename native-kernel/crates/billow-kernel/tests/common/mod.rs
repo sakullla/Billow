@@ -8,10 +8,43 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+/// Ports already used by this test process. The OS hands a released ephemeral
+/// port out again at once, and tests run in parallel: without this registry a
+/// kernel could dial another test's endpoint and every positive case turns
+/// into a confusing 502 or a missing marker.
+static PORTS: std::sync::Mutex<Option<std::collections::BTreeSet<u16>>> = std::sync::Mutex::new(None);
+
+/// Claim `port` for this process; `false` when another test already has it.
+pub fn reserve_port(port: u16) -> bool {
+    let mut ports = PORTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ports.get_or_insert_with(std::collections::BTreeSet::new).insert(port)
+}
+
 /// Ports handed out by [`free_port`]; the kernel and endpoints use distinct ones.
 pub fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("local addr").port()
+    for _ in 0..64 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        if reserve_port(port) {
+            return port;
+        }
+    }
+    panic!("no unused loopback port in 64 attempts");
+}
+
+/// Bind a loopback listener on a port this process has not used yet and claim
+/// it, so a later [`free_port`] cannot hand the same number out.
+pub fn bind_loopback() -> std::net::TcpListener {
+    for _ in 0..64 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        if reserve_port(port) {
+            return listener;
+        }
+    }
+    panic!("no unused loopback port in 64 attempts");
 }
 
 /// A loopback echo server that replies `banner + payload` for every connection,
@@ -35,10 +68,10 @@ pub struct Endpoint {
 }
 
 pub async fn spawn_endpoint(mode: EchoMode) -> Endpoint {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind endpoint");
-    let port = listener.local_addr().unwrap().port();
+    let std_listener = bind_loopback();
+    let port = std_listener.local_addr().unwrap().port();
+    std_listener.set_nonblocking(true).expect("nonblocking endpoint");
+    let listener = TcpListener::from_std(std_listener).expect("adopt endpoint listener");
     let connections = std::sync::Arc::new(AtomicU64::new(0));
     let bytes_received = std::sync::Arc::new(AtomicU64::new(0));
     let mode_config = EndpointConfig {

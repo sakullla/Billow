@@ -1,0 +1,33 @@
+warning: variable does not need to be mutable
+   --> crates/billow-kernel/tests/mihomo_peers.rs:473:14
+    |
+473 |     let Some(mut mihomo) = start_mihomo(bin, certs, sink.port, listeners) else {
+    |              ----^^^^^^
+    |              |
+    |              help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `billow-kernel` (test "mihomo_peers") generated 1 warning (run `cargo fix --test "mihomo_peers" -p billow-kernel` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-a90f65e4e7ec8202)
+
+running 15 tests
+test anytls_outbound_reaches_the_receiving_side_through_mihomo ... ok
+test anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ok
+test dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo ... ok
+test dialer_proxy_chain_with_a_closed_first_hop_never_reaches_the_sink ... ok
+test http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo ... ok
+test http_outbound_wrong_password_never_reaches_the_sink ... ok
+test shadowsocks_outbound_reaches_the_receiving_side_through_mihomo ... ok
+test shadowsocks_wrong_password_never_reaches_the_sink ... ok
+test socks5_outbound_reaches_the_receiving_side_through_mihomo ... ok
+test socks5_wrong_password_never_reaches_the_sink ... ok
+test trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo ... ok
+test trojan_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ok
+test vless_outbound_over_tls_reaches_the_receiving_side_through_mihomo ... ok
+test vless_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
+test vless_wrong_uuid_never_reaches_the_sink ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.60s
+

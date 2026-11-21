@@ -36,6 +36,17 @@ pub struct RuleMatch {
     pub index: usize,
 }
 
+impl RuleMatch {
+    /// `DOMAIN-SUFFIX,x -> s1`; proxy names are resolved through the config.
+    pub fn label(&self, config: &Config) -> String {
+        format!(
+            "{} -> {}",
+            self.rule.matcher,
+            config.action_name(self.rule.action)
+        )
+    }
+}
+
 impl std::fmt::Display for RuleMatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} -> {}", self.rule.matcher, self.rule.action.as_str())

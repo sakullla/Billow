@@ -1,6 +1,6 @@
 [package]
 name = "billow-kernel"
-description = "Billow native Rust proxy kernel: embeddable engine for the first mixed inbound slice"
+description = "Billow native Rust proxy kernel: embeddable engine with mixed inbound and protocol outbounds"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,13 +14,24 @@ publish.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+aes-gcm.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+rand.workspace = true
+ring.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio-rustls.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 

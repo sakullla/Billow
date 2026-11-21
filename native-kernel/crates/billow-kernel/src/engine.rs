@@ -6,14 +6,13 @@
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::AsyncWriteExt;
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -21,7 +20,8 @@ use tracing::{debug, info, warn};
 
 use crate::config::{Action, Config, ConfigError, GeoSiteDatabase, LoadedConfig};
 use crate::identity::Identity;
-use crate::inbound::{self, HandshakeError};
+use crate::inbound::{self, HandshakeError, InboundAuth};
+use crate::outbound;
 use crate::rules::{RuleSet, Target};
 
 /// Version of this kernel (crate version).
@@ -109,6 +109,8 @@ impl Counters {
 /// Shared, immutable session context.
 struct SessionContext {
     rules: Arc<RuleSet>,
+    /// `authentication` users for the mixed inbound (SOCKS5 RFC 1929 / HTTP 407).
+    auth: InboundAuth,
     limits: Limits,
     counters: Arc<Counters>,
 }
@@ -165,7 +167,7 @@ impl Kernel {
                     "GEOSITE,{key} requires --geosite-dir"
                 )))
             })?;
-            GeoSiteDatabase::load_from_dir(&dir, &keys)?
+            GeoSiteDatabase::load_from_dir(dir, &keys)?
         };
         let config = Arc::new(loaded.config.clone());
         let rules = RuleSet::from_config(&config, geosite);
@@ -194,6 +196,9 @@ impl Kernel {
         let (stop_tx, stop_rx) = watch::channel(false);
         let context = Arc::new(SessionContext {
             rules: rules.clone(),
+            auth: InboundAuth {
+                users: loaded.config.inbound_users.clone(),
+            },
             limits,
             counters: counters.clone(),
         });
@@ -262,7 +267,7 @@ impl Kernel {
     /// Returns the action and a human-readable `rule -> ACTION` label.
     pub fn evaluate(&self, host: &str, ip: Option<IpAddr>) -> (Action, String) {
         let m = self.rules.evaluate(&Target::new(host, ip));
-        (m.rule.action, m.to_string())
+        (m.rule.action, m.label(&self.config))
     }
 
     /// Stop accepting, wait for every session task and the listener to exit.
@@ -413,22 +418,29 @@ async fn listen_loop(
 }
 
 async fn serve(
-    stream: TcpStream,
+    mut stream: TcpStream,
     peer: SocketAddr,
     id: u64,
     context: Arc<SessionContext>,
     config: Arc<Config>,
     mut stop: watch::Receiver<bool>,
 ) {
-    // A stop request cuts live tunnels too: dropping the streams closes both
-    // sides, and the runtime drop cancels anything still pending.
+    // The inbound request is read before the stop-aware select: the bytes
+    // arrive with the accept, and reading them here keeps the relay framed by
+    // the select below, where a stop request cuts live tunnels too.
+    let request = tokio::time::timeout(
+        context.limits.handshake_timeout,
+        inbound::accept_request_with_auth(&mut stream, &context.auth),
+    )
+    .await
+    .unwrap_or(Err(HandshakeError::TooLarge));
     let outcome = tokio::select! {
         biased;
         _ = stop.changed() => {
             debug!(session = id, "stopped with the kernel");
             None
         }
-        outcome = serve_inner(stream, peer, id, &context, &config) => Some(outcome),
+        outcome = serve_request(stream, peer, id, request, &context, &config) => Some(outcome),
     };
     let Some(outcome) = outcome else {
         context.counters.active.fetch_sub(1, Ordering::Relaxed);
@@ -454,22 +466,17 @@ enum SessionOutcome {
     Failed,
 }
 
-async fn serve_inner(
+async fn serve_request(
     mut client: TcpStream,
     peer: SocketAddr,
     id: u64,
+    request: Result<inbound::Request, HandshakeError>,
     context: &SessionContext,
     config: &Config,
 ) -> Result<(), SessionOutcome> {
     let limits = context.limits;
     let counters = &context.counters;
 
-    let request = tokio::time::timeout(
-        limits.handshake_timeout,
-        inbound::accept_request(&mut client),
-    )
-    .await
-    .unwrap_or(Err(HandshakeError::TooLarge));
     let request = match request {
         Ok(request) => request,
         Err(err) => {
@@ -478,6 +485,11 @@ async fn serve_inner(
         }
     };
     let protocol = request.protocol;
+    if protocol == inbound::Protocol::HttpConnect && !inbound::http_authorized(&request, &context.auth) {
+        info!(session = id, peer = %peer, "HTTP CONNECT without a valid Proxy-Authorization");
+        inbound::reply_http_auth_required(&mut client).await;
+        return Err(SessionOutcome::Failed);
+    }
     let ip: Option<IpAddr> = request.host.parse().ok();
     let decision = context.rules.evaluate(&Target::new(&request.host, ip));
     debug!(
@@ -491,44 +503,94 @@ async fn serve_inner(
         return Err(SessionOutcome::Rejected);
     }
 
-    // This slice has no protocol outbounds: anything not REJECT is a direct TCP dial.
     let authority = request.authority();
-    let upstream = match tokio::time::timeout(limits.dial_timeout, TcpStream::connect(&authority))
-        .await
-    {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(e)) => {
-            warn!(session = id, target = %authority, rule = %decision, "direct dial failed: {e}");
-            inbound::reply_failure(&mut client, protocol, 0x01).await;
-            return Err(SessionOutcome::Failed);
+    // REJECT was handled above; other actions name a configured proxy, and any
+    // rule without a proxy (including the implicit DIRECT fallback) dials the
+    // target directly.
+    let proxy = match decision.rule.action {
+        Action::Proxy(index) => match config.proxies.get(index) {
+            Some(proxy) => Some(proxy),
+            None => {
+                warn!(session = id, rule = %decision, "rule names a proxy that is no longer configured");
+                inbound::reply_failure(&mut client, protocol, 0x01).await;
+                return Err(SessionOutcome::Failed);
+            }
+        },
+        _ => None,
+    };
+    let (upstream, outbound, outbound_kind): (Box<dyn outbound::Stream>, String, &str) = match proxy {
+        None => {
+            let stream = match tokio::time::timeout(limits.dial_timeout, TcpStream::connect(&authority))
+                .await
+            {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(e)) => {
+                    warn!(session = id, target = %authority, rule = %decision, "direct dial failed: {e}");
+                    inbound::reply_failure(&mut client, protocol, 0x01).await;
+                    return Err(SessionOutcome::Failed);
+                }
+                Err(_) => {
+                    warn!(session = id, target = %authority, "direct dial timed out after {:?}", limits.dial_timeout);
+                    inbound::reply_failure(&mut client, protocol, 0x01).await;
+                    return Err(SessionOutcome::Failed);
+                }
+            };
+            let _ = stream.set_nodelay(true);
+            let peer = stream
+                .peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|_| "?".to_string());
+            (Box::new(stream) as Box<dyn outbound::Stream>, peer, "DIRECT")
         }
-        Err(_) => {
-            warn!(session = id, target = %authority, "direct dial timed out after {:?}", limits.dial_timeout);
-            inbound::reply_failure(&mut client, protocol, 0x01).await;
-            return Err(SessionOutcome::Failed);
+        Some(proxy) => {
+            // Follow `dialer-proxy` from the matched proxy; the loader has
+            // already rejected unknown references and cycles.
+            let mut hops: Vec<&crate::proxies::Proxy> = Vec::new();
+            let mut current = Some(proxy);
+            while let Some(hop) = current {
+                hops.push(hop);
+                current = hop
+                    .dialer_proxy()
+                    .and_then(|name| config.proxies.iter().find(|p| p.name == name));
+            }
+            let target = outbound::Target { host: request.host.clone(), port: request.port };
+            match tokio::time::timeout(limits.dial_timeout, outbound::dial_chain(&hops, &target, limits.dial_timeout)).await {
+                Err(_) => {
+                    warn!(session = id, target = %authority, rule = %decision, proxy = %proxy.name, "outbound dial timed out after {:?}", limits.dial_timeout);
+                    inbound::reply_failure(&mut client, protocol, 0x01).await;
+                    return Err(SessionOutcome::Failed);
+                }
+                Ok(Err(e)) => {
+                    warn!(session = id, target = %authority, rule = %decision, proxy = %proxy.name, "outbound dial failed: {e}");
+                    inbound::reply_failure(&mut client, protocol, 0x01).await;
+                    return Err(SessionOutcome::Failed);
+                }
+                Ok(Ok(dialed)) => {
+                    let label = hops
+                        .iter()
+                        .map(|hop| hop.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("->");
+                    (
+                        dialed.stream,
+                        format!("proxy={} type={} server={} chain={label}", proxy.name, proxy.type_name(), dialed.server),
+                        "PROXY",
+                    )
+                }
+            }
         }
     };
-    let _ = upstream.set_nodelay(true);
-    let outbound = upstream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "?".to_string());
     info!(
         session = id, target = %authority, protocol = protocol.as_str(), rule = %decision,
-        outbound = %outbound, config = %config.digest, "DIRECT tunnel established"
+        outbound = %outbound, config = %config.digest, "{} tunnel established", outbound_kind
     );
 
     if inbound::reply_success(&mut client, &request).await.is_err() {
         return Err(SessionOutcome::Failed);
     }
 
-    let relayed = relay(
-        client,
-        upstream,
-        limits.buffer_size,
-        limits.half_close_timeout,
-    )
-    .await;
+    let relayed =
+        relay(client, upstream, limits.buffer_size, limits.half_close_timeout).await;
     counters
         .bytes_up
         .fetch_add(relayed.bytes_up, Ordering::Relaxed);
@@ -556,186 +618,128 @@ struct Relayed {
     lingering: bool,
 }
 
-/// Copy in both directions with fixed-size buffers. EOF is propagated as a
-/// write-side shutdown of the opposite stream (TCP half-close), so
-/// request/response protocols work. After the first direction finishes, the
-/// second direction is abandoned once `linger` elapses: a stalled peer never
-/// keeps a session alive indefinitely.
+/// Relay between the inbound client socket and its upstream transport (a direct
+/// TCP socket or an outbound proxy stream). A proxy stream is not a socket and
+/// cannot be duplicated, so both sides are split into read/write halves. The
+/// client is a real socket and uses `TcpStream::into_split` (owned, lock-free
+/// halves): `tokio::io::split` around an accepted socket was observed on this
+/// host to leave the first client-to-upstream read pending in rare runs of the
+/// peer suite, while the same code path with owned halves never did.
+/// Both directions run inside this one session future (a `select` over two
+/// pinned copies), so no extra task has to be scheduled, a stop request drops
+/// them with the session, and after the session ends nothing is left behind.
+/// Buffers are the same fixed size and a read stops while the writer is blocked
+/// (back-pressure).
 async fn relay(
     client: TcpStream,
-    upstream: TcpStream,
+    upstream: Box<dyn outbound::Stream>,
     buffer_size: usize,
     linger: Duration,
 ) -> Relayed {
-    // One direction per task, each with its own duplicate of both sockets:
-    //   upload   = read client  -> write upstream
-    //   download = read upstream -> write client
-    // Every session has a single reader and a single writer per socket.
-    let (up_client, down_upstream) = match (duplicate(&client), duplicate(&upstream)) {
-        (Ok(a), Ok(b)) => (a, b),
-        _ => {
-            return Relayed {
-                bytes_up: 0,
-                bytes_down: 0,
-                up_error: true,
-                down_error: true,
-                lingering: false,
+    let (client_r, client_w) = client.into_split();
+    let (upstream_r, upstream_w) = tokio::io::split(upstream);
+    let up_bytes = Arc::new(AtomicU64::new(0));
+    let down_bytes = Arc::new(AtomicU64::new(0));
+    let upload = copy_half(client_r, upstream_w, buffer_size, up_bytes.clone());
+    let download = copy_half(upstream_r, client_w, buffer_size, down_bytes.clone());
+    tokio::pin!(upload);
+    tokio::pin!(download);
+
+    // Upload ends on the client's EOF / half-close; the download side keeps
+    // running while the client is still sending.
+    let mut download_done = false;
+    let mut down_error = false;
+    let up_error = loop {
+        tokio::select! {
+            error = &mut upload => break error,
+            error = &mut download, if !download_done => {
+                download_done = true;
+                down_error = error;
             }
         }
     };
-    let upload = spawn_direction(client, upstream, buffer_size);
-    let download = spawn_direction(down_upstream, up_client, buffer_size);
-
-    let mut upload = upload;
-    let mut download = download;
-    // Upload ends on the client's EOF / half-close.
-    let (bytes_up, up_error) = upload.finish().await;
-    let (bytes_down, down_error, lingering) =
-        match tokio::time::timeout(linger, download.finish()).await {
-            Ok(result) => (result.0, result.1, false),
-            Err(_) => {
-                // The peer stopped reading/writing after a half-close: cut the
-                // session instead of holding the socket, task and buffer forever.
-                debug!("second direction exceeded half-close timeout");
-                (0, false, true)
+    // After the first direction finished, the second one is cut once `linger`
+    // elapses: a stalled peer never keeps a session, a task and buffers alive.
+    let lingering = if download_done {
+        false
+    } else {
+        match tokio::time::timeout(linger, &mut download).await {
+            Ok(error) => {
+                down_error = error;
+                false
             }
-        };
-    // Both tasks are done or stale; aborting is harmless for finished tasks and
-    // releases the sockets and buffers of a cancelled direction.
-    upload.abort();
-    download.abort();
+            Err(_) => {
+                debug!("second direction exceeded half-close timeout");
+                down_error = true;
+                true
+            }
+        }
+    };
     Relayed {
-        bytes_up,
-        bytes_down,
+        bytes_up: up_bytes.load(Ordering::Relaxed),
+        bytes_down: down_bytes.load(Ordering::Relaxed),
         up_error,
         down_error,
         lingering,
     }
 }
 
-/// Handle on one copy task plus the byte counter it updates while running.
-struct DirectionTask {
-    handle: tokio::task::JoinHandle<()>,
-    result: tokio::sync::oneshot::Receiver<(u64, bool)>,
-}
+/// Re-poll interval for a suspended read: 1 ms at first, backing off to 128 ms.
+///
+/// A read that should wake on new bytes has been observed to stay pending on
+/// this host (darwin reactor) while the peer suite's extra processes run.
+/// `AsyncRead::read` is cancel-safe, so re-polling cannot lose bytes; the
+/// backoff keeps an idle tunnel at a few wake-ups per second.
+const READ_RETRY_MIN: Duration = Duration::from_millis(1);
+const READ_RETRY_MAX: Duration = Duration::from_millis(128);
 
-impl DirectionTask {
-    /// Bytes and error state of the direction; returns once its task finished.
-    async fn finish(&mut self) -> (u64, bool) {
-        match (&mut self.result).await {
-            Ok((bytes, error)) => (bytes, error),
-            Err(_) => (0, true),
-        }
-    }
-
-    fn abort(&self) {
-        self.handle.abort();
-    }
-}
-
-fn spawn_direction(reader: TcpStream, writer: TcpStream, buffer_size: usize) -> DirectionTask {
-    let bytes = Arc::new(AtomicU64::new(0));
-    let (tx, result) = tokio::sync::oneshot::channel();
-    let counter = bytes.clone();
-    let handle = tokio::spawn(async move {
-        let outcome = copy_half(SyncReader(reader), writer, buffer_size, &counter).await;
-        let _ = tx.send(outcome);
-    });
-    DirectionTask { handle, result }
-}
-
-/// Duplicate a socket so one direction reads and another writes the same
-/// connection. Implemented with `dup(2)`; the original stays with the caller.
-#[cfg(unix)]
-fn duplicate(stream: &TcpStream) -> io::Result<TcpStream> {
-    let fd = stream.as_raw_fd();
-    extern "C" {
-        fn dup(fd: std::os::unix::io::RawFd) -> std::os::unix::io::RawFd;
-    }
-    // SAFETY: `dup` only reads the descriptor number and returns a fresh one.
-    let dup_fd = unsafe { dup(fd) };
-    if dup_fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `dup_fd` is a fresh, valid descriptor owned by this call.
-    let std_stream =
-        unsafe { <std::net::TcpStream as std::os::fd::FromRawFd>::from_raw_fd(dup_fd) };
-    TcpStream::from_std(std_stream)
-}
-
-/// Windows has no `dup(2)` in std; the platform session path lands with T6, so
-/// sessions here fail explicitly (502 to the client) instead of forwarding wrongly.
-#[cfg(not(unix))]
-fn duplicate(_stream: &TcpStream) -> io::Result<TcpStream> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "socket duplication is not implemented on this platform yet",
-    ))
-}
-
-/// Read-only view of a TCP socket: readiness waits, then a non-blocking read.
-struct SyncReader(TcpStream);
-
-impl SyncReader {
-    async fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        loop {
-            self.0.readable().await?;
-            match self.0.try_read(buffer) {
-                Ok(n) => return Ok(n),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(e) => return Err(e),
+async fn read_with_retry<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    interval: &mut Duration,
+) -> io::Result<usize> {
+    loop {
+        match tokio::time::timeout(*interval, reader.read(buffer)).await {
+            Ok(result) => {
+                *interval = READ_RETRY_MIN;
+                return result;
             }
+            Err(_) => *interval = (*interval * 2).min(READ_RETRY_MAX),
         }
     }
 }
 
-/// A single-direction copy: returns total bytes and whether an I/O error
-/// occurred, once EOF is reached and the writer's write side is shut down.
-async fn copy_half<R: ReadHalf>(
-    reader: R,
-    mut writer: TcpStream,
+async fn copy_half<R, W>(
+    mut reader: R,
+    mut writer: W,
     buffer_size: usize,
-    bytes: &AtomicU64,
-) -> (u64, bool) {
+    bytes: Arc<AtomicU64>,
+) -> bool
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     // Fixed-size buffer per direction; reads stop while the writer is blocked,
     // which is the back-pressure on the sender.
     let mut buffer = vec![0u8; buffer_size];
+    let mut interval = READ_RETRY_MIN;
     loop {
-        let n = match reader.read(&mut buffer).await {
+        let n = match read_with_retry(&mut reader, &mut buffer, &mut interval).await {
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::ConnectionReset => break,
             Err(e) => {
                 debug!("read failed: {e}");
-                return (bytes.load(Ordering::Relaxed), true);
+                return true;
             }
         };
-        let pending = &buffer[..n];
-        match writer.write(pending).await {
-            Ok(0) => {
-                bytes.fetch_add(0, Ordering::Relaxed);
-                break;
-            }
-            Ok(written) => {
-                bytes.fetch_add(written as u64, Ordering::Relaxed);
-            }
-            Err(e) => {
-                debug!("write failed: {e}");
-                return (bytes.load(Ordering::Relaxed), true);
-            }
+        if let Err(e) = writer.write_all(&buffer[..n]).await {
+            debug!("write failed: {e}");
+            return true;
         }
+        bytes.fetch_add(n as u64, Ordering::Relaxed);
     }
     // Shuts the write side only; the peer observes a FIN (half-close).
     let _ = writer.shutdown().await;
-    (bytes.load(Ordering::Relaxed), false)
-}
-
-trait ReadHalf {
-    async fn read(&self, buffer: &mut [u8]) -> io::Result<usize>;
-}
-
-impl ReadHalf for SyncReader {
-    async fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        SyncReader::read(self, buffer).await
-    }
+    false
 }

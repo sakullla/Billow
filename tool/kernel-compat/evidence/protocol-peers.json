@@ -1,0 +1,137 @@
+{
+  "format": "kernel-protocol-peers",
+  "version": 1,
+  "generatedAt": "2026-11-21",
+  "platform": {
+    "verified": [
+      "macos-aarch64"
+    ],
+    "compilesButNotRun": [
+      "linux-x86_64",
+      "linux-aarch64",
+      "android",
+      "ios-simulator"
+    ],
+    "windows": "compiles; the Windows session path is T6 and no Windows peer run has been recorded"
+  },
+  "upstream": {
+    "version": "v1.19.34",
+    "binary": "tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
+    "sha256": "a55a9073f9b7b1fa596a82c034d2dae3407ec34732102b6e42c5513ce3033f34",
+    "role": "the peer is a Mihomo `listeners:` endpoint; the Rust kernel is the client and a controlled loopback sink records what arrived"
+  },
+  "command": "KC_MIHOMO_BIN=tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 cargo test --manifest-path native-kernel/Cargo.toml --locked --test mihomo_peers -- --ignored --test-threads=1",
+  "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
+  "result": {
+    "cases": 15,
+    "passed": 15,
+    "failed": 0
+  },
+  "families": {
+    "socks5": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "socks5_outbound_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "socks5_wrong_password_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: socks with users",
+      "notes": "the peer replies success after its own SOCKS5 handshake but before dialing, so the positive case is judged by the tagged bytes the sink received"
+    },
+    "http": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "http_outbound_wrong_password_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: http with users",
+      "notes": "Mihomo's HTTP inbound writes 200 before dialing, so only the receiving side proves a positive tunnel; a wrong credential is answered with 407 and the kernel reports 502"
+    },
+    "ss": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "shadowsocks_outbound_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "shadowsocks_wrong_password_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: shadowsocks, aes-256-gcm",
+      "notes": "AEAD 2017 framing and both directions (the client reads the server's salt); loopback peers cover aes-128-gcm and chacha20-ietf-poly1305"
+    },
+    "trojan": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "trojan_wrong_password_and_untrusted_certificate_never_reach_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: trojan with a self-signed certificate",
+      "notes": "wrong password and an untrusted certificate are both checked; the peer closes silently on the first, the client refuses the second"
+    },
+    "vless": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "vless_outbound_over_tls_reaches_the_receiving_side_through_mihomo",
+          "vless_over_websocket_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "vless_wrong_uuid_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: vless (tcp and ws-path)",
+      "notes": "the ws case records that the client must not send Sec-WebSocket-Protocol: Mihomo reads a non-empty value as Xray 0-RTT early data"
+    },
+    "anytls": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "anytls_outbound_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: anytls with users",
+      "notes": "one stream per connection, protocol version 2; the server's SYNACK is not awaited before the payload is sent, as sing's client does"
+    },
+    "dialer-proxy": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo"
+        ],
+        "negative": [
+          "dialer_proxy_chain_with_a_closed_first_hop_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "two Mihomo listeners (mixed as the exit hop, socks as the first hop)",
+      "notes": "only a socks5 hop can carry another hop; a closed first hop fails the dial instead of falling back to DIRECT, and other chains are rejected at load time or with a chain error"
+    }
+  },
+  "notCovered": [
+    "UDP: the mixed inbound has no UDP ASSOCIATE, so no protocol family carries UDP traffic end to end (the SS datagram codec is unit-tested)",
+    "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
+    "platforms other than macOS arm64; DNS answers, rule families beyond T2's list, TUN/system-proxy takeover (T6)"
+  ],
+  "runMode": "serially (--test-threads=1); the cases are ignored by default so the default cargo test neither fails nor implies interop"
+}

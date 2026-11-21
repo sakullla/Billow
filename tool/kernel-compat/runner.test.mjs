@@ -12,7 +12,7 @@ import { resolveBaseline } from './baseline.mjs'
 import { setTopLevel, getTopLevel } from './yaml.mjs'
 import { loadFixture, withHosts, withPorts, tagHost } from './fixture.mjs'
 import { runDifferential } from './runner.mjs'
-import { generateFromCache } from './capability.mjs'
+import { generateFromCache, loadRustMapping } from './capability.mjs'
 import { probeSource } from './source.mjs'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -101,8 +101,51 @@ test('source capability index covers config, protocols, rules and platforms', as
   assert.ok(index.platforms.androidBuildTags.includes('with_gvisor'))
   assert.ok(index.unmapped.length > 0, 'unmapped entries are kept, not dropped')
   assert.ok(index.configFields.every((field) => /config\/config\.go:\d+/.test(field.source)))
-  assert.equal(index.coverage.mapped, 0)
-  assert.equal(index.configFields.every((field) => field.rustMapping === null), true)
+  assert.equal(index.coverage.total, index.configFields.length + index.proxies.length + index.listeners.length + index.groups.length + index.rules.length)
+  assert.equal(
+    index.coverage.mapped + index.coverage.partial + index.coverage.unimplemented,
+    index.coverage.total,
+    'every entry has exactly one Rust status',
+  )
+  assert.ok(index.coverage.mapped > 0, 'T4 records implemented entries')
+  assert.equal(index.configFields.every((field) => field.rustMapping?.status), true)
+})
+
+test('the Rust mapping names only pinned entries and backs every claim with a test', async () => {
+  const { index } = await generateFromCache({ cacheDir })
+  const mapping = loadRustMapping()
+  const statuses = new Set(['implemented', 'partial', 'unimplemented'])
+  const check = (kind, allowed, entries) => {
+    for (const [key, value] of Object.entries(entries ?? {})) {
+      assert.ok(statuses.has(value.status), `${kind}.${key} has a known status`)
+      assert.ok(allowed.has(key), `${kind}.${key} exists in the pinned source (found: ${[...allowed].filter((name) => name === key)})`)
+      if (value.status === 'implemented' || value.status === 'partial') {
+        assert.ok((value.evidence ?? []).length > 0, `${kind}.${key} (${value.status}) cites at least one test`)
+      }
+      if (value.status === 'partial') assert.ok(value.reason, `${kind}.${key} says what is missing`)
+    }
+  }
+  check('proxies', new Set(index.proxies.map((entry) => entry.type)), mapping.proxies)
+  check('listeners', new Set(index.listeners.map((entry) => entry.type)), mapping.listeners)
+  check('groups', new Set(index.groups.map((entry) => entry.type)), mapping.groups)
+  check('rules', new Set(index.rules.map((entry) => entry.type)), mapping.rules)
+  check('configFields', new Set(index.configFields.map((field) => field.name)), mapping.configFields)
+  for (const type of ['ss', 'socks5', 'http', 'trojan', 'vless', 'anytls']) {
+    assert.equal(mapping.proxies[type]?.status, 'implemented', `${type} is implemented and tested`)
+  }
+  for (const type of ['ssr', 'vmess', 'hysteria2', 'tuic', 'wireguard']) {
+    assert.notEqual(mapping.proxies[type]?.status, 'implemented', `${type} must not be claimed`)
+  }
+  assert.ok(mapping.platform.verified.length > 0)
+  const peers = JSON.parse(await readFile(resolve(here, 'evidence', 'protocol-peers.json'), 'utf8'))
+  assert.equal(peers.format, 'kernel-protocol-peers')
+  assert.equal(peers.upstream.version, 'v1.19.34')
+  assert.ok(peers.platform.verified.includes(mapping.platform.verified[0]))
+  for (const [type, entry] of Object.entries(peers.families)) {
+    assert.equal(entry.status === 'pass', true, `${type} has a real-peer result`)
+    assert.ok(entry.cases.positive.length > 0 && entry.cases.negative.length > 0, `${type} covers success and failure`)
+    assert.match(entry.command, /mihomo_peers/)
+  }
 })
 
 test('real Mihomo passes the tagged exit fixtures while the Rust side stays missing', async () => {

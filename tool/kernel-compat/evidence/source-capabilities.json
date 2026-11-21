@@ -28,7 +28,13 @@
       "goType": "int",
       "source": "config/config.go:405",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "partial",
+        "reason": "recorded only; the mixed listener is the only bound port",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "name": "socks-port",
@@ -36,7 +42,13 @@
       "goType": "int",
       "source": "config/config.go:406",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "reason": "legacy alias for mixed-port with a warning",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "name": "redir-port",
@@ -44,7 +56,10 @@
       "goType": "int",
       "source": "config/config.go:407",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "tproxy-port",
@@ -52,7 +67,10 @@
       "goType": "int",
       "source": "config/config.go:408",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "mixed-port",
@@ -60,7 +78,14 @@
       "goType": "int",
       "source": "config/config.go:409",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs",
+          "tests/sessions.rs",
+          "tests/mihomo_peers.rs"
+        ]
+      }
     },
     {
       "name": "ss-config",
@@ -68,7 +93,10 @@
       "goType": "string",
       "source": "config/config.go:410",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "vmess-config",
@@ -76,7 +104,10 @@
       "goType": "string",
       "source": "config/config.go:411",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "inbound-tfo",
@@ -84,7 +115,10 @@
       "goType": "bool",
       "source": "config/config.go:412",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "inbound-mptcp",
@@ -92,7 +126,10 @@
       "goType": "bool",
       "source": "config/config.go:413",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "authentication",
@@ -100,7 +137,12 @@
       "goType": "[]string",
       "source": "config/config.go:414",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/protocols.rs::inbound_authentication_guards_socks5_and_http_connect"
+        ]
+      }
     },
     {
       "name": "skip-auth-prefixes",
@@ -108,7 +150,10 @@
       "goType": "[]netip.Prefix",
       "source": "config/config.go:415",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "lan-allowed-ips",
@@ -116,7 +161,10 @@
       "goType": "[]netip.Prefix",
       "source": "config/config.go:416",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "lan-disallowed-ips",
@@ -124,7 +172,10 @@
       "goType": "[]netip.Prefix",
       "source": "config/config.go:417",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "allow-lan",
@@ -132,7 +183,13 @@
       "goType": "bool",
       "source": "config/config.go:418",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs",
+          "tests/sessions.rs"
+        ]
+      }
     },
     {
       "name": "bind-address",
@@ -140,7 +197,12 @@
       "goType": "string",
       "source": "config/config.go:419",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "name": "mode",
@@ -148,7 +210,13 @@
       "goType": "T.TunnelMode",
       "source": "config/config.go:420",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "partial",
+        "reason": "only 'rule'; global/direct are rejected",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "name": "unified-delay",
@@ -156,7 +224,10 @@
       "goType": "bool",
       "source": "config/config.go:421",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "log-level",
@@ -164,7 +235,13 @@
       "goType": "log.LogLevel",
       "source": "config/config.go:422",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs",
+          "crates/billow-kernel-cli/tests/cli.rs"
+        ]
+      }
     },
     {
       "name": "ipv6",
@@ -172,7 +249,10 @@
       "goType": "bool",
       "source": "config/config.go:423",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-controller",
@@ -180,7 +260,10 @@
       "goType": "string",
       "source": "config/config.go:424",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-controller-routing-mark",
@@ -188,7 +271,10 @@
       "goType": "int",
       "source": "config/config.go:425",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-controller-pipe",
@@ -196,7 +282,10 @@
       "goType": "string",
       "source": "config/config.go:426",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-controller-unix",
@@ -204,7 +293,10 @@
       "goType": "string",
       "source": "config/config.go:427",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-controller-tls",
@@ -212,7 +304,10 @@
       "goType": "string",
       "source": "config/config.go:428",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-controller-cors",
@@ -238,7 +333,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-ui",
@@ -246,7 +344,10 @@
       "goType": "string",
       "source": "config/config.go:430",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-ui-url",
@@ -254,7 +355,10 @@
       "goType": "string",
       "source": "config/config.go:431",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-ui-name",
@@ -262,7 +366,10 @@
       "goType": "string",
       "source": "config/config.go:432",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "external-doh-server",
@@ -270,7 +377,10 @@
       "goType": "string",
       "source": "config/config.go:433",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "secret",
@@ -278,7 +388,10 @@
       "goType": "string",
       "source": "config/config.go:434",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "interface-name",
@@ -286,7 +399,10 @@
       "goType": "string",
       "source": "config/config.go:435",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "routing-mark",
@@ -294,7 +410,10 @@
       "goType": "int",
       "source": "config/config.go:436",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "tunnels",
@@ -302,7 +421,10 @@
       "goType": "[]LC.Tunnel",
       "source": "config/config.go:437",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "geo-auto-update",
@@ -310,7 +432,10 @@
       "goType": "bool",
       "source": "config/config.go:438",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "geo-update-interval",
@@ -318,7 +443,10 @@
       "goType": "int",
       "source": "config/config.go:439",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "geodata-mode",
@@ -326,7 +454,10 @@
       "goType": "bool",
       "source": "config/config.go:440",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "geodata-loader",
@@ -334,7 +465,10 @@
       "goType": "string",
       "source": "config/config.go:441",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "geosite-matcher",
@@ -342,7 +476,10 @@
       "goType": "string",
       "source": "config/config.go:442",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "tcp-concurrent",
@@ -350,7 +487,10 @@
       "goType": "bool",
       "source": "config/config.go:443",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "find-process-mode",
@@ -358,7 +498,10 @@
       "goType": "process.FindProcessMode",
       "source": "config/config.go:444",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "global-client-fingerprint",
@@ -366,7 +509,10 @@
       "goType": "string",
       "source": "config/config.go:445",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "global-ua",
@@ -374,7 +520,10 @@
       "goType": "string",
       "source": "config/config.go:446",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "etag-support",
@@ -382,7 +531,10 @@
       "goType": "bool",
       "source": "config/config.go:447",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "keep-alive-idle",
@@ -390,7 +542,10 @@
       "goType": "int",
       "source": "config/config.go:448",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "keep-alive-interval",
@@ -398,7 +553,10 @@
       "goType": "int",
       "source": "config/config.go:449",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "disable-keep-alive",
@@ -406,7 +564,10 @@
       "goType": "bool",
       "source": "config/config.go:450",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "proxy-providers",
@@ -414,7 +575,10 @@
       "goType": "map[string]map[string]any",
       "source": "config/config.go:452",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "rule-providers",
@@ -422,7 +586,10 @@
       "goType": "map[string]map[string]any",
       "source": "config/config.go:453",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "proxies",
@@ -430,7 +597,15 @@
       "goType": "[]map[string]any",
       "source": "config/config.go:454",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "partial",
+        "reason": "six protocol types with their implemented transports; every other type or option is rejected by name",
+        "evidence": [
+          "tests/config.rs",
+          "tests/protocols.rs",
+          "tests/mihomo_peers.rs"
+        ]
+      }
     },
     {
       "name": "proxy-groups",
@@ -438,7 +613,10 @@
       "goType": "[]map[string]any",
       "source": "config/config.go:455",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "rules",
@@ -446,7 +624,13 @@
       "goType": "[]string",
       "source": "config/config.go:456",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs",
+          "tests/protocols.rs"
+        ]
+      }
     },
     {
       "name": "sub-rules",
@@ -454,7 +638,10 @@
       "goType": "map[string][]string",
       "source": "config/config.go:457",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "listeners",
@@ -462,7 +649,10 @@
       "goType": "[]map[string]any",
       "source": "config/config.go:458",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "hosts",
@@ -470,7 +660,10 @@
       "goType": "map[string]any",
       "source": "config/config.go:459",
       "nested": null,
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "dns",
@@ -671,7 +864,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "ntp",
@@ -725,7 +921,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "tun",
@@ -1094,7 +1293,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "tuic-server",
@@ -1190,7 +1392,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "iptables",
@@ -1230,7 +1435,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "experimental",
@@ -1270,7 +1478,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "profile",
@@ -1296,7 +1507,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "geox-url",
@@ -1336,7 +1550,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "sniffer",
@@ -1425,7 +1642,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "name": "tls",
@@ -1479,7 +1699,13 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "partial",
+        "reason": "only custom-cert/certificate roots for outbound verification",
+        "evidence": [
+          "tests/protocols.rs::socks5_and_http_outbounds_over_tls_verify_the_peer_certificate"
+        ]
+      }
     },
     {
       "name": "clash-for-android",
@@ -1505,7 +1731,10 @@
           }
         ]
       },
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     }
   ],
   "proxies": [
@@ -1513,169 +1742,399 @@
       "type": "ss",
       "constructor": "outbound.NewShadowSocks",
       "source": "adapter/parser.go:30",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "cipher (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)",
+          "password",
+          "udp (codec only)",
+          "dialer-proxy"
+        ],
+        "notImplemented": [
+          "plugin",
+          "plugin-opts",
+          "udp-over-tcp",
+          "udp-over-tcp-version",
+          "client-fingerprint",
+          "ip-version"
+        ],
+        "evidence": [
+          "tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip",
+          "tests/mihomo_peers.rs::shadowsocks_outbound_reaches_the_receiving_side_through_mihomo"
+        ]
+      }
     },
     {
       "type": "ssr",
       "constructor": "outbound.NewShadowSocksR",
       "source": "adapter/parser.go:37",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "socks5",
       "constructor": "outbound.NewSocks5",
       "source": "adapter/parser.go:44",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "username",
+          "password",
+          "tls",
+          "sni",
+          "skip-cert-verify",
+          "alpn",
+          "dialer-proxy"
+        ],
+        "notImplemented": [
+          "udp",
+          "fingerprint",
+          "certificate",
+          "private-key",
+          "name-cert-verify",
+          "ip-version"
+        ],
+        "evidence": [
+          "tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target",
+          "tests/mihomo_peers.rs::socks5_outbound_reaches_the_receiving_side_through_mihomo"
+        ]
+      }
     },
     {
       "type": "http",
       "constructor": "outbound.NewHttp",
       "source": "adapter/parser.go:51",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "username",
+          "password",
+          "tls",
+          "sni",
+          "skip-cert-verify",
+          "alpn",
+          "headers",
+          "dialer-proxy"
+        ],
+        "notImplemented": [
+          "fingerprint",
+          "certificate",
+          "private-key",
+          "name-cert-verify",
+          "ip-version"
+        ],
+        "evidence": [
+          "tests/protocols.rs::http_connect_outbound_with_basic_auth",
+          "tests/mihomo_peers.rs::http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo"
+        ]
+      }
     },
     {
       "type": "vmess",
       "constructor": "outbound.NewVmess",
       "source": "adapter/parser.go:58",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "vless",
       "constructor": "outbound.NewVless",
       "source": "adapter/parser.go:65",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "uuid",
+          "tls",
+          "sni",
+          "skip-cert-verify",
+          "alpn",
+          "encryption: none",
+          "network: tcp|ws",
+          "ws-opts.path",
+          "ws-opts.headers",
+          "dialer-proxy"
+        ],
+        "notImplemented": [
+          "flow (xtls-rprx-vision)",
+          "udp",
+          "packet-addr",
+          "xudp",
+          "packet-encoding",
+          "grpc-opts",
+          "http-opts",
+          "h2-opts",
+          "xhttp-opts",
+          "reality-opts",
+          "ech-opts",
+          "client-fingerprint",
+          "ip-version"
+        ],
+        "evidence": [
+          "tests/protocols.rs::vless_over_tls_sends_uuid_target_and_payload",
+          "tests/mihomo_peers.rs::vless_over_websocket_reaches_the_receiving_side_through_mihomo"
+        ]
+      }
     },
     {
       "type": "snell",
       "constructor": "outbound.NewSnell",
       "source": "adapter/parser.go:72",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "trojan",
       "constructor": "outbound.NewTrojan",
       "source": "adapter/parser.go:79",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "password",
+          "sni",
+          "skip-cert-verify",
+          "alpn",
+          "network: tcp|ws",
+          "ws-opts.path",
+          "ws-opts.headers",
+          "udp (codec only)",
+          "dialer-proxy"
+        ],
+        "notImplemented": [
+          "grpc-opts",
+          "reality-opts",
+          "ss-opts",
+          "ech-opts",
+          "shadow-tls-opts",
+          "restls-opts",
+          "jls-opts",
+          "client-fingerprint",
+          "ip-version",
+          "ws early data"
+        ],
+        "evidence": [
+          "tests/protocols.rs::trojan_outbound_over_tls_sends_hash_command_address_and_payload",
+          "tests/mihomo_peers.rs::trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo"
+        ]
+      }
     },
     {
       "type": "hysteria",
       "constructor": "outbound.NewHysteria",
       "source": "adapter/parser.go:86",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "hysteria2",
       "constructor": "outbound.NewHysteria2",
       "source": "adapter/parser.go:93",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "wireguard",
       "constructor": "outbound.NewWireGuard",
       "source": "adapter/parser.go:100",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "tuic",
       "constructor": "outbound.NewTuic",
       "source": "adapter/parser.go:107",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "shadowquic",
       "constructor": "outbound.NewShadowQuic",
       "source": "adapter/parser.go:114",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "gost-relay",
       "constructor": "outbound.NewGostRelay",
       "source": "adapter/parser.go:121",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "direct",
       "constructor": "outbound.NewDirectWithOption",
       "source": "adapter/parser.go:128",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "dns",
       "constructor": "outbound.NewDnsWithOption",
       "source": "adapter/parser.go:135",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "reject",
       "constructor": "outbound.NewRejectWithOption",
       "source": "adapter/parser.go:142",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "rematch",
       "constructor": "outbound.NewRematch",
       "source": "adapter/parser.go:149",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "ssh",
       "constructor": "outbound.NewSsh",
       "source": "adapter/parser.go:156",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "mieru",
       "constructor": "outbound.NewMieru",
       "source": "adapter/parser.go:163",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "anytls",
       "constructor": "outbound.NewAnyTLS",
       "source": "adapter/parser.go:170",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "password",
+          "sni",
+          "skip-cert-verify",
+          "alpn",
+          "dialer-proxy"
+        ],
+        "notImplemented": [
+          "udp",
+          "client-metadata",
+          "idle-session-check-interval",
+          "idle-session-timeout",
+          "min-idle-session",
+          "disable-reuse",
+          "fingerprint",
+          "certificate",
+          "private-key",
+          "ip-version"
+        ],
+        "evidence": [
+          "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo"
+        ]
+      }
     },
     {
       "type": "sudoku",
       "constructor": "outbound.NewSudoku",
       "source": "adapter/parser.go:177",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "masque",
       "constructor": "outbound.NewMasque",
       "source": "adapter/parser.go:184",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "trusttunnel",
       "constructor": "outbound.NewTrustTunnel",
       "source": "adapter/parser.go:191",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "openvpn",
       "constructor": "outbound.NewOpenVPN",
       "source": "adapter/parser.go:198",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "tailscale",
       "constructor": "outbound.NewTailscale",
       "source": "adapter/parser.go:205",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "zerotier",
       "constructor": "outbound.NewZeroTier",
       "source": "adapter/parser.go:212",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "easytier",
       "constructor": "outbound.NewEasyTier",
       "source": "adapter/parser.go:219",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     }
   ],
   "listeners": [
@@ -1683,121 +2142,209 @@
       "type": "socks",
       "constructor": "IN.NewSocks",
       "source": "listener/parse.go:23",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "partial",
+        "reason": "SOCKS5 CONNECT is served on the mixed port; `listeners: type: socks` is rejected (T5)",
+        "notImplemented": [
+          "UDP ASSOCIATE",
+          "users per listener",
+          "tls"
+        ],
+        "evidence": [
+          "tests/sessions.rs"
+        ]
+      }
     },
     {
       "type": "http",
       "constructor": "IN.NewHTTP",
       "source": "listener/parse.go:30",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "partial",
+        "reason": "HTTP CONNECT (and 405 for other methods) on the mixed port; `listeners: type: http` is rejected (T5)",
+        "notImplemented": [
+          "forward proxy requests",
+          "users per listener",
+          "tls"
+        ],
+        "evidence": [
+          "tests/sessions.rs"
+        ]
+      }
     },
     {
       "type": "tproxy",
       "constructor": "IN.NewTProxy",
       "source": "listener/parse.go:37",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "redir",
       "constructor": "IN.NewRedir",
       "source": "listener/parse.go:44",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "mixed",
       "constructor": "IN.NewMixed",
       "source": "listener/parse.go:51",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "partial",
+        "reason": "the kernel binds one mixed port (HTTP CONNECT + SOCKS5 on `mixed-port`/`socks-port`); the top-level `listeners:` section is rejected until T5",
+        "notImplemented": [
+          "users per listener",
+          "udp",
+          "tls",
+          "reality",
+          "shadow-tls",
+          "proxy protocol"
+        ],
+        "evidence": [
+          "tests/sessions.rs",
+          "tests/protocols.rs::inbound_authentication_guards_socks5_and_http_connect"
+        ]
+      }
     },
     {
       "type": "tunnel",
       "constructor": "IN.NewTunnel",
       "source": "listener/parse.go:58",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "tun",
       "constructor": "IN.NewTun",
       "source": "listener/parse.go:65",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "shadowsocks",
       "constructor": "IN.NewShadowSocks",
       "source": "listener/parse.go:75",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "snell",
       "constructor": "IN.NewSnell",
       "source": "listener/parse.go:82",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "vmess",
       "constructor": "IN.NewVmess",
       "source": "listener/parse.go:89",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "vless",
       "constructor": "IN.NewVless",
       "source": "listener/parse.go:96",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "trojan",
       "constructor": "IN.NewTrojan",
       "source": "listener/parse.go:103",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "hysteria2",
       "constructor": "IN.NewHysteria2",
       "source": "listener/parse.go:110",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "hysteria2-realm",
       "constructor": "IN.DefaultHysteria2RealmServerOption",
       "source": "listener/parse.go:117",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "tuic",
       "constructor": "IN.NewTuic",
       "source": "listener/parse.go:124",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "shadowquic",
       "constructor": "IN.NewShadowQuic",
       "source": "listener/parse.go:137",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "anytls",
       "constructor": "IN.NewAnyTLS",
       "source": "listener/parse.go:150",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "mieru",
       "constructor": "IN.NewMieru",
       "source": "listener/parse.go:157",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "sudoku",
       "constructor": "IN.NewSudoku",
       "source": "listener/parse.go:164",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "trusttunnel",
       "constructor": "IN.NewTrustTunnel",
       "source": "listener/parse.go:171",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     }
   ],
   "groups": [
@@ -1805,218 +2352,358 @@
       "type": "url-test",
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:188",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "proxy groups are T5"
+      }
     },
     {
       "type": "select",
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:195",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "proxy groups are T5"
+      }
     },
     {
       "type": "fallback",
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:202",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "proxy groups are T5"
+      }
     },
     {
       "type": "load-balance",
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:209",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "proxy groups are T5"
+      }
     },
     {
       "type": "relay",
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:216",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "proxy groups are T5"
+      }
     }
   ],
   "rules": [
     {
       "type": "DOMAIN",
       "source": "rules/parser.go:18",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "type": "DOMAIN-SUFFIX",
       "source": "rules/parser.go:20",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "type": "DOMAIN-KEYWORD",
       "source": "rules/parser.go:22",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "DOMAIN-REGEX",
       "source": "rules/parser.go:24",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "DOMAIN-WILDCARD",
       "source": "rules/parser.go:26",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "GEOSITE",
       "source": "rules/parser.go:28",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "partial",
+        "reason": "text database only; compiled MRS/protobuf is T5",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "type": "GEOIP",
       "source": "rules/parser.go:30",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "SRC-GEOIP",
       "source": "rules/parser.go:33",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "IP-ASN",
       "source": "rules/parser.go:35",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "SRC-IP-ASN",
       "source": "rules/parser.go:38",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "IP-CIDR",
       "source": "rules/parser.go:40",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "type": "IP-CIDR6",
       "source": "rules/parser.go:40",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs"
+        ]
+      }
     },
     {
       "type": "SRC-IP-CIDR",
       "source": "rules/parser.go:43",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "IP-SUFFIX",
       "source": "rules/parser.go:45",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "SRC-IP-SUFFIX",
       "source": "rules/parser.go:48",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "SRC-PORT",
       "source": "rules/parser.go:50",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "DST-PORT",
       "source": "rules/parser.go:52",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "IN-PORT",
       "source": "rules/parser.go:54",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "DSCP",
       "source": "rules/parser.go:56",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "PROCESS-NAME",
       "source": "rules/parser.go:58",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "PROCESS-PATH",
       "source": "rules/parser.go:60",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "PROCESS-NAME-REGEX",
       "source": "rules/parser.go:62",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "PROCESS-PATH-REGEX",
       "source": "rules/parser.go:64",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "PROCESS-NAME-WILDCARD",
       "source": "rules/parser.go:66",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "PROCESS-PATH-WILDCARD",
       "source": "rules/parser.go:68",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "NETWORK",
       "source": "rules/parser.go:70",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "UID",
       "source": "rules/parser.go:72",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "IN-TYPE",
       "source": "rules/parser.go:74",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "IN-USER",
       "source": "rules/parser.go:76",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "IN-NAME",
       "source": "rules/parser.go:78",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "REMATCH-NAME",
       "source": "rules/parser.go:80",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "SUB-RULE",
       "source": "rules/parser.go:82",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "AND",
       "source": "rules/parser.go:84",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "OR",
       "source": "rules/parser.go:86",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "NOT",
       "source": "rules/parser.go:88",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "RULE-SET",
       "source": "rules/parser.go:90",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "unimplemented",
+        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+      }
     },
     {
       "type": "MATCH",
       "source": "rules/parser.go:93",
-      "rustMapping": null
+      "rustMapping": {
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs",
+          "tests/sessions.rs"
+        ]
+      }
     }
   ],
   "platforms": {
@@ -2579,14 +3266,46 @@
       "reason": "free-form shape; keys are defined by another parser and are indexed there"
     },
     {
-      "kind": "mapping",
+      "kind": "rust-scope",
       "name": "*",
-      "reason": "no Rust implementation exists at T1; every entry is unmapped until a later task records its coverage"
+      "reason": "Every other proxy type (ssr, vmess, snell, ssh, mieru, hysteria, hysteria2, tuic, wireguard, ...) is rejected at load time with its type named, never ignored."
+    },
+    {
+      "kind": "rust-scope",
+      "name": "*",
+      "reason": "Every other listener type (tun, redir, tproxy, mixed with TLS, ...) is rejected through the top-level keys that would enable it."
+    },
+    {
+      "kind": "rust-scope",
+      "name": "*",
+      "reason": "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it."
     }
   ],
+  "rust": {
+    "engine": "billow-kernel",
+    "mapping": "evidence/rust-mapping.json",
+    "platform": {
+      "verified": [
+        "macos-aarch64"
+      ],
+      "compilesButNotRun": [
+        "linux-x86_64",
+        "linux-aarch64",
+        "android",
+        "ios-simulator"
+      ],
+      "notImplementedOnPlatform": {
+        "windows": "sessions compile but the platform session/TUN path is T6; no Windows run has been recorded"
+      },
+      "note": "Every runtime result here comes from macOS arm64. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run."
+    },
+    "note": "rustMapping on each entry comes from that file; partial entries name the options they reject, unimplemented entries are rejected at load time and are never compatible."
+  },
   "coverage": {
-    "mapped": 0,
+    "mapped": 18,
+    "partial": 8,
+    "unimplemented": 129,
     "total": 155,
-    "note": "T1 records the baseline only. A later task must fill rustMapping and update this count; unmapped entries must not be reported as compatible."
+    "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }
 }

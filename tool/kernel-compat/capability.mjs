@@ -2,16 +2,34 @@
 // Builds a reviewable capability index from the locked Mihomo source tree. Everything is
 // extracted statically from the pinned files, with a source location for each entry; entries
 // whose shape cannot be mapped statically (free-form maps, platform-only code) are kept in an
-// unmapped list rather than dropped. Every entry is marked as unmapped to the Rust engine:
-// T1 establishes the baseline, later tasks record their implementation against it.
+// unmapped list rather than dropped. The Rust engine records what it implements in
+// evidence/rust-mapping.json; that file is merged here so every entry carries an explicit
+// status and an unimplemented entry can never be reported as compatible.
 import { readFileSync } from 'node:fs'
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { defaultCacheDir, ensureDir } from './manifest.mjs'
 import { probeSource } from './source.mjs'
 
 const read = (tree, path) => readFile(join(tree, path), 'utf8')
+
+// The Rust side's own statement of coverage, kept as a reviewable checked-in file. It is
+// merged into the generated index instead of being written by this script: a claim needs a
+// test reference, and the pinned source cannot know what the Rust kernel runs.
+export function loadRustMapping() {
+  const path = fileURLToPath(new URL('./evidence/rust-mapping.json', import.meta.url))
+  return JSON.parse(readFileSync(path, 'utf8'))
+}
+
+const unimplemented = (reason) => ({ status: 'unimplemented', reason })
+
+// Attach `rustMapping` to one upstream entry, keeping the Rust file's explicit statement.
+function mapEntry(kind, key, mapping) {
+  const entry = mapping[kind]?.[key]
+  if (entry) return { status: entry.status, ...entry }
+  return unimplemented('not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)')
+}
 
 function lineOf(text, index) {
   return text.slice(0, index).split('\n').length
@@ -158,6 +176,14 @@ export async function generateCapabilities(tree, { version, commit, archiveSha25
     const hit = buildTags(files, tree).find((tag) => tag.locations.some((path) => path.includes(protocol.value)))
     if (hit) gated.push({ kind: 'protocol', name: protocol.value, tag: hit.expression })
   }
+  const rustMapping = loadRustMapping()
+  const allEntries = [
+    ...rawConfig.map((field) => ({ rustMapping: mapEntry('configFields', field.yaml ?? field.name, rustMapping) })),
+    ...protocols.map((entry) => ({ rustMapping: mapEntry('proxies', entry.value, rustMapping) })),
+    ...inboundTypes.map((entry) => ({ rustMapping: mapEntry('listeners', entry.value, rustMapping) })),
+    ...groupTypes.map((entry) => ({ rustMapping: mapEntry('groups', entry.value, rustMapping) })),
+    ...ruleTypes.map((entry) => ({ rustMapping: mapEntry('rules', entry.value, rustMapping) })),
+  ]
   return {
     format: 'kernel-capability-index',
     version: 1,
@@ -182,12 +208,12 @@ export async function generateCapabilities(tree, { version, commit, archiveSha25
       goType: field.goType,
       source: `config/config.go:${field.line}`,
       nested: /^Raw\w+$/.test(field.goType) ? { struct: field.goType, fields: nested[field.goType] } : null,
-      rustMapping: null,
+      rustMapping: mapEntry('configFields', field.yaml ?? field.name, rustMapping),
     })),
-    proxies: protocols.map((entry) => ({ type: entry.value, constructor: entry.constructor, source: `adapter/parser.go:${entry.line}`, rustMapping: null })),
-    listeners: inboundTypes.map((entry) => ({ type: entry.value, constructor: entry.constructor, source: `listener/parse.go:${entry.line}`, rustMapping: null })),
-    groups: groupTypes.map((entry) => ({ type: entry.value, constructor: entry.constructor, source: `adapter/outboundgroup/parser.go:${entry.line}`, rustMapping: null })),
-    rules: ruleTypes.map((entry) => ({ type: entry.value, source: `rules/parser.go:${entry.line}`, rustMapping: null })),
+    proxies: protocols.map((entry) => ({ type: entry.value, constructor: entry.constructor, source: `adapter/parser.go:${entry.line}`, rustMapping: mapEntry('proxies', entry.value, rustMapping) })),
+    listeners: inboundTypes.map((entry) => ({ type: entry.value, constructor: entry.constructor, source: `listener/parse.go:${entry.line}`, rustMapping: mapEntry('listeners', entry.value, rustMapping) })),
+    groups: groupTypes.map((entry) => ({ type: entry.value, constructor: entry.constructor, source: `adapter/outboundgroup/parser.go:${entry.line}`, rustMapping: mapEntry('groups', entry.value, rustMapping) })),
+    rules: ruleTypes.map((entry) => ({ type: entry.value, source: `rules/parser.go:${entry.line}`, rustMapping: mapEntry('rules', entry.value, rustMapping) })),
     platforms: {
       desktopTargets: [],
       androidBuildTags: androidTags,
@@ -198,12 +224,20 @@ export async function generateCapabilities(tree, { version, commit, archiveSha25
     unmapped: [
       ...unmapped,
       ...protocols.filter((entry) => !entry.constructor).map((entry) => ({ kind: 'protocol', name: entry.value, source: `adapter/parser.go:${entry.line}`, reason: 'no constructor recognised; needs manual review' })),
-      { kind: 'mapping', name: '*', reason: 'no Rust implementation exists at T1; every entry is unmapped until a later task records its coverage' },
+      ...(rustMapping.unmappedNotes ?? []).map((reason) => ({ kind: 'rust-scope', name: '*', reason })),
     ],
+    rust: {
+      engine: rustMapping.kernel,
+      mapping: 'evidence/rust-mapping.json',
+      platform: rustMapping.platform,
+      note: 'rustMapping on each entry comes from that file; partial entries name the options they reject, unimplemented entries are rejected at load time and are never compatible.',
+    },
     coverage: {
-      mapped: 0,
-      total: rawConfig.length + protocols.length + inboundTypes.length + groupTypes.length + ruleTypes.length,
-      note: 'T1 records the baseline only. A later task must fill rustMapping and update this count; unmapped entries must not be reported as compatible.',
+      mapped: allEntries.filter((entry) => entry.rustMapping?.status === 'implemented').length,
+      partial: allEntries.filter((entry) => entry.rustMapping?.status === 'partial').length,
+      unimplemented: allEntries.filter((entry) => entry.rustMapping?.status === 'unimplemented').length,
+      total: allEntries.length,
+      note: 'mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims.',
     },
   }
 }
