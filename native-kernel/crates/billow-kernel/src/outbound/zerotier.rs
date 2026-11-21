@@ -1076,10 +1076,21 @@ pub fn is_unencrypted_hello(packet: &Packet) -> bool {
 mod tests {
     use super::*;
 
+    const SECRET_A: &str = "64bb654c16:0:1621a4a2d540cdf6d3b63947a29b9aaed1c86842b12da93e468fa723944c3c4357e8ac7436ccb931a0c230df4da2a8575237262a9564d543cd725b4f48de76c2:cfedde328eca0973d0ddaf3f47f78fc43f9c332b2019cecbecc7e483652d03eda60ec8322f1589580807a3ca79163bd673892eb433b54945c697dfef79e2adc7";
+    const SECRET_B: &str = "a32dce5ea1:0:159562c11bd37e4c9317a63252a686b68387d842988011e2af9ac12ffe1bb02c84ab4e6cb7568a4f1b9a4502582014b133bc8d0db6a02b11311d3e571dd87e15:0d8239f206afb6a37b9b3482d10c74221d23c42c9db8985a3f6858c483b149d4230af59cb7d61298c820aa7e72999c97285454b063783b7d32b9afc2cb0d425c";
+
+    fn identity_a() -> Identity {
+        Identity::parse(SECRET_A).expect("fixed identity A")
+    }
+
+    fn identity_b() -> Identity {
+        Identity::parse(SECRET_B).expect("fixed identity B")
+    }
+
     #[test]
-    fn identity_generation_and_text_roundtrip() {
-        let identity = Identity::generate();
-        identity.validate().expect("generated identity validates");
+    fn identity_text_roundtrip_and_signature() {
+        let identity = identity_a();
+        identity.validate().expect("fixed identity validates");
         assert!(identity.has_private());
         let secret = identity.secret_string().expect("secret form");
         let parsed = Identity::parse(&secret).expect("secret parses");
@@ -1093,8 +1104,17 @@ mod tests {
     }
 
     #[test]
-    fn identity_proof_of_work_is_enforced() {
+    #[ignore]
+    fn identity_generation_satisfies_pow() {
+        // The full proof-of-work loop is a slow, non-hermetic default test;
+        // the controlled peer test exercises a generated identity instead.
         let identity = Identity::generate();
+        identity.validate().expect("generated identity validates");
+    }
+
+    #[test]
+    fn identity_proof_of_work_is_enforced() {
+        let identity = identity_a();
         let mut public = *identity.public_key();
         public[0] ^= 1;
         let broken = Identity {
@@ -1111,8 +1131,8 @@ mod tests {
 
     #[test]
     fn packet_armor_roundtrips_and_rejects_tampering() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
+        let local = identity_a();
+        let peer = identity_b();
         let key = local.agree(&peer).unwrap();
         let mut packet = Packet::new(peer.address(), local.address(), Verb::Echo);
         packet.append(b"hello");
@@ -1134,8 +1154,8 @@ mod tests {
 
     #[test]
     fn hello_has_the_pinned_payload_shape() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
+        let local = identity_a();
+        let peer = identity_b();
         let (packet, key) = build_hello(
             &local,
             &peer,
@@ -1178,7 +1198,7 @@ mod tests {
 
     #[test]
     fn world_parser_reads_roots_and_rejects_truncation() {
-        let root = Identity::generate();
+        let root = identity_a();
         let mut data = vec![1u8];
         data.extend_from_slice(&149604618u64.to_be_bytes());
         data.extend_from_slice(&7u64.to_be_bytes());

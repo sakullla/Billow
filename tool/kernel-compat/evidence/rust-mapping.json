@@ -980,7 +980,7 @@
     },
     "tailscale": {
       "status": "partial",
-      "reason": "The control-base Noise IK transport, the HTTP/2 /machine/map request and the DERP greeting/client-info/ping/packet frames are implemented in src/outbound/tailscale.rs and verified against a controlled peer built from the locked BSD-3-Clause tailscale module. TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device, so dial() refuses with that gap named.",
+      "reason": "The control-base Noise IK transport, the HTTP/2 /machine/map request and the DERP greeting/client-info/ping/packet frames are implemented in src/outbound/tailscale.rs and verified against a controlled peer built from the locked BSD-3-Clause tailscale module. Node registration is not implemented, so hostname/auth-key/state-dir/ephemeral/accept-routes:true/exit-node/exit-node-allow-lan-access:true are rejected at load. TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device, so dial() refuses with that gap named.",
       "options": [
         "hostname",
         "auth-key",
@@ -1002,12 +1002,12 @@
         "tests/mesh_peers.rs::tailscale_derp_greeting_and_ping",
         "tool/kernel-compat/evidence/t19-mesh.md"
       ],
-      "notes": "Config-only registration/state options are accepted and validated; the control key is supplied by the caller/state layer because the pinned type does not declare an option for it. Basic socket-shaping options (tfo/mptcp/interface-name/routing-mark/ip-version) and dialer-proxy are rejected with the T6/T7 boundary.",
+      "notes": "control-url is used by the protocol layer; the control server key is a library parameter. Registration-only options are explicit rejections, not silently accepted. Basic socket-shaping options and dialer-proxy are rejected with the T6/T7 boundary.",
       "license": "No Tailscale source is copied or linked; the locked BSD-3-Clause module is a test peer only. See tool/kernel-compat/evidence/t19-mesh.md."
     },
     "zerotier": {
       "status": "partial",
-      "reason": "Identity generation/parsing (address proof of work), planet/moon parsing, VL1 packet armor (Salsa20/12 + Poly1305 and protocol-13 extended HELLO), HELLO/OK/WHOIS/ECHO and the VL2 frame payload are implemented in src/outbound/zerotier.rs and verified against a controlled peer built from the locked MPL-2.0 zerotier-go module. TCP/UDP through the network needs the T6/T7 userspace IP stack, and the controller membership exchange is T5, so dial() refuses with that gap named.",
+      "reason": "Identity generation/parsing (address proof of work), planet/moon parsing, VL1 packet armor (Salsa20/12 + Poly1305 and protocol-13 extended HELLO), HELLO/OK/WHOIS/ECHO and the VL2 frame payload are implemented in src/outbound/zerotier.rs and verified against a controlled peer built from the locked MPL-2.0 zerotier-go module. An explicit ip-stack, remote-dns-resolve/dns, remote trace and the TCP fallback transport (force/non-empty relay) are rejected with the T6/T7/T5 boundary. TCP/UDP through the network needs the T6/T7 userspace IP stack, and the controller membership exchange is T5, so dial() refuses with that gap named.",
       "options": [
         "network",
         "state-dir",
@@ -1034,39 +1034,16 @@
         "tests/mesh_peers.rs::zerotier_hello_success_and_failure",
         "tool/kernel-compat/evidence/t19-mesh.md"
       ],
-      "notes": "An explicit ip-stack block and remote-dns-resolve/dns are rejected because they ask for the T6/T7 userspace stack; remote-trace-target/level are rejected until implemented. The network-controller membership/config verbs are T5.",
+      "notes": "tcp-fallback-mode auto/disable with an empty relay is accepted because it asks for no transport; force or a non-empty relay is rejected. The controller membership/config verbs are T5.",
       "license": "No ZeroTier source is copied or linked; the locked MPL-2.0 module is a test peer only. See tool/kernel-compat/evidence/t19-mesh.md."
     },
     "easytier": {
-      "status": "partial",
-      "reason": "The cleartext host/discovery frame, HandshakeRequest, PeerManagerHeader and PingPong are implemented in src/outbound/easytier.rs and verified against a controlled peer built from the locked EasyTier protobuf schema plus the pinned wasm core's observed frames. The secure-datagram path (enable-encryption: true, AES-GCM/ChaCha20 + Noise XX) is rejected at load because the core is distributed only as a wasm artifact and no source/crate is in the offline cache; the pinned core also derives network_secret_digest inside that artifact, so a real core rejects this adapter's placeholder digest (recorded boundary). TCP/UDP through the network is T6/T7.",
-      "options": [
-        "network-name",
-        "network-secret",
-        "hostname",
-        "ipv4",
-        "dhcp",
-        "peers",
-        "listeners",
-        "no-listener",
-        "instance-name",
-        "state-dir",
-        "udp",
-        "enable-encryption",
-        "encryption-algorithm",
-        "disable-p2p"
-      ],
+      "status": "unimplemented",
+      "reason": "T19 rejected the whole type: the pinned core derives `network_secret_digest` inside its wasm artifact and that derivation is not reproducible from the offline source/crate cache. A placeholder digest is reset by the real core, so neither the cleartext host/discovery path nor `enable-encryption: true` is loaded as compatible. Device/TUN remains T6/T7.",
       "evidence": [
-        "src/outbound/easytier.rs::tests::frame_roundtrips_with_the_pinned_byte_order",
-        "src/outbound/easytier.rs::tests::handshake_request_roundtrips_and_checks_magic",
-        "src/outbound/easytier.rs::tests::peer_manager_header_roundtrips",
-        "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
-        "tests/mesh_peers.rs::easytier_cleartext_handshake_and_authentication",
-        "tests/mesh_peers.rs::easytier_pinned_core_rejects_a_non_matching_digest",
-        "tool/kernel-compat/evidence/t19-mesh.md"
+        "tests/config.rs::mesh_control_planes_load_the_pinned_shapes"
       ],
-      "notes": "mapped-listeners, exit-nodes, proxy-networks, accept-dns, enable-exit-node, private-mode, latency-first, KCP/QUIC proxies, tld-dns-zone, secure-mode and local key material are rejected by name. The pinned core's digest derivation is not public; success is verified against the controlled protobuf peer, and the pinned core's rejection is the authentication boundary.",
-      "license": "No EasyTier source or wasm is vendored or linked; the locked LGPL-3.0 test peer and wasm core are test-only. Our framing/protobuf expression was written from the pinned schema and captures. See tool/kernel-compat/evidence/t19-mesh.md."
+      "notes": "Rejected at configuration load with the digest gap named; no protocol object or peer is exposed as compatible."
     },
     "openvpn": {
       "status": "partial",
@@ -1229,7 +1206,7 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters; T19 implemented the tailscale/zerotier/easytier protocol and configuration adapters (partial; device/TUN remains T6/T7). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku`; T17's clean-room attempt stayed rejected because the protocol is not publicly specified (evidence/t17-cleanroom.md). T5 owns the built-in direct/dns/reject/rematch adapters.",
+    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters; T19 implemented the tailscale/zerotier protocol and configuration adapters (partial; device/TUN remains T6/T7) and rejected easytier by name because its pinned-core digest is not reproducible offline. T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku`; T17's clean-room attempt stayed rejected because the protocol is not publicly specified (evidence/t17-cleanroom.md). T5 owns the built-in direct/dns/reject/rematch adapters.",
     "entries": {
       "direct": {
         "owner": "T5",
@@ -1251,6 +1228,10 @@
       "sudoku": {
         "owner": "T17 (clean-room attempt: blocked, needs an Owner decision)",
         "reason": "the A1 port was a GPL-3.0 derivative of `transport/sudoku` (table/record/KIP/HTTP mask translated from the pinned tree) and was removed in T13-A3. T17 implemented nothing new: the pinned peer rejects a foreign handshake with INVALID_SUDOKU_MAP_MISS, the same plaintext under one key is encoded differently on every connection (the codebook is key-derived and randomized), and the table derivation, KIP key schedule and record epochs appear only in the GPL-3.0 implementation. Reproducing them needs the Owner's decision recorded in evidence/t17-cleanroom.md#decision-needed"
+      },
+      "easytier": {
+        "owner": "T19 (rejected)",
+        "reason": "the pinned core's cleartext network_secret_digest derivation is not public/offline; both cleartext and encrypted forms are rejected by name. Device/TUN remains T6/T7."
       }
     }
   },

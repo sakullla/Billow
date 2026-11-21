@@ -465,7 +465,6 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {    match pr
         crate::proxies::Protocol::OpenVpn(_) => "openvpn (no UDP association)",
         crate::proxies::Protocol::Tailscale(_) => "tailscale (no UDP association)",
         crate::proxies::Protocol::Zerotier(_) => "zerotier (no UDP association)",
-        crate::proxies::Protocol::Easytier(_) => "easytier (no UDP association)",
     }
 }
 

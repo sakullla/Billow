@@ -11,7 +11,6 @@
 //!   session; the client sees the inbound failure reply.
 
 pub mod anytls;
-pub mod easytier;
 pub mod gost_relay;
 pub mod h3;
 pub mod http;
@@ -425,16 +424,6 @@ async fn dial_inner(
                 io::Error::new(
                     io::ErrorKind::Unsupported,
                     "the identity, planet, VL1 armor/HELLO/OK and VL2 frame layers are implemented in outbound/zerotier.rs, but TCP/UDP through the network needs the userspace IP stack and TUN device owned by T6/T7",
-                ),
-            ))
-        }
-        Protocol::Easytier(_) => {
-            refuse_chain(via, "easytier")?;
-            Err(handshake(
-                "easytier",
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "the cleartext host/discovery handshake and peer-manager frame are implemented in outbound/easytier.rs, but TCP/UDP through the network needs the userspace IP stack and TUN device owned by T6/T7; the secure-datagram path is rejected at load",
                 ),
             ))
         }

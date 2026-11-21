@@ -5,7 +5,7 @@ Task: `2026-11-20-native-rust-kernel#T19`. Scope: `tailscale`, `zerotier` and
 macOS arm64, 2026-11-22. Device/TUN and the userspace IP stack remain T6/T7;
 EasyTier's controller/DNS integration remains T5.
 
-## Tailscale
+## Tailscale (partial)
 
 Implemented in `native-kernel/crates/billow-kernel/src/outbound/tailscale.rs`:
 
@@ -18,11 +18,13 @@ Implemented in `native-kernel/crates/billow-kernel/src/outbound/tailscale.rs`:
 * DERP: `DERP🔑` server-key greeting, NaCl-boxed `ClientInfo`, frame header,
   ping/pong and send/recv packet frames.
 
-The pinned option table (`hostname`, `auth-key`, `control-url`, `state-dir`,
-`ephemeral`, `udp`, `accept-routes`, `exit-node`, `exit-node-allow-lan-access`)
-is parsed and validated. The control server key is not a pinned option (the
-real client learns it from the control-plane DNS record), so the library API
-takes it as a parameter. Basic socket-shaping options and `dialer-proxy` are
+The control server key is not a pinned option (the real client learns it from
+the control-plane DNS record), so the library API takes it as a parameter.
+`control-url` is used by the protocol layer. Node registration and
+control-plane preferences are not implemented: `hostname`, `auth-key`,
+`state-dir`, `ephemeral`, `accept-routes: true`, `exit-node` and
+`exit-node-allow-lan-access: true` are rejected at load with the missing
+registration named. Basic socket-shaping options and `dialer-proxy` are
 rejected with the T6/T7 boundary.
 
 Verification (controlled peer `tool/kernel-compat/peers/tailscale-peer`, built
@@ -40,7 +42,7 @@ KC_TAILSCALE_PEER_BIN=... cargo test --manifest-path native-kernel/Cargo.toml \
 the greeting, the boxed client info, ping/pong, a send-packet echo and a wrong
 server-key rejection.
 
-## ZeroTier
+## ZeroTier (partial)
 
 Implemented in `native-kernel/crates/billow-kernel/src/outbound/zerotier.rs`:
 
@@ -58,9 +60,11 @@ Implemented in `native-kernel/crates/billow-kernel/src/outbound/zerotier.rs`:
 The pinned option table is parsed: `network`, `state-dir`, `identity-secret`,
 `planet`, `mtu`, `physical-mtu`, `udp`, `low-bandwidth`, `encrypted-hello`,
 `primary-port`, `secondary-port`, `tcp-fallback-mode`, `tcp-fallback-relay` and
-`orbit`. An explicit `ip-stack`, `remote-dns-resolve`/`dns` and remote trace
-are rejected with the T6/T7/T5 boundary. The controller membership exchange is
-T5; the packet transport is available to T6/T7.
+`orbit`. An explicit `ip-stack`, `remote-dns-resolve`/`dns`, remote trace and
+the TCP fallback transport (`tcp-fallback-mode: force` or a non-empty
+`tcp-fallback-relay`) are rejected with the T6/T7/T5 boundary; `auto`/`disable`
+with an empty relay asks for no transport and still loads. The controller
+membership exchange is T5; the packet transport is available to T6/T7.
 
 Verification (controlled peer `tool/kernel-compat/peers/zerotier-peer`, using
 the locked MPL-2.0 `github.com/metacubex/zerotier-go` parser/armor):
@@ -75,37 +79,18 @@ the address proof of work and the MAC, and builds the OK with the pinned armor.
 The test covers a successful HELLO/OK, a wrong-key OK (client authentication
 failure) and a truncated reply (client timeout).
 
-## EasyTier
+## EasyTier (rejected)
 
-Implemented in `native-kernel/crates/billow-kernel/src/outbound/easytier.rs`:
-
-* the peer-manager frame: little-endian total length, big-endian source and
-  destination peer ids, type/flags/version, little-endian body length;
-* `HandshakeRequest` (magic `0xd1e1a5e1`, peer id, version,
-  `liveness-echo-v1`, network name, network-secret digest);
-* the `PeerManagerHeader` protobuf for data/route packets;
-* type 4/5 PingPong.
-
-The cleartext host/discovery path is what the pinned core uses when
-`enable_encryption` is false. The secure-datagram path (AES-GCM/ChaCha20 and
-Noise XX) is rejected at load with the missing wasm-only layer named.
-
-Verification:
-
-```sh
-KC_EASYTIER_PEER_BIN=... cargo test ... --test mesh_peers -- --ignored
-# easytier_cleartext_handshake_and_authentication ... ok
-# easytier_pinned_core_rejects_a_non_matching_digest ... ok
-```
-
-`easytier_cleartext_handshake_and_authentication` uses the controlled protobuf
-peer: success, wrong-secret rejection and an explicit `-reject` boundary.
-`easytier_pinned_core_rejects_a_non_matching_digest` runs the pinned wasm core
-with `enable_encryption=false`, completes the cleartext reply, and records the
-core resetting the connection because its `network_secret_digest` is derived
-inside the wasm artifact by a routine that is not in the public source tree.
-This is an explicit boundary, not a claim that the encrypted/authenticated
-EasyTier path is compatible.
+`type: easytier` is rejected at configuration load. The pinned core derives
+`network_secret_digest` inside its wasm artifact (`easytier_core.wasm`), and
+that derivation is not reproducible from the offline source/crate cache. The
+earlier T19-A1 cleartext adapter used `SHA-256(secret)` and a controlled peer
+that used the same placeholder; that was a same-error pass and is removed.
+The pinned core resets a connection with a placeholder digest, so no cleartext
+host/discovery compatibility is claimed. `enable-encryption: true` (AES-GCM/
+ChaCha20 + Noise XX) is part of the same rejected type. Device/TUN remains
+T6/T7. There is no EasyTier peer or mesh test because no compatible client
+exists.
 
 ## Offline dependency and licence decisions
 
@@ -116,26 +101,23 @@ EasyTier path is compatible.
   `aes` 0.8 and `ctr` 0.9, plus the existing `h2`/`http` for the control
   request. No dependency was downloaded.
 * The locked Go module cache has `github.com/metacubex/tailscale`
-  (BSD-3-Clause), `github.com/metacubex/zerotier-go` (MPL-2.0) and
-  `github.com/easytier/easytier/easytier-go` (LGPL-3.0, wasm core). They are
-  built only as controlled test peers; no Go or wasm code is vendored, linked
-  or translated into the Rust kernel.
+  (BSD-3-Clause) and `github.com/metacubex/zerotier-go` (MPL-2.0). They are
+  built only as controlled test peers; no Go code is vendored, linked or
+  translated into the Rust kernel. The EasyTier Go module (LGPL-3.0) is no
+  longer used by this task after the type was rejected.
 * `tailscale` and `zerotier` protocol facts came from the public protocol
-  descriptions and black-box packet captures; `easytier` framing/protobuf came
-  from the pinned generated protobuf schema and captures of the pinned core.
-  The no-copy audit is `find native-kernel -name '*.go'` = 0 and no wasm file
-  under `native-kernel/`.
+  descriptions and black-box packet captures. The no-copy audit is
+  `find native-kernel -name '*.go'` = 0 and no wasm file under `native-kernel/`.
 
 ## Boundaries
 
-* `dial()` for all three families refuses with the T6/T7 IP-stack/TUN gap. The
-  protocol objects (`TailscaleControl`, `DerpClient`, `zerotier::handshake`,
-  `EasytierSession`) are the interfaces for that layer.
-* Tailscale `state-dir`/`auth-key`/`accept-routes`/`exit-node` shape the control
-  plane; node registration and the WireGuard data path are not run here.
-* ZeroTier's controller membership/config, TCP fallback relay and DNS resolver
-  are not implemented (T5/T6/T7); `encrypted-hello` uses protocol-13 extended
-  armor but the surrounding node/path machinery is T6/T7.
-* EasyTier's secure datagram/Noise path, KCP/QUIC proxies, private mode,
-  exit nodes, DNS and key material are rejected by name. The pinned core's
-  digest derivation gap is recorded above.
+* `dial()` for both loadable families refuses with the T6/T7 IP-stack/TUN gap.
+  The protocol objects (`TailscaleControl`, `DerpClient`,
+  `zerotier::handshake`) are the interfaces for that layer.
+* Tailscale registration/state persistence and control-plane prefs are rejected
+  by name; the WireGuard data path is not run here.
+* ZeroTier's controller membership/config, TCP fallback relay, DNS resolver and
+  real TCP/UDP exits are not implemented (T5/T6/T7); `encrypted-hello` uses
+  protocol-13 extended armor but the surrounding node/path machinery is T6/T7.
+* EasyTier is unimplemented as a whole type; no fallback or partial cleartext
+  claim remains.

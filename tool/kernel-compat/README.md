@@ -25,7 +25,7 @@ cargo build --release --manifest-path native-kernel/Cargo.toml --locked -p billo
 # Controlled peers for families with no Mihomo listener (gost-relay, ssh, ssr)
 # and the T16/T19 device/mesh families (WireGuard via the locked wireguard-go
 # device, OpenVPN 2.7.9 via the Homebrew binary with --dev null, and the
-# tailscale/zerotier/easytier peers built from the locked Go modules),
+# tailscale/zerotier peers built from the locked Go modules),
 # the independent Go SSR server and the pinned SSR stream-cipher vectors;
 # needs `go`
 tool/kernel-compat/family-peers.sh
@@ -156,11 +156,12 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   BSD-3-Clause `controlbase.Server` for the Noise transport and an HTTP/2
   server for `/machine/map`, plus a DERP greeting/client-info/ping echo;
   `peers/zerotier-peer` uses the locked MPL-2.0 `zerotier-go` packet/identity
-  code to parse the Rust HELLO and build OK; `peers/easytier-peer` has a
-  controlled protobuf peer for the cleartext frame/digest boundary and a mode
-  that runs the pinned wasm core. `native-kernel/tests/mesh_peers.rs` covers
-  success, authentication failure and a boundary per family. The offline
-  dependency/licence/decision record is `evidence/t19-mesh.md`.
+  code to parse the Rust HELLO and build OK. `native-kernel/tests/mesh_peers.rs`
+  covers success, authentication failure and a boundary for those two families.
+  EasyTier is rejected as a whole type because the pinned core's cleartext
+  `network_secret_digest` is not reproducible offline; there is no EasyTier
+  peer or compatibility test. The offline dependency/licence/decision record
+  is `evidence/t19-mesh.md`.
 
   T17 tried the clean-room `sudoku` rewrite and produced no client: the
   protocol is not specified at byte level anywhere public, the encoding

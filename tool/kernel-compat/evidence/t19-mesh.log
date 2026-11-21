@@ -1,10 +1,9 @@
-# T19 mesh peer run (macOS arm64, 2026-11-21T22:38:03Z)
+# T19 mesh peer run (macOS arm64, 2026-11-21T23:00:46Z)
 # peers built from the locked Go module cache; see evidence/t19-mesh.md
+# EasyTier is rejected at load; no EasyTier peer or compatibility test.
 
-test easytier_cleartext_handshake_and_authentication ... ok
-test easytier_pinned_core_rejects_a_non_matching_digest ... ok
 test tailscale_control_noise_and_http2 ... controlbase ok
 controlbase: decrypting machine key: chacha20poly1305: message authentication failed
 test tailscale_derp_greeting_and_ping ... ok
 test zerotier_hello_success_and_failure ... ok
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.21s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.16s

@@ -1049,6 +1049,12 @@ fn deferred_families_name_their_decision() {
     assert!(sudoku.contains("not publicly specified"), "{sudoku}");
     assert!(sudoku.contains("multiplex"), "{sudoku}");
     assert!(sudoku.contains("UoT"), "{sudoku}");
+
+    let easytier = proxy_err(
+        "proxies:\n  - {name: p, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1']}\nrules: ['MATCH,p']\n",
+    );
+    assert!(easytier.contains("type=easytier"), "{easytier}");
+    assert!(easytier.contains("network_secret_digest"), "{easytier}");
 }
 
 #[test]
@@ -1146,29 +1152,62 @@ fn mesh_control_planes_load_the_pinned_shapes() {
     // tool/kernel-compat/evidence/t16-mesh-parity.log). T19 implements the
     // configuration semantics and protocol layers, so they load here too;
     // every dial still names the T6/T7 device layer.
-    let identity = billow_kernel::outbound::zerotier::Identity::generate()
-        .secret_string()
-        .expect("secret identity");
+    let identity = "64bb654c16:0:1621a4a2d540cdf6d3b63947a29b9aaed1c86842b12da93e468fa723944c3c4357e8ac7436ccb931a0c230df4da2a8575237262a9564d543cd725b4f48de76c2:cfedde328eca0973d0ddaf3f47f78fc43f9c332b2019cecbecc7e483652d03eda60ec8322f1589580807a3ca79163bd673892eb433b54945c697dfef79e2adc7".to_string();
     let cases = [
         "proxies:\n  - {name: m, type: tailscale, server: 127.0.0.1, port: 1}\nrules: ['MATCH,m']\n".to_string(),
-        "proxies:\n  - {name: m, type: tailscale, hostname: billow, auth-key: tskey-1, control-url: http://127.0.0.1:1, accept-routes: true, exit-node: 100.64.0.1, ephemeral: true}\nrules: ['MATCH,m']\n".to_string(),
+        "proxies:\n  - {name: m, type: tailscale, control-url: http://127.0.0.1:1}\nrules: ['MATCH,m']\n".to_string(),
         "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001}\nrules: ['MATCH,m']\n".to_string(),
         format!("proxies:\n  - {{name: m, type: zerotier, network: 8056c2e21c000001, identity-secret: {identity}}}\nrules: ['MATCH,m']\n"),
-        "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['udp://127.0.0.1:11010']}\nrules: ['MATCH,m']\n".to_string(),
-        "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['tcp://127.0.0.1:11010'], enable-encryption: false, encryption-algorithm: chacha20, disable-p2p: true}\nrules: ['MATCH,m']\n".to_string(),
     ];
     for yaml in cases {
         assert_eq!(proxy_err(&yaml), "ok", "{yaml}");
     }
-    // Encrypted EasyTier and device-stack-only options are explicit rejections.
+    // Registration-only Tailscale options, the EasyTier digest gap and
+    // device-stack-only options are explicit rejections.
     for (yaml, needle) in [
         (
+            "proxies:\n  - {name: m, type: tailscale, auth-key: tskey-1, control-url: http://127.0.0.1:1}\nrules: ['MATCH,m']\n",
+            "auth-key",
+        ),
+        (
+            "proxies:\n  - {name: m, type: tailscale, state-dir: tailscale-state, control-url: http://127.0.0.1:1}\nrules: ['MATCH,m']\n",
+            "state-dir",
+        ),
+        (
+            "proxies:\n  - {name: m, type: tailscale, accept-routes: true, control-url: http://127.0.0.1:1}\nrules: ['MATCH,m']\n",
+            "accept-routes",
+        ),
+        (
+            "proxies:\n  - {name: m, type: tailscale, exit-node: 100.64.0.1, control-url: http://127.0.0.1:1}\nrules: ['MATCH,m']\n",
+            "exit-node",
+        ),
+        (
+            "proxies:\n  - {name: m, type: tailscale, hostname: billow, control-url: http://127.0.0.1:1}\nrules: ['MATCH,m']\n",
+            "hostname",
+        ),
+        (
+            "proxies:\n  - {name: m, type: tailscale, control-url: http://127.0.0.1:1, ephemeral: true}\nrules: ['MATCH,m']\n",
+            "ephemeral",
+        ),
+        (
+            "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1']}\nrules: ['MATCH,m']\n",
+            "network_secret_digest",
+        ),
+        (
             "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1'], enable-encryption: true}\nrules: ['MATCH,m']\n",
-            "secure-datagram",
+            "network_secret_digest",
         ),
         (
             "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001, ip-stack: {mode: gvisor}}\nrules: ['MATCH,m']\n",
             "ip-stack",
+        ),
+        (
+            "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001, tcp-fallback-mode: force}\nrules: ['MATCH,m']\n",
+            "tcp-fallback-mode",
+        ),
+        (
+            "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001, tcp-fallback-relay: relay:443}\nrules: ['MATCH,m']\n",
+            "tcp-fallback-relay",
         ),
         (
             "proxies:\n  - {name: m, type: tailscale, control-url: http://127.0.0.1:1, dialer-proxy: p2}\n  - {name: p2, type: direct}\nrules: ['MATCH,m']\n",
@@ -1185,9 +1224,7 @@ fn mesh_control_planes_load_the_pinned_shapes() {
 async fn implemented_device_families_load_and_dial_names_the_t6_t7_gap() {
     const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     let ca = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
-    let zt_identity = billow_kernel::outbound::zerotier::Identity::generate()
-        .secret_string()
-        .expect("secret identity");
+    let zt_identity = "64bb654c16:0:1621a4a2d540cdf6d3b63947a29b9aaed1c86842b12da93e468fa723944c3c4357e8ac7436ccb931a0c230df4da2a8575237262a9564d543cd725b4f48de76c2:cfedde328eca0973d0ddaf3f47f78fc43f9c332b2019cecbecc7e483652d03eda60ec8322f1589580807a3ca79163bd673892eb433b54945c697dfef79e2adc7".to_string();
     let configs = [
         format!(
             "mixed-port: 1\nproxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 9, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}]}}\nrules: ['MATCH,wg']\n"
@@ -1199,7 +1236,6 @@ async fn implemented_device_families_load_and_dial_names_the_t6_t7_gap() {
         format!(
             "mixed-port: 1\nproxies:\n  - {{name: zt, type: zerotier, network: 8056c2e21c000001, identity-secret: {zt_identity}}}\nrules: ['MATCH,zt']\n"
         ),
-        "mixed-port: 1\nproxies:\n  - {name: et, type: easytier, network-name: billow, network-secret: s, peers: ['tcp://127.0.0.1:1']}\nrules: ['MATCH,et']\n".to_string(),
     ];
     for yaml in configs {
         let loaded = load_config(&yaml, "dial-gap.yaml").expect("configuration loads");

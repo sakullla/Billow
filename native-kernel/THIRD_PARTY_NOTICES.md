@@ -151,3 +151,98 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+## T19 mesh adapters (Rust dependencies)
+
+The T19 Tailscale/ZeroTier protocol code adds these direct dependencies. They
+are linked into the Rust kernel under their upstream licenses; no upstream
+source was copied or translated.
+
+| crate | version | license |
+| --- | --- | --- |
+| `ed25519-dalek` | 2.2.0 | BSD-3-Clause |
+| `x25519-dalek` | 2.0.1 | BSD-3-Clause |
+| `salsa20` | 0.10.2 | MIT OR Apache-2.0 |
+| `poly1305` | 0.8.0 | Apache-2.0 OR MIT |
+| `aes` | 0.8.4 | MIT OR Apache-2.0 |
+| `ctr` | 0.9.2 | MIT OR Apache-2.0 |
+| `hex` | 0.4.3 | MIT OR Apache-2.0 |
+| `blake2` | 0.10.6 | MIT OR Apache-2.0 |
+| `chacha20poly1305` | 0.10.1 | Apache-2.0 OR MIT |
+| `hkdf` | 0.12.4 | MIT OR Apache-2.0 |
+| `hmac` | 0.12.1 | MIT OR Apache-2.0 |
+| `sha2` | 0.10.9 | MIT OR Apache-2.0 |
+
+The MIT text for the dual-licensed crates:
+
+```text
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The Apache-2.0 alternative is the standard Apache License 2.0 text shipped as
+`LICENSE-APACHE` in each dual-licensed crate under the locked Cargo registry
+cache.
+
+The BSD-3-Clause text for `ed25519-dalek`/`x25519-dalek`:
+
+```text
+ed25519-dalek:
+Copyright (c) 2017-2019 isis agora lovecruft. All rights reserved.
+
+x25519-dalek:
+Copyright (c) 2017-2021 isis agora lovecruft. All rights reserved.
+Copyright (c) 2019-2021 DebugSteven. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of the copyright holders nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+## T19 controlled peers (test only)
+
+`tool/kernel-compat/peers/tailscale-peer` builds the locked
+`github.com/metacubex/tailscale` module (BSD-3-Clause) and uses it only as an
+independent test process; no Tailscale source is vendored or linked into the
+kernel. `tool/kernel-compat/peers/zerotier-peer` builds the locked
+`github.com/metacubex/zerotier-go` module (MPL-2.0) under the same test-only
+rule. EasyTier is rejected as a whole type; its LGPL-3.0 `easytier-go`/wasm
+module is not used by the current tree and no EasyTier peer remains. None of
+these test peers is part of the kernel distribution.

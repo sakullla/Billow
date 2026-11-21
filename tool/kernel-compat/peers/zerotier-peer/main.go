@@ -15,23 +15,6 @@ import (
 	ZT "github.com/metacubex/zerotier-go"
 )
 
-func varintAt(data []byte, at int) (uint64, int) {
-	var value uint64
-	var shift uint
-	for {
-		if at >= len(data) {
-			return 0, at
-		}
-		byteValue := data[at]
-		at++
-		value |= uint64(byteValue&0x7f) << shift
-		if byteValue&0x80 == 0 {
-			return value, at
-		}
-		shift += 7
-	}
-}
-
 func parseInet(data []byte) (int, error) {
 	if len(data) < 1 {
 		return 0, fmt.Errorf("short endpoint")
@@ -150,4 +133,3 @@ func main() {
 	}
 }
 
-var _ = varintAt

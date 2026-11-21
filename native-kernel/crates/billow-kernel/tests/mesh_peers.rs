@@ -1,6 +1,6 @@
 //! T19 mesh adapters against controlled locked-source peers.
 //!
-//! The peers live in `tool/kernel-compat/peers/{zerotier,easytier,tailscale}-peer`
+//! The peers live in `tool/kernel-compat/peers/{zerotier,tailscale}-peer`
 //! and are built by `tool/kernel-compat/family-peers.sh`. Every case is
 //! `#[ignore]`d and prints SKIP without its environment variable, so the
 //! default `cargo test` stays hermetic.
@@ -10,7 +10,6 @@ use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use billow_kernel::outbound::easytier::{EasytierSession, EasytierError};
 use billow_kernel::outbound::tailscale::{
     derp, DerpClient, TailscaleControl, TailscaleError,
 };
@@ -124,130 +123,6 @@ async fn zerotier_hello_success_and_failure() {
     .await
     .expect_err("truncated reply must fail");
     assert!(matches!(error, ZerotierError::Timeout), "{error}");
-}
-
-#[tokio::test]
-#[ignore]
-async fn easytier_cleartext_handshake_and_authentication() {
-    let Some(bin) = env_bin("KC_EASYTIER_PEER_BIN") else {
-        return skip("easytier", "KC_EASYTIER_PEER_BIN");
-    };
-    let peer = start(
-        &bin,
-        &["-mode", "controlled", "-network", "billow", "-secret", "s3cret"],
-    );
-    let address: SocketAddr = format!("127.0.0.1:{}", peer.port).parse().unwrap();
-    let mut session = EasytierSession::connect(
-        address,
-        "billow",
-        "s3cret",
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("handshake");
-    session.ping(7, Duration::from_secs(3)).await.expect("pong");
-
-    let wrong = start(
-        &bin,
-        &["-mode", "controlled", "-network", "billow", "-secret", "other"],
-    );
-    let address: SocketAddr = format!("127.0.0.1:{}", wrong.port).parse().unwrap();
-    let error = EasytierSession::connect(address, "billow", "s3cret", Duration::from_secs(3))
-        .await
-        .expect_err("wrong secret must fail");
-    assert!(
-        matches!(
-            error,
-            EasytierError::Timeout | EasytierError::Io(_) | EasytierError::Frame(_)
-        ),
-        "{error}"
-    );
-
-    let rejected = start(
-        &bin,
-        &[
-            "-mode",
-            "controlled",
-            "-network",
-            "billow",
-            "-secret",
-            "s3cret",
-            "-reject",
-        ],
-    );
-    let address: SocketAddr = format!("127.0.0.1:{}", rejected.port).parse().unwrap();
-    assert!(
-        EasytierSession::connect(address, "billow", "s3cret", Duration::from_secs(2))
-            .await
-            .is_err()
-    );
-}
-
-#[tokio::test]
-#[ignore]
-async fn easytier_pinned_core_rejects_a_non_matching_digest() {
-    // Boundary against the real locked core: its `network_secret_digest` is
-    // derived inside the wasm artifact by a routine that is not in the public
-    // source tree, so this adapter cannot reproduce it offline. The core
-    // replies to the cleartext handshake and then resets the connection when
-    // the digest does not match; that is the authentication boundary recorded
-    // for T19, not a silent success.
-    let Some(bin) = env_bin("KC_EASYTIER_PEER_BIN") else {
-        return skip("easytier-core", "KC_EASYTIER_PEER_BIN");
-    };
-    if std::env::var("KC_EASYTIER_CORE").as_deref() == Ok("0") {
-        eprintln!("SKIP easytier-core: KC_EASYTIER_CORE=0");
-        return;
-    }
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
-    let listen = format!("127.0.0.1:{port}");
-    let peer = start(
-        &bin,
-        &[
-            "-mode",
-            "core",
-            "-listen",
-            &listen,
-            "-network",
-            "billow",
-            "-secret",
-            "s3cret",
-        ],
-    );
-    assert_eq!(peer.port, port);
-    let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let mut observed = None;
-    for _ in 0..40 {
-        match EasytierSession::connect(address, "billow", "s3cret", Duration::from_secs(2)).await {
-            Ok(mut session) => {
-                if let Err(error) = session.ping(9, Duration::from_secs(2)).await {
-                    observed = Some(format!("{error}"));
-                    break;
-                }
-                panic!("the pinned core accepted the placeholder digest");
-            }
-            Err(error) => {
-                observed = Some(format!("{error}"));
-                if matches!(error, EasytierError::SecretDigest) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-        }
-    }
-    let observed = observed.expect("a handshake attempt");
-    assert!(
-        observed.contains("reset")
-            || observed.contains("Timeout")
-            || observed.contains("secret")
-            || observed.contains("digest")
-            || observed.contains("eof")
-            || observed.contains("io:"),
-        "{observed}"
-    );
 }
 
 #[tokio::test]
