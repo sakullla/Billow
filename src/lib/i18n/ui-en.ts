@@ -1609,6 +1609,8 @@ export const UI_EN: Record<string, string> = {
   '剩余 {0}': '{0} left',
   '到期 {0}': 'Expires {0}',
   '{0} 天后重置': 'Resets in {0} days',
+  '明天重置': 'Resets tomorrow',
+  '今天重置': 'Resets today',
   '在代理页查看该组全部节点与选项': 'See every node and option for this group on Proxies',
   '点击切换「{0}」节点': 'Click to switch node in “{0}”',
   '选择此节点': 'Select node',

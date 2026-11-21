@@ -198,6 +198,32 @@ describe('parseSubscriptionInfo', () => {
     expect(info.others).toEqual([])
   })
 
+  it('never turns a reset date, a combined line or a partial match into a wrong value', () => {
+    const lines = [
+      '流量重置日：每月 1 日',
+      '重置时间：2026年12月1日',
+      '每月 15 日重置',
+      '剩余流量：120 GB 到期：2026-12-31',
+      '距离到期还有 30 天',
+      'Expire: 永久',
+    ]
+    const info = parseSubscriptionInfo(lines)
+    expect(info.resetDays).toBeNull()
+    expect(info.expire).toBeNull()
+    expect(info.remaining).toBeNull()
+    expect(info.others).toEqual(lines)
+  })
+
+  it('reads grouped thousands and the common countdown shapes', () => {
+    expect(parseSubscriptionInfo(['剩余流量：1,024 GB']).remaining).toMatchObject({ value: '1,024 GB' })
+    expect(parseSubscriptionInfo(['1,024 GB | 2,048 GB']).usage).toMatchObject({ used: '1,024 GB', percent: 50 })
+    expect(parseSubscriptionInfo(['16.47GB|500GB']).usage).toMatchObject({ used: '16.47 GB', total: '500 GB' })
+    expect(parseSubscriptionInfo(['Traffic Reset：17 Days Left']).resetDays).toMatchObject({ value: 17 })
+    expect(parseSubscriptionInfo(['Resets in 3 days']).resetDays).toMatchObject({ value: 3 })
+    expect(parseSubscriptionInfo(['重置剩余：9 天']).resetDays).toMatchObject({ value: 9 })
+    expect(parseSubscriptionInfo(['到期时间：2026-12-31 23:59:59']).expire).toMatchObject({ value: '2026-12-31 23:59:59' })
+  })
+
   it('keeps anything it cannot read verbatim', () => {
     const info = parseSubscriptionInfo(['官网：example.com', '已用流量：30 GB', 'Days Left: 30'])
     expect(info.usage).toBeNull()

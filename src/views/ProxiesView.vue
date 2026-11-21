@@ -190,6 +190,12 @@ function quotaTagCount(info: SubscriptionInfo): number {
   return Number(Boolean(info.remaining)) + Number(Boolean(info.expire)) + Number(Boolean(info.resetDays)) + info.others.length
 }
 
+function resetText(days: number): string {
+  if (days <= 0) return tr('今天重置')
+  if (days === 1) return tr('明天重置')
+  return tr('{0} 天后重置', { 0: days })
+}
+
 function percentText(value: number): string {
   if (value > 0 && value < 0.1) return '<0.1%'
   return `${value < 10 ? value.toFixed(1) : Math.round(value)}%`
@@ -1131,8 +1137,8 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             <div v-if="quotaTagCount(quotaOf(group.info))" class="group-quota-tags">
               <span v-if="quotaOf(group.info).remaining" class="group-info-item" :title="quotaOf(group.info).remaining!.source">{{ tr('剩余 {0}', { 0: quotaOf(group.info).remaining!.value }) }}</span>
               <span v-if="quotaOf(group.info).expire" class="group-info-item" :title="quotaOf(group.info).expire!.source">{{ tr('到期 {0}', { 0: quotaOf(group.info).expire!.value }) }}</span>
-              <span v-if="quotaOf(group.info).resetDays" class="group-info-item" :title="quotaOf(group.info).resetDays!.source">{{ tr('{0} 天后重置', { 0: quotaOf(group.info).resetDays!.value }) }}</span>
-              <span v-for="text in quotaOf(group.info).others" :key="text" class="group-info-item" :title="text">{{ text }}</span>
+              <span v-if="quotaOf(group.info).resetDays" class="group-info-item" :title="quotaOf(group.info).resetDays!.source">{{ resetText(quotaOf(group.info).resetDays!.value) }}</span>
+              <span v-for="(text, textIndex) in quotaOf(group.info).others" :key="`${textIndex}:${text}`" class="group-info-item" :title="text">{{ text }}</span>
             </div>
           </div>
         </template>

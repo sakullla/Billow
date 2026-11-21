@@ -423,23 +423,40 @@ export interface SubscriptionInfo {
   others: string[]
 }
 
-const SIZE = String.raw`(\d+(?:\.\d+)?)\s*([KMGTP]i?B|B)`
+/** A size such as `16.47 GB`, `1,024 MB` or `4 GiB`. */
+const SIZE = String.raw`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*([KMGTP]i?B|B)`
 const UNIT_POWER: Record<string, number> = { B: 0, K: 1, M: 2, G: 3, T: 4, P: 5 }
 
 function bytesOf(amount: string, unit: string): number {
-  return Number(amount) * 1024 ** (UNIT_POWER[unit[0]!.toUpperCase()] ?? 0)
+  return Number(amount.replace(/,/g, '')) * 1024 ** (UNIT_POWER[unit[0]!.toUpperCase()] ?? 0)
 }
 
 function sizeText(amount: string, unit: string): string {
   return `${amount} ${unit.toUpperCase().replace('IB', 'iB')}`
 }
 
-const USAGE_PAIR = new RegExp(`^${SIZE}\\s*[|/]\\s*${SIZE}$`, 'i')
-const LABELLED_SIZE = new RegExp(`${SIZE}`, 'i')
+function percentOf(used: { amount: string; unit: string }, total: { amount: string; unit: string }): number {
+  const totalBytes = bytesOf(total.amount, total.unit)
+  return totalBytes > 0 ? Math.min(100, Math.max(0, (bytesOf(used.amount, used.unit) / totalBytes) * 100)) : 0
+}
+
+const COLON = String.raw`\s*[:：]\s*`
+const USAGE_PAIR = new RegExp(String.raw`^${SIZE}\s*[|/]\s*${SIZE}$`, 'i')
+const REMAINING = new RegExp(String.raw`^(?:剩余流量|remaining\s*(?:traffic|data))${COLON}${SIZE}$`, 'i')
+const USED = new RegExp(String.raw`^(?:已用流量|used\s*(?:traffic|data))${COLON}${SIZE}$`, 'i')
+const TOTAL = new RegExp(String.raw`^(?:总流量|total\s*(?:traffic|data))${COLON}${SIZE}$`, 'i')
+const EXPIRE = new RegExp(String.raw`^(?:expire\s*(?:date|time|at|on)?|expiry(?:\s*date)?|套餐到期|到期时间|过期时间|到期日期|到期)${COLON}(\d[\d\-/.: ]*\d)$`, 'i')
+/** Only an explicit countdown counts; "每月 15 日重置" names a day of the month, not days left. */
+const RESET_COUNTDOWNS = [
+  new RegExp(String.raw`^traffic\s*reset${COLON}(\d+)\s*days?\s*left$`, 'i'),
+  /^resets?\s*in\s*(\d+)\s*days?$/i,
+  new RegExp(String.raw`^(?:距离)?(?:下次)?(?:流量)?重置(?:剩余|还剩|还有)(?:${COLON})?(\d+)\s*天$`),
+]
 
 /**
  * Subscription "info nodes" (quota, expiry, reset countdown) parsed into the pieces the
- * proxy page shows as a usage bar and small labels. Anything unrecognised stays verbatim.
+ * proxy page shows as a usage bar and small labels. Each line must match one whole known
+ * shape; anything else (or a repeat of a field already read) stays verbatim in `others`.
  */
 export function parseSubscriptionInfo(texts: readonly string[]): SubscriptionInfo {
   const info: SubscriptionInfo = { usage: null, remaining: null, expire: null, resetDays: null, others: [] }
@@ -447,49 +464,47 @@ export function parseSubscriptionInfo(texts: readonly string[]): SubscriptionInf
   let total: { amount: string; unit: string; source: string } | null = null
   for (const raw of texts) {
     const text = raw.trim()
-    const pair = USAGE_PAIR.exec(text)
-    if (pair && !info.usage) {
-      const [, ua, uu, ta, tu] = pair
-      const totalBytes = bytesOf(ta!, tu!)
+    let match: RegExpExecArray | null
+    if (!info.usage && (match = USAGE_PAIR.exec(text))) {
+      const [, ua, uu, ta, tu] = match
       info.usage = {
         used: sizeText(ua!, uu!),
         total: sizeText(ta!, tu!),
-        percent: totalBytes > 0 ? Math.min(100, Math.max(0, (bytesOf(ua!, uu!) / totalBytes) * 100)) : 0,
+        percent: percentOf({ amount: ua!, unit: uu! }, { amount: ta!, unit: tu! }),
         source: raw,
       }
       continue
     }
-    const reset = /(?:reset|重置)/i.test(text) ? /(\d+)\s*(?:days?|天|日)/i.exec(text) : null
-    if (reset && !info.resetDays) {
-      info.resetDays = { value: Number(reset[1]), source: raw }
+    if (!info.resetDays) {
+      const reset = RESET_COUNTDOWNS.map((pattern) => pattern.exec(text)).find(Boolean)
+      if (reset) {
+        info.resetDays = { value: Number(reset[1]), source: raw }
+        continue
+      }
+    }
+    if (!info.expire && (match = EXPIRE.exec(text))) {
+      info.expire = { value: match[1]!.trim(), source: raw }
       continue
     }
-    const expire = /(?:expire\s*(?:date|time|at)?|套餐到期|到期时间|过期时间|到期)\s*[:：]?\s*(.+)$/i.exec(text)
-    if (expire && !info.expire && /\d/.test(expire[1]!)) {
-      info.expire = { value: expire[1]!.trim(), source: raw }
+    if (!info.remaining && (match = REMAINING.exec(text))) {
+      info.remaining = { value: sizeText(match[1]!, match[2]!), source: raw }
       continue
     }
-    const size = LABELLED_SIZE.exec(text)
-    if (size && /剩余流量|remaining\s*traffic/i.test(text) && !info.remaining) {
-      info.remaining = { value: sizeText(size[1]!, size[2]!), source: raw }
+    if (!used && (match = USED.exec(text))) {
+      used = { amount: match[1]!, unit: match[2]!, source: raw }
       continue
     }
-    if (size && /已用流量|used\s*traffic/i.test(text) && !used) {
-      used = { amount: size[1]!, unit: size[2]!, source: raw }
-      continue
-    }
-    if (size && /总流量|total\s*traffic/i.test(text) && !total) {
-      total = { amount: size[1]!, unit: size[2]!, source: raw }
+    if (!total && (match = TOTAL.exec(text))) {
+      total = { amount: match[1]!, unit: match[2]!, source: raw }
       continue
     }
     info.others.push(raw)
   }
   if (!info.usage && used && total) {
-    const totalBytes = bytesOf(total.amount, total.unit)
     info.usage = {
       used: sizeText(used.amount, used.unit),
       total: sizeText(total.amount, total.unit),
-      percent: totalBytes > 0 ? Math.min(100, (bytesOf(used.amount, used.unit) / totalBytes) * 100) : 0,
+      percent: percentOf(used, total),
       source: `${used.source} · ${total.source}`,
     }
   } else {
