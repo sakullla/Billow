@@ -49,6 +49,12 @@ not implemented: the earlier port was a GPL-3.0 derivative of the pinned
 `transport/sudoku` and has been removed; a clean-room implementation is T17
 ```
 
+T17 later extended this message with its own finding: the keyed puzzle table,
+the KIP handshake and the record layers are not publicly specified, so the
+clean-room client remains unimplemented, and the multiplex, the
+`stream`/`poll`/`auto`/`ws` HTTP tunnels and UoT stay unimplemented as well
+(`evidence/t17-cleanroom.md`).
+
 ## Audit
 
 Commands run from the repository root on 2026-11-22.

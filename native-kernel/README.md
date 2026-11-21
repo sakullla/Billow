@@ -17,7 +17,9 @@ added the QUIC families `tuic` (v5 `uuid`/`password`), `hysteria` (v1) and
 `hysteria2` (HTTP/3 auth + TCP), all over `quinn` 0.11. T13 added `mieru`
 (single-session TCP, an independent implementation of the published protocol);
 its earlier `sudoku` port was removed because it was a GPL-3.0 derivative of
-the pinned `transport/sudoku`, and a clean-room rewrite is T17. T14 added
+the pinned `transport/sudoku`; T17's clean-room attempt found the protocol's
+keyed table, handshake and record layers are not publicly specified, so the
+type stays rejected (see [Not implemented](#not-implemented)). T14 added
 `masque` as an RFC 9298 CONNECT-UDP client over HTTP/3, reusing the T10
 `quinn` profile for the UDP association;
 the pinned Cloudflare WARP CONNECT-IP flow (`cf-connect-ip` + a userspace IP
@@ -176,8 +178,14 @@ in that module) and wire observations against the pinned binary, which is used
 only as the controlled peer. The earlier `sudoku` port and its Go codec peer
 were removed in T13-A3: they were translated from the pinned `transport/sudoku`,
 which is part of the GPL-3.0 Mihomo tree, so they were GPL derivatives. No
-sudoku code, vectors or attribution data remain; a clean-room rewrite is T17
-(`tool/kernel-compat/evidence/t13-a3-sudoku-removal.md` records the audit).
+sudoku code, vectors or attribution data remain. T17 observed the pinned peer
+from the outside only (`tool/kernel-compat/sudoku-observe.py`, record in
+`tool/kernel-compat/evidence/t17-cleanroom.md`) and produced no client: the
+key-derived puzzle table, the KIP handshake and the record layers are not
+publicly specified, the encoding randomizes each byte per connection, and a
+foreign handshake is rejected with `INVALID_SUDOKU_MAP_MISS`. `type: sudoku`
+therefore stays rejected; the audit of the removal is
+`tool/kernel-compat/evidence/t13-a3-sudoku-removal.md`.
 
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
@@ -242,8 +250,10 @@ T13 delivered `mieru` in the single-session TCP slice: an independent
 implementation of the published protocol (the module is GPL-3.0, so no mieru
 code is vendored or linked; only the pinned binary runs it as a peer). The
 earlier `sudoku` port was removed in T13-A3 because it was translated from the
-GPL-3.0 pinned `transport/sudoku`; `type: sudoku` is rejected by name and a
-clean-room implementation is T17. mieru's rejected pieces are named in
+GPL-3.0 pinned `transport/sudoku`; `type: sudoku` is rejected by name, and
+T17's clean-room attempt recorded why it stays that way: the table, handshake
+and record layers are not publicly specified (see
+[Not implemented](#not-implemented)). mieru's rejected pieces are named in
 [Not implemented](#not-implemented).
 
 T14's `masque` is the RFC 9298 CONNECT-UDP subset, written from the RFCs over
@@ -352,7 +362,9 @@ quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, congestion/window tuning;
 `udp: true`, the multiplexing levels (one session per underlay) and
 `traffic-pattern` (padding/nonce/low-entropy shaping); `sudoku` is rejected as
 a whole type because its earlier port was a GPL-3.0 derivative and was removed
-in T13-A3 (clean-room rewrite: T17). `masque` rejects the
+in T13-A3, and T17's clean-room attempt found the keyed table, the KIP
+handshake and the record layers are not publicly specified
+(`tool/kernel-compat/evidence/t17-cleanroom.md`). `masque` rejects the
 pinned CONNECT-IP/WARP pieces (`private-key`, `public-key`, `uri`, `ip`,
 `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve`, `dns`), both non-HTTP/3
 networks (`h2`, `h3-l4proxy`), the congestion knobs and `dialer-proxy` (a QUIC
@@ -593,7 +605,10 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   T13 added 5 mieru cases against `listeners: type: mieru`: the TCP session,
   `port-range`, an idle session across the five-second heartbeat, a wrong
   password and a closed peer port. The sudoku cases and their locked-codec
-  differential were removed with the GPL-derived implementation in T13-A3.
+  differential were removed with the GPL-derived implementation in T13-A3;
+  T17 recorded what the pinned Sudoku peer does with foreign traffic
+  (`tool/kernel-compat/sudoku-observe.py`, `evidence/t17-observe.log`) but has
+  no peer case because no Sudoku client exists.
   T15 added 4 shadowquic cases: TCP, UDP over QUIC datagrams, UDP over
   `udp-over-stream`, and a wrong-password case that is forwarded to the
   camouflage upstream and never reaches the sink. The JLS seal is also
@@ -637,7 +652,8 @@ The immutable coordination inputs are in `docs/coordination/`: `t11-handoff.md`
 Owner material and are not modified by the kernel tasks. The concrete blockers
 and next steps for the families still deferred by T10 are in
 `tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers mieru
-(sudoku was removed in T13-A3 and is a T17 clean-room item), T14's covers
+(sudoku was removed in T13-A3; T17's clean-room attempt recorded the protocol
+as not publicly specified, `evidence/t17-cleanroom.md`), T14's covers
 `masque` (the CONNECT-UDP subset and the CONNECT-IP
 gap recorded in `evidence/t14-feasibility.json`), and T15's covers
 `shadowquic` (the JLS subset and its named rejections). With T15 the T9 list

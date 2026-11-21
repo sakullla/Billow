@@ -1039,9 +1039,11 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
 #[test]
 fn deferred_families_name_their_decision() {
     for (kind, needle) in [
-        // T13-A3 removed the GPL-3.0-derived Sudoku port; the rejection names
-        // the removal and the clean-room task that owns it (T17).
-        ("sudoku", "GPL-3.0 derivative"),
+        // T13-A3 removed the GPL-3.0-derived Sudoku port; T17's clean-room
+        // attempt found the protocol's keyed table, handshake and record
+        // layers are not publicly specified, and the rejection points at that
+        // record.
+        ("sudoku", "t17-cleanroom.md"),
         ("tailscale", "Tailscale control plane"),
         ("zerotier", "Zerotier Rust crate"),
         ("easytier", "easytier crate"),
@@ -1052,6 +1054,13 @@ fn deferred_families_name_their_decision() {
         assert!(e.contains("is not implemented"), "{kind}: {e}");
         assert!(e.contains(needle), "{kind}: {e}");
     }
+    // The Sudoku rejection keeps the licence history alongside the T17 record
+    // and names the layers that would remain unimplemented even with a client.
+    let sudoku = proxy_err("proxies:\n  - {name: p, type: sudoku, server: x, port: 1}\nrules: ['MATCH,p']\n");
+    assert!(sudoku.contains("GPL-3.0 derivative"), "{sudoku}");
+    assert!(sudoku.contains("not publicly specified"), "{sudoku}");
+    assert!(sudoku.contains("multiplex"), "{sudoku}");
+    assert!(sudoku.contains("UoT"), "{sudoku}");
 }
 
 #[test]

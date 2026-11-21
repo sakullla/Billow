@@ -711,7 +711,7 @@
     },
     "sudoku": {
       "status": "unimplemented",
-      "reason": "the earlier T13 port was a GPL-3.0 derivative of the pinned `transport/sudoku` (Mihomo's tree license) and was removed in T13-A3; a clean-room implementation is T17. The type is rejected by name at load time with this reason"
+      "reason": "the earlier T13 port was a GPL-3.0 derivative of the pinned `transport/sudoku` and was removed in T13-A3; the T17 clean-room attempt observed the pinned peer and found the keyed puzzle table, the KIP handshake and the record layers are not publicly specified, so no wire-compatible client can be written from documentation and observation alone (tool/kernel-compat/evidence/t17-cleanroom.md, tool/kernel-compat/evidence/t17-observe.log). The type is rejected by name at load time with this reason"
     },
     "tuic": {
       "status": "partial",
@@ -1140,7 +1140,7 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters (mesh families rejected). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku` (clean-room rewrite is T17). T5 owns the built-in direct/dns/reject/rematch adapters.",
+    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters (mesh families rejected). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku`; T17's clean-room attempt stayed rejected because the protocol is not publicly specified (evidence/t17-cleanroom.md). T5 owns the built-in direct/dns/reject/rematch adapters.",
     "entries": {
       "tailscale": {
         "owner": "T16 (rejected) / future control-plane task",
@@ -1170,10 +1170,10 @@
         "owner": "T5",
         "reason": "rule-engine adapter"
       },
-      "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters (mesh families rejected). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku` (clean-room rewrite is T17). T5 owns the built-in direct/dns/reject/rematch adapters.",
+      "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters (mesh families rejected). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku`; T17's clean-room attempt stayed rejected because the protocol is not publicly specified (evidence/t17-cleanroom.md). T5 owns the built-in direct/dns/reject/rematch adapters.",
       "sudoku": {
-        "owner": "T17 (clean-room rewrite)",
-        "reason": "the A1 port was a GPL-3.0 derivative of `transport/sudoku` (table/record/KIP/HTTP mask translated from the pinned tree) and was removed in T13-A3; a clean-room implementation from wire observations is T17. Registered alongside mieru's clean-room precedent."
+        "owner": "T17 (clean-room attempt: blocked, needs an Owner decision)",
+        "reason": "the A1 port was a GPL-3.0 derivative of `transport/sudoku` (table/record/KIP/HTTP mask translated from the pinned tree) and was removed in T13-A3. T17 implemented nothing new: the pinned peer rejects a foreign handshake with INVALID_SUDOKU_MAP_MISS, the same plaintext under one key is encoded differently on every connection (the codebook is key-derived and randomized), and the table derivation, KIP key schedule and record epochs appear only in the GPL-3.0 implementation. Reproducing them needs the Owner's decision recorded in evidence/t17-cleanroom.md#decision-needed"
       }
     }
   },

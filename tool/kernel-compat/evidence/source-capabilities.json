@@ -2607,7 +2607,7 @@
       "source": "adapter/parser.go:177",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "the earlier T13 port was a GPL-3.0 derivative of the pinned `transport/sudoku` (Mihomo's tree license) and was removed in T13-A3; a clean-room implementation is T17. The type is rejected by name at load time with this reason"
+        "reason": "the earlier T13 port was a GPL-3.0 derivative of the pinned `transport/sudoku` and was removed in T13-A3; the T17 clean-room attempt observed the pinned peer and found the keyed puzzle table, the KIP handshake and the record layers are not publicly specified, so no wire-compatible client can be written from documentation and observation alone (tool/kernel-compat/evidence/t17-cleanroom.md, tool/kernel-compat/evidence/t17-observe.log). The type is rejected by name at load time with this reason"
       }
     },
     {

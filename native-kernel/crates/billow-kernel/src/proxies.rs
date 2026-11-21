@@ -1580,7 +1580,7 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "mieru" => Protocol::Mieru(parse_mieru(&mut entry)?),
         "sudoku" => {
             return Err(entry.unsupported(
-                "protocol type 'sudoku' is not implemented: the earlier port was a GPL-3.0 derivative of the pinned `transport/sudoku` and has been removed; a clean-room implementation is T17",
+                "protocol type 'sudoku' is not implemented: the earlier port was a GPL-3.0 derivative of the pinned `transport/sudoku` and has been removed; the T17 clean-room attempt found that the keyed puzzle table, the KIP handshake and the record layers are not publicly specified (tool/kernel-compat/evidence/t17-cleanroom.md), and multiplex, the stream/poll/auto/ws HTTP tunnels and UoT are unimplemented as well",
             ))
         }
         "masque" => Protocol::Masque(parse_masque(&mut entry)?),

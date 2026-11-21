@@ -414,7 +414,9 @@ fn process_loads_t9_outbounds() {
 /// server port is closed (it never falls back to DIRECT). The successful path
 /// runs against the pinned Mihomo listener in `mihomo_peers.rs`. `sudoku` is
 /// rejected by name because the earlier port was a GPL-3.0 derivative and has
-/// been removed (the clean-room rewrite is T17).
+/// been removed, and T17's clean-room attempt found the protocol's keyed
+/// table, handshake and record layers are not publicly specified
+/// (`tool/kernel-compat/evidence/t17-cleanroom.md`).
 #[test]
 fn process_loads_mieru_and_rejects_sudoku() {
     let mieru_port = free_port();

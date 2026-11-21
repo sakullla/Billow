@@ -358,7 +358,8 @@
     "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
     "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
     "families still unimplemented after T15 (the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case. shadowquic is partial: TCP/UDP and JLS are covered above; zero-rtt and the Brutal congestion options are rejected by name.",
-    "WireGuard/OpenVPN positive data-path cases stop at the IP packet (WireGuard ICMP echo through the locked device; OpenVPN AEAD keepalive decrypt): TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device."
+    "WireGuard/OpenVPN positive data-path cases stop at the IP packet (WireGuard ICMP echo through the locked device; OpenVPN AEAD keepalive decrypt): TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device.",
+    "sudoku: the family stays rejected. T17 observed the pinned peer only (tool/kernel-compat/sudoku-observe.py, evidence/t17-observe.log) and could not derive the keyed puzzle table, the KIP handshake or the record layers from public material; there is no sudoku peer case because no client exists (evidence/t17-cleanroom.md)."
   ],
   "t9": {
     "date": "2026-11-21",
@@ -413,7 +414,7 @@
       "gost-relay: UDP and smux are rejected at load time; only the TCP relay (plain/TLS) is implemented.",
       "ssh: private-key file paths are rejected (inline PEM only) and each dial opens its own SSH client; Mihomo reuses one client per proxy.",
       "ssr: only `protocol: origin` and `obfs: plain`; the auth_*/tls1.2_ticket_*/http_simple plugin layers are rejected by name.",
-      "mieru was delivered by T13 as a clean-room TCP slice; T13's earlier sudoku port was removed in T13-A3 (GPL-derived) and a clean-room rewrite is T17. masque and the device families have their own tasks."
+      "mieru was delivered by T13 as a clean-room TCP slice; T13's earlier sudoku port was removed in T13-A3 (GPL-derived) and T17's clean-room attempt stayed rejected because the keyed table, KIP handshake and record layers are not publicly specified (evidence/t17-cleanroom.md, evidence/t17-observe.log). masque and the device families have their own tasks."
     ]
   },
   "t13": {
@@ -428,7 +429,7 @@
     },
     "splitDecisions": {
       "mieru": "transport UDP, `udp: true`, multiplexing levels and traffic-pattern are rejected at load; TCP single session only (handshake-mode values load, NO_WAIT merely defers the same handshake)",
-      "sudoku": "removed in T13-A3: the earlier port was a GPL-3.0 derivative of the pinned `transport/sudoku` (table/record/KIP/HTTP mask translated from the GPL tree). The type is now rejected by name; the clean-room rewrite is T17. No sudoku code, vectors or peer remains in the repository (audit: evidence/t13-a3-sudoku-removal.md)"
+      "sudoku": "removed in T13-A3: the earlier port was a GPL-3.0 derivative of the pinned `transport/sudoku` (table/record/KIP/HTTP mask translated from the GPL tree). The type is now rejected by name. No sudoku code, vectors or peer remains in the repository (audit: evidence/t13-a3-sudoku-removal.md). T17's clean-room attempt produced no client: the protocol is not publicly specified (evidence/t17-cleanroom.md)."
     },
     "license": {
       "mieru": "the enfein/mieru v3.39.0 module is GPL-3.0; no mieru source is vendored or linked, the client follows the published docs/protocol.md and is verified only against the pinned binary",
@@ -564,5 +565,35 @@
       "openvpn_peer": "OpenVPN 2.7.9 binary GPL-2.0; test process only, not linked.",
       "kernel": "MIT; provenance and the no-copy audit are in tool/kernel-compat/evidence/t16-provenance.md."
     }
+  },
+  "t17": {
+    "date": "2026-11-22",
+    "implemented": [],
+    "rejected": [
+      "sudoku"
+    ],
+    "observation": {
+      "command": "python3 tool/kernel-compat/sudoku-observe.py {probe,repeat,reject,sweep-paths,sweep-bodies}",
+      "log": "tool/kernel-compat/evidence/t17-observe.log",
+      "peer": "the pinned Mihomo v1.19.34 release binary as `listeners: type: sudoku` (and as the client) with a loopback relay as the observer; no Sudoku source is read, ported or linked",
+      "measured": [
+        "uplink and downlink are exactly 4 wire bytes per plaintext byte (676 bytes for an 82-byte request, slope 4 over path lengths 6..70; downlink slope 4 over response bodies 12..1000)",
+        "each direction uses 64 distinct symbols: 0x0a plus 0x40..0x7e, 98-99.7% printable (table-type prefer_ascii, padding 0/0)",
+        "the same plaintext under the same key differs in ~640 of 676 positions between two connections while keeping the length: the encoding is randomized",
+        "a different key keeps the lengths and the alphabet but changes every byte: the codebook is key-derived",
+        "chacha20-poly1305 adds 360 uplink / 240 downlink bytes for the same payload (record layer framing)",
+        "httpmask mode legacy prepends a plaintext, per-connection randomized browser request of ~518 bytes",
+        "the listener rejects foreign handshakes: plain HTTP closes with no reply; 64 zero bytes give `INVALID_SUDOKU_MAP_MISS`"
+      ]
+    },
+    "blocked": [
+      "table construction from `key` (grid enumeration, byte->grid codebook, clue-set pool, 64-symbol style order)",
+      "KIP handshake (X25519 + HKDF labels, message layout, table hint, timestamp/nonce/replay handling)",
+      "record layer (framing, epoch counters, HMAC derivation, sequence validation, rotation cadence)",
+      "legacy HTTP mask template pool, packed downlink framing, multiplex, stream/poll/auto/ws tunnels and UoT all inherit the above"
+    ],
+    "license": "the pinned Mihomo tree and the upstream Sudoku project are both GPL-3.0 (the upstream adds a name clause); no GPL code, table, vector or attribute data is vendored or linked, and the T13-A3 removed module was not restored. The pinned release binary runs only as a test peer.",
+    "decision": "Owner decision needed: keep `sudoku` rejected (current), authorise a documented specification-consultation process against the GPL-3.0 implementation, or wait for a public byte-level specification (evidence/t17-cleanroom.md#decision-needed)",
+    "platform": "macos-aarch64 for the recorded observations; the harness binds loopback ports only"
   }
 }
