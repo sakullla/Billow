@@ -273,6 +273,121 @@ pub struct SnellObfs {
     pub host: String,
 }
 
+/// ShadowsocksR stream cipher (`transport/shadowsocks/shadowstream`). Only the
+/// stream ciphers are reachable from SSR; AEAD ciphers are not in Mihomo's SSR
+/// cipher list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SsrCipher {
+    Dummy,
+    Rc4Md5,
+    Aes128Cfb,
+    Aes192Cfb,
+    Aes256Cfb,
+    Aes128Ctr,
+    Aes192Ctr,
+    Aes256Ctr,
+    ChaCha20,
+    ChaCha20Ietf,
+    XChaCha20,
+}
+
+impl SsrCipher {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_uppercase().as_str() {
+            "NONE" | "DUMMY" => Some(SsrCipher::Dummy),
+            "RC4-MD5" => Some(SsrCipher::Rc4Md5),
+            "AES-128-CFB" => Some(SsrCipher::Aes128Cfb),
+            "AES-192-CFB" => Some(SsrCipher::Aes192Cfb),
+            "AES-256-CFB" => Some(SsrCipher::Aes256Cfb),
+            "AES-128-CTR" => Some(SsrCipher::Aes128Ctr),
+            "AES-192-CTR" => Some(SsrCipher::Aes192Ctr),
+            "AES-256-CTR" => Some(SsrCipher::Aes256Ctr),
+            "CHACHA20" => Some(SsrCipher::ChaCha20),
+            "CHACHA20-IETF" => Some(SsrCipher::ChaCha20Ietf),
+            "XCHACHA20" => Some(SsrCipher::XChaCha20),
+            _ => None,
+        }
+    }
+
+    pub fn key_len(self) -> usize {
+        match self {
+            SsrCipher::Dummy | SsrCipher::Rc4Md5 => 16,
+            SsrCipher::Aes128Cfb | SsrCipher::Aes128Ctr => 16,
+            SsrCipher::Aes192Cfb | SsrCipher::Aes192Ctr => 24,
+            SsrCipher::Aes256Cfb | SsrCipher::Aes256Ctr => 32,
+            SsrCipher::ChaCha20 | SsrCipher::ChaCha20Ietf | SsrCipher::XChaCha20 => 32,
+        }
+    }
+
+    pub fn iv_len(self) -> usize {
+        match self {
+            SsrCipher::Dummy => 0,
+            SsrCipher::Rc4Md5 | SsrCipher::Aes128Cfb | SsrCipher::Aes192Cfb
+            | SsrCipher::Aes256Cfb | SsrCipher::Aes128Ctr | SsrCipher::Aes192Ctr
+            | SsrCipher::Aes256Ctr => 16,
+            SsrCipher::ChaCha20 => 8,
+            SsrCipher::ChaCha20Ietf => 12,
+            SsrCipher::XChaCha20 => 24,
+        }
+    }
+}
+
+/// ShadowsocksR (`adapter/outbound/shadowsocksr.go`). The SSR stack is
+/// cipher + obfs + protocol; this kernel implements the stream ciphers, the
+/// `origin` protocol and the `plain` obfs. Other protocol/obfs plugins are
+/// rejected by name instead of being skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SsrOutbound {
+    pub server: String,
+    pub port: u16,
+    pub password: Secret,
+    pub cipher: SsrCipher,
+    pub protocol: String,
+    pub protocol_param: Option<String>,
+    pub obfs: String,
+    pub obfs_param: Option<String>,
+    pub dialer_proxy: Option<String>,
+}
+
+/// SSH (`adapter/outbound/ssh.go`): an SSH client that opens one
+/// `direct-tcpip` channel per dial. Host keys are accepted without
+/// verification unless `host-key` pins them, matching Mihomo's
+/// `InsecureIgnoreHostKey` default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshOutbound {
+    pub server: String,
+    pub port: u16,
+    pub username: String,
+    pub password: Option<Secret>,
+    /// Inline PEM (`-----BEGIN ... PRIVATE KEY-----`); a file path is rejected
+    /// by name because the loader has no config-relative path root.
+    pub private_key: Option<Secret>,
+    pub private_key_passphrase: Option<Secret>,
+    /// Authorized-key lines the server key must match; empty accepts any key.
+    pub host_key: Vec<String>,
+    /// `host-key-algorithms`, in preference order.
+    pub host_key_algorithms: Vec<String>,
+    pub dialer_proxy: Option<String>,
+}
+
+/// Gost relay v2 (`transport/gost/relay.go`): a versioned request header with
+/// optional user authentication and target address, then the raw byte stream.
+/// Only the TCP relay and the optional TLS wrapper are implemented; UDP and
+/// smux multiplexing are rejected by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GostRelayOutbound {
+    pub server: String,
+    pub port: u16,
+    /// `forward: true` omits the target-address feature, so the relay server
+    /// uses its own configured forward target.
+    pub forward: bool,
+    pub tls: bool,
+    pub tls_settings: TlsSettings,
+    pub username: Option<Secret>,
+    pub password: Option<Secret>,
+    pub dialer_proxy: Option<String>,
+}
+
 
 /// One enabled proxy entry. `DIRECT` and `REJECT` are built in and cannot be
 /// redefined (Mihomo rejects the duplicate name).
@@ -293,6 +408,9 @@ pub enum Protocol {
     Vmess(VmessOutbound),
     Snell(SnellOutbound),
     TrustTunnel(TrustTunnelOutbound),
+    GostRelay(GostRelayOutbound),
+    Ssh(SshOutbound),
+    Ssr(SsrOutbound),
 }
 
 impl Protocol {
@@ -307,6 +425,9 @@ impl Protocol {
             Protocol::Vmess(p) => p.dialer_proxy.as_deref(),
             Protocol::Snell(p) => p.dialer_proxy.as_deref(),
             Protocol::TrustTunnel(p) => p.dialer_proxy.as_deref(),
+            Protocol::GostRelay(p) => p.dialer_proxy.as_deref(),
+            Protocol::Ssh(p) => p.dialer_proxy.as_deref(),
+            Protocol::Ssr(p) => p.dialer_proxy.as_deref(),
         }
     }
 }
@@ -323,6 +444,9 @@ impl Proxy {
             Protocol::Vmess(_) => "vmess",
             Protocol::Snell(_) => "snell",
             Protocol::TrustTunnel(_) => "trusttunnel",
+            Protocol::GostRelay(_) => "gost-relay",
+            Protocol::Ssh(_) => "ssh",
+            Protocol::Ssr(_) => "ssr",
         }
     }
 
@@ -337,6 +461,9 @@ impl Proxy {
             Protocol::Vmess(p) => (&p.server, p.port),
             Protocol::Snell(p) => (&p.server, p.port),
             Protocol::TrustTunnel(p) => (&p.server, p.port),
+            Protocol::GostRelay(p) => (&p.server, p.port),
+            Protocol::Ssh(p) => (&p.server, p.port),
+            Protocol::Ssr(p) => (&p.server, p.port),
         }
     }
 
@@ -1059,9 +1186,27 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "vmess" => Protocol::Vmess(parse_vmess(&mut entry)?),
         "snell" => Protocol::Snell(parse_snell(&mut entry)?),
         "trusttunnel" => Protocol::TrustTunnel(parse_trusttunnel(&mut entry)?),
+        "gost-relay" => Protocol::GostRelay(parse_gost_relay(&mut entry)?),
+        "ssh" => Protocol::Ssh(parse_ssh(&mut entry)?),
+        "ssr" => Protocol::Ssr(parse_ssr(&mut entry)?),
+        "mieru" => {
+            return Err(entry.unsupported(
+                "protocol type 'mieru' is not implemented: it wraps the external enfein/mieru v3.39.0 module (encrypted underlay, padding, multiplexing); T11 deferred it pending a vendor/port decision",
+            ))
+        }
+        "masque" => {
+            return Err(entry.unsupported(
+                "protocol type 'masque' is not implemented: HTTP/3 CONNECT-IP/CONNECT-UDP needs the QUIC stack and an IP stack aligned with T10/T7; T11 deferred it",
+            ))
+        }
+        "sudoku" => {
+            return Err(entry.unsupported(
+                "protocol type 'sudoku' is not implemented: ~13.6k lines of custom crypto/KIP/multiplexing; T11 deferred it pending a split into its own task",
+            ))
+        }
         other => {
             return Err(ConfigError::Unsupported(format!(
-                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel)",
+                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr)",
                 entry.prefix()
             )))
         }
@@ -1748,6 +1893,222 @@ fn parse_trusttunnel(entry: &mut Entry<'_>) -> Result<TrustTunnelOutbound, Confi
     })
 }
 
+/// ShadowsocksR (`adapter/outbound/shadowsocksr.go`). The pinned type requires
+/// `cipher`, `password`, `protocol` and `obfs`; only the stream ciphers plus
+/// `protocol: origin` and `obfs: plain` are implemented here. The SSR plugin
+/// layers (`auth_*`, `tls1.2_ticket_*`, `http_simple`, ...) are rejected by
+/// name so no configuration is loaded as compatible with a layer that would
+/// change the wire format.
+fn parse_ssr(entry: &mut Entry<'_>) -> Result<SsrOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let cipher_name = entry.required_string("cipher")?;
+    let cipher = SsrCipher::from_name(&cipher_name).ok_or_else(|| {
+        entry.unsupported(format!(
+            "option 'cipher' value '{cipher_name}' is not implemented (SSR stream ciphers: rc4-md5, aes-128/192/256-cfb, aes-128/192/256-ctr, chacha20, chacha20-ietf, xchacha20, none)"
+        ))
+    })?;
+    let password = entry
+        .string("password")?
+        .ok_or_else(|| entry.invalid("missing required option 'password' (Mihomo requires it)"))?;
+    let protocol = entry.required_string("protocol")?;
+    if protocol != "origin" {
+        return Err(entry.unsupported(format!(
+            "option 'protocol' value '{protocol}' is not implemented (origin)"
+        )));
+    }
+    let obfs = entry.required_string("obfs")?;
+    if obfs != "plain" {
+        return Err(entry.unsupported(format!(
+            "option 'obfs' value '{obfs}' is not implemented (plain)"
+        )));
+    }
+    // `origin`/`plain` ignore their parameter in the pinned implementation.
+    let protocol_param = entry.string("protocol-param")?.filter(|s| !s.is_empty());
+    let obfs_param = entry.string("obfs-param")?.filter(|s| !s.is_empty());
+    if entry.bool("udp")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'udp' is not implemented for ssr (no UDP association)",
+        ));
+    }
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "password",
+        "cipher",
+        "obfs",
+        "obfs-param",
+        "protocol",
+        "protocol-param",
+        "udp",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, false, None)?;
+    Ok(SsrOutbound {
+        server,
+        port,
+        password: Secret::new(password),
+        cipher,
+        protocol,
+        protocol_param,
+        obfs,
+        obfs_param,
+        dialer_proxy,
+    })
+}
+
+/// SSH (`adapter/outbound/ssh.go`): password and inline-PEM public-key
+/// authentication, one `direct-tcpip` channel per dial. The pinned outbound
+/// reuses one SSH client for every session; this kernel opens one connection
+/// per dial (same wire behaviour, no shared-client lifecycle).
+fn parse_ssh(entry: &mut Entry<'_>) -> Result<SshOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    // The pinned `SshOption.UserName` has no `omitempty`, so Mihomo reports
+    // "unset fields: username" when it is absent; an empty value is accepted.
+    let username = entry
+        .string("username")?
+        .ok_or_else(|| entry.invalid("missing required option 'username' (Mihomo requires it)"))?;
+    let password = entry
+        .string("password")?
+        .filter(|value| !value.is_empty())
+        .map(Secret::new);
+    let private_key = entry
+        .string("private-key")?
+        .filter(|value| !value.is_empty());
+    let private_key_passphrase = entry
+        .string("private-key-passphrase")?
+        .filter(|value| !value.is_empty())
+        .map(Secret::new);
+    if let Some(pem) = &private_key {
+        if !pem.contains("PRIVATE KEY") {
+            return Err(entry.unsupported(
+                "option 'private-key' file paths are not implemented (inline PEM only)",
+            ));
+        }
+        let parsed = russh::keys::PrivateKey::from_openssh(pem.as_bytes()).map_err(|e| {
+            entry.invalid(format!("option 'private-key' is not a valid PEM key: {e}"))
+        })?;
+        if parsed.is_encrypted() {
+            let Some(passphrase) = &private_key_passphrase else {
+                return Err(entry.invalid(
+                    "option 'private-key' is encrypted but 'private-key-passphrase' is absent",
+                ));
+            };
+            parsed.decrypt(passphrase.expose().as_bytes()).map_err(|e| {
+                entry.invalid(format!("option 'private-key-passphrase' does not decrypt the key: {e}"))
+            })?;
+        }
+    }
+    let host_key = entry.string_list("host-key")?;
+    for line in &host_key {
+        russh::keys::PublicKey::from_openssh(line).map_err(|e| {
+            entry.invalid(format!("option 'host-key' is not an authorized key: {e}"))
+        })?;
+    }
+    let host_key_algorithms = entry.string_list("host-key-algorithms")?;
+    for name in &host_key_algorithms {
+        use std::str::FromStr;
+        russh::keys::Algorithm::from_str(name).map_err(|e| {
+            entry.invalid(format!("option 'host-key-algorithms' entry '{name}': {e}"))
+        })?;
+    }
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "username",
+        "password",
+        "private-key",
+        "private-key-passphrase",
+        "host-key",
+        "host-key-algorithms",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, false, None)?;
+    Ok(SshOutbound {
+        server,
+        port,
+        username,
+        password,
+        private_key: private_key.map(Secret::new),
+        private_key_passphrase,
+        host_key,
+        host_key_algorithms,
+        dialer_proxy,
+    })
+}
+
+/// Gost relay (`adapter/outbound/gost_relay.go`, `transport/gost/relay.go`):
+/// TCP relay with optional TLS, user authentication and target-address
+/// feature. `udp` and `mux` are declared by the pinned type but need a UDP
+/// association or an smux session this kernel does not implement.
+fn parse_gost_relay(entry: &mut Entry<'_>) -> Result<GostRelayOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let forward = entry.bool("forward")?.unwrap_or(false);
+    let tls = entry.bool("tls")?.unwrap_or(false);
+    let tls_settings = entry.tls_settings(true, false)?;
+    let username = entry
+        .string("username")?
+        .filter(|value| !value.is_empty())
+        .map(Secret::new);
+    let password = entry
+        .string("password")?
+        .filter(|value| !value.is_empty())
+        .map(Secret::new);
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    if entry.bool("udp")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'udp' is not implemented for gost-relay (no UDP association)",
+        ));
+    }
+    if entry.bool("mux")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'mux' is not implemented for gost-relay (no smux session)",
+        ));
+    }
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "forward",
+        "udp",
+        "tls",
+        "mux",
+        "sni",
+        "username",
+        "password",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "client-fingerprint",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, tls, None)?;
+    Ok(GostRelayOutbound {
+        server,
+        port,
+        forward,
+        tls,
+        tls_settings,
+        username,
+        password,
+        dialer_proxy,
+    })
+}
+
 fn display(raw: &str) -> String {
     if raw.is_empty() {
         "-".to_string()
@@ -1760,6 +2121,7 @@ fn display(raw: &str) -> String {
 pub fn supported_protocol_names() -> &'static [&'static str] {
     &[
         "socks5", "http", "ss", "trojan", "vless", "anytls", "vmess", "snell", "trusttunnel",
+        "gost-relay", "ssh", "ssr",
     ]
 }
 

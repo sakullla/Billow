@@ -253,25 +253,31 @@ proxies:
   - {name: vm, type: vmess, server: 127.0.0.1, port: 443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto}
   - {name: sn, type: snell, server: 127.0.0.1, port: 443, psk: p, version: 3}
   - {name: tt, type: trusttunnel, server: 127.0.0.1, port: 443, username: u, password: p}
+  - {name: gr, type: gost-relay, server: 127.0.0.1, port: 9000, forward: true, tls: true, sni: gr.example, username: u, password: p}
+  - {name: sh, type: ssh, server: 127.0.0.1, port: 22, username: u, password: p}
+  - {name: sr, type: ssr, server: 127.0.0.1, port: 8388, cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain}
 rules:
   - DOMAIN,a.example,ss1
   - MATCH,h1
 "#;
     let loaded = load_config(yaml, "test.yaml").expect("accepted");
     let config = loaded.config;
-    assert_eq!(config.proxies.len(), 8);
+    assert_eq!(config.proxies.len(), 11);
     assert_eq!(config.proxies[0].type_name(), "socks5");
     assert_eq!(config.proxies[2].type_name(), "ss");
     assert!(config.proxies[2].udp_enabled());
     assert_eq!(config.proxies[5].type_name(), "vmess");
     assert_eq!(config.proxies[6].type_name(), "snell");
     assert_eq!(config.proxies[7].type_name(), "trusttunnel");
+    assert_eq!(config.proxies[8].type_name(), "gost-relay");
+    assert_eq!(config.proxies[9].type_name(), "ssh");
+    assert_eq!(config.proxies[10].type_name(), "ssr");
     assert!(!config.proxies[5].udp_enabled());
     assert_eq!(config.action_name(billow_kernel::Action::Proxy(2)), "ss1");
     assert_eq!(config.action_name(billow_kernel::Action::Proxy(1)), "h1");
     assert!(config
         .feature_summary()
-        .contains("protocols=s5=socks5,h1=http,ss1=ss,tj=trojan,vl=vless,vm=vmess,sn=snell,tt=trusttunnel"));
+        .contains("protocols=s5=socks5,h1=http,ss1=ss,tj=trojan,vl=vless,vm=vmess,sn=snell,tt=trusttunnel,gr=gost-relay,sh=ssh,sr=ssr"));
 }
 
 #[test]
@@ -845,5 +851,122 @@ fn trusttunnel_options_are_strict() {
         let yaml = format!("proxies:\n  - {{name: tt, type: trusttunnel, server: x, port: 1, {field}: {value}}}\nrules: ['MATCH,tt']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+    }
+}
+
+#[test]
+fn gost_relay_options_are_strict() {
+    let ok = "proxies:\n  - {name: gr, type: gost-relay, server: 127.0.0.1, port: 9000, forward: true, tls: true, sni: gr.example, username: u, password: p, skip-cert-verify: true}\nrules: ['MATCH,gr']\n";
+    let loaded = load_config(ok, "t").expect("gost-relay accepted");
+    assert_eq!(loaded.config.proxies[0].type_name(), "gost-relay");
+    // `forward: false`, empty credentials and `udp: false` state the same
+    // thing the kernel does, so they load.
+    load_config(
+        "proxies:\n  - {name: gr, type: gost-relay, server: 127.0.0.1, port: 9000, forward: false, udp: false, username: '', password: ''}\nrules: ['MATCH,gr']\n",
+        "t",
+    )
+    .expect("disabled forms load");
+    for (field, value) in [
+        ("udp", "true"),
+        ("mux", "true"),
+        ("name-cert-verify", "example.org"),
+        ("fingerprint", "sha256"),
+        ("certificate", "cert.pem"),
+        ("private-key", "key.pem"),
+        ("client-fingerprint", "chrome"),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: gr, type: gost-relay, server: x, port: 1, tls: true, {field}: {value}}}\nrules: ['MATCH,gr']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+    }
+}
+
+#[test]
+fn ssh_options_are_strict() {
+    let ok = "proxies:\n  - {name: sh, type: ssh, server: 127.0.0.1, port: 22, username: u, password: p}\nrules: ['MATCH,sh']\n";
+    let loaded = load_config(ok, "t").expect("ssh accepted");
+    assert_eq!(loaded.config.proxies[0].type_name(), "ssh");
+    // Inline PEM and pinned host keys are parsed at load time, as Mihomo
+    // parses them when it constructs the outbound.
+    let key = russh::keys::PrivateKey::random(
+        &mut rand::rngs::OsRng,
+        russh::keys::Algorithm::Ed25519,
+    )
+    .expect("key");
+    let pem = key
+        .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+        .expect("pem");
+    let authorized = key.public_key().to_openssh().expect("authorized key");
+    let yaml = format!(
+        "proxies:\n  - name: sh\n    type: ssh\n    server: 127.0.0.1\n    port: 22\n    username: u\n    private-key: |\n{}    host-key: [\"{authorized}\"]\n    host-key-algorithms: [ssh-ed25519]\nrules: ['MATCH,sh']\n",
+        pem.lines().map(|line| format!("      {line}\n")).collect::<String>()
+    );
+    load_config(&yaml, "t").expect("inline key, host key and algorithm accepted");
+    for (field, value) in [
+        ("tfo", "true"),
+        ("mptcp", "true"),
+        ("interface-name", "en0"),
+        ("routing-mark", "1"),
+        ("ip-version", "ipv4"),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: sh, type: ssh, server: x, port: 22, username: u, {field}: {value}}}\nrules: ['MATCH,sh']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+    }
+    let e = proxy_err("proxies:\n  - {name: sh, type: ssh, server: x, port: 22, password: p}\nrules: ['MATCH,sh']\n");
+    assert!(e.contains("missing required option 'username'"), "{e}");
+    let e = proxy_err("proxies:\n  - {name: sh, type: ssh, server: x, port: 22, username: u, private-key: /tmp/id_ed25519}\nrules: ['MATCH,sh']\n");
+    assert!(e.contains("option 'private-key' file paths are not implemented"), "{e}");
+    let e = proxy_err("proxies:\n  - {name: sh, type: ssh, server: x, port: 22, username: u, host-key: [not-a-key]}\nrules: ['MATCH,sh']\n");
+    assert!(e.contains("option 'host-key'"), "{e}");
+    let e = proxy_err("proxies:\n  - {name: sh, type: ssh, server: x, port: 22, username: u, host-key-algorithms: [nope]}\nrules: ['MATCH,sh']\n");
+    assert!(e.contains("option 'host-key-algorithms'"), "{e}");
+}
+
+#[test]
+fn ssr_options_are_strict() {
+    let ok = "proxies:\n  - {name: sr, type: ssr, server: 127.0.0.1, port: 8388, cipher: AES-256-CFB, password: p, protocol: origin, protocol-param: ignored, obfs: plain, obfs-param: ignored}\nrules: ['MATCH,sr']\n";
+    let loaded = load_config(ok, "t").expect("ssr accepted");
+    assert_eq!(loaded.config.proxies[0].type_name(), "ssr");
+    load_config(
+        "proxies:\n  - {name: sr, type: ssr, server: x, port: 1, cipher: none, password: '', protocol: origin, obfs: plain, udp: false}\nrules: ['MATCH,sr']\n",
+        "t",
+    )
+    .expect("dummy cipher with an empty password and udp: false loads");
+    for (field, value) in [
+        ("protocol", "auth_chain_a"),
+        ("obfs", "tls1.2_ticket_auth"),
+        ("cipher", "aes-256-gcm"),
+        ("udp", "true"),
+        ("tfo", "true"),
+    ] {
+        // protocol/obfs/cipher are required, so replace the base value
+        // instead of adding a duplicate key.
+        let base = match field {
+            "protocol" => format!("cipher: aes-256-cfb, password: p, protocol: {value}, obfs: plain"),
+            "obfs" => format!("cipher: aes-256-cfb, password: p, protocol: origin, obfs: {value}"),
+            "cipher" => format!("cipher: {value}, password: p, protocol: origin, obfs: plain"),
+            _ => format!("cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain, {field}: {value}"),
+        };
+        let yaml = format!("proxies:\n  - {{name: sr, type: ssr, server: x, port: 1, {base}}}\nrules: ['MATCH,sr']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+    }
+    let e = proxy_err("proxies:\n  - {name: sr, type: ssr, server: x, port: 1, cipher: aes-256-cfb, password: p, obfs: plain}\nrules: ['MATCH,sr']\n");
+    assert!(e.contains("missing required option 'protocol'"), "{e}");
+}
+
+#[test]
+fn deferred_t11_families_name_their_decision() {
+    for (kind, needle) in [
+        ("mieru", "enfein/mieru"),
+        ("masque", "QUIC stack"),
+        ("sudoku", "split into its own task"),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: p, type: {kind}, server: x, port: 1}}\nrules: ['MATCH,p']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(&format!("type={kind}")), "{kind}: {e}");
+        assert!(e.contains("is not implemented"), "{kind}: {e}");
+        assert!(e.contains(needle), "{kind}: {e}");
     }
 }

@@ -133,7 +133,10 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   for (const type of ['ss', 'socks5', 'http', 'trojan', 'vless', 'anytls', 'vmess', 'snell', 'trusttunnel']) {
     assert.equal(mapping.proxies[type]?.status, 'implemented', `${type} is implemented and tested`)
   }
-  for (const type of ['ssr', 'ssh', 'mieru', 'masque', 'gost-relay', 'sudoku', 'hysteria2', 'tuic', 'wireguard']) {
+  for (const type of ['ssr', 'ssh', 'gost-relay']) {
+    assert.equal(mapping.proxies[type]?.status, 'partial', `${type} is partially implemented with the gaps named`)
+  }
+  for (const type of ['mieru', 'masque', 'sudoku', 'hysteria2', 'tuic', 'wireguard']) {
     assert.notEqual(mapping.proxies[type]?.status, 'implemented', `${type} must not be claimed`)
   }
   assert.ok(mapping.platform.verified.length > 0)
@@ -144,7 +147,7 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   for (const [type, entry] of Object.entries(peers.families)) {
     assert.equal(entry.status === 'pass', true, `${type} has a real-peer result`)
     assert.ok(entry.cases.positive.length > 0 && entry.cases.negative.length > 0, `${type} covers success and failure`)
-    assert.match(entry.command, /mihomo_peers/)
+    assert.match(entry.command, /mihomo_peers|protocols\.rs/)
   }
   // UDP must be real-peer verified for the families that claim it, and the
   // command must work from the crate directory (an absolute binary path).
@@ -158,6 +161,11 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
     )
   }
   assert.match(peers.command, /KC_MIHOMO_BIN=\/|KC_MIHOMO_BIN=[A-Z]:\\/)
+  assert.equal(peers.controlledPeers?.command, 'tool/kernel-compat/family-peers.sh')
+  assert.equal(peers.controlledPeers?.result.passed, peers.controlledPeers?.result.cases)
+  for (const family of peers.controlledPeers?.families ?? []) {
+    assert.equal(peers.families[family]?.status, 'pass', `${family} has a controlled-peer result`)
+  }
   assert.equal(peers.result.passed, peers.result.cases)
   assert.ok(
     allCases.some((name) => name.includes('chained_ss_udp')),

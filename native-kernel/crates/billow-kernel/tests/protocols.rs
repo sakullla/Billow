@@ -56,6 +56,19 @@ fn detail(log: &Log) -> Vec<String> {
         .collect()
 }
 
+/// Wait for the peer's log to contain a line with `prefix`. A peer writes its
+/// reply before it records the attempt, so a negative case can observe the
+/// client failure a moment before the peer's own line appears.
+async fn wait_detail_prefix(log: &Log, prefix: &str) -> bool {
+    for _ in 0..200 {
+        if detail(log).iter().any(|d| d.starts_with(prefix)) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
 fn forwarded_count(log: &Log) -> usize {
     log.lock().unwrap().iter().filter(|a| a.forwarded).count()
 }
@@ -1765,7 +1778,7 @@ async fn http_connect_outbound_wrong_password_is_refused() {
     assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
     assert_eq!(received.load(Ordering::Relaxed), 0);
     assert!(
-        detail(&log).iter().any(|d| d.starts_with("407")),
+        wait_detail_prefix(&log, "407").await,
         "{:?}",
         detail(&log)
     );
@@ -2321,6 +2334,30 @@ async fn embedded_api_tunnels_through_a_protocol_outbound() {
     kernel.stop().unwrap();
 }
 
+
+/// The library entry point carries the T11 families: a host that embeds the
+/// kernel (the iOS extension, `examples/embed.rs`) can load and dial them
+/// without the CLI. The tunnel runs through the controlled gost-relay peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn embedded_api_loads_and_dials_the_t11_outbounds() {
+    let (peer_port, _log) = gost_peer(GostMode::default(), None).await;
+    let (target_port, received) = echo_target().await;
+    let yaml = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}}}\n  - {{name: sh, type: ssh, server: 127.0.0.1, port: {peer_port}, username: u, password: p}}\n  - {{name: sr, type: ssr, server: 127.0.0.1, port: {peer_port}, cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain}}\nrules:\n  - 'MATCH,gr'\n",
+        free_port()
+    );
+    let (mut kernel, _) = Kernel::start_from_yaml(&yaml, None, limits()).unwrap();
+    let features = kernel.identity().features.clone();
+    assert!(features.contains("gr=gost-relay"), "{features}");
+    assert!(features.contains("sh=ssh"), "{features}");
+    assert!(features.contains("sr=ssr"), "{features}");
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"embedded-t11")
+        .await
+        .expect("embedded gost-relay roundtrip");
+    assert_eq!(back, b"embedded-t11");
+    wait_for(&received, 12).await;
+    kernel.stop().unwrap();
+}
 
 /// The configuration's own trust anchors (`tls.custom-cert`) are installed for
 /// every outbound TLS dial: the same private-CA peer succeeds when the CA is
@@ -3149,4 +3186,908 @@ fn config_errors_tag_the_exact_proxy_field() {
             .contains("proxies[0] (name=s1, type=hysteria2)"),
         "{err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gost relay v2 (transport/gost/relay.go): controlled server peer.
+//
+// The pinned Mihomo has no relay listener, so the server side below is an
+// independent implementation of the version-1 request/response header from the
+// pinned source. `tool/kernel-compat/peers/gost-relay-server` is the same peer
+// in Go, used by `tool/kernel-compat/family-peers.sh` as a cross-check that
+// the Rust client does not merely agree with itself.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+struct GostMode {
+    require_auth: Option<(String, String)>,
+    forward: Option<u16>,
+    bad_version: bool,
+}
+
+fn parse_gost_addr(bytes: &[u8]) -> Option<(String, u16)> {
+    let (host, rest) = match bytes.first()? {
+        0x01 if bytes.len() >= 7 => {
+            let ip = std::net::Ipv4Addr::new(bytes[1], bytes[2], bytes[3], bytes[4]);
+            (ip.to_string(), &bytes[5..])
+        }
+        0x04 if bytes.len() >= 19 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&bytes[1..17]);
+            (std::net::Ipv6Addr::from(octets).to_string(), &bytes[17..])
+        }
+        0x03 if bytes.len() >= 2 => {
+            let len = bytes[1] as usize;
+            if bytes.len() < 2 + len + 2 {
+                return None;
+            }
+            (
+                String::from_utf8(bytes[2..2 + len].to_vec()).ok()?,
+                &bytes[2 + len..],
+            )
+        }
+        _ => return None,
+    };
+    if rest.len() < 2 {
+        return None;
+    }
+    Some((host, u16::from_be_bytes([rest[0], rest[1]])))
+}
+
+async fn gost_peer(mode: GostMode, tls_cert: Option<&Cert>) -> (u16, Log) {
+    let std_listener = common::bind_loopback();
+    let port = std_listener.local_addr().unwrap().port();
+    std_listener.set_nonblocking(true).unwrap();
+    let listener = TcpListener::from_std(std_listener).unwrap();
+    let acceptor = tls_cert.map(tls_acceptor);
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let log_task = log.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let mode = mode.clone();
+            let log = log_task.clone();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                match acceptor {
+                    Some(acceptor) => match acceptor.accept(stream).await {
+                        Ok(tls) => serve_gost(tls, mode, log).await,
+                        Err(e) => push(
+                            &log,
+                            Attempt {
+                                details: vec![format!("tls-error={e}")],
+                                forwarded: false,
+                            },
+                        ),
+                    },
+                    None => serve_gost(stream, mode, log).await,
+                }
+            });
+        }
+    });
+    (port, log)
+}
+
+async fn serve_gost<S>(mut stream: S, mode: GostMode, log: Log)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+                let mut header = [0u8; 4];
+                if stream.read_exact(&mut header).await.is_err() {
+                    return;
+                }
+                let version = header[0];
+                let mut features = vec![0u8; u16::from_be_bytes([header[2], header[3]]) as usize];
+                if stream.read_exact(&mut features).await.is_err() {
+                    return;
+                }
+                let mut pos = 0;
+                let mut auth: Option<(String, String)> = None;
+                let mut addr: Option<(String, u16)> = None;
+                let mut network: u16 = 0xffff;
+                while pos + 3 <= features.len() {
+                    let kind = features[pos];
+                    let len = u16::from_be_bytes([features[pos + 1], features[pos + 2]]) as usize;
+                    let payload = &features[pos + 3..pos + 3 + len];
+                    match kind {
+                        0x01 => {
+                            let ulen = payload[0] as usize;
+                            let user = String::from_utf8_lossy(&payload[1..1 + ulen]).into_owned();
+                            let plen = payload[1 + ulen] as usize;
+                            let pass = String::from_utf8_lossy(
+                                &payload[2 + ulen..2 + ulen + plen],
+                            )
+                            .into_owned();
+                            auth = Some((user, pass));
+                        }
+                        0x02 => addr = parse_gost_addr(payload),
+                        0x04 => network = u16::from_be_bytes([payload[0], payload[1]]),
+                        _ => {}
+                    }
+                    pos += 3 + len;
+                }
+                if mode.bad_version {
+                    let _ = stream.write_all(&[0x02, 0x00, 0x00, 0x00]).await;
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec!["bad-version-sent".to_string()],
+                            forwarded: false,
+                        },
+                    );
+                    return;
+                }
+                if let Some((user, pass)) = &mode.require_auth {
+                    if auth.as_ref() != Some(&(user.clone(), pass.clone())) {
+                        let _ = stream.write_all(&[0x01, 0x02, 0x00, 0x00]).await;
+                        push(
+                            &log,
+                            Attempt {
+                                details: vec![format!("unauthorized auth={auth:?}")],
+                                forwarded: false,
+                            },
+                        );
+                        return;
+                    }
+                }
+                let target = match (addr, mode.forward) {
+                    (Some(addr), _) => addr,
+                    (None, Some(port)) => ("127.0.0.1".to_string(), port),
+                    (None, None) => {
+                        let _ = stream.write_all(&[0x01, 0x01, 0x00, 0x00]).await;
+                        push(
+                            &log,
+                            Attempt {
+                                details: vec!["missing-address".to_string()],
+                                forwarded: false,
+                            },
+                        );
+                        return;
+                    }
+                };
+                let upstream = match TcpStream::connect((target.0.as_str(), target.1)).await {
+                    Ok(upstream) => upstream,
+                    Err(e) => {
+                        let _ = stream.write_all(&[0x01, 0x06, 0x00, 0x00]).await;
+                        push(
+                            &log,
+                            Attempt {
+                                details: vec![format!("target-error={e}")],
+                                forwarded: false,
+                            },
+                        );
+                        return;
+                    }
+                };
+                let _ = stream.write_all(&[0x01, 0x00, 0x00, 0x00]).await;
+                push(
+                    &log,
+                    Attempt {
+                        details: vec![
+                            format!("version={version}"),
+                            format!("network={network}"),
+                            format!("target={}:{}", target.0, target.1),
+                            format!("auth={auth:?}"),
+                        ],
+                        forwarded: true,
+                    },
+                );
+                let mut upstream = upstream;
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+}
+
+async fn gost_roundtrip(proxy: SocketAddr, target: &str, payload: &[u8]) -> io::Result<Vec<u8>> {
+    let (mut stream, status) = http_connect(proxy, target).await?;
+    assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    stream.write_all(payload).await?;
+    let mut back = vec![0u8; payload.len()];
+    stream.read_exact(&mut back).await?;
+    Ok(back)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_outbound_relays_to_the_address_feature_target() {
+    let (peer_port, log) = gost_peer(GostMode::default(), None).await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("gost");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!("  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}}}\n"),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    let payload = b"tagged-gost-relay-payload";
+    let back = gost_roundtrip(
+        kernel.listen_addr(),
+        &format!("127.0.0.1:{target_port}"),
+        payload,
+    )
+    .await
+    .unwrap();
+    assert_eq!(back, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(
+        details
+            .iter()
+            .any(|d| d == &format!("target=127.0.0.1:{target_port}")),
+        "{details:?}"
+    );
+    assert!(details.iter().any(|d| d == "network=0"), "{details:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_outbound_sends_user_auth_and_forward_omits_the_address() {
+    let (target_port, received) = echo_target().await;
+    let mode = GostMode {
+        require_auth: Some(("relay-user".into(), "relay-pass".into())),
+        forward: Some(target_port),
+        bad_version: false,
+    };
+    let (peer_port, log) = gost_peer(mode, None).await;
+    let dir = scratch("gost-forward");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}, forward: true, username: relay-user, password: relay-pass}}\n"
+        ),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    // The CONNECT target is deliberately a dead port: `forward: true` must
+    // send no address feature, so the peer uses its own forward target.
+    let payload = b"tagged-gost-forward";
+    let back = gost_roundtrip(
+        kernel.listen_addr(),
+        &format!("127.0.0.1:{}", common::free_port()),
+        payload,
+    )
+    .await
+    .unwrap();
+    assert_eq!(back, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(
+        details
+            .iter()
+            .any(|d| d == "auth=Some((\"relay-user\", \"relay-pass\"))"),
+        "{details:?}"
+    );
+    assert!(
+        details
+            .iter()
+            .any(|d| d == &format!("target=127.0.0.1:{target_port}")),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_outbound_wrong_credentials_never_reach_the_target() {
+    let mode = GostMode {
+        require_auth: Some(("relay-user".into(), "relay-pass".into())),
+        ..GostMode::default()
+    };
+    let (peer_port, log) = gost_peer(mode, None).await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("gost-bad-auth");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}, username: relay-user, password: wrong}}\n"
+        ),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    let (_, status) = http_connect(
+        kernel.listen_addr(),
+        &format!("127.0.0.1:{target_port}"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    assert_eq!(received.load(Ordering::Relaxed), 0);
+    assert!(
+        wait_detail_prefix(&log, "unauthorized").await,
+        "{:?}",
+        detail(&log)
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_outbound_rejects_a_bad_response_version() {
+    let (peer_port, log) = gost_peer(
+        GostMode {
+            bad_version: true,
+            ..GostMode::default()
+        },
+        None,
+    )
+    .await;
+    let (target_port, _received) = echo_target().await;
+    let dir = scratch("gost-bad-version");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!("  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}}}\n"),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    let (_, status) = http_connect(
+        kernel.listen_addr(),
+        &format!("127.0.0.1:{target_port}"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    assert!(
+        wait_detail_prefix(&log, "bad-version-sent").await,
+        "{:?}",
+        detail(&log)
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_outbound_over_tls_relays_and_verifies_the_certificate() {
+    let cert = require_cert("gost-relay");
+    let (peer_port, log) = gost_peer(GostMode::default(), Some(&cert)).await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("gost-tls");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}, tls: true, sni: localhost, skip-cert-verify: true}}\n"
+        ),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    let payload = b"tagged-gost-tls";
+    let back = gost_roundtrip(
+        kernel.listen_addr(),
+        &format!("127.0.0.1:{target_port}"),
+        payload,
+    )
+    .await
+    .unwrap();
+    assert_eq!(back, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(
+        details
+            .iter()
+            .any(|d| d == &format!("target=127.0.0.1:{target_port}")),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// SSH (adapter/outbound/ssh.go): controlled russh server peer.
+//
+// The pinned Mihomo has no SSH listener. This peer is a real SSH server built
+// on the same `russh` crate the outbound uses for its client side; it accepts
+// password or public-key authentication and opens the requested
+// `direct-tcpip` channel to a loopback echo target. The wire behaviour under
+// test is the client's, so sharing the SSH implementation does not hide a
+// client-side framing bug (the server enforces the protocol independently).
+// ---------------------------------------------------------------------------
+
+struct SshPeerState {
+    username: String,
+    password: String,
+    client_key: Option<russh::keys::PublicKey>,
+    log: Log,
+}
+
+#[derive(Clone)]
+struct SshPeer {
+    state: Arc<SshPeerState>,
+}
+
+impl russh::server::Server for SshPeer {
+    type Handler = SshPeer;
+
+    fn new_client(&mut self, _peer: Option<std::net::SocketAddr>) -> Self {
+        self.clone()
+    }
+
+    fn handle_session_error(&mut self, error: <Self::Handler as russh::server::Handler>::Error) {
+        push(
+            &self.state.log,
+            Attempt {
+                details: vec![format!("session-error={error}")],
+                forwarded: false,
+            },
+        );
+    }
+}
+
+impl russh::server::Handler for SshPeer {
+    type Error = russh::Error;
+
+    async fn auth_password(
+        &mut self,
+        user: &str,
+        password: &str,
+    ) -> Result<russh::server::Auth, Self::Error> {
+        let ok = user == self.state.username && password == self.state.password;
+        push(
+            &self.state.log,
+            Attempt {
+                details: vec![format!("auth-password user={user} ok={ok}")],
+                forwarded: false,
+            },
+        );
+        Ok(if ok {
+            russh::server::Auth::Accept
+        } else {
+            russh::server::Auth::reject()
+        })
+    }
+
+    async fn auth_publickey(
+        &mut self,
+        user: &str,
+        key: &russh::keys::PublicKey,
+    ) -> Result<russh::server::Auth, Self::Error> {
+        let ok = user == self.state.username
+            && self
+                .state
+                .client_key
+                .as_ref()
+                .is_none_or(|expected| expected.key_data() == key.key_data());
+        push(
+            &self.state.log,
+            Attempt {
+                details: vec![format!("auth-publickey user={user} ok={ok}")],
+                forwarded: false,
+            },
+        );
+        Ok(if ok {
+            russh::server::Auth::Accept
+        } else {
+            russh::server::Auth::reject()
+        })
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::server::Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut russh::server::Session,
+    ) -> Result<bool, Self::Error> {
+        let host = host_to_connect.to_string();
+        let port = port_to_connect as u16;
+        push(
+            &self.state.log,
+            Attempt {
+                details: vec![format!("direct-tcpip {host}:{port}")],
+                forwarded: true,
+            },
+        );
+        tokio::spawn(async move {
+            let mut channel = channel.into_stream();
+            if let Ok(mut upstream) = TcpStream::connect((host.as_str(), port)).await {
+                let _ = tokio::io::copy_bidirectional(&mut channel, &mut upstream).await;
+            }
+        });
+        Ok(true)
+    }
+}
+
+async fn ssh_peer(
+    username: &str,
+    password: &str,
+    client_key: Option<russh::keys::PublicKey>,
+) -> (u16, Log, russh::keys::PrivateKey) {
+    let host_key =
+        russh::keys::PrivateKey::random(&mut rand::rngs::OsRng, russh::keys::Algorithm::Ed25519)
+            .expect("generate ssh host key");
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let config = Arc::new(russh::server::Config {
+        keys: vec![host_key.clone()],
+        inactivity_timeout: Some(Duration::from_secs(30)),
+        auth_rejection_time: Duration::from_millis(10),
+        auth_rejection_time_initial: Some(Duration::from_millis(0)),
+        ..Default::default()
+    });
+    let mut server = SshPeer {
+        state: Arc::new(SshPeerState {
+            username: username.to_string(),
+            password: password.to_string(),
+            client_key,
+            log: log.clone(),
+        }),
+    };
+    tokio::spawn(async move {
+        let _ = russh::server::Server::run_on_socket(&mut server, config, &listener).await;
+    });
+    (port, log, host_key)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssh_outbound_password_auth_relays_direct_tcpip() {
+    let (peer_port, log, _host_key) = ssh_peer("tester", "secret", None).await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("ssh-password");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: sp, type: ssh, server: 127.0.0.1, port: {peer_port}, username: tester, password: secret}}\n"
+        ),
+        "sp",
+        limits(),
+    )
+    .unwrap();
+    let payload = b"tagged-ssh-password";
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, payload)
+        .await
+        .unwrap();
+    assert_eq!(back, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(
+        details.iter().any(|d| d == "auth-password user=tester ok=true"),
+        "{details:?}"
+    );
+    assert!(
+        details
+            .iter()
+            .any(|d| d == &format!("direct-tcpip 127.0.0.1:{target_port}")),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssh_outbound_wrong_password_never_reaches_the_target() {
+    let (peer_port, log, _host_key) = ssh_peer("tester", "secret", None).await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("ssh-bad-password");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: sp, type: ssh, server: 127.0.0.1, port: {peer_port}, username: tester, password: wrong}}\n"
+        ),
+        "sp",
+        limits(),
+    )
+    .unwrap();
+    let error = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"nope").await;
+    assert!(error.is_err(), "wrong password must fail the dial: {error:?}");
+    assert_eq!(received.load(Ordering::Relaxed), 0);
+    let details = detail(&log);
+    assert!(
+        details.iter().any(|d| d == "auth-password user=tester ok=false"),
+        "{details:?}"
+    );
+    assert!(
+        !details.iter().any(|d| d.starts_with("direct-tcpip")),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssh_outbound_public_key_auth_relays_direct_tcpip() {
+    let client_key =
+        russh::keys::PrivateKey::random(&mut rand::rngs::OsRng, russh::keys::Algorithm::Ed25519)
+            .expect("generate client key");
+    let client_public = client_key.public_key().clone();
+    let pem = client_key
+        .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+        .expect("encode client key");
+    let (peer_port, log, _host_key) = ssh_peer("tester", "", Some(client_public)).await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("ssh-publickey");
+    let proxies = format!(
+        "  - name: sp\n    type: ssh\n    server: 127.0.0.1\n    port: {peer_port}\n    username: tester\n    private-key: |\n{}",
+        pem.lines()
+            .map(|line| format!("      {line}\n"))
+            .collect::<String>()
+    );
+    let (mut kernel, _) = start_kernel(&dir, &proxies, "sp", limits()).unwrap();
+    let payload = b"tagged-ssh-publickey";
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, payload)
+        .await
+        .unwrap();
+    assert_eq!(back, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(
+        details
+            .iter()
+            .any(|d| d == "auth-publickey user=tester ok=true"),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssh_outbound_pinned_host_key_must_match_the_server() {
+    let (peer_port, log, host_key) = ssh_peer("tester", "secret", None).await;
+    let (target_port, received) = echo_target().await;
+    let wrong_key =
+        russh::keys::PrivateKey::random(&mut rand::rngs::OsRng, russh::keys::Algorithm::Ed25519)
+            .expect("generate other key");
+    let wrong_line = wrong_key.public_key().to_openssh().unwrap();
+    let right_line = host_key.public_key().to_openssh().unwrap();
+    let dir = scratch("ssh-hostkey");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: sp, type: ssh, server: 127.0.0.1, port: {peer_port}, username: tester, password: secret, host-key: [\"{wrong_line}\"]}}\n"
+        ),
+        "sp",
+        limits(),
+    )
+    .unwrap();
+    let error = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"nope").await;
+    assert!(error.is_err(), "a mismatched host key must fail: {error:?}");
+    assert_eq!(received.load(Ordering::Relaxed), 0);
+    assert!(
+        !detail(&log).iter().any(|d| d.starts_with("direct-tcpip")),
+        "{:?}",
+        detail(&log)
+    );
+    kernel.stop().unwrap();
+
+    // The same peer is accepted once the pinned key is the server's own key.
+    let dir = scratch("ssh-hostkey-ok");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: sp, type: ssh, server: 127.0.0.1, port: {peer_port}, username: tester, password: secret, host-key: [\"{right_line}\"]}}\n"
+        ),
+        "sp",
+        limits(),
+    )
+    .unwrap();
+    let payload = b"tagged-ssh-pinned";
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, payload)
+        .await
+        .unwrap();
+    assert_eq!(back, payload.to_vec());
+    kernel.stop().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// ShadowsocksR (origin/plain subset): controlled server peer.
+//
+// The pinned Mihomo has no SSR listener. The peer wraps the same cipher stream
+// in the opposite direction, reads the IV + encrypted SOCKS address and relays
+// to a loopback echo target. Cipher correctness is pinned independently by the
+// Go vectors in `src/outbound/ssr.rs`; this peer proves the IV placement,
+// address framing and bidirectional relay of the client.
+// ---------------------------------------------------------------------------
+
+async fn ssr_peer(
+    cipher: billow_kernel::proxies::SsrCipher,
+    password: &str,
+) -> (u16, Log) {
+    let key = billow_kernel::keys::evp_bytes_to_key(password.as_bytes(), cipher.key_len());
+    let std_listener = common::bind_loopback();
+    let port = std_listener.local_addr().unwrap().port();
+    std_listener.set_nonblocking(true).unwrap();
+    let listener = TcpListener::from_std(std_listener).unwrap();
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let log_task = log.clone();
+    tokio::spawn(async move {
+        while let Ok((mut tcp, _)) = listener.accept().await {
+            let key = key.clone();
+            let log = log_task.clone();
+            tokio::spawn(async move {
+                let mut server_iv = vec![0u8; cipher.iv_len()];
+                if cipher != billow_kernel::proxies::SsrCipher::Dummy {
+                    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut server_iv);
+                    if tcp.write_all(&server_iv).await.is_err() {
+                        return;
+                    }
+                }
+                let mut stream = billow_kernel::outbound::ssr::SsrStream::new(
+                    tcp,
+                    cipher,
+                    key,
+                    server_iv,
+                );
+                // Read the encrypted SOCKS address.
+                let mut kind = [0u8; 1];
+                if stream.read_exact(&mut kind).await.is_err() {
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec!["address-error".to_string()],
+                            forwarded: false,
+                        },
+                    );
+                    return;
+                }
+                let host = match kind[0] {
+                    0x01 => {
+                        let mut octets = [0u8; 4];
+                        if stream.read_exact(&mut octets).await.is_err() {
+                            return;
+                        }
+                        std::net::Ipv4Addr::from(octets).to_string()
+                    }
+                    0x04 => {
+                        let mut octets = [0u8; 16];
+                        if stream.read_exact(&mut octets).await.is_err() {
+                            return;
+                        }
+                        std::net::Ipv6Addr::from(octets).to_string()
+                    }
+                    0x03 => {
+                        let mut len = [0u8; 1];
+                        if stream.read_exact(&mut len).await.is_err() {
+                            return;
+                        }
+                        let mut name = vec![0u8; len[0] as usize];
+                        if stream.read_exact(&mut name).await.is_err() {
+                            return;
+                        }
+                        String::from_utf8_lossy(&name).into_owned()
+                    }
+                    _ => {
+                        push(
+                            &log,
+                            Attempt {
+                                details: vec![format!("bad-address-type={}", kind[0])],
+                                forwarded: false,
+                            },
+                        );
+                        return;
+                    }
+                };
+                let mut port_bytes = [0u8; 2];
+                if stream.read_exact(&mut port_bytes).await.is_err() {
+                    return;
+                }
+                let target_port = u16::from_be_bytes(port_bytes);
+                let mut upstream = match TcpStream::connect((host.as_str(), target_port)).await {
+                    Ok(upstream) => upstream,
+                    Err(e) => {
+                        push(
+                            &log,
+                            Attempt {
+                                details: vec![format!("target-error={e}")],
+                                forwarded: false,
+                            },
+                        );
+                        return;
+                    }
+                };
+                push(
+                    &log,
+                    Attempt {
+                        details: vec![format!("target={host}:{target_port}")],
+                        forwarded: true,
+                    },
+                );
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+            });
+        }
+    });
+    (port, log)
+}
+
+async fn ssr_roundtrip(proxy: SocketAddr, target: &str, payload: &[u8]) -> io::Result<Vec<u8>> {
+    let (mut stream, status) = http_connect(proxy, target).await?;
+    assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    stream.write_all(payload).await?;
+    let mut back = vec![0u8; payload.len()];
+    stream.read_exact(&mut back).await?;
+    Ok(back)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssr_outbound_origin_plain_relays_with_aes_256_cfb() {
+    use billow_kernel::proxies::SsrCipher;
+    let (peer_port, log) = ssr_peer(SsrCipher::Aes256Cfb, "ssr-password").await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("ssr-aes");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: sr, type: ssr, server: 127.0.0.1, port: {peer_port}, cipher: aes-256-cfb, password: ssr-password, protocol: origin, obfs: plain}}\n"
+        ),
+        "sr",
+        limits(),
+    )
+    .unwrap();
+    let payload = b"tagged-ssr-aes-256-cfb";
+    let back = ssr_roundtrip(kernel.listen_addr(), &format!("127.0.0.1:{target_port}"), payload)
+        .await
+        .unwrap();
+    assert_eq!(back, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(
+        details
+            .iter()
+            .any(|d| d == &format!("target=127.0.0.1:{target_port}")),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssr_outbound_rc4_md5_and_dummy_ciphers_relay() {
+    use billow_kernel::proxies::SsrCipher;
+    for (cipher_name, cipher) in [
+        ("rc4-md5", SsrCipher::Rc4Md5),
+        ("none", SsrCipher::Dummy),
+    ] {
+        let (peer_port, _log) = ssr_peer(cipher, "ssr-password").await;
+        let (target_port, received) = echo_target().await;
+        let dir = scratch(&format!("ssr-{cipher_name}"));
+        let (mut kernel, _) = start_kernel(
+            &dir,
+            &format!(
+                "  - {{name: sr, type: ssr, server: 127.0.0.1, port: {peer_port}, cipher: {cipher_name}, password: ssr-password, protocol: origin, obfs: plain}}\n"
+            ),
+            "sr",
+            limits(),
+        )
+        .unwrap();
+        let payload = format!("tagged-ssr-{cipher_name}").into_bytes();
+        let back = ssr_roundtrip(
+            kernel.listen_addr(),
+            &format!("127.0.0.1:{target_port}"),
+            &payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(back, payload, "{cipher_name}");
+        wait_for(&received, payload.len() as u64).await;
+        kernel.stop().unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssr_outbound_wrong_password_never_reaches_the_target() {
+    use billow_kernel::proxies::SsrCipher;
+    let (peer_port, log) = ssr_peer(SsrCipher::Aes256Cfb, "right-password").await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("ssr-bad-password");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: sr, type: ssr, server: 127.0.0.1, port: {peer_port}, cipher: aes-256-cfb, password: wrong-password, protocol: origin, obfs: plain}}\n"
+        ),
+        "sr",
+        limits(),
+    )
+    .unwrap();
+    let error = ssr_roundtrip(
+        kernel.listen_addr(),
+        &format!("127.0.0.1:{target_port}"),
+        b"nope",
+    )
+    .await;
+    assert!(error.is_err(), "wrong password must not relay: {error:?}");
+    assert_eq!(received.load(Ordering::Relaxed), 0);
+    // The peer either fails to read an address (garbage decrypt) or sees an
+    // unknown address type; wait for that record so the assertion is not a
+    // race with the peer's log write.
+    let saw_rejection = wait_detail_prefix(&log, "address-error").await
+        || wait_detail_prefix(&log, "bad-address-type").await;
+    assert!(saw_rejection, "{:?}", detail(&log));
+    assert!(
+        !detail(&log).iter().any(|d| d.starts_with("target=")),
+        "{:?}",
+        detail(&log)
+    );
+    kernel.stop().unwrap();
 }

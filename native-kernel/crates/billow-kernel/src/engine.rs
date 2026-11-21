@@ -978,6 +978,9 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
         crate::proxies::Protocol::Vmess(_) => "vmess (udp: false)",
         crate::proxies::Protocol::Snell(_) => "snell (udp: false)",
         crate::proxies::Protocol::TrustTunnel(_) => "trusttunnel (udp: false)",
+        crate::proxies::Protocol::GostRelay(_) => "gost-relay (udp: false)",
+        crate::proxies::Protocol::Ssh(_) => "ssh (udp: false)",
+        crate::proxies::Protocol::Ssr(_) => "ssr (udp: false)",
     }
 }
 

@@ -4,13 +4,18 @@ An embeddable proxy engine plus a standalone process entry. No Tauri or other
 GUI dependency; the library crate also builds as a `staticlib` so the iOS
 Network Extension (T3/T7) can link it directly.
 
-Status after T9: one mixed inbound on the configured address (TCP CONNECT,
+Status after T11: one mixed inbound on the configured address (TCP CONNECT,
 SOCKS5 and SOCKS5 `UDP ASSOCIATE`), a strict subset of the clash
 configuration, `DIRECT`/`REJECT` and the protocol outbounds below with their
 transports and UDP associations. T9 added `vmess` (AEAD header), `snell`
-(v1-v3) and `trusttunnel` (TLS + HTTP/2 CONNECT); the other six T9 families
-(`ssr`, `ssh`, `mieru`, `masque`, `gost-relay`, `sudoku`) are still rejected by
-name. **Not implemented yet** (rejected with
+(v1-v3) and `trusttunnel` (TLS + HTTP/2 CONNECT). T11 added `gost-relay`
+(relay v2: TCP/TLS/auth/`forward`), `ssh` (password and inline-PEM key auth,
+host-key pinning, `direct-tcpip`) and the `ssr` stream-cipher subset
+(`protocol: origin`, `obfs: plain`). Those three are partial: their gaps are
+named in [Not implemented](#not-implemented) and in
+`tool/kernel-compat/evidence/rust-mapping.json`. `mieru`, `masque` and
+`sudoku` remain rejected by name with the decisions recorded below.
+**Not implemented yet** (rejected with
 `[unsupported]`, never ignored): DNS and `hosts`, proxy groups and providers,
 the control API (`external-controller`, `proxy-providers`, rules beyond the
 listed types), `tun`/`redir`/`tproxy`, the families listed under
@@ -28,7 +33,7 @@ native-kernel/
     │   ├── src/config.rs           # strict YAML/geosite parsing
     │   ├── src/proxies.rs          # strict `proxies:` option tables
     │   ├── src/outbound/           # socks5, http, ss, trojan, vless, anytls, vmess, snell,
-    │   │                           # trusttunnel + tls, ws, h2
+    │   │                           # trusttunnel, gost-relay, ssh, ssr + tls, ws, h2
     │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid
     │   ├── src/rules.rs            # rule set evaluation
     │   ├── src/inbound.rs          # SOCKS5 + HTTP CONNECT handshake, authentication
@@ -125,6 +130,9 @@ identities of the servers are logged as the session exit.
 | `vmess` | AEAD request header (`alterId: 0`), `cipher: auto`/`aes-128-gcm`/`chacha20-poly1305`/`none`, `tls: true`, `network: tcp`/`ws` (`ws-opts.path`, `headers`), `sni`/`servername` | no | `listeners: type: vmess` (aes-128-gcm, chacha20-poly1305, domain target), wrong uuid |
 | `snell` | v1 (chacha20-poly1305) / v2 / v3 (aes-128-gcm), Argon2id KDF, `obfs-opts: {mode: http, host}` | no | `listeners: type: snell` v1/v2/v3, v3 + http obfs, wrong psk |
 | `trusttunnel` | TLS + HTTP/2 `CONNECT`, Basic `Proxy-Authorization`, ALPN `h2`, `sni`, `skip-cert-verify` | no | `listeners: type: trusttunnel` (`network: [tcp]`), wrong password |
+| `gost-relay` | relay v2 over TCP, `tls: true` (`sni`, `skip-cert-verify`), `username`/`password`, `forward` (no address feature) | no | controlled relay-v2 server (header vectors + auth/forward/TLS/status cases); no Mihomo listener exists |
+| `ssh` | password and inline-PEM public-key auth, `private-key-passphrase`, `host-key` pinning, `host-key-algorithms`, one `direct-tcpip` channel per dial | no | controlled `russh` server (password/key/host-key cases); no Mihomo listener exists |
+| `ssr` | stream ciphers (`rc4-md5`, `aes-128/192/256-cfb`, `aes-128/192/256-ctr`, `chacha20`, `chacha20-ietf`, `xchacha20`, `none`), `protocol: origin`, `obfs: plain` | no | pinned Go cipher vectors + controlled origin/plain server; no Mihomo listener exists |
 
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
@@ -167,30 +175,38 @@ the association ends with its control connection or after
 
 ### Protocol families outside this slice
 
-The pinned parser lists 28 outbound types; this slice implements nine
+The pinned parser lists 28 outbound types. Nine are implemented
 (`ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`, `vmess`, `snell`,
-`trusttunnel`). The rest are rejected by name at load time, so no
-configuration is silently reduced. T9 delivered `vmess`, `snell` and
-`trusttunnel`; the other six non-QUIC families are still open and stay
-rejected:
+`trusttunnel`) and three are partial after T11 (`gost-relay`, `ssh`, `ssr`).
+The rest are rejected by name at load time, so no configuration is silently
+reduced:
 
-| families | why not here | task |
+| families | why not here | task / decision |
 | --- | --- | --- |
-| `ssr` | legacy stream ciphers plus the SSR `protocol`/`obfs` layers (auth_aes128_*, auth_chain_*, tls1.2_ticket_auth); needs a server fixture because the pinned Mihomo has no SSR listener | **T9** (open) |
-| `ssh` | a full SSH client (key exchange, host-key verification, `direct-tcpip`); the pure-Rust `russh` 0.64 needs Rust 1.89 while this workspace pins MSRV 1.85, and the pinned Mihomo has no SSH listener | **T9** (open) |
-| `mieru` | the pinned outbound wraps the external `enfein/mieru` v3.39.0 module (encrypted underlay, padding, handshake modes, multiplexing); no Rust port exists in this tree | **T9** (open) |
-| `masque` | HTTP/3 CONNECT-IP/CONNECT-UDP with an IP stack (or HTTP/2 capsules); the QUIC/IP-stack dependency profile overlaps T10 | **T9** (open) |
-| `gost-relay` | gost relay v2 framing; the pinned Mihomo has no relay listener | **T9** (open) |
-| `sudoku` | 13k lines of custom crypto/KIP/HTTP-mask/multiplexing in the pinned tree | **T9** (open) |
+| `mieru` | the pinned outbound wraps the external `enfein/mieru` v3.39.0 module (encrypted underlay, padding, handshake modes, multiplexing); no Rust port exists in this tree | **T11 deferred**: vendor/port the module or keep it explicitly deferred; a partial port would not be wire-compatible |
+| `masque` | HTTP/3 CONNECT-IP/CONNECT-UDP with an IP stack (or HTTP/2 capsules); the QUIC/IP-stack dependency profile overlaps T10 | **T11 deferred**: align the QUIC stack with T10/T7 before implementing (the 40 MB budget is measured there) |
+| `sudoku` | 13.6k lines of custom crypto/KIP/HTTP-mask/multiplexing in the pinned tree | **T11 deferred**: split into its own task or explicitly defer; a partial port would not be wire-compatible |
 | `hysteria`, `hysteria2`, `tuic`, `shadowquic` | QUIC-based transports (QUIC stack, congestion, UDP relay); a different dependency and memory profile | **T10** (QUIC/device families); the QUIC stack is measured against the 40 MB budget by T7 |
 | `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols with their own device/TUN ownership, which T6/T7 provide | **T10** (QUIC/device families) |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
 
-`03-execution-plan.md` defines T9 (non-QUIC), T10 (QUIC and device families)
-and T5's integration of their output; the capability index records each of the
-families above as `unimplemented`, so none can be reported as compatible.
-`vmess`, `snell` and `trusttunnel` are recorded as `implemented` with the peer
-cases that observed them.
+The partial families have their remaining gaps named in
+[Not implemented](#not-implemented): `gost-relay` rejects `udp`/`mux`;
+`ssh` rejects private-key file paths and opens one SSH client per dial;
+`ssr` implements only `protocol: origin` and `obfs: plain` with the stream
+ciphers. `ssh` uses `russh` 0.56 with the `ring` backend; `russh` 0.64
+requires Rust 1.89 and its default `aws-lc-rs` backend would add a C/CMake
+build, so it is not used. `russh` 0.56 declares MSRV 1.85 but its transitive
+`home` 0.5.12 declares 1.88 and the Windows-only `pageant` 0.2.5 declares 1.89
+(`uuid` 1.29.3 already declared 1.89 in the previous lock). The workspace MSRV
+decision (raise to 1.89 or pin compatible transitive versions) is still open
+and is recorded in the T11 result; the code compiles and every test runs on
+the current toolchain. `03-execution-plan.md`
+defines T9/T11 (non-QUIC), T10 (QUIC and device families) and T5's integration
+of their output. The capability index
+records the implemented families as `implemented`, the T11 ones as `partial`
+with the missing options, and the rest as `unimplemented`; none can be
+reported as compatible.
 
 ### Not implemented
 
@@ -208,11 +224,17 @@ With the pinned option tables that means `tfo`, `mptcp`, `interface-name`,
 `authenticated-length` and the vmess mux/TLS-mirror blocks, snell
 `version: 4-6`/`reuse`/`mode`/obfs `tls`, trusttunnel
 `udp`/`quic`/`health-check`/`max-connections`/`min-streams`/`max-streams`/
-`congestion-controller`/`cwnd`/`bbr-profile`, and `udp: true` on
-`socks5`/`vless`/`anytls`/`vmess`/`snell`/`trusttunnel` (no UDP association for
-those families). `udp: false` is accepted for those families because it states the
-same thing this kernel does; `udp` is not a Mihomo HTTP option at all and is
-rejected there. Unsupported protocol types are listed in the error message.
+`congestion-controller`/`cwnd`/`bbr-profile`, gost-relay
+`udp`/`mux`/`name-cert-verify`/`fingerprint`/`certificate`/`private-key`/
+`client-fingerprint`, ssh private-key file paths, ssr
+`protocol: auth_sha1_v4/auth_aes128_md5/auth_aes128_sha1/auth_chain_a/auth_chain_b`
+and `obfs: http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth`,
+and `udp: true` on
+`socks5`/`vless`/`anytls`/`vmess`/`snell`/`trusttunnel`/`gost-relay`/`ssr`
+(no UDP association for those families). `udp: false` is accepted for those
+families because it states the same thing this kernel does; `udp` is not a
+Mihomo HTTP option at all and is rejected there. Unsupported protocol types are
+listed in the error message.
 
 The rule is mechanical: `reject_unknown` accepts only keys the parser read and
 honoured, so a new option cannot be "documented as rejected" while being let
@@ -227,7 +249,10 @@ false}`, `ss-opts: {}`, `shadow-tls-opts: {}`, `restls-opts: {}`, `plugin-opts:
 (other fields are then ignored, as in Mihomo), and `plugin-opts` is ignored
 unless a plugin is configured. `vmess` requires `alterId` and `cipher` (Mihomo's
 decoder reports them as unset fields when absent) and only accepts
-`alterId: 0`; `snell` accepts versions 1-3 and the HTTP obfs mode. Their
+`alterId: 0`; `snell` accepts versions 1-3 and the HTTP obfs mode; `ssr`
+requires `cipher`, `password`, `protocol` and `obfs` (the pinned type declares
+them without `omitempty`), and its `origin`/`plain` layers ignore their
+`*-param` values exactly as the pinned plugins do. Their
 unimplemented options (`udp: true`, `packet-addr`, `xudp`, `packet-encoding`,
 `global-padding`, `authenticated-length`, `grpc-opts`/`h2-opts`/`http-opts`,
 `reality-opts`/`ech-opts`/`shadow-tls-opts`/`restls-opts`/`jls-opts`,
@@ -345,6 +370,11 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   entry. `vmess`, `snell` and `trusttunnel` have no loopback peer here: their
   wire formats are covered by the Go-pinned unit vectors in
   `src/outbound/{vmess,snell,trusttunnel}.rs` and by the real-peer cases below.
+  The T11 families have controlled loopback peers here: `gost-relay` (relay v2
+  header/auth/forward/TLS/status), `ssh` (a real `russh` server with password,
+  Ed25519 key and pinned-host-key cases) and `ssr` (origin/plain server plus
+  pinned Go cipher vectors); they are also the explicit entry point of
+  `tool/kernel-compat/family-peers.sh`.
 - `tests/mihomo_peers.rs` — real-peer interop: each case starts the pinned
   Mihomo v1.19.34 binary with one `listeners:` entry, the Rust kernel dials it
   as a client and the test asserts what a controlled sink received (and, for
@@ -372,6 +402,9 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   `vmess` (aes-128-gcm, chacha20-poly1305, `none`, websocket, domain target,
   wrong uuid), `snell` (v1, v2, v3 + http obfs, wrong psk) and `trusttunnel`
   (HTTP/2 CONNECT, domain target, wrong password), 36 cases in total.
+  T11's `gost-relay`, `ssh` and `ssr` have no Mihomo listener, so their peer
+  cases live in `tests/protocols.rs` and are recorded under
+  `controlledPeers` in `tool/kernel-compat/evidence/protocol-peers.json`.
 
   Observed host behaviour: starting the peer for many cases in one test process
   occasionally ends with a case where the kernel established the tunnel but the
@@ -399,6 +432,10 @@ node tool/kernel-compat/runner.mjs \
 
 # the harness's own acceptance command
 node --test tool/kernel-compat/runner.test.mjs
+
+# controlled peers for the families with no Mihomo listener (gost-relay, ssh,
+# ssr) plus the pinned SSR cipher vectors; needs `go`
+tool/kernel-compat/family-peers.sh
 ```
 
 ## Platform notes

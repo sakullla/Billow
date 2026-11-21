@@ -184,6 +184,55 @@
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: trusttunnel with `users`, `certificate`/`private-key` and `network: [tcp]`",
       "notes": "The Rust client opens TLS with ALPN h2, sends CONNECT with `Proxy-Authorization: Basic` and carries the tunnel in DATA frames; the peer forwards to the controlled sink. A wrong password is answered with 407 before any stream exists, so the sink is never reached. UDP (`_udp2`), ICMP (`_icmp`), QUIC and the pooled multiplexing options are rejected at load time."
+    },
+    "gost-relay": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "gost_relay_outbound_relays_to_the_address_feature_target",
+          "gost_relay_outbound_sends_user_auth_and_forward_omits_the_address",
+          "gost_relay_outbound_over_tls_relays_and_verifies_the_certificate"
+        ],
+        "negative": [
+          "gost_relay_outbound_wrong_credentials_never_reach_the_target",
+          "gost_relay_outbound_rejects_a_bad_response_version"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/protocols.rs (controlled loopback relay v2 server; tool/kernel-compat/family-peers.sh)",
+      "peer": "controlled gost relay v2 server in tests/protocols.rs, written from transport/gost/relay.go: version-1 header, auth/address/network features, status reply, TCP relay; TLS uses the test's private certificate",
+      "notes": "The pinned Mihomo has no relay listener. The peer is an independent server-side implementation of the pinned wire format; the client vectors in src/outbound/gost_relay.rs pin the exact bytes. UDP and smux are rejected at load time."
+    },
+    "ssh": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "ssh_outbound_password_auth_relays_direct_tcpip",
+          "ssh_outbound_public_key_auth_relays_direct_tcpip",
+          "ssh_outbound_pinned_host_key_must_match_the_server"
+        ],
+        "negative": [
+          "ssh_outbound_wrong_password_never_reaches_the_target",
+          "ssh_outbound_pinned_host_key_must_match_the_server (mismatched key)"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/protocols.rs (controlled russh server; tool/kernel-compat/family-peers.sh)",
+      "peer": "controlled SSH server built on russh in tests/protocols.rs: password and public-key auth, host-key pinning, one direct-tcpip channel per dial to a loopback echo target",
+      "notes": "The pinned Mihomo has no SSH listener. The peer enforces the SSH protocol independently of the outbound; the client is tested with password auth, Ed25519 public-key auth and a pinned host key (match and mismatch). A private-key file path is rejected at load time (inline PEM only)."
+    },
+    "ssr": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "ssr_outbound_origin_plain_relays_with_aes_256_cfb",
+          "ssr_outbound_rc4_md5_and_dummy_ciphers_relay"
+        ],
+        "negative": [
+          "ssr_outbound_wrong_password_never_reaches_the_target"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/protocols.rs (controlled origin/plain SSR server; tool/kernel-compat/family-peers.sh)",
+      "peer": "controlled SSR server for `protocol: origin`/`obfs: plain` in tests/protocols.rs (IV + encrypted SOCKS address + relay), plus pinned Go cipher vectors from transport/shadowsocks/shadowstream via tool/kernel-compat/peers/ssr-cipher-vectors",
+      "notes": "The pinned Mihomo has no SSR listener. The cipher layer is pinned byte-for-byte by Go vectors for every stream cipher; the peer proves IV placement, address framing and bidirectional relay. The auth_*/obfs plugin layers are rejected at load time, so this is recorded as a partial family."
     }
   },
   "loopbackOnlyEvidence": {
@@ -195,12 +244,12 @@
     "domain_server_chained_udp": "tests/protocols.rs::shadowsocks_udp_chained_with_a_domain_server_keeps_the_replies configures `server: localhost` behind a hop: the hop resolves the name and reports the IP in its reply header, so the kernel compares resolved addresses instead of the configured string."
   },
   "notCovered": [
-    "UDP for socks5, vless (packet-addr/XUDP) and anytls (UoT): `udp: true` is rejected at load time; no UDP association exists for those families",
+    "UDP for socks5, vless (packet-addr/XUDP), anytls (UoT), gost-relay and ssr: `udp: true` is rejected at load time; no UDP association exists for those families",
     "fragmented SOCKS5 UDP datagrams (FRAG != 0) are dropped instead of reassembled",
     "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
     "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
     "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
-    "protocol families this slice does not implement (ssr, ssh, mieru, masque, gost-relay, sudoku, the QUIC/device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented"
+    "families still unimplemented after T11 (mieru, masque, sudoku, the QUIC/device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented"
   ],
   "t9": {
     "date": "2026-11-21",
@@ -215,12 +264,49 @@
       "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
     },
     "stillUnimplemented": [
-      "ssr",
-      "ssh",
       "mieru",
       "masque",
-      "gost-relay",
       "sudoku"
+    ]
+  },
+  "controlledPeers": {
+    "command": "tool/kernel-compat/family-peers.sh",
+    "log": "tool/kernel-compat/evidence/family-peers-run.log",
+    "families": [
+      "gost-relay",
+      "ssh",
+      "ssr"
+    ],
+    "result": {
+      "cases": 12,
+      "passed": 12,
+      "failed": 0
+    },
+    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr are independent server-side implementations of the pinned wire formats (the SSR cipher bytes are additionally pinned by Go vectors); ssh uses a real SSH server. The `result` above counts the test functions in family-peers.sh (gost 5, ssh 4, ssr 3)."
+  },
+  "t11": {
+    "date": "2026-11-21",
+    "delivered": [
+      "gost-relay (partial: TCP/TLS/auth/forward)",
+      "ssh (partial: password/key/host-key/direct-tcpip)",
+      "ssr (partial: stream ciphers + origin/plain)"
+    ],
+    "run": {
+      "command": "tool/kernel-compat/family-peers.sh",
+      "result": "12 passed, 0 failed",
+      "log": "tool/kernel-compat/evidence/family-peers-run.log"
+    },
+    "deferred": {
+      "mieru": "external enfein/mieru v3.39.0 module; decision needed: vendor/port or explicit deferral",
+      "masque": "HTTP/3 + IP stack; align the QUIC dependency profile with T10/T7 before implementing",
+      "sudoku": "~13.6k lines of custom crypto/KIP/multiplexing; split into its own task or explicitly defer"
+    },
+    "platform": "macos-aarch64 for the recorded runs. The Rust peers are in-process loopback servers, so the default suite runs them on every platform the crate builds on; family-peers.sh additionally needs `go` for the pinned SSR cipher vectors (first run downloads the locked module's dependencies).",
+    "limitations": [
+      "gost-relay: UDP and smux are rejected at load time; only the TCP relay (plain/TLS) is implemented.",
+      "ssh: private-key file paths are rejected (inline PEM only) and each dial opens its own SSH client; Mihomo reuses one client per proxy.",
+      "ssr: only `protocol: origin` and `obfs: plain`; the auth_*/tls1.2_ticket_*/http_simple plugin layers are rejected by name.",
+      "mieru, masque and sudoku remain unimplemented with the decisions in rust-mapping.json#familiesNotImplemented."
     ]
   }
 }

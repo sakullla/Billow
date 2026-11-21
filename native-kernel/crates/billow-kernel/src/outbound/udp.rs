@@ -343,6 +343,9 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
         crate::proxies::Protocol::Vmess(_) => "vmess",
         crate::proxies::Protocol::Snell(_) => "snell",
         crate::proxies::Protocol::TrustTunnel(_) => "trusttunnel",
+        crate::proxies::Protocol::GostRelay(_) => "gost-relay",
+        crate::proxies::Protocol::Ssh(_) => "ssh",
+        crate::proxies::Protocol::Ssr(_) => "ssr",
     }
 }
 

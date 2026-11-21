@@ -11,13 +11,19 @@
 //!   session; the client sees the inbound failure reply.
 
 pub mod anytls;
+pub mod gost_relay;
 pub mod http;
 pub mod shadowsocks;
+pub mod snell;
+pub mod ssh;
+pub mod ssr;
 pub mod socks5;
 pub mod tls;
 pub mod trojan;
+pub mod trusttunnel;
 pub mod udp;
 pub mod vless;
+pub mod vmess;
 pub mod ws;
 
 use std::io;
@@ -328,6 +334,30 @@ async fn dial_inner(
         Protocol::Anytls(p) => {
             refuse_chain(via, "anytls")?;
             anytls::dial(p, target, tls).await
+        }
+        Protocol::Vmess(p) => {
+            refuse_chain(via, "vmess")?;
+            vmess::dial(p, target, tls).await
+        }
+        Protocol::Snell(p) => {
+            refuse_chain(via, "snell")?;
+            snell::dial(p, target).await
+        }
+        Protocol::TrustTunnel(p) => {
+            refuse_chain(via, "trusttunnel")?;
+            trusttunnel::dial(p, target, tls).await
+        }
+        Protocol::GostRelay(p) => {
+            refuse_chain(via, "gost-relay")?;
+            gost_relay::dial(p, target, tls).await
+        }
+        Protocol::Ssh(p) => {
+            refuse_chain(via, "ssh")?;
+            ssh::dial(p, target).await
+        }
+        Protocol::Ssr(p) => {
+            refuse_chain(via, "ssr")?;
+            ssr::dial(p, target).await
         }
     }
 }

@@ -1,0 +1,45 @@
+== pinned SSR cipher vectors (Go) ==
+AES-128-CFB    iv=30313233343536373839616263646566 cipher=06d4fd7b873259a22a46eb3117aecc8cbd
+AES-192-CFB    iv=30313233343536373839616263646566 cipher=0082273b01067df5fabcf8916eb78641bc
+AES-256-CFB    iv=30313233343536373839616263646566 cipher=7af17ea8b72264fd45cbcfa97a61a72460
+AES-128-CTR    iv=30313233343536373839616263646566 cipher=06d4fd7b873259a22a46eb3117aecc8c0e
+AES-192-CTR    iv=30313233343536373839616263646566 cipher=0082273b01067df5fabcf8916eb786416e
+AES-256-CTR    iv=30313233343536373839616263646566 cipher=7af17ea8b72264fd45cbcfa97a61a72477
+RC4-MD5        iv=30313233343536373839616263646566 cipher=4e8974fe4bca9c275fe6edf87276a46c35
+CHACHA20       iv=3031323334353637 cipher=103f61df371541818a14d56c0848e1c210
+CHACHA20-IETF  iv=303132333435363738396162 cipher=02c1ab8d0d96b7ce763f212c7f85a1386a
+XCHACHA20      iv=303132333435363738396162636465663031323334353637 cipher=63d6daa424afc78a6f0ed041efd39daf31
+== controlled Rust peers (gost-relay, ssh, ssr) ==
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-17a4a1358b980635)
+
+running 5 tests
+test gost_relay_outbound_over_tls_relays_and_verifies_the_certificate ... ok
+test gost_relay_outbound_rejects_a_bad_response_version ... ok
+test gost_relay_outbound_relays_to_the_address_feature_target ... ok
+test gost_relay_outbound_sends_user_auth_and_forward_omits_the_address ... ok
+test gost_relay_outbound_wrong_credentials_never_reach_the_target ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.63s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-17a4a1358b980635)
+
+running 4 tests
+test ssh_outbound_password_auth_relays_direct_tcpip ... ok
+test ssh_outbound_pinned_host_key_must_match_the_server ... ok
+test ssh_outbound_public_key_auth_relays_direct_tcpip ... ok
+test ssh_outbound_wrong_password_never_reaches_the_target ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.58s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-17a4a1358b980635)
+
+running 3 tests
+test ssr_outbound_origin_plain_relays_with_aes_256_cfb ... ok
+test ssr_outbound_rc4_md5_and_dummy_ciphers_relay ... ok
+test ssr_outbound_wrong_password_never_reaches_the_target ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 2.89s
+

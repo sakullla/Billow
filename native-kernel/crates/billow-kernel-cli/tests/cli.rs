@@ -387,7 +387,7 @@ fn process_loads_t9_outbounds() {
     let port = free_port();
     let kernel = KernelProcess::start_body(
         &format!(
-            "proxies:\n  - {{name: vm, type: vmess, server: 127.0.0.1, port: {vmess_port}, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto}}\n  - {{name: sn, type: snell, server: 127.0.0.1, port: {snell_port}, psk: p, version: 2}}\n  - {{name: tt, type: trusttunnel, server: 127.0.0.1, port: {snell_port}, username: u, password: p}}\nrules:\n  - 'MATCH,vm'\n"
+            "proxies:\n  - {{name: vm, type: vmess, server: 127.0.0.1, port: {vmess_port}, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto}}\n  - {{name: sn, type: snell, server: 127.0.0.1, port: {snell_port}, psk: p, version: 2}}\n  - {{name: tt, type: trusttunnel, server: 127.0.0.1, port: {snell_port}, username: u, password: p}}\n  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {snell_port}, forward: true, username: u, password: p}}\n  - {{name: sh, type: ssh, server: 127.0.0.1, port: {snell_port}, username: u, password: p}}\n  - {{name: sr, type: ssr, server: 127.0.0.1, port: {snell_port}, cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain}}\nrules:\n  - 'MATCH,vm'\n"
         ),
         port,
     );
@@ -403,4 +403,7 @@ fn process_loads_t9_outbounds() {
     assert!(stdout.contains("vm=vmess"), "{stdout}");
     assert!(stdout.contains("sn=snell"), "{stdout}");
     assert!(stdout.contains("tt=trusttunnel"), "{stdout}");
+    assert!(stdout.contains("gr=gost-relay"), "{stdout}");
+    assert!(stdout.contains("sh=ssh"), "{stdout}");
+    assert!(stdout.contains("sr=ssr"), "{stdout}");
 }

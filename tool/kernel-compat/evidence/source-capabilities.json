@@ -599,7 +599,7 @@
       "nested": null,
       "rustMapping": {
         "status": "partial",
-        "reason": "six protocol types with their implemented transports and UDP associations (ss/trojan); every other type or option is rejected by name",
+        "reason": "twelve protocol types with their implemented transports, options and UDP associations (ss/trojan); every other type or option is rejected by name",
         "evidence": [
           "tests/config.rs",
           "tests/protocols.rs",
@@ -1779,8 +1779,39 @@
       "constructor": "outbound.NewShadowSocksR",
       "source": "adapter/parser.go:37",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "all pinned stream ciphers plus `protocol: origin` and `obfs: plain`; the SSR protocol/obfs plugins (auth_sha1_v4, auth_aes128_*, auth_chain_*, http_simple, http_post, random_head, tls1.2_ticket_*) are rejected by name.",
+        "options": [
+          "server",
+          "port",
+          "password",
+          "cipher (rc4-md5, aes-128/192/256-cfb, aes-128/192/256-ctr, chacha20, chacha20-ietf, xchacha20, none)",
+          "protocol: origin",
+          "protocol-param (ignored by origin)",
+          "obfs: plain",
+          "obfs-param (ignored by plain)",
+          "dialer-proxy"
+        ],
+        "udp": "not implemented: `udp: true` is rejected (no UDP association); `udp: false` loads",
+        "notImplemented": [
+          "protocol: auth_sha1_v4/auth_aes128_md5/auth_aes128_sha1/auth_chain_a/auth_chain_b",
+          "obfs: http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth",
+          "udp: true",
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark"
+        ],
+        "evidence": [
+          "src/outbound/ssr.rs::tests::stream_ciphers_match_the_pinned_go_vectors",
+          "src/outbound/ssr.rs::tests::cfb_roundtrips_across_chunk_boundaries",
+          "src/outbound/ssr.rs::tests::ctr_and_rc4_roundtrip",
+          "tests/protocols.rs::ssr_outbound_origin_plain_relays_with_aes_256_cfb",
+          "tests/protocols.rs::ssr_outbound_rc4_md5_and_dummy_ciphers_relay",
+          "tests/protocols.rs::ssr_outbound_wrong_password_never_reaches_the_target",
+          "tests/config.rs::ssr_options_are_strict"
+        ]
       }
     },
     {
@@ -1862,8 +1893,63 @@
       "constructor": "outbound.NewVmess",
       "source": "adapter/parser.go:58",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "uuid",
+          "alterId",
+          "cipher",
+          "tls",
+          "network (tcp, ws)",
+          "sni",
+          "servername",
+          "skip-cert-verify",
+          "alpn",
+          "ws-opts (path, headers)",
+          "dialer-proxy"
+        ],
+        "udp": "not implemented: `udp: true` is rejected (no VMess UDP command); `udp: false` loads",
+        "notImplemented": [
+          "udp: true",
+          "alterId > 0",
+          "packet-addr",
+          "xudp",
+          "packet-encoding",
+          "global-padding",
+          "authenticated-length",
+          "grpc-opts",
+          "http-opts",
+          "h2-opts",
+          "xhttp-opts",
+          "reality-opts",
+          "ech-opts",
+          "shadow-tls-opts",
+          "restls-opts",
+          "jls-opts",
+          "tlsmirror-opts",
+          "mekya-opts",
+          "mkcp-opts",
+          "fingerprint",
+          "certificate",
+          "private-key",
+          "name-cert-verify",
+          "client-fingerprint",
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark"
+        ],
+        "evidence": [
+          "src/outbound/vmess.rs::tests::request_body_layout_is_fixed",
+          "tests/mihomo_peers.rs::vmess_outbound_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::vmess_chacha20_poly1305_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::vmess_cipher_none_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::vmess_over_websocket_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::vmess_domain_target_is_resolved_by_the_mihomo_side",
+          "tests/mihomo_peers.rs::vmess_wrong_uuid_never_reaches_the_sink"
+        ]
       }
     },
     {
@@ -1926,8 +2012,36 @@
       "constructor": "outbound.NewSnell",
       "source": "adapter/parser.go:72",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "psk",
+          "version (1, 2, 3)",
+          "obfs-opts (mode http, host)",
+          "dialer-proxy"
+        ],
+        "udp": "not implemented: `udp: true` is rejected (no Snell UDP command); `udp: false` loads",
+        "notImplemented": [
+          "udp: true",
+          "version 4-6",
+          "reuse",
+          "mode",
+          "obfs-opts.mode: tls",
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark"
+        ],
+        "evidence": [
+          "src/outbound/snell.rs::tests::request_header_layouts",
+          "src/outbound/snell.rs::tests::nonce_increments_little_endian",
+          "tests/mihomo_peers.rs::snell_v1_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::snell_v2_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::snell_v3_with_http_obfs_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::snell_wrong_psk_never_reaches_the_sink"
+        ]
       }
     },
     {
@@ -2027,8 +2141,45 @@
       "constructor": "outbound.NewGostRelay",
       "source": "adapter/parser.go:121",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "TCP relay with optional TLS, username/password authentication and `forward`; the UDP association and smux multiplexing the pinned type also declares are rejected by name.",
+        "options": [
+          "server",
+          "port",
+          "forward",
+          "tls",
+          "sni",
+          "skip-cert-verify",
+          "username",
+          "password",
+          "dialer-proxy"
+        ],
+        "udp": "not implemented: `udp: true` is rejected (no UDP association); `udp: false` loads",
+        "notImplemented": [
+          "udp: true",
+          "mux: true",
+          "name-cert-verify",
+          "fingerprint",
+          "certificate",
+          "private-key",
+          "client-fingerprint",
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark"
+        ],
+        "evidence": [
+          "src/outbound/gost_relay.rs::tests::ipv4_request_layout_matches_the_pinned_encoder",
+          "src/outbound/gost_relay.rs::tests::domain_and_auth_features_follow_the_pinned_order",
+          "src/outbound/gost_relay.rs::tests::forward_omits_the_address_feature",
+          "tests/protocols.rs::gost_relay_outbound_relays_to_the_address_feature_target",
+          "tests/protocols.rs::gost_relay_outbound_sends_user_auth_and_forward_omits_the_address",
+          "tests/protocols.rs::gost_relay_outbound_wrong_credentials_never_reach_the_target",
+          "tests/protocols.rs::gost_relay_outbound_rejects_a_bad_response_version",
+          "tests/protocols.rs::gost_relay_outbound_over_tls_relays_and_verifies_the_certificate",
+          "tests/config.rs::gost_relay_options_are_strict"
+        ]
       }
     },
     {
@@ -2072,8 +2223,36 @@
       "constructor": "outbound.NewSsh",
       "source": "adapter/parser.go:156",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "password and inline-PEM public-key authentication, host-key pinning and one direct-tcpip channel per dial; a private-key file path is rejected by name and each dial opens its own SSH client (Mihomo reuses one client per proxy).",
+        "options": [
+          "server",
+          "port",
+          "username",
+          "password",
+          "private-key (inline PEM)",
+          "private-key-passphrase",
+          "host-key",
+          "host-key-algorithms",
+          "dialer-proxy"
+        ],
+        "udp": "not applicable: Mihomo's SSH outbound reports UDP false; any `udp` key is rejected as a non-Mihomo option",
+        "notImplemented": [
+          "private-key file paths",
+          "shared client/multiplexing across dials",
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark"
+        ],
+        "evidence": [
+          "tests/protocols.rs::ssh_outbound_password_auth_relays_direct_tcpip",
+          "tests/protocols.rs::ssh_outbound_wrong_password_never_reaches_the_target",
+          "tests/protocols.rs::ssh_outbound_public_key_auth_relays_direct_tcpip",
+          "tests/protocols.rs::ssh_outbound_pinned_host_key_must_match_the_server",
+          "tests/config.rs::ssh_options_are_strict"
+        ]
       }
     },
     {
@@ -2082,7 +2261,7 @@
       "source": "adapter/parser.go:163",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "the pinned outbound wraps the external enfein/mieru v3.39.0 module; T11 deferred it pending a vendor/port decision"
       }
     },
     {
@@ -2135,7 +2314,7 @@
       "source": "adapter/parser.go:177",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "~13.6k lines of custom crypto/KIP/multiplexing; T11 deferred it pending a split into its own task"
       }
     },
     {
@@ -2144,7 +2323,7 @@
       "source": "adapter/parser.go:184",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "HTTP/3 CONNECT-IP/CONNECT-UDP needs the QUIC stack and an IP stack aligned with T10/T7; T11 deferred it"
       }
     },
     {
@@ -2152,8 +2331,46 @@
       "constructor": "outbound.NewTrustTunnel",
       "source": "adapter/parser.go:191",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "options": [
+          "server",
+          "port",
+          "username",
+          "password",
+          "tls",
+          "sni",
+          "skip-cert-verify",
+          "alpn (h2)",
+          "dialer-proxy"
+        ],
+        "udp": "not implemented: `udp: true` is rejected (`_udp2` multiplex); `udp: false` loads",
+        "notImplemented": [
+          "udp: true",
+          "quic",
+          "health-check",
+          "max-connections",
+          "min-streams",
+          "max-streams",
+          "congestion-controller",
+          "cwnd",
+          "bbr-profile",
+          "fingerprint",
+          "certificate",
+          "private-key",
+          "name-cert-verify",
+          "client-fingerprint",
+          "ech-opts",
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark"
+        ],
+        "evidence": [
+          "tests/mihomo_peers.rs::trusttunnel_outbound_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::trusttunnel_domain_target_is_resolved_by_the_mihomo_side",
+          "tests/mihomo_peers.rs::trusttunnel_wrong_password_never_reaches_the_sink"
+        ]
       }
     },
     {
@@ -3360,9 +3577,9 @@
     "note": "rustMapping on each entry comes from that file; partial entries name the options they reject, unimplemented entries are rejected at load time and are never compatible."
   },
   "coverage": {
-    "mapped": 19,
-    "partial": 7,
-    "unimplemented": 129,
+    "mapped": 22,
+    "partial": 10,
+    "unimplemented": 123,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }
