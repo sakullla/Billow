@@ -10,9 +10,11 @@
 //! `IP-CIDR`, `IP-CIDR6`, `MATCH` with `DIRECT`/`REJECT`, and protocol
 //! outbounds `socks5`, `http`, `ss` (AEAD 2017), `trojan`, `vless` and
 //! `anytls` with the transports they need (TLS, WebSocket, `dialer-proxy`
-//! through a socks5 hop). Every other key, rule or option fails configuration
-//! loading instead of being ignored; unsupported protocol options are named in
-//! the error. DNS, proxy groups, providers and the control API are T5.
+//! through a socks5 hop). A rule or protocol option the kernel does not
+//! implement fails configuration loading when its value asks for something; a
+//! key the pinned type does not declare is ignored exactly as Mihomo ignores
+//! it, so a valid upstream configuration loads. DNS, proxy groups, providers
+//! and the control API are T5.
 //!
 //! ```no_run
 //! # fn main() -> anyhow::Result<()> {

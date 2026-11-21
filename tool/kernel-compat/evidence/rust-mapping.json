@@ -24,7 +24,7 @@
     "partial": "part of the upstream shape works; the missing options are named and rejected explicitly",
     "unimplemented": "the Rust kernel rejects the entry/field instead of ignoring it"
   },
-  "optionPolicy": "proxies.rs accepts only the keys its parser read and honoured, plus values Mihomo accepts and ignores: disabled booleans (`udp: false`, `disable-reuse: false`, `packet-addr: false`, `xudp: false`, `v2ray-http-upgrade-fast-open: false`), empty blocks (`grpc-opts: {}`, `ech-opts: {enable: false}`, `smux: {enabled: false}`, `ss-opts: {}`, `shadow-tls-opts: {}`, `restls-opts: {}`, `plugin-opts: {}`) and TLS-only options with TLS off (`skip-cert-verify`, `sni`, `alpn`, `fingerprint`, `certificate`, `private-key`, `name-cert-verify`, `client-fingerprint`, `ech-opts`, `reality-opts`). `reality-opts` and `jls-opts` require fields even when empty (Mihomo's `-t` rejects them), so their empty form fails here too. Every behaviour-changing form fails with the key named. tool/kernel-compat/option-probe.mjs compares the no-op and enabled forms against the pinned Mihomo `-t` and writes evidence/option-matrix.txt. A `udp: true` proxy with `dialer-proxy` must name exactly one socks5 hop; other chains fail at load time (validate_udp_chains).",
+  "optionPolicy": "proxies.rs accepts only the keys its parser read and honoured, plus values Mihomo accepts and ignores: disabled booleans (`udp: false`, `disable-reuse: false`, `packet-addr: false`, `xudp: false`, `v2ray-http-upgrade-fast-open: false`), empty blocks (`grpc-opts: {}`, `ech-opts: {enable: false}`, `smux: {enabled: false}`, `ss-opts: {}`, `shadow-tls-opts: {}`, `restls-opts: {}`, `plugin-opts: {}`) and TLS-only options with TLS off (`skip-cert-verify`, `sni`, `alpn`, `fingerprint`, `certificate`, `private-key`, `name-cert-verify`, `client-fingerprint`, `ech-opts`, `reality-opts`). `reality-opts` and `jls-opts` require fields even when empty (Mihomo's `-t` rejects them), so their empty form fails here too. Every behaviour-changing form fails with the key named. tool/kernel-compat/option-probe.mjs compares the no-op and enabled forms against the pinned Mihomo `-t` and writes evidence/option-matrix.txt. A `udp: true` proxy with `dialer-proxy` must name exactly one socks5 hop; other chains fail at load time (validate_udp_chains). `reality-opts`, `shadow-tls-opts`, `restls-opts` and `jls-opts` require `tls: true` (Mihomo rejects them without TLS), so with TLS off a non-empty block fails; with TLS on, a non-empty block fails as not implemented. Keys the pinned type does not declare at all (`smux`, `ss-opts` on vless, `udp` on http, any unknown name) are ignored exactly as Mihomo ignores them.",
   "configFields": {
     "mixed-port": {
       "status": "implemented",
@@ -132,14 +132,12 @@
         "mptcp",
         "interface-name",
         "routing-mark",
-        "smux",
         "udp-over-tcp",
         "udp-over-tcp-version",
         "ech-opts",
         "shadow-tls-opts",
         "restls-opts",
-        "jls-opts",
-        "client-fingerprint"
+        "jls-opts"
       ],
       "evidence": [
         "tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target",
@@ -172,12 +170,10 @@
         "mptcp",
         "interface-name",
         "routing-mark",
-        "smux",
         "ech-opts",
         "shadow-tls-opts",
         "restls-opts",
-        "jls-opts",
-        "client-fingerprint"
+        "jls-opts"
       ],
       "evidence": [
         "tests/protocols.rs::http_connect_outbound_with_basic_auth",
@@ -201,13 +197,11 @@
         "plugin-opts",
         "udp-over-tcp",
         "udp-over-tcp-version",
-        "client-fingerprint",
         "ip-version",
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark",
-        "smux"
+        "routing-mark"
       ],
       "evidence": [
         "tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip",
@@ -249,8 +243,7 @@
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark",
-        "smux"
+        "routing-mark"
       ],
       "evidence": [
         "tests/protocols.rs::trojan_outbound_over_tls_sends_hash_command_address_and_payload",
@@ -299,8 +292,7 @@
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark",
-        "smux"
+        "routing-mark"
       ],
       "evidence": [
         "tests/protocols.rs::vless_over_tls_sends_uuid_target_and_payload",
@@ -342,8 +334,7 @@
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark",
-        "smux"
+        "routing-mark"
       ],
       "evidence": [
         "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo",
@@ -554,5 +545,14 @@
     "Every proxy type outside the six implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records their proposed owner.",
     "Every other listener type (tun, redir, tproxy, mixed with TLS, ...) is rejected through the top-level keys that would enable it.",
     "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it."
-  ]
+  ],
+  "ignoredByPinnedVersion": {
+    "keys": [
+      "smux",
+      "ss-opts (on types without the field)",
+      "udp (on http, which has no such option)",
+      "client-fingerprint (on socks5/http, whose option structs do not declare it)"
+    ],
+    "note": "Mihomo v1.19.34's decoder tolerates keys the type does not declare, so these are accepted and have no effect there; the kernel ignores them for the same reason (R2: a valid configuration must load). A key the type does declare but this kernel does not implement is handled by optionPolicy instead."
+  }
 }

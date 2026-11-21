@@ -2600,6 +2600,112 @@ async fn socks5_udp_peer() -> (u16, Log) {
     (addr.port(), log)
 }
 
+/// Trojan UDP peer over TLS: accepts command 3, then forwards each
+/// `addr|len|CRLF|payload` frame to `echo_port` and returns the echo in the
+/// same framing. Records the targets it served.
+async fn trojan_udp_peer(cert: &Cert, password: &'static str, echo_port: u16) -> (u16, Log) {
+    let acceptor = tls_acceptor(cert);
+    let (listener, addr) = spawn_tcp().await;
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let log_task = log.clone();
+    let expected = trojan_password_key(password);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let log = log_task.clone();
+            let expected = expected.clone();
+            tokio::spawn(async move {
+                let Ok(mut stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut bytes = Vec::new();
+                let mut byte = [0u8; 1];
+                let mut crlfs = 0;
+                while crlfs < 2 {
+                    if stream.read(&mut byte).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    bytes.push(byte[0]);
+                    if bytes.ends_with(b"\r\n") {
+                        crlfs += 1;
+                    }
+                }
+                let mut lines = bytes
+                    .split(|value| *value == b'\n')
+                    .map(|line| line.strip_suffix(b"\r").unwrap_or(line).to_vec());
+                let hash = lines.next().unwrap_or_default();
+                if hash != expected {
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec!["bad-password".into()],
+                            forwarded: false,
+                        },
+                    );
+                    return;
+                }
+                loop {
+                    let mut atyp = [0u8; 1];
+                    if stream.read_exact(&mut atyp).await.is_err() {
+                        return;
+                    }
+                    let skip = match atyp[0] {
+                        0x01 => 4,
+                        0x04 => 16,
+                        0x03 => {
+                            let mut len = [0u8; 1];
+                            stream.read_exact(&mut len).await.unwrap();
+                            len[0] as usize
+                        }
+                        _ => return,
+                    };
+                    let mut rest = vec![0u8; skip + 2 + 2 + 2];
+                    if stream.read_exact(&mut rest).await.is_err() {
+                        return;
+                    }
+                    let port = u16::from_be_bytes([rest[skip], rest[skip + 1]]);
+                    let length = u16::from_be_bytes([rest[skip + 2], rest[skip + 3]]) as usize;
+                    let mut payload = vec![0u8; length];
+                    if stream.read_exact(&mut payload).await.is_err() {
+                        return;
+                    }
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec![
+                                format!("target=127.0.0.1:{port}"),
+                                format!("payload={}", String::from_utf8_lossy(&payload)),
+                            ],
+                            forwarded: true,
+                        },
+                    );
+                    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                    let _ = socket
+                        .send_to(&payload, ("127.0.0.1", echo_port))
+                        .await;
+                    let mut reply = vec![0u8; 4096];
+                    let Ok(Ok((n, _))) =
+                        tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut reply))
+                            .await
+                    else {
+                        continue;
+                    };
+                    let mut frame = vec![0x01, 127, 0, 0, 1];
+                    frame.extend_from_slice(&port.to_be_bytes());
+                    frame.extend_from_slice(&(n as u16).to_be_bytes());
+                    frame.extend_from_slice(b"\r\n");
+                    frame.extend_from_slice(&reply[..n]);
+                    if stream.write_all(&frame).await.is_err() {
+                        return;
+                    }
+                    let _ = stream.flush().await;
+                }
+            });
+        }
+    });
+    (addr.port(), log)
+}
+
 /// A UDP echo on loopback; returns its port and the payload counter.
 async fn udp_echo() -> (u16, Arc<AtomicU64>) {
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -2892,6 +2998,83 @@ async fn trojan_udp_reconnects_after_the_server_closes_the_stream() {
     assert!(
         connections.load(Ordering::Relaxed) >= 2,
         "the trojan server must have been reconnected"
+    );
+    drop(control);
+    kernel.stop().unwrap();
+}
+
+
+/// A chained ss UDP association whose `server` is a *name*: the hop reports the
+/// resolved address in its reply header, so the kernel must compare resolved
+/// addresses instead of the configured string (otherwise every reply is
+/// dropped).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shadowsocks_udp_chained_with_a_domain_server_keeps_the_replies() {
+    let cipher = billow_kernel::proxies::SsCipher::Aes256Gcm;
+    let password = "domain-ss-pw";
+    let (echo_port, _) = udp_echo().await;
+    let (ss_port, ss_log) = ss_udp_peer(cipher, password, echo_port).await;
+    let (hop_port, hop_log) = socks5_udp_peer().await;
+    let dir = scratch("ss-udp-domain");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: exit, type: ss, server: localhost, port: {ss_port}, cipher: aes-256-gcm, password: {password}, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}}}\nrules:\n  - 'MATCH,exit'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let reply = udp_roundtrip(relay, target, b"domain-chained", Duration::from_secs(3))
+        .expect("a domain server must not drop the replies");
+    assert_eq!(reply, b"domain-chained");
+    assert!(
+        detail(&hop_log).contains(&format!("udp-target=127.0.0.1:{ss_port}")),
+        "the hop resolves the name and relays to the IP: {:?}",
+        detail(&hop_log)
+    );
+    assert!(detail(&ss_log).iter().any(|d| d == "payload=domain-chained"));
+    drop(control);
+    kernel.stop().unwrap();
+}
+
+/// `trojan` + `udp: true` + `dialer-proxy`: the server connection is TCP, so it
+/// goes through the hop's CONNECT exactly like the TCP path, and the UDP frames
+/// ride that tunnel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trojan_udp_goes_through_the_dialer_proxy_hop() {
+    let cert = require_cert("trojan-udp-chain");
+    let (echo_port, _) = udp_echo().await;
+    let (tj_port, tj_log) = trojan_udp_peer(&cert, "chain-pw", echo_port).await;
+    let (hop_port, hop_log) = socks5_peer("alice", "s3cret").await;
+    let dir = scratch("trojan-udp-chain");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: exit, type: trojan, server: 127.0.0.1, port: {tj_port}, password: chain-pw, sni: localhost, skip-cert-verify: true, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}, username: alice, password: s3cret}}\nrules:\n  - 'MATCH,exit'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let reply = udp_roundtrip(relay, target, b"trojan-chained", Duration::from_secs(3))
+        .expect("the chained trojan datagram must come back");
+    assert_eq!(reply, b"trojan-chained");
+    assert!(
+        detail(&hop_log).contains(&format!("target=127.0.0.1:{tj_port}")),
+        "the hop must carry the trojan server connection: {:?}",
+        detail(&hop_log)
+    );
+    assert!(
+        detail(&tj_log).iter().any(|d| d == "payload=trojan-chained"),
+        "{:?}",
+        detail(&tj_log)
     );
     drop(control);
     kernel.stop().unwrap();

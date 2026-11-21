@@ -1759,13 +1759,11 @@
           "plugin-opts",
           "udp-over-tcp",
           "udp-over-tcp-version",
-          "client-fingerprint",
           "ip-version",
           "tfo",
           "mptcp",
           "interface-name",
-          "routing-mark",
-          "smux"
+          "routing-mark"
         ],
         "evidence": [
           "tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip",
@@ -1814,14 +1812,12 @@
           "mptcp",
           "interface-name",
           "routing-mark",
-          "smux",
           "udp-over-tcp",
           "udp-over-tcp-version",
           "ech-opts",
           "shadow-tls-opts",
           "restls-opts",
-          "jls-opts",
-          "client-fingerprint"
+          "jls-opts"
         ],
         "evidence": [
           "tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target",
@@ -1859,12 +1855,10 @@
           "mptcp",
           "interface-name",
           "routing-mark",
-          "smux",
           "ech-opts",
           "shadow-tls-opts",
           "restls-opts",
-          "jls-opts",
-          "client-fingerprint"
+          "jls-opts"
         ],
         "evidence": [
           "tests/protocols.rs::http_connect_outbound_with_basic_auth",
@@ -1925,8 +1919,7 @@
           "tfo",
           "mptcp",
           "interface-name",
-          "routing-mark",
-          "smux"
+          "routing-mark"
         ],
         "evidence": [
           "tests/protocols.rs::vless_over_tls_sends_uuid_target_and_payload",
@@ -1983,8 +1976,7 @@
           "tfo",
           "mptcp",
           "interface-name",
-          "routing-mark",
-          "smux"
+          "routing-mark"
         ],
         "evidence": [
           "tests/protocols.rs::trojan_outbound_over_tls_sends_hash_command_address_and_payload",
@@ -2138,8 +2130,7 @@
           "tfo",
           "mptcp",
           "interface-name",
-          "routing-mark",
-          "smux"
+          "routing-mark"
         ],
         "evidence": [
           "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo",

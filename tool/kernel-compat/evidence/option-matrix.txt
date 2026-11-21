@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 75, enabled cases: 94, problems: 0
+# no-op cases: 90, enabled cases: 84, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
@@ -44,9 +44,20 @@ noop    anytls  mptcp                        rust=accept mihomo=accept
 noop    anytls  interface-name               rust=accept mihomo=accept
 noop    anytls  routing-mark                 rust=accept mihomo=accept
 noop    socks5  ech-opts                     rust=accept mihomo=accept
+noop    socks5  ech-opts                     rust=accept mihomo=accept
+noop    trojan  ech-opts                     rust=accept mihomo=accept
 noop    trojan  ech-opts                     rust=accept mihomo=accept
 noop    vless   ech-opts                     rust=accept mihomo=accept
+noop    vless   ech-opts                     rust=accept mihomo=accept
 noop    anytls  ech-opts                     rust=accept mihomo=accept
+noop    anytls  ech-opts                     rust=accept mihomo=accept
+noop    socks5  smux                         rust=accept mihomo=accept
+noop    trojan  smux                         rust=accept mihomo=accept
+noop    vless   smux                         rust=accept mihomo=accept
+noop    anytls  smux                         rust=accept mihomo=accept
+noop    socks5  smux                         rust=accept mihomo=accept
+noop    trojan  smux                         rust=accept mihomo=accept
+noop    vless   smux                         rust=accept mihomo=accept
 noop    socks5  grpc-opts                    rust=accept mihomo=accept
 noop    trojan  grpc-opts                    rust=accept mihomo=accept
 noop    vless   grpc-opts                    rust=accept mihomo=accept
@@ -69,6 +80,7 @@ noop    vless   ech-opts                     rust=accept mihomo=accept
 noop    trojan  ss-opts                      rust=accept mihomo=accept
 noop    ss      plugin                       rust=accept mihomo=accept
 noop    ss      plugin-opts                  rust=accept mihomo=accept
+noop    ss      plugin-opts                  rust=accept mihomo=accept
 noop    ss      client-fingerprint           rust=accept mihomo=accept
 noop    ss      udp-over-tcp                 rust=accept mihomo=accept
 noop    socks5  udp                          rust=accept mihomo=accept
@@ -78,6 +90,9 @@ noop    vless   packet-addr                  rust=accept mihomo=accept
 noop    vless   xudp                         rust=accept mihomo=accept
 noop    anytls  disable-reuse                rust=accept mihomo=accept
 noop    anytls  idle-session-timeout         rust=accept mihomo=accept
+noop    socks5  bogus                        rust=accept mihomo=accept
+noop    trojan  bogus                        rust=accept mihomo=accept
+noop    vless   ss-opts                      rust=accept mihomo=accept
 noop    anytls  client-metadata              rust=accept mihomo=accept
 enabled socks5  udp                          rust=reject mihomo=accept
 enabled socks5  fingerprint                  rust=reject mihomo=accept
@@ -89,14 +104,12 @@ enabled socks5  tfo                          rust=reject mihomo=accept
 enabled socks5  mptcp                        rust=reject mihomo=accept
 enabled socks5  interface-name               rust=reject mihomo=accept
 enabled socks5  routing-mark                 rust=reject mihomo=accept
-enabled socks5  smux                         rust=reject mihomo=accept
 enabled socks5  udp-over-tcp                 rust=reject mihomo=accept
 enabled socks5  udp-over-tcp-version         rust=reject mihomo=accept
 enabled socks5  ech-opts                     rust=reject mihomo=accept
 enabled socks5  shadow-tls-opts              rust=reject mihomo=accept
 enabled socks5  restls-opts                  rust=reject mihomo=accept
 enabled socks5  jls-opts                     rust=reject mihomo=accept
-enabled socks5  client-fingerprint           rust=reject mihomo=accept
 enabled http    fingerprint                  rust=reject mihomo=accept
 enabled http    certificate                  rust=reject mihomo=reject
 enabled http    private-key                  rust=reject mihomo=reject
@@ -106,14 +119,11 @@ enabled http    tfo                          rust=reject mihomo=accept
 enabled http    mptcp                        rust=reject mihomo=accept
 enabled http    interface-name               rust=reject mihomo=accept
 enabled http    routing-mark                 rust=reject mihomo=accept
-enabled http    smux                         rust=reject mihomo=accept
 enabled http    ech-opts                     rust=reject mihomo=accept
 enabled http    shadow-tls-opts              rust=reject mihomo=accept
 enabled http    restls-opts                  rust=reject mihomo=accept
 enabled http    jls-opts                     rust=reject mihomo=accept
-enabled http    client-fingerprint           rust=reject mihomo=accept
 enabled ss      plugin                       rust=reject mihomo=reject
-enabled ss      plugin-opts                  rust=reject mihomo=accept
 enabled ss      udp-over-tcp                 rust=reject mihomo=accept
 enabled ss      udp-over-tcp-version         rust=reject mihomo=accept
 enabled ss      ip-version                   rust=reject mihomo=accept
@@ -121,27 +131,24 @@ enabled ss      tfo                          rust=reject mihomo=accept
 enabled ss      mptcp                        rust=reject mihomo=accept
 enabled ss      interface-name               rust=reject mihomo=accept
 enabled ss      routing-mark                 rust=reject mihomo=accept
-enabled ss      smux                         rust=reject mihomo=accept
 enabled trojan  reality-opts                 rust=reject mihomo=reject
 enabled trojan  ss-opts                      rust=reject mihomo=accept
-enabled trojan  ech-opts                     rust=reject mihomo=accept
+enabled trojan  ech-opts                     rust=reject mihomo=reject
 enabled trojan  shadow-tls-opts              rust=reject mihomo=accept
 enabled trojan  restls-opts                  rust=reject mihomo=reject
 enabled trojan  jls-opts                     rust=reject mihomo=accept
 enabled trojan  client-fingerprint           rust=reject mihomo=accept
 enabled trojan  ip-version                   rust=reject mihomo=accept
-enabled trojan  ws-opts.v2ray-http-upgrade-fast-open rust=reject mihomo=accept
 enabled trojan  tfo                          rust=reject mihomo=accept
 enabled trojan  mptcp                        rust=reject mihomo=accept
 enabled trojan  interface-name               rust=reject mihomo=accept
 enabled trojan  routing-mark                 rust=reject mihomo=accept
-enabled trojan  smux                         rust=reject mihomo=accept
 enabled vless   udp                          rust=reject mihomo=accept
 enabled vless   packet-addr                  rust=reject mihomo=accept
 enabled vless   xudp                         rust=reject mihomo=accept
 enabled vless   packet-encoding              rust=reject mihomo=accept
 enabled vless   reality-opts                 rust=reject mihomo=reject
-enabled vless   ech-opts                     rust=reject mihomo=accept
+enabled vless   ech-opts                     rust=reject mihomo=reject
 enabled vless   shadow-tls-opts              rust=reject mihomo=reject
 enabled vless   restls-opts                  rust=reject mihomo=reject
 enabled vless   jls-opts                     rust=reject mihomo=reject
@@ -152,7 +159,6 @@ enabled vless   tfo                          rust=reject mihomo=accept
 enabled vless   mptcp                        rust=reject mihomo=accept
 enabled vless   interface-name               rust=reject mihomo=accept
 enabled vless   routing-mark                 rust=reject mihomo=accept
-enabled vless   smux                         rust=reject mihomo=accept
 enabled anytls  udp                          rust=reject mihomo=accept
 enabled anytls  client-metadata              rust=reject mihomo=accept
 enabled anytls  idle-session-check-interval  rust=reject mihomo=accept
@@ -162,7 +168,7 @@ enabled anytls  disable-reuse                rust=reject mihomo=accept
 enabled anytls  fingerprint                  rust=reject mihomo=accept
 enabled anytls  certificate                  rust=reject mihomo=accept
 enabled anytls  private-key                  rust=reject mihomo=accept
-enabled anytls  ech-opts                     rust=reject mihomo=accept
+enabled anytls  ech-opts                     rust=reject mihomo=reject
 enabled anytls  shadow-tls-opts              rust=reject mihomo=accept
 enabled anytls  restls-opts                  rust=reject mihomo=reject
 enabled anytls  jls-opts                     rust=reject mihomo=accept
@@ -172,4 +178,3 @@ enabled anytls  tfo                          rust=reject mihomo=accept
 enabled anytls  mptcp                        rust=reject mihomo=accept
 enabled anytls  interface-name               rust=reject mihomo=accept
 enabled anytls  routing-mark                 rust=reject mihomo=accept
-enabled anytls  smux                         rust=reject mihomo=accept

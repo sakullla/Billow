@@ -90,8 +90,12 @@ rules:
   - MATCH,ss1
 ```
 
-Errors are categorized by a stable tag: `invalid_yaml`, `invalid_value`,
-`unsupported`, plus `bind` and `limits` at start-up. Example:
+A key the pinned version declares but this kernel does not implement (a
+top-level key such as `dns`/`hosts`, or a proxy option such as `tfo`) fails when
+its value asks for something; a key the pinned version does not declare at all
+is ignored with a warning, exactly as Mihomo's decoder ignores it, so a valid
+upstream configuration is not rejected (R2). Errors are categorized by a stable tag: `invalid_yaml`,
+`invalid_value`, `unsupported`, plus `bind` and `limits` at start-up. Example:
 
 ```
 error: [unsupported] unsupported configuration: top-level key 'dns' is not implemented by the Rust kernel slice
@@ -196,9 +200,14 @@ empty blocks (`grpc-opts: {}`, `ech-opts: {enable: false}`, `smux: {enabled:
 false}`, `ss-opts: {}`, `shadow-tls-opts: {}`, `restls-opts: {}`, `plugin-opts:
 {}`) and TLS-only options when TLS is off (`skip-cert-verify`, `sni`, `alpn`,
 `fingerprint`, `certificate`, `private-key`, `name-cert-verify`,
-`client-fingerprint`, `ech-opts`, `reality-opts`). `reality-opts` and
-`jls-opts` are the exception: Mihomo itself rejects an empty block (required
-fields), so the kernel rejects it too.
+`client-fingerprint`, `ech-opts`). `ech-opts` is disabled unless `enable: true`
+(other fields are then ignored, as in Mihomo), and `plugin-opts` is ignored
+unless a plugin is configured. Keys the pinned type does not declare at all
+(`smux`, `ss-opts` on vless, `udp` on http, any unknown name) are ignored, which
+is what Mihomo does with them. Three cases are rejected even when "empty":
+`reality-opts` and `jls-opts` require fields (Mihomo rejects the empty block),
+and `reality-opts`/`shadow-tls-opts`/`restls-opts`/`jls-opts` require
+`tls: true` (Mihomo rejects them without TLS, so they are not ignored).
 
 A transport block for a transport the configuration did not select
 (`grpc-opts`, `http-opts`, `h2-opts`, `xhttp-opts` with `network: tcp|ws`) is
@@ -206,10 +215,13 @@ ignored by Mihomo even when it has content, so it is accepted here too; the
 selected transport itself (`network: grpc|http|h2|xhttp`) is rejected.
 
 `tool/kernel-compat/option-probe.mjs` runs the matrix against the pinned
-Mihomo `-t`: every no-op form must be accepted by both engines, and every
-enabled form must be rejected by the kernel with the field named (Mihomo's own
-verdict is recorded; forms it rejects need no implementation). The result and
-its counts are in `tool/kernel-compat/evidence/option-matrix.txt`.
+Mihomo `-t`: every no-op form (including unknown keys and disabled switches
+with extra fields) must be accepted by both engines, and every enabled form
+must be rejected by the kernel with the field named **and** be registered in
+`rust-mapping.json` (a rejection of an unregistered key is reported as a
+problem, so the matrix cannot hide an over-strict parser). Mihomo's own verdict
+is recorded; forms it rejects need no implementation. The result and its counts
+are in `tool/kernel-compat/evidence/option-matrix.txt`.
 
 ## CLI
 

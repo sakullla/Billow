@@ -82,6 +82,36 @@ fn rejects_unimplemented_rule_types_and_outbounds() {
     assert!(err_tag("rules: MATCH,DIRECT\n").starts_with("invalid_yaml"));
 }
 
+
+/// Mihomo's decoder tolerates top-level keys it does not declare, so a file
+/// carrying one (a fixture block, a newer option) must load; a key the pinned
+/// version declares but this kernel does not implement still fails.
+#[test]
+fn unknown_top_level_keys_are_ignored_like_mihomo() {
+    let loaded = load_config(
+        "mixed-port: 1\nx-kernel-compat:\n  requests: []\nrulez: [MATCH,DIRECT]\nrules: ['MATCH,DIRECT']\n",
+        "t",
+    )
+    .expect("unknown top-level keys load");
+    assert_eq!(loaded.config.rules.len(), 1);
+    assert!(
+        loaded.warnings.iter().any(|w| w.contains("x-kernel-compat")),
+        "{:?}",
+        loaded.warnings
+    );
+    assert!(
+        loaded.warnings.iter().any(|w| w.contains("rulez")),
+        "{:?}",
+        loaded.warnings
+    );
+    // Known but unimplemented keys still fail with their name.
+    for key in ["dns", "hosts", "proxy-groups", "listeners", "tun"] {
+        let yaml = format!("mixed-port: 1\n{key}: {{}}\n");
+        let e = err_tag(&yaml);
+        assert!(e.starts_with("unsupported"), "{key}: {e}");
+    }
+}
+
 #[test]
 fn rejects_unimplemented_modes_and_levels() {
     assert!(err_tag("mode: global\n").starts_with("unsupported"));
@@ -247,10 +277,16 @@ fn unimplemented_protocol_and_option_name_the_field() {
         e.contains("option 'reality-opts' is not implemented"),
         "{e}"
     );
-    let e = proxy_err("proxies:\n  - {name: t, type: trojan, server: x, port: 1, password: p, smux: {enabled: true}}\nrules: ['MATCH,DIRECT']\n");
-    assert!(e.contains("option 'smux' is not implemented"), "{e}");
-    let e = proxy_err("proxies:\n  - {name: t, type: trojan, server: x, port: 1, password: p, bogus: 1}\nrules: ['MATCH,DIRECT']\n");
-    assert!(e.contains("option 'bogus' is not implemented"), "{e}");
+    // Keys the pinned type does not know are ignored by Mihomo's decoder, so
+    // the same file must load here (R2: do not reject a valid configuration).
+    assert_eq!(
+        proxy_err("proxies:\n  - {name: t, type: trojan, server: x, port: 1, password: p, smux: {enabled: true}}\nrules: ['MATCH,DIRECT']\n"),
+        "ok"
+    );
+    assert_eq!(
+        proxy_err("proxies:\n  - {name: t, type: trojan, server: x, port: 1, password: p, bogus: 1}\nrules: ['MATCH,DIRECT']\n"),
+        "ok"
+    );
     let e = proxy_err("proxies:\n  - {name: s, type: ss, server: x, port: 1, cipher: rc4-md5, password: p}\nrules: ['MATCH,DIRECT']\n");
     assert!(
         e.contains("option 'cipher' value 'rc4-md5' is not implemented"),
@@ -285,7 +321,6 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
         ("http", "server: 127.0.0.1, port: 1, tls: true", "private-key: k.pem"),
         ("http", "server: 127.0.0.1, port: 1, tls: true", "name-cert-verify: x"),
         ("http", "server: 127.0.0.1, port: 1", "ip-version: ipv4"),
-        ("http", "server: 127.0.0.1, port: 1", "udp: true"),
         (
             "ss",
             "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
@@ -484,6 +519,14 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "ech-opts: {enable: true}"),
         // Disabled/empty values.
         ("socks5", "server: 127.0.0.1, port: 1", "smux: {enabled: false}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "smux: {enabled: true}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "smux: {enabled: false, protocol: h2mux}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "ech-opts: {enable: false, config: x}"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "ech-opts: {enable: false, config: x}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "bogus: 1"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "smux: {enabled: true, protocol: h2mux}"),
+        ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "plugin-opts: {mode: tls}"),
+        ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "ss-opts: {enabled: true, password: p}"),
         ("socks5", "server: 127.0.0.1, port: 1", "grpc-opts: {}"),
         ("socks5", "server: 127.0.0.1, port: 1", "ech-opts: {enable: false}"),
         ("socks5", "server: 127.0.0.1, port: 1", "fingerprint: ''"),
@@ -533,13 +576,11 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
 
     // The same keys with a value that changes behaviour still fail.
     let enabled: &[(&str, &str, &str)] = &[
-        ("socks5", "server: 127.0.0.1, port: 1", "smux: {enabled: true}"),
         ("socks5", "server: 127.0.0.1, port: 1, tls: true", "ech-opts: {enable: true}"),
         ("socks5", "server: 127.0.0.1, port: 1", "tfo: true"),
         ("socks5", "server: 127.0.0.1, port: 1", "routing-mark: 100"),
         ("socks5", "server: 127.0.0.1, port: 1", "udp-over-tcp: true"),
         ("socks5", "server: 127.0.0.1, port: 1", "interface-name: eth0"),
-        ("trojan", "server: 127.0.0.1, port: 1, password: p", "smux: {enabled: true}"),
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {enabled: true}"),
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {public-key: k}"),
         ("anytls", "server: 127.0.0.1, port: 1, password: p", "idle-session-timeout: 30"),

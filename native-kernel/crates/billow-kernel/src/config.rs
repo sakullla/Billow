@@ -27,6 +27,24 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "log-level",
     "rules",
 ];
+/// Top-level keys the pinned `RawConfig` declares but this kernel does not
+/// implement. They fail with `[unsupported]`; a key outside both lists is not a
+/// Mihomo key at all and is ignored exactly as Mihomo's decoder ignores it (R2:
+/// a valid configuration must load).
+pub const KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
+    "redir-port", "tproxy-port", "ss-config", "vmess-config", "inbound-tfo", "inbound-mptcp",
+    "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips", "unified-delay", "ipv6",
+    "external-controller", "external-controller-routing-mark", "external-controller-pipe",
+    "external-controller-unix", "external-controller-tls", "external-controller-cors",
+    "external-ui", "external-ui-url", "external-ui-name", "external-doh-server", "secret",
+    "interface-name", "routing-mark", "tunnels", "geo-auto-update", "geo-update-interval",
+    "geodata-mode", "geodata-loader", "geosite-matcher", "tcp-concurrent", "find-process-mode",
+    "global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
+    "keep-alive-interval", "disable-keep-alive", "proxy-providers", "rule-providers",
+    "proxy-groups", "sub-rules", "listeners", "hosts", "dns", "ntp", "tun", "tuic-server",
+    "iptables", "experimental", "profile", "geox-url", "sniffer", "clash-for-android"
+];
+
 /// Rule types understood by the first slice.
 pub const SUPPORTED_RULE_TYPES: &[&str] = &[
     "DOMAIN",
@@ -289,9 +307,15 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             "authentication" => authentication = parse_authentication(value, path)?,
             "tls" => tls_roots = parse_tls(value, path)?,
             _ => {
-                return Err(ConfigError::Unsupported(format!(
-                    "top-level key '{key}' is not implemented by the Rust kernel slice"
-                )));
+                if KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS.contains(&key) {
+                    return Err(ConfigError::Unsupported(format!(
+                        "top-level key '{key}' is not implemented by the Rust kernel slice"
+                    )));
+                }
+                // Not a Mihomo top-level key: Mihomo's decoder tolerates extra
+                // keys (fixtures carry `x-kernel-compat`, newer versions add
+                // keys), so the same file must load here.
+                warnings.push(format!("ignored unknown top-level key '{key}'"));
             }
         }
     }

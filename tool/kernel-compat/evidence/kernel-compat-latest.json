@@ -1,8 +1,8 @@
 {
   "format": "kernel-compat-report",
   "version": 1,
-  "startedAt": "2026-11-21T04:47:38.825Z",
-  "finishedAt": "2026-11-21T04:48:58.582Z",
+  "startedAt": "2026-11-21T05:49:03.205Z",
+  "finishedAt": "2026-11-21T05:50:21.417Z",
   "host": {
     "platform": "darwin",
     "arch": "arm64",
@@ -260,7 +260,7 @@
       "displayVersion": "billow-kernel 0.1.0",
       "versionSource": "cli --version",
       "identity": "billow-kernel 0.1.0",
-      "sha256": "2498ae57d4a25f3d8ccfba44f448482b73d36d5ccd190c1653aaf79876b09e28",
+      "sha256": "7363af978546aaf65843a241a1a1587498de0c4bb19c43f7b1c819bd284725b0",
       "reason": null
     },
     {
@@ -324,12 +324,12 @@
           "version": "v1.19.34",
           "versionSource": "kernel banner",
           "markers": {
-            "p": "billowt1-p-7cfddc48.probe.invalid",
-            "c": "billowt1-c-7cfddc48.probe.invalid"
+            "p": "billowt1-p-232499a2.probe.invalid",
+            "c": "billowt1-c-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 54984,
-            "controller": 54985
+            "mixed": 56068,
+            "controller": 56069
           },
           "client": {
             "host": "127.0.0.1"
@@ -343,7 +343,7 @@
               "steps": [
                 {
                   "step": "p",
-                  "marker": "billowt1-p-7cfddc48.probe.invalid",
+                  "marker": "billowt1-p-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -352,13 +352,13 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 61,
-                    "value": "billowt1-p-7cfddc48.probe.invalid"
+                    "value": "billowt1-p-232499a2.probe.invalid"
                   },
                   "durationMs": 3
                 },
                 {
                   "step": "c",
-                  "marker": "billowt1-c-7cfddc48.probe.invalid",
+                  "marker": "billowt1-c-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -367,7 +367,7 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-c-7cfddc48.probe.invalid"
+                    "value": "billowt1-c-232499a2.probe.invalid"
                   },
                   "durationMs": 1
                 }
@@ -375,8 +375,8 @@
               "markersSent": 2,
               "echoSawMarkers": 2,
               "controlValue": {
-                "expected": "billowt1-c-7cfddc48.probe.invalid",
-                "observed": "billowt1-c-7cfddc48.probe.invalid"
+                "expected": "billowt1-c-232499a2.probe.invalid",
+                "observed": "billowt1-c-232499a2.probe.invalid"
               }
             },
             "control": {
@@ -388,7 +388,7 @@
                   "expectStatus": 204,
                   "body": "",
                   "error": null,
-                  "durationMs": 32
+                  "durationMs": 30
                 }
               ],
               "proxies": {
@@ -409,21 +409,21 @@
                 }
               }
             },
-            "readyMs": 11,
+            "readyMs": 10,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "p": {
                   "accept": true,
-                  "host": "billowt1-p-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.48",
+                  "host": "billowt1-p-232499a2.probe.invalid",
+                  "resolved": "198.18.0.89",
                   "resolver": "default resolver answered",
                   "error": null
                 },
                 "c": {
                   "accept": true,
-                  "host": "billowt1-c-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.49",
+                  "host": "billowt1-c-232499a2.probe.invalid",
+                  "resolved": "198.18.0.90",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -437,9 +437,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 73,
+            "elapsedMs": 67,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:47:39.723290000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:47:39.723397000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:47:39.723402000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:47:39.723512000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:47:39.723586000+08:00\" level=info msg=\"RESTful API listening at: 127.0.0.1:54985\"\ntime=\"2026-11-21T12:47:39.724497000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T12:47:39.724583000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: [::]:54984\"\ntime=\"2026-11-21T12:47:39.724604000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T12:47:39.724643000+08:00\" level=info msg=\"Start initial compatible provider Compat\"\ntime=\"2026-11-21T12:47:39.747219000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:55154 -> \"\ntime=\"2026-11-21T12:47:39.747336000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T12:47:39.747440000+08:00\" level=info msg=\"[TCP] 127.0.0.1:55154 --> billowt1-p-7cfddc48.probe.invalid:18080 match Match using Compat[tagged-parent]\"\ntime=\"2026-11-21T12:47:39.749832000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:55156 -> \"\ntime=\"2026-11-21T12:47:39.749869000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T12:47:39.749944000+08:00\" level=info msg=\"[TCP] 127.0.0.1:55156 --> billowt1-c-7cfddc48.probe.invalid:18080 match Match using Compat[tagged-parent]\"\ntime=\"2026-11-21T12:47:39.784390000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+              "stdout": "time=\"2026-11-21T13:49:03.562382000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:03.562459000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:03.562464000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:03.562568000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:03.562725000+08:00\" level=info msg=\"RESTful API listening at: 127.0.0.1:56069\"\ntime=\"2026-11-21T13:49:03.563530000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T13:49:03.563618000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: [::]:56068\"\ntime=\"2026-11-21T13:49:03.563641000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T13:49:03.563649000+08:00\" level=info msg=\"Start initial compatible provider Compat\"\ntime=\"2026-11-21T13:49:03.583632000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:56219 -> \"\ntime=\"2026-11-21T13:49:03.583758000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T13:49:03.583875000+08:00\" level=info msg=\"[TCP] 127.0.0.1:56219 --> billowt1-p-232499a2.probe.invalid:18080 match Match using Compat[tagged-parent]\"\ntime=\"2026-11-21T13:49:03.585935000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:56221 -> \"\ntime=\"2026-11-21T13:49:03.585981000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T13:49:03.586054000+08:00\" level=info msg=\"[TCP] 127.0.0.1:56221 --> billowt1-c-232499a2.probe.invalid:18080 match Match using Compat[tagged-parent]\"\ntime=\"2026-11-21T13:49:03.618551000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
               "stderr": ""
             }
           }
@@ -452,12 +452,12 @@
           "version": "0.1.0",
           "versionSource": "cli --version",
           "markers": {
-            "p": "billowt1-p-7cfddc48.probe.invalid",
-            "c": "billowt1-c-7cfddc48.probe.invalid"
+            "p": "billowt1-p-232499a2.probe.invalid",
+            "c": "billowt1-c-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 55161,
-            "controller": 55162
+            "mixed": 56226,
+            "controller": 56227
           },
           "client": {
             "host": "127.0.0.1"
@@ -468,7 +468,7 @@
             "readyError": "proxy endpoint did not accept connections within 15000 ms",
             "flow": null,
             "control": null,
-            "diagnosticConfig": "hosts:\n  \"billowt1-p-7cfddc48.probe.invalid\": 127.0.0.1\n  \"billowt1-c-7cfddc48.probe.invalid\": 127.0.0.1\n# Control case: a SELECTOR starts on DIRECT and its tagged child; the runner switches the\n# group to the tagged parent through the allocated controller and re-sends a tagged request.\nmixed-port: 55161\nmode: rule\nlog-level: debug\n# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the\n# harness source explicitly so the same fixture is meaningful for both kernels.\nallow-lan: true\nlan-allowed-ips:\n  - 0.0.0.0/0\n  - \"::/0\"\nexternal-controller: 127.0.0.1:55162\nproxies:\n  - {name: \"tagged-parent\", type: direct}\n  - {name: \"tagged-child\", type: direct}\nproxy-groups:\n  - {name: Compat, type: select, proxies: [\"tagged-parent\", \"tagged-child\"], interval: 0}\nrules:\n  - MATCH,Compat\n",
+            "diagnosticConfig": "hosts:\n  \"billowt1-p-232499a2.probe.invalid\": 127.0.0.1\n  \"billowt1-c-232499a2.probe.invalid\": 127.0.0.1\n# Control case: a SELECTOR starts on DIRECT and its tagged child; the runner switches the\n# group to the tagged parent through the allocated controller and re-sends a tagged request.\nmixed-port: 56226\nmode: rule\nlog-level: debug\n# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the\n# harness source explicitly so the same fixture is meaningful for both kernels.\nallow-lan: true\nlan-allowed-ips:\n  - 0.0.0.0/0\n  - \"::/0\"\nexternal-controller: 127.0.0.1:56227\nproxies:\n  - {name: \"tagged-parent\", type: direct}\n  - {name: \"tagged-child\", type: direct}\nproxy-groups:\n  - {name: Compat, type: select, proxies: [\"tagged-parent\", \"tagged-child\"], interval: 0}\nrules:\n  - MATCH,Compat\n",
             "cleanup": {
               "main": {
                 "code": 1,
@@ -492,12 +492,12 @@
           "version": "v1.19.34",
           "versionSource": null,
           "markers": {
-            "p": "billowt1-p-7cfddc48.probe.invalid",
-            "c": "billowt1-c-7cfddc48.probe.invalid"
+            "p": "billowt1-p-232499a2.probe.invalid",
+            "c": "billowt1-c-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 61188,
-            "controller": 61189
+            "mixed": 51495,
+            "controller": 51496
           },
           "client": {
             "host": "127.0.0.1"
@@ -511,7 +511,7 @@
               "steps": [
                 {
                   "step": "p",
-                  "marker": "billowt1-p-7cfddc48.probe.invalid",
+                  "marker": "billowt1-p-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -520,13 +520,13 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 61,
-                    "value": "billowt1-p-7cfddc48.probe.invalid"
+                    "value": "billowt1-p-232499a2.probe.invalid"
                   },
                   "durationMs": 1
                 },
                 {
                   "step": "c",
-                  "marker": "billowt1-c-7cfddc48.probe.invalid",
+                  "marker": "billowt1-c-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -535,7 +535,7 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-c-7cfddc48.probe.invalid"
+                    "value": "billowt1-c-232499a2.probe.invalid"
                   },
                   "durationMs": 1
                 }
@@ -543,26 +543,26 @@
               "markersSent": 2,
               "echoSawMarkers": 2,
               "controlValue": {
-                "expected": "billowt1-c-7cfddc48.probe.invalid",
-                "observed": "billowt1-c-7cfddc48.probe.invalid"
+                "expected": "billowt1-c-232499a2.probe.invalid",
+                "observed": "billowt1-c-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 27,
+            "readyMs": 26,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "p": {
                   "accept": true,
-                  "host": "billowt1-p-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.48",
+                  "host": "billowt1-p-232499a2.probe.invalid",
+                  "resolved": "198.18.0.89",
                   "resolver": "default resolver answered",
                   "error": null
                 },
                 "c": {
                   "accept": true,
-                  "host": "billowt1-c-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.49",
+                  "host": "billowt1-c-232499a2.probe.invalid",
+                  "resolved": "198.18.0.90",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -578,7 +578,7 @@
             },
             "elapsedMs": 47,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:47:54.799651000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:47:54.799869000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:47:54.799875000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:47:54.800017000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:47:54.800047000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T12:47:54.800133000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:61188\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":61188,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T12:47:54.835098000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:61191 -> \"\ntime=\"2026-11-21T12:47:54.835272000+08:00\" level=debug msg=\"probe relay: type=HTTP host=billowt1-p-7cfddc48.probe.invalid dst=invalid AddrPort src=127.0.0.1:61191\"\ntime=\"2026-11-21T12:47:54.835376000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\ntime=\"2026-11-21T12:47:54.835919000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:61193 -> \"\ntime=\"2026-11-21T12:47:54.835967000+08:00\" level=debug msg=\"probe relay: type=HTTP host=billowt1-c-7cfddc48.probe.invalid dst=invalid AddrPort src=127.0.0.1:61193\"\ntime=\"2026-11-21T12:47:54.836024000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
+              "stdout": "time=\"2026-11-21T13:49:18.632726000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:18.632833000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:18.632843000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:18.632970000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:18.632986000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T13:49:18.633031000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:51495\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":51495,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T13:49:18.668473000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:51498 -> \"\ntime=\"2026-11-21T13:49:18.668568000+08:00\" level=debug msg=\"probe relay: type=HTTP host=billowt1-p-232499a2.probe.invalid dst=invalid AddrPort src=127.0.0.1:51498\"\ntime=\"2026-11-21T13:49:18.668643000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\ntime=\"2026-11-21T13:49:18.669195000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:51500 -> \"\ntime=\"2026-11-21T13:49:18.669235000+08:00\" level=debug msg=\"probe relay: type=HTTP host=billowt1-c-232499a2.probe.invalid dst=invalid AddrPort src=127.0.0.1:51500\"\ntime=\"2026-11-21T13:49:18.669293000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
               "stderr": ""
             }
           }
@@ -638,10 +638,10 @@
           "version": "v1.19.34",
           "versionSource": "kernel banner",
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 61196,
+            "mixed": 51503,
             "controller": null
           },
           "client": {
@@ -656,7 +656,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "connectStatus": 200,
                   "connectHead": "HTTP/1.1 200 Connection established",
@@ -664,7 +664,7 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
                   "durationMs": 505
                 }
@@ -672,19 +672,19 @@
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 11,
+            "readyMs": 10,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -698,9 +698,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 528,
+            "elapsedMs": 527,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:47:54.847142000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:47:54.847175000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:47:54.847180000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:47:54.847289000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:47:54.848430000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T12:47:54.848540000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: [::]:61196\"\ntime=\"2026-11-21T12:47:54.848584000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T12:47:54.859475000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:61553 -> \"\ntime=\"2026-11-21T12:47:54.859516000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T12:47:54.859607000+08:00\" level=info msg=\"[TCP] 127.0.0.1:61553 --> billowt1-a-7cfddc48.probe.invalid:18080 match Match using DIRECT\"\ntime=\"2026-11-21T12:47:55.364447000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+              "stdout": "time=\"2026-11-21T13:49:18.680284000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:18.680317000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:18.680321000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:18.680423000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:18.681393000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T13:49:18.681494000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: [::]:51503\"\ntime=\"2026-11-21T13:49:18.681532000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T13:49:18.691887000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:51825 -> \"\ntime=\"2026-11-21T13:49:18.691922000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T13:49:18.692015000+08:00\" level=info msg=\"[TCP] 127.0.0.1:51825 --> billowt1-a-232499a2.probe.invalid:18080 match Match using DIRECT\"\ntime=\"2026-11-21T13:49:19.196672000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
               "stderr": ""
             }
           }
@@ -713,10 +713,10 @@
           "version": "0.1.0",
           "versionSource": "cli --version",
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 61556,
+            "mixed": 51828,
             "controller": null
           },
           "client": {
@@ -728,7 +728,7 @@
             "readyError": "proxy endpoint did not accept connections within 15000 ms",
             "flow": null,
             "control": null,
-            "diagnosticConfig": "hosts:\n  \"billowt1-a-7cfddc48.probe.invalid\": 127.0.0.1\n# Positive case: one tagged HTTP CONNECT through the mixed inbound. The tag host is mapped by\n# `hosts` to the loopback echo, the rule selects DIRECT, and the echo must report the tag.\nmixed-port: 61556\nmode: rule\nlog-level: debug\n# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the\n# harness source explicitly so the same fixture is meaningful for both kernels.\nallow-lan: true\nlan-allowed-ips:\n  - 0.0.0.0/0\n  - \"::/0\"\nrules:\n  - MATCH,DIRECT\n",
+            "diagnosticConfig": "hosts:\n  \"billowt1-a-232499a2.probe.invalid\": 127.0.0.1\n# Positive case: one tagged HTTP CONNECT through the mixed inbound. The tag host is mapped by\n# `hosts` to the loopback echo, the rule selects DIRECT, and the echo must report the tag.\nmixed-port: 51828\nmode: rule\nlog-level: debug\n# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the\n# harness source explicitly so the same fixture is meaningful for both kernels.\nallow-lan: true\nlan-allowed-ips:\n  - 0.0.0.0/0\n  - \"::/0\"\nrules:\n  - MATCH,DIRECT\n",
             "cleanup": {
               "main": {
                 "code": 1,
@@ -752,10 +752,10 @@
           "version": "v1.19.34",
           "versionSource": null,
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 65002,
+            "mixed": 51520,
             "controller": null
           },
           "client": {
@@ -770,7 +770,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "connectStatus": 200,
                   "connectHead": "HTTP/1.1 200 Connection established",
@@ -778,27 +778,27 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
-                  "durationMs": 45
+                  "durationMs": 3
                 }
               ],
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 129,
+            "readyMs": 26,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -812,9 +812,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 197,
+            "elapsedMs": 39,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:10.469957000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:10.470960000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:10.470973000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:10.471650000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\ntime=\"2026-11-21T12:48:10.471834000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T12:48:10.472512000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:65002\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":65002,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T12:48:10.522424000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:65004 -> \"\ntime=\"2026-11-21T12:48:10.522643000+08:00\" level=debug msg=\"probe relay: type=HTTPS host=billowt1-a-7cfddc48.probe.invalid dst=invalid AddrPort src=127.0.0.1:65004\"\ntime=\"2026-11-21T12:48:10.524222000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
+              "stdout": "time=\"2026-11-21T13:49:34.210140000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:34.210172000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:34.210177000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:34.210283000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:34.210294000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T13:49:34.210335000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:51520\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":51520,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T13:49:34.236713000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:51522 -> \"\ntime=\"2026-11-21T13:49:34.236743000+08:00\" level=debug msg=\"probe relay: type=HTTPS host=billowt1-a-232499a2.probe.invalid dst=invalid AddrPort src=127.0.0.1:51522\"\ntime=\"2026-11-21T13:49:34.236808000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
               "stderr": ""
             }
           }
@@ -879,11 +879,11 @@
           "version": "v1.19.34",
           "versionSource": "kernel banner",
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid",
-            "r": "billowt1-r-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid",
+            "r": "billowt1-r-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 65007,
+            "mixed": 51525,
             "controller": null
           },
           "client": {
@@ -898,7 +898,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "connectStatus": 200,
                   "connectHead": "HTTP/1.1 200 Connection established",
@@ -906,34 +906,34 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
-                  "durationMs": 524
+                  "durationMs": 505
                 }
               ],
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 22,
+            "readyMs": 10,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 },
                 "r": {
                   "accept": true,
-                  "host": "billowt1-r-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.51",
+                  "host": "billowt1-r-232499a2.probe.invalid",
+                  "resolved": "198.18.0.92",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -947,9 +947,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 597,
+            "elapsedMs": 535,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:10.584629000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:10.585691000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:10.585706000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:10.585935000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:48:10.587978000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T12:48:10.588193000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: 127.0.0.1:65007\"\ntime=\"2026-11-21T12:48:10.588262000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T12:48:10.639991000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:65032 -> \"\ntime=\"2026-11-21T12:48:10.640150000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T12:48:10.640510000+08:00\" level=info msg=\"[TCP] 127.0.0.1:65032 --> 127.0.0.1:18080 match Match using DIRECT\"\ntime=\"2026-11-21T12:48:11.163000000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+              "stdout": "time=\"2026-11-21T13:49:34.250051000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:34.250084000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:34.250088000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:34.250187000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:34.251136000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T13:49:34.251188000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: 127.0.0.1:51525\"\ntime=\"2026-11-21T13:49:34.251223000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T13:49:34.269732000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:51924 -> \"\ntime=\"2026-11-21T13:49:34.269775000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T13:49:34.269874000+08:00\" level=info msg=\"[TCP] 127.0.0.1:51924 --> 127.0.0.1:18080 match Match using DIRECT\"\ntime=\"2026-11-21T13:49:34.774599000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
               "stderr": ""
             }
           }
@@ -962,11 +962,11 @@
           "version": "0.1.0",
           "versionSource": "cli --version",
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid",
-            "r": "billowt1-r-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid",
+            "r": "billowt1-r-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 65035,
+            "mixed": 51927,
             "controller": null
           },
           "client": {
@@ -981,7 +981,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "connectStatus": 200,
                   "connectHead": "HTTP/1.1 200 Connection Established",
@@ -989,34 +989,34 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
-                  "durationMs": 545
+                  "durationMs": 523
                 }
               ],
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 246,
+            "readyMs": 112,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 },
                 "r": {
                   "accept": true,
-                  "host": "billowt1-r-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.51",
+                  "host": "billowt1-r-232499a2.probe.invalid",
+                  "resolved": "198.18.0.92",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -1030,10 +1030,10 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 834,
+            "elapsedMs": 655,
             "logs": {
-              "stdout": "instance=1918270b-efe5-4019-979b-a244af05388a pid=62822 version=0.1.0 listen=127.0.0.1:65035 overridden_port=65035 config=sha256:d6ee8730b3732922781ec00fe0746b93ab4c0887bc5f33c1d020a7153675d585 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); outbounds=DIRECT,REJECT; protocols=none; dns=none\nstopped instance=1918270b-efe5-4019-979b-a244af05388a accepted=3 active=0 completed=1 rejected=0 failed=2 bytes_up=209 bytes_down=227\n",
-              "stderr": "[04:48:11.368 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); outbounds=DIRECT,REJECT; protocols=none; dns=none instance=1918270b-efe5-4019-979b-a244af05388a pid=62822 version=\"0.1.0\" listen=127.0.0.1:65035\n[04:48:11.412 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:52561 code=\"closed\"\n[04:48:11.413 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=2 peer=127.0.0.1:52562 code=\"closed\"\n[04:48:11.452 DEBUG billow_kernel::engine] message=request matched session=3 peer=127.0.0.1:52563 protocol=\"http-connect\" target=127.0.0.1:18080 rule=MATCH -> DIRECT config=sha256:d6ee8730b3732922781ec00fe0746b93ab4c0887bc5f33c1d020a7153675d585\n[04:48:11.453 INFO  billow_kernel::engine] message=DIRECT tunnel established session=3 target=127.0.0.1:18080 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:18080 config=sha256:d6ee8730b3732922781ec00fe0746b93ab4c0887bc5f33c1d020a7153675d585\n[04:48:11.472 INFO  billow_kernel::engine] message=session closed session=3 target=127.0.0.1:18080 bytes_up=209 bytes_down=227\n[04:48:11.996 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[04:48:11.996 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[04:48:11.996 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[04:48:11.998 INFO  billow_kernel::engine] message=billow-kernel stopped instance=1918270b-efe5-4019-979b-a244af05388a sessions=3 active=0 finished=3\n"
+              "stdout": "instance=5361af2d-7616-4178-8cb2-d99014906f8b pid=5183 version=0.1.0 listen=127.0.0.1:51927 overridden_port=51927 config=sha256:624a1354bc6cdb3fa8e296a6463a5f0298c4ee16ba9c70db4da040f4d63abf94 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); outbounds=DIRECT,REJECT; protocols=none; dns=none\nstopped instance=5361af2d-7616-4178-8cb2-d99014906f8b accepted=3 active=0 completed=1 rejected=0 failed=2 bytes_up=209 bytes_down=227\n",
+              "stderr": "[05:49:34.889 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); outbounds=DIRECT,REJECT; protocols=none; dns=none instance=5361af2d-7616-4178-8cb2-d99014906f8b pid=5183 version=\"0.1.0\" listen=127.0.0.1:51927\n[05:49:34.889 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=2 peer=127.0.0.1:55722 code=\"closed\"\n[05:49:34.889 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:55721 code=\"closed\"\n[05:49:34.908 DEBUG billow_kernel::engine] message=request matched session=3 peer=127.0.0.1:55723 protocol=\"http-connect\" target=127.0.0.1:18080 rule=MATCH -> DIRECT config=sha256:624a1354bc6cdb3fa8e296a6463a5f0298c4ee16ba9c70db4da040f4d63abf94\n[05:49:34.908 INFO  billow_kernel::engine] message=DIRECT tunnel established session=3 target=127.0.0.1:18080 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:18080 config=sha256:624a1354bc6cdb3fa8e296a6463a5f0298c4ee16ba9c70db4da040f4d63abf94\n[05:49:34.927 INFO  billow_kernel::engine] message=session closed session=3 target=127.0.0.1:18080 bytes_up=209 bytes_down=227\n[05:49:35.431 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[05:49:35.431 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[05:49:35.431 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[05:49:35.431 INFO  billow_kernel::engine] message=billow-kernel stopped instance=5361af2d-7616-4178-8cb2-d99014906f8b sessions=3 active=0 finished=3\n"
             }
           }
         },
@@ -1045,11 +1045,11 @@
           "version": "v1.19.34",
           "versionSource": null,
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid",
-            "r": "billowt1-r-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid",
+            "r": "billowt1-r-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 52566,
+            "mixed": 55726,
             "controller": null
           },
           "client": {
@@ -1064,7 +1064,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "connectStatus": 200,
                   "connectHead": "HTTP/1.1 200 Connection established",
@@ -1072,13 +1072,13 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
-                  "durationMs": 45
+                  "durationMs": 2
                 },
                 {
                   "step": "r",
-                  "marker": "billowt1-r-7cfddc48.probe.invalid",
+                  "marker": "billowt1-r-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -1087,16 +1087,16 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-r-7cfddc48.probe.invalid"
+                    "value": "billowt1-r-232499a2.probe.invalid"
                   },
-                  "durationMs": 2
+                  "durationMs": 1
                 }
               ],
               "markersSent": 2,
               "echoSawMarkers": 2,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
@@ -1106,15 +1106,15 @@
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 },
                 "r": {
                   "accept": true,
-                  "host": "billowt1-r-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.51",
+                  "host": "billowt1-r-232499a2.probe.invalid",
+                  "resolved": "198.18.0.92",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -1128,9 +1128,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 120,
+            "elapsedMs": 49,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:12.017487000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:12.017556000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:12.017561000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:12.017736000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:48:12.017753000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T12:48:12.017865000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:52566\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":52566,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T12:48:12.074456000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:52568 -> \"\ntime=\"2026-11-21T12:48:12.074554000+08:00\" level=debug msg=\"probe relay: type=HTTPS host= dst=127.0.0.1:18080 src=127.0.0.1:52568\"\ntime=\"2026-11-21T12:48:12.074726000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\ntime=\"2026-11-21T12:48:12.119053000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:52570 -> \"\ntime=\"2026-11-21T12:48:12.119821000+08:00\" level=debug msg=\"probe relay: type=HTTP host= dst=127.0.0.1:18080 src=127.0.0.1:52570\"\ntime=\"2026-11-21T12:48:12.120075000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
+              "stdout": "time=\"2026-11-21T13:49:35.441623000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:35.441654000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:35.441658000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:35.441765000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:35.441775000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T13:49:35.441842000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:55726\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":55726,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T13:49:35.478880000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:55729 -> \"\ntime=\"2026-11-21T13:49:35.478924000+08:00\" level=debug msg=\"probe relay: type=HTTPS host= dst=127.0.0.1:18080 src=127.0.0.1:55729\"\ntime=\"2026-11-21T13:49:35.479057000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\ntime=\"2026-11-21T13:49:35.481014000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:55731 -> \"\ntime=\"2026-11-21T13:49:35.481072000+08:00\" level=debug msg=\"probe relay: type=HTTP host= dst=127.0.0.1:18080 src=127.0.0.1:55731\"\ntime=\"2026-11-21T13:49:35.481157000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
               "stderr": ""
             }
           }
@@ -1188,10 +1188,10 @@
           "version": "v1.19.34",
           "versionSource": "kernel banner",
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 52573,
+            "mixed": 55734,
             "controller": null
           },
           "client": {
@@ -1206,7 +1206,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -1215,27 +1215,27 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
-                  "durationMs": 2
+                  "durationMs": 1
                 }
               ],
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 19,
+            "readyMs": 10,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -1249,9 +1249,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 43,
+            "elapsedMs": 22,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:12.139562000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:12.139643000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:12.139652000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:12.139879000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:48:12.141829000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T12:48:12.142110000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: [::]:52573\"\ntime=\"2026-11-21T12:48:12.142261000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T12:48:12.162942000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:52898 -> \"\ntime=\"2026-11-21T12:48:12.163233000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T12:48:12.163708000+08:00\" level=info msg=\"[TCP] 127.0.0.1:52898 --> billowt1-a-7cfddc48.probe.invalid:18080 match Match using DIRECT\"\ntime=\"2026-11-21T12:48:12.164620000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+              "stdout": "time=\"2026-11-21T13:49:35.491903000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:35.491935000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:35.491938000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:35.492041000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:35.493005000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T13:49:35.493107000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: [::]:55734\"\ntime=\"2026-11-21T13:49:35.493139000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T13:49:35.503529000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:55919 -> \"\ntime=\"2026-11-21T13:49:35.503635000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T13:49:35.503759000+08:00\" level=info msg=\"[TCP] 127.0.0.1:55919 --> billowt1-a-232499a2.probe.invalid:18080 match Match using DIRECT\"\ntime=\"2026-11-21T13:49:35.504103000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
               "stderr": ""
             }
           }
@@ -1264,10 +1264,10 @@
           "version": "0.1.0",
           "versionSource": "cli --version",
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 52901,
+            "mixed": 55922,
             "controller": null
           },
           "client": {
@@ -1279,7 +1279,7 @@
             "readyError": "proxy endpoint did not accept connections within 15000 ms",
             "flow": null,
             "control": null,
-            "diagnosticConfig": "hosts:\n  \"billowt1-a-7cfddc48.probe.invalid\": 127.0.0.1\n# Positive case: a plain forward request (no CONNECT) to the tagged host. The pinned HTTP\n# inbound hands the request to the tunnel with the tagged domain as the destination, the rule\n# selects DIRECT, and the echo must report the tag. This is the Rust kernel's expected path.\nmixed-port: 52901\nmode: rule\nlog-level: debug\nallow-lan: true\nlan-allowed-ips:\n  - 0.0.0.0/0\n  - \"::/0\"\nrules:\n  - MATCH,DIRECT\n",
+            "diagnosticConfig": "hosts:\n  \"billowt1-a-232499a2.probe.invalid\": 127.0.0.1\n# Positive case: a plain forward request (no CONNECT) to the tagged host. The pinned HTTP\n# inbound hands the request to the tunnel with the tagged domain as the destination, the rule\n# selects DIRECT, and the echo must report the tag. This is the Rust kernel's expected path.\nmixed-port: 55922\nmode: rule\nlog-level: debug\nallow-lan: true\nlan-allowed-ips:\n  - 0.0.0.0/0\n  - \"::/0\"\nrules:\n  - MATCH,DIRECT\n",
             "cleanup": {
               "main": {
                 "code": 1,
@@ -1288,7 +1288,7 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 15005,
+            "elapsedMs": 15167,
             "logs": {
               "stdout": "",
               "stderr": "error: [unsupported] unsupported configuration: top-level key 'hosts' is not implemented by the Rust kernel slice\n"
@@ -1303,10 +1303,10 @@
           "version": "v1.19.34",
           "versionSource": null,
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 57899,
+            "mixed": 62082,
             "controller": null
           },
           "client": {
@@ -1321,7 +1321,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -1330,27 +1330,27 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
-                  "durationMs": 2
+                  "durationMs": 1
                 }
               ],
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 158,
+            "readyMs": 25,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -1364,9 +1364,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 179,
+            "elapsedMs": 37,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:27.305617000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:27.306895000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:27.306906000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:27.307306000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\ntime=\"2026-11-21T12:48:27.307510000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T12:48:27.308133000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:57899\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":57899,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T12:48:27.351781000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:57901 -> \"\ntime=\"2026-11-21T12:48:27.352576000+08:00\" level=debug msg=\"probe relay: type=HTTP host=billowt1-a-7cfddc48.probe.invalid dst=invalid AddrPort src=127.0.0.1:57901\"\ntime=\"2026-11-21T12:48:27.352713000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
+              "stdout": "time=\"2026-11-21T13:49:50.686711000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:50.686780000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:50.686788000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:50.687008000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:50.687027000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T13:49:50.687131000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:62082\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":62082,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T13:49:50.709960000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:62084 -> \"\ntime=\"2026-11-21T13:49:50.710025000+08:00\" level=debug msg=\"probe relay: type=HTTP host=billowt1-a-232499a2.probe.invalid dst=invalid AddrPort src=127.0.0.1:62084\"\ntime=\"2026-11-21T13:49:50.710138000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
               "stderr": ""
             }
           }
@@ -1426,10 +1426,10 @@
           "version": "v1.19.34",
           "versionSource": "kernel banner",
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 57904,
+            "mixed": 62087,
             "controller": null
           },
           "client": {
@@ -1444,7 +1444,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -1453,7 +1453,7 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
                   "durationMs": 1
                 }
@@ -1461,19 +1461,19 @@
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 16,
+            "readyMs": 10,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -1487,9 +1487,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 33,
+            "elapsedMs": 22,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:27.368656000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:27.368823000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:27.368833000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:27.368968000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:48:27.370657000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T12:48:27.370738000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: 127.0.0.1:57904\"\ntime=\"2026-11-21T12:48:27.370792000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T12:48:27.370848000+08:00\" level=info msg=\"Start initial compatible provider Probe\"\ntime=\"2026-11-21T12:48:27.386489000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:58231 -> \"\ntime=\"2026-11-21T12:48:27.386623000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T12:48:27.386751000+08:00\" level=info msg=\"[TCP] 127.0.0.1:58231 --> static.probe.invalid:18080 match Match using Probe[probe-direct]\"\ntime=\"2026-11-21T12:48:27.387235000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+              "stdout": "time=\"2026-11-21T13:49:50.720855000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:49:50.720920000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:49:50.720924000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:49:50.721026000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:49:50.721986000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T13:49:50.722044000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: 127.0.0.1:62087\"\ntime=\"2026-11-21T13:49:50.722077000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T13:49:50.722087000+08:00\" level=info msg=\"Start initial compatible provider Probe\"\ntime=\"2026-11-21T13:49:50.732175000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:62294 -> \"\ntime=\"2026-11-21T13:49:50.732271000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T13:49:50.732378000+08:00\" level=info msg=\"[TCP] 127.0.0.1:62294 --> static.probe.invalid:18080 match Match using Probe[probe-direct]\"\ntime=\"2026-11-21T13:49:50.732794000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
               "stderr": ""
             }
           }
@@ -1502,10 +1502,10 @@
           "version": "0.1.0",
           "versionSource": "cli --version",
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 58234,
+            "mixed": 62297,
             "controller": null
           },
           "client": {
@@ -1517,7 +1517,7 @@
             "readyError": "proxy endpoint did not accept connections within 15000 ms",
             "flow": null,
             "control": null,
-            "diagnosticConfig": "# Coverage probe, not a pass claim: a valid configuration that uses a hosts entry, a\n# selector group and a tagged forward request (the config shape the pinned desktop kernel\n# accepts). Engines that do not implement one of these keys reject the whole file; the report\n# records that rejection with the engine's own reason as \"not implemented (T4/T5 scope)\".\nmixed-port: 58234\nmode: rule\nlog-level: debug\nhosts:\n  \"static.probe.invalid\": 127.0.0.1\nproxies:\n  - {name: probe-direct, type: direct}\nproxy-groups:\n  - {name: Probe, type: select, proxies: [probe-direct]}\nrules:\n  - MATCH,Probe\n",
+            "diagnosticConfig": "# Coverage probe, not a pass claim: a valid configuration that uses a hosts entry, a\n# selector group and a tagged forward request (the config shape the pinned desktop kernel\n# accepts). Engines that do not implement one of these keys reject the whole file; the report\n# records that rejection with the engine's own reason as \"not implemented (T4/T5 scope)\".\nmixed-port: 62297\nmode: rule\nlog-level: debug\nhosts:\n  \"static.probe.invalid\": 127.0.0.1\nproxies:\n  - {name: probe-direct, type: direct}\nproxy-groups:\n  - {name: Probe, type: select, proxies: [probe-direct]}\nrules:\n  - MATCH,Probe\n",
             "cleanup": {
               "main": {
                 "code": 1,
@@ -1526,7 +1526,7 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 15008,
+            "elapsedMs": 15001,
             "logs": {
               "stdout": "",
               "stderr": "error: [unsupported] unsupported configuration: top-level key 'hosts' is not implemented by the Rust kernel slice\n"
@@ -1541,10 +1541,10 @@
           "version": "v1.19.34",
           "versionSource": null,
           "markers": {
-            "a": "billowt1-a-7cfddc48.probe.invalid"
+            "a": "billowt1-a-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 57577,
+            "mixed": 56192,
             "controller": null
           },
           "client": {
@@ -1559,7 +1559,7 @@
               "steps": [
                 {
                   "step": "a",
-                  "marker": "billowt1-a-7cfddc48.probe.invalid",
+                  "marker": "billowt1-a-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -1568,27 +1568,27 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-a-7cfddc48.probe.invalid"
+                    "value": "billowt1-a-232499a2.probe.invalid"
                   },
-                  "durationMs": 12
+                  "durationMs": 1
                 }
               ],
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-a-7cfddc48.probe.invalid",
-                "observed": "billowt1-a-7cfddc48.probe.invalid"
+                "expected": "billowt1-a-232499a2.probe.invalid",
+                "observed": "billowt1-a-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 58,
+            "readyMs": 27,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "a": {
                   "accept": true,
-                  "host": "billowt1-a-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.50",
+                  "host": "billowt1-a-232499a2.probe.invalid",
+                  "resolved": "198.18.0.91",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -1602,9 +1602,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 120,
+            "elapsedMs": 37,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:42.437612000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:42.438521000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:42.438533000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:42.438714000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\ntime=\"2026-11-21T12:48:42.438729000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T12:48:42.438818000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:57577\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":57577,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T12:48:42.513152000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:57579 -> \"\ntime=\"2026-11-21T12:48:42.513530000+08:00\" level=debug msg=\"probe relay: type=HTTP host=static.probe.invalid dst=invalid AddrPort src=127.0.0.1:57579\"\ntime=\"2026-11-21T12:48:42.513788000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
+              "stdout": "time=\"2026-11-21T13:50:05.743941000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:50:05.744010000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:50:05.744021000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:50:05.744154000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:50:05.744172000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T13:50:05.744223000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:56192\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":56192,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T13:50:05.771138000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:56194 -> \"\ntime=\"2026-11-21T13:50:05.771200000+08:00\" level=debug msg=\"probe relay: type=HTTP host=static.probe.invalid dst=invalid AddrPort src=127.0.0.1:56194\"\ntime=\"2026-11-21T13:50:05.771264000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
               "stderr": ""
             }
           }
@@ -1660,10 +1660,10 @@
           "version": "v1.19.34",
           "versionSource": "kernel banner",
           "markers": {
-            "c": "billowt1-c-7cfddc48.probe.invalid"
+            "c": "billowt1-c-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 57582,
+            "mixed": 56197,
             "controller": null
           },
           "client": {
@@ -1684,7 +1684,7 @@
             "cleanup": {
               "mixedPortFree": true
             },
-            "elapsedMs": 51,
+            "elapsedMs": 9,
             "logs": {
               "stdout": "",
               "stderr": ""
@@ -1699,10 +1699,10 @@
           "version": "0.1.0",
           "versionSource": "cli --version",
           "markers": {
-            "c": "billowt1-c-7cfddc48.probe.invalid"
+            "c": "billowt1-c-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 57584,
+            "mixed": 56199,
             "controller": null
           },
           "client": {
@@ -1723,7 +1723,7 @@
             "cleanup": {
               "mixedPortFree": true
             },
-            "elapsedMs": 50,
+            "elapsedMs": 3,
             "logs": {
               "stdout": "",
               "stderr": ""
@@ -1738,10 +1738,10 @@
           "version": "v1.19.34",
           "versionSource": null,
           "markers": {
-            "c": "billowt1-c-7cfddc48.probe.invalid"
+            "c": "billowt1-c-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 57586,
+            "mixed": 56201,
             "controller": null
           },
           "client": {
@@ -1768,7 +1768,7 @@
             "cleanup": {
               "mixedPortFree": true
             },
-            "elapsedMs": 62,
+            "elapsedMs": 9,
             "logs": {
               "stdout": "",
               "stderr": ""
@@ -1831,10 +1831,10 @@
           "version": "v1.19.34",
           "versionSource": "kernel banner",
           "markers": {
-            "b": "billowt1-b-7cfddc48.probe.invalid"
+            "b": "billowt1-b-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 57588,
+            "mixed": 56203,
             "controller": null
           },
           "client": {
@@ -1849,30 +1849,30 @@
               "steps": [
                 {
                   "step": "b",
-                  "marker": "billowt1-b-7cfddc48.probe.invalid",
+                  "marker": "billowt1-b-232499a2.probe.invalid",
                   "category": "forward-error",
                   "responseStatus": 502,
                   "responseBytes": 66,
                   "responseHead": "HTTP/1.1 502 Bad Gateway",
-                  "durationMs": 538
+                  "durationMs": 506
                 }
               ],
               "markersSent": 1,
               "echoSawMarkers": 0,
               "controlValue": {
-                "expected": "billowt1-b-7cfddc48.probe.invalid",
+                "expected": "billowt1-b-232499a2.probe.invalid",
                 "observed": null
               }
             },
             "control": null,
-            "readyMs": 39,
+            "readyMs": 10,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "b": {
                   "accept": true,
-                  "host": "billowt1-b-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.52",
+                  "host": "billowt1-b-232499a2.probe.invalid",
+                  "resolved": "198.18.0.93",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -1886,9 +1886,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 650,
+            "elapsedMs": 527,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:42.786046000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:42.786120000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:42.786128000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:42.786334000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:48:42.788243000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T12:48:42.788610000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: [::]:57588\"\ntime=\"2026-11-21T12:48:42.788681000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T12:48:42.856471000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:57625 -> \"\ntime=\"2026-11-21T12:48:42.856727000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T12:48:42.856797000+08:00\" level=info msg=\"[TCP] 127.0.0.1:57625 --> billowt1-b-7cfddc48.probe.invalid:18080 match DomainSuffix(probe.invalid) using REJECT\"\ntime=\"2026-11-21T12:48:43.398268000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+              "stdout": "time=\"2026-11-21T13:50:05.803351000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:50:05.803385000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:50:05.803389000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:50:05.803495000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T13:50:05.804473000+08:00\" level=info msg=\"Sniffer is closed\"\ntime=\"2026-11-21T13:50:05.804592000+08:00\" level=info msg=\"Mixed(http+socks) proxy listening at: [::]:56203\"\ntime=\"2026-11-21T13:50:05.804682000+08:00\" level=info msg=\"Start initial compatible provider default\"\ntime=\"2026-11-21T13:50:05.814310000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:56584 -> \"\ntime=\"2026-11-21T13:50:05.814417000+08:00\" level=debug msg=\"[Rule] use default rules\"\ntime=\"2026-11-21T13:50:05.814441000+08:00\" level=info msg=\"[TCP] 127.0.0.1:56584 --> billowt1-b-232499a2.probe.invalid:18080 match DomainSuffix(probe.invalid) using REJECT\"\ntime=\"2026-11-21T13:50:06.320749000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
               "stderr": ""
             }
           }
@@ -1901,10 +1901,10 @@
           "version": "0.1.0",
           "versionSource": "cli --version",
           "markers": {
-            "b": "billowt1-b-7cfddc48.probe.invalid"
+            "b": "billowt1-b-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 57627,
+            "mixed": 56586,
             "controller": null
           },
           "client": {
@@ -1916,7 +1916,7 @@
             "readyError": "proxy endpoint did not accept connections within 15000 ms",
             "flow": null,
             "control": null,
-            "diagnosticConfig": "hosts:\n  \"billowt1-b-7cfddc48.probe.invalid\": 127.0.0.1\n# Negative case: a domain rule sends the tag host to REJECT. Both kernels must accept the\n# config and fail the request the same way; the echo must receive nothing.\nmixed-port: 57627\nmode: rule\nlog-level: debug\n# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the\n# harness source explicitly so the same fixture is meaningful for both kernels.\nallow-lan: true\nlan-allowed-ips:\n  - 0.0.0.0/0\n  - \"::/0\"\nrules:\n  - DOMAIN-SUFFIX,probe.invalid,REJECT\n  - MATCH,DIRECT\n",
+            "diagnosticConfig": "hosts:\n  \"billowt1-b-232499a2.probe.invalid\": 127.0.0.1\n# Negative case: a domain rule sends the tag host to REJECT. Both kernels must accept the\n# config and fail the request the same way; the echo must receive nothing.\nmixed-port: 56586\nmode: rule\nlog-level: debug\n# The pinned mixed inbound refuses client addresses outside lan-allowed-ips; declare the\n# harness source explicitly so the same fixture is meaningful for both kernels.\nallow-lan: true\nlan-allowed-ips:\n  - 0.0.0.0/0\n  - \"::/0\"\nrules:\n  - DOMAIN-SUFFIX,probe.invalid,REJECT\n  - MATCH,DIRECT\n",
             "cleanup": {
               "main": {
                 "code": 1,
@@ -1925,7 +1925,7 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 15005,
+            "elapsedMs": 15001,
             "logs": {
               "stdout": "",
               "stderr": "error: [unsupported] unsupported configuration: top-level key 'hosts' is not implemented by the Rust kernel slice\n"
@@ -1940,10 +1940,10 @@
           "version": "v1.19.34",
           "versionSource": null,
           "markers": {
-            "b": "billowt1-b-7cfddc48.probe.invalid"
+            "b": "billowt1-b-232499a2.probe.invalid"
           },
           "ports": {
-            "mixed": 55118,
+            "mixed": 52223,
             "controller": null
           },
           "client": {
@@ -1958,7 +1958,7 @@
               "steps": [
                 {
                   "step": "b",
-                  "marker": "billowt1-b-7cfddc48.probe.invalid",
+                  "marker": "billowt1-b-232499a2.probe.invalid",
                   "category": "reached-echo",
                   "responseStatus": 200,
                   "responseBytes": 227,
@@ -1967,27 +1967,27 @@
                     "method": "GET",
                     "path": "/probe",
                     "bodyBytes": 92,
-                    "value": "billowt1-b-7cfddc48.probe.invalid"
+                    "value": "billowt1-b-232499a2.probe.invalid"
                   },
-                  "durationMs": 6
+                  "durationMs": 2
                 }
               ],
               "markersSent": 1,
               "echoSawMarkers": 1,
               "controlValue": {
-                "expected": "billowt1-b-7cfddc48.probe.invalid",
-                "observed": "billowt1-b-7cfddc48.probe.invalid"
+                "expected": "billowt1-b-232499a2.probe.invalid",
+                "observed": "billowt1-b-232499a2.probe.invalid"
               }
             },
             "control": null,
-            "readyMs": 54,
+            "readyMs": 76,
             "dns": {
               "note": "resolved by the system resolver of the machine running the harness, not by either kernel (the pinned kernel resolves CONNECT hosts with it)",
               "results": {
                 "b": {
                   "accept": true,
-                  "host": "billowt1-b-7cfddc48.probe.invalid",
-                  "resolved": "198.18.0.52",
+                  "host": "billowt1-b-232499a2.probe.invalid",
+                  "resolved": "198.18.0.93",
                   "resolver": "default resolver answered",
                   "error": null
                 }
@@ -2001,9 +2001,9 @@
               },
               "mixedPortFree": true
             },
-            "elapsedMs": 105,
+            "elapsedMs": 92,
             "logs": {
-              "stdout": "time=\"2026-11-21T12:48:58.465767000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T12:48:58.465830000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T12:48:58.465836000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T12:48:58.466019000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-21T12:48:58.466037000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T12:48:58.466131000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:55118\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":55118,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T12:48:58.533104000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:55120 -> \"\ntime=\"2026-11-21T12:48:58.533275000+08:00\" level=debug msg=\"probe relay: type=HTTP host=billowt1-b-7cfddc48.probe.invalid dst=invalid AddrPort src=127.0.0.1:55120\"\ntime=\"2026-11-21T12:48:58.533578000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
+              "stdout": "time=\"2026-11-21T13:50:21.392805000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-21T13:50:21.393827000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-21T13:50:21.393833000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-21T13:50:21.394152000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\ntime=\"2026-11-21T13:50:21.394314000+08:00\" level=debug msg=\"probe serve start upstream=127.0.0.1:18080 source=127.0.0.1 allowed=[0.0.0.0/0 ::/0]\"\ntime=\"2026-11-21T13:50:21.394883000+08:00\" level=info msg=\"Mixed(http+socks)[probe-mixed] proxy listening at: 127.0.0.1:52223\"\n{\"mode\":\"serve\",\"accept\":false,\"details\":{\"mixedPort\":52223,\"udp\":\"not relayed\"}}\ntime=\"2026-11-21T13:50:21.414278000+08:00\" level=debug msg=\"Auth success from 127.0.0.1:52225 -> \"\ntime=\"2026-11-21T13:50:21.414926000+08:00\" level=debug msg=\"probe relay: type=HTTP host=billowt1-b-232499a2.probe.invalid dst=invalid AddrPort src=127.0.0.1:52225\"\ntime=\"2026-11-21T13:50:21.414990000+08:00\" level=debug msg=\"probe relay connected to 127.0.0.1:18080\"\n",
               "stderr": ""
             }
           }
@@ -2056,7 +2056,7 @@
             "expectStatus": 204,
             "body": "",
             "error": null,
-            "durationMs": 32
+            "durationMs": 30
           }
         ],
         "right": null
@@ -2076,7 +2076,7 @@
                 "method": "GET",
                 "path": "/probe",
                 "bodyBytes": 92,
-                "value": "billowt1-a-7cfddc48.probe.invalid"
+                "value": "billowt1-a-232499a2.probe.invalid"
               }
             }
           ]
@@ -2093,7 +2093,7 @@
                 "method": "GET",
                 "path": "/probe",
                 "bodyBytes": 92,
-                "value": "billowt1-a-7cfddc48.probe.invalid"
+                "value": "billowt1-a-232499a2.probe.invalid"
               }
             },
             {
@@ -2104,7 +2104,7 @@
                 "method": "GET",
                 "path": "/probe",
                 "bodyBytes": 92,
-                "value": "billowt1-r-7cfddc48.probe.invalid"
+                "value": "billowt1-r-232499a2.probe.invalid"
               }
             }
           ]
@@ -2136,7 +2136,7 @@
                 "method": "GET",
                 "path": "/probe",
                 "bodyBytes": 92,
-                "value": "billowt1-b-7cfddc48.probe.invalid"
+                "value": "billowt1-b-232499a2.probe.invalid"
               }
             }
           ]

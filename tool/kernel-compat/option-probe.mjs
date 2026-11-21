@@ -74,6 +74,7 @@ const valueFor = (key) => {
   if (key === 'client-metadata') return 'm'
   if (key === 'idle-session-check-interval' || key === 'idle-session-timeout') return '30'
   if (key === 'min-idle-session') return '1'
+  if (key === 'ech-opts') return '{enable: true, config: x}'
   if (key === 'packet-encoding') return 'xudp'
   if (key === 'ws-headers') return '{X-Probe: yes}'
   if (key === 'network') return 'grpc'
@@ -88,6 +89,11 @@ const valueFor = (key) => {
 // bases use the default network, so their content is a no-op for Mihomo.
 const transportBlocks = new Set(['grpc-opts', 'http-opts', 'h2-opts', 'xhttp-opts'])
 
+// Keys the pinned type declares but the kernel does not implement; every
+// enabled row must name one of them for its family, so a rejection is only
+// allowed for a registered gap.
+const registered = (type, key) => (mapping.proxies[type]?.notImplemented ?? []).some((entry) => entry.replace(/:.*$/, '') === key)
+
 // Enabled forms: one per (family, key) from the mapping's `notImplemented`.
 const enabled = []
 for (const [type, entry] of Object.entries(mapping.proxies)) {
@@ -95,7 +101,11 @@ for (const [type, entry] of Object.entries(mapping.proxies)) {
     const parsed = /^([a-z0-9.-]+)(?::\s*true)?$/.exec(option)
     if (!parsed) continue
     const key = parsed[1]
-    if (transportBlocks.has(key)) continue
+    // Sub-options (`ws-opts.…`) are exercised by the transport tests, and
+    // `plugin-opts` is a no-op unless a plugin is configured (which is itself
+    // rejected), so neither can be enabled at the proxy level.
+    if (key.includes('.')) continue
+    if (transportBlocks.has(key) || key === 'plugin-opts') continue
     const base = tlsOnly.has(key) ? bases[type].on : bases[type].off
     if (!base) continue // the family has no TLS, so a TLS-only key cannot be enabled
     enabled.push({ type, key, base, option: `${key}: ${valueFor(key)}` })
@@ -119,7 +129,12 @@ for (const type of ['socks5', 'http', 'trojan', 'vless', 'anytls']) {
   add(type, 'interface-name', "''")
   add(type, 'routing-mark', '0')
 }
-for (const type of ['socks5', 'trojan', 'vless', 'anytls']) add(type, 'ech-opts', '{enable: false}')
+for (const type of ['socks5', 'trojan', 'vless', 'anytls']) {
+  add(type, 'ech-opts', '{enable: false}')
+  add(type, 'ech-opts', '{enable: false, config: x}')
+}
+for (const type of ['socks5', 'trojan', 'vless', 'anytls']) add(type, 'smux', '{enabled: true, protocol: h2mux}')
+for (const type of ['socks5', 'trojan', 'vless']) add(type, 'smux', '{enabled: false}')
 for (const type of ['socks5', 'trojan', 'vless']) add(type, 'grpc-opts', '{}')
 for (const type of ['trojan', 'vless']) {
   add(type, 'grpc-opts', '{grpc-service-name: svc}')
@@ -140,6 +155,7 @@ add('vless', 'ech-opts', '{enable: true}') // TLS is off here: Mihomo ignores it
 add('trojan', 'ss-opts', '{}')
 add('ss', 'plugin', "''")
 add('ss', 'plugin-opts', '{}')
+add('ss', 'plugin-opts', '{mode: tls}')
 add('ss', 'client-fingerprint', 'chrome') // no TLS on ss, and the plugin is refused
 add('ss', 'udp-over-tcp', 'false')
 for (const type of ['socks5', 'vless', 'anytls']) add(type, 'udp', 'false')
@@ -147,6 +163,9 @@ add('vless', 'packet-addr', 'false')
 add('vless', 'xudp', 'false')
 add('anytls', 'disable-reuse', 'false')
 add('anytls', 'idle-session-timeout', '0')
+add('socks5', 'bogus', '1')
+add('trojan', 'bogus', '{a: b}')
+add('vless', 'ss-opts', '{enabled: true, password: p}')
 add('anytls', 'client-metadata', "''")
 
 function parseArgs(argv) {
@@ -190,6 +209,7 @@ function runCase({ type, key, base, option }, expectReject, group) {
   const verdict = `rust=${rustRejected ? 'reject' : 'accept'} mihomo=${mihomoVerdict}`
   if (expectReject) {
     if (!rustRejected || !rustNamed) problems.push(`${type}/${key}: an enabled option was accepted or not named`)
+    if (!registered(type, key)) problems.push(`${type}/${key}: rejected but not registered as notImplemented`)
     // A form Mihomo itself rejects needs no implementation; both engines
     // rejecting it is the correct outcome and is recorded as such.
   } else {

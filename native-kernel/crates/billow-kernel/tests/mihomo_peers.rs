@@ -1290,6 +1290,46 @@ fn chained_ss_udp_rejected_by_the_hop_never_reaches_the_echo() {
     );
 }
 
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn chained_trojan_udp_rejected_by_the_hop_never_reaches_the_echo() {
+    // trojan UDP rides a TCP stream, so the chain is the hop's CONNECT. The
+    // hop's ruleset REJECTs it; a kernel that dialled the trojan server
+    // directly (ignoring `dialer-proxy`) would reach the echo.
+    let tj_port = free_port();
+    let hop_port = free_port();
+    let listeners = listener(
+        "trojan",
+        tj_port,
+        &format!(
+            ", certificate: CERT, private-key: KEY, users: [{{password: \"{TROJAN_PASSWORD}\"}}]"
+        ),
+    );
+    with_udp_peer_on(
+        "trojan-udp-chain-reject",
+        &listeners,
+        "MATCH,REJECT",
+        Some(hop_port),
+        |_mihomo, _| {
+            let echo = UdpEcho::start();
+            let (running, _) = start_kernel(&format!(
+                "  - {{name: p0, type: trojan, server: 127.0.0.1, port: {tj_port}, password: \"{TROJAN_PASSWORD}\", sni: localhost, skip-cert-verify: true, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}}}\n"
+            ));
+            let (_control, relay) = udp_associate(running.proxy);
+            let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+            assert!(
+                try_datagram(relay, target, b"must-be-rejected-at-the-hop").is_none(),
+                "the hop rejects the trojan server connection, so no reply may come back"
+            );
+            assert!(
+                echo.received().is_empty(),
+                "the echo must not be reached: the trojan stream went through the hop"
+            );
+        },
+    );
+}
+
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
 fn dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo() {

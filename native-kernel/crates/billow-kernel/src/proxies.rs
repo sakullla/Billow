@@ -1,9 +1,12 @@
 //! Strict parsing of the `proxies` list (the protocol outbounds of T4).
 //!
 //! Every entry is decoded against an explicit option table copied from the
-//! pinned Mihomo v1.19.34 source (`adapter/outbound/*.go`). Unknown keys,
-//! unsupported protocols and unsupported values fail with the index, name,
-//! type and the exact option, e.g.
+//! pinned Mihomo v1.19.34 source (`adapter/outbound/*.go`). A key the pinned
+//! type does not know is ignored exactly as Mihomo ignores it (its decoder
+//! tolerates extra keys, so rejecting one would reject a valid
+//! configuration); a known option this kernel does not implement fails when
+//! its value asks for something, with the index, name, type and the option,
+//! e.g.
 //!
 //! ```text
 //! [unsupported] proxies[0] (name=s1, type=hysteria2): option 'up' is not implemented
@@ -260,6 +263,36 @@ fn is_noop_value(value: &serde_yaml::Value) -> bool {
 /// not a no-op - Mihomo's own `-t` rejects it.
 const REQUIRED_FIELDS: &[&str] = &["reality-opts", "jls-opts"];
 
+/// Blocks that require TLS in the pinned version: with TLS off Mihomo rejects
+/// them (`REALITY requires TLS`, `ShadowTLS requires TLS`, ...) instead of
+/// ignoring them, so the kernel must reject them too.
+const REQUIRES_TLS: &[&str] = &["reality-opts", "shadow-tls-opts", "restls-opts", "jls-opts"];
+
+/// Whether a known-but-unimplemented option asks for nothing.
+///
+/// `is_noop_value` covers the generic shapes; two options carry their switch in
+/// a field, so `{enable: false, config: ...}` is disabled even though `config`
+/// is set, and `plugin-opts` is only read when `plugin` is set.
+fn option_is_noop(key: &str, value: &serde_yaml::Value, plugin_set: bool) -> bool {
+    match key {
+        // Mihomo's ECH options are only applied when `enable` is true.
+        "ech-opts" => match value.as_mapping() {
+            Some(map) => {
+                let enabled = match map.get(serde_yaml::Value::String("enable".to_string())) {
+                    Some(serde_yaml::Value::Bool(flag)) => *flag,
+                    Some(serde_yaml::Value::String(text)) => text == "true",
+                    _ => false,
+                };
+                !enabled
+            }
+            None => is_noop_value(value),
+        },
+        // The plugin options are ignored unless a plugin is configured.
+        "plugin-opts" => !plugin_set || is_noop_value(value),
+        _ => is_noop_value(value),
+    }
+}
+
 /// Options that only shape a TLS handshake. With TLS off, Mihomo ignores them,
 /// so they are no-ops for `socks5`/`http` (and `vless` without `tls: true`).
 fn is_tls_option(key: &str) -> bool {
@@ -287,7 +320,6 @@ const COMMON_UNSUPPORTED: &[&str] = &[
     "mptcp",
     "interface-name",
     "routing-mark",
-    "smux",
     "udp-over-tcp",
     "udp-over-tcp-version",
     "ech-opts",
@@ -741,6 +773,13 @@ impl<'a> Entry<'a> {
             if self.used.contains(&key) {
                 continue;
             }
+            // Not part of the pinned type: Mihomo's decoder tolerates extra
+            // keys (a newer option, a typo), so the same file must load here.
+            if !mihomo_options.contains(&key.as_str())
+                && !COMMON_UNSUPPORTED.contains(&key.as_str())
+            {
+                continue;
+            }
             // A transport block for a transport the configuration did not
             // select is ignored by Mihomo (only the selected `network` is
             // read), so it changes nothing here either.
@@ -758,9 +797,20 @@ impl<'a> Entry<'a> {
                     }
                 }
             }
-            if REQUIRED_FIELDS.contains(&key.as_str()) && is_noop_value(value) {
+            let plugin_set = self
+                .mapping
+                .get(serde_yaml::Value::String("plugin".to_string()))
+                .and_then(|plugin| plugin.as_str())
+                .is_some_and(|plugin| !plugin.is_empty());
+            let noop = option_is_noop(&key, value, plugin_set);
+            if REQUIRED_FIELDS.contains(&key.as_str()) && noop {
                 return Err(self.unsupported(format!(
                     "option '{key}' must set its required fields (Mihomo rejects the empty block)"
+                )));
+            }
+            if !tls_enabled && REQUIRES_TLS.contains(&key.as_str()) && !noop {
+                return Err(self.unsupported(format!(
+                    "option '{key}' requires 'tls: true' (Mihomo rejects it without TLS)"
                 )));
             }
             // A TLS-only option with TLS off is ignored by Mihomo, and a value
@@ -769,7 +819,7 @@ impl<'a> Entry<'a> {
             if !tls_enabled && is_tls_option(&key) {
                 continue;
             }
-            if is_noop_value(value) {
+            if noop {
                 continue;
             }
             if COMMON_UNSUPPORTED.contains(&key.as_str()) || mihomo_options.contains(&key.as_str())
@@ -963,9 +1013,9 @@ fn parse_shadowsocks(entry: &mut Entry<'_>) -> Result<ShadowsocksOutbound, Confi
     let udp = entry.bool("udp")?.unwrap_or(false);
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let plugin = entry.string("plugin")?;
-    let has_plugin_opts = entry
-        .get("plugin-opts")
-        .is_some_and(|value| !is_noop_value(value));
+    // `plugin-opts` is only read when a plugin is configured (see
+    // `option_is_noop`); with no plugin it is a no-op, as in Mihomo.
+    let _ = entry.get("plugin-opts");
     let allowed = [
         "dialer-proxy",
         "name",
@@ -987,9 +1037,6 @@ fn parse_shadowsocks(entry: &mut Entry<'_>) -> Result<ShadowsocksOutbound, Confi
         return Err(entry.unsupported(format!(
             "option 'plugin' value '{plugin}' is not implemented"
         )));
-    }
-    if has_plugin_opts {
-        return Err(entry.unsupported("option 'plugin-opts' without 'plugin' is not implemented"));
     }
     Ok(ShadowsocksOutbound {
         server,

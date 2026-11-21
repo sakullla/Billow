@@ -118,6 +118,15 @@ pub fn parse_address(bytes: &[u8], offset: usize) -> Option<(Target, usize)> {
     Some((Target { host, port }, cursor + 2 - offset))
 }
 
+/// Whether a relayed source address is the proxy server we sent to. The hop
+/// reports an IP; a domain in the reply header (unusual) is resolved once.
+fn target_matches(from: &Target, server: SocketAddr) -> bool {
+    match from.host.parse::<IpAddr>() {
+        Ok(ip) => SocketAddr::new(ip, from.port) == server,
+        Err(_) => false,
+    }
+}
+
 /// Resolve a UDP destination: names use the system resolver (there is no
 /// in-kernel DNS before T5), literals are used as they are.
 pub async fn resolve(target: &Target) -> io::Result<SocketAddr> {
@@ -141,7 +150,10 @@ enum PacketTransport {
     },
     Socks5 {
         association: super::socks5::Socks5Udp,
-        server: Target,
+        /// The server's resolved address: the hop fills the reply header with
+        /// the address it actually saw, which is an IP even when the
+        /// configuration names a domain.
+        server: SocketAddr,
     },
 }
 
@@ -152,7 +164,11 @@ impl PacketTransport {
                 socket.send_to(payload, *server).await.map(|_| ())
             }
             PacketTransport::Socks5 { association, server } => {
-                association.send(server, payload).await
+                let target = Target {
+                    host: server.ip().to_string(),
+                    port: server.port(),
+                };
+                association.send(&target, payload).await
             }
         }
     }
@@ -169,9 +185,10 @@ impl PacketTransport {
             }
             PacketTransport::Socks5 { association, server } => {
                 match association.recv(buffer).await? {
-                    Some((from, len)) if from.host == server.host && from.port == server.port => {
-                        Ok(Some(len))
-                    }
+                    // Compare the resolved address, not the configured name: a
+                    // `server: example.org` configuration still receives replies
+                    // whose header carries the IP the hop dialled.
+                    Some((from, len)) if target_matches(&from, *server) => Ok(Some(len)),
                     _ => Ok(None),
                 }
             }
@@ -200,12 +217,14 @@ impl SsUdp {
             host: option.server.clone(),
             port: option.port,
         };
+        // Resolve once: the Direct socket needs the address, and the SOCKS5
+        // hop reports the address it saw (an IP) in its reply header.
+        let resolved = resolve(&server).await.map_err(|source| DialError::Resolve {
+            host: server.host.clone(),
+            source,
+        })?;
         let transport = match via.len() {
             1 => {
-                let resolved = resolve(&server).await.map_err(|source| DialError::Resolve {
-                    host: server.host.clone(),
-                    source,
-                })?;
                 let bind = if resolved.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
                 let socket = UdpSocket::bind(bind)
                     .await
@@ -221,7 +240,7 @@ impl SsUdp {
             2 => match &via[1].protocol {
                 crate::proxies::Protocol::Socks5(hop) => PacketTransport::Socks5 {
                     association: super::socks5::Socks5Udp::connect(hop, timeout, tls).await?,
-                    server,
+                    server: resolved,
                 },
                 other => {
                     return Err(DialError::Chain(format!(
