@@ -379,6 +379,10 @@ pub struct RandomHeadStream<S> {
     /// The peer's random head, accumulated until its checksum matches (a head
     /// split across TCP reads must not leak bytes into the cipher stream).
     head: Vec<u8>,
+    /// Bytes that arrived together with the peer's head and belong to the
+    /// stream; served before the next inner read.
+    pending_read: Vec<u8>,
+    pending_read_pos: usize,
 }
 
 impl<S> RandomHeadStream<S> {
@@ -392,6 +396,8 @@ impl<S> RandomHeadStream<S> {
             buffered: Vec::new(),
             flushing: false,
             head: Vec::new(),
+            pending_read: Vec::new(),
+            pending_read_pos: 0,
         }
     }
 }
@@ -437,14 +443,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for RandomHeadStream<S> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        if !this.raw_recv {
-            // The peer answers the random head; that first chunk is discarded
-            // and only then is the buffered payload sent (pinned client order).
-            loop {
-                if random_head_complete(&this.head) {
+        loop {
+            if take_buffered(&mut this.pending_read, &mut this.pending_read_pos, buf) {
+                return Poll::Ready(Ok(()));
+            }
+            if !this.raw_recv {
+                // The peer answers the random head; that head is discarded and
+                // only then is the buffered payload sent (pinned client order).
+                if let Some(length) = random_head_length(&this.head) {
+                    let rest = this.head.split_off(length);
                     this.head.clear();
+                    this.pending_read = rest;
+                    this.pending_read_pos = 0;
                     this.raw_recv = true;
-                    break;
+                    continue;
                 }
                 let mut scratch = [0u8; 256];
                 let mut piece = ReadBuf::new(&mut scratch);
@@ -468,16 +480,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for RandomHeadStream<S> {
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                     Poll::Pending => return Poll::Pending,
                 }
+                continue;
             }
-        }
-        if !this.raw_sent {
-            match this.poll_flush_buffer(cx) {
-                Poll::Ready(Ok(())) => {}
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            if !this.raw_sent {
+                match this.poll_flush_buffer(cx) {
+                    Poll::Ready(Ok(())) => {}
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                }
+                continue;
             }
+            return Pin::new(&mut this.inner).poll_read(cx, buf);
         }
-        Pin::new(&mut this.inner).poll_read(cx, buf)
     }
 }
 
@@ -531,13 +545,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for RandomHeadStream<S> {
     }
 }
 
-/// Whether `head` ends at a valid random-head boundary: 4..=99 random bytes
-/// followed by `0xffffffff - crc32(random)`.
-fn random_head_complete(head: &[u8]) -> bool {
-    for length in 4..=99usize {
-        if head.len() < length + 4 {
-            break;
-        }
+/// The length (random part plus the four checksum bytes) of the peer's random
+/// head, or `None` while the head is incomplete.
+///
+/// The scan runs from the longest candidate down: the CRC check is not unique
+/// for every random length — for some lengths `crc32(head[:n-1])` also matches
+/// the four bytes at `n-1`, and an ascending scan would then take the head one
+/// byte short and misalign the cipher stream (observed as an intermittent
+/// `auth_* wrong mac`). The longest match is the real head boundary.
+fn random_head_length(head: &[u8]) -> Option<usize> {
+    let upper = 99usize.min(head.len().saturating_sub(4));
+    for length in (4..=upper).rev() {
         let stored = u32::from_le_bytes([
             head[length],
             head[length + 1],
@@ -545,10 +563,10 @@ fn random_head_complete(head: &[u8]) -> bool {
             head[length + 3],
         ]);
         if crc32(&head[..length]).wrapping_add(stored) == 0xffff_ffff {
-            return true;
+            return Some(length + 4);
         }
     }
-    false
+    None
 }
 
 pub(super) fn crc32(data: &[u8]) -> u32 {
@@ -992,5 +1010,23 @@ mod tests {
         let head = b"random-head";
         let stored = 0xffff_ffffu32 - crc32(head);
         assert_eq!(stored.wrapping_add(crc32(head)), 0xffff_ffff);
+    }
+
+    #[test]
+    fn random_head_length_picks_the_real_boundary() {
+        // This five-byte head is also accepted one byte short: the crc32 of
+        // `head[..4]` equals the four bytes at offset 4. An ascending scan
+        // returns 8 (the head one byte short) and misaligns everything after
+        // it; the real head is 5 bytes, i.e. 9 with the checksum.
+        let head = [0xff, 0x71, 0x8f, 0x3b, 0xd5];
+        let mut buf = head.to_vec();
+        buf.extend_from_slice(&(0xffff_ffffu32 - crc32(&head)).to_le_bytes());
+        let false_boundary = crc32(&buf[..4])
+            .wrapping_add(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]));
+        assert_eq!(false_boundary, 0xffff_ffff, "the short boundary is a real false match");
+        assert_eq!(random_head_length(&buf), Some(9));
+        // A prefix of the head is not accepted yet.
+        assert_eq!(random_head_length(&buf[..8]), Some(8));
+        assert_eq!(random_head_length(&buf[..7]), None);
     }
 }

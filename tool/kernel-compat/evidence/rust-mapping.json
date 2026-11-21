@@ -467,7 +467,7 @@
     },
     "gost-relay": {
       "status": "implemented",
-      "reason": "TCP relay with optional TLS, username/password authentication, `forward`, the UDP association and the version-1 smux session. The controlled peer is the loopback relay v2 server in tests/protocols.rs, written from transport/gost/relay.go; the smux frame layout is pinned by a unit test.",
+      "reason": "TCP relay with optional TLS, username/password authentication, `forward`, the UDP association and the version-1 smux session. The controlled peer is the loopback relay v2 server in tests/protocols.rs, written from transport/gost/relay.go; the smux frame layout is pinned by a unit test. The controlled peer is also driven by the pinned `gost.NewRelayDialer` (`tool/kernel-compat/peers/gost-relay-harness`, with mux and UDP), so the UDP association and the smux session are not only checked against our own client.",
       "options": [
         "server",
         "port",
@@ -495,6 +495,8 @@
         "routing-mark"
       ],
       "evidence": [
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_gost_relay_mux",
+        "tests/protocols.rs::gost_relay_pinned_dialer_accepts_the_controlled_peer",
         "src/outbound/gost_relay.rs::tests::ipv4_request_layout_matches_the_pinned_encoder",
         "src/outbound/gost_relay.rs::tests::domain_and_auth_features_follow_the_pinned_order",
         "src/outbound/gost_relay.rs::tests::udp_request_sets_the_flag_and_the_udp_network",
@@ -548,7 +550,7 @@
     },
     "ssr": {
       "status": "implemented",
-      "reason": "every pinned stream cipher plus every protocol plugin (origin, auth_sha1_v4, auth_aes128_md5, auth_aes128_sha1, auth_chain_a, auth_chain_b), every obfs plugin (plain, http_simple, http_post, random_head, tls1.2_ticket_auth, tls1.2_ticket_fastauth) and the UDP association. The wire format is checked against an independent Go peer built from the pinned packages (`tool/kernel-compat/peers/ssr-plugins`), which also runs the pinned client packages against itself.",
+      "reason": "every pinned stream cipher plus every protocol plugin (origin, auth_sha1_v4, auth_aes128_md5, auth_aes128_sha1, auth_chain_a, auth_chain_b), every obfs plugin (plain, http_simple, http_post, random_head, tls1.2_ticket_auth, tls1.2_ticket_fastauth) and the UDP association. The wire format is checked against an independent Go peer built from the pinned packages (`tool/kernel-compat/peers/ssr-plugins`), which also runs the pinned client packages against itself. random_head locates the peer head by scanning the CRC from the longest candidate: the pinned CRC check is not unique for every length (crc32(head[:n-1]) can match the four bytes at n-1), and an ascending scan occasionally took the head one byte short and misaligned the cipher stream.",
       "options": [
         "server",
         "port",
@@ -561,7 +563,7 @@
         "udp (the pinned cipher.PacketConn + protocol.PacketConn association; no obfs layer, as in the pinned outbound)",
         "dialer-proxy"
       ],
-      "udp": "implemented: `udp: true` opens the pinned association (IV || cipher(protocol packet), SOCKS5 address inside, no obfs); verified for every protocol against the Go peer and rejected for a wrong password",
+      "udp": "implemented: `udp: true` opens the pinned association (IV || cipher(protocol packet), SOCKS5 address inside, no obfs). Every protocol is verified against the Go peer and a wrong password is rejected. Limit inherited from the pinned client: `auth_aes128_*` datagrams are sealed with the derived user key but opened with the cipher key, so a `protocol-param` breaks the UDP path in both directions; the UDP tests therefore use no protocol-param (TCP with `protocol-param` is covered).",
       "notImplemented": [
         "ip-version",
         "tfo",
@@ -570,6 +572,8 @@
         "routing-mark"
       ],
       "evidence": [
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_an_ssr_plugin",
+        "src/outbound/ssr/obfs.rs::tests::random_head_length_picks_the_real_boundary",
         "src/outbound/ssr.rs::tests::stream_ciphers_match_the_pinned_go_vectors",
         "src/outbound/ssr.rs::dial_wire_tests::origin_plain_writes_the_iv_then_the_address_and_payload",
         "src/outbound/ssr/protocol.rs::tests::crc32_and_adler32_match_the_go_reference_values",

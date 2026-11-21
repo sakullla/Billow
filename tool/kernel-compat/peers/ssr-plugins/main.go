@@ -1208,9 +1208,16 @@ func (c *randomHeadServerConn) Read(b []byte) (int, error) {
 			return 0, err
 		}
 		c.buf = append(c.buf, tmp[:n]...)
-		for length := 4; length+4 <= len(c.buf) && length <= 99; length++ {
+		// Longest candidate first: the CRC check is not unique for every
+		// random length (crc32(head[:n-1]) can match the four bytes at n-1), so
+		// an ascending scan occasionally takes the head one byte short and
+		// misaligns the cipher stream. The longest match is the real boundary.
+		for length := min(99, len(c.buf)-4); length >= 4; length-- {
 			if crc32.ChecksumIEEE(c.buf[:length])+binary.LittleEndian.Uint32(c.buf[length:length+4]) != 0xffffffff {
 				continue
+			}
+			if debug {
+				fmt.Fprintf(os.Stderr, "peer random_head: detected length=%d buffered=%d\n", length, len(c.buf))
 			}
 			rest := append([]byte{}, c.buf[length+4:]...)
 			c.buf = rest
@@ -1226,6 +1233,9 @@ func (c *randomHeadServerConn) Read(b []byte) (int, error) {
 			return 0, nil
 		}
 		if len(c.buf) > 256 {
+			if debug {
+				fmt.Fprintf(os.Stderr, "peer random_head: bad head buffered=%d first=%x\n", len(c.buf), c.buf[:min(16, len(c.buf))])
+			}
 			return 0, errors.New("random_head bad head")
 		}
 	}
@@ -1424,6 +1434,9 @@ func runClient(addr, cipherName, password, protocolName, protocolParam,
 	}
 	defer raw.Close()
 	_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+	if debug {
+		raw = &loggingConn{Conn: raw}
+	}
 	conn := obfsImpl.StreamConn(raw)
 	conn = ciph.StreamConn(conn)
 	var iv []byte
@@ -1454,6 +1467,19 @@ func runClient(addr, cipherName, password, protocolName, protocolParam,
 	}
 	fmt.Println("CLIENT OK")
 	return nil
+}
+
+type loggingConn struct {
+	net.Conn
+}
+
+func (c *loggingConn) Write(b []byte) (int, error) {
+	head := b
+	if len(head) > 24 {
+		head = head[:24]
+	}
+	fmt.Fprintf(os.Stderr, "client wire write n=%d first=%x\n", len(b), head)
+	return c.Conn.Write(b)
 }
 
 func portOf(addr string) int {

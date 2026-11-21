@@ -137,7 +137,7 @@ identities of the servers are logged as the session exit.
 | `trusttunnel` | TLS + HTTP/2 `CONNECT`, Basic `Proxy-Authorization`, ALPN `h2`, `sni`, `skip-cert-verify` | no | `listeners: type: trusttunnel` (`network: [tcp]`), wrong password |
 | `gost-relay` | relay v2 over TCP, `tls: true` (`sni`, `skip-cert-verify`), `username`/`password`, `forward` (no address feature), `mux` (smux v1 session, one stream per dial) | `udp: true`: one association bound to the target, `length(u16 BE) || payload` frames | controlled relay-v2 server (header vectors, auth/forward/TLS/status, UDP and smux cases); no Mihomo listener exists |
 | `ssh` | password and inline-PEM public-key auth, `private-key-passphrase`, `host-key` pinning, `host-key-algorithms`, one `direct-tcpip` channel per dial | no | controlled `russh` server (password/key/host-key cases); no Mihomo listener exists |
-| `ssr` | stream ciphers (`rc4-md5`, `aes-128/192/256-cfb`, `aes-128/192/256-ctr`, `chacha20`, `chacha20-ietf`, `xchacha20`, `none`), every protocol plugin (`origin`, `auth_sha1_v4`, `auth_aes128_md5`, `auth_aes128_sha1`, `auth_chain_a`, `auth_chain_b`), every obfs plugin (`plain`, `http_simple`, `http_post`, `random_head`, `tls1.2_ticket_auth`, `tls1.2_ticket_fastauth`) | `udp: true`: the pinned `cipher.PacketConn` + `protocol.PacketConn` association (no obfs, as in the pinned outbound) | pinned Go cipher vectors; the Go plugin peer, which the *pinned* client packages also accept for all 36 protocol/obfs combinations; wrong-password and UDP cases; no Mihomo listener exists |
+| `ssr` | stream ciphers (`rc4-md5`, `aes-128/192/256-cfb`, `aes-128/192/256-ctr`, `chacha20`, `chacha20-ietf`, `xchacha20`, `none`), every protocol plugin (`origin`, `auth_sha1_v4`, `auth_aes128_md5`, `auth_aes128_sha1`, `auth_chain_a`, `auth_chain_b`), every obfs plugin (`plain`, `http_simple`, `http_post`, `random_head`, `tls1.2_ticket_auth`, `tls1.2_ticket_fastauth`) | `udp: true`: the pinned `cipher.PacketConn` + `protocol.PacketConn` association (no obfs, as in the pinned outbound). Pinned limit: `auth_aes128_*` datagrams are sealed with the derived user key but opened with the cipher key, so `protocol-param` breaks the UDP path; the UDP cases use no `protocol-param` | pinned Go cipher vectors; the Go plugin peer, which the *pinned* client packages also accept for all 36 protocol/obfs combinations; wrong-password and UDP cases; no Mihomo listener exists |
 | `tuic` | QUIC (`quinn` 0.11, TLS 1.3, ALPN `h3`), v5 `uuid`/`password` authentication via the TLS exporter, one TCP stream per dial, `ip`/`sni`/`skip-cert-verify`/`disable-sni`/`heartbeat-interval`/`request-timeout` (bounds the auth/Connect stream operations) | no | `listeners: type: tuic` (users map), wrong password; controlled `quinn` peer for the default suite |
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
@@ -398,15 +398,27 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   The T11/T12 families have controlled loopback peers here: `gost-relay` (relay
   v2 header/auth/forward/TLS/status, the UDP association, and the smux session),
   `ssh` (a real `russh` server with password, Ed25519 key and pinned-host-key
-  cases) and `ssr` (origin/plain server plus pinned Go cipher vectors); they are
-  also the explicit entry point of `tool/kernel-compat/family-peers.sh`.
+  cases), `ssr` (origin/plain server plus pinned Go cipher vectors) and
+  `gost-relay`'s smux session (`cli_process_tunnels_through_gost_relay_mux`;
+  the SSR plugin layers run through the real binary in the controlled entry,
+  `cli_process_tunnels_through_an_ssr_plugin`); they are also the explicit entry
+  point of `tool/kernel-compat/family-peers.sh`.
+  `random_head` locates the peer's head by scanning the CRC from the longest
+  candidate: the pinned check is not unique for every length
+  (`crc32(head[:n-1])` can equal the four bytes at `n-1`), and an ascending scan
+  occasionally took the head one byte short and misaligned the cipher stream.
+  The regression test is `random_head_length_picks_the_real_boundary`. The
+  peer's address read and the client roundtrips are bounded, so a wrong
+  password fails in seconds instead of leaving both sides waiting.
   `family-peers.sh` additionally builds the two independent Go SSR peers
   (`peers/ssr-server` for origin/plain and `peers/ssr-plugins` for every
   protocol and obfs plugin plus UDP), requires the *pinned* client packages to
-  accept `peers/ssr-plugins` for all 36 protocol/obfs combinations, and then
-  runs `tests/independent_peers.rs` (matrix, wrong passwords, protocol-param
-  with large payloads, UDP), so the framing is checked against the locked
-  implementation rather than against the Rust client code.
+  accept `peers/ssr-plugins` for all 36 protocol/obfs combinations, runs
+  `tests/independent_peers.rs` (matrix, wrong passwords, protocol-param with
+  large payloads, UDP), and builds `peers/gost-relay-harness` — the *pinned*
+  `gost.NewRelayDialer` with `mux` and the UDP association — to drive the same
+  gost-relay peer. The framing is therefore checked against the locked
+  implementations, not only against the Rust client.
 - `tests/mihomo_peers.rs` — real-peer interop: each case starts the pinned
   Mihomo v1.19.34 binary with one `listeners:` entry, the Rust kernel dials it
   as a client and the test asserts what a controlled sink received (and, for

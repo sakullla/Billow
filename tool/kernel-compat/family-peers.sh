@@ -4,7 +4,10 @@
 # The peers are local processes/threads, not Mihomo:
 #   - gost-relay: a loopback relay v2 server in tests/protocols.rs, written from
 #     transport/gost/relay.go (request/response header, auth, address feature,
-#     the UDP association and the version-1 smux session).
+#     the UDP association and the version-1 smux session). The harness in
+#     tool/kernel-compat/peers/gost-relay-harness is the *pinned*
+#     `gost.NewRelayDialer` (with `mux` and the UDP association) driving that
+#     same peer, so the peer is not only checked against our own client.
 #   - ssh: a loopback SSH server built on russh, accepting password/public-key
 #     auth and opening direct-tcpip channels.
 #   - ssr: the Go peer in tool/kernel-compat/peers/ssr-plugins is the server side
@@ -91,15 +94,29 @@ wait $echo_pid 2>/dev/null || true
 echo "== Rust client against the same Go peer (matrix, auth failure, large payloads, UDP) =="
 KC_SSR_PEER_BIN="$peer_bin" KC_SSR_PLUGINS_BIN="$plugins_bin" cargo test \
     --manifest-path "$root/native-kernel/Cargo.toml" --locked \
-    --test independent_peers -- --ignored --test-threads=1
+    --test independent_peers -- --ignored --test-threads=1 --nocapture
+
+echo "== CLI process: SSR plugin tunnel =="
+KC_SSR_PLUGINS_BIN="$plugins_bin" cargo test \
+    --manifest-path "$root/native-kernel/Cargo.toml" --locked \
+    --test family_cli -- --ignored --test-threads=1
+
+echo "== pinned gost relay dialer against the controlled peer =="
+gost_bin=$(mktemp "${TMPDIR:-/tmp}/billow-gost-harness.XXXXXX")
+(cd "$root/tool/kernel-compat/peers/gost-relay-harness" && GOFLAGS=-mod=mod go build -o "$gost_bin" .)
+KC_GOST_HARNESS_BIN="$gost_bin" cargo test \
+    --manifest-path "$root/native-kernel/Cargo.toml" --locked \
+    --test protocols -- --ignored --test-threads=1 gost_relay_pinned_dialer
 
 echo "== controlled Rust peers (gost-relay incl. udp/mux, ssh, ssr origin/plain) =="
 if [ -n "$filter" ]; then
-    cargo test --manifest-path "$root/native-kernel/Cargo.toml" --locked \
+    KC_GOST_HARNESS_BIN="$gost_bin" cargo test \
+        --manifest-path "$root/native-kernel/Cargo.toml" --locked \
         --test protocols -- --test-threads=1 "$filter"
 else
     for filter in gost_relay ssh_outbound ssr_outbound; do
-        cargo test --manifest-path "$root/native-kernel/Cargo.toml" --locked \
+        KC_GOST_HARNESS_BIN="$gost_bin" cargo test \
+            --manifest-path "$root/native-kernel/Cargo.toml" --locked \
             --test protocols -- --test-threads=1 "$filter"
     done
 fi

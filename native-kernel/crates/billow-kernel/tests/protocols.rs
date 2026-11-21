@@ -4299,6 +4299,80 @@ async fn gost_relay_mux_relays_over_one_smux_stream() {
     kernel.stop().unwrap();
 }
 
+/// The pinned `transport/gost.NewRelayDialer` (the client Mihomo ships) must be
+/// accepted by the same controlled peer the Rust client is checked against.
+/// That closes the "both sides are our own implementation" gap for the UDP
+/// association and the smux session. Controlled entry:
+/// `tool/kernel-compat/family-peers.sh` builds
+/// `tool/kernel-compat/peers/gost-relay-harness` and sets `KC_GOST_HARNESS_BIN`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs the pinned gost dialer harness: run tool/kernel-compat/family-peers.sh"]
+async fn gost_relay_pinned_dialer_accepts_the_controlled_peer() {
+    let Some(bin) = std::env::var_os("KC_GOST_HARNESS_BIN") else {
+        eprintln!("SKIP gost_relay_pinned_dialer (set KC_GOST_HARNESS_BIN; run tool/kernel-compat/family-peers.sh)");
+        return;
+    };
+    let mode = GostMode {
+        mux: true,
+        udp: true,
+        ..GostMode::default()
+    };
+    let (peer_port, log) = gost_peer(mode, None).await;
+    let (target_port, received) = echo_target().await;
+    let (udp_port, udp_received) = udp_echo().await;
+    let run = |mode: &'static str, target: String, marker: &'static str| {
+        let bin = bin.clone();
+        async move {
+            tokio::process::Command::new(bin)
+                .args([
+                    "-relay",
+                    &format!("127.0.0.1:{peer_port}"),
+                    "-target",
+                    &target,
+                    "-mux",
+                    "-mode",
+                    mode,
+                    "-marker",
+                    marker,
+                ])
+                .output()
+                .await
+                .expect("run the pinned dialer harness")
+        }
+    };
+    let tcp = run("tcp", format!("127.0.0.1:{target_port}"), "pinned-dialer-tcp").await;
+    assert!(
+        tcp.status.success(),
+        "pinned tcp dialer failed: {}\n{}",
+        String::from_utf8_lossy(&tcp.stdout),
+        String::from_utf8_lossy(&tcp.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&tcp.stdout).contains("OK tcp"),
+        "{}",
+        String::from_utf8_lossy(&tcp.stdout)
+    );
+    wait_for(&received, "pinned-dialer-tcp".len() as u64).await;
+
+    let udp = run("udp", format!("127.0.0.1:{udp_port}"), "pinned-dialer-udp").await;
+    assert!(
+        udp.status.success(),
+        "pinned udp dialer failed: {}\n{}",
+        String::from_utf8_lossy(&udp.stdout),
+        String::from_utf8_lossy(&udp.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&udp.stdout).contains("OK udp"),
+        "{}",
+        String::from_utf8_lossy(&udp.stdout)
+    );
+    wait_for(&udp_received, "pinned-dialer-udp".len() as u64).await;
+
+    let details = detail(&log);
+    assert!(details.iter().any(|d| d == "smux-syn"), "{details:?}");
+    assert!(details.iter().any(|d| d == "command=0x81"), "{details:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gost_relay_mux_and_udp_share_the_smux_session() {
     let mode = GostMode {
@@ -4371,67 +4445,43 @@ async fn ssr_peer(
                     key,
                     server_iv,
                 );
-                // Read the encrypted SOCKS address.
-                let mut kind = [0u8; 1];
-                if stream.read_exact(&mut kind).await.is_err() {
-                    push(
-                        &log,
-                        Attempt {
-                            details: vec!["address-error".to_string()],
-                            forwarded: false,
-                        },
-                    );
-                    return;
-                }
-                let host = match kind[0] {
-                    0x01 => {
-                        let mut octets = [0u8; 4];
-                        if stream.read_exact(&mut octets).await.is_err() {
-                            return;
-                        }
-                        std::net::Ipv4Addr::from(octets).to_string()
-                    }
-                    0x04 => {
-                        let mut octets = [0u8; 16];
-                        if stream.read_exact(&mut octets).await.is_err() {
-                            return;
-                        }
-                        std::net::Ipv6Addr::from(octets).to_string()
-                    }
-                    0x03 => {
-                        let mut len = [0u8; 1];
-                        if stream.read_exact(&mut len).await.is_err() {
-                            return;
-                        }
-                        let mut name = vec![0u8; len[0] as usize];
-                        if stream.read_exact(&mut name).await.is_err() {
-                            return;
-                        }
-                        String::from_utf8_lossy(&name).into_owned()
-                    }
-                    _ => {
+                // Read the encrypted SOCKS address. A wrong password decrypts
+                // to arbitrary bytes, so the read is bounded: an unbounded
+                // `read_exact` would wait for bytes the client never sends
+                // (the client is waiting for the echo at the same time).
+                let (host, target_port) = match read_ssr_address(&mut stream).await {
+                    Ok(address) => address,
+                    Err(detail) => {
                         push(
                             &log,
                             Attempt {
-                                details: vec![format!("bad-address-type={}", kind[0])],
+                                details: vec![detail],
                                 forwarded: false,
                             },
                         );
                         return;
                     }
                 };
-                let mut port_bytes = [0u8; 2];
-                if stream.read_exact(&mut port_bytes).await.is_err() {
-                    return;
-                }
-                let target_port = u16::from_be_bytes(port_bytes);
-                let mut upstream = match TcpStream::connect((host.as_str(), target_port)).await {
-                    Ok(upstream) => upstream,
-                    Err(e) => {
+                let connect = TcpStream::connect((host.as_str(), target_port));
+                let mut upstream = match tokio::time::timeout(SSR_PEER_ADDRESS_TIMEOUT, connect)
+                    .await
+                {
+                    Ok(Ok(upstream)) => upstream,
+                    Ok(Err(e)) => {
                         push(
                             &log,
                             Attempt {
                                 details: vec![format!("target-error={e}")],
+                                forwarded: false,
+                            },
+                        );
+                        return;
+                    }
+                    Err(_) => {
+                        push(
+                            &log,
+                            Attempt {
+                                details: vec!["target-error=timeout".to_string()],
                                 forwarded: false,
                             },
                         );
@@ -4452,13 +4502,79 @@ async fn ssr_peer(
     (port, log)
 }
 
-async fn ssr_roundtrip(proxy: SocketAddr, target: &str, payload: &[u8]) -> io::Result<Vec<u8>> {
-    let (mut stream, status) = http_connect(proxy, target).await?;
-    assert_eq!(status, "HTTP/1.1 200 Connection Established");
-    stream.write_all(payload).await?;
-    let mut back = vec![0u8; payload.len()];
-    stream.read_exact(&mut back).await?;
-    Ok(back)
+/// Read one SSR address with a hard bound. The first bytes come from the
+/// cipher stream, so a wrong password yields arbitrary values; without the
+/// bound an `0x03` (domain) or `0x04` (IPv6) type would read a random number of
+/// bytes that never arrive.
+async fn read_ssr_address<S>(stream: &mut S) -> Result<(String, u16), String>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let read = async {
+        let mut kind = [0u8; 1];
+        stream.read_exact(&mut kind).await?;
+        let host = match kind[0] {
+            0x01 => {
+                let mut octets = [0u8; 4];
+                stream.read_exact(&mut octets).await?;
+                std::net::Ipv4Addr::from(octets).to_string()
+            }
+            0x04 => {
+                let mut octets = [0u8; 16];
+                stream.read_exact(&mut octets).await?;
+                std::net::Ipv6Addr::from(octets).to_string()
+            }
+            0x03 => {
+                let mut len = [0u8; 1];
+                stream.read_exact(&mut len).await?;
+                let mut name = vec![0u8; len[0] as usize];
+                stream.read_exact(&mut name).await?;
+                String::from_utf8_lossy(&name).into_owned()
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("bad-address-type={other}"),
+                ))
+            }
+        };
+        let mut port = [0u8; 2];
+        stream.read_exact(&mut port).await?;
+        Ok((host, u16::from_be_bytes(port)))
+    };
+    match tokio::time::timeout(SSR_PEER_ADDRESS_TIMEOUT, read).await {
+        Ok(Ok(address)) => Ok(address),
+        Ok(Err(e)) if e.kind() == io::ErrorKind::InvalidData => Err(format!("bad-address-type={}", e)),
+        Ok(Err(e)) => Err(format!("address-error={e}")),
+        Err(_) => Err("address-error=timeout".to_string()),
+    }
+}
+
+/// Bound for the peer's address read; a valid client sends the whole address
+/// in its first write, so this only ever fires on a garbage decrypt.
+const SSR_PEER_ADDRESS_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn ssr_roundtrip(
+    proxy: SocketAddr,
+    target: &str,
+    payload: &[u8],
+    timeout: Duration,
+) -> io::Result<Vec<u8>> {
+    let roundtrip = async {
+        let (mut stream, status) = http_connect(proxy, target).await?;
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        stream.write_all(payload).await?;
+        let mut back = vec![0u8; payload.len()];
+        stream.read_exact(&mut back).await?;
+        Ok(back)
+    };
+    match tokio::time::timeout(timeout, roundtrip).await {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("ssr roundtrip to {target} timed out after {timeout:?}"),
+        )),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4477,9 +4593,14 @@ async fn ssr_outbound_origin_plain_relays_with_aes_256_cfb() {
     )
     .unwrap();
     let payload = b"tagged-ssr-aes-256-cfb";
-    let back = ssr_roundtrip(kernel.listen_addr(), &format!("127.0.0.1:{target_port}"), payload)
-        .await
-        .unwrap();
+    let back = ssr_roundtrip(
+        kernel.listen_addr(),
+        &format!("127.0.0.1:{target_port}"),
+        payload,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
     assert_eq!(back, payload.to_vec());
     wait_for(&received, payload.len() as u64).await;
     let details = detail(&log);
@@ -4516,6 +4637,7 @@ async fn ssr_outbound_rc4_md5_and_dummy_ciphers_relay() {
             kernel.listen_addr(),
             &format!("127.0.0.1:{target_port}"),
             &payload,
+            Duration::from_secs(10),
         )
         .await
         .unwrap();
@@ -4544,6 +4666,7 @@ async fn ssr_outbound_wrong_password_never_reaches_the_target() {
         kernel.listen_addr(),
         &format!("127.0.0.1:{target_port}"),
         b"nope",
+        Duration::from_secs(5),
     )
     .await;
     assert!(error.is_err(), "wrong password must not relay: {error:?}");

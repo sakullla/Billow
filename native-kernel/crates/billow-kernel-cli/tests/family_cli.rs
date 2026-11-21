@@ -4,7 +4,7 @@
 //! configured outbound and asserts the echoed marker, so the shipped entry
 //! point is covered end to end, not just by loading the configuration.
 
-use std::io::{Read as _, Write as _};
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -112,9 +112,12 @@ fn tunnel(port: u16, echo_port: u16, marker: &[u8]) -> Vec<u8> {
     )
     .expect("connect to CLI");
     assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
     stream.write_all(marker).unwrap();
     let mut back = vec![0u8; marker.len()];
-    stream.read_exact(&mut back).unwrap();
+    stream.read_exact(&mut back).expect("relayed marker");
     back
 }
 
@@ -219,36 +222,40 @@ fn spawn_ssr_peer(cipher: billow_kernel::proxies::SsrCipher, password: &'static 
                         key,
                         server_iv,
                     );
-                    let mut kind = [0u8; 1];
-                    if stream.read_exact(&mut kind).await.is_err() {
-                        return;
-                    }
-                    let host = match kind[0] {
-                        0x01 => {
-                            let mut octets = [0u8; 4];
-                            if stream.read_exact(&mut octets).await.is_err() {
-                                return;
+                    // Bound the address read: garbage (a wrong password) must
+                    // not wait for bytes the client never sends.
+                    let address = async {
+                        let mut kind = [0u8; 1];
+                        stream.read_exact(&mut kind).await?;
+                        let host = match kind[0] {
+                            0x01 => {
+                                let mut octets = [0u8; 4];
+                                stream.read_exact(&mut octets).await?;
+                                std::net::Ipv4Addr::from(octets).to_string()
                             }
-                            std::net::Ipv4Addr::from(octets).to_string()
-                        }
-                        0x03 => {
-                            let mut len = [0u8; 1];
-                            if stream.read_exact(&mut len).await.is_err() {
-                                return;
+                            0x03 => {
+                                let mut len = [0u8; 1];
+                                stream.read_exact(&mut len).await?;
+                                let mut name = vec![0u8; len[0] as usize];
+                                stream.read_exact(&mut name).await?;
+                                String::from_utf8_lossy(&name).into_owned()
                             }
-                            let mut name = vec![0u8; len[0] as usize];
-                            if stream.read_exact(&mut name).await.is_err() {
-                                return;
+                            _ => {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "bad address type",
+                                ))
                             }
-                            String::from_utf8_lossy(&name).into_owned()
-                        }
-                        _ => return,
+                        };
+                        let mut port = [0u8; 2];
+                        stream.read_exact(&mut port).await?;
+                        Ok::<_, std::io::Error>((host, u16::from_be_bytes(port)))
                     };
-                    let mut port = [0u8; 2];
-                    if stream.read_exact(&mut port).await.is_err() {
+                    let Ok(Ok((host, port))) =
+                        tokio::time::timeout(Duration::from_secs(2), address).await
+                    else {
                         return;
-                    }
-                    let port = u16::from_be_bytes(port);
+                    };
                     let Ok(mut upstream) = tokio::net::TcpStream::connect((host.as_str(), port)).await
                     else {
                         return;
@@ -259,6 +266,175 @@ fn spawn_ssr_peer(cipher: billow_kernel::proxies::SsrCipher, password: &'static 
         });
     });
     rx.recv().unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// gost-relay v2 server behind a version-1 smux session. One stream per
+// connection (the pinned relay dialer's `mux` mode) and a one-shot echo relay,
+// which is what the CLI's single marker roundtrip needs.
+// ---------------------------------------------------------------------------
+
+struct MuxPeer {
+    stream: TcpStream,
+    sid: u32,
+    under: Vec<u8>,
+    out: Vec<u8>,
+}
+
+impl Read for MuxPeer {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if !self.out.is_empty() {
+                let take = self.out.len().min(buf.len());
+                buf[..take].copy_from_slice(&self.out[..take]);
+                self.out.drain(..take);
+                return Ok(take);
+            }
+            let mut consumed = 0;
+            while self.under.len() >= consumed + 8 {
+                let frame = &self.under[consumed..];
+                let cmd = frame[1];
+                let len = u16::from_le_bytes([frame[2], frame[3]]) as usize;
+                let sid = u32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
+                if self.under.len() < consumed + 8 + len {
+                    break;
+                }
+                let payload = self.under[consumed + 8..consumed + 8 + len].to_vec();
+                consumed += 8 + len;
+                if cmd == 2 && sid == self.sid {
+                    self.out.extend_from_slice(&payload);
+                }
+            }
+            if consumed > 0 {
+                self.under.drain(..consumed);
+                continue;
+            }
+            let mut chunk = [0u8; 4096];
+            let n = self.stream.read(&mut chunk)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            self.under.extend_from_slice(&chunk[..n]);
+        }
+    }
+}
+
+impl Write for MuxPeer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut header = [0u8; 8];
+        header[0] = 1;
+        header[1] = 2;
+        header[2..4].copy_from_slice(&(buf.len() as u16).to_le_bytes());
+        header[4..8].copy_from_slice(&self.sid.to_le_bytes());
+        self.stream.write_all(&header)?;
+        self.stream.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+fn spawn_gost_mux_peer() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut syn = [0u8; 8];
+                if stream.read_exact(&mut syn).is_err() || syn[0] != 1 || syn[1] != 0 {
+                    return;
+                }
+                let sid = u32::from_le_bytes([syn[4], syn[5], syn[6], syn[7]]);
+                let mut mux = MuxPeer {
+                    stream,
+                    sid,
+                    under: Vec::new(),
+                    out: Vec::new(),
+                };
+                let mut header = [0u8; 4];
+                if mux.read_exact(&mut header).is_err() || header[0] != 1 {
+                    return;
+                }
+                let mut features = vec![0u8; u16::from_be_bytes([header[2], header[3]]) as usize];
+                if mux.read_exact(&mut features).is_err() {
+                    return;
+                }
+                let mut pos = 0;
+                let mut target = None;
+                while pos + 3 <= features.len() {
+                    let kind = features[pos];
+                    let len = u16::from_be_bytes([features[pos + 1], features[pos + 2]]) as usize;
+                    let payload = &features[pos + 3..pos + 3 + len];
+                    if kind == 0x02 {
+                        let (host, rest) = match payload[0] {
+                            0x01 => (
+                                std::net::Ipv4Addr::new(payload[1], payload[2], payload[3], payload[4])
+                                    .to_string(),
+                                &payload[5..],
+                            ),
+                            0x03 => (
+                                String::from_utf8_lossy(&payload[2..2 + payload[1] as usize])
+                                    .into_owned(),
+                                &payload[2 + payload[1] as usize..],
+                            ),
+                            _ => return,
+                        };
+                        target = Some((host, u16::from_be_bytes([rest[0], rest[1]])));
+                    }
+                    pos += 3 + len;
+                }
+                let Some((host, port)) = target else {
+                    let _ = mux.write_all(&[1, 1, 0, 0]);
+                    return;
+                };
+                let Ok(mut upstream) = TcpStream::connect((host.as_str(), port)) else {
+                    let _ = mux.write_all(&[1, 6, 0, 0]);
+                    return;
+                };
+                if mux.write_all(&[1, 0, 0, 0]).is_err() {
+                    return;
+                }
+                // One-shot relay: the CLI sends one marker and waits for it.
+                let mut buffer = [0u8; 4096];
+                let Ok(n) = mux.read(&mut buffer) else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                if upstream.write_all(&buffer[..n]).is_err() {
+                    return;
+                }
+                let mut back = vec![0u8; n];
+                if upstream.read_exact(&mut back).is_err() {
+                    return;
+                }
+                let _ = mux.write_all(&back);
+            });
+        }
+    });
+    port
+}
+
+#[test]
+fn cli_process_tunnels_through_gost_relay_mux() {
+    let (echo_port, _seen) = spawn_echo();
+    let peer_port = spawn_gost_mux_peer();
+    let port = free_port();
+    let child = start_cli(
+        &format!(
+            "proxies:\n  - {{name: p, type: gost-relay, server: 127.0.0.1, port: {peer_port}, mux: true}}\nrules:\n  - 'MATCH,p'\n"
+        ),
+        port,
+    );
+    assert_eq!(
+        tunnel(port, echo_port, b"cli-gost-mux-marker"),
+        b"cli-gost-mux-marker".to_vec()
+    );
+    stop_cli(child);
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +582,57 @@ fn cli_process_tunnels_through_ssr() {
         b"cli-ssr-marker".to_vec()
     );
     stop_cli(child);
+}
+
+/// The SSR plugin layers through the real CLI process. The peer is the Go
+/// server from `tool/kernel-compat/peers/ssr-plugins` (the pinned tree has no
+/// SSR listener); the case is `#[ignore]`d and driven by
+/// `tool/kernel-compat/family-peers.sh`, which builds the peer and sets
+/// `KC_SSR_PLUGINS_BIN`.
+#[test]
+#[ignore = "needs the Go SSR plugin peer: run tool/kernel-compat/family-peers.sh"]
+fn cli_process_tunnels_through_an_ssr_plugin() {
+    let Some(bin) = std::env::var_os("KC_SSR_PLUGINS_BIN") else {
+        eprintln!("SKIP cli_process_tunnels_through_an_ssr_plugin (set KC_SSR_PLUGINS_BIN; run tool/kernel-compat/family-peers.sh)");
+        return;
+    };
+    let (echo_port, _seen) = spawn_echo();
+    let peer_port = free_port();
+    let mut peer = Command::new(bin)
+        .args([
+            "-listen",
+            &format!("127.0.0.1:{peer_port}"),
+            "-cipher",
+            "aes-256-cfb",
+            "-password",
+            "cli-plugin-pass",
+            "-protocol",
+            "auth_chain_b",
+            "-obfs",
+            "tls1.2_ticket_auth",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the SSR plugin peer");
+    let stdout = peer.stdout.take().expect("peer stdout");
+    let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stdout));
+    let ready = lines.next().expect("peer READY line").expect("peer READY");
+    assert!(ready.starts_with("READY "), "peer said: {ready}");
+    let port = free_port();
+    let child = start_cli(
+        &format!(
+            "proxies:\n  - {{name: p, type: ssr, server: 127.0.0.1, port: {peer_port}, cipher: aes-256-cfb, password: cli-plugin-pass, protocol: auth_chain_b, obfs: tls1.2_ticket_auth}}\nrules:\n  - 'MATCH,p'\n"
+        ),
+        port,
+    );
+    assert_eq!(
+        tunnel(port, echo_port, b"cli-ssr-plugin-marker"),
+        b"cli-ssr-plugin-marker".to_vec()
+    );
+    stop_cli(child);
+    let _ = peer.kill();
+    let _ = peer.wait();
 }
 
 // ---------------------------------------------------------------------------

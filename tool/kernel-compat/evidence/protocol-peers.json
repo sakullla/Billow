@@ -194,7 +194,8 @@
           "gost_relay_outbound_over_tls_relays_and_verifies_the_certificate",
           "gost_relay_udp_relays_datagrams_to_the_bound_target",
           "gost_relay_mux_relays_over_one_smux_stream",
-          "gost_relay_mux_and_udp_share_the_smux_session"
+          "gost_relay_mux_and_udp_share_the_smux_session",
+          "gost_relay_pinned_dialer_accepts_the_controlled_peer"
         ],
         "negative": [
           "gost_relay_outbound_wrong_credentials_never_reach_the_target",
@@ -203,8 +204,8 @@
         ]
       },
       "command": "native-kernel/crates/billow-kernel/tests/protocols.rs (controlled loopback relay v2 server; tool/kernel-compat/family-peers.sh)",
-      "peer": "controlled gost relay v2 server in tests/protocols.rs, written from transport/gost/relay.go: request/response header, auth, address and network features, the UDP association (`length(u16 BE) || payload`) and a version-1 smux session (SYN/PSH/FIN frames)",
-      "notes": "the UDP association is bound to one target like relayPacketConn, so a new destination replaces it; a server that refuses the UDP command produces no reply and the kernel never falls back to DIRECT. The smux session is the pinned `DefaultConfig` version 1 with keep-alive disabled, one stream per dial."
+      "peer": "controlled gost relay v2 server in tests/protocols.rs, written from transport/gost/relay.go: request/response header, auth, address and network features, the UDP association (`length(u16 BE) || payload`) and a version-1 smux session (SYN/PSH/FIN frames); `tool/kernel-compat/peers/gost-relay-harness` is the pinned `gost.NewRelayDialer` (mux + UDP) driving the same peer, so the server framing is checked against the locked dialer as well as against our client",
+      "notes": "the UDP association is bound to one target like relayPacketConn, so a new destination replaces it; a server that refuses the UDP command produces no reply and the kernel never falls back to DIRECT. The smux session is the pinned `DefaultConfig` version 1 with keep-alive disabled, one stream per dial. The pinned-dialer harness is run by tool/kernel-compat/family-peers.sh; the CLI process cases cover a plain TCP relay and the `mux` session (`cli_process_tunnels_through_gost_relay_mux`)."
     },
     "ssh": {
       "status": "pass",
@@ -243,7 +244,7 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/protocols.rs + tests/independent_peers.rs; tool/kernel-compat/family-peers.sh",
       "peer": "two independent Go peers. `peers/ssr-server` (origin/plain, built on the pinned shadowstream package) and `peers/ssr-plugins`, the server side of every pinned protocol and obfs plugin plus the UDP association, written from the pinned client code with the roles swapped. `peers/ssr-plugins -client` runs the *pinned* obfs/protocol packages as a client, and family-peers.sh requires it to accept the peer for all 36 protocol/obfs combinations before the Rust matrix runs.",
-      "notes": "the plugin matrix covers all 6 protocols x 6 obfs; the wrong-password cases run for every auth plugin with plain and tls1.2_ticket_auth; the protocol-param case exercises the user id/key path with payloads larger than the 8100/2800-byte record split; UDP has no obfs layer in the pinned outbound and is verified for every protocol. The Go peer derives the server framing from the pinned client code (the locked tree has no SSR listener) and documents the two pinned quirks it mirrors: the client discards two bytes of the server's first auth_chain record, and the auth_chain UDP reply hashes auth+uid while the request hashes auth only."
+      "notes": "the plugin matrix covers all 6 protocols x 6 obfs; the wrong-password cases run for every auth plugin with plain and tls1.2_ticket_auth; the protocol-param case exercises the user id/key path with payloads larger than the 8100/2800-byte record split; UDP has no obfs layer in the pinned outbound and is verified for every protocol. The Go peer derives the server framing from the pinned client code (the locked tree has no SSR listener) and documents the two pinned quirks it mirrors: the client discards two bytes of the server's first auth_chain record, and the auth_chain UDP reply hashes auth+uid while the request hashes auth only. The random_head head boundary is found by scanning the CRC from the longest candidate: the pinned check also matches one byte short for some lengths, which produced an intermittent `auth_* wrong mac` in the controlled runs before the scan order was fixed. The CLI process case `cli_process_tunnels_through_an_ssr_plugin` drives an `auth_chain_b` + `tls1.2_ticket_auth` tunnel through the real binary (controlled entry only). The peer's address read and the client roundtrips are bounded so a wrong password fails in seconds instead of hanging. Residual ambiguity: the pinned random_head format carries no explicit length, so a TCP split exactly one byte before the head end on a length that admits the short boundary could still mis-slice; it did not reproduce in 300 controlled connections or in 10 repeated matrix runs after the scan order was fixed."
     },
     "tuic": {
       "status": "pass",
