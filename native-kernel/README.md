@@ -148,7 +148,12 @@ outbound would need its own UDP relay: all three are explicit gaps recorded in
 Fragmented datagrams (`FRAG != 0`) are dropped. Destination names are resolved
 with the system resolver because there is no in-kernel DNS before T5 (a
 datagram to a name therefore leaves with the resolved address, as Mihomo's
-system resolver does). Memory per association is bounded: one 64 KiB client
+system resolver does). For a chained association the *server* name is resolved
+once and the whole address set is kept: a multi-A record (or a server answering
+from another of its addresses) is accepted, while a reply from an address the
+name did not resolve to is dropped. A resolver that returns only one family
+(`AI_ADDRCONFIG` on a host without global IPv6, for example) yields a
+single-entry set, which is what this host does for `localhost`. Memory per association is bounded: one 64 KiB client
 datagram buffer plus one 64 KiB reply buffer per transport actually used, and
 the association ends with its control connection or after
 `Limits.udp_idle_timeout` (default 60 s).
@@ -157,22 +162,21 @@ the association ends with its control connection or after
 
 The pinned parser lists 28 outbound types; this slice implements six
 (`ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`). The rest are rejected by
-name at load time, so no configuration is silently reduced, but they are still
-a compatibility gap for R2 and need an owner:
+name at load time, so no configuration is silently reduced. The remaining
+families are scheduled in the execution plan as separate tasks (T5 depends on
+both and integrates them):
 
-| families | why not here | proposed owner |
+| families | why not here | task |
 | --- | --- | --- |
-| `vmess`, `ssr`, `snell`, `ssh`, `mieru` | separate handshakes/muxes with their own tests and peer fixtures; VMess alone needs AEAD header, alterId-free protocol and an MD5-of-UUID user id | T4 follow-up (the T4 goal says "complete the proxy protocols at the pinned version") or a new protocol task before T8 |
-| `hysteria`, `hysteria2`, `tuic`, `shadowquic` | QUIC-based transports (`quinn`/QUIC stack, congestion, UDP relay); a different dependency and memory profile | T4 follow-up, ideally after T7 measures the QUIC stack against the 40 MB budget |
-| `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols with their own device/TUN ownership; they also overlap T6's takeover work | T6/T7 (they need the tunnel ownership model), or a dedicated task |
-| `masque`, `trusttunnel`, `gost-relay`, `sudoku` | newer pinned transport variants without a stable public interop fixture in this repository | T4 follow-up with a pinned fixture per family |
-| `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | T5 (groups/rules/rematch) |
+| `vmess`, `ssr`, `snell`, `ssh`, `mieru` | separate handshakes/muxes with their own tests and peer fixtures; VMess alone needs the AEAD header, the alterId-free protocol and an MD5-of-UUID user id | **T9** (remaining non-QUIC families) |
+| `masque`, `trusttunnel`, `gost-relay`, `sudoku` | newer pinned transport variants, each needing its own interop fixture | **T9** (remaining non-QUIC families) |
+| `hysteria`, `hysteria2`, `tuic`, `shadowquic` | QUIC-based transports (QUIC stack, congestion, UDP relay); a different dependency and memory profile | **T10** (QUIC/device families); the QUIC stack is measured against the 40 MB budget by T7 |
+| `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols with their own device/TUN ownership, which T6/T7 provide | **T10** (QUIC/device families) |
+| `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
 
-The capability index records each of them as `unimplemented` with this note, so
-they cannot be reported as compatible. T5's scope in the execution plan covers
-DNS, groups, providers, rules and the control interface, not these protocol
-families; deciding whether they extend T4 or move to another task is an owner
-decision, recorded as a concern on this task.
+`03-execution-plan.md` defines T9 (non-QUIC), T10 (QUIC and device families)
+and T5's integration of their output; the capability index records each of the
+families above as `unimplemented`, so none can be reported as compatible.
 
 ### Not implemented
 
@@ -207,7 +211,10 @@ unless a plugin is configured. Keys the pinned type does not declare at all
 is what Mihomo does with them. Three cases are rejected even when "empty":
 `reality-opts` and `jls-opts` require fields (Mihomo rejects the empty block),
 and `reality-opts`/`shadow-tls-opts`/`restls-opts`/`jls-opts` require
-`tls: true` (Mihomo rejects them without TLS, so they are not ignored).
+`tls: true` (Mihomo rejects them without TLS, so they are not ignored). The
+same keys are ignored on a type whose option table does not declare them
+(`socks5`/`http`/`ss`); `anytls` does declare them and applies them as a
+security mode, so there a content block stays a registered rejection.
 
 A transport block for a transport the configuration did not select
 (`grpc-opts`, `http-opts`, `h2-opts`, `xhttp-opts` with `network: tcp|ws`) is

@@ -131,13 +131,7 @@
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark",
-        "udp-over-tcp",
-        "udp-over-tcp-version",
-        "ech-opts",
-        "shadow-tls-opts",
-        "restls-opts",
-        "jls-opts"
+        "routing-mark"
       ],
       "evidence": [
         "tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target",
@@ -169,11 +163,7 @@
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark",
-        "ech-opts",
-        "shadow-tls-opts",
-        "restls-opts",
-        "jls-opts"
+        "routing-mark"
       ],
       "evidence": [
         "tests/protocols.rs::http_connect_outbound_with_basic_auth",
@@ -238,12 +228,12 @@
         "jls-opts",
         "client-fingerprint",
         "ip-version",
-        "ws early data",
         "ws-opts.v2ray-http-upgrade-fast-open",
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark"
+        "routing-mark",
+        "ws early data"
       ],
       "evidence": [
         "tests/protocols.rs::trojan_outbound_over_tls_sends_hash_command_address_and_payload",
@@ -272,7 +262,6 @@
       ],
       "udp": "not implemented: `udp: true` is rejected (needs packet-addr/XUDP); `udp: false` loads",
       "notImplemented": [
-        "flow (xtls-rprx-vision)",
         "udp: true",
         "packet-addr: true",
         "xudp: true",
@@ -292,7 +281,8 @@
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark"
+        "routing-mark",
+        "flow (xtls-rprx-vision)"
       ],
       "evidence": [
         "tests/protocols.rs::vless_over_tls_sends_uuid_target_and_payload",
@@ -339,7 +329,8 @@
       "evidence": [
         "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo",
         "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls"
-      ]
+      ],
+      "notes": "shadow-tls-opts/restls-opts/jls-opts are declared by the pinned anytls type and applied (they add a security mode to the TLS config), so a non-empty block is a registered rejection; the same keys on socks5/http/ss are not declared there and are ignored."
     }
   },
   "listeners": {
@@ -449,78 +440,78 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4's goal is 'complete the proxy protocols at the pinned version'; this slice covers 6 of the 28 outbound types the pinned parser accepts. Every entry below is rejected by name at load time (never ignored). Ownership is a decision for the owner: T5's plan text covers DNS, groups, providers, rules and the control interface, not these families.",
+    "note": "T4's goal is 'complete the proxy protocols at the pinned version'; this slice covers 6 of the 28 outbound types. The remaining 22 are rejected by name at load time (never ignored) and are scheduled as separate tasks in 03-execution-plan.md: T9 implements the non-QUIC families (vmess, ssr, snell, ssh, mieru, masque, trusttunnel, gost-relay, sudoku), T10 the QUIC and device families (hysteria, hysteria2, tuic, shadowquic, wireguard, tailscale, zerotier, easytier, openvpn), and T5 integrates both and owns the built-in direct/dns/reject/rematch adapters. T5 depends on T9 and T10.",
     "entries": {
       "vmess": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "AEAD header, user-id derivation, mux; needs its own pinned peer fixture"
       },
       "ssr": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "legacy ShadowsocksR stream ciphers and obfs protocols"
       },
       "snell": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "closed protocol with a fixed framing; needs a pinned peer"
       },
       "ssh": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "SSH transport and authentication"
       },
       "mieru": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "proprietary multiplexed transport"
       },
       "hysteria": {
-        "owner": "T4 follow-up (after T7 measures QUIC memory)",
+        "owner": "T10",
         "reason": "QUIC-based, needs a QUIC stack"
       },
       "hysteria2": {
-        "owner": "T4 follow-up (after T7 measures QUIC memory)",
+        "owner": "T10",
         "reason": "QUIC-based, congestion control and UDP relay"
       },
       "tuic": {
-        "owner": "T4 follow-up (after T7 measures QUIC memory)",
+        "owner": "T10",
         "reason": "QUIC-based, needs a QUIC stack"
       },
       "shadowquic": {
-        "owner": "T4 follow-up (after T7 measures QUIC memory)",
+        "owner": "T10",
         "reason": "QUIC-based"
       },
       "wireguard": {
-        "owner": "T6/T7",
+        "owner": "T10",
         "reason": "device/TUN ownership overlaps the takeover model"
       },
       "tailscale": {
-        "owner": "T6/T7",
+        "owner": "T10",
         "reason": "WireGuard-based mesh with its own control plane"
       },
       "zerotier": {
-        "owner": "T6/T7",
+        "owner": "T10",
         "reason": "mesh VPN with its own device ownership"
       },
       "easytier": {
-        "owner": "T6/T7",
+        "owner": "T10",
         "reason": "mesh VPN with its own device ownership"
       },
       "openvpn": {
-        "owner": "T6/T7",
+        "owner": "T10",
         "reason": "openvpn3 transport with its own device handling"
       },
       "masque": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "HTTP/3 MASQUE; needs a pinned fixture"
       },
       "trusttunnel": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "newer pinned transport without an interop fixture here"
       },
       "gost-relay": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "relay-only adapter; needs a pinned fixture"
       },
       "sudoku": {
-        "owner": "T4 follow-up",
+        "owner": "T9",
         "reason": "proprietary transport without an interop fixture here"
       },
       "direct": {
@@ -542,17 +533,39 @@
     }
   },
   "unmappedNotes": [
-    "Every proxy type outside the six implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records their proposed owner.",
+    "Every proxy type outside the six implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it (T9 non-QUIC, T10 QUIC/device, T5 built-ins).",
     "Every other listener type (tun, redir, tproxy, mixed with TLS, ...) is rejected through the top-level keys that would enable it.",
     "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it."
   ],
   "ignoredByPinnedVersion": {
-    "keys": [
-      "smux",
-      "ss-opts (on types without the field)",
-      "udp (on http, which has no such option)",
-      "client-fingerprint (on socks5/http, whose option structs do not declare it)"
-    ],
-    "note": "Mihomo v1.19.34's decoder tolerates keys the type does not declare, so these are accepted and have no effect there; the kernel ignores them for the same reason (R2: a valid configuration must load). A key the type does declare but this kernel does not implement is handled by optionPolicy instead."
+    "note": "Keys the pinned type does not declare (or declares only as a no-op in the given configuration) are accepted and ignored, exactly as Mihomo ignores them. They are not compatibility gaps.",
+    "byType": {
+      "socks5": [
+        "udp-over-tcp",
+        "udp-over-tcp-version",
+        "ech-opts",
+        "shadow-tls-opts",
+        "restls-opts",
+        "jls-opts"
+      ],
+      "http": [
+        "ech-opts",
+        "shadow-tls-opts",
+        "restls-opts",
+        "jls-opts"
+      ],
+      "trojan": [
+        "ws early data"
+      ],
+      "vless": [
+        "flow (xtls-rprx-vision)"
+      ],
+      "ss": [
+        "client-fingerprint (only read by a plugin, which is rejected)"
+      ]
+    },
+    "global": [
+      "any key no proxy type declares (a typo or a newer option)"
+    ]
   }
 }

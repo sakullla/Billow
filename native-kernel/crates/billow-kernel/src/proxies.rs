@@ -293,6 +293,17 @@ fn option_is_noop(key: &str, value: &serde_yaml::Value, plugin_set: bool) -> boo
     }
 }
 
+/// Options every outbound embeds through the pinned `BasicOption`, so they are
+/// part of every type's table.
+const BASIC_OPTIONS: &[&str] = &[
+    "tfo",
+    "mptcp",
+    "interface-name",
+    "routing-mark",
+    "ip-version",
+    "dialer-proxy",
+];
+
 /// Options that only shape a TLS handshake. With TLS off, Mihomo ignores them,
 /// so they are no-ops for `socks5`/`http` (and `vless` without `tls: true`).
 fn is_tls_option(key: &str) -> bool {
@@ -310,27 +321,6 @@ fn is_tls_option(key: &str) -> bool {
             | "reality-opts"
     )
 }
-
-/// Option tables from the pinned source. An option that is present in the
-/// mapping but listed as unsupported fails; an unknown key fails too (Mihomo's
-/// decoder errors with `invalid map key`). A key whose value is a no-op (see
-/// [`is_noop_value`]) is accepted, because Mihomo accepts it and does nothing.
-const COMMON_UNSUPPORTED: &[&str] = &[
-    "tfo",
-    "mptcp",
-    "interface-name",
-    "routing-mark",
-    "udp-over-tcp",
-    "udp-over-tcp-version",
-    "ech-opts",
-    "shadow-tls-opts",
-    "restls-opts",
-    "jls-opts",
-    "fingerprint",
-    "certificate",
-    "private-key",
-    "name-cert-verify",
-];
 
 /// Parse the `proxies` value. Returns the proxies in file order.
 pub fn parse_proxies(value: &serde_yaml::Value) -> Result<Vec<Proxy>, ConfigError> {
@@ -575,10 +565,21 @@ impl<'a> Entry<'a> {
         }
     }
 
-    fn tls_settings(&mut self) -> Result<TlsSettings, ConfigError> {
-        let sni = self.string("sni")?.filter(|s| !s.is_empty());
+    /// TLS options the type declares: `socks5` has no `sni`/`alpn`, `http` no
+    /// `alpn` (Mihomo ignores those there, so reading them would apply a value
+    /// the reference ignores).
+    fn tls_settings(
+        &mut self,
+        sni: bool,
+        alpn: bool,
+    ) -> Result<TlsSettings, ConfigError> {
+        let sni = if sni {
+            self.string("sni")?.filter(|s| !s.is_empty())
+        } else {
+            None
+        };
         let skip = self.bool("skip-cert-verify")?.unwrap_or(false);
-        let alpn = self.string_list("alpn")?;
+        let alpn = if alpn { self.string_list("alpn")? } else { Vec::new() };
         Ok(TlsSettings {
             sni,
             skip_cert_verify: skip,
@@ -773,11 +774,11 @@ impl<'a> Entry<'a> {
             if self.used.contains(&key) {
                 continue;
             }
-            // Not part of the pinned type: Mihomo's decoder tolerates extra
-            // keys (a newer option, a typo), so the same file must load here.
-            if !mihomo_options.contains(&key.as_str())
-                && !COMMON_UNSUPPORTED.contains(&key.as_str())
-            {
+            // Not part of this type's table in the pinned version: Mihomo's
+            // decoder tolerates extra keys (a newer option, a typo, an option
+            // of another proxy type), so the same file must load here. A key
+            // is only "known but unimplemented" when this type declares it.
+            if !mihomo_options.contains(&key.as_str()) && !BASIC_OPTIONS.contains(&key.as_str()) {
                 continue;
             }
             // A transport block for a transport the configuration did not
@@ -822,14 +823,7 @@ impl<'a> Entry<'a> {
             if noop {
                 continue;
             }
-            if COMMON_UNSUPPORTED.contains(&key.as_str()) || mihomo_options.contains(&key.as_str())
-            {
-                return Err(self.unsupported(format!("option '{key}' is not implemented")));
-            }
-            return Err(self.unsupported(format!(
-                "option '{key}' is not implemented (not a Mihomo {} option either)",
-                self.kind
-            )));
+            return Err(self.unsupported(format!("option '{key}' is not implemented")));
         }
         Ok(())
     }
@@ -890,7 +884,7 @@ fn parse_socks5(entry: &mut Entry<'_>) -> Result<Socks5Outbound, ConfigError> {
         .filter(|s| !s.is_empty())
         .map(Secret::new);
     let tls = entry.bool("tls")?.unwrap_or(false);
-    let tls_settings = entry.tls_settings()?;
+    let tls_settings = entry.tls_settings(false, false)?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     // `udp: false` states the same thing this outbound does (no UDP); `true`
     // would need a UDP association this kernel does not open to a SOCKS5 peer.
@@ -910,7 +904,6 @@ fn parse_socks5(entry: &mut Entry<'_>) -> Result<Socks5Outbound, ConfigError> {
         "tls",
         "udp",
         "skip-cert-verify",
-        "alpn",
         "name-cert-verify",
         "fingerprint",
         "certificate",
@@ -944,7 +937,7 @@ fn parse_http(entry: &mut Entry<'_>) -> Result<HttpOutbound, ConfigError> {
         .filter(|s| !s.is_empty())
         .map(Secret::new);
     let tls = entry.bool("tls")?.unwrap_or(false);
-    let tls_settings = entry.tls_settings()?;
+    let tls_settings = entry.tls_settings(true, false)?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let headers = entry.string_map("headers")?;
     // Mihomo's HTTP outbound has no `udp` option at all, so any occurrence is
@@ -960,7 +953,6 @@ fn parse_http(entry: &mut Entry<'_>) -> Result<HttpOutbound, ConfigError> {
         "tls",
         "sni",
         "skip-cert-verify",
-        "alpn",
         "name-cert-verify",
         "fingerprint",
         "certificate",
@@ -1055,7 +1047,7 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
     if password.expose().len() > 56 {
         return Err(entry.invalid("option 'password' longer than 56 bytes"));
     }
-    let tls_settings = entry.tls_settings()?;
+    let tls_settings = entry.tls_settings(true, true)?;
     let network = entry
         .string("network")?
         .unwrap_or_else(|| "tcp".to_string());
@@ -1132,7 +1124,11 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
         )));
     }
     let tls = entry.bool("tls")?.unwrap_or(false);
-    let tls_settings = entry.tls_settings()?;
+    let mut tls_settings = entry.tls_settings(true, true)?;
+    // `servername` is the pinned type's alias for `sni`.
+    if tls_settings.sni.is_none() {
+        tls_settings.sni = entry.string("servername")?.filter(|value| !value.is_empty());
+    }
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let network = entry
         .string("network")?
@@ -1201,6 +1197,7 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
         "ws-opts",
         "xhttp-opts",
         "ws-headers",
+        "servername",
         "client-fingerprint",
         "ip-version",
     ];
@@ -1221,7 +1218,7 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
     let password = Secret::new(entry.required_string("password")?);
-    let tls_settings = entry.tls_settings()?;
+    let tls_settings = entry.tls_settings(true, true)?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     for key in [
         "client-metadata",
@@ -1292,11 +1289,11 @@ pub fn supported_protocol_names() -> &'static [&'static str] {
     &["socks5", "http", "ss", "trojan", "vless", "anytls"]
 }
 
-/// Options accepted for every outbound in the pinned source but without a
-/// backend in this kernel; kept here so the capability report has one list.
+/// Options the pinned `BasicOption` declares for every outbound and this
+/// kernel does not implement; kept here so the capability report has one list.
 pub fn unsupported_common_options() -> BTreeMap<&'static str, &'static str> {
-    COMMON_UNSUPPORTED
-        .iter()
-        .map(|key| (*key, "no implementation in the Rust runtime (T4)"))
+    ["tfo", "mptcp", "interface-name", "routing-mark", "ip-version"]
+        .into_iter()
+        .map(|key| (key, "no implementation in the Rust runtime (T4)"))
         .collect()
 }

@@ -164,6 +164,23 @@ add('vless', 'xudp', 'false')
 add('anytls', 'disable-reuse', 'false')
 add('anytls', 'idle-session-timeout', '0')
 add('socks5', 'bogus', '1')
+// Keys another proxy type declares: the pinned decoder ignores them here.
+for (const type of ['socks5', 'http']) {
+  add(type, 'jls-opts', '{}')
+  add(type, 'shadow-tls-opts', '{password: p}')
+  add(type, 'restls-opts', '{password: p}')
+  add(type, 'ech-opts', '{enable: true}')
+  add(type, 'udp-over-tcp', 'true')
+  add(type, 'udp-over-tcp-version', '2')
+  add(type, 'ss-opts', '{enabled: true, password: p}')
+}
+for (const type of ['ss']) {
+  add(type, 'shadow-tls-opts', '{password: p}')
+  add(type, 'jls-opts', '{password: p, username: u}')
+  add(type, 'restls-opts', '{password: p}')
+  add(type, 'ech-opts', '{enable: true}')
+}
+for (const type of ['trojan', 'vless', 'anytls']) add(type, 'udp-over-tcp', 'true')
 add('trojan', 'bogus', '{a: b}')
 add('vless', 'ss-opts', '{enabled: true, password: p}')
 add('anytls', 'client-metadata', "''")

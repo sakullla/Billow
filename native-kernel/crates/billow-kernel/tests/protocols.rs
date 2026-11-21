@@ -2402,7 +2402,16 @@ async fn ss_udp_peer(
     password: &'static str,
     echo_port: u16,
 ) -> (u16, Log) {
-    let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    ss_udp_peer_bound("127.0.0.1:0", cipher, password, echo_port).await
+}
+
+async fn ss_udp_peer_bound(
+    bind: &'static str,
+    cipher: billow_kernel::proxies::SsCipher,
+    password: &'static str,
+    echo_port: u16,
+) -> (u16, Log) {
+    let server = tokio::net::UdpSocket::bind(bind).await.unwrap();
     let server_port = server.local_addr().unwrap().port();
     common::reserve_port(server_port);
     let log: Log = Arc::new(Mutex::new(Vec::new()));
@@ -2483,6 +2492,16 @@ async fn ss_udp_peer(
 /// forwarded, and the reply wrapped back. It records the targets it relayed to,
 /// which is how a chained test proves the hop was used.
 async fn socks5_udp_peer() -> (u16, Log) {
+    socks5_udp_peer_with(None, None).await
+}
+
+/// `prefer` selects the resolved address family for the relayed target (a
+/// multi-A server), `bogus_source` rewrites the reply header so the client sees
+/// an address it did not resolve to.
+async fn socks5_udp_peer_with(
+    prefer: Option<&'static str>,
+    bogus_source: Option<std::net::SocketAddr>,
+) -> (u16, Log) {
     let (listener, addr) = spawn_tcp().await;
     let relay = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let relay_addr = relay.local_addr().unwrap();
@@ -2502,8 +2521,13 @@ async fn socks5_udp_peer() -> (u16, Log) {
             };
             let payload = buffer[datagram.offset..read].to_vec();
             let target = datagram.target.clone();
-            let resolved = match billow_kernel::outbound::udp::resolve(&target).await {
-                Ok(addr) => addr,
+            let resolved = match billow_kernel::outbound::udp::resolve_all(&target).await {
+                Ok(addrs) => match prefer {
+                    Some("ipv6") => addrs.iter().find(|addr| addr.is_ipv6()).copied(),
+                    Some("ipv4") => addrs.iter().find(|addr| addr.is_ipv4()).copied(),
+                    _ => addrs.first().copied(),
+                }
+                .unwrap_or(addrs[0]),
                 Err(_) => continue,
             };
             push(
@@ -2516,7 +2540,8 @@ async fn socks5_udp_peer() -> (u16, Log) {
                     forwarded: true,
                 },
             );
-            let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let bind = if resolved.is_ipv4() { "127.0.0.1:0" } else { "[::1]:0" };
+            let socket = tokio::net::UdpSocket::bind(bind).await.unwrap();
             let _ = socket.send_to(&payload, resolved).await;
             let mut reply = vec![0u8; 65535];
             let Ok(Ok((n, source))) =
@@ -2524,6 +2549,7 @@ async fn socks5_udp_peer() -> (u16, Log) {
             else {
                 continue;
             };
+            let source = bogus_source.unwrap_or(source);
             let origin = billow_kernel::outbound::Target {
                 host: source.ip().to_string(),
                 port: source.port(),
@@ -3075,6 +3101,38 @@ async fn trojan_udp_goes_through_the_dialer_proxy_hop() {
         detail(&tj_log).iter().any(|d| d == "payload=trojan-chained"),
         "{:?}",
         detail(&tj_log)
+    );
+    drop(control);
+    kernel.stop().unwrap();
+}
+
+
+/// A reply whose header names an address the server name did not resolve to is
+/// dropped, so the association never accepts an arbitrary sender.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shadowsocks_udp_chained_drops_a_reply_from_an_unresolved_address() {
+    let cipher = billow_kernel::proxies::SsCipher::Aes256Gcm;
+    let password = "rogue-pw";
+    let (echo_port, _) = udp_echo().await;
+    let (ss_port, _ss_log) = ss_udp_peer(cipher, password, echo_port).await;
+    let rogue: SocketAddr = "203.0.113.9:53".parse().unwrap();
+    let (hop_port, _hop_log) = socks5_udp_peer_with(None, Some(rogue)).await;
+    let dir = scratch("ss-udp-rogue");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: exit, type: ss, server: 127.0.0.1, port: {ss_port}, cipher: aes-256-gcm, password: {password}, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}}}\nrules:\n  - 'MATCH,exit'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    assert!(
+        udp_roundtrip(relay, target, b"rogue-source", Duration::from_millis(800)).is_none(),
+        "a reply from an unresolved address must be dropped"
     );
     drop(control);
     kernel.stop().unwrap();

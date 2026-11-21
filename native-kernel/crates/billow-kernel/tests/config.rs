@@ -296,7 +296,13 @@ fn unimplemented_protocol_and_option_name_the_field() {
     assert!(e.contains("option 'plugin' value 'obfs'"), "{e}");
     let e = proxy_err("proxies:\n  - {name: v, type: vless, server: x, port: 1, uuid: 9d0cb9d0964f4ef6897d6c6b3ccf9e68, flow: xtls-rprx-vision}\nrules: ['MATCH,DIRECT']\n");
     assert!(e.contains("option 'flow' value 'xtls-rprx-vision'"), "{e}");
-    let e = proxy_err("proxies:\n  - {name: s, type: socks5, server: x, port: 1, udp-over-tcp: true}\nrules: ['MATCH,DIRECT']\n");
+    // `udp-over-tcp` belongs to ss, not socks5: Mihomo ignores it there, so
+    // the same file must load (the ss case above still rejects it when set).
+    assert_eq!(
+        proxy_err("proxies:\n  - {name: s, type: socks5, server: x, port: 1, udp-over-tcp: true}\nrules: ['MATCH,DIRECT']\n"),
+        "ok"
+    );
+    let e = proxy_err("proxies:\n  - {name: s, type: ss, server: x, port: 1, cipher: aes-256-gcm, password: p, udp-over-tcp: true}\nrules: ['MATCH,DIRECT']\n");
     assert!(
         e.contains("option 'udp-over-tcp' is not implemented"),
         "{e}"
@@ -527,6 +533,26 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "smux: {enabled: true, protocol: h2mux}"),
         ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "plugin-opts: {mode: tls}"),
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "ss-opts: {enabled: true, password: p}"),
+        // Keys another proxy type declares are unknown here: Mihomo ignores
+        // them, so they must load (a cross-protocol key is not a gap).
+        ("socks5", "server: 127.0.0.1, port: 1", "shadow-tls-opts: {password: p}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "restls-opts: {password: p}"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "ech-opts: {enable: true}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "udp-over-tcp: true"),
+        ("socks5", "server: 127.0.0.1, port: 1", "udp-over-tcp-version: 2"),
+        ("socks5", "server: 127.0.0.1, port: 1", "ss-opts: {enabled: true, password: p}"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "sni: example.org"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "alpn: [h2]"),
+        ("http", "server: 127.0.0.1, port: 1", "jls-opts: {}"),
+        ("http", "server: 127.0.0.1, port: 1", "shadow-tls-opts: {password: p}"),
+        ("http", "server: 127.0.0.1, port: 1", "udp-over-tcp: true"),
+        ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "shadow-tls-opts: {password: p}"),
+        ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "jls-opts: {password: p, username: u}"),
+        ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "restls-opts: {password: p}"),
+        ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "ech-opts: {enable: true}"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "udp-over-tcp: true"),
+        ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "udp-over-tcp: true"),
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "udp-over-tcp: true"),
         ("socks5", "server: 127.0.0.1, port: 1", "grpc-opts: {}"),
         ("socks5", "server: 127.0.0.1, port: 1", "ech-opts: {enable: false}"),
         ("socks5", "server: 127.0.0.1, port: 1", "fingerprint: ''"),
@@ -563,7 +589,7 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "reality-opts: {}"),
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {}"),
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "jls-opts: {}"),
-        ("socks5", "server: 127.0.0.1, port: 1", "jls-opts: {}"),
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "jls-opts: {}"),
     ] {
         let key = option.split(':').next().unwrap_or_default();
         let yaml = format!(
@@ -576,14 +602,18 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
 
     // The same keys with a value that changes behaviour still fail.
     let enabled: &[(&str, &str, &str)] = &[
-        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "ech-opts: {enable: true}"),
+        // `ech-opts`/`udp-over-tcp` are not socks5 options: Mihomo ignores them
+        // there (covered by the no-op list), so they cannot be "enabled".
         ("socks5", "server: 127.0.0.1, port: 1", "tfo: true"),
         ("socks5", "server: 127.0.0.1, port: 1", "routing-mark: 100"),
-        ("socks5", "server: 127.0.0.1, port: 1", "udp-over-tcp: true"),
         ("socks5", "server: 127.0.0.1, port: 1", "interface-name: eth0"),
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {enabled: true}"),
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {public-key: k}"),
         ("anytls", "server: 127.0.0.1, port: 1, password: p", "idle-session-timeout: 30"),
+        // anytls declares these security modes and applies them, so a content
+        // block is a registered gap (not an ignored key).
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "shadow-tls-opts: {password: p}"),
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "jls-opts: {password: p, username: u}"),
         ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "plugin: obfs"),
     ];
     for (kind, base, option) in enabled {

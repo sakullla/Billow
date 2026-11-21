@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 90, enabled cases: 84, problems: 0
+# no-op cases: 111, enabled cases: 74, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
@@ -91,6 +91,27 @@ noop    vless   xudp                         rust=accept mihomo=accept
 noop    anytls  disable-reuse                rust=accept mihomo=accept
 noop    anytls  idle-session-timeout         rust=accept mihomo=accept
 noop    socks5  bogus                        rust=accept mihomo=accept
+noop    socks5  jls-opts                     rust=accept mihomo=accept
+noop    socks5  shadow-tls-opts              rust=accept mihomo=accept
+noop    socks5  restls-opts                  rust=accept mihomo=accept
+noop    socks5  ech-opts                     rust=accept mihomo=accept
+noop    socks5  udp-over-tcp                 rust=accept mihomo=accept
+noop    socks5  udp-over-tcp-version         rust=accept mihomo=accept
+noop    socks5  ss-opts                      rust=accept mihomo=accept
+noop    http    jls-opts                     rust=accept mihomo=accept
+noop    http    shadow-tls-opts              rust=accept mihomo=accept
+noop    http    restls-opts                  rust=accept mihomo=accept
+noop    http    ech-opts                     rust=accept mihomo=accept
+noop    http    udp-over-tcp                 rust=accept mihomo=accept
+noop    http    udp-over-tcp-version         rust=accept mihomo=accept
+noop    http    ss-opts                      rust=accept mihomo=accept
+noop    ss      shadow-tls-opts              rust=accept mihomo=accept
+noop    ss      jls-opts                     rust=accept mihomo=accept
+noop    ss      restls-opts                  rust=accept mihomo=accept
+noop    ss      ech-opts                     rust=accept mihomo=accept
+noop    trojan  udp-over-tcp                 rust=accept mihomo=accept
+noop    vless   udp-over-tcp                 rust=accept mihomo=accept
+noop    anytls  udp-over-tcp                 rust=accept mihomo=accept
 noop    trojan  bogus                        rust=accept mihomo=accept
 noop    vless   ss-opts                      rust=accept mihomo=accept
 noop    anytls  client-metadata              rust=accept mihomo=accept
@@ -104,12 +125,6 @@ enabled socks5  tfo                          rust=reject mihomo=accept
 enabled socks5  mptcp                        rust=reject mihomo=accept
 enabled socks5  interface-name               rust=reject mihomo=accept
 enabled socks5  routing-mark                 rust=reject mihomo=accept
-enabled socks5  udp-over-tcp                 rust=reject mihomo=accept
-enabled socks5  udp-over-tcp-version         rust=reject mihomo=accept
-enabled socks5  ech-opts                     rust=reject mihomo=accept
-enabled socks5  shadow-tls-opts              rust=reject mihomo=accept
-enabled socks5  restls-opts                  rust=reject mihomo=accept
-enabled socks5  jls-opts                     rust=reject mihomo=accept
 enabled http    fingerprint                  rust=reject mihomo=accept
 enabled http    certificate                  rust=reject mihomo=reject
 enabled http    private-key                  rust=reject mihomo=reject
@@ -119,10 +134,6 @@ enabled http    tfo                          rust=reject mihomo=accept
 enabled http    mptcp                        rust=reject mihomo=accept
 enabled http    interface-name               rust=reject mihomo=accept
 enabled http    routing-mark                 rust=reject mihomo=accept
-enabled http    ech-opts                     rust=reject mihomo=accept
-enabled http    shadow-tls-opts              rust=reject mihomo=accept
-enabled http    restls-opts                  rust=reject mihomo=accept
-enabled http    jls-opts                     rust=reject mihomo=accept
 enabled ss      plugin                       rust=reject mihomo=reject
 enabled ss      udp-over-tcp                 rust=reject mihomo=accept
 enabled ss      udp-over-tcp-version         rust=reject mihomo=accept
