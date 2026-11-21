@@ -5836,8 +5836,8 @@ html[data-keyboard] .compact .page {
   content: '';
   position: absolute;
   top: 0;
-  left: 12px;
-  right: 8px;
+  left: 0;
+  right: 0;
   height: 1px;
   background: var(--border);
 }
@@ -8196,6 +8196,10 @@ details.cfg-section[open] .cfg-fold-icon {
 .compact .page.proxies .nodes:not(.dense) .node.selected {
   background: var(--accent-soft);
 }
+/* The tint alone marks the choice on phones: no ring from the card view (R2). */
+.compact .page.proxies .nodes:not(.dense) .node.selected {
+  box-shadow: none;
+}
 .compact .page.proxies .nodes:not(.dense) .node.selected .node-name {
   color: var(--accent-ink);
 }
@@ -8321,9 +8325,18 @@ details.cfg-section[open] .cfg-fold-icon {
   }
 }
 
-.compact .page.proxies .nodes:not(.dense) .node.located,
+@keyframes locate-row-tint {
+  0%, 45% {
+    background: color-mix(in srgb, var(--accent) 20%, var(--surface));
+  }
+}
+
 .shell:not(.compact) .page.proxies .nodes.list .node.located {
   animation: locate-row-cue 1.6s var(--ease) both;
+}
+/* Phone rows are rounded and inset, so the locate cue is a tint flash without the edge bar. */
+.compact .page.proxies .nodes:not(.dense) .node.located {
+  animation: locate-row-tint 1.6s var(--ease) both;
 }
 
 .compact .page.proxies .nodes:not(.dense) .node:active:not(.locked) {

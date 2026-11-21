@@ -1135,7 +1135,7 @@ export const UI_EN: Record<string, string> = {
   '测试全部节点延迟': 'Test every node’s latency',
   '测试延迟': 'Test latency',
   '测试该组延迟': 'Test this group’s latency',
-  '测速 {0}': 'Tested {0}',
+  '测速 {0}': 'Test {0}',
   '测速中 ({0}/{1})': 'Testing ({0}/{1})',
   '测速完成：{0} 个可用，{1} 个超时': 'Test finished: {0} available, {1} timed out',
   '测速完成：{0} 个节点全部可用': 'Test finished: all {0} nodes are available',
