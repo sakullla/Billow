@@ -3,7 +3,7 @@
   "version": 3,
   "engine": "rust",
   "kernel": "billow-kernel",
-  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,engine.rs,outbound/*.rs,outbound/sudoku/*.rs} and tests/{config,protocols,mihomo_peers}.rs",
+  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,engine.rs,outbound/*.rs} and tests/{config,protocols,mihomo_peers,quic_peers}.rs",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -710,54 +710,8 @@
       ]
     },
     "sudoku": {
-      "status": "partial",
-      "reason": "TCP sessions with the legacy HTTP mask, both downlink codecs, the record layer and the KIP handshake are implemented; the HTTP tunnel modes (stream/poll/auto/ws), `multiplex: on` (session mux) and `udp: true` (UoT) are rejected at load with the reason recorded (T13 scope)",
-      "options": [
-        "server",
-        "port",
-        "key",
-        "aead-method",
-        "padding-min",
-        "padding-max",
-        "table-type",
-        "custom-table",
-        "custom-tables",
-        "enable-pure-downlink",
-        "http-mask",
-        "http-mask-mode",
-        "path-root",
-        "multiplex",
-        "httpmask",
-        "dialer-proxy"
-      ],
-      "udp": "not implemented: `udp: true` (the UoT association) is rejected; TCP sessions only",
-      "notImplemented": [
-        "udp: true",
-        "http-mask-mode: stream/poll/auto/ws",
-        "multiplex: on",
-        "http-mask-tls (no effect without a tunnel mode)",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark",
-        "ip-version"
-      ],
-      "notes": [
-        "wire-compatible port of the pinned transport/sudoku: Go's math/rand shuffle (rnsSource + rngCooked) reproduces the 288-grid table order, both pure and packed codecs, the record layer (chacha20-poly1305, aes-128-gcm, none) and the KIP X25519/HKDF handshake",
-        "the HTTP tunnel modes are a mihomo extension (split-stream/poll/WebSocket) and are rejected by name; the legacy header mask is the default and is implemented, as is disable-http-mask",
-        "table rotation (custom-tables) picks one table per connection and sends the KIP table hint so the probing server resolves it"
-      ],
-      "evidence": [
-        "tests/mihomo_peers.rs::sudoku_tcp_session_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side",
-        "tests/mihomo_peers.rs::sudoku_directional_table_reaches_the_receiving_side",
-        "tests/mihomo_peers.rs::sudoku_custom_table_pattern_reaches_the_receiving_side",
-        "tests/mihomo_peers.rs::sudoku_rotating_custom_tables_reach_the_receiving_side",
-        "tests/mihomo_peers.rs::sudoku_wrong_key_never_reaches_the_sink",
-        "tests/mihomo_peers.rs::sudoku_mismatched_table_type_never_reaches_the_sink",
-        "tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation",
-        "src/outbound/sudoku/table.rs::pinned_vectors::the_pinned_encoder_output_decodes_with_our_table"
-      ]
+      "status": "unimplemented",
+      "reason": "the earlier T13 port was a GPL-3.0 derivative of the pinned `transport/sudoku` (Mihomo's tree license) and was removed in T13-A3; a clean-room implementation is T17. The type is rejected by name at load time with this reason"
     },
     "tuic": {
       "status": "partial",
@@ -1186,7 +1140,7 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T15 added shadowquic (partial); T16 added the wireguard and openvpn protocol halves (partial: transport implemented, T6/T7 device layer owns the IP stack) and rejected the tailscale/zerotier/easytier control planes with the missing dependency named. T13 added mieru and sudoku; T14 added masque as an RFC 9298 CONNECT-UDP subset. T9 owns the remaining gaps and T5 owns the built-in direct/dns/reject/rematch adapters.",
+    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters (mesh families rejected). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku` (clean-room rewrite is T17). T5 owns the built-in direct/dns/reject/rematch adapters.",
     "entries": {
       "tailscale": {
         "owner": "T16 (rejected) / future control-plane task",
@@ -1216,7 +1170,11 @@
         "owner": "T5",
         "reason": "rule-engine adapter"
       },
-      "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T15 added shadowquic (partial, independent JLS and transport over quinn; evidence/t15-cleanroom.md). The device families wireguard/tailscale/zerotier/easytier/openvpn remain explicitly rejected by name; T6/T7 only own device/TUN, so the protocol adaptation must be a new task or a T9 follow-up (T9 outcome 2 fails if these remain unsupported). T9 owns mieru/masque/sudoku; T5 owns the built-in direct/dns/reject/rematch adapters."
+      "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters (mesh families rejected). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku` (clean-room rewrite is T17). T5 owns the built-in direct/dns/reject/rematch adapters.",
+      "sudoku": {
+        "owner": "T17 (clean-room rewrite)",
+        "reason": "the A1 port was a GPL-3.0 derivative of `transport/sudoku` (table/record/KIP/HTTP mask translated from the pinned tree) and was removed in T13-A3; a clean-room implementation from wire observations is T17. Registered alongside mieru's clean-room precedent."
+      }
     }
   },
   "unmappedNotes": [

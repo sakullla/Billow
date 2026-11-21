@@ -22,9 +22,7 @@ blake2 = "0.10"
 bytes = "1"
 chacha20 = "0.9"
 chacha20poly1305 = "0.10"
-# Sudoku key material (T13): X25519 for the KIP handshake and the Edwards
-# point/scalar operations `ClientAEADSeed` needs to canonicalise a hex key.
-curve25519-dalek = { version = "4.1", default-features = false, features = ["alloc"] }
+# X25519 for the JLS (T15) and WireGuard (T16) key exchanges.
 x25519-dalek = { version = "2.0", default-features = false, features = ["static_secrets"] }
 clap = "4"
 h2 = "0.4"

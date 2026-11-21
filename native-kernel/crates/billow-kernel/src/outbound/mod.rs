@@ -25,7 +25,6 @@ pub mod shadowquic;
 pub mod snell;
 pub mod socks5;
 pub mod smux;
-pub mod sudoku;
 pub mod ssh;
 pub mod ssr;
 pub mod quic;
@@ -387,10 +386,6 @@ async fn dial_inner(
         Protocol::Mieru(p) => {
             refuse_chain(via, "mieru")?;
             mieru::dial(p, target).await
-        }
-        Protocol::Sudoku(p) => {
-            refuse_chain(via, "sudoku")?;
-            sudoku::dial(p, target).await
         }
         Protocol::Masque(p) => {
             refuse_chain(via, "masque")?;

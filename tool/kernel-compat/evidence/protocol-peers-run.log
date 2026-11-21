@@ -1,8 +1,8 @@
 peer: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-a9e248fc1d56a94d)
+     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-70790d5470abcbc6)
 
-running 61 tests
+running 50 tests
 test anytls_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ok
 test chained_ss_udp_rejected_by_the_hop_never_reaches_the_echo ... ok
@@ -33,17 +33,6 @@ test snell_v3_with_http_obfs_reaches_the_receiving_side_through_mihomo ... ok
 test snell_wrong_psk_never_reaches_the_sink ... ok
 test socks5_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test socks5_wrong_password_never_reaches_the_sink ... ok
-test sudoku_aes_128_gcm_record_layer_reaches_the_receiving_side ... ok
-test sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side ... ok
-test sudoku_custom_table_pattern_reaches_the_receiving_side ... ok
-test sudoku_directional_table_reaches_the_receiving_side ... ok
-test sudoku_mismatched_table_type_never_reaches_the_sink ... ok
-test sudoku_private_key_material_matches_the_public_key_peer ... ok
-test sudoku_rotating_custom_tables_reach_the_receiving_side ... ok
-test sudoku_tcp_session_reaches_the_receiving_side_through_mihomo ... ok
-test sudoku_unencrypted_record_layer_reaches_the_receiving_side ... ok
-test sudoku_without_the_http_mask_reaches_the_receiving_side ... ok
-test sudoku_wrong_key_never_reaches_the_sink ... ok
 test trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo ... ok
 test trojan_udp_reaches_the_receiving_side_through_mihomo ... ok
 test trojan_udp_wrong_password_never_reaches_the_echo ... ok
@@ -65,5 +54,5 @@ test vmess_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_wrong_uuid_never_reaches_the_sink ... ok
 
-test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.31s
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 52.69s
 

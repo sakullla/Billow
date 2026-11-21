@@ -138,17 +138,17 @@
   "results": {
     "defaultSuite": {
       "command": "cargo test --offline --locked --manifest-path native-kernel/Cargo.toml",
-      "result": "all green: 103 lib unit tests, 38 config, 48 protocols, 18 quic_peers, 11 sessions, 1 shadowquic_stream, 7 cli, 7 family_cli, 1 doc-test; 8 ignore-marked peer families",
+      "result": "all green (after the T13-A3 sudoku removal): 85 lib unit tests, 37 config, 48 protocols, 18 quic_peers, 11 sessions, 1 shadowquic_stream, 7 cli, 7 family_cli, 1 doc-test; 8 ignore-marked peer families",
       "hermetic": "yes: the default suite starts no network peer; the ignored cases need KC_WIREGUARD_PEER_BIN/KC_OPENVPN_BIN"
     },
     "familyPeers": {
       "command": "tool/kernel-compat/family-peers.sh",
-      "result": "exit 0; wireguard 5/5, openvpn 4/4, plus the pre-existing gost/ssh/ssr/Sudoku groups",
+      "result": "exit 0; wireguard 5/5, openvpn 4/4, plus the pre-existing gost/ssh/ssr groups (the Sudoku group was removed in T13-A3)",
       "log": "tool/kernel-compat/evidence/family-peers-run.log"
     },
     "mihomoPeers": {
       "command": "tool/kernel-compat/peer-tests.sh",
-      "result": "61 passed, 0 failed",
+      "result": "50 passed, 0 failed",
       "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
     },
     "runnerTest": {

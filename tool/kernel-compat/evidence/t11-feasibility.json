@@ -3,7 +3,7 @@
   "version": 1,
   "generatedAt": "2026-11-21",
   "task": "T11",
-  "summary": "T11 delivered and verified the gost-relay/ssh/ssr subset. mieru, masque and sudoku were investigated against the locked v1.19.34 tree and the local module/crate caches; the concrete blockers and executable next steps are recorded here. They are not claimed as implemented.",
+  "summary": "T11 delivered and verified the gost-relay/ssh/ssr subset. mieru, masque and sudoku were investigated against the locked v1.19.34 tree and the local module/crate caches; the concrete blockers and executable next steps are recorded here. They are not claimed as implemented. T13 later delivered mieru (clean-room TCP) and removed its GPL-derived sudoku port (T13-A3; clean-room rewrite is T17).",
   "completed": {
     "gost-relay": "TCP/TLS/auth/forward; controlled Rust peer + CLI success tunnel; option matrix rows",
     "ssh": "password/inline PEM/host-key/direct-tcpip; controlled russh peer + CLI success tunnel; MSRV raised to 1.89",
@@ -27,7 +27,8 @@
         "T13 decision: clean-room TCP single-session client first (PBKDF2-SHA256, XChaCha20-Poly1305, session open/data/close, no mux/low-entropy), with Go-generated segment vectors; then UDP associate and mux.",
         "Build the controlled server from the local module (e.g. `go run ./cmd/mita` with a generated config) as a separate GPL test fixture; record the build command and keep it out of the shipped Rust binary.",
         "If the license/effort decision is to defer, keep the current explicit `[unsupported]` rejection and remove it from T11 compatibility claims."
-      ]
+      ],
+      "outcome": "T13 delivered the clean-room TCP single-session client; the blockers above refer to the GPL module and were resolved by implementing from docs/protocol.md (peer evidence in protocol-peers.json#t13)."
     },
     "masque": {
       "source": {
@@ -63,7 +64,8 @@
       "next_steps": [
         "T13 split: (a) build a controlled server from the locked transport/sudoku and capture handshake/KIP vectors, (b) port the handshake + KIP + table layout for a single TCP session, (c) add HTTP mask and multiplexing, (d) verify success/auth-failure/boundary cases.",
         "If the split is not approved, keep the explicit rejection and record sudoku as deferred rather than partially compatible."
-      ]
+      ],
+      "outcome": "T13-A3 (2026-11-22): the first T13 port was translated from the GPL-3.0 `transport/sudoku` and was removed; `type: sudoku` is rejected by name again. Any implementation of the steps above must be clean-room (wire observations and the public protocol shape only, never the pinned Go source); the task is T17. Audit: evidence/t13-a3-sudoku-removal.md"
     }
   },
   "plan_conflict": {

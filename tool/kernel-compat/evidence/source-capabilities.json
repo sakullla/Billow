@@ -2606,54 +2606,8 @@
       "constructor": "outbound.NewSudoku",
       "source": "adapter/parser.go:177",
       "rustMapping": {
-        "status": "partial",
-        "reason": "TCP sessions with the legacy HTTP mask, both downlink codecs, the record layer and the KIP handshake are implemented; the HTTP tunnel modes (stream/poll/auto/ws), `multiplex: on` (session mux) and `udp: true` (UoT) are rejected at load with the reason recorded (T13 scope)",
-        "options": [
-          "server",
-          "port",
-          "key",
-          "aead-method",
-          "padding-min",
-          "padding-max",
-          "table-type",
-          "custom-table",
-          "custom-tables",
-          "enable-pure-downlink",
-          "http-mask",
-          "http-mask-mode",
-          "path-root",
-          "multiplex",
-          "httpmask",
-          "dialer-proxy"
-        ],
-        "udp": "not implemented: `udp: true` (the UoT association) is rejected; TCP sessions only",
-        "notImplemented": [
-          "udp: true",
-          "http-mask-mode: stream/poll/auto/ws",
-          "multiplex: on",
-          "http-mask-tls (no effect without a tunnel mode)",
-          "tfo",
-          "mptcp",
-          "interface-name",
-          "routing-mark",
-          "ip-version"
-        ],
-        "notes": [
-          "wire-compatible port of the pinned transport/sudoku: Go's math/rand shuffle (rnsSource + rngCooked) reproduces the 288-grid table order, both pure and packed codecs, the record layer (chacha20-poly1305, aes-128-gcm, none) and the KIP X25519/HKDF handshake",
-          "the HTTP tunnel modes are a mihomo extension (split-stream/poll/WebSocket) and are rejected by name; the legacy header mask is the default and is implemented, as is disable-http-mask",
-          "table rotation (custom-tables) picks one table per connection and sends the KIP table hint so the probing server resolves it"
-        ],
-        "evidence": [
-          "tests/mihomo_peers.rs::sudoku_tcp_session_reaches_the_receiving_side_through_mihomo",
-          "tests/mihomo_peers.rs::sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side",
-          "tests/mihomo_peers.rs::sudoku_directional_table_reaches_the_receiving_side",
-          "tests/mihomo_peers.rs::sudoku_custom_table_pattern_reaches_the_receiving_side",
-          "tests/mihomo_peers.rs::sudoku_rotating_custom_tables_reach_the_receiving_side",
-          "tests/mihomo_peers.rs::sudoku_wrong_key_never_reaches_the_sink",
-          "tests/mihomo_peers.rs::sudoku_mismatched_table_type_never_reaches_the_sink",
-          "tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation",
-          "src/outbound/sudoku/table.rs::pinned_vectors::the_pinned_encoder_output_decodes_with_our_table"
-        ]
+        "status": "unimplemented",
+        "reason": "the earlier T13 port was a GPL-3.0 derivative of the pinned `transport/sudoku` (Mihomo's tree license) and was removed in T13-A3; a clean-room implementation is T17. The type is rejected by name at load time with this reason"
       }
     },
     {
@@ -4040,8 +3994,8 @@
   },
   "coverage": {
     "mapped": 24,
-    "partial": 17,
-    "unimplemented": 114,
+    "partial": 16,
+    "unimplemented": 115,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }

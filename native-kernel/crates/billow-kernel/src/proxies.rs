@@ -275,45 +275,6 @@ pub struct MieruOutbound {
     pub dialer_proxy: Option<String>,
 }
 
-/// Sudoku AEAD method (`aead-method`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SudokuAead {
-    Chacha20Poly1305,
-    Aes128Gcm,
-    None,
-}
-
-/// Sudoku multiplex mode. `auto` only reuses an HTTP tunnel connection, which
-/// this kernel does not implement, so it behaves like `off` on the legacy
-/// mask; `on` (the session mux) is rejected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SudokuMultiplex {
-    Off,
-    Auto,
-}
-
-/// Sudoku (`adapter/outbound/sudoku.go`): table-driven obfuscation, a record
-/// layer and the KIP handshake. Only the legacy HTTP mask and TCP sessions
-/// are implemented; the HTTP tunnel modes, session multiplexing and UoT are
-/// rejected at load with the reason recorded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SudokuOutbound {
-    pub server: String,
-    pub port: u16,
-    pub key: Secret,
-    pub aead_method: SudokuAead,
-    pub padding_min: u8,
-    pub padding_max: u8,
-    pub table_type: String,
-    pub custom_table: Option<String>,
-    pub custom_tables: Vec<String>,
-    pub enable_pure_downlink: bool,
-    pub http_mask: bool,
-    pub path_root: Option<String>,
-    pub multiplex: SudokuMultiplex,
-    pub dialer_proxy: Option<String>,
-}
-
 /// Snell (`transport/snell`). Versions 1-3 share one request header and an
 /// Argon2id-derived AEAD record layer; v4+ change the record layer and are
 /// rejected explicitly.
@@ -778,7 +739,6 @@ pub enum Protocol {
     Hysteria(HysteriaOutbound),
     Hysteria2(Hysteria2Outbound),
     Mieru(MieruOutbound),
-    Sudoku(SudokuOutbound),
     Masque(MasqueOutbound),
     ShadowQuic(ShadowQuicOutbound),
     Wireguard(WireguardOutbound),
@@ -804,7 +764,6 @@ impl Protocol {
             Protocol::Hysteria(p) => p.dialer_proxy.as_deref(),
             Protocol::Hysteria2(p) => p.dialer_proxy.as_deref(),
             Protocol::Mieru(p) => p.dialer_proxy.as_deref(),
-            Protocol::Sudoku(p) => p.dialer_proxy.as_deref(),
             Protocol::Masque(_) => None,
             Protocol::ShadowQuic(_) => None,
             Protocol::Wireguard(_) => None,
@@ -832,7 +791,6 @@ impl Proxy {
             Protocol::Hysteria(_) => "hysteria",
             Protocol::Hysteria2(_) => "hysteria2",
             Protocol::Mieru(_) => "mieru",
-            Protocol::Sudoku(_) => "sudoku",
             Protocol::Masque(_) => "masque",
             Protocol::ShadowQuic(_) => "shadowquic",
             Protocol::Wireguard(_) => "wireguard",
@@ -863,7 +821,6 @@ impl Proxy {
                     .or(p.port_range.map(|(first, _)| first))
                     .unwrap_or(0),
             ),
-            Protocol::Sudoku(p) => (&p.server, p.port),
             Protocol::Masque(p) => (&p.server, p.port),
             Protocol::ShadowQuic(p) => (&p.server, p.port),
             Protocol::Wireguard(p) => p
@@ -1621,7 +1578,11 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "hysteria" => Protocol::Hysteria(parse_hysteria(&mut entry)?),
         "hysteria2" => Protocol::Hysteria2(parse_hysteria2(&mut entry)?),
         "mieru" => Protocol::Mieru(parse_mieru(&mut entry)?),
-        "sudoku" => Protocol::Sudoku(parse_sudoku(&mut entry)?),
+        "sudoku" => {
+            return Err(entry.unsupported(
+                "protocol type 'sudoku' is not implemented: the earlier port was a GPL-3.0 derivative of the pinned `transport/sudoku` and has been removed; a clean-room implementation is T17",
+            ))
+        }
         "masque" => Protocol::Masque(parse_masque(&mut entry)?),
         "shadowquic" => Protocol::ShadowQuic(parse_shadowquic(&mut entry)?),
         "wireguard" => Protocol::Wireguard(parse_wireguard(&mut entry)?),
@@ -1644,7 +1605,7 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
 
         other => {
             return Err(ConfigError::Unsupported(format!(
-                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2, mieru, sudoku, masque, shadowquic)",
+                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2, mieru, masque, shadowquic)",
                 entry.prefix()
             )))
         }
@@ -2377,209 +2338,6 @@ fn finish_mieru(
         password: Secret::new(password),
         dialer_proxy,
     })
-}
-
-/// Sudoku (`adapter/outbound/sudoku.go`). The pinned type validates the AEAD
-/// method, the padding range, the table type and the HTTP mask mode; this
-/// kernel implements the legacy mask and TCP sessions and rejects the tunnel
-/// modes, the session mux and UoT with the reason recorded.
-fn parse_sudoku(entry: &mut Entry<'_>) -> Result<SudokuOutbound, ConfigError> {
-    let server = entry.server()?;
-    let port = entry.port()?;
-    let key = Secret::new(entry.required_string("key")?);
-    if key.expose().trim().is_empty() {
-        return Err(entry.invalid("option 'key' must not be empty"));
-    }
-    let aead_method = match entry.string("aead-method")?.unwrap_or_default().as_str() {
-        "" | "chacha20-poly1305" => SudokuAead::Chacha20Poly1305,
-        "aes-128-gcm" => SudokuAead::Aes128Gcm,
-        "none" => SudokuAead::None,
-        other => {
-            return Err(entry.invalid(format!(
-                "option 'aead-method' value '{other}' must be one of: aes-128-gcm, chacha20-poly1305, none"
-            )))
-        }
-    };
-    let (padding_min, padding_max) = sudoku_padding(entry)?;
-    let table_type = match entry.string("table-type")?.filter(|v| !v.trim().is_empty()) {
-        Some(value) => {
-            if crate::outbound::sudoku::table::AsciiMode::parse(&value).is_none() {
-                return Err(entry.invalid(format!(
-                    "option 'table-type' value '{value}' must be prefer_ascii, prefer_entropy, up_ascii_down_entropy or up_entropy_down_ascii"
-                )));
-            }
-            value
-        }
-        None => "prefer_entropy".to_string(),
-    };
-    let custom_table = entry
-        .string("custom-table")?
-        .filter(|v| !v.trim().is_empty());
-    let custom_tables = entry
-        .string_list("custom-tables")?
-        .into_iter()
-        .filter(|v| !v.trim().is_empty())
-        .collect::<Vec<_>>();
-    for pattern in custom_table.iter().chain(custom_tables.iter()) {
-        if !crate::outbound::sudoku::table::validate_custom_pattern(pattern) {
-            return Err(entry.invalid(format!(
-                "custom table pattern '{pattern}' must have 8 symbols with exactly 2 x, 2 p and 4 v"
-            )));
-        }
-    }
-    let enable_pure_downlink = entry.bool("enable-pure-downlink")?.unwrap_or(true);
-    // `http-mask-tls`/`http-mask-host` only shape the HTTP tunnel modes, which
-    // are rejected above; with the legacy mask (and with the mask disabled)
-    // Mihomo ignores them, so reading them is only about not rejecting a
-    // valid configuration.
-    let _ = entry.bool("http-mask-tls")?;
-    let _ = entry.string("http-mask-host")?;
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'udp' is not implemented for sudoku: the UDP-over-TCP (UoT) association is not ported",
-        ));
-    }
-
-    // The HTTP mask block and its flat aliases; the pinned decoder lets the
-    // block win where both are set.
-    let mut http_mask = entry.bool("http-mask")?.unwrap_or(true);
-    let mut http_mask_mode = entry.string("http-mask-mode")?.unwrap_or_default();
-    let mut path_root = entry.string("path-root")?.filter(|v| !v.trim().is_empty());
-    let mut multiplex_name = entry.string("multiplex")?.unwrap_or_default();
-    let legacy_multiplex = entry
-        .string("http-mask-multiplex")?
-        .unwrap_or_default();
-    if !legacy_multiplex.trim().is_empty() {
-        multiplex_name = legacy_multiplex;
-    }
-    if let Some(block) = entry.block("httpmask")? {
-        http_mask = !block
-            .get("disable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if let Some(mode) = block.get("mode").and_then(|v| v.as_str()) {
-            if !mode.trim().is_empty() {
-                http_mask_mode = mode.to_string();
-            }
-        }
-        if let Some(root) = block.get("path-root").and_then(|v| v.as_str()) {
-            if !root.trim().is_empty() {
-                path_root = Some(root.to_string());
-            }
-        }
-        if let Some(mux) = block.get("multiplex").and_then(|v| v.as_str()) {
-            if !mux.trim().is_empty() {
-                multiplex_name = mux.to_string();
-            }
-        }
-    }
-    let mode = http_mask_mode.trim().to_ascii_lowercase();
-    match mode.as_str() {
-        "" | "legacy" => {}
-        "stream" | "poll" | "auto" | "ws" => {
-            return Err(entry.unsupported(format!(
-                "option 'http-mask-mode' value '{mode}' is not implemented: the HTTP tunnel layer (split-stream/poll/WebSocket) is a mihomo extension over Sudoku and is not ported; the legacy mask is"
-            )))
-        }
-        other => {
-            return Err(entry.invalid(format!(
-                "option 'http-mask-mode' value '{other}' must be one of: legacy, stream, poll, auto, ws"
-            )))
-        }
-    }
-    let multiplex = match multiplex_name.trim().to_ascii_lowercase().as_str() {
-        "" | "off" => SudokuMultiplex::Off,
-        "auto" => SudokuMultiplex::Auto,
-        "on" => {
-            return Err(entry.unsupported(
-                "option 'multiplex' value 'on' is not implemented: the Sudoku session mux (KIPTypeStartMux, stream ids, credit windows) is not ported; one target per connection is",
-            ))
-        }
-        other => {
-            return Err(entry.invalid(format!(
-                "option 'multiplex' value '{other}' must be one of: off, auto, on"
-            )))
-        }
-    };
-    if let Some(root) = path_root.as_deref() {
-        if crate::outbound::sudoku::codec::normalized_path_root(root).is_none() {
-            return Err(entry.invalid(
-                "option 'path-root' must be a single path segment of [A-Za-z0-9_-]",
-            ));
-        }
-    }
-    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
-    let allowed = [
-        "name",
-        "type",
-        "server",
-        "port",
-        "key",
-        "aead-method",
-        "padding-min",
-        "padding-max",
-        "table-type",
-        "enable-pure-downlink",
-        "http-mask",
-        "http-mask-mode",
-        "http-mask-tls",
-        "http-mask-host",
-        "path-root",
-        "multiplex",
-        "http-mask-multiplex",
-        "httpmask",
-        "custom-table",
-        "custom-tables",
-        "udp",
-        "dialer-proxy",
-        "ip-version",
-    ];
-    entry.reject_unknown(&allowed, false, None)?;
-    Ok(SudokuOutbound {
-        server,
-        port,
-        key,
-        aead_method,
-        padding_min,
-        padding_max,
-        table_type,
-        custom_table,
-        custom_tables,
-        enable_pure_downlink,
-        http_mask,
-        path_root,
-        multiplex,
-        dialer_proxy,
-    })
-}
-
-/// `ResolvePadding`: each bound defaults independently, and a single bound
-/// that would make the range invalid pulls the other one along.
-fn sudoku_padding(entry: &mut Entry<'_>) -> Result<(u8, u8), ConfigError> {
-    let min = entry.int("padding-min")?;
-    let max = entry.int("padding-max")?;
-    let range = |value: Option<i64>, name: &str| -> Result<Option<u8>, ConfigError> {
-        match value {
-            Some(value) if !(0..=100).contains(&value) => Err(entry.invalid(format!(
-                "option '{name}' must be between 0 and 100"
-            ))),
-            Some(value) => Ok(Some(value as u8)),
-            None => Ok(None),
-        }
-    };
-    let min = range(min, "padding-min")?;
-    let max = range(max, "padding-max")?;
-    let (mut low, mut high) = (min.unwrap_or(10), max.unwrap_or(30));
-    if min.is_none() && max.is_some() && high < low {
-        low = high;
-    }
-    if max.is_none() && min.is_some() && high < low {
-        high = low;
-    }
-    if high < low {
-        return Err(entry.invalid("option 'padding-max' must be >= 'padding-min'"));
-    }
-    Ok((low, high))
 }
 
 /// TrustTunnel (`adapter/outbound/trusttunnel.go`): TLS + HTTP/2 CONNECT with
@@ -4340,7 +4098,6 @@ pub fn supported_protocol_names() -> &'static [&'static str] {
         "hysteria",
         "hysteria2",
         "mieru",
-        "sudoku",
         "masque",
         "shadowquic",
     ]

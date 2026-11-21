@@ -131,10 +131,19 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   license for `jls-tls` is in `native-kernel/THIRD_PARTY_NOTICES.md`; the
   ShadowQUIC transport provenance, black-box observation matrix and no-copy
   audit (with its residual caveat) are in `evidence/t15-cleanroom.md`. The
-  option matrix now has 224 no-op / 253 enabled cases with 0 problems,
-  including the shadowquic `zero-rtt`/`quic-versions: v2`/Brutal/BasicOption
-  rejections. `t10-feasibility.json` records shadowquic as implemented by T15;
-  the remaining follow-up owners are the device families.
+  option matrix has 213 no-op / 239 enabled cases with 0 problems, including
+  the shadowquic `zero-rtt`/`quic-versions: v2`/Brutal/BasicOption rejections.
+  `t10-feasibility.json` records shadowquic as implemented by T15; the
+  remaining follow-up owners are the device families.
+
+  T13 kept the clean-room `mieru` client and removed its earlier `sudoku` port:
+  the port was a GPL-3.0 derivative of the pinned `transport/sudoku` (the
+  locked tree's LICENSE is GPL-3.0), so the type is rejected by name again and
+  a clean-room rewrite is T17. No sudoku code, test, fixture, peer, option row
+  or capability claim remains; `evidence/t13-a3-sudoku-removal.md` records the
+  deletion inventory, the grep audit and the license reasoning. The mieru
+  option rows stay (5 no-op / 8 enabled) and its five pinned-Mihomo peer cases
+  are part of `peer-tests.sh` (50 cases).
 
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo

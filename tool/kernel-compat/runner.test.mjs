@@ -154,17 +154,19 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   // by name, so masque is partial, never implemented.
   assert.equal(mapping.proxies.masque?.status, 'partial')
   assert.match(mapping.proxies.masque?.reason ?? '', /CONNECT-IP/)
-  // T13 delivered the TCP slice of both families; the rejected pieces are
-  // named in their `reason`/`notImplemented` lists, so neither is claimed in
-  // full.
-  for (const type of ['mieru', 'sudoku']) {
+  // T13 delivered the clean-room mieru TCP slice; its rejected pieces are named
+  // in `reason`/`notImplemented`. `sudoku` was removed in T13-A3 (the earlier
+  // port was GPL-derived) and must stay unclaimed until the clean-room rewrite
+  // (T17).
+  for (const type of ['mieru']) {
     assert.equal(mapping.proxies[type]?.status, 'partial', `${type} is implemented for TCP with its gaps named`)
     assert.match(mapping.proxies[type]?.reason ?? '', /rejected at load/, `${type} names the rejected pieces`)
   }
+  assert.equal(mapping.proxies.sudoku?.status, 'unimplemented', 'sudoku is rejected until the clean-room rewrite (T17)')
   // T15 delivered shadowquic as a partial family (TCP/UDP + JLS, named
   // zero-rtt/QUIC-v2/Brutal rejections); it must not be claimed as fully
   // implemented. masque is partial and the device families are unimplemented.
-  for (const type of ['masque', 'shadowquic', 'wireguard', 'tailscale', 'zerotier', 'easytier', 'openvpn']) {
+  for (const type of ['sudoku', 'masque', 'shadowquic', 'wireguard', 'tailscale', 'zerotier', 'easytier', 'openvpn']) {
     assert.notEqual(mapping.proxies[type]?.status, 'implemented', `${type} must not be claimed`)
   }
   assert.ok(mapping.platform.verified.length > 0)

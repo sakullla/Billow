@@ -177,23 +177,6 @@ pub(crate) fn md5(input: &[u8]) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn sudoku_seed_canonicalises_key_material_like_the_pinned_helper() {
-        // Printed by `tool/kernel-compat/peers/sudoku-vectors -op keypair`
-        // (the pinned `sudoku.GenKeyPair` / `ClientAEADSeed`).
-        let private =
-            "b8b31447340b4075285104902992bee510a56b81d87db697e52fd3184d9f440cae6e44c1c6d9bf4d20a5ed01089f5ec3e3b09a1137fa357a3847cbd7aa6f5e0d";
-        let public = "32b3e97af0b5d5a31a3b9adc1872ea4944ffe259ec3982d37c535511fdb5f5e2";
-        assert_eq!(sudoku_seed(private).unwrap(), public);
-        assert_eq!(sudoku_seed(public).unwrap(), public);
-        // A non-hex PSK is used verbatim, and so is a hex string that is not
-        // key material (the pinned helper keeps the text in both cases).
-        assert_eq!(sudoku_seed("plain-psk").unwrap(), "plain-psk");
-        assert_eq!(sudoku_seed("00").unwrap(), "00");
-        assert_eq!(sudoku_seed("zz").unwrap(), "zz");
-        assert_eq!(sudoku_seed("  padded-key  ").unwrap(), "padded-key");
-    }
-
     use super::*;
 
     #[test]
@@ -305,80 +288,4 @@ mod tests {
         assert_eq!(dashed, plain);
         assert!(parse_uuid("xyz").is_err());
     }
-}
-
-/// Sudoku's canonical AEAD seed (`ClientAEADSeed`/`ServerAEADSeed` of the
-/// pinned source): a hex key is interpreted as key material and replaced by
-/// the compressed public point it carries or derives, anything else is used
-/// verbatim. Both sides must agree on this string because the table and the
-/// KIP/HKDF keys are derived from it.
-pub fn sudoku_seed(key: &str) -> Result<String, String> {
-    use curve25519_dalek::edwards::CompressedEdwardsY;
-    use curve25519_dalek::scalar::Scalar;
-
-    let key = key.trim();
-    if key.is_empty() {
-        return Ok(String::new());
-    }
-    let bytes = match decode_hex(key) {
-        Some(bytes) => bytes,
-        None => return Ok(key.to_string()),
-    };
-    let encode = |point: &curve25519_dalek::edwards::EdwardsPoint| hex_encode(&point.compress().to_bytes());
-    if bytes.len() == 32 {
-        // A compressed point and a scalar share the length; the pinned helper
-        // keeps a valid point verbatim and only then treats the bytes as a
-        // private scalar.
-        if let Some(point) = CompressedEdwardsY(
-            bytes.as_slice().try_into().map_err(|_| "32 bytes")?,
-        )
-        .decompress()
-        {
-            return Ok(encode(&point));
-        }
-    }
-    let scalar = |slice: &[u8]| -> Option<Scalar> {
-        let array: [u8; 32] = slice.try_into().ok()?;
-        Option::<Scalar>::from(Scalar::from_canonical_bytes(array))
-    };
-    let public = match bytes.len() {
-        32 => scalar(&bytes).map(|x| curve25519_dalek::edwards::EdwardsPoint::mul_base(&x)),
-        64 => {
-            let (r, k) = bytes.split_at(32);
-            match (scalar(r), scalar(k)) {
-                (Some(r), Some(k)) => Some(curve25519_dalek::edwards::EdwardsPoint::mul_base(
-                    &(r + k),
-                )),
-                _ => None,
-            }
-        }
-        _ => None,
-    };
-    match public {
-        Some(point) => Ok(encode(&point)),
-        None => Ok(key.to_string()),
-    }
-}
-
-fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(text.len() / 2);
-    for pair in text.as_bytes().chunks_exact(2) {
-        let high = (pair[0] as char).to_digit(16)?;
-        let low = (pair[1] as char).to_digit(16)?;
-        out.push((high * 16 + low) as u8);
-    }
-    Some(out)
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(DIGITS[(byte >> 4) as usize] as char);
-        out.push(DIGITS[(byte & 0x0f) as usize] as char);
-    }
-    out
 }

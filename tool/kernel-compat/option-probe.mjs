@@ -74,7 +74,6 @@ const bases = {
     off: 'server: 127.0.0.1, port: 1, transport: TCP, username: u, password: p',
     on: null,
   },
-  sudoku: { off: 'server: 127.0.0.1, port: 1, key: k', on: null },
   shadowquic: {
     off: 'server: 127.0.0.1, port: 1, username: alice, password: p',
     on: null,
@@ -253,9 +252,10 @@ const t10Enabled = [
   ['hysteria2', 'interface-name', 'interface-name: eth0'],
   ['hysteria2', 'routing-mark', 'routing-mark: 100'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].on, option }))
-// T13 families: explicit forms, because some rejected values are not booleans
-// (`multiplexing: MULTIPLEXING_LOW`, `http-mask-mode: stream`, `multiplex: on`)
-// and the generic `{enabled: true}` shape would be a YAML type error.
+// T13 family: explicit forms, because some rejected values are not booleans
+// (`multiplexing: MULTIPLEXING_LOW`) and the generic `{enabled: true}` shape
+// would be a YAML type error. `sudoku` is rejected as a whole type, so it has
+// no per-option rows.
 const t13Enabled = [
   ['mieru', 'udp', 'udp: true'],
   ['mieru', 'multiplexing', 'multiplexing: MULTIPLEXING_LOW'],
@@ -265,14 +265,6 @@ const t13Enabled = [
   ['mieru', 'interface-name', 'interface-name: eth0'],
   ['mieru', 'routing-mark', 'routing-mark: 100'],
   ['mieru', 'ip-version', 'ip-version: ipv4'],
-  ['sudoku', 'udp', 'udp: true'],
-  ['sudoku', 'http-mask-mode', 'http-mask-mode: stream'],
-  ['sudoku', 'multiplex', 'multiplex: on'],
-  ['sudoku', 'tfo', 'tfo: true'],
-  ['sudoku', 'mptcp', 'mptcp: true'],
-  ['sudoku', 'interface-name', 'interface-name: eth0'],
-  ['sudoku', 'routing-mark', 'routing-mark: 100'],
-  ['sudoku', 'ip-version', 'ip-version: ipv4'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
 // T15 shadowquic: explicit enabled forms (a list for `quic-versions` and rate
 // strings for `up`/`down`).
@@ -413,8 +405,8 @@ add('hysteria2', 'cwnd', '0')
 add('hysteria2', 'bbr-profile', "''")
 add('hysteria2', 'realm-opts', '{enable: false}')
 
-// T13 families: no-op forms accepted by both engines.
-for (const type of ['mieru', 'sudoku']) {
+// T13 family: no-op forms accepted by both engines.
+for (const type of ['mieru']) {
   add(type, 'udp', 'false')
   add(type, 'tfo', 'false')
   add(type, 'mptcp', 'false')
@@ -425,11 +417,6 @@ for (const type of ['mieru', 'sudoku']) {
 add('mieru', 'multiplexing', 'MULTIPLEXING_OFF')
 add('mieru', 'handshake-mode', 'HANDSHAKE_STANDARD')
 add('mieru', 'handshake-mode', 'HANDSHAKE_NO_WAIT')
-add('sudoku', 'multiplex', 'off')
-add('sudoku', 'http-mask-mode', 'legacy')
-add('sudoku', 'httpmask', '{disable: false}')
-add('sudoku', 'enable-pure-downlink', 'true')
-add('sudoku', 'http-mask', 'true')
 
 // T15 shadowquic: no-op forms accepted by both engines.
 for (const type of ['shadowquic']) {

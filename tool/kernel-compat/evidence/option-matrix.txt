@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 224, enabled cases: 253, problems: 0
+# no-op cases: 213, enabled cases: 239, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 # skipped: masque (- the pinned base requires private-key/public-key (Cloudflare WARP CONNECT-IP registration) that this kernel rejects; the RFC 9298 CONNECT-UDP subset is verified in tests/quic_peers.rs and the boundary is in evidence/t14-feasibility.json)
 
@@ -195,20 +195,9 @@ noop    mieru   mptcp                        rust=accept mihomo=accept
 noop    mieru   interface-name               rust=accept mihomo=accept
 noop    mieru   routing-mark                 rust=accept mihomo=accept
 noop    mieru   ip-version                   rust=accept mihomo=accept
-noop    sudoku  udp                          rust=accept mihomo=accept
-noop    sudoku  tfo                          rust=accept mihomo=accept
-noop    sudoku  mptcp                        rust=accept mihomo=accept
-noop    sudoku  interface-name               rust=accept mihomo=accept
-noop    sudoku  routing-mark                 rust=accept mihomo=accept
-noop    sudoku  ip-version                   rust=accept mihomo=accept
 noop    mieru   multiplexing                 rust=accept mihomo=accept
 noop    mieru   handshake-mode               rust=accept mihomo=accept
 noop    mieru   handshake-mode               rust=accept mihomo=accept
-noop    sudoku  multiplex                    rust=accept mihomo=accept
-noop    sudoku  http-mask-mode               rust=accept mihomo=accept
-noop    sudoku  httpmask                     rust=accept mihomo=accept
-noop    sudoku  enable-pure-downlink         rust=accept mihomo=accept
-noop    sudoku  http-mask                    rust=accept mihomo=accept
 noop    shadowquic tfo                          rust=accept mihomo=accept
 noop    shadowquic mptcp                        rust=accept mihomo=accept
 noop    shadowquic interface-name               rust=accept mihomo=accept
@@ -382,12 +371,6 @@ enabled mieru   mptcp                        rust=reject mihomo=accept
 enabled mieru   interface-name               rust=reject mihomo=accept
 enabled mieru   routing-mark                 rust=reject mihomo=accept
 enabled mieru   ip-version                   rust=reject mihomo=accept
-enabled sudoku  udp                          rust=reject mihomo=accept
-enabled sudoku  tfo                          rust=reject mihomo=accept
-enabled sudoku  mptcp                        rust=reject mihomo=accept
-enabled sudoku  interface-name               rust=reject mihomo=accept
-enabled sudoku  routing-mark                 rust=reject mihomo=accept
-enabled sudoku  ip-version                   rust=reject mihomo=accept
 enabled tuic    token                        rust=reject mihomo=accept
 enabled tuic    udp-relay-mode               rust=reject mihomo=accept
 enabled tuic    reduce-rtt                   rust=reject mihomo=accept
@@ -462,14 +445,6 @@ enabled mieru   mptcp                        rust=reject mihomo=accept
 enabled mieru   interface-name               rust=reject mihomo=accept
 enabled mieru   routing-mark                 rust=reject mihomo=accept
 enabled mieru   ip-version                   rust=reject mihomo=accept
-enabled sudoku  udp                          rust=reject mihomo=accept
-enabled sudoku  http-mask-mode               rust=reject mihomo=accept
-enabled sudoku  multiplex                    rust=reject mihomo=accept
-enabled sudoku  tfo                          rust=reject mihomo=accept
-enabled sudoku  mptcp                        rust=reject mihomo=accept
-enabled sudoku  interface-name               rust=reject mihomo=accept
-enabled sudoku  routing-mark                 rust=reject mihomo=accept
-enabled sudoku  ip-version                   rust=reject mihomo=accept
 enabled shadowquic zero-rtt                     rust=reject mihomo=accept
 enabled shadowquic quic-versions                rust=reject mihomo=accept
 enabled shadowquic congestion-controller        rust=reject mihomo=accept

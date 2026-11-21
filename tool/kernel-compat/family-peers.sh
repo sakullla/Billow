@@ -108,22 +108,6 @@ KC_GOST_HARNESS_BIN="$gost_bin" cargo test \
     --manifest-path "$root/native-kernel/Cargo.toml" --locked \
     --test protocols -- --ignored --test-threads=1 gost_relay_pinned_dialer
 
-echo "== pinned Sudoku table/codec vectors (Go, locked transport/sudoku) =="
-vectors=$(cd "$root/tool/kernel-compat/peers/sudoku-vectors" && GOFLAGS=-mod=mod go run . \
-    -op vectors -key test-key-123 -mode prefer_entropy -plaintext 000102030405ff)
-printf '%s\n' "$vectors" | grep -q '"hint": 3489163188' || {
-    echo "Sudoku table hint mismatch" >&2
-    exit 1
-}
-printf '%s\n' "$vectors" | grep -q '"paddingPool": "80108111821283138414851586168717"' || {
-    echo "Sudoku padding pool mismatch" >&2
-    exit 1
-}
-echo "pinned Sudoku table hint and padding pool match"
-cargo test \
-    --manifest-path "$root/native-kernel/Cargo.toml" --locked \
-    --test protocols -- --ignored --test-threads=1 sudoku_codec_matches_the_pinned_implementation
-
 echo "== controlled Rust peers (gost-relay incl. udp/mux, ssh, ssr origin/plain) =="
 if [ -n "$filter" ]; then
     KC_GOST_HARNESS_BIN="$gost_bin" cargo test \
