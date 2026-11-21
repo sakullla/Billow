@@ -111,9 +111,10 @@ impl std::fmt::Debug for Secret {
     }
 }
 
-// Small MD5 so the workspace does not need another dependency; only the
-// ECB-BytesToKey step of SIP004 uses it.
-fn md5(input: &[u8]) -> [u8; 16] {
+// Small MD5 so the workspace does not need another dependency. It backs
+// `EVP_BytesToKey` (SIP004), the VMess user-id derivation and the VMess
+// chacha20-poly1305 key schedule.
+pub(crate) fn md5(input: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
         7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
         9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,

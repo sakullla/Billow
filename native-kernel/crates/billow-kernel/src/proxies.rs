@@ -168,6 +168,112 @@ pub struct AnytlsOutbound {
     pub dialer_proxy: Option<String>,
 }
 
+/// VMess body cipher (`cipher:` in the pinned `VmessOption`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmessCipher {
+    /// `auto`: chacha20-poly1305, or aes-128-gcm on the 64-bit targets Mihomo
+    /// selects it for (amd64, arm64, s390x). Both are implemented, so the
+    /// resolved value is stored explicitly instead of re-deciding at dial time.
+    Aes128Gcm,
+    Chacha20Poly1305,
+    None,
+}
+
+impl VmessCipher {
+    /// Resolve the configured value the way `transport/vmess.NewClient` does.
+    pub fn resolve(name: &str) -> Option<Self> {
+        match name {
+            "aes-128-gcm" => Some(VmessCipher::Aes128Gcm),
+            "chacha20-poly1305" => Some(VmessCipher::Chacha20Poly1305),
+            "none" => Some(VmessCipher::None),
+            "auto" => Some(if cfg!(any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "s390x"
+            )) {
+                VmessCipher::Aes128Gcm
+            } else {
+                VmessCipher::Chacha20Poly1305
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VmessCipher::Aes128Gcm => "aes-128-gcm",
+            VmessCipher::Chacha20Poly1305 => "chacha20-poly1305",
+            VmessCipher::None => "none",
+        }
+    }
+
+    /// AEAD tag length of one body record.
+    pub fn overhead(self) -> usize {
+        match self {
+            VmessCipher::None => 0,
+            _ => 16,
+        }
+    }
+}
+
+/// VMess transport (`network:`). Only the byte-stream transports are
+/// implemented: `tcp` (optionally over TLS) and `ws` (over TLS, as the pinned
+/// VMess listener serves it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VmessNetwork {
+    Tcp,
+    Ws(WsSettings),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmessOutbound {
+    pub server: String,
+    pub port: u16,
+    pub uuid: [u8; 16],
+    /// `alterId`: the AEAD header this kernel speaks is the `alterId: 0`
+    /// protocol; a non-zero value selects the legacy MD5 header and is
+    /// rejected at load time.
+    pub alter_id: u16,
+    pub cipher: VmessCipher,
+    pub tls: bool,
+    pub tls_settings: TlsSettings,
+    pub network: VmessNetwork,
+    pub dialer_proxy: Option<String>,
+}
+
+/// TrustTunnel (`transport/trusttunnel`): TLS + HTTP/2 `CONNECT` with Basic
+/// proxy authentication. Only the TCP transport is implemented; UDP (`_udp2`),
+/// ICMP (`_icmp`) and the QUIC variant are rejected at load time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustTunnelOutbound {
+    pub server: String,
+    pub port: u16,
+    pub username: Secret,
+    pub password: Secret,
+    pub tls_settings: TlsSettings,
+    pub dialer_proxy: Option<String>,
+}
+
+/// Snell (`transport/snell`). Versions 1-3 share one request header and an
+/// Argon2id-derived AEAD record layer; v4+ change the record layer and are
+/// rejected explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnellOutbound {
+    pub server: String,
+    pub port: u16,
+    pub psk: Secret,
+    pub version: u8,
+    pub obfs: Option<SnellObfs>,
+    pub dialer_proxy: Option<String>,
+}
+
+/// Snell v2+ HTTP obfuscation (`obfs-opts: {mode: http, host: ...}`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnellObfs {
+    pub host: String,
+}
+
+
 /// One enabled proxy entry. `DIRECT` and `REJECT` are built in and cannot be
 /// redefined (Mihomo rejects the duplicate name).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +290,9 @@ pub enum Protocol {
     Trojan(TrojanOutbound),
     Vless(VlessOutbound),
     Anytls(AnytlsOutbound),
+    Vmess(VmessOutbound),
+    Snell(SnellOutbound),
+    TrustTunnel(TrustTunnelOutbound),
 }
 
 impl Protocol {
@@ -195,6 +304,9 @@ impl Protocol {
             Protocol::Trojan(p) => p.dialer_proxy.as_deref(),
             Protocol::Vless(p) => p.dialer_proxy.as_deref(),
             Protocol::Anytls(p) => p.dialer_proxy.as_deref(),
+            Protocol::Vmess(p) => p.dialer_proxy.as_deref(),
+            Protocol::Snell(p) => p.dialer_proxy.as_deref(),
+            Protocol::TrustTunnel(p) => p.dialer_proxy.as_deref(),
         }
     }
 }
@@ -208,6 +320,9 @@ impl Proxy {
             Protocol::Trojan(_) => "trojan",
             Protocol::Vless(_) => "vless",
             Protocol::Anytls(_) => "anytls",
+            Protocol::Vmess(_) => "vmess",
+            Protocol::Snell(_) => "snell",
+            Protocol::TrustTunnel(_) => "trusttunnel",
         }
     }
 
@@ -219,6 +334,9 @@ impl Proxy {
             Protocol::Trojan(p) => (&p.server, p.port),
             Protocol::Vless(p) => (&p.server, p.port),
             Protocol::Anytls(p) => (&p.server, p.port),
+            Protocol::Vmess(p) => (&p.server, p.port),
+            Protocol::Snell(p) => (&p.server, p.port),
+            Protocol::TrustTunnel(p) => (&p.server, p.port),
         }
     }
 
@@ -526,6 +644,82 @@ impl<'a> Entry<'a> {
             other => Err(self.invalid(format!(
                 "option '{key}' must be a boolean, found {}",
                 crate::config::kind_name(other)
+            ))),
+        }
+    }
+
+    fn int(&mut self, key: &str) -> Result<Option<i64>, ConfigError> {
+        let Some(value) = self.get(key) else {
+            return Ok(None);
+        };
+        match value {
+            serde_yaml::Value::Number(n) => n
+                .as_i64()
+                .map(Some)
+                .ok_or_else(|| self.invalid(format!("option '{key}' must be an integer"))),
+            serde_yaml::Value::String(s) => s.parse::<i64>().map(Some).map_err(|_| {
+                self.invalid(format!("option '{key}' must be an integer, found '{s}'"))
+            }),
+            serde_yaml::Value::Null => Ok(None),
+            other => Err(self.invalid(format!(
+                "option '{key}' must be an integer, found {}",
+                crate::config::kind_name(other)
+            ))),
+        }
+    }
+
+    /// Snell `obfs-opts`: `{mode: http|tls, host: <name>}`. Only the HTTP
+    /// simple-obfs layer is implemented; `tls` (the fake TLS handshake) is
+    /// rejected by name.
+    fn snell_obfs(&mut self) -> Result<Option<SnellObfs>, ConfigError> {
+        let Some(value) = self.get("obfs-opts") else {
+            return Ok(None);
+        };
+        let Some(map) = value.as_mapping() else {
+            if value.is_null() {
+                return Ok(None);
+            }
+            return Err(self.invalid("option 'obfs-opts' must be a mapping"));
+        };
+        let mut mode = String::new();
+        let mut host = "bing.com".to_string();
+        for (key, item) in map {
+            let key = key
+                .as_str()
+                .ok_or_else(|| self.invalid("obfs-opts keys must be strings"))?;
+            match key {
+                "mode" => match item {
+                    serde_yaml::Value::String(text) => mode = text.clone(),
+                    serde_yaml::Value::Null => {}
+                    other => {
+                        return Err(self.invalid(format!(
+                            "option 'obfs-opts.mode' must be a string, found {}",
+                            crate::config::kind_name(other)
+                        )))
+                    }
+                },
+                "host" => match item {
+                    serde_yaml::Value::String(text) => host = text.clone(),
+                    serde_yaml::Value::Null => {}
+                    other => {
+                        return Err(self.invalid(format!(
+                            "option 'obfs-opts.host' must be a string, found {}",
+                            crate::config::kind_name(other)
+                        )))
+                    }
+                },
+                other => {
+                    return Err(
+                        self.unsupported(format!("option 'obfs-opts.{other}' is not implemented"))
+                    )
+                }
+            }
+        }
+        match mode.as_str() {
+            "" => Ok(None),
+            "http" => Ok(Some(SnellObfs { host })),
+            other => Err(self.unsupported(format!(
+                "option 'obfs-opts.mode' value '{other}' is not implemented (http)"
             ))),
         }
     }
@@ -862,9 +1056,12 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "trojan" => Protocol::Trojan(parse_trojan(&mut entry)?),
         "vless" => Protocol::Vless(parse_vless(&mut entry)?),
         "anytls" => Protocol::Anytls(parse_anytls(&mut entry)?),
+        "vmess" => Protocol::Vmess(parse_vmess(&mut entry)?),
+        "snell" => Protocol::Snell(parse_snell(&mut entry)?),
+        "trusttunnel" => Protocol::TrustTunnel(parse_trusttunnel(&mut entry)?),
         other => {
             return Err(ConfigError::Unsupported(format!(
-                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls)",
+                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel)",
                 entry.prefix()
             )))
         }
@@ -1276,6 +1473,281 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     })
 }
 
+/// VMess (`adapter/outbound/vmess.go`, `transport/vmess`). Only the AEAD
+/// header (`alterId: 0`) and the `tcp`/`ws` byte-stream transports are
+/// implemented; every other option the pinned type declares is either a
+/// transport this kernel rejects by name or a UDP/mux feature that has no
+/// implementation here yet.
+fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let uuid_raw = entry.required_string("uuid")?;
+    let uuid = parse_uuid(&uuid_raw).map_err(|e| entry.invalid(format!("option 'uuid': {e}")))?;
+    // Mihomo's decoder reports `alterId` and `cipher` as unset fields when they
+    // are absent, so a VMess entry without them is invalid there too.
+    let alter_id = entry
+        .int("alterId")?
+        .ok_or_else(|| entry.invalid("missing required option 'alterId' (Mihomo requires it)"))?;
+    if alter_id != 0 {
+        return Err(entry.unsupported(format!(
+            "option 'alterId' value {alter_id} is not implemented (only the AEAD header, alterId 0)"
+        )));
+    }
+    let cipher_name = entry.string("cipher")?.ok_or_else(|| {
+        entry.invalid("missing required option 'cipher' (Mihomo requires it; use 'auto')")
+    })?;
+    let cipher = VmessCipher::resolve(&cipher_name).ok_or_else(|| {
+        entry.unsupported(format!(
+            "option 'cipher' value '{cipher_name}' is not implemented (auto, aes-128-gcm, chacha20-poly1305, none)"
+        ))
+    })?;
+    let tls = entry.bool("tls")?.unwrap_or(false);
+    let mut tls_settings = entry.tls_settings(true, true)?;
+    // `servername` is the pinned type's alias for the TLS name.
+    if tls_settings.sni.is_none() {
+        tls_settings.sni = entry.string("servername")?.filter(|value| !value.is_empty());
+    }
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    let network_name = entry
+        .string("network")?
+        .unwrap_or_else(|| "tcp".to_string());
+    let ws = entry.ws_settings()?;
+    let selected = network_name.clone();
+    let network = match network_name.as_str() {
+        "tcp" => VmessNetwork::Tcp,
+        "ws" => VmessNetwork::Ws(ws),
+        other => {
+            return Err(entry.unsupported(format!(
+                "option 'network' value '{other}' is not implemented (tcp, ws)"
+            )))
+        }
+    };
+    if matches!(network, VmessNetwork::Ws(_)) && !tls {
+        return Err(entry.unsupported(
+            "option 'network: ws' requires 'tls: true' (the VMess WebSocket listener is TLS-only here)",
+        ));
+    }
+    if entry.bool("udp")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'udp' is not implemented for vmess (no VMess UDP command)",
+        ));
+    }
+    for key in [
+        "packet-addr",
+        "xudp",
+        "global-padding",
+        "authenticated-length",
+    ] {
+        if entry.bool(key)?.unwrap_or(false) {
+            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+        }
+    }
+    if entry
+        .string("packet-encoding")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported("option 'packet-encoding' is not implemented"));
+    }
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "uuid",
+        "alterId",
+        "cipher",
+        "udp",
+        "network",
+        "tls",
+        "alpn",
+        "sni",
+        "servername",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "ech-opts",
+        "shadow-tls-opts",
+        "restls-opts",
+        "jls-opts",
+        "reality-opts",
+        "tlsmirror-opts",
+        "mekya-opts",
+        "mkcp-opts",
+        "http-opts",
+        "h2-opts",
+        "grpc-opts",
+        "ws-opts",
+        "packet-addr",
+        "xudp",
+        "packet-encoding",
+        "global-padding",
+        "authenticated-length",
+        "client-fingerprint",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, tls, Some(selected.as_str()))?;
+    Ok(VmessOutbound {
+        server,
+        port,
+        uuid,
+        alter_id: alter_id as u16,
+        cipher,
+        tls,
+        tls_settings,
+        network,
+        dialer_proxy,
+    })
+}
+
+/// Snell (`transport/snell`): versions 1-3 over a raw TCP stream. `version`
+/// defaults to 1 (Mihomo's outbound default); 4-6 change the record layer and
+/// are rejected by name.
+fn parse_snell(entry: &mut Entry<'_>) -> Result<SnellOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let psk = Secret::new(entry.required_string("psk")?);
+    let version = entry.int("version")?.unwrap_or(1);
+    if !(1..=3).contains(&version) {
+        return Err(entry.unsupported(format!(
+            "option 'version' value {version} is not implemented (snell v1, v2, v3)"
+        )));
+    }
+    if entry.bool("reuse")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'reuse' is not implemented (one stream per connection)",
+        ));
+    }
+    if let Some(mode) = entry.string("mode")?.filter(|value| !value.is_empty()) {
+        return Err(entry.unsupported(format!(
+            "option 'mode' value '{mode}' is not implemented (v6 record layer)"
+        )));
+    }
+    let obfs = entry.snell_obfs()?;
+    if obfs.is_some() && version < 2 {
+        return Err(entry.invalid("option 'obfs-opts' requires version 2 or newer"));
+    }
+    if entry.bool("udp")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'udp' is not implemented for snell (no UDP command)",
+        ));
+    }
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "psk",
+        "udp",
+        "version",
+        "reuse",
+        "mode",
+        "obfs-opts",
+        "client-fingerprint",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, false, None)?;
+    Ok(SnellOutbound {
+        server,
+        port,
+        psk,
+        version: version as u8,
+        obfs,
+        dialer_proxy,
+    })
+}
+
+/// TrustTunnel (`adapter/outbound/trusttunnel.go`): TLS + HTTP/2 CONNECT with
+/// `username`/`password` Basic auth. The UDP (`_udp2`), ICMP (`_icmp`), QUIC
+/// and pooled-multiplexing options are rejected by name.
+fn parse_trusttunnel(entry: &mut Entry<'_>) -> Result<TrustTunnelOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let username = Secret::new(entry.string("username")?.unwrap_or_default());
+    let password = Secret::new(entry.string("password")?.unwrap_or_default());
+    let tls_settings = entry.tls_settings(true, true)?;
+    if !tls_settings.alpn.is_empty()
+        && !tls_settings.alpn.iter().any(|value| value == "h2")
+    {
+        return Err(entry.unsupported(
+            "option 'alpn' without 'h2' is not implemented (TrustTunnel requires the h2 protocol)",
+        ));
+    }
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    if entry.bool("udp")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'udp' is not implemented for trusttunnel (the `_udp2` multiplex is not implemented)",
+        ));
+    }
+    for key in ["quic", "health-check"] {
+        if entry.bool(key)?.unwrap_or(false) {
+            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+        }
+    }
+    for key in ["max-connections", "min-streams", "max-streams"] {
+        if entry.int(key)?.unwrap_or(0) != 0 {
+            return Err(entry.unsupported(format!(
+                "option '{key}' is not implemented (one stream per connection)"
+            )));
+        }
+    }
+    for key in ["congestion-controller", "bbr-profile"] {
+        if entry
+            .string(key)?
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(entry.unsupported(format!(
+                "option '{key}' is not implemented (QUIC only)"
+            )));
+        }
+    }
+    if entry.int("cwnd")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported("option 'cwnd' is not implemented (QUIC only)"));
+    }
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "username",
+        "password",
+        "alpn",
+        "sni",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "ech-opts",
+        "client-fingerprint",
+        "udp",
+        "health-check",
+        "quic",
+        "congestion-controller",
+        "cwnd",
+        "bbr-profile",
+        "max-connections",
+        "min-streams",
+        "max-streams",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, true, None)?;
+    Ok(TrustTunnelOutbound {
+        server,
+        port,
+        username,
+        password,
+        tls_settings,
+        dialer_proxy,
+    })
+}
+
 fn display(raw: &str) -> String {
     if raw.is_empty() {
         "-".to_string()
@@ -1286,7 +1758,9 @@ fn display(raw: &str) -> String {
 
 /// Names of supported protocols, for diagnostics.
 pub fn supported_protocol_names() -> &'static [&'static str] {
-    &["socks5", "http", "ss", "trojan", "vless", "anytls"]
+    &[
+        "socks5", "http", "ss", "trojan", "vless", "anytls", "vmess", "snell", "trusttunnel",
+    ]
 }
 
 /// Options the pinned `BasicOption` declares for every outbound and this

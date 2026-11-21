@@ -975,6 +975,9 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
         crate::proxies::Protocol::Trojan(_) => "trojan (udp: false)",
         crate::proxies::Protocol::Vless(_) => "vless",
         crate::proxies::Protocol::Anytls(_) => "anytls",
+        crate::proxies::Protocol::Vmess(_) => "vmess (udp: false)",
+        crate::proxies::Protocol::Snell(_) => "snell (udp: false)",
+        crate::proxies::Protocol::TrustTunnel(_) => "trusttunnel (udp: false)",
     }
 }
 

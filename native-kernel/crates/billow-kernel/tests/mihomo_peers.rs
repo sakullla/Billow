@@ -1368,3 +1368,304 @@ fn dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo() {
         assert!(sink.received().contains(marker), "the sink saw:\n{}", sink.received());
     });
 }
+
+// --- T9: VMess -----------------------------------------------------------
+
+/// `listeners:` line for a VMess listener with one AEAD user.
+fn vmess_listener(port: u16, uuid: &str, alter_id: u32) -> String {
+    listener(
+        "vmess",
+        port,
+        &format!(", users: [{{username: u, uuid: {uuid}, alterId: {alter_id}}}]"),
+    )
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_outbound_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = vmess_listener(port, UUID, 0);
+    with_peer("vmess", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: auto}}\n"
+        ));
+        let marker = "marker-vmess-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vmess", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_chacha20_poly1305_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = vmess_listener(port, UUID, 0);
+    with_peer("vmess-chacha20", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: chacha20-poly1305}}\n"
+        ));
+        let marker = "marker-vmess-chacha20-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vmess-chacha20", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_wrong_uuid_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = vmess_listener(port, UUID, 0);
+    with_peer("vmess-wrong-uuid", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: 00000000-0000-0000-0000-000000000000, alterId: 0, cipher: auto}}\n"
+        ));
+        let (status, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        // The kernel sends the header, then the server rejects the auth id and
+        // closes; the client sees the inbound failure reply.
+        assert!(status.contains("502") || status.contains("200"), "{status}");
+        expect_not_reached("vmess-wrong-uuid", sink);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_domain_target_is_resolved_by_the_mihomo_side() {
+    let port = free_port();
+    let listeners = vmess_listener(port, UUID, 0);
+    with_peer("vmess-domain", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: auto}}\n"
+        ));
+        let marker = "marker-vmess-domain-through-mihomo";
+        // `localhost` is sent as a domain address type, so the peer resolves it.
+        let status = connect_while(
+            running.proxy,
+            &format!("localhost:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vmess-domain", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+// --- T9: Snell -----------------------------------------------------------
+
+fn snell_listener(port: u16, version: u8, psk: &str, obfs: &str) -> String {
+    listener(
+        "snell",
+        port,
+        &format!(", psk: \"{psk}\", version: {version}{obfs}"),
+    )
+}
+
+const SNELL_PSK: &str = "vlmpIPSyHH6f4S8WVPdRIHIlzmB+GIRfoH3aNJ/t9Gg=";
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn snell_v1_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = snell_listener(port, 1, SNELL_PSK, "");
+    with_peer("snell-v1", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: snell, server: 127.0.0.1, port: {port}, psk: \"{SNELL_PSK}\", version: 1}}\n"
+        ));
+        let marker = "marker-snell-v1-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("snell-v1", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn snell_v2_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = snell_listener(port, 2, SNELL_PSK, "");
+    with_peer("snell-v2", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: snell, server: 127.0.0.1, port: {port}, psk: \"{SNELL_PSK}\", version: 2}}\n"
+        ));
+        let marker = "marker-snell-v2-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("snell-v2", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn snell_v3_with_http_obfs_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = snell_listener(port, 3, SNELL_PSK, ", obfs-opts: {mode: http, host: bing.com}");
+    with_peer("snell-v3-obfs", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: snell, server: 127.0.0.1, port: {port}, psk: \"{SNELL_PSK}\", version: 3, obfs-opts: {{mode: http, host: bing.com}}}}\n"
+        ));
+        let marker = "marker-snell-v3-obfs-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("snell-v3-obfs", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn snell_wrong_psk_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = snell_listener(port, 2, SNELL_PSK, "");
+    with_peer("snell-wrong-psk", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: snell, server: 127.0.0.1, port: {port}, psk: wrong-psk, version: 2}}\n"
+        ));
+        let (status, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        assert!(status.contains("502") || status.contains("200"), "{status}");
+        expect_not_reached("snell-wrong-psk", sink);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_over_websocket_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = listener(
+        "vmess",
+        port,
+        &format!(
+            ", users: [{{username: u, uuid: {UUID}, alterId: 0}}], ws-path: /vm, certificate: CERT, private-key: KEY"
+        ),
+    );
+    with_peer("vmess-ws", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: auto, tls: true, skip-cert-verify: true, network: ws, ws-opts: {{path: /vm}}}}\n"
+        ));
+        let marker = "marker-vmess-ws-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vmess-ws", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+// --- T9: TrustTunnel -----------------------------------------------------
+
+fn trusttunnel_listener(port: u16) -> String {
+    listener(
+        "trusttunnel",
+        port,
+        &format!(
+            ", users: [{{username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\"}}], certificate: CERT, private-key: KEY, network: [tcp]"
+        ),
+    )
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn trusttunnel_outbound_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = trusttunnel_listener(port);
+    with_peer("trusttunnel", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: trusttunnel, server: 127.0.0.1, port: {port}, username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\", skip-cert-verify: true}}\n"
+        ));
+        let marker = "marker-trusttunnel-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("trusttunnel", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn trusttunnel_wrong_password_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = trusttunnel_listener(port);
+    with_peer("trusttunnel-wrong-password", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: trusttunnel, server: 127.0.0.1, port: {port}, username: {SOCKS_USER}, password: wrong, skip-cert-verify: true}}\n"
+        ));
+        let (status, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        assert!(status.contains("502"), "{status}");
+        expect_not_reached("trusttunnel-wrong-password", sink);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_cipher_none_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = vmess_listener(port, UUID, 0);
+    with_peer("vmess-none", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: none}}\n"
+        ));
+        let marker = "marker-vmess-none-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vmess-none", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn trusttunnel_domain_target_is_resolved_by_the_mihomo_side() {
+    let port = free_port();
+    let listeners = trusttunnel_listener(port);
+    with_peer("trusttunnel-domain", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: trusttunnel, server: 127.0.0.1, port: {port}, username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\", skip-cert-verify: true}}\n"
+        ));
+        let marker = "marker-trusttunnel-domain-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("localhost:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("trusttunnel-domain", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}

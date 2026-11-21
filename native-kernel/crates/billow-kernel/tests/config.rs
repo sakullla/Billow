@@ -250,21 +250,28 @@ proxies:
   - {name: ss1, type: ss, server: 127.0.0.1, port: 8388, cipher: aes-128-gcm, password: pw, udp: true}
   - {name: tj, type: trojan, server: 127.0.0.1, port: 443, password: pw, sni: tj.example, skip-cert-verify: true}
   - {name: vl, type: vless, server: 127.0.0.1, port: 8443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true, network: ws, ws-opts: {path: /ws, headers: {Host: vl.example}}}
+  - {name: vm, type: vmess, server: 127.0.0.1, port: 443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto}
+  - {name: sn, type: snell, server: 127.0.0.1, port: 443, psk: p, version: 3}
+  - {name: tt, type: trusttunnel, server: 127.0.0.1, port: 443, username: u, password: p}
 rules:
   - DOMAIN,a.example,ss1
   - MATCH,h1
 "#;
     let loaded = load_config(yaml, "test.yaml").expect("accepted");
     let config = loaded.config;
-    assert_eq!(config.proxies.len(), 5);
+    assert_eq!(config.proxies.len(), 8);
     assert_eq!(config.proxies[0].type_name(), "socks5");
     assert_eq!(config.proxies[2].type_name(), "ss");
     assert!(config.proxies[2].udp_enabled());
+    assert_eq!(config.proxies[5].type_name(), "vmess");
+    assert_eq!(config.proxies[6].type_name(), "snell");
+    assert_eq!(config.proxies[7].type_name(), "trusttunnel");
+    assert!(!config.proxies[5].udp_enabled());
     assert_eq!(config.action_name(billow_kernel::Action::Proxy(2)), "ss1");
     assert_eq!(config.action_name(billow_kernel::Action::Proxy(1)), "h1");
     assert!(config
         .feature_summary()
-        .contains("protocols=s5=socks5,h1=http,ss1=ss,tj=trojan,vl=vless"));
+        .contains("protocols=s5=socks5,h1=http,ss1=ss,tj=trojan,vl=vless,vm=vmess,sn=snell,tt=trusttunnel"));
 }
 
 #[test]
@@ -727,6 +734,115 @@ fn anytls_options_are_strict() {
         ("udp", "true"),
     ] {
         let yaml = format!("proxies:\n  - {{name: at, type: anytls, server: x, port: 1, password: p, {field}: {value}}}\nrules: ['MATCH,at']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+    }
+}
+
+#[test]
+fn vmess_options_are_strict() {
+    let ok = "proxies:\n  - {name: vm, type: vmess, server: 127.0.0.1, port: 443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, tls: true, sni: vm.example, network: ws, ws-opts: {path: /vm}}\nrules: ['MATCH,vm']\n";
+    let loaded = load_config(ok, "t").expect("vmess accepted");
+    assert_eq!(loaded.config.proxies[0].type_name(), "vmess");
+    for (field, value) in [
+        ("alterId", "1"),
+        ("cipher", "rc4-md5"),
+        ("udp", "true"),
+        ("network", "grpc"),
+        ("packet-addr", "true"),
+        ("xudp", "true"),
+        ("global-padding", "true"),
+        ("authenticated-length", "true"),
+        ("packet-encoding", "xudp"),
+        ("reality-opts", "{public-key: key}"),
+    ] {
+        let base = if field == "alterId" {
+            format!("uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, cipher: auto, alterId: {value}")
+        } else if field == "cipher" {
+            format!("uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: {value}")
+        } else {
+            format!("uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, {field}: {value}")
+        };
+        let yaml = format!("proxies:\n  - {{name: vm, type: vmess, server: x, port: 1, {base}}}\nrules: ['MATCH,vm']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+    }
+    // A transport block for a network that is not selected is ignored by
+    // Mihomo, so it loads here too.
+    load_config(
+        "proxies:\n  - {name: vm, type: vmess, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, grpc-opts: {grpc-service-name: s}}\nrules: ['MATCH,vm']\n",
+        "t",
+    )
+    .expect("an unselected transport block is ignored");
+    // Mihomo's decoder requires both fields; the kernel does too.
+    for missing in [
+        "proxies:\n  - {name: vm, type: vmess, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, cipher: auto}\nrules: ['MATCH,vm']\n",
+        "proxies:\n  - {name: vm, type: vmess, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0}\nrules: ['MATCH,vm']\n",
+    ] {
+        let e = proxy_err(missing);
+        assert!(e.contains("missing required option"), "{e}");
+    }
+}
+
+#[test]
+fn snell_options_are_strict() {
+    for version in [1, 2, 3] {
+        let yaml = format!("proxies:\n  - {{name: sn, type: snell, server: 127.0.0.1, port: 443, psk: p, version: {version}}}\nrules: ['MATCH,sn']\n");
+        let loaded = load_config(&yaml, "t").expect("snell accepted");
+        assert_eq!(loaded.config.proxies[0].type_name(), "snell");
+    }
+    let obfs = "proxies:\n  - {name: sn, type: snell, server: 127.0.0.1, port: 443, psk: p, version: 3, obfs-opts: {mode: http, host: bing.com}}\nrules: ['MATCH,sn']\n";
+    load_config(obfs, "t").expect("snell http obfs accepted");
+    for (field, value) in [
+        ("version", "4"),
+        ("version", "6"),
+        ("reuse", "true"),
+        ("mode", "unshaped"),
+        ("udp", "true"),
+        ("obfs-opts", "{mode: tls}"),
+    ] {
+        let base = if field == "version" {
+            format!("psk: p, version: {value}")
+        } else {
+            format!("psk: p, version: 3, {field}: {value}")
+        };
+        let yaml = format!("proxies:\n  - {{name: sn, type: snell, server: x, port: 1, {base}}}\nrules: ['MATCH,sn']\n");
+        let e = proxy_err(&yaml);
+        if field == "obfs-opts" {
+            // The sub-option is named: `option 'obfs-opts.mode' value 'tls' ...`.
+            assert!(e.contains("option 'obfs-opts"), "{field}: {e}");
+        } else {
+            assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+        }
+    }
+    let e = proxy_err("proxies:\n  - {name: sn, type: snell, server: x, port: 1, version: 2}\nrules: ['MATCH,sn']\n");
+    assert!(e.contains("missing required option 'psk'"), "{e}");
+}
+
+#[test]
+fn trusttunnel_options_are_strict() {
+    let ok = "proxies:\n  - {name: tt, type: trusttunnel, server: 127.0.0.1, port: 443, username: u, password: p, sni: tt.example, skip-cert-verify: true, alpn: [h2]}\nrules: ['MATCH,tt']\n";
+    let loaded = load_config(ok, "t").expect("trusttunnel accepted");
+    assert_eq!(loaded.config.proxies[0].type_name(), "trusttunnel");
+    for (field, value) in [
+        ("udp", "true"),
+        ("quic", "true"),
+        ("health-check", "true"),
+        ("max-connections", "4"),
+        ("min-streams", "1"),
+        ("max-streams", "8"),
+        ("congestion-controller", "bbr"),
+        ("cwnd", "16"),
+        ("bbr-profile", "standard"),
+        ("client-fingerprint", "chrome"),
+        ("fingerprint", "sha256"),
+        ("certificate", "cert.pem"),
+        ("private-key", "key.pem"),
+        ("name-cert-verify", "example.org"),
+        ("ech-opts", "{enable: true, config: x}"),
+        ("alpn", "[h3]"),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: tt, type: trusttunnel, server: x, port: 1, {field}: {value}}}\nrules: ['MATCH,tt']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
     }

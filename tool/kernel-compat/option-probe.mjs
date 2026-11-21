@@ -39,6 +39,15 @@ const bases = {
     on: 'server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true',
   },
   anytls: { off: 'server: 127.0.0.1, port: 1, password: p', on: 'server: 127.0.0.1, port: 1, password: p' },
+  vmess: {
+    off: 'server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto',
+    on: 'server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, tls: true',
+  },
+  snell: { off: 'server: 127.0.0.1, port: 1, psk: p, version: 2', on: null },
+  trusttunnel: {
+    off: 'server: 127.0.0.1, port: 1, username: u, password: p',
+    on: 'server: 127.0.0.1, port: 1, username: u, password: p',
+  },
 }
 
 const tlsOnly = new Set([
@@ -129,11 +138,11 @@ for (const type of ['socks5', 'http', 'trojan', 'vless', 'anytls']) {
   add(type, 'interface-name', "''")
   add(type, 'routing-mark', '0')
 }
-for (const type of ['socks5', 'trojan', 'vless', 'anytls']) {
+for (const type of ['socks5', 'trojan', 'vless', 'anytls', 'vmess']) {
   add(type, 'ech-opts', '{enable: false}')
   add(type, 'ech-opts', '{enable: false, config: x}')
 }
-for (const type of ['socks5', 'trojan', 'vless', 'anytls']) add(type, 'smux', '{enabled: true, protocol: h2mux}')
+for (const type of ['socks5', 'trojan', 'vless', 'anytls', 'vmess']) add(type, 'smux', '{enabled: true, protocol: h2mux}')
 for (const type of ['socks5', 'trojan', 'vless']) add(type, 'smux', '{enabled: false}')
 for (const type of ['socks5', 'trojan', 'vless']) add(type, 'grpc-opts', '{}')
 for (const type of ['trojan', 'vless']) {

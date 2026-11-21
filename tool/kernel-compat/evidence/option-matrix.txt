@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 111, enabled cases: 74, problems: 0
+# no-op cases: 114, enabled cases: 126, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
@@ -51,10 +51,13 @@ noop    vless   ech-opts                     rust=accept mihomo=accept
 noop    vless   ech-opts                     rust=accept mihomo=accept
 noop    anytls  ech-opts                     rust=accept mihomo=accept
 noop    anytls  ech-opts                     rust=accept mihomo=accept
+noop    vmess   ech-opts                     rust=accept mihomo=accept
+noop    vmess   ech-opts                     rust=accept mihomo=accept
 noop    socks5  smux                         rust=accept mihomo=accept
 noop    trojan  smux                         rust=accept mihomo=accept
 noop    vless   smux                         rust=accept mihomo=accept
 noop    anytls  smux                         rust=accept mihomo=accept
+noop    vmess   smux                         rust=accept mihomo=accept
 noop    socks5  smux                         rust=accept mihomo=accept
 noop    trojan  smux                         rust=accept mihomo=accept
 noop    vless   smux                         rust=accept mihomo=accept
@@ -189,3 +192,55 @@ enabled anytls  tfo                          rust=reject mihomo=accept
 enabled anytls  mptcp                        rust=reject mihomo=accept
 enabled anytls  interface-name               rust=reject mihomo=accept
 enabled anytls  routing-mark                 rust=reject mihomo=accept
+enabled vmess   udp                          rust=reject mihomo=accept
+enabled vmess   packet-addr                  rust=reject mihomo=accept
+enabled vmess   xudp                         rust=reject mihomo=accept
+enabled vmess   packet-encoding              rust=reject mihomo=accept
+enabled vmess   global-padding               rust=reject mihomo=reject
+enabled vmess   authenticated-length         rust=reject mihomo=reject
+enabled vmess   reality-opts                 rust=reject mihomo=reject
+enabled vmess   ech-opts                     rust=reject mihomo=reject
+enabled vmess   shadow-tls-opts              rust=reject mihomo=reject
+enabled vmess   restls-opts                  rust=reject mihomo=reject
+enabled vmess   jls-opts                     rust=reject mihomo=reject
+enabled vmess   tlsmirror-opts               rust=reject mihomo=accept
+enabled vmess   mekya-opts                   rust=reject mihomo=accept
+enabled vmess   mkcp-opts                    rust=reject mihomo=accept
+enabled vmess   fingerprint                  rust=reject mihomo=accept
+enabled vmess   certificate                  rust=reject mihomo=accept
+enabled vmess   private-key                  rust=reject mihomo=accept
+enabled vmess   name-cert-verify             rust=reject mihomo=accept
+enabled vmess   client-fingerprint           rust=reject mihomo=accept
+enabled vmess   ip-version                   rust=reject mihomo=accept
+enabled vmess   tfo                          rust=reject mihomo=accept
+enabled vmess   mptcp                        rust=reject mihomo=accept
+enabled vmess   interface-name               rust=reject mihomo=accept
+enabled vmess   routing-mark                 rust=reject mihomo=accept
+enabled snell   udp                          rust=reject mihomo=reject
+enabled snell   reuse                        rust=reject mihomo=reject
+enabled snell   mode                         rust=reject mihomo=reject
+enabled snell   ip-version                   rust=reject mihomo=accept
+enabled snell   tfo                          rust=reject mihomo=accept
+enabled snell   mptcp                        rust=reject mihomo=accept
+enabled snell   interface-name               rust=reject mihomo=accept
+enabled snell   routing-mark                 rust=reject mihomo=accept
+enabled trusttunnel udp                          rust=reject mihomo=accept
+enabled trusttunnel quic                         rust=reject mihomo=reject
+enabled trusttunnel health-check                 rust=reject mihomo=reject
+enabled trusttunnel max-connections              rust=reject mihomo=reject
+enabled trusttunnel min-streams                  rust=reject mihomo=reject
+enabled trusttunnel max-streams                  rust=reject mihomo=reject
+enabled trusttunnel congestion-controller        rust=reject mihomo=reject
+enabled trusttunnel cwnd                         rust=reject mihomo=reject
+enabled trusttunnel bbr-profile                  rust=reject mihomo=reject
+enabled trusttunnel fingerprint                  rust=reject mihomo=accept
+enabled trusttunnel certificate                  rust=reject mihomo=accept
+enabled trusttunnel private-key                  rust=reject mihomo=accept
+enabled trusttunnel name-cert-verify             rust=reject mihomo=accept
+enabled trusttunnel client-fingerprint           rust=reject mihomo=accept
+enabled trusttunnel ech-opts                     rust=reject mihomo=reject
+enabled trusttunnel ip-version                   rust=reject mihomo=accept
+enabled trusttunnel tfo                          rust=reject mihomo=accept
+enabled trusttunnel mptcp                        rust=reject mihomo=accept
+enabled trusttunnel interface-name               rust=reject mihomo=accept
+enabled trusttunnel routing-mark                 rust=reject mihomo=accept

@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 23,
-    "passed": 23,
+    "cases": 36,
+    "passed": 36,
     "failed": 0
   },
   "families": {
@@ -135,6 +135,55 @@
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "two Mihomo listeners (mixed as the exit hop, socks as the first hop)",
       "notes": "only a socks5 hop can carry another hop; a closed first hop fails the dial instead of falling back to DIRECT, and other chains are rejected at load time or with a chain error. UDP follows the same chain (see ss and loopbackOnlyEvidence.chained_udp_positive)."
+    },
+    "vmess": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "vmess_outbound_reaches_the_receiving_side_through_mihomo",
+          "vmess_chacha20_poly1305_reaches_the_receiving_side_through_mihomo",
+          "vmess_over_websocket_reaches_the_receiving_side_through_mihomo",
+          "vmess_domain_target_is_resolved_by_the_mihomo_side",
+          "vmess_cipher_none_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "vmess_wrong_uuid_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: vmess with one `users: [{uuid, alterId: 0}]` entry (sing-vmess server)",
+      "notes": "The Rust client sends the AEAD request header and the record layer; the peer's `MATCH,sink-http` rule forwards to the controlled sink. `auto` resolves to aes-128-gcm on this host, `chacha20-poly1305` is exercised explicitly, the domain case sends `localhost` as a domain address so the peer resolves it, and the websocket case uses the peer's `ws-path` over TLS. A wrong uuid is rejected by the peer's auth id check, so the sink is never reached. UDP, the legacy alterId header and the non-tcp/ws transports are rejected at load time."
+    },
+    "snell": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "snell_v1_reaches_the_receiving_side_through_mihomo",
+          "snell_v2_reaches_the_receiving_side_through_mihomo",
+          "snell_v3_with_http_obfs_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "snell_wrong_psk_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: snell with `psk`, `version: 1|2|3` (and `obfs-opts: {mode: http, host: bing.com}` for v3)",
+      "notes": "v1 is chacha20-poly1305 and v2/v3 aes-128-gcm over the Argon2id-derived record layer; the v3 case adds the simple-obfs HTTP layer. A wrong psk fails the record authentication, so the sink is never reached. v4-v6, `reuse`, `mode` and the obfs `tls` mode are rejected at load time."
+    },
+    "trusttunnel": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "trusttunnel_outbound_reaches_the_receiving_side_through_mihomo",
+          "trusttunnel_domain_target_is_resolved_by_the_mihomo_side"
+        ],
+        "negative": [
+          "trusttunnel_wrong_password_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: trusttunnel with `users`, `certificate`/`private-key` and `network: [tcp]`",
+      "notes": "The Rust client opens TLS with ALPN h2, sends CONNECT with `Proxy-Authorization: Basic` and carries the tunnel in DATA frames; the peer forwards to the controlled sink. A wrong password is answered with 407 before any stream exists, so the sink is never reached. UDP (`_udp2`), ICMP (`_icmp`), QUIC and the pooled multiplexing options are rejected at load time."
     }
   },
   "loopbackOnlyEvidence": {
@@ -150,7 +199,28 @@
     "fragmented SOCKS5 UDP datagrams (FRAG != 0) are dropped instead of reassembled",
     "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
     "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
-    "protocol families this slice does not implement (vmess, ssr, hysteria/hysteria2, tuic, wireguard, ...): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented",
-    "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead"
-  ]
+    "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
+    "protocol families this slice does not implement (ssr, ssh, mieru, masque, gost-relay, sudoku, the QUIC/device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented"
+  ],
+  "t9": {
+    "date": "2026-11-21",
+    "implementedAndVerified": [
+      "vmess",
+      "snell",
+      "trusttunnel"
+    ],
+    "run": {
+      "command": "tool/kernel-compat/peer-tests.sh",
+      "result": "31 passed, 0 failed, 0 ignored",
+      "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
+    },
+    "stillUnimplemented": [
+      "ssr",
+      "ssh",
+      "mieru",
+      "masque",
+      "gost-relay",
+      "sudoku"
+    ]
+  }
 }

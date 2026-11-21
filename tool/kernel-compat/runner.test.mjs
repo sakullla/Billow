@@ -130,10 +130,10 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   check('groups', new Set(index.groups.map((entry) => entry.type)), mapping.groups)
   check('rules', new Set(index.rules.map((entry) => entry.type)), mapping.rules)
   check('configFields', new Set(index.configFields.map((field) => field.name)), mapping.configFields)
-  for (const type of ['ss', 'socks5', 'http', 'trojan', 'vless', 'anytls']) {
+  for (const type of ['ss', 'socks5', 'http', 'trojan', 'vless', 'anytls', 'vmess', 'snell', 'trusttunnel']) {
     assert.equal(mapping.proxies[type]?.status, 'implemented', `${type} is implemented and tested`)
   }
-  for (const type of ['ssr', 'vmess', 'hysteria2', 'tuic', 'wireguard']) {
+  for (const type of ['ssr', 'ssh', 'mieru', 'masque', 'gost-relay', 'sudoku', 'hysteria2', 'tuic', 'wireguard']) {
     assert.notEqual(mapping.proxies[type]?.status, 'implemented', `${type} must not be claimed`)
   }
   assert.ok(mapping.platform.verified.length > 0)

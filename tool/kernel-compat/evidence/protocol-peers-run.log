@@ -1,8 +1,8 @@
 peer: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-a90f65e4e7ec8202)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-dc9b5e2ee0fb84c1)
 
-running 23 tests
+running 36 tests
 test anytls_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ok
 test chained_ss_udp_rejected_by_the_hop_never_reaches_the_echo ... ok
@@ -15,17 +15,30 @@ test shadowsocks_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test shadowsocks_udp_reaches_the_receiving_side_through_mihomo ... ok
 test shadowsocks_udp_wrong_password_never_reaches_the_echo ... ok
 test shadowsocks_wrong_password_never_reaches_the_sink ... ok
+test snell_v1_reaches_the_receiving_side_through_mihomo ... ok
+test snell_v2_reaches_the_receiving_side_through_mihomo ... ok
+test snell_v3_with_http_obfs_reaches_the_receiving_side_through_mihomo ... ok
+test snell_wrong_psk_never_reaches_the_sink ... ok
 test socks5_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test socks5_wrong_password_never_reaches_the_sink ... ok
 test trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo ... ok
 test trojan_udp_reaches_the_receiving_side_through_mihomo ... ok
 test trojan_udp_wrong_password_never_reaches_the_echo ... ok
 test trojan_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ok
+test trusttunnel_domain_target_is_resolved_by_the_mihomo_side ... ok
+test trusttunnel_outbound_reaches_the_receiving_side_through_mihomo ... ok
+test trusttunnel_wrong_password_never_reaches_the_sink ... ok
 test vless_outbound_over_tls_reaches_the_receiving_side_through_mihomo ... ok
 test vless_over_v2ray_http_upgrade_reaches_the_receiving_side_through_mihomo ... ok
 test vless_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
 test vless_over_websocket_with_a_host_override_reaches_the_receiving_side_through_mihomo ... ok
 test vless_wrong_uuid_never_reaches_the_sink ... ok
+test vmess_chacha20_poly1305_reaches_the_receiving_side_through_mihomo ... ok
+test vmess_cipher_none_reaches_the_receiving_side_through_mihomo ... ok
+test vmess_domain_target_is_resolved_by_the_mihomo_side ... ok
+test vmess_outbound_reaches_the_receiving_side_through_mihomo ... ok
+test vmess_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
+test vmess_wrong_uuid_never_reaches_the_sink ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.37s
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.77s
 

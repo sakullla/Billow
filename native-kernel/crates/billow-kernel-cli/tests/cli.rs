@@ -373,3 +373,34 @@ fn process_forwards_through_a_protocol_outbound() {
     let output = kernel.sigint();
     assert!(output.status.success());
 }
+
+/// T9 families in the shipped process: the CLI loads VMess, Snell and
+/// TrustTunnel outbounds, names them in its identity line, and a tunnel routed
+/// to the first one fails with the inbound failure reply when the server is
+/// absent (it never falls back to DIRECT). The successful path through each
+/// family is exercised against the pinned Mihomo listener in
+/// `mihomo_peers.rs`.
+#[test]
+fn process_loads_t9_outbounds() {
+    let vmess_port = free_port();
+    let snell_port = free_port();
+    let port = free_port();
+    let kernel = KernelProcess::start_body(
+        &format!(
+            "proxies:\n  - {{name: vm, type: vmess, server: 127.0.0.1, port: {vmess_port}, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto}}\n  - {{name: sn, type: snell, server: 127.0.0.1, port: {snell_port}, psk: p, version: 2}}\n  - {{name: tt, type: trusttunnel, server: 127.0.0.1, port: {snell_port}, username: u, password: p}}\nrules:\n  - 'MATCH,vm'\n"
+        ),
+        port,
+    );
+    let proxy: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let (mut tunnel, status) = http_connect(proxy, "127.0.0.1:9").unwrap();
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    let _ = tunnel.write_all(b"unused");
+    drop(tunnel);
+    let mut kernel = kernel;
+    let output = kernel.sigint();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("vm=vmess"), "{stdout}");
+    assert!(stdout.contains("sn=snell"), "{stdout}");
+    assert!(stdout.contains("tt=trusttunnel"), "{stdout}");
+}
