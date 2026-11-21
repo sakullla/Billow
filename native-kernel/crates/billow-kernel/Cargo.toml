@@ -22,7 +22,12 @@ blake2.workspace = true
 bytes.workspace = true
 chacha20.workspace = true
 chacha20poly1305.workspace = true
+ctr.workspace = true
+ed25519-dalek.workspace = true
 h2.workspace = true
+hex.workspace = true
+poly1305.workspace = true
+salsa20.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
 http.workspace = true
@@ -49,3 +54,6 @@ x25519-dalek.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "full"] }
+hex.workspace = true
+rand.workspace = true
+x25519-dalek.workspace = true

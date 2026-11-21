@@ -430,6 +430,114 @@ impl OpenVpnOutbound {
     }
 }
 
+/// Tailscale (`adapter/outbound/tailscale.go`): the pinned adapter embeds
+/// `tsnet` (the control-plane Noise protocol, DERP relays and a WireGuard data
+/// path) and a userspace netstack. T19 implements the control-plane Noise
+/// transport, the HTTP/2 control request and the DERP frame codec in
+/// `outbound/tailscale.rs`; the TCP/UDP socket layer inside the tunnel stays
+/// with T6/T7, so every `dial()` names that gap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailscaleOutbound {
+    /// `hostname`; the `tsnet` default when unset.
+    pub hostname: Option<String>,
+    /// `auth-key`: the node registration key.
+    pub auth_key: Option<Secret>,
+    /// `control-url`; `https://controlplane.tailscale.com` when unset.
+    pub control_url: Option<String>,
+    /// `state-dir`; the pinned default is `tailscale`.
+    pub state_dir: String,
+    /// `ephemeral`: do not store the node in the control plane.
+    pub ephemeral: bool,
+    /// `udp`: the data plane carries UDP; the T6/T7 stack supplies it.
+    pub udp: bool,
+    pub accept_routes: Option<bool>,
+    pub exit_node: Option<String>,
+    pub exit_node_allow_lan_access: Option<bool>,
+}
+
+/// One `orbit:` entry (`world` + `seed` node address).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZerotierOrbit {
+    pub world: u64,
+    pub seed: u64,
+}
+
+/// ZeroTier (`adapter/outbound/zerotier.go` + the locked `zerotier-go`).
+///
+/// T19 implements identity generation/parsing, planet/moon parsing, the VL1
+/// packet armor and HELLO/OK/WHOIS/ECHO verbs, and the VL2 frame payload in
+/// `outbound/zerotier.rs`. The pinned adapter also runs a userspace IP stack
+/// and the network-controller membership exchange; those are T6/T7 and T5, so
+/// this outbound loads, validates its identity/planet and refuses every
+/// `dial()` with that gap named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZerotierOutbound {
+    pub network_id: u64,
+    /// `state-dir`; the pinned default is `zerotier`.
+    pub state_dir: String,
+    pub identity_secret: Option<Secret>,
+    /// Path to a serialized planet; the pinned default planet when unset.
+    pub planet: Option<String>,
+    pub mtu: u16,
+    /// Normalized `ip-stack.mode` (`auto` when unset).
+    pub ip_stack_mode: String,
+    pub physical_mtu: u16,
+    pub udp: bool,
+    pub remote_dns_resolve: bool,
+    pub dns: Vec<String>,
+    pub low_bandwidth: bool,
+    pub encrypted_hello: bool,
+    pub primary_port: u16,
+    pub secondary_port: u16,
+    /// Normalized `tcp-fallback-mode` (`auto` when unset).
+    pub tcp_fallback_mode: String,
+    pub tcp_fallback_relay: String,
+    pub orbit: Vec<ZerotierOrbit>,
+}
+
+/// EasyTier (`adapter/outbound/easytier.go` + the pinned `easytier-go`).
+///
+/// The pinned adapter runs the EasyTier core (host/instance, peer discovery,
+/// secure datagrams, KCP/QUIC proxies and a netstack). T19 implements the
+/// configuration semantics and the cleartext host/discovery handshake
+/// (`HandshakeRequest` + the peer-manager frame) in `outbound/easytier.rs`.
+/// The secure-datagram encryption path is rejected by name because the pinned
+/// core is distributed only as a wasm artifact and no source/crate is in the
+/// offline cache; the netstack/TUN stays with T6/T7.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EasytierOutbound {
+    pub network_name: String,
+    pub network_secret: Secret,
+    pub hostname: Option<String>,
+    pub ipv4: Option<String>,
+    pub dhcp: bool,
+    pub peers: Vec<String>,
+    pub listeners: Vec<String>,
+    pub no_listener: Option<bool>,
+    pub mapped_listeners: Vec<String>,
+    pub exit_nodes: Vec<String>,
+    pub proxy_networks: Vec<String>,
+    pub instance_name: String,
+    pub state_dir: String,
+    pub udp: bool,
+    pub accept_dns: Option<bool>,
+    pub enable_exit_node: Option<bool>,
+    pub enable_encryption: bool,
+    pub encryption_algorithm: String,
+    pub private_mode: Option<bool>,
+    pub latency_first: Option<bool>,
+    pub disable_p2p: Option<bool>,
+    pub enable_kcp_proxy: Option<bool>,
+    pub disable_kcp_input: Option<bool>,
+    pub enable_quic_proxy: Option<bool>,
+    pub disable_quic_input: Option<bool>,
+    pub mtu: u16,
+    pub tld_dns_zone: Option<String>,
+    pub secure_mode: Option<bool>,
+    pub local_private_key: Option<Secret>,
+    pub local_public_key: Option<Secret>,
+}
+
 /// MASQUE (RFC 9298 CONNECT-UDP over HTTP/3). Only the CONNECT-UDP data path
 /// is implemented: one QUIC/HTTP/3 association, one request stream per
 /// destination, UDP payloads in `DATAGRAM` capsules. The pinned adapter's
@@ -743,6 +851,9 @@ pub enum Protocol {
     ShadowQuic(ShadowQuicOutbound),
     Wireguard(WireguardOutbound),
     OpenVpn(OpenVpnOutbound),
+    Tailscale(TailscaleOutbound),
+    Zerotier(ZerotierOutbound),
+    Easytier(EasytierOutbound),
 }
 
 impl Protocol {
@@ -768,6 +879,9 @@ impl Protocol {
             Protocol::ShadowQuic(_) => None,
             Protocol::Wireguard(_) => None,
             Protocol::OpenVpn(_) => None,
+            Protocol::Tailscale(_) => None,
+            Protocol::Zerotier(_) => None,
+            Protocol::Easytier(_) => None,
         }
     }
 }
@@ -795,6 +909,9 @@ impl Proxy {
             Protocol::ShadowQuic(_) => "shadowquic",
             Protocol::Wireguard(_) => "wireguard",
             Protocol::OpenVpn(_) => "openvpn",
+            Protocol::Tailscale(_) => "tailscale",
+            Protocol::Zerotier(_) => "zerotier",
+            Protocol::Easytier(_) => "easytier",
         }
     }
 
@@ -829,6 +946,9 @@ impl Proxy {
                 .map(|peer| (peer.server.as_str(), peer.port))
                 .unwrap_or(("", 0)),
             Protocol::OpenVpn(p) => (&p.server, p.port),
+            Protocol::Tailscale(p) => (&p.state_dir, 0),
+            Protocol::Zerotier(p) => (&p.state_dir, 0),
+            Protocol::Easytier(p) => (&p.state_dir, 0),
         }
     }
 
@@ -842,6 +962,9 @@ impl Proxy {
             Protocol::GostRelay(p) => p.udp,
             Protocol::Masque(p) => p.udp,
             Protocol::ShadowQuic(_) => true,
+            Protocol::Tailscale(p) => p.udp,
+            Protocol::Zerotier(p) => p.udp,
+            Protocol::Easytier(p) => p.udp,
             _ => false,
         }
     }
@@ -1586,31 +1709,471 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "masque" => Protocol::Masque(parse_masque(&mut entry)?),
         "shadowquic" => Protocol::ShadowQuic(parse_shadowquic(&mut entry)?),
         "wireguard" => Protocol::Wireguard(parse_wireguard(&mut entry)?),
-        "tailscale" => {
-            return Err(entry.unsupported(
-                "protocol type 'tailscale' is not implemented: the pinned outbound (with_gvisor) embeds the Tailscale control plane (controlplane.tailscale.com Noise control protocol, DERP relays, node-key registration) plus a gVisor netstack; its data path is WireGuard, which this kernel implements as a transport in outbound/wireguard.rs, but the control plane has no Rust crate in the offline cargo cache (only the Go tailscale.com module is cached) and device/TUN ownership is T6/T7",
-            ))
-        }
-        "zerotier" => {
-            return Err(entry.unsupported(
-                "protocol type 'zerotier' is not implemented: the pinned outbound wraps zerotier-go (Curve25519 identity, planet/root servers, the VL1/VL2 control protocol and Salsa20/Poly1305 crypto) plus a gVisor netstack; no Zerotier Rust crate is in the offline cargo cache and device/TUN ownership is T6/T7",
-            ))
-        }
-        "easytier" => {
-            return Err(entry.unsupported(
-                "protocol type 'easytier' is not implemented: the pinned outbound embeds the easytier-go host/instance (peer discovery, encryption, KCP/QUIC proxies) plus a netstack; the upstream EasyTier project is Rust but no easytier crate is in the offline cargo cache and device/TUN ownership is T6/T7",
-            ))
-        }
+        "tailscale" => Protocol::Tailscale(parse_tailscale(&mut entry)?),
+        "zerotier" => Protocol::Zerotier(parse_zerotier(&mut entry)?),
+        "easytier" => Protocol::Easytier(parse_easytier(&mut entry)?),
         "openvpn" => Protocol::OpenVpn(parse_openvpn(&mut entry)?),
 
         other => {
             return Err(ConfigError::Unsupported(format!(
-                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2, mieru, masque, shadowquic)",
+                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2, mieru, masque, shadowquic, wireguard, openvpn, tailscale, zerotier, easytier)",
                 entry.prefix()
             )))
         }
     };
     Ok(Proxy { name, protocol })
+}
+
+/// Basic options shared by every outbound. The mesh adapters dial their own
+/// control/physical sockets, so the device-shaping forms are rejected with the
+/// T6/T7 boundary instead of being accepted without effect.
+fn reject_device_basic(entry: &mut Entry<'_>) -> Result<(), ConfigError> {
+    if entry.bool("tfo")?.unwrap_or(false) {
+        return Err(entry.unsupported("option 'tfo' is not implemented for mesh outbounds (the T6/T7 device layer owns the socket)"));
+    }
+    if entry.bool("mptcp")?.unwrap_or(false) {
+        return Err(entry.unsupported("option 'mptcp' is not implemented for mesh outbounds"));
+    }
+    if entry.string("interface-name")?.filter(|v| !v.is_empty()).is_some() {
+        return Err(entry.unsupported("option 'interface-name' requires the T6/T7 device layer"));
+    }
+    if entry.int("routing-mark")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported("option 'routing-mark' requires the T6/T7 device layer"));
+    }
+    if entry.string("ip-version")?.filter(|v| !v.is_empty()).is_some() {
+        return Err(entry.unsupported("option 'ip-version' is not implemented for mesh outbounds"));
+    }
+    if entry.string("dialer-proxy")?.filter(|v| !v.is_empty()).is_some() {
+        return Err(entry.unsupported("option 'dialer-proxy' is not implemented for mesh outbounds (their control sockets are dialled locally)"));
+    }
+    Ok(())
+}
+
+fn parse_tailscale(entry: &mut Entry<'_>) -> Result<TailscaleOutbound, ConfigError> {
+    reject_device_basic(entry)?;
+    let hostname = entry.string("hostname")?.filter(|v| !v.is_empty());
+    if let Some(hostname) = &hostname {
+        if hostname.chars().any(|c| c.is_whitespace()) {
+            return Err(entry.invalid("option 'hostname' must not contain whitespace"));
+        }
+    }
+    let auth_key = entry.string("auth-key")?.filter(|v| !v.is_empty()).map(Secret::new);
+    let control_url = entry.string("control-url")?.filter(|v| !v.is_empty());
+    if let Some(url) = &control_url {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(entry.invalid("option 'control-url' must be an http(s) URL"));
+        }
+    }
+    let state_dir = entry
+        .string("state-dir")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "tailscale".to_string());
+    let ephemeral = entry.bool("ephemeral")?.unwrap_or(false);
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let accept_routes = entry.bool("accept-routes")?;
+    let exit_node = entry.string("exit-node")?.filter(|v| !v.is_empty());
+    let exit_node_allow_lan_access = entry.bool("exit-node-allow-lan-access")?;
+    entry.reject_unknown(
+        &[
+            "hostname",
+            "auth-key",
+            "control-url",
+            "state-dir",
+            "ephemeral",
+            "udp",
+            "accept-routes",
+            "exit-node",
+            "exit-node-allow-lan-access",
+        ],
+        false,
+        None,
+    )?;
+    Ok(TailscaleOutbound {
+        hostname,
+        auth_key,
+        control_url,
+        state_dir,
+        ephemeral,
+        udp,
+        accept_routes,
+        exit_node,
+        exit_node_allow_lan_access,
+    })
+}
+
+fn parse_zerotier(entry: &mut Entry<'_>) -> Result<ZerotierOutbound, ConfigError> {
+    reject_device_basic(entry)?;
+    let network = entry.required_string("network")?;
+    let network_id = crate::outbound::zerotier::parse_network_id(&network)
+        .map_err(|_| entry.invalid("option 'network' must be a 16-digit ZeroTier network ID"))?;
+    let state_dir = entry
+        .string("state-dir")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "zerotier".to_string());
+    let identity_secret = entry
+        .string("identity-secret")?
+        .filter(|v| !v.is_empty())
+        .map(Secret::new);
+    if let Some(secret) = &identity_secret {
+        crate::outbound::zerotier::Identity::parse(secret.expose())
+            .map_err(|e| entry.invalid(format!("option 'identity-secret': {e}")))?;
+    }
+    let planet = entry.string("planet")?.filter(|v| !v.is_empty());
+    let mtu = match entry.int("mtu")? {
+        Some(value) if value != 0 && !(1280..=10000).contains(&value) => {
+            return Err(entry.invalid("option 'mtu' must be between 1280 and 10000"))
+        }
+        Some(value) => value as u16,
+        None => 0,
+    };
+    let physical_mtu = match entry.int("physical-mtu")? {
+        Some(value) if value != 0 && !(510..=10324).contains(&value) => {
+            return Err(entry.invalid("option 'physical-mtu' must be between 510 and 10324"))
+        }
+        Some(value) => value as u16,
+        None => 0,
+    };
+    let ip_stack_mode = if let Some(block) = entry.block("ip-stack")? {
+        let mut mode = "auto".to_string();
+        for (key, value) in block {
+            let key = key.as_str().ok_or_else(|| entry.invalid("ip-stack keys must be strings"))?;
+            match key {
+                "mode" => {
+                    mode = value.as_str().unwrap_or("").to_ascii_lowercase();
+                    if mode.is_empty() {
+                        mode = "auto".to_string();
+                    }
+                }
+                other => {
+                    return Err(entry.unsupported(format!(
+                        "option 'ip-stack.{other}' requires the T6/T7 userspace IP stack"
+                    )))
+                }
+            }
+        }
+        if !matches!(mode.as_str(), "auto" | "gvisor" | "mips") {
+            return Err(entry.invalid(format!(
+                "option 'ip-stack.mode' value '{mode}' is not one of auto, gvisor, mips"
+            )));
+        }
+        return Err(entry.unsupported(
+            "option 'ip-stack' requires the userspace IP stack and TUN device owned by T6/T7",
+        ));
+    } else {
+        "auto".to_string()
+    };
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let remote_dns_resolve = entry.bool("remote-dns-resolve")?.unwrap_or(false);
+    let dns = entry.string_list("dns")?;
+    if remote_dns_resolve || !dns.is_empty() {
+        return Err(entry.unsupported(
+            "options 'remote-dns-resolve'/'dns' require the T6/T7 userspace IP stack resolver",
+        ));
+    }
+    let low_bandwidth = entry.bool("low-bandwidth")?.unwrap_or(false);
+    let encrypted_hello = entry.bool("encrypted-hello")?.unwrap_or(false);
+    let primary_port = match entry.int("primary-port")? {
+        Some(value) if (1..=65535).contains(&value) => value as u16,
+        Some(_) => return Err(entry.invalid("option 'primary-port' must be a port in 1..=65535")),
+        None => 0,
+    };
+    let secondary_port = match entry.int("secondary-port")? {
+        Some(value) if (1..=65535).contains(&value) => value as u16,
+        Some(_) => return Err(entry.invalid("option 'secondary-port' must be a port in 1..=65535")),
+        None => 0,
+    };
+    let tcp_fallback_mode = entry
+        .string("tcp-fallback-mode")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "auto".to_string())
+        .to_ascii_lowercase();
+    if !matches!(tcp_fallback_mode.as_str(), "auto" | "force" | "disable") {
+        return Err(entry.invalid("option 'tcp-fallback-mode' must be auto, force or disable"));
+    }
+    let tcp_fallback_relay = entry.string("tcp-fallback-relay")?.unwrap_or_default();
+    let mut orbit = Vec::new();
+    if let Some(value) = entry.get("orbit") {
+        let items = value
+            .as_sequence()
+            .ok_or_else(|| entry.invalid("option 'orbit' must be a list"))?;
+        let mut worlds = std::collections::BTreeSet::new();
+        for item in items {
+            let map = item
+                .as_mapping()
+                .ok_or_else(|| entry.invalid("each 'orbit' entry must be a mapping"))?;
+            let mut world = None;
+            let mut seed = None;
+            for (key, value) in map {
+                let key = key.as_str().ok_or_else(|| entry.invalid("orbit keys must be strings"))?;
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| entry.invalid(format!("orbit.{key} must be a string")))?;
+                match key {
+                    "world" => {
+                        if text.len() != 16 {
+                            return Err(entry.invalid("orbit.world must be a 16-digit hexadecimal ID"));
+                        }
+                        world = u64::from_str_radix(text, 16).ok().filter(|v| *v != 0);
+                        if world.is_none() {
+                            return Err(entry.invalid("orbit.world is not a hexadecimal ID"));
+                        }
+                    }
+                    "seed" => {
+                        if text.len() != 10 {
+                            return Err(entry.invalid("orbit.seed must be a 10-digit node ID"));
+                        }
+                        seed = u64::from_str_radix(text, 16).ok().filter(|v| *v != 0);
+                        if seed.is_none() {
+                            return Err(entry.invalid("orbit.seed is not a hexadecimal node ID"));
+                        }
+                    }
+                    other => {
+                        return Err(entry.unsupported(format!("option 'orbit.{other}' is not implemented")))
+                    }
+                }
+            }
+            let (Some(world), Some(seed)) = (world, seed) else {
+                return Err(entry.invalid("each 'orbit' entry requires 'world' and 'seed'"));
+            };
+            if !worlds.insert(world) {
+                return Err(entry.invalid(format!("duplicate orbit world {world:016x}")));
+            }
+            orbit.push(ZerotierOrbit { world, seed });
+        }
+    }
+    if entry.string("remote-trace-target")?.filter(|v| !v.is_empty()).is_some() {
+        return Err(entry.unsupported("option 'remote-trace-target' is not implemented"));
+    }
+    if entry.int("remote-trace-level")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported("option 'remote-trace-level' is not implemented"));
+    }
+    entry.reject_unknown(
+        &[
+            "network",
+            "state-dir",
+            "identity-secret",
+            "planet",
+            "mtu",
+            "ip-stack",
+            "physical-mtu",
+            "udp",
+            "remote-dns-resolve",
+            "dns",
+            "low-bandwidth",
+            "encrypted-hello",
+            "primary-port",
+            "secondary-port",
+            "tcp-fallback-mode",
+            "tcp-fallback-relay",
+            "orbit",
+            "remote-trace-target",
+            "remote-trace-level",
+        ],
+        false,
+        None,
+    )?;
+    Ok(ZerotierOutbound {
+        network_id,
+        state_dir,
+        identity_secret,
+        planet,
+        mtu,
+        ip_stack_mode,
+        physical_mtu,
+        udp,
+        remote_dns_resolve,
+        dns,
+        low_bandwidth,
+        encrypted_hello,
+        primary_port,
+        secondary_port,
+        tcp_fallback_mode,
+        tcp_fallback_relay,
+        orbit,
+    })
+}
+
+fn parse_easytier(entry: &mut Entry<'_>) -> Result<EasytierOutbound, ConfigError> {
+    reject_device_basic(entry)?;
+    let network_name = entry.string("network-name")?.unwrap_or_default();
+    let network_secret = entry.string("network-secret")?.unwrap_or_default();
+    let hostname = entry.string("hostname")?.filter(|v| !v.is_empty());
+    let ipv4 = entry.string("ipv4")?.filter(|v| !v.is_empty());
+    if let Some(ipv4) = &ipv4 {
+        let (address, prefix) = ipv4
+            .split_once('/')
+            .ok_or_else(|| entry.invalid("option 'ipv4' must be an IPv4 prefix such as 10.144.0.10/24"))?;
+        if address.parse::<std::net::Ipv4Addr>().is_err()
+            || prefix.parse::<u8>().map_or(true, |bits| bits > 32)
+        {
+            return Err(entry.invalid("option 'ipv4' must be an IPv4 prefix such as 10.144.0.10/24"));
+        }
+    }
+    let dhcp = entry.bool("dhcp")?.unwrap_or(false);
+    let peers = entry.string_list("peers")?;
+    let listeners = entry.string_list("listeners")?;
+    let no_listener = entry.bool("no-listener")?;
+    let mapped_listeners = entry.string_list("mapped-listeners")?;
+    if !mapped_listeners.is_empty() {
+        return Err(entry.unsupported("option 'mapped-listeners' is not implemented"));
+    }
+    if !peers.is_empty() && peers.iter().any(|p| !(p.starts_with("udp://") || p.starts_with("tcp://") || p.starts_with("wg://") || p.starts_with("quic://"))) {
+        return Err(entry.invalid("each 'peers' entry must be a udp://, tcp://, wg:// or quic:// URL"));
+    }
+    if !listeners.is_empty() && listeners.iter().any(|p| !(p.starts_with("udp://") || p.starts_with("tcp://") || p.starts_with("wg://") || p.starts_with("quic://"))) {
+        return Err(entry.invalid("each 'listeners' entry must be a udp://, tcp://, wg:// or quic:// URL"));
+    }
+    if peers.is_empty() && listeners.is_empty() && no_listener != Some(true) {
+        return Err(entry.invalid("EasyTier requires at least one peer or listener (or 'no-listener: true')"));
+    }
+    let exit_nodes = entry.string_list("exit-nodes")?;
+    if !exit_nodes.is_empty() {
+        return Err(entry.unsupported("option 'exit-nodes' is not implemented"));
+    }
+    let proxy_networks = entry.string_list("proxy-networks")?;
+    if !proxy_networks.is_empty() {
+        return Err(entry.unsupported("option 'proxy-networks' is not implemented"));
+    }
+    let instance_name = entry
+        .string("instance-name")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| entry.name.clone());
+    let state_dir = entry
+        .string("state-dir")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| format!("easytier/{instance_name}"));
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let accept_dns = entry.bool("accept-dns")?;
+    if accept_dns == Some(true) {
+        return Err(entry.unsupported("option 'accept-dns' requires the EasyTier DNS integration (T5)"));
+    }
+    let enable_exit_node = entry.bool("enable-exit-node")?;
+    if enable_exit_node == Some(true) {
+        return Err(entry.unsupported("option 'enable-exit-node' is not implemented"));
+    }
+    let enable_encryption = entry.bool("enable-encryption")?.unwrap_or(false);
+    let encryption_algorithm = entry
+        .string("encryption-algorithm")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "aes-gcm".to_string())
+        .to_ascii_lowercase();
+    if !matches!(encryption_algorithm.as_str(), "aes-gcm" | "chacha20") {
+        return Err(entry.invalid("option 'encryption-algorithm' must be aes-gcm or chacha20"));
+    }
+    if enable_encryption {
+        return Err(entry.unsupported(
+            "option 'enable-encryption: true' is not implemented: the pinned EasyTier core's secure-datagram (AES-GCM/ChaCha20 + Noise XX) layer is distributed only as a wasm artifact and neither source nor crate is in the offline cache; the cleartext host/discovery handshake is implemented in outbound/easytier.rs",
+        ));
+    }
+    let private_mode = entry.bool("private-mode")?;
+    if private_mode == Some(true) {
+        return Err(entry.unsupported("option 'private-mode' is not implemented"));
+    }
+    let latency_first = entry.bool("latency-first")?;
+    if latency_first == Some(true) {
+        return Err(entry.unsupported("option 'latency-first' is not implemented"));
+    }
+    let disable_p2p = entry.bool("disable-p2p")?;
+    let enable_kcp_proxy = entry.bool("enable-kcp-proxy")?;
+    if enable_kcp_proxy == Some(true) {
+        return Err(entry.unsupported("option 'enable-kcp-proxy' is not implemented"));
+    }
+    let disable_kcp_input = entry.bool("disable-kcp-input")?;
+    let enable_quic_proxy = entry.bool("enable-quic-proxy")?;
+    if enable_quic_proxy == Some(true) {
+        return Err(entry.unsupported("option 'enable-quic-proxy' is not implemented"));
+    }
+    let disable_quic_input = entry.bool("disable-quic-input")?;
+    let mtu = match entry.int("mtu")? {
+        Some(value) if value != 0 && !(576..=65535).contains(&value) => {
+            return Err(entry.invalid("option 'mtu' must be between 576 and 65535"))
+        }
+        Some(value) => value as u16,
+        None => 0,
+    };
+    let tld_dns_zone = entry.string("tld-dns-zone")?.filter(|v| !v.is_empty());
+    if tld_dns_zone.is_some() {
+        return Err(entry.unsupported("option 'tld-dns-zone' is not implemented (T5 DNS)"));
+    }
+    let secure_mode = entry.bool("secure-mode")?;
+    if secure_mode == Some(true) {
+        return Err(entry.unsupported("option 'secure-mode' is not implemented"));
+    }
+    let local_private_key = entry.string("local-private-key")?.filter(|v| !v.is_empty()).map(Secret::new);
+    let local_public_key = entry.string("local-public-key")?.filter(|v| !v.is_empty()).map(Secret::new);
+    if local_private_key.is_some() || local_public_key.is_some() {
+        return Err(entry.unsupported(
+            "options 'local-private-key'/'local-public-key' are the Noise static keys of the unimplemented secure path",
+        ));
+    }
+    entry.reject_unknown(
+        &[
+            "network-name",
+            "network-secret",
+            "hostname",
+            "ipv4",
+            "dhcp",
+            "peers",
+            "listeners",
+            "no-listener",
+            "mapped-listeners",
+            "exit-nodes",
+            "proxy-networks",
+            "instance-name",
+            "state-dir",
+            "udp",
+            "accept-dns",
+            "enable-exit-node",
+            "enable-encryption",
+            "encryption-algorithm",
+            "private-mode",
+            "latency-first",
+            "disable-p2p",
+            "enable-kcp-proxy",
+            "disable-kcp-input",
+            "enable-quic-proxy",
+            "disable-quic-input",
+            "mtu",
+            "tld-dns-zone",
+            "secure-mode",
+            "local-private-key",
+            "local-public-key",
+        ],
+        false,
+        None,
+    )?;
+    Ok(EasytierOutbound {
+        network_name,
+        network_secret: Secret::new(network_secret),
+        hostname,
+        ipv4,
+        dhcp,
+        peers,
+        listeners,
+        no_listener,
+        mapped_listeners,
+        exit_nodes,
+        proxy_networks,
+        instance_name,
+        state_dir,
+        udp,
+        accept_dns,
+        enable_exit_node,
+        enable_encryption,
+        encryption_algorithm,
+        private_mode,
+        latency_first,
+        disable_p2p,
+        enable_kcp_proxy,
+        disable_kcp_input,
+        enable_quic_proxy,
+        disable_quic_input,
+        mtu,
+        tld_dns_zone,
+        secure_mode,
+        local_private_key,
+        local_public_key,
+    })
 }
 
 fn parse_socks5(entry: &mut Entry<'_>) -> Result<Socks5Outbound, ConfigError> {

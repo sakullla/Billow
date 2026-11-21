@@ -23,8 +23,9 @@ node tool/kernel-compat/capability.mjs --cache tool/kernel-compat/.cache \
 cargo build --release --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel-cli
 
 # Controlled peers for families with no Mihomo listener (gost-relay, ssh, ssr)
-# and the T16 device families (WireGuard via the locked wireguard-go device,
-# OpenVPN 2.7.9 via the Homebrew binary with --dev null),
+# and the T16/T19 device/mesh families (WireGuard via the locked wireguard-go
+# device, OpenVPN 2.7.9 via the Homebrew binary with --dev null, and the
+# tailscale/zerotier/easytier peers built from the locked Go modules),
 # the independent Go SSR server and the pinned SSR stream-cipher vectors;
 # needs `go`
 tool/kernel-compat/family-peers.sh
@@ -150,6 +151,16 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   audit and the license reasoning. The mieru option rows stay (5 no-op / 8
   enabled) and its five pinned-Mihomo peer cases are part of `peer-tests.sh`
   (50 cases).
+
+  T19 added the mesh adapters. `peers/tailscale-peer` uses the locked
+  BSD-3-Clause `controlbase.Server` for the Noise transport and an HTTP/2
+  server for `/machine/map`, plus a DERP greeting/client-info/ping echo;
+  `peers/zerotier-peer` uses the locked MPL-2.0 `zerotier-go` packet/identity
+  code to parse the Rust HELLO and build OK; `peers/easytier-peer` has a
+  controlled protobuf peer for the cleartext frame/digest boundary and a mode
+  that runs the pinned wasm core. `native-kernel/tests/mesh_peers.rs` covers
+  success, authentication failure and a boundary per family. The offline
+  dependency/licence/decision record is `evidence/t19-mesh.md`.
 
   T17 tried the clean-room `sudoku` rewrite and produced no client: the
   protocol is not specified at byte level anywhere public, the encoding

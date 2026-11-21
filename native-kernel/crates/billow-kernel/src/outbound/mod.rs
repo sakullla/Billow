@@ -11,6 +11,7 @@
 //!   session; the client sees the inbound failure reply.
 
 pub mod anytls;
+pub mod easytier;
 pub mod gost_relay;
 pub mod h3;
 pub mod http;
@@ -21,6 +22,8 @@ pub mod masque;
 pub mod mieru;
 pub mod openvpn;
 pub mod shadowsocks;
+pub mod tailscale;
+pub mod zerotier;
 pub mod shadowquic;
 pub mod snell;
 pub mod socks5;
@@ -402,6 +405,36 @@ async fn dial_inner(
                 io::Error::new(
                     io::ErrorKind::Unsupported,
                     "the control channel, TLS authentication and AEAD data channel are implemented, but IP packets through the tunnel need the userspace IP stack and TUN device owned by T6/T7 (use outbound::openvpn::OpenVpnTunnel for the data channel)",
+                ),
+            ))
+        }
+        Protocol::Tailscale(_) => {
+            refuse_chain(via, "tailscale")?;
+            Err(handshake(
+                "tailscale",
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the control-plane Noise transport, HTTP/2 control request and DERP frame codec are implemented in outbound/tailscale.rs, but TCP/UDP through the tunnel needs the userspace IP stack and TUN device owned by T6/T7",
+                ),
+            ))
+        }
+        Protocol::Zerotier(_) => {
+            refuse_chain(via, "zerotier")?;
+            Err(handshake(
+                "zerotier",
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the identity, planet, VL1 armor/HELLO/OK and VL2 frame layers are implemented in outbound/zerotier.rs, but TCP/UDP through the network needs the userspace IP stack and TUN device owned by T6/T7",
+                ),
+            ))
+        }
+        Protocol::Easytier(_) => {
+            refuse_chain(via, "easytier")?;
+            Err(handshake(
+                "easytier",
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the cleartext host/discovery handshake and peer-manager frame are implemented in outbound/easytier.rs, but TCP/UDP through the network needs the userspace IP stack and TUN device owned by T6/T7; the secure-datagram path is rejected at load",
                 ),
             ))
         }

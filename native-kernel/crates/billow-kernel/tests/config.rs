@@ -288,9 +288,9 @@ rules:
 
 #[test]
 fn unimplemented_protocol_and_option_name_the_field() {
-    let e = proxy_err("proxies:\n  - {name: s1, type: tailscale, server: x, port: 1}\nrules: ['MATCH,DIRECT']\n");
+    let e = proxy_err("proxies:\n  - {name: s1, type: mesh-unknown, server: x, port: 1}\nrules: ['MATCH,DIRECT']\n");
     assert!(e.starts_with("unsupported"), "{e}");
-    assert!(e.contains("proxies[0] (name=s1, type=tailscale)"), "{e}");
+    assert!(e.contains("proxies[0] (name=s1, type=mesh-unknown)"), "{e}");
     let e = proxy_err("proxies:\n  - {name: v, type: vless, server: x, port: 1, uuid: 9d0cb9d0964f4ef6897d6c6b3ccf9e68, tls: true, reality-opts: {public-key: k}}\nrules: ['MATCH,DIRECT']\n");
     assert!(
         e.contains("option 'reality-opts' is not implemented"),
@@ -1038,25 +1038,13 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
 
 #[test]
 fn deferred_families_name_their_decision() {
-    for (kind, needle) in [
-        // T13-A3 removed the GPL-3.0-derived Sudoku port; T17's clean-room
-        // attempt found the protocol's keyed table, handshake and record
-        // layers are not publicly specified, and the rejection points at that
-        // record.
-        ("sudoku", "t17-cleanroom.md"),
-        ("tailscale", "Tailscale control plane"),
-        ("zerotier", "Zerotier Rust crate"),
-        ("easytier", "easytier crate"),
-    ] {
-        let yaml = format!("proxies:\n  - {{name: p, type: {kind}, server: x, port: 1}}\nrules: ['MATCH,p']\n");
-        let e = proxy_err(&yaml);
-        assert!(e.contains(&format!("type={kind}")), "{kind}: {e}");
-        assert!(e.contains("is not implemented"), "{kind}: {e}");
-        assert!(e.contains(needle), "{kind}: {e}");
-    }
-    // The Sudoku rejection keeps the licence history alongside the T17 record
-    // and names the layers that would remain unimplemented even with a client.
+    // T13-A3 removed the GPL-3.0-derived Sudoku port; T17's clean-room
+    // attempt found the protocol's keyed table, handshake and record layers
+    // are not publicly specified, and the rejection points at that record.
     let sudoku = proxy_err("proxies:\n  - {name: p, type: sudoku, server: x, port: 1}\nrules: ['MATCH,p']\n");
+    assert!(sudoku.contains("type=sudoku"), "{sudoku}");
+    assert!(sudoku.contains("is not implemented"), "{sudoku}");
+    assert!(sudoku.contains("t17-cleanroom.md"), "{sudoku}");
     assert!(sudoku.contains("GPL-3.0 derivative"), "{sudoku}");
     assert!(sudoku.contains("not publicly specified"), "{sudoku}");
     assert!(sudoku.contains("multiplex"), "{sudoku}");
@@ -1153,32 +1141,43 @@ fn openvpn_accepts_the_pinned_shapes_and_names_its_gaps() {
 }
 
 #[test]
-fn mesh_control_planes_reject_configs_the_pinned_binary_accepts_by_name() {
+fn mesh_control_planes_load_the_pinned_shapes() {
     // These exact shapes pass `mihomo -t` for v1.19.34 (see
-    // tool/kernel-compat/evidence/t16-mesh-parity.log); the kernel must not
-    // load them as if it had the control plane.
+    // tool/kernel-compat/evidence/t16-mesh-parity.log). T19 implements the
+    // configuration semantics and protocol layers, so they load here too;
+    // every dial still names the T6/T7 device layer.
+    let identity = billow_kernel::outbound::zerotier::Identity::generate()
+        .secret_string()
+        .expect("secret identity");
     let cases = [
-        (
-            "tailscale",
-            "proxies:\n  - {name: m, type: tailscale, server: 127.0.0.1, port: 1}\nrules: ['MATCH,m']\n",
-            "Tailscale control plane",
-        ),
-        (
-            "zerotier",
-            "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001}\nrules: ['MATCH,m']\n",
-            "Zerotier Rust crate",
-        ),
-        (
-            "easytier",
-            "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['udp://127.0.0.1:11010']}\nrules: ['MATCH,m']\n",
-            "easytier crate",
-        ),
+        "proxies:\n  - {name: m, type: tailscale, server: 127.0.0.1, port: 1}\nrules: ['MATCH,m']\n".to_string(),
+        "proxies:\n  - {name: m, type: tailscale, hostname: billow, auth-key: tskey-1, control-url: http://127.0.0.1:1, accept-routes: true, exit-node: 100.64.0.1, ephemeral: true}\nrules: ['MATCH,m']\n".to_string(),
+        "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001}\nrules: ['MATCH,m']\n".to_string(),
+        format!("proxies:\n  - {{name: m, type: zerotier, network: 8056c2e21c000001, identity-secret: {identity}}}\nrules: ['MATCH,m']\n"),
+        "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['udp://127.0.0.1:11010']}\nrules: ['MATCH,m']\n".to_string(),
+        "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['tcp://127.0.0.1:11010'], enable-encryption: false, encryption-algorithm: chacha20, disable-p2p: true}\nrules: ['MATCH,m']\n".to_string(),
     ];
-    for (kind, yaml, needle) in cases {
+    for yaml in cases {
+        assert_eq!(proxy_err(&yaml), "ok", "{yaml}");
+    }
+    // Encrypted EasyTier and device-stack-only options are explicit rejections.
+    for (yaml, needle) in [
+        (
+            "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1'], enable-encryption: true}\nrules: ['MATCH,m']\n",
+            "secure-datagram",
+        ),
+        (
+            "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001, ip-stack: {mode: gvisor}}\nrules: ['MATCH,m']\n",
+            "ip-stack",
+        ),
+        (
+            "proxies:\n  - {name: m, type: tailscale, control-url: http://127.0.0.1:1, dialer-proxy: p2}\n  - {name: p2, type: direct}\nrules: ['MATCH,m']\n",
+            "dialer-proxy",
+        ),
+    ] {
         let error = proxy_err(yaml);
-        assert!(error.starts_with("unsupported:"), "{kind}: {error}");
-        assert!(error.contains(&format!("type={kind}")), "{kind}: {error}");
-        assert!(error.contains(needle), "{kind}: {error}");
+        assert!(error.starts_with("unsupported:"), "{error}");
+        assert!(error.contains(needle), "{error}");
     }
 }
 
@@ -1186,6 +1185,9 @@ fn mesh_control_planes_reject_configs_the_pinned_binary_accepts_by_name() {
 async fn implemented_device_families_load_and_dial_names_the_t6_t7_gap() {
     const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     let ca = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+    let zt_identity = billow_kernel::outbound::zerotier::Identity::generate()
+        .secret_string()
+        .expect("secret identity");
     let configs = [
         format!(
             "mixed-port: 1\nproxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 9, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}]}}\nrules: ['MATCH,wg']\n"
@@ -1193,6 +1195,11 @@ async fn implemented_device_families_load_and_dial_names_the_t6_t7_gap() {
         format!(
             "mixed-port: 1\nproxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 9, ca: \"{ca}\"}}\nrules: ['MATCH,ov']\n"
         ),
+        "mixed-port: 1\nproxies:\n  - {name: ts, type: tailscale, control-url: http://127.0.0.1:1}\nrules: ['MATCH,ts']\n".to_string(),
+        format!(
+            "mixed-port: 1\nproxies:\n  - {{name: zt, type: zerotier, network: 8056c2e21c000001, identity-secret: {zt_identity}}}\nrules: ['MATCH,zt']\n"
+        ),
+        "mixed-port: 1\nproxies:\n  - {name: et, type: easytier, network-name: billow, network-secret: s, peers: ['tcp://127.0.0.1:1']}\nrules: ['MATCH,et']\n".to_string(),
     ];
     for yaml in configs {
         let loaded = load_config(&yaml, "dial-gap.yaml").expect("configuration loads");

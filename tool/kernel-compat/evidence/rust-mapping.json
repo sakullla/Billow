@@ -979,16 +979,94 @@
       "license": "No wireguard/boringtun crate and no GPL source copied; the locked MIT wireguard-go device is a test peer only. See tool/kernel-compat/evidence/t16-provenance.md."
     },
     "tailscale": {
-      "status": "unimplemented",
-      "reason": "the pinned outbound (with_gvisor) embeds the tailscale.com control plane and a gVisor netstack; device/TUN ownership is T6/T7 and no Rust tailscale stack is available offline"
+      "status": "partial",
+      "reason": "The control-base Noise IK transport, the HTTP/2 /machine/map request and the DERP greeting/client-info/ping/packet frames are implemented in src/outbound/tailscale.rs and verified against a controlled peer built from the locked BSD-3-Clause tailscale module. TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device, so dial() refuses with that gap named.",
+      "options": [
+        "hostname",
+        "auth-key",
+        "control-url",
+        "state-dir",
+        "ephemeral",
+        "udp",
+        "accept-routes",
+        "exit-node",
+        "exit-node-allow-lan-access"
+      ],
+      "evidence": [
+        "src/outbound/tailscale.rs::tests::nacl_box_roundtrips_and_rejects_tampering",
+        "src/outbound/tailscale.rs::tests::control_records_use_the_pinned_framing",
+        "src/outbound/tailscale.rs::tests::initiation_has_the_pinned_header",
+        "src/outbound/tailscale.rs::tests::derp_server_key_body_starts_with_the_magic",
+        "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
+        "tests/mesh_peers.rs::tailscale_control_noise_and_http2",
+        "tests/mesh_peers.rs::tailscale_derp_greeting_and_ping",
+        "tool/kernel-compat/evidence/t19-mesh.md"
+      ],
+      "notes": "Config-only registration/state options are accepted and validated; the control key is supplied by the caller/state layer because the pinned type does not declare an option for it. Basic socket-shaping options (tfo/mptcp/interface-name/routing-mark/ip-version) and dialer-proxy are rejected with the T6/T7 boundary.",
+      "license": "No Tailscale source is copied or linked; the locked BSD-3-Clause module is a test peer only. See tool/kernel-compat/evidence/t19-mesh.md."
     },
     "zerotier": {
-      "status": "unimplemented",
-      "reason": "the pinned outbound wraps zerotier-go (identity, planet, control protocol, crypto) plus a gVisor netstack; device/TUN ownership is T6/T7 and no Rust zerotier stack is available offline"
+      "status": "partial",
+      "reason": "Identity generation/parsing (address proof of work), planet/moon parsing, VL1 packet armor (Salsa20/12 + Poly1305 and protocol-13 extended HELLO), HELLO/OK/WHOIS/ECHO and the VL2 frame payload are implemented in src/outbound/zerotier.rs and verified against a controlled peer built from the locked MPL-2.0 zerotier-go module. TCP/UDP through the network needs the T6/T7 userspace IP stack, and the controller membership exchange is T5, so dial() refuses with that gap named.",
+      "options": [
+        "network",
+        "state-dir",
+        "identity-secret",
+        "planet",
+        "mtu",
+        "physical-mtu",
+        "udp",
+        "low-bandwidth",
+        "encrypted-hello",
+        "primary-port",
+        "secondary-port",
+        "tcp-fallback-mode",
+        "tcp-fallback-relay",
+        "orbit"
+      ],
+      "evidence": [
+        "src/outbound/zerotier.rs::tests::identity_generation_and_text_roundtrip",
+        "src/outbound/zerotier.rs::tests::packet_armor_roundtrips_and_rejects_tampering",
+        "src/outbound/zerotier.rs::tests::hello_has_the_pinned_payload_shape",
+        "src/outbound/zerotier.rs::tests::world_parser_reads_roots_and_rejects_truncation",
+        "src/outbound/zerotier.rs::tests::network_ids_and_vl2_frames",
+        "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
+        "tests/mesh_peers.rs::zerotier_hello_success_and_failure",
+        "tool/kernel-compat/evidence/t19-mesh.md"
+      ],
+      "notes": "An explicit ip-stack block and remote-dns-resolve/dns are rejected because they ask for the T6/T7 userspace stack; remote-trace-target/level are rejected until implemented. The network-controller membership/config verbs are T5.",
+      "license": "No ZeroTier source is copied or linked; the locked MPL-2.0 module is a test peer only. See tool/kernel-compat/evidence/t19-mesh.md."
     },
     "easytier": {
-      "status": "unimplemented",
-      "reason": "the pinned outbound embeds the easytier-go host/instance (peer discovery, encryption, KCP/QUIC proxies) plus a netstack; device/TUN ownership is T6/T7 and no Rust easytier stack is available offline"
+      "status": "partial",
+      "reason": "The cleartext host/discovery frame, HandshakeRequest, PeerManagerHeader and PingPong are implemented in src/outbound/easytier.rs and verified against a controlled peer built from the locked EasyTier protobuf schema plus the pinned wasm core's observed frames. The secure-datagram path (enable-encryption: true, AES-GCM/ChaCha20 + Noise XX) is rejected at load because the core is distributed only as a wasm artifact and no source/crate is in the offline cache; the pinned core also derives network_secret_digest inside that artifact, so a real core rejects this adapter's placeholder digest (recorded boundary). TCP/UDP through the network is T6/T7.",
+      "options": [
+        "network-name",
+        "network-secret",
+        "hostname",
+        "ipv4",
+        "dhcp",
+        "peers",
+        "listeners",
+        "no-listener",
+        "instance-name",
+        "state-dir",
+        "udp",
+        "enable-encryption",
+        "encryption-algorithm",
+        "disable-p2p"
+      ],
+      "evidence": [
+        "src/outbound/easytier.rs::tests::frame_roundtrips_with_the_pinned_byte_order",
+        "src/outbound/easytier.rs::tests::handshake_request_roundtrips_and_checks_magic",
+        "src/outbound/easytier.rs::tests::peer_manager_header_roundtrips",
+        "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
+        "tests/mesh_peers.rs::easytier_cleartext_handshake_and_authentication",
+        "tests/mesh_peers.rs::easytier_pinned_core_rejects_a_non_matching_digest",
+        "tool/kernel-compat/evidence/t19-mesh.md"
+      ],
+      "notes": "mapped-listeners, exit-nodes, proxy-networks, accept-dns, enable-exit-node, private-mode, latency-first, KCP/QUIC proxies, tld-dns-zone, secure-mode and local key material are rejected by name. The pinned core's digest derivation is not public; success is verified against the controlled protobuf peer, and the pinned core's rejection is the authentication boundary.",
+      "license": "No EasyTier source or wasm is vendored or linked; the locked LGPL-3.0 test peer and wasm core are test-only. Our framing/protobuf expression was written from the pinned schema and captures. See tool/kernel-compat/evidence/t19-mesh.md."
     },
     "openvpn": {
       "status": "partial",
@@ -1151,20 +1229,8 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters (mesh families rejected). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku`; T17's clean-room attempt stayed rejected because the protocol is not publicly specified (evidence/t17-cleanroom.md). T5 owns the built-in direct/dns/reject/rematch adapters.",
+    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters; T19 implemented the tailscale/zerotier/easytier protocol and configuration adapters (partial; device/TUN remains T6/T7). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku`; T17's clean-room attempt stayed rejected because the protocol is not publicly specified (evidence/t17-cleanroom.md). T5 owns the built-in direct/dns/reject/rematch adapters.",
     "entries": {
-      "tailscale": {
-        "owner": "T16 (rejected) / future control-plane task",
-        "reason": "controlplane.tailscale.com Noise control + DERP relays + gVisor netstack; no Rust crate offline; data-path WireGuard transport exists in outbound/wireguard.rs. T6/T7 own device/TUN."
-      },
-      "zerotier": {
-        "owner": "T16 (rejected) / future control-plane task",
-        "reason": "zerotier-go identity/planet/VL1/VL2 control protocol + Salsa20/Poly1305 + gVisor netstack; no Rust crate offline. T6/T7 own device/TUN."
-      },
-      "easytier": {
-        "owner": "T16 (rejected) / future control-plane task",
-        "reason": "easytier-go host/discovery/encryption + KCP/QUIC proxies + netstack; the upstream project is Rust but no easytier crate is in the offline cache. T6/T7 own device/TUN."
-      },
       "direct": {
         "owner": "T5",
         "reason": "built-in; DIRECT is already a rule action"

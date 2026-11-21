@@ -31,11 +31,16 @@ protocol halves of `wireguard` (Noise IK handshake, cookie reply, transport
 keys, replay window and keepalive, verified against the locked
 `metacubex/wireguard-go` device) and `openvpn` (UDP/TCP control channel,
 TLS 1.2/1.3 client authentication, key-method 2 and the AEAD data channel,
-verified against OpenVPN 2.7.9), plus the mesh families' configuration
-decisions: `tailscale`, `zerotier` and `easytier` are rejected by name because
-their control planes are not available offline. Device/TUN ownership and the
-userspace IP stack stay with T6/T7, so both implemented families load a valid
-configuration and refuse every `dial()` with that gap named. The T10/T14/T15/
+verified against OpenVPN 2.7.9). T19 added the mesh adapters: `tailscale`
+(control-base Noise IK, the HTTP/2 `/machine/map` control request and the DERP
+greeting/client-info/ping/packet frames), `zerotier` (identity proof of work,
+planet/moon parsing, VL1 armor and HELLO/OK/WHOIS/ECHO, VL2 frame payload) and
+`easytier` (the cleartext host/discovery frame, `HandshakeRequest`,
+`PeerManagerHeader` and PingPong). Device/TUN ownership and the userspace IP
+stack stay with T6/T7, so every mesh family loads a valid configuration and
+refuses every `dial()` with that gap named. EasyTier's secure-datagram path and
+the derived `network_secret_digest` are not available offline and are rejected
+or recorded as a boundary instead of being claimed compatible. The T10/T14/T15/
 T16 families are partial: their gaps are named in
 [Not implemented](#not-implemented) and in
 `tool/kernel-compat/evidence/rust-mapping.json`.
@@ -59,8 +64,11 @@ native-kernel/
     │   ├── src/outbound/           # socks5, http, ss, trojan, vless, anytls, vmess, snell,
     │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, masque,
     │   │                           # shadowquic + jls (recorded-random TLS hook),
-    │   │                           # wireguard (Noise IK/transport) and openvpn
+    │   │                           # wireguard (Noise IK/transport), openvpn
     │   │                           # (control/TLS/key-method 2/AEAD data channel),
+    │   │                           # tailscale (control Noise/HTTP2 + DERP),
+    │   │                           # zerotier (identity/planet/VL1/VL2) and
+    │   │                           # easytier (cleartext host/discovery),
     │   │                           # quic, h3 + tls, ws, h2
     │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid
     │   ├── src/rules.rs            # rule set evaluation
@@ -239,8 +247,13 @@ The pinned parser lists 28 outbound types, matching the status recorded in
   QUIC `v2` and the private Brutal congestion options are rejected), and
   `wireguard`/`openvpn` (protocol transports implemented, TCP/UDP dial needs
   the T6/T7 userspace IP stack and TUN device);
-- **unimplemented (4)**: `sudoku` (the clean-room port is blocked; rejected by
-  name) and the mesh families `tailscale`, `zerotier`, `easytier`;
+- **partial (3 more)**: `tailscale` (control/DERP protocol halves; the tunnel
+  still needs T6/T7), `zerotier` (identity/planet/VL1/VL2 protocol halves; the
+  controller membership exchange is T5 and the tunnel needs T6/T7) and
+  `easytier` (cleartext host/discovery; the secure-datagram/digest path is
+  rejected by name);
+- **unimplemented (1)**: `sudoku` (the clean-room port is blocked; rejected by
+  name);
 - **built-ins (4)**: `direct`, `dns`, `reject` and `rematch` as `proxies`
   entries (T5).
 
@@ -250,7 +263,7 @@ is silently reduced:
 | families | why not here | task / decision |
 | --- | --- | --- |
 | `wireguard`, `openvpn` | the protocol halves are implemented (`src/outbound/wireguard.rs`, `src/outbound/openvpn.rs`) and verified against controlled peers, but turning their IP packets into TCP streams needs the userspace IP stack and TUN device owned by T6/T7 | **T16**: transport + configuration semantics; a `dial()` names the T6/T7 device gap. `outbound::wireguard::WireguardTunnel` and `outbound::openvpn::OpenVpnTunnel` are the interfaces for that layer |
-| `tailscale`, `zerotier`, `easytier` | control planes are external services and no Rust implementation is in the offline cargo cache: Tailscale's `controlplane.tailscale.com` Noise control + DERP relays, ZeroTier's identity/planet/VL1/VL2, EasyTier's host/discovery (the upstream project is Rust but no `easytier` crate is cached); all three also need the T6/T7 IP stack | **T16 rejected by name** with the missing dependency recorded; the Tailscale data path's WireGuard transport is already available |
+| `tailscale`, `zerotier`, `easytier` | the protocol/configuration adapters are implemented in `src/outbound/{tailscale,zerotier,easytier}.rs` and verified against controlled peers built from the locked Go modules; the tunnel's TCP/UDP socket layer needs the T6/T7 userspace IP stack and TUN device, and EasyTier's secure-datagram path (AES-GCM/ChaCha20 + Noise XX + the pinned core's private digest derivation) is not available offline | **T19 partial**: control/DERP, identity/planet/VL1/VL2 and cleartext host/discovery are available to T6/T7/T5; `dial()` names the device gap; EasyTier `enable-encryption: true` is rejected by name |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
 
 T13 delivered `mieru` in the single-session TCP slice: an independent
@@ -397,9 +410,14 @@ accepted and used by the transport. `openvpn` rejects `tls-auth`/`tls-crypt`/
 `tls-crypt-v2` (the static-key control-packet codec), `comp-lzo: yes|adaptive`
 (compression), the CBC data ciphers and a non-`tun` `dev`; it implements the
 AEAD data ciphers, the `data-ciphers` negotiation, inline `ca`/`cert`/`key`,
-username/password, `peer-info`, UDP and TCP framing. The mesh families
-(`tailscale`, `zerotier`, `easytier`) are rejected as whole types with the
-missing control plane named, never loaded as if compatible.
+username/password, `peer-info`, UDP and TCP framing. The mesh
+families are partial: `tailscale` accepts every pinned option and exposes the
+control-base Noise/HTTP2 and DERP layers; `zerotier` accepts the identity,
+planet, MTU, port, orbit, low-bandwidth and encrypted-HELLO options and rejects
+an explicit `ip-stack`, `remote-dns-resolve`/`dns` and remote trace with the
+T6/T7/T5 boundary; `easytier` accepts the cleartext host/discovery options and
+rejects `enable-encryption: true` plus the KCP/QUIC/private-mode/DNS/exit-node
+and key-material options by name. Every mesh `dial()` names the T6/T7 gap.
 `udp: false` is accepted for a family that has no UDP association because it
 states the same thing this kernel does; `udp` is not a
 Mihomo HTTP option at all and is rejected there. Unsupported protocol types are
