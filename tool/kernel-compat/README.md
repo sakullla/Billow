@@ -22,6 +22,11 @@ node tool/kernel-compat/capability.mjs --cache tool/kernel-compat/.cache \
 # Rust kernel CLI (workspace member billow-kernel-cli, binary billow-kernel)
 cargo build --release --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel-cli
 
+# Option rejection: every key the Rust mapping marks unimplemented must fail
+# the kernel's own --check with the field named (exit 1 if one is accepted)
+node tool/kernel-compat/option-probe.mjs --rust <path-to-billow-kernel> \
+  --out tool/kernel-compat/evidence/option-rejection.txt
+
 # Differential run; pass each kernel explicitly (repeatable --fixture, --report-name)
 node tool/kernel-compat/runner.mjs \
   --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
@@ -72,12 +77,18 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   `coverage` (`mapped` counts only `implemented` entries; `partial` names what is missing).
   An entry without a Rust statement is `unimplemented`, never compatible.
 - `evidence/protocol-peers.json` (with `protocol-peers-run.log`) — the controlled real-peer
-  matrix: each family, its positive and negative cases, the exact test command, the peer
-  binary identity and the platform condition. It is produced by
+  matrix: each family (TCP and, for ss/trojan, UDP), its positive and negative cases, the
+  exact test command, the peer binary identity and the platform condition. Loopback-only
+  evidence that needs a test-controlled certificate or UDP echo is named separately. It is produced by
   `native-kernel/tests/mihomo_peers.rs` (ignored by default):
 
   ```sh
-  KC_MIHOMO_BIN=tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 \
+  # resolves the repository root, the cache and the pinned binary
+  tool/kernel-compat/peer-tests.sh
+
+  # or explicitly; cargo test runs from native-kernel/crates/billow-kernel,
+  # so the path must be absolute
+  KC_MIHOMO_BIN=/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 \
     cargo test --manifest-path native-kernel/Cargo.toml --locked \
     --test mihomo_peers -- --ignored --test-threads=1
   ```
@@ -87,6 +98,10 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   established but nothing received (the peer's log shows its listener up and no connection)
   after many cases in one test process, so the suite is run serially and rerun once in that
   case — a rerun is never recorded as a first-attempt pass.
+
+`evidence/option-rejection.txt` is the probe's output: one line per option,
+each rejected by `--check` with the option named. It is regenerated with
+`option-probe.mjs` and fails (exit 1) if a future option table admits one.
 
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every

@@ -2,7 +2,9 @@
 //! RFC 1929 username/password) and HTTP CONNECT on the same listener.
 //!
 //! Either way the handshake ends in a [`Request`] that the engine evaluates
-//! against the rule set before dialling (DIRECT) or refusing (REJECT).
+//! against the rule set before dialling (DIRECT) or refusing (REJECT). SOCKS5
+//! `UDP ASSOCIATE` is accepted as well: the engine answers with its relay
+//! socket and forwards each datagram through the same rules.
 
 use std::io;
 
@@ -19,8 +21,19 @@ pub struct Request {
     pub host: String,
     pub port: u16,
     pub protocol: Protocol,
+    pub command: Command,
     /// HTTP CONNECT headers (lowercased names), empty for SOCKS5.
     pub headers: Vec<(String, String)>,
+}
+
+/// The inbound command of a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    /// TCP CONNECT (the only command HTTP CONNECT maps to).
+    Connect,
+    /// SOCKS5 `UDP ASSOCIATE`; `host`/`port` are the client's hint, usually
+    /// `0.0.0.0:0`.
+    UdpAssociate,
 }
 
 impl Request {
@@ -173,6 +186,27 @@ where
     } else {
         Err(HandshakeError::UnknownProtocol(first[0]))
     }
+}
+
+/// Reply to a SOCKS5 `UDP ASSOCIATE` with the relay socket the client must
+/// send its datagrams to.
+pub async fn reply_udp_associate<S>(stream: &mut S, relay: std::net::SocketAddr) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    let mut reply = vec![0x05, 0x00, 0x00];
+    match relay.ip() {
+        std::net::IpAddr::V4(v4) => {
+            reply.push(0x01);
+            reply.extend_from_slice(&v4.octets());
+        }
+        std::net::IpAddr::V6(v6) => {
+            reply.push(0x04);
+            reply.extend_from_slice(&v6.octets());
+        }
+    }
+    reply.extend_from_slice(&relay.port().to_be_bytes());
+    stream.write_all(&reply).await
 }
 
 /// Reply success and return the stream positioned at the tunnel payload.
@@ -340,14 +374,18 @@ where
     if request[0] != 0x05 {
         return Err(HandshakeError::SocksUnsupported("version"));
     }
-    if request[1] != 0x01 {
-        // CONNECT only; BIND and UDP ASSOCIATE are refused with the SOCKS5
-        // "command not supported" reply instead of a silent close.
-        let _ = stream
-            .write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-            .await;
-        return Err(HandshakeError::SocksUnsupported("command"));
-    }
+    let command = match request[1] {
+        0x01 => Command::Connect,
+        0x03 => Command::UdpAssociate,
+        _ => {
+            // BIND and unknown commands are refused with the SOCKS5 "command
+            // not supported" reply instead of a silent close.
+            let _ = stream
+                .write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await;
+            return Err(HandshakeError::SocksUnsupported("command"));
+        }
+    };
     let host = read_socks_address(stream, request[3]).await?;
     let mut port = [0u8; 2];
     stream.read_exact(&mut port).await?;
@@ -355,6 +393,7 @@ where
         host,
         port: u16::from_be_bytes(port),
         protocol: Protocol::Socks5,
+        command,
         headers: Vec::new(),
     })
 }
@@ -484,6 +523,7 @@ where
         host,
         port,
         protocol: Protocol::HttpConnect,
+        command: Command::Connect,
         headers,
     })
 }

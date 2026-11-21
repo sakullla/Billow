@@ -23,6 +23,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use super::{connect_tcp, handshake, tls, DialError, Dialed, Target};
 use crate::proxies::AnytlsOutbound;
 
+use super::tls::ClientTls;
+
 const CMD_WASTE: u8 = 0;
 const CMD_SYN: u8 = 1;
 const CMD_PSH: u8 = 2;
@@ -324,10 +326,14 @@ where
     }
 }
 
-pub async fn dial(option: &AnytlsOutbound, target: &Target) -> Result<Dialed, DialError> {
+pub async fn dial(
+    option: &AnytlsOutbound,
+    target: &Target,
+    tls: &ClientTls,
+) -> Result<Dialed, DialError> {
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("anytls", e))?;
-    let mut stream = tls::wrap(tcp, &option.server, &option.tls_settings)
+    let mut stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
         .await
         .map_err(|e| handshake("anytls tls", e))?;
     stream

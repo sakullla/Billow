@@ -267,6 +267,171 @@ fn unimplemented_protocol_and_option_name_the_field() {
     );
 }
 
+
+/// The option table must not admit a key the parser does not honour: each of
+/// these was silently accepted before the T4 repair. One case per key so a
+/// regression names the exact field.
+#[test]
+fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("socks5", "server: 127.0.0.1, port: 1", "udp: true"),
+        ("socks5", "server: 127.0.0.1, port: 1", "fingerprint: chrome"),
+        ("socks5", "server: 127.0.0.1, port: 1", "certificate: x.pem"),
+        ("socks5", "server: 127.0.0.1, port: 1", "private-key: k.pem"),
+        ("socks5", "server: 127.0.0.1, port: 1", "name-cert-verify: x"),
+        ("socks5", "server: 127.0.0.1, port: 1", "ip-version: ipv4"),
+        ("http", "server: 127.0.0.1, port: 1", "fingerprint: chrome"),
+        ("http", "server: 127.0.0.1, port: 1", "certificate: x.pem"),
+        ("http", "server: 127.0.0.1, port: 1", "private-key: k.pem"),
+        ("http", "server: 127.0.0.1, port: 1", "name-cert-verify: x"),
+        ("http", "server: 127.0.0.1, port: 1", "ip-version: ipv4"),
+        ("http", "server: 127.0.0.1, port: 1", "udp: true"),
+        (
+            "ss",
+            "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
+            "udp-over-tcp: true",
+        ),
+        (
+            "ss",
+            "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
+            "udp-over-tcp-version: 2",
+        ),
+        (
+            "ss",
+            "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
+            "client-fingerprint: chrome",
+        ),
+        (
+            "ss",
+            "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
+            "ip-version: ipv4",
+        ),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {enabled: true}"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ech-opts: {enable: true}"),
+        (
+            "trojan",
+            "server: 127.0.0.1, port: 1, password: p",
+            "shadow-tls-opts: {password: p}",
+        ),
+        (
+            "trojan",
+            "server: 127.0.0.1, port: 1, password: p",
+            "restls-opts: {password: p}",
+        ),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "jls-opts: {password: p}"),
+        (
+            "trojan",
+            "server: 127.0.0.1, port: 1, password: p",
+            "client-fingerprint: chrome",
+        ),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ip-version: ipv4"),
+        (
+            "vless",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "ech-opts: {enable: true}",
+        ),
+        (
+            "vless",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "shadow-tls-opts: {password: p}",
+        ),
+        (
+            "vless",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "restls-opts: {password: p}",
+        ),
+        (
+            "vless",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "jls-opts: {password: p}",
+        ),
+        (
+            "vless",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "client-fingerprint: chrome",
+        ),
+        (
+            "vless",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "ip-version: ipv4",
+        ),
+        (
+            "vless",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "udp: true",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "ech-opts: {enable: true}",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "shadow-tls-opts: {password: p}",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "restls-opts: {password: p}",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "jls-opts: {password: p}",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "client-fingerprint: chrome",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "ip-version: ipv4",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "fingerprint: chrome",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "certificate: x.pem",
+        ),
+        (
+            "anytls",
+            "server: 127.0.0.1, port: 1, password: p",
+            "private-key: k.pem",
+        ),
+    ];
+    for (kind, base, option) in cases {
+        let key = option.split(':').next().unwrap_or_default();
+        let yaml = format!(
+            "proxies:\n  - {{name: p, type: {kind}, {base}, {option}}}\nrules: ['MATCH,p']\n"
+        );
+        let e = proxy_err(&yaml);
+        assert!(e.starts_with("unsupported"), "{kind}/{key}: {e}");
+        assert!(e.contains(&format!("option '{key}'")), "{kind}/{key}: {e}");
+    }
+    // The no-op form of a boolean states what the kernel already does.
+    for (kind, base, option) in [
+        ("socks5", "server: 127.0.0.1, port: 1", "udp: false"),
+        (
+            "vless",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "udp: false",
+        ),
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "udp: false"),
+    ] {
+        let yaml = format!(
+            "proxies:\n  - {{name: p, type: {kind}, {base}, {option}}}\nrules: ['MATCH,p']\n"
+        );
+        assert_eq!(proxy_err(&yaml), "ok", "{kind}/{option} should load");
+    }
+}
+
 #[test]
 fn proxy_list_rejects_bad_shapes_and_names() {
     assert!(proxy_err("proxies: {}\n").starts_with("invalid_value"));
@@ -301,12 +466,16 @@ fn authentication_is_parsed_for_the_inbound() {
     assert!(err_tag("authentication: [':x']\n").starts_with("invalid_value"));
 }
 
+/// A self-signed CA certificate committed with the test (no private key): the
+/// parser only needs a PEM block, so the case does not depend on any file that
+/// happens to exist on the machine.
+const TEST_ROOT_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIC9jCCAd6gAwIBAgIUelKdKzfsjux9SN8/Qn4tL9YDcDIwDQYJKoZIhvcNAQEL\nBQAwGzEZMBcGA1UEAwwQYmlsbG93LXRlc3Qtcm9vdDAeFw0yNjExMjEwNDExMTla\nFw0zNjExMTgwNDExMTlaMBsxGTAXBgNVBAMMEGJpbGxvdy10ZXN0LXJvb3QwggEi\nMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC2wRi2FVbHIunj30b3Jn2t5HUT\nqBpmUXc+554NeKtqP9NoCTFmZkhDfTRgakZpzJiT3GwizRASCM2622IqlEcHzINl\nZ+vsWAf9K8gHIgcHlCA8W43VW+eR9WoPAKwyFd9s2XP4ybFz7JuKAIsvCChFE894\nhuCbDsJ1tSzBdMhazwlr1VYHPKyQsXNYHWjRUCizEe+zWDbNbdwMduqL13k0XJ3G\n+9Eq0Y1QASbTUGYcoBUtDTpK5Dw2yKMrfNgRsOY9JpazRUZHPJVoRqQA2ynXdWLa\nrPeDVh7ft4MLELi7XsxnqK6ilWlqGZ1mIlyBA1V7SEKAQvVPuB7q3ZDS6ZmXAgMB\nAAGjMjAwMB0GA1UdDgQWBBT40+3az1yyAvbYOv/DssEWj1kIljAPBgNVHRMBAf8E\nBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQAnRn5jByX32e7OOb1Z0GOejmCgDMoC\nME5fQElY4zyrMQ+/Ee6WyHbZMyK3my3JArc/NBIABz69rMXpBCR1K+UEqopjdxhX\niDuRqx3BtMaGRl+/2Zf2yvYdDObWzW1vPWViV+nYy/FQZpvG/Vq3weuC3O8HpCeh\n5xh9V9yh2XUbOsJGWcdwXxVGSgRkReueCN2BZCL1htpOFr2bNYTraeH9z8jmjRIR\nKGPvMu2bOX3cnpyynHKC+ppP1Xh5kH7GP/a39aIUMzxR/pM5TRGFHtoA4QyaZhE7\nds7T4WWGAhf+mImBbogczhBpT0POr/8m+gV8vHwpb/mJrvXK/ELuGWVH\n-----END CERTIFICATE-----\n";
+
 #[test]
 fn tls_roots_are_loaded_and_unknown_tls_keys_fail() {
     let dir = std::env::temp_dir().join(format!("billow-tls-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("custom")).unwrap();
-    let pem = std::fs::read_to_string("/tmp/certtest/cert.pem").expect("test certificate");
-    std::fs::write(dir.join("custom/root.pem"), &pem).unwrap();
+    std::fs::write(dir.join("custom/root.pem"), TEST_ROOT_PEM).unwrap();
     let yaml = format!(
         "tls:\n  certificate: {}\nmixed-port: 1\n",
         dir.join("custom").display()

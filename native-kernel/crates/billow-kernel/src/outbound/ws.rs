@@ -4,6 +4,17 @@
 //! both directions with client-side masking, fragmentation reassembly,
 //! ping/pong and close. Text and compressed (per-message deflate) frames are
 //! not negotiated and are refused if a peer sends them anyway.
+//!
+//! Two handshakes exist in the pinned version:
+//! - the standard WebSocket upgrade (a `Sec-WebSocket-Key` and a checked
+//!   `Sec-WebSocket-Accept`), and
+//! - `ws-opts.v2ray-http-upgrade: true`, where the client sends `Upgrade:
+//!   websocket` *without* a key and both sides treat the connection as a raw
+//!   byte tunnel after the `101` (Mihomo detects it as `IsV2rayHttpUpdate`).
+//!
+//! `ws-opts.headers` may override `Host` (a CDN front often needs that while
+//! the TLS name stays the `sni`); the other fixed header names are refused by
+//! the configuration parser.
 
 use std::io;
 use std::pin::Pin;
@@ -30,19 +41,30 @@ pub async fn connect<S>(
     host_header: &str,
     path: &str,
     headers: &[(String, String)],
-) -> io::Result<WebSocketStream<S>>
+    v2ray_http_upgrade: bool,
+) -> io::Result<Tunnel<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut key_bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut key_bytes);
-    let key = super::base64(&key_bytes);
-    // No `Sec-WebSocket-Protocol`: Mihomo's server reads a non-empty value as
-    // Xray 0-RTT early data, and its own client only sets the header then.
+    // A `headers` entry named Host overrides the TLS/SNI-derived value, as in
+    // the pinned client; every other fixed name was rejected at load time.
+    let host = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("host"))
+        .map(|(_, value)| value.as_str())
+        .unwrap_or(host_header);
+    let mut key = String::new();
     let mut request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host_header}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-         Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
     );
+    if !v2ray_http_upgrade {
+        let mut key_bytes = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut key_bytes);
+        key = super::base64(&key_bytes);
+        request.push_str(&format!(
+            "Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+        ));
+    }
     for (name, value) in headers {
         if name.eq_ignore_ascii_case("host")
             || name.eq_ignore_ascii_case("upgrade")
@@ -93,12 +115,36 @@ where
         ));
     }
     let mut accept = None;
+    let mut upgrade = None;
+    let mut connection = None;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("sec-websocket-accept") {
+            let name = name.trim();
+            if name.eq_ignore_ascii_case("sec-websocket-accept") {
                 accept = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("upgrade") {
+                upgrade = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("connection") {
+                connection = Some(value.trim().to_string());
             }
         }
+    }
+    if v2ray_http_upgrade {
+        // The pinned server answers a key-less upgrade with the same header
+        // pair and then treats the stream as raw bytes.
+        if !upgrade
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+            || !connection
+                .as_deref()
+                .is_some_and(|value| value.to_ascii_lowercase().contains("upgrade"))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "v2ray HTTP upgrade: response is not a websocket upgrade",
+            ));
+        }
+        return Ok(Tunnel::Raw(stream));
     }
     let expected = base64_sha1(format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes());
     if accept.as_deref() != Some(expected.as_str()) {
@@ -107,7 +153,7 @@ where
             "WebSocket upgrade: bad Sec-WebSocket-Accept",
         ));
     }
-    Ok(WebSocketStream {
+    Ok(Tunnel::Framed(WebSocketStream {
         inner: stream,
         raw: Vec::new(),
         read_buf: Vec::new(),
@@ -119,7 +165,61 @@ where
         control: Vec::new(),
         control_pos: 0,
         closed: false,
-    })
+    }))
+}
+
+/// The transport a `network: ws` dial ends up with.
+pub enum Tunnel<S> {
+    /// Framed WebSocket (the standard upgrade).
+    Framed(WebSocketStream<S>),
+    /// Raw byte tunnel after a key-less upgrade (`v2ray-http-upgrade: true`).
+    Raw(S),
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for Tunnel<S> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match self.get_mut() {
+            Tunnel::Framed(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+            Tunnel::Raw(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Tunnel<S> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Tunnel::Framed(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+            Tunnel::Raw(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match self.get_mut() {
+            Tunnel::Framed(stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            Tunnel::Raw(stream) => std::pin::Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match self.get_mut() {
+            Tunnel::Framed(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            Tunnel::Raw(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+        }
+    }
 }
 
 /// `base64(SHA-1(input))`, the RFC 6455 handshake digest.

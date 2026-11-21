@@ -9,11 +9,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, Wr
 use super::{connect_hop, handshake, tls, BoxStream, DialError, Dialed, SocksAddr, Target};
 use crate::proxies::{Proxy, Socks5Outbound};
 
+use super::tls::ClientTls;
+
 pub async fn dial(
     option: &Socks5Outbound,
     target: &Target,
     via: &[&Proxy],
     _timeout: Duration,
+    tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
     if !via.is_empty() {
         // `tunnel()` is how dial_with_rest reaches a hop that itself carries a
@@ -25,7 +28,7 @@ pub async fn dial(
     }
     let (tcp, server) = connect_hop(&option.server, option.port).await?;
     let stream: BoxStream = if option.tls {
-        let mut stream = tls::wrap(tcp, &option.server, &option.tls_settings)
+        let mut stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
             .await
             .map_err(|e| handshake("socks5 tls", e))?;
         negotiate(&mut stream, option, target)
@@ -50,12 +53,13 @@ pub async fn tunnel(
     port: u16,
     via: &[&Proxy],
     timeout: Duration,
+    tls: &ClientTls,
 ) -> Result<(ReadHalf<BoxStream>, WriteHalf<BoxStream>), DialError> {
     let request = Target {
         host: target.to_string(),
         port,
     };
-    let dialed = dial(option, &request, via, timeout).await?;
+    let dialed = dial(option, &request, via, timeout, tls).await?;
     Ok(dialed.into_parts())
 }
 

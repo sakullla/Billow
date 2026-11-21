@@ -146,6 +146,28 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
     assert.ok(entry.cases.positive.length > 0 && entry.cases.negative.length > 0, `${type} covers success and failure`)
     assert.match(entry.command, /mihomo_peers/)
   }
+  // UDP must be real-peer verified for the families that claim it, and the
+  // command must work from the crate directory (an absolute binary path).
+  const allCases = Object.values(peers.families).flatMap((entry) => [...entry.cases.positive, ...entry.cases.negative])
+  assert.ok(allCases.some((name) => name.includes('_udp_')), 'a UDP case is run against the peer')
+  for (const family of ['ss', 'trojan']) {
+    assert.ok(
+      peers.families[family].cases.positive.some((name) => name.includes('_udp_')) &&
+        peers.families[family].cases.negative.some((name) => name.includes('_udp_')),
+      `${family} covers UDP success and failure`,
+    )
+  }
+  assert.match(peers.command, /KC_MIHOMO_BIN=\/|KC_MIHOMO_BIN=[A-Z]:\\/)
+  assert.equal(peers.result.passed, peers.result.cases)
+  // Every proxy type the index marks unimplemented must name an owner, so a
+  // family cannot silently disappear from the scope.
+  for (const entry of index.proxies) {
+    if (entry.rustMapping.status !== 'unimplemented') continue
+    assert.ok(
+      mapping.familiesNotImplemented?.entries?.[entry.type],
+      `${entry.type} names its owner in familiesNotImplemented`,
+    )
+  }
 })
 
 test('real Mihomo passes the tagged exit fixtures while the Rust side stays missing', async () => {

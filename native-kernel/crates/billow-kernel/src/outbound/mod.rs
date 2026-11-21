@@ -16,6 +16,7 @@ pub mod shadowsocks;
 pub mod socks5;
 pub mod tls;
 pub mod trojan;
+pub mod udp;
 pub mod vless;
 pub mod ws;
 
@@ -27,6 +28,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
 use crate::proxies::{Protocol, Proxy};
+
+use self::tls::ClientTls;
 
 /// Boxed duplex stream with half-close support (plain TCP, TLS, TLS+WS, ...).
 pub type BoxStream = Box<dyn Stream>;
@@ -130,8 +133,18 @@ pub fn peer_of(proxy: &Proxy) -> SocketAddr {
 }
 
 /// Dial `target` through `proxy`.
-pub async fn dial(proxy: &Proxy, target: &Target, timeout: Duration) -> Result<Dialed, DialError> {
-    match tokio::time::timeout(timeout, dial_inner(&proxy.protocol, target, &[], timeout)).await {
+pub async fn dial(
+    proxy: &Proxy,
+    target: &Target,
+    timeout: Duration,
+    tls: &ClientTls,
+) -> Result<Dialed, DialError> {
+    match tokio::time::timeout(
+        timeout,
+        dial_inner(&proxy.protocol, target, &[], timeout, tls),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(DialError::Timeout(timeout)),
     }
@@ -147,6 +160,7 @@ pub async fn dial_chain(
     chain: &[&Proxy],
     target: &Target,
     timeout: Duration,
+    tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
     // The matched proxy may itself be reached through `dialer-proxy`; the
     // effective chain starts at the first hop without one.
@@ -165,7 +179,7 @@ pub async fn dial_chain(
         },
         None => target.clone(),
     };
-    let inner = dial_with_rest(first, &hop_target, rest, timeout);
+    let inner = dial_with_rest(first, &hop_target, rest, timeout, tls);
     match tokio::time::timeout(timeout, inner).await {
         Ok(result) => result,
         Err(_) => Err(DialError::Timeout(timeout)),
@@ -177,18 +191,19 @@ async fn dial_with_rest(
     target: &Target,
     rest: &[&Proxy],
     timeout: Duration,
+    tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
     let (next, tail) = match rest.split_first() {
         Some(pair) => pair,
-        None => return dial_inner(&first.protocol, target, &[], timeout).await,
+        None => return dial_inner(&first.protocol, target, &[], timeout, tls).await,
     };
     match (&first.protocol, &next.protocol) {
         (Protocol::Socks5(option), _) => {
             // The next hop's server connection is a SOCKS5 tunnel through this hop.
             let (host, port) = next.server();
-            let (read, write) = socks5::tunnel(option, host, port, tail, timeout).await?;
+            let (read, write) = socks5::tunnel(option, host, port, tail, timeout, tls).await?;
             let stream: BoxStream = Box::new(Joined { read, write });
-            dial_over(next, stream, target, tail, timeout).await
+            dial_over(next, stream, target, tail, timeout, tls).await
         }
         (_, Protocol::Socks5(_)) => Err(DialError::Chain(format!(
             "dialer-proxy chain {}({}) -> {}(socks5): a socks5 hop over a non-socks5 hop is not supported",
@@ -254,6 +269,7 @@ async fn dial_over(
     target: &Target,
     tail: &[&Proxy],
     timeout: Duration,
+    tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
     match &proxy.protocol {
         Protocol::Socks5(option) => {
@@ -266,7 +282,7 @@ async fn dial_over(
             })
         }
         _other => {
-            let _ = (tail, timeout);
+            let _ = (tail, timeout, tls);
             Err(DialError::Chain(format!(
                 "hop {} ({}) reached through a dialer-proxy is not supported",
                 proxy.name,
@@ -283,12 +299,13 @@ async fn dial_inner(
     target: &Target,
     via: &[&Proxy],
     timeout: Duration,
+    tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
     match protocol {
-        Protocol::Socks5(p) => socks5::dial(p, target, via, timeout).await,
+        Protocol::Socks5(p) => socks5::dial(p, target, via, timeout, tls).await,
         Protocol::Http(p) => {
             refuse_chain(via, "http")?;
-            http::dial(p, target).await
+            http::dial(p, target, tls).await
         }
         Protocol::Shadowsocks(p) => {
             refuse_chain(via, "ss")?;
@@ -296,15 +313,15 @@ async fn dial_inner(
         }
         Protocol::Trojan(p) => {
             refuse_chain(via, "trojan")?;
-            trojan::dial(p, target).await
+            trojan::dial(p, target, tls).await
         }
         Protocol::Vless(p) => {
             refuse_chain(via, "vless")?;
-            vless::dial(p, target).await
+            vless::dial(p, target, tls).await
         }
         Protocol::Anytls(p) => {
             refuse_chain(via, "anytls")?;
-            anytls::dial(p, target).await
+            anytls::dial(p, target, tls).await
         }
     }
 }

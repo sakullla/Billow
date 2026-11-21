@@ -599,7 +599,7 @@
       "nested": null,
       "rustMapping": {
         "status": "partial",
-        "reason": "six protocol types with their implemented transports; every other type or option is rejected by name",
+        "reason": "six protocol types with their implemented transports and UDP associations (ss/trojan); every other type or option is rejected by name",
         "evidence": [
           "tests/config.rs",
           "tests/protocols.rs",
@@ -1700,10 +1700,11 @@
         ]
       },
       "rustMapping": {
-        "status": "partial",
-        "reason": "only custom-cert/certificate roots for outbound verification",
+        "status": "implemented",
+        "reason": "custom-cert/certificate anchors are built into the kernel instance and used by every TLS dial; skip-cert-verify is the explicit override",
         "evidence": [
-          "tests/protocols.rs::socks5_and_http_outbounds_over_tls_verify_the_peer_certificate"
+          "tests/config.rs::tls_roots_are_loaded_and_unknown_tls_keys_fail",
+          "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls"
         ]
       }
     },
@@ -1749,20 +1750,29 @@
           "port",
           "cipher (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)",
           "password",
-          "udp (codec only)",
+          "udp",
           "dialer-proxy"
         ],
+        "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt",
         "notImplemented": [
           "plugin",
           "plugin-opts",
           "udp-over-tcp",
           "udp-over-tcp-version",
           "client-fingerprint",
-          "ip-version"
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "smux"
         ],
         "evidence": [
           "tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip",
-          "tests/mihomo_peers.rs::shadowsocks_outbound_reaches_the_receiving_side_through_mihomo"
+          "tests/protocols.rs::shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead",
+          "tests/mihomo_peers.rs::shadowsocks_outbound_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::shadowsocks_udp_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::shadowsocks_udp_wrong_password_never_reaches_the_echo"
         ]
       }
     },
@@ -1792,16 +1802,30 @@
           "alpn",
           "dialer-proxy"
         ],
+        "udp": "not implemented: `udp: true` is rejected (no SOCKS5 UDP relay to the server); `udp: false` loads",
         "notImplemented": [
-          "udp",
+          "udp: true",
           "fingerprint",
           "certificate",
           "private-key",
           "name-cert-verify",
-          "ip-version"
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "smux",
+          "udp-over-tcp",
+          "udp-over-tcp-version",
+          "ech-opts",
+          "shadow-tls-opts",
+          "restls-opts",
+          "jls-opts",
+          "client-fingerprint"
         ],
         "evidence": [
           "tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target",
+          "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls",
           "tests/mihomo_peers.rs::socks5_outbound_reaches_the_receiving_side_through_mihomo"
         ]
       }
@@ -1824,16 +1848,28 @@
           "headers",
           "dialer-proxy"
         ],
+        "udp": "not applicable: Mihomo's HTTP outbound has no UDP option, so any `udp` key is rejected as a non-Mihomo option",
         "notImplemented": [
           "fingerprint",
           "certificate",
           "private-key",
           "name-cert-verify",
-          "ip-version"
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "smux",
+          "ech-opts",
+          "shadow-tls-opts",
+          "restls-opts",
+          "jls-opts",
+          "client-fingerprint"
         ],
         "evidence": [
           "tests/protocols.rs::http_connect_outbound_with_basic_auth",
-          "tests/mihomo_peers.rs::http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo"
+          "tests/mihomo_peers.rs::http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::http_outbound_wrong_password_never_reaches_the_sink"
         ]
       }
     },
@@ -1863,14 +1899,16 @@
           "encryption: none",
           "network: tcp|ws",
           "ws-opts.path",
-          "ws-opts.headers",
+          "ws-opts.headers (Host override)",
+          "ws-opts.v2ray-http-upgrade",
           "dialer-proxy"
         ],
+        "udp": "not implemented: `udp: true` is rejected (needs packet-addr/XUDP); `udp: false` loads",
         "notImplemented": [
           "flow (xtls-rprx-vision)",
-          "udp",
-          "packet-addr",
-          "xudp",
+          "udp: true",
+          "packet-addr: true",
+          "xudp: true",
           "packet-encoding",
           "grpc-opts",
           "http-opts",
@@ -1878,12 +1916,25 @@
           "xhttp-opts",
           "reality-opts",
           "ech-opts",
+          "shadow-tls-opts",
+          "restls-opts",
+          "jls-opts",
           "client-fingerprint",
-          "ip-version"
+          "ip-version",
+          "ws-headers",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "smux"
         ],
         "evidence": [
           "tests/protocols.rs::vless_over_tls_sends_uuid_target_and_payload",
-          "tests/mihomo_peers.rs::vless_over_websocket_reaches_the_receiving_side_through_mihomo"
+          "tests/protocols.rs::vless_over_websocket_honours_the_host_header_override",
+          "tests/protocols.rs::vless_over_v2ray_http_upgrade_tunnels_raw_bytes",
+          "tests/mihomo_peers.rs::vless_over_websocket_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::vless_over_v2ray_http_upgrade_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::vless_over_websocket_with_a_host_override_reaches_the_receiving_side_through_mihomo"
         ]
       }
     },
@@ -1911,10 +1962,12 @@
           "alpn",
           "network: tcp|ws",
           "ws-opts.path",
-          "ws-opts.headers",
-          "udp (codec only)",
+          "ws-opts.headers (Host override)",
+          "ws-opts.v2ray-http-upgrade",
+          "udp",
           "dialer-proxy"
         ],
+        "udp": "implemented: command 3 over TLS with `addr|length|CRLF|payload` frames",
         "notImplemented": [
           "grpc-opts",
           "reality-opts",
@@ -1925,11 +1978,20 @@
           "jls-opts",
           "client-fingerprint",
           "ip-version",
-          "ws early data"
+          "ws early data",
+          "ws-opts.v2ray-http-upgrade-fast-open",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "smux"
         ],
         "evidence": [
           "tests/protocols.rs::trojan_outbound_over_tls_sends_hash_command_address_and_payload",
-          "tests/mihomo_peers.rs::trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo"
+          "tests/protocols.rs::trojan_over_websocket_tunnels_with_a_host_override",
+          "tests/mihomo_peers.rs::trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::trojan_udp_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::trojan_udp_wrong_password_never_reaches_the_echo"
         ]
       }
     },
@@ -2056,20 +2118,32 @@
           "alpn",
           "dialer-proxy"
         ],
+        "udp": "not implemented: `udp: true` is rejected (needs UoT); `udp: false` loads",
         "notImplemented": [
-          "udp",
+          "udp: true",
           "client-metadata",
           "idle-session-check-interval",
           "idle-session-timeout",
           "min-idle-session",
-          "disable-reuse",
+          "disable-reuse: true",
           "fingerprint",
           "certificate",
           "private-key",
-          "ip-version"
+          "ech-opts",
+          "shadow-tls-opts",
+          "restls-opts",
+          "jls-opts",
+          "client-fingerprint",
+          "ip-version",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "smux"
         ],
         "evidence": [
-          "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo"
+          "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo",
+          "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls"
         ]
       }
     },
@@ -2144,14 +2218,15 @@
       "source": "listener/parse.go:23",
       "rustMapping": {
         "status": "partial",
-        "reason": "SOCKS5 CONNECT is served on the mixed port; `listeners: type: socks` is rejected (T5)",
+        "reason": "SOCKS5 CONNECT and UDP ASSOCIATE are served on the mixed port; `listeners: type: socks` is rejected (T5)",
         "notImplemented": [
-          "UDP ASSOCIATE",
           "users per listener",
-          "tls"
+          "tls",
+          "fragmented UDP datagrams (FRAG != 0 dropped)"
         ],
         "evidence": [
-          "tests/sessions.rs"
+          "tests/sessions.rs",
+          "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject"
         ]
       }
     },
@@ -2196,10 +2271,10 @@
       "source": "listener/parse.go:51",
       "rustMapping": {
         "status": "partial",
-        "reason": "the kernel binds one mixed port (HTTP CONNECT + SOCKS5 on `mixed-port`/`socks-port`); the top-level `listeners:` section is rejected until T5",
+        "reason": "one mixed port (HTTP CONNECT + SOCKS5 CONNECT + SOCKS5 UDP ASSOCIATE) from `mixed-port`/`socks-port`; the top-level `listeners:` section is rejected until T5",
         "notImplemented": [
           "users per listener",
-          "udp",
+          "UDP over the mixed port's HTTP side",
           "tls",
           "reality",
           "shadow-tls",
@@ -2207,7 +2282,7 @@
         ],
         "evidence": [
           "tests/sessions.rs",
-          "tests/protocols.rs::inbound_authentication_guards_socks5_and_http_connect"
+          "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject"
         ]
       }
     },
@@ -2488,7 +2563,8 @@
       "rustMapping": {
         "status": "implemented",
         "evidence": [
-          "tests/config.rs"
+          "tests/config.rs",
+          "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject"
         ]
       }
     },
@@ -3268,7 +3344,7 @@
     {
       "kind": "rust-scope",
       "name": "*",
-      "reason": "Every other proxy type (ssr, vmess, snell, ssh, mieru, hysteria, hysteria2, tuic, wireguard, ...) is rejected at load time with its type named, never ignored."
+      "reason": "Every proxy type outside the six implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records their proposed owner."
     },
     {
       "kind": "rust-scope",
@@ -3297,13 +3373,13 @@
       "notImplementedOnPlatform": {
         "windows": "sessions compile but the platform session/TUN path is T6; no Windows run has been recorded"
       },
-      "note": "Every runtime result here comes from macOS arm64. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run."
+      "note": "Every runtime result here comes from macOS arm64, including the UDP and private-CA cases. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run."
     },
     "note": "rustMapping on each entry comes from that file; partial entries name the options they reject, unimplemented entries are rejected at load time and are never compatible."
   },
   "coverage": {
-    "mapped": 18,
-    "partial": 8,
+    "mapped": 19,
+    "partial": 7,
     "unimplemented": 129,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."

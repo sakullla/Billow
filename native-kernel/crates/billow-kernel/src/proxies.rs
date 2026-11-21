@@ -72,10 +72,13 @@ pub struct TlsSettings {
 pub struct WsSettings {
     /// Request path; default `/`.
     pub path: String,
-    /// Extra request headers; `Host` is honoured as an override.
+    /// Extra request headers; `Host` is honoured as an override of the
+    /// upgrade request's Host (the TLS name still comes from `sni`/`server`).
     pub headers: Vec<(String, String)>,
     pub max_early_data: u64,
     pub early_data_header_name: Option<String>,
+    /// Key-less `Upgrade: websocket` handshake followed by raw bytes, as the
+    /// pinned client/server do for Xray's HTTP upgrade.
     pub v2ray_http_upgrade: bool,
 }
 
@@ -245,7 +248,6 @@ const COMMON_UNSUPPORTED: &[&str] = &[
     "smux",
     "udp-over-tcp",
     "udp-over-tcp-version",
-    "dialer-proxy",
     "ech-opts",
     "shadow-tls-opts",
     "restls-opts",
@@ -628,17 +630,26 @@ impl<'a> Entry<'a> {
         Ok(ws)
     }
 
-    /// Report a key that the protocol's option table does not contain.
-    fn reject_unknown(&self, allowed: &[&str]) -> Result<(), ConfigError> {
+    /// Reject every key this proxy's parser did not honour.
+    ///
+    /// `mihomo_options` is the option table of the pinned type: a key that is
+    /// in it but was not read by the parser is a real Mihomo option this
+    /// kernel does not implement, so it fails instead of being ignored. A key
+    /// outside the table is not a Mihomo option at all (Mihomo's decoder
+    /// rejects it too). Only keys in `used` - the ones the parser read and
+    /// honoured - pass, which is what keeps the capability statements in
+    /// `tool/kernel-compat/evidence/rust-mapping.json` honest.
+    fn reject_unknown(&self, mihomo_options: &[&str]) -> Result<(), ConfigError> {
         for (key, _) in self.mapping {
             let Some(key) = key.as_str() else {
                 return Err(self.invalid("option names must be strings"));
             };
             let key = key.replace('_', "-");
-            if allowed.contains(&key.as_str()) || self.used.contains(&key) {
+            if self.used.contains(&key) {
                 continue;
             }
-            if COMMON_UNSUPPORTED.contains(&key.as_str()) {
+            if COMMON_UNSUPPORTED.contains(&key.as_str()) || mihomo_options.contains(&key.as_str())
+            {
                 return Err(self.unsupported(format!("option '{key}' is not implemented")));
             }
             return Err(self.unsupported(format!(
@@ -707,6 +718,13 @@ fn parse_socks5(entry: &mut Entry<'_>) -> Result<Socks5Outbound, ConfigError> {
     let tls = entry.bool("tls")?.unwrap_or(false);
     let tls_settings = entry.tls_settings()?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    // `udp: false` states the same thing this outbound does (no UDP); `true`
+    // would need a UDP association this kernel does not open to a SOCKS5 peer.
+    if entry.bool("udp")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'udp' is not implemented for socks5 (UDP over proxies is implemented for ss and trojan)",
+        ));
+    }
     let allowed = [
         "dialer-proxy",
         "name",
@@ -761,6 +779,8 @@ fn parse_http(entry: &mut Entry<'_>) -> Result<HttpOutbound, ConfigError> {
     let tls_settings = entry.tls_settings()?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let headers = entry.string_map("headers")?;
+    // Mihomo's HTTP outbound has no `udp` option at all, so any occurrence is
+    // rejected by the option check below (it is absent from the table).
     let allowed = [
         "dialer-proxy",
         "name",

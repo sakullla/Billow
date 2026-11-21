@@ -7,13 +7,19 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use super::{base64, connect_tcp, handshake, tls, BoxStream, DialError, Dialed, Target};
 use crate::proxies::HttpOutbound;
 
+use super::tls::ClientTls;
+
 const MAX_HEAD: usize = 16 * 1024;
 
-pub async fn dial(option: &HttpOutbound, target: &Target) -> Result<Dialed, DialError> {
+pub async fn dial(
+    option: &HttpOutbound,
+    target: &Target,
+    tls: &ClientTls,
+) -> Result<Dialed, DialError> {
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("http", e))?;
     let stream: BoxStream = if option.tls {
-        let mut stream = tls::wrap(tcp, &option.server, &option.tls_settings)
+        let mut stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
             .await
             .map_err(|e| handshake("http tls", e))?;
         connect_request(&mut stream, option, target)

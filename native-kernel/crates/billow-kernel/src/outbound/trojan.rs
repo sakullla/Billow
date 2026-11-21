@@ -13,10 +13,16 @@ use super::{connect_tcp, handshake, tls, ws, BoxStream, DialError, Dialed, Socks
 use crate::keys::trojan_password_key;
 use crate::proxies::TrojanOutbound;
 
-pub async fn dial(option: &TrojanOutbound, target: &Target) -> Result<Dialed, DialError> {
+use super::tls::ClientTls;
+
+pub async fn dial(
+    option: &TrojanOutbound,
+    target: &Target,
+    tls: &ClientTls,
+) -> Result<Dialed, DialError> {
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("trojan", e))?;
-    let stream = tls::wrap(tcp, &option.server, &option.tls_settings)
+    let stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
         .await
         .map_err(|e| handshake("trojan tls", e))?;
     let mut stream: BoxStream = match &option.network {
@@ -27,10 +33,16 @@ pub async fn dial(option: &TrojanOutbound, target: &Target) -> Result<Dialed, Di
                 .sni
                 .clone()
                 .unwrap_or_else(|| option.server.clone());
-            let ws_stream = ws::connect(stream, &host, &ws_settings.path, &ws_settings.headers)
-                .await
-                .map_err(|e| handshake("trojan ws", e))?;
-            Box::new(ws_stream)
+            let tunnel = ws::connect(
+                stream,
+                &host,
+                &ws_settings.path,
+                &ws_settings.headers,
+                ws_settings.v2ray_http_upgrade,
+            )
+            .await
+            .map_err(|e| handshake("trojan ws", e))?;
+            Box::new(tunnel)
         }
     };
     let mut header = trojan_password_key(option.password.expose());

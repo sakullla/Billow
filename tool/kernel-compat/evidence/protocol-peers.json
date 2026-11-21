@@ -1,6 +1,6 @@
 {
   "format": "kernel-protocol-peers",
-  "version": 1,
+  "version": 2,
   "generatedAt": "2026-11-21",
   "platform": {
     "verified": [
@@ -16,15 +16,16 @@
   },
   "upstream": {
     "version": "v1.19.34",
-    "binary": "tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
+    "binary": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
     "sha256": "a55a9073f9b7b1fa596a82c034d2dae3407ec34732102b6e42c5513ce3033f34",
-    "role": "the peer is a Mihomo `listeners:` endpoint; the Rust kernel is the client and a controlled loopback sink records what arrived"
+    "role": "the peer is a Mihomo `listeners:` endpoint; the Rust kernel is the client and a controlled loopback sink (TCP) or loopback UDP echo records what arrived"
   },
-  "command": "KC_MIHOMO_BIN=tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 cargo test --manifest-path native-kernel/Cargo.toml --locked --test mihomo_peers -- --ignored --test-threads=1",
+  "command": "KC_MIHOMO_BIN=/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 cargo test --manifest-path /Users/yanggeng/github/Billow/native-kernel/Cargo.toml --locked --test mihomo_peers -- --ignored --test-threads=1",
+  "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 15,
-    "passed": 15,
+    "cases": 21,
+    "passed": 21,
     "failed": 0
   },
   "families": {
@@ -40,7 +41,7 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: socks with users",
-      "notes": "the peer replies success after its own SOCKS5 handshake but before dialing, so the positive case is judged by the tagged bytes the sink received"
+      "notes": "the peer replies success after its SOCKS5 handshake but before dialing, so the positive case is judged by the tagged bytes the sink received; UDP is not part of this family (udp: true is rejected)"
     },
     "http": {
       "status": "pass",
@@ -60,36 +61,42 @@
       "status": "pass",
       "cases": {
         "positive": [
-          "shadowsocks_outbound_reaches_the_receiving_side_through_mihomo"
+          "shadowsocks_outbound_reaches_the_receiving_side_through_mihomo",
+          "shadowsocks_udp_reaches_the_receiving_side_through_mihomo"
         ],
         "negative": [
-          "shadowsocks_wrong_password_never_reaches_the_sink"
+          "shadowsocks_wrong_password_never_reaches_the_sink",
+          "shadowsocks_udp_wrong_password_never_reaches_the_echo"
         ]
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
-      "peer": "listeners: type: shadowsocks, aes-256-gcm",
-      "notes": "AEAD 2017 framing and both directions (the client reads the server's salt); loopback peers cover aes-128-gcm and chacha20-ietf-poly1305"
+      "peer": "listeners: type: shadowsocks, aes-256-gcm (the listener serves TCP and UDP)",
+      "notes": "TCP uses the AEAD-2017 stream framing and both directions; UDP uses one AEAD datagram per packet with the peer's own salt. The UDP peer's ruleset forwards DIRECT to the loopback UDP echo because the sink is a TCP proxy. The loopback peer test `shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead` covers aes-256-gcm with an independent decoder; `shadowsocks_aes_256_gcm_roundtrip` / `..._chacha20_ietf_poly1305_roundtrip` cover the other ciphers over TCP."
     },
     "trojan": {
       "status": "pass",
       "cases": {
         "positive": [
-          "trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo"
+          "trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo",
+          "trojan_udp_reaches_the_receiving_side_through_mihomo"
         ],
         "negative": [
-          "trojan_wrong_password_and_untrusted_certificate_never_reach_the_sink"
+          "trojan_wrong_password_and_untrusted_certificate_never_reach_the_sink",
+          "trojan_udp_wrong_password_never_reaches_the_echo"
         ]
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: trojan with a self-signed certificate",
-      "notes": "wrong password and an untrusted certificate are both checked; the peer closes silently on the first, the client refuses the second"
+      "notes": "wrong password and an untrusted certificate are both checked for TCP; UDP opens command 3 and exchanges `addr|length|CRLF|payload` frames, a wrong password ends the stream and the echo stays untouched"
     },
     "vless": {
       "status": "pass",
       "cases": {
         "positive": [
           "vless_outbound_over_tls_reaches_the_receiving_side_through_mihomo",
-          "vless_over_websocket_reaches_the_receiving_side_through_mihomo"
+          "vless_over_websocket_reaches_the_receiving_side_through_mihomo",
+          "vless_over_v2ray_http_upgrade_reaches_the_receiving_side_through_mihomo",
+          "vless_over_websocket_with_a_host_override_reaches_the_receiving_side_through_mihomo"
         ],
         "negative": [
           "vless_wrong_uuid_never_reaches_the_sink"
@@ -97,7 +104,7 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: vless (tcp and ws-path)",
-      "notes": "the ws case records that the client must not send Sec-WebSocket-Protocol: Mihomo reads a non-empty value as Xray 0-RTT early data"
+      "notes": "the ws cases record the two pinned handshakes: a standard upgrade (no `Sec-WebSocket-Protocol`, which Mihomo reads as 0-RTT early data) and the key-less v2ray HTTP upgrade that turns the stream raw; the Host override only changes the upgrade request"
     },
     "anytls": {
       "status": "pass",
@@ -111,7 +118,7 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: anytls with users",
-      "notes": "one stream per connection, protocol version 2; the server's SYNACK is not awaited before the payload is sent, as sing's client does"
+      "notes": "one stream per connection, protocol version 2; the server's SYNACK is not awaited before the payload is sent, as sing's client does; UDP needs UoT and is rejected"
     },
     "dialer-proxy": {
       "status": "pass",
@@ -128,10 +135,15 @@
       "notes": "only a socks5 hop can carry another hop; a closed first hop fails the dial instead of falling back to DIRECT, and other chains are rejected at load time or with a chain error"
     }
   },
+  "loopbackOnlyEvidence": {
+    "custom_tls_roots": "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls starts a private CA and a server certificate it signs, then runs trojan, vless and socks5-tls with and without `tls: {custom-cert: [<ca>]}`: without the anchor every handshake fails, with it every tunnel reaches the echo. It is loopback because the peer needs a certificate this test controls.",
+    "udp_direct_and_reject": "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject covers the inbound relay, DIRECT forwarding and a REJECT rule without an external process."
+  },
   "notCovered": [
-    "UDP: the mixed inbound has no UDP ASSOCIATE, so no protocol family carries UDP traffic end to end (the SS datagram codec is unit-tested)",
+    "UDP for socks5, vless (packet-addr/XUDP) and anytls (UoT): `udp: true` is rejected at load time; no UDP association exists for those families",
+    "fragmented SOCKS5 UDP datagrams (FRAG != 0) are dropped instead of reassembled",
     "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
-    "platforms other than macOS arm64; DNS answers, rule families beyond T2's list, TUN/system-proxy takeover (T6)"
-  ],
-  "runMode": "serially (--test-threads=1); the cases are ignored by default so the default cargo test neither fails nor implies interop"
+    "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
+    "protocol families this slice does not implement (vmess, ssr, hysteria/hysteria2, tuic, wireguard, ...): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented"
+  ]
 }

@@ -1,9 +1,9 @@
 {
   "format": "kernel-rust-mapping",
-  "version": 2,
+  "version": 3,
   "engine": "rust",
   "kernel": "billow-kernel",
-  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,outbound/*.rs} and tests/{config,protocols,mihomo_peers}.rs",
+  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,engine.rs,outbound/*.rs} and tests/{config,protocols,mihomo_peers}.rs",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -17,13 +17,14 @@
     "notImplementedOnPlatform": {
       "windows": "sessions compile but the platform session/TUN path is T6; no Windows run has been recorded"
     },
-    "note": "Every runtime result here comes from macOS arm64. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run."
+    "note": "Every runtime result here comes from macOS arm64, including the UDP and private-CA cases. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run."
   },
   "statusVocabulary": {
     "implemented": "the Rust kernel performs the behaviour and a loopback or pinned-Mihomo test observes it",
     "partial": "part of the upstream shape works; the missing options are named and rejected explicitly",
     "unimplemented": "the Rust kernel rejects the entry/field instead of ignoring it"
   },
+  "optionPolicy": "proxies.rs accepts only the keys its parser read and honoured; every other key - whether a real Mihomo option or not - fails configuration loading with the key named. The only keys accepted without an effect are boolean no-ops that request nothing (`udp: false` on families without an association, `disable-reuse: false`, `packet-addr: false`, `xudp: false`, `v2ray-http-upgrade-fast-open: false`); their `true` form fails with the key named. tool/kernel-compat/option-probe.mjs probes every rejected key through the CLI --check and writes evidence/option-rejection.txt.",
   "configFields": {
     "mixed-port": { "status": "implemented", "evidence": ["tests/config.rs", "tests/sessions.rs", "tests/mihomo_peers.rs"] },
     "port": { "status": "partial", "reason": "recorded only; the mixed listener is the only bound port", "evidence": ["tests/config.rs"] },
@@ -33,60 +34,66 @@
     "mode": { "status": "partial", "reason": "only 'rule'; global/direct are rejected", "evidence": ["tests/config.rs"] },
     "log-level": { "status": "implemented", "evidence": ["tests/config.rs", "crates/billow-kernel-cli/tests/cli.rs"] },
     "rules": { "status": "implemented", "evidence": ["tests/config.rs", "tests/protocols.rs"] },
-    "proxies": { "status": "partial", "reason": "six protocol types with their implemented transports; every other type or option is rejected by name", "evidence": ["tests/config.rs", "tests/protocols.rs", "tests/mihomo_peers.rs"] },
+    "proxies": { "status": "partial", "reason": "six protocol types with their implemented transports and UDP associations (ss/trojan); every other type or option is rejected by name", "evidence": ["tests/config.rs", "tests/protocols.rs", "tests/mihomo_peers.rs"] },
     "authentication": { "status": "implemented", "evidence": ["tests/protocols.rs::inbound_authentication_guards_socks5_and_http_connect"] },
-    "tls": { "status": "partial", "reason": "only custom-cert/certificate roots for outbound verification", "evidence": ["tests/protocols.rs::socks5_and_http_outbounds_over_tls_verify_the_peer_certificate"] }
+    "tls": { "status": "implemented", "reason": "custom-cert/certificate anchors are built into the kernel instance and used by every TLS dial; skip-cert-verify is the explicit override", "evidence": ["tests/config.rs::tls_roots_are_loaded_and_unknown_tls_keys_fail", "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls"] }
   },
   "proxies": {
     "socks5": {
       "status": "implemented",
       "options": ["server", "port", "username", "password", "tls", "sni", "skip-cert-verify", "alpn", "dialer-proxy"],
-      "notImplemented": ["udp", "fingerprint", "certificate", "private-key", "name-cert-verify", "ip-version"],
-      "evidence": ["tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target", "tests/mihomo_peers.rs::socks5_outbound_reaches_the_receiving_side_through_mihomo"]
+      "udp": "not implemented: `udp: true` is rejected (no SOCKS5 UDP relay to the server); `udp: false` loads",
+      "notImplemented": ["udp: true", "fingerprint", "certificate", "private-key", "name-cert-verify", "ip-version", "tfo", "mptcp", "interface-name", "routing-mark", "smux", "udp-over-tcp", "udp-over-tcp-version", "ech-opts", "shadow-tls-opts", "restls-opts", "jls-opts", "client-fingerprint"],
+      "evidence": ["tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target", "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls", "tests/mihomo_peers.rs::socks5_outbound_reaches_the_receiving_side_through_mihomo"]
     },
     "http": {
       "status": "implemented",
       "options": ["server", "port", "username", "password", "tls", "sni", "skip-cert-verify", "alpn", "headers", "dialer-proxy"],
-      "notImplemented": ["fingerprint", "certificate", "private-key", "name-cert-verify", "ip-version"],
-      "evidence": ["tests/protocols.rs::http_connect_outbound_with_basic_auth", "tests/mihomo_peers.rs::http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo"]
+      "udp": "not applicable: Mihomo's HTTP outbound has no UDP option, so any `udp` key is rejected as a non-Mihomo option",
+      "notImplemented": ["fingerprint", "certificate", "private-key", "name-cert-verify", "ip-version", "tfo", "mptcp", "interface-name", "routing-mark", "smux", "ech-opts", "shadow-tls-opts", "restls-opts", "jls-opts", "client-fingerprint"],
+      "evidence": ["tests/protocols.rs::http_connect_outbound_with_basic_auth", "tests/mihomo_peers.rs::http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo", "tests/mihomo_peers.rs::http_outbound_wrong_password_never_reaches_the_sink"]
     },
     "ss": {
       "status": "implemented",
-      "options": ["server", "port", "cipher (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)", "password", "udp (codec only)", "dialer-proxy"],
-      "notImplemented": ["plugin", "plugin-opts", "udp-over-tcp", "udp-over-tcp-version", "client-fingerprint", "ip-version"],
-      "evidence": ["tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip", "tests/mihomo_peers.rs::shadowsocks_outbound_reaches_the_receiving_side_through_mihomo"]
+      "options": ["server", "port", "cipher (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)", "password", "udp", "dialer-proxy"],
+      "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt",
+      "notImplemented": ["plugin", "plugin-opts", "udp-over-tcp", "udp-over-tcp-version", "client-fingerprint", "ip-version", "tfo", "mptcp", "interface-name", "routing-mark", "smux"],
+      "evidence": ["tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip", "tests/protocols.rs::shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead", "tests/mihomo_peers.rs::shadowsocks_outbound_reaches_the_receiving_side_through_mihomo", "tests/mihomo_peers.rs::shadowsocks_udp_reaches_the_receiving_side_through_mihomo", "tests/mihomo_peers.rs::shadowsocks_udp_wrong_password_never_reaches_the_echo"]
     },
     "trojan": {
       "status": "implemented",
-      "options": ["server", "port", "password", "sni", "skip-cert-verify", "alpn", "network: tcp|ws", "ws-opts.path", "ws-opts.headers", "udp (codec only)", "dialer-proxy"],
-      "notImplemented": ["grpc-opts", "reality-opts", "ss-opts", "ech-opts", "shadow-tls-opts", "restls-opts", "jls-opts", "client-fingerprint", "ip-version", "ws early data"],
-      "evidence": ["tests/protocols.rs::trojan_outbound_over_tls_sends_hash_command_address_and_payload", "tests/mihomo_peers.rs::trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo"]
+      "options": ["server", "port", "password", "sni", "skip-cert-verify", "alpn", "network: tcp|ws", "ws-opts.path", "ws-opts.headers (Host override)", "ws-opts.v2ray-http-upgrade", "udp", "dialer-proxy"],
+      "udp": "implemented: command 3 over TLS with `addr|length|CRLF|payload` frames",
+      "notImplemented": ["grpc-opts", "reality-opts", "ss-opts", "ech-opts", "shadow-tls-opts", "restls-opts", "jls-opts", "client-fingerprint", "ip-version", "ws early data", "ws-opts.v2ray-http-upgrade-fast-open", "tfo", "mptcp", "interface-name", "routing-mark", "smux"],
+      "evidence": ["tests/protocols.rs::trojan_outbound_over_tls_sends_hash_command_address_and_payload", "tests/protocols.rs::trojan_over_websocket_tunnels_with_a_host_override", "tests/mihomo_peers.rs::trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo", "tests/mihomo_peers.rs::trojan_udp_reaches_the_receiving_side_through_mihomo", "tests/mihomo_peers.rs::trojan_udp_wrong_password_never_reaches_the_echo"]
     },
     "vless": {
       "status": "implemented",
-      "options": ["server", "port", "uuid", "tls", "sni", "skip-cert-verify", "alpn", "encryption: none", "network: tcp|ws", "ws-opts.path", "ws-opts.headers", "dialer-proxy"],
-      "notImplemented": ["flow (xtls-rprx-vision)", "udp", "packet-addr", "xudp", "packet-encoding", "grpc-opts", "http-opts", "h2-opts", "xhttp-opts", "reality-opts", "ech-opts", "client-fingerprint", "ip-version"],
-      "evidence": ["tests/protocols.rs::vless_over_tls_sends_uuid_target_and_payload", "tests/mihomo_peers.rs::vless_over_websocket_reaches_the_receiving_side_through_mihomo"]
+      "options": ["server", "port", "uuid", "tls", "sni", "skip-cert-verify", "alpn", "encryption: none", "network: tcp|ws", "ws-opts.path", "ws-opts.headers (Host override)", "ws-opts.v2ray-http-upgrade", "dialer-proxy"],
+      "udp": "not implemented: `udp: true` is rejected (needs packet-addr/XUDP); `udp: false` loads",
+      "notImplemented": ["flow (xtls-rprx-vision)", "udp: true", "packet-addr: true", "xudp: true", "packet-encoding", "grpc-opts", "http-opts", "h2-opts", "xhttp-opts", "reality-opts", "ech-opts", "shadow-tls-opts", "restls-opts", "jls-opts", "client-fingerprint", "ip-version", "ws-headers", "tfo", "mptcp", "interface-name", "routing-mark", "smux"],
+      "evidence": ["tests/protocols.rs::vless_over_tls_sends_uuid_target_and_payload", "tests/protocols.rs::vless_over_websocket_honours_the_host_header_override", "tests/protocols.rs::vless_over_v2ray_http_upgrade_tunnels_raw_bytes", "tests/mihomo_peers.rs::vless_over_websocket_reaches_the_receiving_side_through_mihomo", "tests/mihomo_peers.rs::vless_over_v2ray_http_upgrade_reaches_the_receiving_side_through_mihomo", "tests/mihomo_peers.rs::vless_over_websocket_with_a_host_override_reaches_the_receiving_side_through_mihomo"]
     },
     "anytls": {
       "status": "implemented",
       "options": ["server", "port", "password", "sni", "skip-cert-verify", "alpn", "dialer-proxy"],
-      "notImplemented": ["udp", "client-metadata", "idle-session-check-interval", "idle-session-timeout", "min-idle-session", "disable-reuse", "fingerprint", "certificate", "private-key", "ip-version"],
-      "evidence": ["tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo"]
+      "udp": "not implemented: `udp: true` is rejected (needs UoT); `udp: false` loads",
+      "notImplemented": ["udp: true", "client-metadata", "idle-session-check-interval", "idle-session-timeout", "min-idle-session", "disable-reuse: true", "fingerprint", "certificate", "private-key", "ech-opts", "shadow-tls-opts", "restls-opts", "jls-opts", "client-fingerprint", "ip-version", "tfo", "mptcp", "interface-name", "routing-mark", "smux"],
+      "evidence": ["tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo", "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls"]
     }
   },
   "listeners": {
     "mixed": {
       "status": "partial",
-      "reason": "the kernel binds one mixed port (HTTP CONNECT + SOCKS5 on `mixed-port`/`socks-port`); the top-level `listeners:` section is rejected until T5",
-      "notImplemented": ["users per listener", "udp", "tls", "reality", "shadow-tls", "proxy protocol"],
-      "evidence": ["tests/sessions.rs", "tests/protocols.rs::inbound_authentication_guards_socks5_and_http_connect"]
+      "reason": "one mixed port (HTTP CONNECT + SOCKS5 CONNECT + SOCKS5 UDP ASSOCIATE) from `mixed-port`/`socks-port`; the top-level `listeners:` section is rejected until T5",
+      "notImplemented": ["users per listener", "UDP over the mixed port's HTTP side", "tls", "reality", "shadow-tls", "proxy protocol"],
+      "evidence": ["tests/sessions.rs", "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject"]
     },
     "socks": {
       "status": "partial",
-      "reason": "SOCKS5 CONNECT is served on the mixed port; `listeners: type: socks` is rejected (T5)",
-      "notImplemented": ["UDP ASSOCIATE", "users per listener", "tls"],
-      "evidence": ["tests/sessions.rs"]
+      "reason": "SOCKS5 CONNECT and UDP ASSOCIATE are served on the mixed port; `listeners: type: socks` is rejected (T5)",
+      "notImplemented": ["users per listener", "tls", "fragmented UDP datagrams (FRAG != 0 dropped)"],
+      "evidence": ["tests/sessions.rs", "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject"]
     },
     "http": {
       "status": "partial",
@@ -106,12 +113,39 @@
     "DOMAIN": { "status": "implemented", "evidence": ["tests/config.rs"] },
     "DOMAIN-SUFFIX": { "status": "implemented", "evidence": ["tests/config.rs"] },
     "GEOSITE": { "status": "partial", "reason": "text database only; compiled MRS/protobuf is T5", "evidence": ["tests/config.rs"] },
-    "IP-CIDR": { "status": "implemented", "evidence": ["tests/config.rs"] },
+    "IP-CIDR": { "status": "implemented", "evidence": ["tests/config.rs", "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject"] },
     "IP-CIDR6": { "status": "implemented", "evidence": ["tests/config.rs"] },
     "MATCH": { "status": "implemented", "evidence": ["tests/config.rs", "tests/sessions.rs"] }
   },
+  "familiesNotImplemented": {
+    "note": "T4's goal is 'complete the proxy protocols at the pinned version'; this slice covers 6 of the 28 outbound types the pinned parser accepts. Every entry below is rejected by name at load time (never ignored). Ownership is a decision for the owner: T5's plan text covers DNS, groups, providers, rules and the control interface, not these families.",
+    "entries": {
+      "vmess": { "owner": "T4 follow-up", "reason": "AEAD header, user-id derivation, mux; needs its own pinned peer fixture" },
+      "ssr": { "owner": "T4 follow-up", "reason": "legacy ShadowsocksR stream ciphers and obfs protocols" },
+      "snell": { "owner": "T4 follow-up", "reason": "closed protocol with a fixed framing; needs a pinned peer" },
+      "ssh": { "owner": "T4 follow-up", "reason": "SSH transport and authentication" },
+      "mieru": { "owner": "T4 follow-up", "reason": "proprietary multiplexed transport" },
+      "hysteria": { "owner": "T4 follow-up (after T7 measures QUIC memory)", "reason": "QUIC-based, needs a QUIC stack" },
+      "hysteria2": { "owner": "T4 follow-up (after T7 measures QUIC memory)", "reason": "QUIC-based, congestion control and UDP relay" },
+      "tuic": { "owner": "T4 follow-up (after T7 measures QUIC memory)", "reason": "QUIC-based, needs a QUIC stack" },
+      "shadowquic": { "owner": "T4 follow-up (after T7 measures QUIC memory)", "reason": "QUIC-based" },
+      "wireguard": { "owner": "T6/T7", "reason": "device/TUN ownership overlaps the takeover model" },
+      "tailscale": { "owner": "T6/T7", "reason": "WireGuard-based mesh with its own control plane" },
+      "zerotier": { "owner": "T6/T7", "reason": "mesh VPN with its own device ownership" },
+      "easytier": { "owner": "T6/T7", "reason": "mesh VPN with its own device ownership" },
+      "openvpn": { "owner": "T6/T7", "reason": "openvpn3 transport with its own device handling" },
+      "masque": { "owner": "T4 follow-up", "reason": "HTTP/3 MASQUE; needs a pinned fixture" },
+      "trusttunnel": { "owner": "T4 follow-up", "reason": "newer pinned transport without an interop fixture here" },
+      "gost-relay": { "owner": "T4 follow-up", "reason": "relay-only adapter; needs a pinned fixture" },
+      "sudoku": { "owner": "T4 follow-up", "reason": "proprietary transport without an interop fixture here" },
+      "direct": { "owner": "T5", "reason": "built-in; DIRECT is already a rule action" },
+      "dns": { "owner": "T5", "reason": "built-in adapter that needs the DNS resolver" },
+      "reject": { "owner": "T5", "reason": "built-in; REJECT is already a rule action" },
+      "rematch": { "owner": "T5", "reason": "rule-engine adapter" }
+    }
+  },
   "unmappedNotes": [
-    "Every other proxy type (ssr, vmess, snell, ssh, mieru, hysteria, hysteria2, tuic, wireguard, ...) is rejected at load time with its type named, never ignored.",
+    "Every proxy type outside the six implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records their proposed owner.",
     "Every other listener type (tun, redir, tproxy, mixed with TLS, ...) is rejected through the top-level keys that would enable it.",
     "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it."
   ]

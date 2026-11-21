@@ -13,6 +13,8 @@ use tokio::io::AsyncWriteExt;
 use super::{connect_tcp, handshake, tls, ws, BoxStream, DialError, Dialed, Target};
 use crate::proxies::VlessOutbound;
 
+use super::tls::ClientTls;
+
 const VERSION: u8 = 0;
 const CMD_TCP: u8 = 1;
 
@@ -43,12 +45,16 @@ pub fn request_header(uuid: &[u8; 16], target: &Target) -> Vec<u8> {
     out
 }
 
-pub async fn dial(option: &VlessOutbound, target: &Target) -> Result<Dialed, DialError> {
+pub async fn dial(
+    option: &VlessOutbound,
+    target: &Target,
+    tls: &ClientTls,
+) -> Result<Dialed, DialError> {
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("vless", e))?;
     let mut stream: BoxStream = match &option.network {
         crate::proxies::VlessNetwork::Tcp => {
-            let stream = tls::wrap(tcp, &option.server, &option.tls_settings)
+            let stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
                 .await
                 .map_err(|e| handshake("vless tls", e))?;
             Box::new(stream)
@@ -57,7 +63,7 @@ pub async fn dial(option: &VlessOutbound, target: &Target) -> Result<Dialed, Dia
             // The server's WebSocket ALPN negotiation (Mihomo's vless listener
             // with `ws-path`) expects the plain TLS handshake first; the
             // `ws-opts` request follows over that connection.
-            let stream = tls::wrap(tcp, &option.server, &option.tls_settings)
+            let stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
                 .await
                 .map_err(|e| handshake("vless tls", e))?;
             let host = option
@@ -65,10 +71,16 @@ pub async fn dial(option: &VlessOutbound, target: &Target) -> Result<Dialed, Dia
                 .sni
                 .clone()
                 .unwrap_or_else(|| option.server.clone());
-            let ws_stream = ws::connect(stream, &host, &ws_settings.path, &ws_settings.headers)
-                .await
-                .map_err(|e| handshake("vless ws", e))?;
-            Box::new(ws_stream)
+            let tunnel = ws::connect(
+                stream,
+                &host,
+                &ws_settings.path,
+                &ws_settings.headers,
+                ws_settings.v2ray_http_upgrade,
+            )
+            .await
+            .map_err(|e| handshake("vless ws", e))?;
+            Box::new(tunnel)
         }
     };
     stream

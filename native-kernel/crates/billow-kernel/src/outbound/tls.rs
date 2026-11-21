@@ -1,9 +1,14 @@
-//! TLS client used by trojan, vless, and `tls: true` socks5/http outbounds.
+//! TLS client used by trojan, vless, anytls and `tls: true` socks5/http outbounds.
 //!
 //! Verification uses the platform trust store (rustls-native-certs, which on
-//! iOS/Android/macOS/Windows consults the OS anchors); `skip-cert-verify`
-//! replaces it with "accept any certificate", exactly like Mihomo's option.
+//! iOS/Android/macOS/Windows consults the OS anchors) plus the anchors from the
+//! top-level `tls:` block of the loaded configuration; `skip-cert-verify`
+//! replaces both with "accept any certificate", exactly like Mihomo's option.
 //! The certificate name is `sni` when set, else the configured server name.
+//!
+//! The anchors are built once per kernel ([`ClientTls`]) and passed to every
+//! outbound dial, so two kernels in one process (tests, a host that switches
+//! configurations) cannot inherit each other's private authorities.
 
 use std::io;
 use std::sync::Arc;
@@ -21,30 +26,37 @@ fn provider() -> Arc<CryptoProvider> {
     Arc::new(ring::default_provider())
 }
 
-/// Process-wide extra roots from the configuration (`tls.custom-cert`).
-/// Installed once at kernel start; every TLS client of this process uses them.
-static EXTRA_ROOTS: std::sync::OnceLock<Vec<rustls_pki_types::CertificateDer<'static>>> =
-    std::sync::OnceLock::new();
-
-/// Install configuration-provided roots (first kernel in the process wins;
-/// a later, different set is reported so the host can restart instead of
-/// silently keeping stale anchors).
-pub fn install_extra_roots(
-    certs: Vec<rustls_pki_types::CertificateDer<'static>>,
-) -> Result<(), String> {
-    match EXTRA_ROOTS.set(certs) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            let current = EXTRA_ROOTS.get().map(Vec::len).unwrap_or(0);
-            Err(format!(
-                "TLS extra roots were already installed in this process ({current} certificates); a configuration with different tls roots needs a new process"
-            ))
-        }
-    }
+/// Trust anchors for one kernel: the platform store plus the configuration's
+/// `tls.custom-cert`/`tls.certificate` entries. Built once at start so the
+/// platform store is not re-read on every dial.
+#[derive(Clone)]
+pub struct ClientTls {
+    roots: Arc<RootCertStore>,
+    extra: usize,
 }
 
-pub fn extra_roots_installed() -> usize {
-    EXTRA_ROOTS.get().map(Vec::len).unwrap_or(0)
+impl ClientTls {
+    pub fn new(extra: &[rustls_pki_types::CertificateDer<'static>]) -> ClientTls {
+        let mut store = RootCertStore::empty();
+        let native = rustls_native_certs::load_native_certs();
+        let _ = store.add_parsable_certificates(native.certs);
+        let before = store.len();
+        let _ = store.add_parsable_certificates(extra.to_vec());
+        let extra = store.len() - before;
+        ClientTls {
+            roots: Arc::new(store),
+            extra,
+        }
+    }
+
+    /// Number of configured anchors that actually became trust anchors.
+    pub fn extra_roots(&self) -> usize {
+        self.extra
+    }
+
+    pub fn roots(&self) -> &RootCertStore {
+        &self.roots
+    }
 }
 
 /// Parse a PEM bundle into DER certificates (config errors keep their tag).
@@ -63,19 +75,6 @@ pub fn parse_pem_certs(
         ));
     }
     Ok(certs)
-}
-
-/// Trust anchors: the platform store plus configured extra roots. When both
-/// are empty the store stays empty and every verification fails loudly (never
-/// a silent skip).
-pub fn roots() -> RootCertStore {
-    let mut store = RootCertStore::empty();
-    let native = rustls_native_certs::load_native_certs();
-    let _ = store.add_parsable_certificates(native.certs);
-    if let Some(extra) = EXTRA_ROOTS.get() {
-        let _ = store.add_parsable_certificates(extra.clone());
-    }
-    store
 }
 
 #[derive(Debug)]
@@ -130,7 +129,10 @@ impl ServerCertVerifier for AcceptAny {
     }
 }
 
-pub fn client_config(settings: &TlsSettings) -> io::Result<Arc<ClientConfig>> {
+pub fn client_config(
+    settings: &TlsSettings,
+    tls: &ClientTls,
+) -> io::Result<Arc<ClientConfig>> {
     let provider = provider();
     let builder = ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
@@ -142,7 +144,7 @@ pub fn client_config(settings: &TlsSettings) -> io::Result<Arc<ClientConfig>> {
             .with_no_client_auth()
     } else {
         builder
-            .with_root_certificates(roots())
+            .with_root_certificates(tls.roots().clone())
             .with_no_client_auth()
     };
     config.alpn_protocols = settings
@@ -158,6 +160,7 @@ pub async fn wrap(
     stream: TcpStream,
     server: &str,
     settings: &TlsSettings,
+    tls: &ClientTls,
 ) -> io::Result<TlsStream<TcpStream>> {
     let name = settings.sni.clone().unwrap_or_else(|| server.to_string());
     let server_name = ServerName::try_from(name.clone()).map_err(|e| {
@@ -166,7 +169,7 @@ pub async fn wrap(
             format!("invalid TLS server name '{name}': {e}"),
         )
     })?;
-    let config = client_config(settings)?;
+    let config = client_config(settings, tls)?;
     tokio_rustls::TlsConnector::from(config)
         .connect(server_name, stream)
         .await

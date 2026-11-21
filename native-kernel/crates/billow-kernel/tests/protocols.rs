@@ -155,6 +155,112 @@ fn require_cert(name: &str) -> Cert {
     })
 }
 
+/// A private CA and a server certificate signed by it (SAN for 127.0.0.1 and
+/// localhost). The CA PEM stays next to the server identity, so a kernel can
+/// be started with `tls: {custom-cert: [<ca>]}` while the `Cert` is alive.
+fn make_ca_signed_cert(name: &str) -> Option<(Cert, PathBuf)> {
+    let dir = std::env::temp_dir().join(format!(
+        "billow-ca-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).ok()?;
+    let ca_key = dir.join("ca.key");
+    let ca_pem = dir.join("ca.pem");
+    let key = dir.join("key.pem");
+    let csr = dir.join("server.csr");
+    let server_pem = dir.join("cert.pem");
+    let ext = dir.join("server.ext");
+    std::fs::write(
+        &ext,
+        "subjectAltName=IP:127.0.0.1,DNS:localhost\n         basicConstraints=critical,CA:FALSE\n         keyUsage=critical,digitalSignature,keyEncipherment\n         extendedKeyUsage=serverAuth\n",
+    )
+    .ok()?;
+    let openssl = |args: &[&std::ffi::OsStr]| -> bool {
+        Command::new("openssl")
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    };
+    let ok = openssl(&[
+        "req".as_ref(),
+        "-x509".as_ref(),
+        "-newkey".as_ref(),
+        "rsa:2048".as_ref(),
+        "-nodes".as_ref(),
+        "-keyout".as_ref(),
+        ca_key.as_os_str(),
+        "-out".as_ref(),
+        ca_pem.as_os_str(),
+        "-days".as_ref(),
+        "1".as_ref(),
+        "-subj".as_ref(),
+        "/CN=billow-test-ca".as_ref(),
+        "-addext".as_ref(),
+        "basicConstraints=critical,CA:TRUE".as_ref(),
+    ]) && openssl(&[
+        "req".as_ref(),
+        "-newkey".as_ref(),
+        "rsa:2048".as_ref(),
+        "-nodes".as_ref(),
+        "-keyout".as_ref(),
+        key.as_os_str(),
+        "-out".as_ref(),
+        csr.as_os_str(),
+        "-subj".as_ref(),
+        "/CN=localhost".as_ref(),
+    ]) && openssl(&[
+        "x509".as_ref(),
+        "-req".as_ref(),
+        "-in".as_ref(),
+        csr.as_os_str(),
+        "-CA".as_ref(),
+        ca_pem.as_os_str(),
+        "-CAkey".as_ref(),
+        ca_key.as_os_str(),
+        "-CAcreateserial".as_ref(),
+        "-out".as_ref(),
+        server_pem.as_os_str(),
+        "-days".as_ref(),
+        "1".as_ref(),
+        "-extfile".as_ref(),
+        ext.as_os_str(),
+    ]);
+    if !ok {
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
+    }
+    let pem = std::fs::read_to_string(&server_pem).ok()?;
+    let mut reader = std::io::BufReader::new(pem.as_bytes());
+    let der: Vec<u8> = rustls_pemfile::certs(&mut reader)
+        .flatten()
+        .flat_map(|cert| cert.as_ref().to_vec())
+        .collect();
+    if der.is_empty() {
+        return None;
+    }
+    Some((
+        Cert {
+            der,
+            key,
+            dir,
+        },
+        ca_pem,
+    ))
+}
+
+fn require_ca_cert(name: &str) -> (Cert, PathBuf) {
+    make_ca_signed_cert(name).unwrap_or_else(|| {
+        panic!("these tests need the openssl CLI to mint a private CA; without it the custom-root case is not exercised")
+    })
+}
+
 fn tls_acceptor(cert: &Cert) -> TlsAcceptor {
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -881,7 +987,7 @@ async fn trojan_peer(cert: &Cert, password: &'static str) -> (u16, Log) {
                     &log,
                     Attempt {
                         details: vec![
-                            format!("password-hash-ok"),
+                            "password-hash-ok".to_string(),
                             format!("target={target}"),
                         ],
                         forwarded: true,
@@ -895,9 +1001,233 @@ async fn trojan_peer(cert: &Cert, password: &'static str) -> (u16, Log) {
     (addr.port(), log)
 }
 
+/// Trojan over TLS + WebSocket: upgrades, records the Host header and the
+/// target, then echoes the payload frames. Covers `network: ws` for trojan,
+/// which has no other test.
+async fn trojan_ws_peer(cert: &Cert, password: &'static str) -> (u16, Log) {
+    let acceptor = tls_acceptor(cert);
+    let (listener, addr) = spawn_tcp().await;
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let log_task = log.clone();
+    let expected = trojan_password_key(password);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let log = log_task.clone();
+            let expected = expected.clone();
+            tokio::spawn(async move {
+                let Ok(mut stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut head = Vec::new();
+                let mut b = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    if stream.read(&mut b).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    head.push(b[0]);
+                }
+                let text = String::from_utf8_lossy(&head).to_string();
+                let host = text
+                    .lines()
+                    .filter_map(|l| l.split_once(':'))
+                    .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+                    .map(|(_, v)| v.trim().to_string())
+                    .unwrap_or_default();
+                let key = text
+                    .lines()
+                    .filter_map(|l| l.split_once(':'))
+                    .find(|(k, _)| k.eq_ignore_ascii_case("sec-websocket-key"))
+                    .map(|(_, v)| v.trim().to_string())
+                    .unwrap_or_default();
+                let accept =
+                    base64(&sha1(&format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+                let response = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n");
+                stream.write_all(response.as_bytes()).await.unwrap();
+                push(
+                    &log,
+                    Attempt {
+                        details: vec![format!("ws-host={host}")],
+                        forwarded: true,
+                    },
+                );
+                // The trojan header arrives as a byte stream over frames: the
+                // password line, then the command and address, each CRLF-ended.
+                let mut bytes = Vec::new();
+                let header_end = loop {
+                    if let Some(frame) = read_ws_frame(&mut stream).await {
+                        bytes.extend_from_slice(&frame);
+                    } else {
+                        return;
+                    }
+                    let mut seen = 0;
+                    let mut at = None;
+                    for (index, window) in bytes.windows(2).enumerate() {
+                        if window == b"\r\n" {
+                            seen += 1;
+                            if seen == 2 {
+                                at = Some(index);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(at) = at {
+                        break at;
+                    }
+                    if bytes.len() > 4096 {
+                        return;
+                    }
+                };
+                let header = bytes[..header_end + 2].to_vec();
+                let mut lines = header.split(|byte| *byte == b'\n').map(|line| {
+                    let mut line = line.to_vec();
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    line
+                });
+                let hash = lines.next().unwrap_or_default();
+                let command_line = lines.next().unwrap_or_default();
+                if hash != expected {
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec!["bad-password".into()],
+                            forwarded: false,
+                        },
+                    );
+                    return;
+                }
+                let Some((&command, addr_line)) = command_line.split_first() else {
+                    return;
+                };
+                if command != 1 {
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec!["bad cmd".into()],
+                            forwarded: false,
+                        },
+                    );
+                    return;
+                }
+                let Some(target) = parse_socks_addr(addr_line) else {
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec!["address-error".into()],
+                            forwarded: false,
+                        },
+                    );
+                    return;
+                };
+                push(
+                    &log,
+                    Attempt {
+                        details: vec!["password-hash-ok".into(), format!("target={target}")],
+                        forwarded: true,
+                    },
+                );
+                // Echo payload frames back (the test sends one tagged payload).
+                while let Some(frame) = read_ws_frame(&mut stream).await {
+                    let mut out = vec![0x82u8];
+                    if frame.len() < 126 {
+                        out.push(frame.len() as u8);
+                    } else {
+                        out.push(126);
+                        out.extend_from_slice(&(frame.len() as u16).to_be_bytes());
+                    }
+                    out.extend_from_slice(&frame);
+                    if stream.write_all(&out).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (addr.port(), log)
+}
+
 // ---------------------------------------------------------------------------
 // VLESS peer over TLS (optionally behind a WebSocket upgrade).
 // ---------------------------------------------------------------------------
+
+/// SOCKS5 server behind TLS: answers the greeting, records the target and
+/// relays to it. Used by the custom-CA case, where the certificate is signed by
+/// a private authority rather than self-signed.
+async fn tls_socks5_peer(cert: &Cert) -> (u16, Log) {
+    let acceptor = tls_acceptor(cert);
+    let (listener, addr) = spawn_tcp().await;
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let log_task = log.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let log = log_task.clone();
+            tokio::spawn(async move {
+                let Ok(mut stream) = acceptor.accept(stream).await else {
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec!["tls-error".into()],
+                            forwarded: false,
+                        },
+                    );
+                    return;
+                };
+                let mut greeting = [0u8; 3];
+                if stream.read_exact(&mut greeting).await.is_err() {
+                    return;
+                }
+                stream.write_all(&[5, 0]).await.ok();
+                let mut request = [0u8; 4];
+                if stream.read_exact(&mut request).await.is_err() {
+                    return;
+                }
+                let host = match request[3] {
+                    0x01 => {
+                        let mut v4 = [0u8; 4];
+                        stream.read_exact(&mut v4).await.unwrap();
+                        std::net::Ipv4Addr::from(v4).to_string()
+                    }
+                    0x03 => {
+                        let mut len = [0u8; 1];
+                        stream.read_exact(&mut len).await.unwrap();
+                        let mut name = vec![0u8; len[0] as usize];
+                        stream.read_exact(&mut name).await.unwrap();
+                        String::from_utf8_lossy(&name).to_string()
+                    }
+                    0x04 => {
+                        let mut v6 = [0u8; 16];
+                        stream.read_exact(&mut v6).await.unwrap();
+                        std::net::Ipv6Addr::from(v6).to_string()
+                    }
+                    _ => return,
+                };
+                let mut port = [0u8; 2];
+                stream.read_exact(&mut port).await.unwrap();
+                let target = match host.parse::<std::net::IpAddr>() {
+                    Ok(ip) => SocketAddr::new(ip, u16::from_be_bytes(port)),
+                    Err(_) => return,
+                };
+                push(
+                    &log,
+                    Attempt {
+                        details: vec![format!("target={target}")],
+                        forwarded: true,
+                    },
+                );
+                stream
+                    .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+                    .await
+                    .ok();
+                let (r, w) = tokio::io::split(stream);
+                relay_task(r, w, target);
+            });
+        }
+    });
+    (addr.port(), log)
+}
 
 /// Read one WebSocket data frame from a tunnel and return its application
 /// bytes (binary or continuation opcode). `None` on close or a broken frame.
@@ -981,6 +1311,24 @@ async fn vless_peer(cert: &Cert, uuid: [u8; 16], ws_path: Option<&'static str>) 
                         .unwrap_or_default();
                     let accept =
                         base64(&sha1(&format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+                    let host = text
+                        .lines()
+                        .filter_map(|l| l.split_once(':'))
+                        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+                        .map(|(_, v)| v.trim().to_string())
+                        .unwrap_or_default();
+                    // A key-less upgrade is the Xray HTTP upgrade: raw bytes follow.
+                    let raw = key.is_empty();
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec![
+                                format!("ws-host={host}"),
+                                format!("ws-mode={}", if raw { "raw" } else { "framed" }),
+                            ],
+                            forwarded: true,
+                        },
+                    );
                     if !request_line.starts_with(&format!("GET {path} ")) {
                         stream
                             .write_all(b"HTTP/1.1 404 Not Found\r\n\r\n")
@@ -1007,8 +1355,53 @@ async fn vless_peer(cert: &Cert, uuid: [u8; 16], ws_path: Option<&'static str>) 
                             forwarded: true,
                         },
                     );
-                    let response = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: binary\r\n\r\n");
+                    let response = if raw {
+                        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n".to_string()
+                    } else {
+                        format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n")
+                    };
                     stream.write_all(response.as_bytes()).await.unwrap();
+                    if raw {
+                        // Raw upgrade: the VLESS request follows as plain bytes.
+                        match read_vless_request(&mut stream).await {
+                            Ok((got_id, target, payload)) => {
+                                if got_id != uuid {
+                                    push(
+                                        &log,
+                                        Attempt {
+                                            details: vec!["uuid-mismatch".into()],
+                                            forwarded: false,
+                                        },
+                                    );
+                                    return;
+                                }
+                                push(
+                                    &log,
+                                    Attempt {
+                                        details: vec![
+                                            "uuid-ok".into(),
+                                            format!("target={}:{}", target.host, target.port),
+                                            format!(
+                                                "payload={}",
+                                                String::from_utf8_lossy(&payload)
+                                            ),
+                                        ],
+                                        forwarded: true,
+                                    },
+                                );
+                                let _ = stream.write_all(&payload).await;
+                                let _ = stream.shutdown().await;
+                            }
+                            Err(e) => push(
+                                &log,
+                                Attempt {
+                                    details: vec![format!("vless-error={e}")],
+                                    forwarded: false,
+                                },
+                            ),
+                        }
+                        return;
+                    }
                     // The WebSocket transport carries a byte stream: a VLESS
                     // request may span several frames (the client sends the
                     // header and the first payload separately), so the peer
@@ -1067,7 +1460,7 @@ async fn vless_peer(cert: &Cert, uuid: [u8; 16], ws_path: Option<&'static str>) 
                         &log,
                         Attempt {
                             details: vec![
-                                format!("uuid-ok"),
+                                "uuid-ok".to_string(),
                                 format!("target={}:{}", target.host, target.port),
                                 format!("payload={}", String::from_utf8_lossy(&payload)),
                             ],
@@ -1105,7 +1498,7 @@ async fn vless_peer(cert: &Cert, uuid: [u8; 16], ws_path: Option<&'static str>) 
                             &log,
                             Attempt {
                                 details: vec![
-                                    format!("uuid-ok"),
+                                    "uuid-ok".to_string(),
                                     format!("target={}:{}", target.host, target.port),
                                     format!("payload={}", String::from_utf8_lossy(&payload)),
                                 ],
@@ -1542,6 +1935,34 @@ async fn trojan_outbound_over_tls_sends_hash_command_address_and_payload() {
     kernel.stop().unwrap();
 }
 
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trojan_over_websocket_tunnels_with_a_host_override() {
+    let cert = require_cert("trojan-ws");
+    let (peer_port, log) = trojan_ws_peer(&cert, "trojan-ws-pw").await;
+    let (target_port, _) = echo_target().await;
+    let dir = scratch("trojan-ws");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!("  - {{name: tjw, type: trojan, server: 127.0.0.1, port: {peer_port}, password: trojan-ws-pw, sni: localhost, skip-cert-verify: true, network: ws, ws-opts: {{path: /tj, headers: {{Host: front.example}}}}}}\n"),
+        "tjw",
+        limits(),
+    )
+    .unwrap();
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"trojan-ws-payload")
+        .await
+        .expect("trojan ws roundtrip");
+    assert_eq!(back, b"trojan-ws-payload");
+    let details = detail(&log);
+    assert!(details.contains(&"ws-host=front.example".to_string()), "{details:?}");
+    assert!(details.contains(&"password-hash-ok".to_string()), "{details:?}");
+    assert!(
+        details.contains(&format!("target=127.0.0.1:{target_port}")),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn trojan_wrong_password_is_rejected() {
     let cert = require_cert("trojan-bad");
@@ -1602,6 +2023,9 @@ async fn trojan_without_skip_cert_verify_fails_on_an_untrusted_certificate() {
 const VLESS_UUID: [u8; 16] = [
     0x9d, 0x0c, 0xb9, 0xd0, 0x96, 0x4f, 0x4e, 0xf6, 0x89, 0x7d, 0x6c, 0x6b, 0x3c, 0xcf, 0x9e, 0x68,
 ];
+
+/// The same UUID in the textual form a configuration uses.
+const VLESS_UUID_TEXT: &str = "9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vless_over_tls_sends_uuid_target_and_payload() {
@@ -1667,6 +2091,55 @@ async fn vless_over_tls_and_websocket_tunnels_the_header_frame() {
         "{details:?}"
     );
     assert!(details.contains(&"uuid-ok".to_string()), "{details:?}");
+    kernel.stop().unwrap();
+}
+
+/// `ws-opts.headers: {Host: ...}` overrides the upgrade request's Host while
+/// the tunnel still carries the VLESS request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vless_over_websocket_honours_the_host_header_override() {
+    let cert = require_cert("vless-ws-host");
+    let (peer_port, log) = vless_peer(&cert, VLESS_UUID, Some("/vless-ws")).await;
+    let (target_port, _) = echo_target().await;
+    let dir = scratch("vless-ws-host");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!("  - {{name: vlw, type: vless, server: 127.0.0.1, port: {peer_port}, uuid: {VLESS_UUID_TEXT}, tls: true, skip-cert-verify: true, network: ws, ws-opts: {{path: /vless-ws, headers: {{Host: cdn.example}}}}}}\n"),
+        "vlw",
+        limits(),
+    )
+    .unwrap();
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"host-override")
+        .await
+        .expect("roundtrip");
+    assert_eq!(back, b"host-override");
+    let details = detail(&log);
+    assert!(details.contains(&"ws-host=cdn.example".to_string()), "{details:?}");
+    assert!(details.contains(&"ws-mode=framed".to_string()), "{details:?}");
+    kernel.stop().unwrap();
+}
+
+/// `ws-opts.v2ray-http-upgrade: true` sends a key-less upgrade and then uses
+/// the stream as raw bytes (no WebSocket framing).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vless_over_v2ray_http_upgrade_tunnels_raw_bytes() {
+    let cert = require_cert("vless-ws-raw");
+    let (peer_port, log) = vless_peer(&cert, VLESS_UUID, Some("/vless-raw")).await;
+    let (target_port, _) = echo_target().await;
+    let dir = scratch("vless-ws-raw");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!("  - {{name: vlw, type: vless, server: 127.0.0.1, port: {peer_port}, uuid: {VLESS_UUID_TEXT}, tls: true, skip-cert-verify: true, network: ws, ws-opts: {{path: /vless-raw, v2ray-http-upgrade: true}}}}\n"),
+        "vlw",
+        limits(),
+    )
+    .unwrap();
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"raw-upgrade")
+        .await
+        .expect("roundtrip");
+    assert_eq!(back, b"raw-upgrade");
+    let details = detail(&log);
+    assert!(details.contains(&"ws-mode=raw".to_string()), "{details:?}");
     kernel.stop().unwrap();
 }
 
@@ -1816,7 +2289,7 @@ async fn embedded_api_selects_the_rule_proxy() {
     let (action, label) = kernel.evaluate("a.corp.example", None);
     assert_eq!(action, billow_kernel::Action::Proxy(0));
     assert_eq!(label, "DOMAIN-SUFFIX,corp.example -> tj");
-    let (action, _) = kernel.evaluate(&format!("127.0.0.1"), None);
+    let (action, _) = kernel.evaluate("127.0.0.1", None);
     assert_eq!(action, billow_kernel::Action::Direct);
     assert!(kernel.identity().features.contains("protocols=tj=trojan"));
     // The rule routes the tagged host to the unreachable trojan server: the session fails.
@@ -1845,6 +2318,265 @@ async fn embedded_api_tunnels_through_a_protocol_outbound() {
     assert_eq!(back, b"embedded");
     assert!(received.load(Ordering::Relaxed) > 0);
     assert!(kernel.identity().features.contains("protocols=s=socks5"));
+    kernel.stop().unwrap();
+}
+
+
+/// The configuration's own trust anchors (`tls.custom-cert`) are installed for
+/// every outbound TLS dial: the same private-CA peer succeeds when the CA is
+/// configured and fails when it is not. Runs in one process, so it also proves
+/// the anchors are per kernel rather than a process-wide singleton.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn custom_ca_roots_are_installed_for_outbound_tls() {
+    let (cert, ca) = require_ca_cert("ca-roots");
+    let (target_port, _) = echo_target().await;
+    let (tj_port, _) = trojan_peer(&cert, "trojan-pw").await;
+    let (vl_port, _) = vless_peer(&cert, VLESS_UUID, None).await;
+    let (s5_port, _) = tls_socks5_peer(&cert).await;
+    let cases = [
+        (
+            "trojan",
+            format!("  - {{name: p, type: trojan, server: 127.0.0.1, port: {tj_port}, password: trojan-pw, sni: localhost}}\n"),
+        ),
+        (
+            "vless",
+            format!("  - {{name: p, type: vless, server: 127.0.0.1, port: {vl_port}, uuid: {VLESS_UUID_TEXT}, tls: true, sni: localhost}}\n"),
+        ),
+        (
+            "socks5-tls",
+            format!("  - {{name: p, type: socks5, server: 127.0.0.1, port: {s5_port}, tls: true, sni: localhost}}\n"),
+        ),
+    ];
+    for (label, proxy) in cases {
+        // Without the CA: verification must fail before any tunnel is used.
+        let dir = scratch(&format!("ca-none-{label}"));
+        let (mut kernel, _) = start_kernel(&dir, &proxy, "p", limits())
+            .unwrap_or_else(|(e, _)| panic!("{label}: kernel start: {e}"));
+        let err = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"x")
+            .await
+            .expect_err("an untrusted private CA must fail");
+        assert!(
+            !err.to_string().is_empty(),
+            "{label}: expected a handshake failure"
+        );
+        kernel.stop().unwrap();
+
+        // With `tls: {custom-cert: [<ca>]}` the same peer is trusted.
+        let dir = scratch(&format!("ca-installed-{label}"));
+        let path = dir.join("kernel.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                "mixed-port: {}\nlog-level: warn\ntls:\n  custom-cert: [{}]\nproxies:\n{proxy}rules:\n  - 'MATCH,p'\n",
+                free_port(),
+                ca.display()
+            ),
+        )
+        .unwrap();
+        let (mut kernel, _) = Kernel::start(&path, None, limits())
+            .unwrap_or_else(|e| panic!("{label}: kernel start with custom CA: {e}"));
+        let payload = format!("ca-tagged-{label}");
+        let back = roundtrip(
+            kernel.listen_addr(),
+            "127.0.0.1",
+            target_port,
+            payload.as_bytes(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{label}: custom CA tunnel: {e}"));
+        assert_eq!(back, payload.as_bytes());
+        kernel.stop().unwrap();
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// UDP: the mixed inbound's SOCKS5 UDP ASSOCIATE and the ss datagram path.
+// ---------------------------------------------------------------------------
+
+/// A UDP echo on loopback; returns its port and the payload counter.
+async fn udp_echo() -> (u16, Arc<AtomicU64>) {
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = socket.local_addr().unwrap().port();
+    common::reserve_port(port);
+    let received = Arc::new(AtomicU64::new(0));
+    let counter = received.clone();
+    tokio::spawn(async move {
+        let mut buffer = vec![0u8; 65535];
+        while let Ok((read, from)) = socket.recv_from(&mut buffer).await {
+            counter.fetch_add(read as u64, Ordering::Relaxed);
+            let _ = socket.send_to(&buffer[..read], from).await;
+        }
+    });
+    (port, received)
+}
+
+/// Open a SOCKS5 UDP association through the kernel; the control connection
+/// must stay alive for the association to work.
+fn udp_associate(proxy: SocketAddr) -> (std::net::TcpStream, std::net::SocketAddr) {
+    use std::io::{Read as _, Write as _};
+    let mut control =
+        std::net::TcpStream::connect_timeout(&proxy, Duration::from_secs(5)).expect("control");
+    control
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    control.write_all(&[0x05, 0x01, 0x00]).unwrap();
+    let mut selection = [0u8; 2];
+    control.read_exact(&mut selection).unwrap();
+    control
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .unwrap();
+    let mut reply = [0u8; 10];
+    control.read_exact(&mut reply).unwrap();
+    assert_eq!(reply[1], 0, "UDP associate refused: {reply:02x?}");
+    let ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
+    let port = u16::from_be_bytes([reply[8], reply[9]]);
+    (control, std::net::SocketAddr::from((ip, port)))
+}
+
+/// Send one SOCKS5 UDP datagram and return the reply payload (without header).
+fn udp_roundtrip(
+    relay: std::net::SocketAddr,
+    target: std::net::SocketAddr,
+    payload: &[u8],
+    wait: Duration,
+) -> Option<Vec<u8>> {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+    match target.ip() {
+        std::net::IpAddr::V4(v4) => packet.extend_from_slice(&v4.octets()),
+        _ => return None,
+    }
+    packet.extend_from_slice(&target.port().to_be_bytes());
+    packet.extend_from_slice(payload);
+    socket.send_to(&packet, relay).ok()?;
+    socket.set_read_timeout(Some(wait)).ok()?;
+    let mut buffer = [0u8; 65535];
+    let (read, _) = socket.recv_from(&mut buffer).ok()?;
+    assert!(read > 10, "reply too short: {read}");
+    assert_eq!(buffer[3], 0x01, "reply header: {:02x?}", &buffer[..read]);
+    Some(buffer[10..read].to_vec())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socks5_udp_associate_forwards_datagrams_and_honours_reject() {
+    let (echo_port, received) = udp_echo().await;
+    let dir = scratch("udp-direct");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nrules:\n  - 'IP-CIDR,127.0.0.1/32,DIRECT'\n  - 'MATCH,REJECT'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+
+    let reply = udp_roundtrip(relay, target, b"udp-tagged", Duration::from_secs(3))
+        .expect("a DIRECT datagram must come back through the relay");
+    assert_eq!(reply, b"udp-tagged");
+    wait_for(&received, b"udp-tagged".len() as u64).await;
+
+    // A destination the rules REJECT is dropped before it reaches the echo.
+    let blocked: SocketAddr = format!("127.0.0.2:{echo_port}").parse().unwrap();
+    assert!(
+        udp_roundtrip(relay, blocked, b"udp-blocked", Duration::from_millis(600)).is_none(),
+        "REJECT must not produce a reply"
+    );
+    let seen = received.load(Ordering::Relaxed);
+    assert_eq!(seen, b"udp-tagged".len() as u64);
+
+    // The association ends with its control connection; no session stays active.
+    drop(control);
+    wait_for_counters(&kernel, |stats| stats.active == 0).await;
+
+    // A live association must not outlive `stop()`: stop returns, the relay
+    // socket and the buffers are released with the session.
+    let (_live_control, _live_relay) = udp_associate(kernel.listen_addr());
+    std::thread::sleep(Duration::from_millis(50));
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead() {
+    // An independent ss UDP server (TestAead, not the client's codec) proves
+    // the datagram framing: `salt || sealed(addr || payload)` both ways.
+    let cipher = billow_kernel::proxies::SsCipher::Aes256Gcm;
+    let password = "ss-udp-password";
+    let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let server_port = server.local_addr().unwrap().port();
+    common::reserve_port(server_port);
+    let (echo_port, _) = udp_echo().await;
+    tokio::spawn(async move {
+        let mut buffer = vec![0u8; 65535];
+        loop {
+            let Ok((read, from)) = server.recv_from(&mut buffer).await else {
+                return;
+            };
+            let salt_len = cipher.key_len();
+            if read <= salt_len {
+                continue;
+            }
+            let key = billow_kernel::keys::hkdf_sha1_with_salt(
+                &buffer[..salt_len],
+                &billow_kernel::keys::evp_bytes_to_key(password.as_bytes(), 32),
+                32,
+            );
+            let aead = TestAead::new(cipher, &key);
+            let mut body = buffer[salt_len..read].to_vec();
+            if aead.open(&[0u8; 12], &mut body).is_err() {
+                continue;
+            }
+            // body = SOCKS5 address header + payload; echo the payload back.
+            let Some((target, header)) = billow_kernel::outbound::udp::parse_address(&body, 0)
+            else {
+                continue;
+            };
+            let payload = &body[header..];
+            let reply_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let _ = reply_socket.send_to(payload, ("127.0.0.1", echo_port)).await;
+            let mut echo_reply = vec![0u8; 4096];
+            let Ok((n, _)) = reply_socket.recv_from(&mut echo_reply).await else {
+                continue;
+            };
+            let mut reply = billow_kernel::outbound::udp::address_header(&target);
+            reply.extend_from_slice(&echo_reply[..n]);
+            let mut salt = vec![0u8; salt_len];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
+            let key = billow_kernel::keys::hkdf_sha1_with_salt(
+                &salt,
+                &billow_kernel::keys::evp_bytes_to_key(password.as_bytes(), 32),
+                32,
+            );
+            let aead = TestAead::new(cipher, &key);
+            let mut sealed = reply;
+            aead.seal(&[0u8; 12], &mut sealed);
+            let mut packet = salt;
+            packet.extend_from_slice(&sealed);
+            let _ = server.send_to(&packet, from).await;
+        }
+    });
+    let dir = scratch("ss-udp");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: s, type: ss, server: 127.0.0.1, port: {server_port}, cipher: aes-256-gcm, password: {password}, udp: true}}\nrules:\n  - 'MATCH,s'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    // The target the ss server sees is the echo; the address header carries it.
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let reply = udp_roundtrip(relay, target, b"ss-udp-tagged", Duration::from_secs(3))
+        .expect("the ss datagram must come back");
+    assert_eq!(reply, b"ss-udp-tagged");
+    drop(control);
     kernel.stop().unwrap();
 }
 

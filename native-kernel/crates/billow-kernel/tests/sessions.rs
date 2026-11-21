@@ -264,9 +264,11 @@ async fn handshake_failures_are_reported_and_sessions_reclaimed() {
     let mut closed = Vec::new();
     let _ = raw.read_to_end(&mut closed).await;
 
-    // SOCKS5 BIND / UDP ASSOCIATE are refused explicitly.
+    // SOCKS5 BIND is refused explicitly; UDP ASSOCIATE is served (the helper
+    // drops its control connection right after the reply, which ends the
+    // association and releases its sockets).
     assert_eq!(socks5_command(running.proxy, 0x02).await.unwrap(), 0x07);
-    assert_eq!(socks5_command(running.proxy, 0x03).await.unwrap(), 0x07);
+    assert_eq!(socks5_command(running.proxy, 0x03).await.unwrap(), 0x00);
 
     // HTTP proxy request without CONNECT is refused with 405.
     let mut raw = tokio::net::TcpStream::connect(running.proxy).await.unwrap();
@@ -286,7 +288,10 @@ async fn handshake_failures_are_reported_and_sessions_reclaimed() {
     })
     .await;
     let stats = running.kernel().stats();
-    assert_eq!(stats.failed, 4, "{stats:?}");
+    // unknown byte, BIND and the non-CONNECT HTTP request fail; the UDP
+    // association completes when its control connection closes.
+    assert_eq!(stats.failed, 3, "{stats:?}");
+    assert_eq!(stats.completed, 1, "{stats:?}");
     assert_eq!(stats.active, 0);
 }
 

@@ -148,7 +148,13 @@ impl Drop for Mihomo {
 /// Start Mihomo with `listeners` (YAML lines; `CERT`/`KEY` become the PEM
 /// names copied next to the config) forwarding to a sink through a local HTTP
 /// proxy, and wait until every listener accepts a connection.
-fn start_mihomo(bin: PathBuf, certs: PathBuf, sink_port: u16, listeners: &str) -> Option<Mihomo> {
+fn start_mihomo(
+    bin: PathBuf,
+    certs: PathBuf,
+    sink_port: u16,
+    listeners: &str,
+    rule: &str,
+) -> Option<Mihomo> {
     let dir = std::env::temp_dir().join(format!(
         "billow-peers-{}-{}",
         std::process::id(),
@@ -161,7 +167,7 @@ fn start_mihomo(bin: PathBuf, certs: PathBuf, sink_port: u16, listeners: &str) -
         .replace("CERT", "cert.pem")
         .replace("KEY", "key.pem");
     let config = format!(
-        "mixed-port: {}\nlog-level: debug\nproxies:\n  - {{name: sink-http, type: http, server: 127.0.0.1, port: {sink_port}}}\nrules:\n  - MATCH,sink-http\nlisteners:\n{listeners}",
+        "mixed-port: {}\nlog-level: debug\nproxies:\n  - {{name: sink-http, type: http, server: 127.0.0.1, port: {sink_port}}}\n  - {{name: sink-direct, type: direct}}\nrules:\n  - {rule}\nlisteners:\n{listeners}",
         free_port()
     );
     std::fs::write(dir.join("config.yaml"), &config).ok()?;
@@ -470,7 +476,7 @@ where
         return;
     };
     let sink = Sink::start();
-    let Some(mihomo) = start_mihomo(bin, certs, sink.port, listeners) else {
+    let Some(mihomo) = start_mihomo(bin, certs, sink.port, listeners, "MATCH,sink-http") else {
         panic!("{test}: Mihomo did not start its listeners");
     };
     let ports = listener_ports(
@@ -488,6 +494,38 @@ where
             mihomo.config,
             mihomo.log()
         );
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// Like [`with_peer`] but the peer's ruleset forwards datagrams DIRECT to the
+/// UDP target, because the HTTP sink is a TCP proxy.
+fn with_udp_peer<F>(test: &str, listeners: &str, body: F)
+where
+    F: FnOnce(&Mihomo, &[u16]),
+{
+    install_kernel_log();
+    static SERIAL: Mutex<()> = Mutex::new(());
+    let _serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(bin) = mihomo_bin() else {
+        skip(test, "set KC_MIHOMO_BIN to the pinned Mihomo binary");
+        return;
+    };
+    let Some(certs) = cert_dir() else {
+        skip(test, "provide the openssl CLI or KC_CERT_DIR with cert.pem/key.pem");
+        return;
+    };
+    let Some(mihomo) = start_mihomo(bin, certs, free_port(), listeners, "MATCH,sink-direct") else {
+        panic!("{test}: Mihomo did not start its listeners");
+    };
+    let ports = listener_ports(
+        &listeners
+            .replace("CERT", "cert.pem")
+            .replace("KEY", "key.pem"),
+    );
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mihomo, &ports)));
+    if let Err(panic) = outcome {
+        eprintln!("--- {test}: peer config ---\n{}", mihomo.config);
         std::panic::resume_unwind(panic);
     }
 }
@@ -513,6 +551,126 @@ fn expect_not_reached(test: &str, sink: &Sink) {
 
 fn listener(kind: &str, port: u16, extra: &str) -> String {
     format!("  - {{name: in-{kind}, type: {kind}, listen: 127.0.0.1, port: {port}{extra}}}\n")
+}
+
+
+/// A loopback UDP echo: returns its port and the payloads it received.
+struct UdpEcho {
+    port: u16,
+    seen: Arc<Mutex<Vec<Vec<u8>>>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl UdpEcho {
+    fn start() -> UdpEcho {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (log, stop_task) = (seen.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 65535];
+            while !stop_task.load(Ordering::Relaxed) {
+                if let Ok((read, from)) = socket.recv_from(&mut buffer) {
+                    log.lock().unwrap().push(buffer[..read].to_vec());
+                    let _ = socket.send_to(&buffer[..read], from);
+                }
+            }
+        });
+        UdpEcho { port, seen, stop }
+    }
+
+    fn received(&self) -> Vec<Vec<u8>> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+impl Drop for UdpEcho {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Open a SOCKS5 UDP association through the kernel and return the control
+/// connection (kept alive) plus the relay socket address.
+fn udp_associate(proxy: SocketAddr) -> (TcpStream, SocketAddr) {
+    let mut stream = TcpStream::connect_timeout(&proxy, Duration::from_secs(5)).expect("control");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(&[0x05, 0x01, 0x00]).unwrap();
+    let mut selection = [0u8; 2];
+    stream.read_exact(&mut selection).unwrap();
+    assert_eq!(selection, [0x05, 0x00]);
+    // UDP ASSOCIATE with 0.0.0.0:0; the relay address comes back in the reply.
+    stream
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .unwrap();
+    let mut reply = [0u8; 10];
+    stream.read_exact(&mut reply).unwrap();
+    assert_eq!(reply[1], 0x00, "UDP associate refused: {reply:02x?}");
+    let ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
+    let port = u16::from_be_bytes([reply[8], reply[9]]);
+    (stream, SocketAddr::from((ip, port)))
+}
+
+/// Send one SOCKS5 UDP datagram (RSV RSV FRAG ATYP ADDR PORT payload).
+fn send_datagram(relay: SocketAddr, target: SocketAddr, payload: &[u8]) {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+    packet.extend_from_slice(&target.ip().to_string().parse::<std::net::Ipv4Addr>().unwrap().octets());
+    packet.extend_from_slice(&target.port().to_be_bytes());
+    packet.extend_from_slice(payload);
+    socket.send_to(&packet, relay).unwrap();
+    // Wait for the reply on the same socket, then hand it back.
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut buffer = [0u8; 65535];
+    match socket.recv_from(&mut buffer) {
+        Ok((read, _)) => {
+            assert!(read > 10, "reply too short: {read}");
+            let (host, offset) = parse_udp_reply(&buffer[..read]);
+            assert_eq!(host, target);
+            eprintln!(
+                "UDP reply from {host}: {}",
+                String::from_utf8_lossy(&buffer[offset..read])
+            );
+        }
+        Err(e) => panic!("no UDP reply through the kernel: {e}"),
+    }
+}
+
+/// Send a datagram and return the reply payload, or `None` on timeout.
+fn try_datagram(relay: SocketAddr, target: SocketAddr, payload: &[u8]) -> Option<Vec<u8>> {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+    packet.extend_from_slice(&target.ip().to_string().parse::<std::net::Ipv4Addr>().unwrap().octets());
+    packet.extend_from_slice(&target.port().to_be_bytes());
+    packet.extend_from_slice(payload);
+    socket.send_to(&packet, relay).ok()?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(1200)))
+        .ok()?;
+    let mut buffer = [0u8; 65535];
+    let (read, _) = socket.recv_from(&mut buffer).ok()?;
+    let (_, offset) = parse_udp_reply(&buffer[..read]);
+    Some(buffer[offset..read].to_vec())
+}
+
+fn parse_udp_reply(reply: &[u8]) -> (SocketAddr, usize) {
+    assert_eq!(
+        reply[3],
+        0x01,
+        "only IPv4 replies are asserted here; raw reply: {:02x?}",
+        reply
+    );
+    let ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
+    let port = u16::from_be_bytes([reply[8], reply[9]]);
+    (SocketAddr::from((ip, port)), 10)
 }
 
 /// The sink port is only known after the sink starts, so each listener is
@@ -829,6 +987,59 @@ fn vless_over_websocket_reaches_the_receiving_side_through_mihomo() {
 
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
+fn vless_over_v2ray_http_upgrade_reaches_the_receiving_side_through_mihomo() {
+    // A key-less `Upgrade: websocket` request is what Mihomo treats as the
+    // Xray HTTP upgrade (`IsV2rayHttpUpdate`): the same listener then carries a
+    // raw byte stream instead of framed WebSocket messages.
+    let port = free_port();
+    let listeners = listener(
+        "vless",
+        port,
+        &format!(", ws-path: /vlraw, certificate: CERT, private-key: KEY, users: [{{username: u1, uuid: {UUID}}}]"),
+    );
+    with_peer("vless-ws-raw", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vless, server: 127.0.0.1, port: {port}, uuid: {UUID}, tls: true, skip-cert-verify: true, network: ws, ws-opts: {{path: /vlraw, v2ray-http-upgrade: true}}}}\n"
+        ));
+        let marker = "marker-vless-raw-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vless-ws-raw", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vless_over_websocket_with_a_host_override_reaches_the_receiving_side_through_mihomo() {
+    // The Host override changes only the upgrade request; the tunnel must still
+    // reach the sink, which is what a CDN front needs.
+    let port = free_port();
+    let listeners = listener(
+        "vless",
+        port,
+        &format!(", ws-path: /vlhost, certificate: CERT, private-key: KEY, users: [{{username: u1, uuid: {UUID}}}]"),
+    );
+    with_peer("vless-ws-host", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vless, server: 127.0.0.1, port: {port}, uuid: {UUID}, tls: true, skip-cert-verify: true, network: ws, ws-opts: {{path: /vlhost, headers: {{Host: cdn.example}}}}}}\n"
+        ));
+        let marker = "marker-vless-ws-host-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vless-ws-host", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
 fn vless_wrong_uuid_never_reaches_the_sink() {
     let port = free_port();
     let listeners = listener(
@@ -903,6 +1114,112 @@ fn anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink() {
         );
         assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
         expect_not_reached("anytls-untrusted-certificate", sink);
+    });
+}
+
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowsocks_udp_reaches_the_receiving_side_through_mihomo() {
+    // The peer's Shadowsocks listener carries AEAD-2017 UDP; the kernel's
+    // SOCKS5 UDP ASSOCIATE forwards each datagram through the configured ss
+    // outbound (`udp: true`).
+    let port = free_port();
+    let listeners = listener(
+        "shadowsocks",
+        port,
+        &format!(", cipher: aes-256-gcm, password: \"{SS_PASSWORD}\""),
+    );
+    with_udp_peer("ss-udp", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: ss, server: 127.0.0.1, port: {port}, cipher: aes-256-gcm, password: \"{SS_PASSWORD}\", udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-ss-udp-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the UDP echo must receive the datagram through the ss listener"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowsocks_udp_wrong_password_never_reaches_the_echo() {
+    let port = free_port();
+    let listeners = listener(
+        "shadowsocks",
+        port,
+        &format!(", cipher: aes-256-gcm, password: \"{SS_PASSWORD}\""),
+    );
+    with_udp_peer("ss-udp-wrong-password", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: ss, server: 127.0.0.1, port: {port}, cipher: aes-256-gcm, password: wrong, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        assert!(
+            try_datagram(relay, target, b"must-not-arrive").is_none(),
+            "a wrong ss password must not produce a reply"
+        );
+        assert!(echo.received().is_empty(), "the echo must not be reached");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn trojan_udp_reaches_the_receiving_side_through_mihomo() {
+    // The trojan listener accepts command 3 and carries `addr|len|CRLF|payload`
+    // frames over TLS; the kernel's association uses the same framing.
+    let port = free_port();
+    let listeners = listener(
+        "trojan",
+        port,
+        &format!(
+            ", certificate: CERT, private-key: KEY, users: [{{password: \"{TROJAN_PASSWORD}\"}}]"
+        ),
+    );
+    with_udp_peer("trojan-udp", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: trojan, server: 127.0.0.1, port: {port}, password: \"{TROJAN_PASSWORD}\", sni: localhost, skip-cert-verify: true, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-trojan-udp-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(echo.received(), vec![payload.to_vec()]);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn trojan_udp_wrong_password_never_reaches_the_echo() {
+    let port = free_port();
+    let listeners = listener(
+        "trojan",
+        port,
+        &format!(
+            ", certificate: CERT, private-key: KEY, users: [{{password: \"{TROJAN_PASSWORD}\"}}]"
+        ),
+    );
+    with_udp_peer("trojan-udp-wrong-password", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: trojan, server: 127.0.0.1, port: {port}, password: wrong, sni: localhost, skip-cert-verify: true, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        assert!(
+            try_datagram(relay, target, b"must-not-arrive").is_none(),
+            "a wrong trojan password must not produce a reply"
+        );
+        assert!(echo.received().is_empty(), "the echo must not be reached");
     });
 }
 

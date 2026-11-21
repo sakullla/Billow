@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 use crate::config::{Action, Config, ConfigError, GeoSiteDatabase, LoadedConfig};
 use crate::identity::Identity;
 use crate::inbound::{self, HandshakeError, InboundAuth};
+use crate::outbound::tls::ClientTls;
 use crate::outbound;
 use crate::rules::{RuleSet, Target};
 
@@ -38,6 +39,9 @@ pub struct Limits {
     pub handshake_timeout: Duration,
     /// Deadline for dialling the DIRECT target.
     pub dial_timeout: Duration,
+    /// How long a SOCKS5 UDP association may stay idle before its sockets and
+    /// buffers are released (the control connection normally closes first).
+    pub udp_idle_timeout: Duration,
     /// Extra time given to the second direction after the first one finished.
     pub half_close_timeout: Duration,
 }
@@ -49,6 +53,7 @@ impl Default for Limits {
             max_sessions: 256,
             handshake_timeout: crate::config::default_handshake_timeout(),
             dial_timeout: Duration::from_secs(10),
+            udp_idle_timeout: Duration::from_secs(60),
             half_close_timeout: Duration::from_secs(30),
         }
     }
@@ -109,6 +114,9 @@ impl Counters {
 /// Shared, immutable session context.
 struct SessionContext {
     rules: Arc<RuleSet>,
+    /// Trust anchors of this kernel: platform store plus the configuration's
+    /// `tls.custom-cert`/`tls.certificate` entries.
+    tls: Arc<ClientTls>,
     /// `authentication` users for the mixed inbound (SOCKS5 RFC 1929 / HTTP 407).
     auth: InboundAuth,
     limits: Limits,
@@ -171,6 +179,11 @@ impl Kernel {
         };
         let config = Arc::new(loaded.config.clone());
         let rules = RuleSet::from_config(&config, geosite);
+        // The configuration's own anchors are part of the kernel instance:
+        // they are installed before the listener exists, so no dial can run
+        // without them, and a second kernel in this process cannot inherit
+        // the first one's private authorities.
+        let tls = Arc::new(ClientTls::new(&config.tls_roots));
 
         // Bind with a short-lived current-thread runtime on this thread; the
         // caller may itself be inside a tokio runtime (tests, hosts), so the
@@ -196,6 +209,7 @@ impl Kernel {
         let (stop_tx, stop_rx) = watch::channel(false);
         let context = Arc::new(SessionContext {
             rules: rules.clone(),
+            tls: tls.clone(),
             auth: InboundAuth {
                 users: loaded.config.inbound_users.clone(),
             },
@@ -490,6 +504,9 @@ async fn serve_request(
         inbound::reply_http_auth_required(&mut client).await;
         return Err(SessionOutcome::Failed);
     }
+    if request.command == inbound::Command::UdpAssociate {
+        return serve_udp_associate(client, peer, id, context, config).await;
+    }
     let ip: Option<IpAddr> = request.host.parse().ok();
     let decision = context.rules.evaluate(&Target::new(&request.host, ip));
     debug!(
@@ -554,7 +571,12 @@ async fn serve_request(
                     .and_then(|name| config.proxies.iter().find(|p| p.name == name));
             }
             let target = outbound::Target { host: request.host.clone(), port: request.port };
-            match tokio::time::timeout(limits.dial_timeout, outbound::dial_chain(&hops, &target, limits.dial_timeout)).await {
+            match tokio::time::timeout(
+                limits.dial_timeout,
+                outbound::dial_chain(&hops, &target, limits.dial_timeout, &context.tls),
+            )
+            .await
+            {
                 Err(_) => {
                     warn!(session = id, target = %authority, rule = %decision, proxy = %proxy.name, "outbound dial timed out after {:?}", limits.dial_timeout);
                     inbound::reply_failure(&mut client, protocol, 0x01).await;
@@ -607,6 +629,327 @@ async fn serve_request(
         Err(SessionOutcome::Failed)
     } else {
         Ok(())
+    }
+}
+
+/// Serve a SOCKS5 `UDP ASSOCIATE`: bind the relay socket, tell the client where
+/// it is, then forward every datagram through the rule set. The association
+/// ends with the control connection (or `udp_idle_timeout`), and both sockets
+/// and buffers are released with it.
+///
+/// Memory is bounded: two 64 KiB buffers (client datagram, one reply at a
+/// time) plus one socket per transport actually used, so an association costs
+/// at most ~128 KiB regardless of how many destinations it talks to.
+async fn serve_udp_associate(
+    mut client: TcpStream,
+    peer: SocketAddr,
+    id: u64,
+    context: &SessionContext,
+    config: &Config,
+) -> Result<(), SessionOutcome> {
+    let limits = context.limits;
+    let counters = &context.counters;
+    let local = match client.local_addr() {
+        Ok(local) => local,
+        Err(e) => {
+            warn!(session = id, "UDP associate: no local address: {e}");
+            return Err(SessionOutcome::Failed);
+        }
+    };
+    let relay = match tokio::net::UdpSocket::bind((local.ip(), 0)).await {
+        Ok(socket) => socket,
+        Err(e) => {
+            warn!(session = id, "UDP associate: cannot bind relay: {e}");
+            inbound::reply_failure(&mut client, inbound::Protocol::Socks5, 0x01).await;
+            return Err(SessionOutcome::Failed);
+        }
+    };
+    let relay_addr = match relay.local_addr() {
+        Ok(addr) => addr,
+        Err(e) => {
+            warn!(session = id, "UDP associate: no relay address: {e}");
+            return Err(SessionOutcome::Failed);
+        }
+    };
+    if let Err(e) = inbound::reply_udp_associate(&mut client, relay_addr).await {
+        warn!(session = id, "UDP associate: reply failed: {e}");
+        return Err(SessionOutcome::Failed);
+    }
+    info!(
+        session = id, peer = %peer, relay = %relay_addr, config = %config.digest,
+        "UDP association established"
+    );
+
+    let mut client_udp: Option<SocketAddr> = None;
+    let mut direct: Option<tokio::net::UdpSocket> = None;
+    // The DIRECT socket is bound to the wildcard of the destination's family,
+    // so a loopback-bound listener can still reach remote UDP targets (a socket
+    // bound to 127.0.0.1 cannot). A destination of the other family recreates
+    // it; in-flight replies of the previous family are dropped, which the log
+    // records.
+    let mut direct_v4 = true;
+    let mut ss: Option<outbound::udp::SsUdp> = None;
+    let mut trojan: Option<outbound::udp::TrojanUdp> = None;
+    // One datagram buffer for the client, plus one reply buffer per transport
+    // that is actually used: a direct-only association never allocates the ss
+    // or trojan buffer.
+    let mut client_buf = vec![0u8; outbound::udp::MAX_DATAGRAM];
+    let mut direct_buf: Option<Vec<u8>> = None;
+    let mut ss_buf: Option<Vec<u8>> = None;
+    let mut trojan_buf: Option<Vec<u8>> = None;
+    let mut control_probe = [0u8; 1];
+    let mut failed = false;
+    let mut idle_deadline = tokio::time::Instant::now() + limits.udp_idle_timeout;
+    // A transport that reported EOF/error is dropped outside the `select`, so
+    // its branch cannot be polled again against a dead stream (which would spin
+    // on an immediate EOF).
+    let mut direct_eof = false;
+    let mut ss_eof = false;
+    let mut trojan_eof = false;
+
+    'associate: loop {
+        if direct_eof {
+            direct = None;
+            direct_buf = None;
+        }
+        if ss_eof {
+            ss = None;
+            ss_buf = None;
+        }
+        if trojan_eof {
+            trojan = None;
+            trojan_buf = None;
+        }
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(idle_deadline) => {
+                debug!(session = id, "UDP association idle timeout");
+                break 'associate;
+            }
+            read = client.read(&mut control_probe) => {
+                match read {
+                    Ok(0) | Err(_) => break 'associate,
+                    // Data on the control connection is not part of RFC 1928's
+                    // UDP association; it is discarded, the association stays.
+                    Ok(_) => {}
+                }
+            }
+            received = relay.recv_from(&mut client_buf) => {
+                let (read, source) = match received {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        debug!(session = id, "UDP relay read failed: {e}");
+                        failed = true;
+                        break 'associate;
+                    }
+                };
+                // RFC 1928: only the client that created the association may use
+                // it. The first datagram teaches the port, then it must match.
+                match client_udp {
+                    Some(known) if known != source => continue,
+                    None if source.ip() != peer.ip() => continue,
+                    None => client_udp = Some(source),
+                    _ => {}
+                }
+                idle_deadline = tokio::time::Instant::now() + limits.udp_idle_timeout;
+                let Some(datagram) = outbound::udp::parse_datagram(&client_buf[..read]) else {
+                    debug!(session = id, "UDP datagram dropped: malformed or fragmented");
+                    continue;
+                };
+                let payload = &client_buf[datagram.offset..read];
+                let ip: Option<IpAddr> = datagram.target.host.parse().ok();
+                let decision = context.rules.evaluate(&Target::new(&datagram.target.host, ip));
+                let action = decision.rule.action;
+                if action == Action::Reject {
+                    debug!(session = id, target = %datagram.target.host, rule = %decision, "UDP REJECT");
+                    continue;
+                }
+                let proxy = match action {
+                    Action::Proxy(index) => config.proxies.get(index),
+                    _ => None,
+                };
+                let sent = match proxy {
+                    None => {
+                        let destination = match outbound::udp::resolve(&datagram.target).await {
+                            Ok(addr) => addr,
+                            Err(e) => {
+                                debug!(session = id, target = %datagram.target.host, "UDP resolve failed: {e}");
+                                failed = true;
+                                continue;
+                            }
+                        };
+                        let wants_v4 = destination.is_ipv4();
+                        if direct.is_none() || wants_v4 != direct_v4 {
+                            let bind = if wants_v4 { "0.0.0.0:0" } else { "[::]:0" };
+                            match tokio::net::UdpSocket::bind(bind).await {
+                                Ok(socket) => {
+                                    direct = Some(socket);
+                                    direct_v4 = wants_v4;
+                                    direct_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    direct_eof = false;
+                                }
+                                Err(e) => {
+                                    warn!(session = id, "UDP direct socket: {e}");
+                                    failed = true;
+                                    continue;
+                                }
+                            }
+                        }
+                        let socket = direct.as_ref().expect("bound above");
+                        socket.send_to(payload, destination).await.map(|_| ())
+                    }
+                    Some(proxy) => match &proxy.protocol {
+                        crate::proxies::Protocol::Shadowsocks(option) if option.udp => {
+                            if ss.is_none() {
+                                match outbound::udp::SsUdp::connect(option).await {
+                                    Ok(association) => {
+                                        ss = Some(association);
+                                        ss_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "ss UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            ss.as_ref().expect("connected above").send(&datagram.target, payload).await
+                        }
+                        crate::proxies::Protocol::Trojan(option) if option.udp => {
+                            if trojan.is_none() {
+                                match outbound::udp::TrojanUdp::connect(option, &context.tls).await {
+                                    Ok(association) => {
+                                        trojan = Some(association);
+                                        trojan_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "trojan UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            trojan.as_mut().expect("connected above").send(&datagram.target, payload).await
+                        }
+                        other => {
+                            // The pinned outbound has no UDP association this
+                            // kernel implements for this family; dropping is a
+                            // recorded gap, never a silent success.
+                            debug!(
+                                session = id, proxy = %proxy.name, proxy_type = %other_type(other),
+                                "UDP datagram dropped: no UDP association for this proxy type"
+                            );
+                            failed = true;
+                            continue;
+                        }
+                    },
+                };
+                match sent {
+                    Ok(()) => {
+                        counters.bytes_up.fetch_add(payload.len() as u64, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        debug!(session = id, "UDP send failed: {e}");
+                        failed = true;
+                    }
+                }
+            }
+            received = async {
+                match (direct.as_ref(), direct_buf.as_mut()) {
+                    (Some(socket), Some(buffer)) => socket.recv_from(buffer.as_mut_slice()).await,
+                    _ => std::future::pending().await,
+                }
+            }, if direct.is_some() && !direct_eof => {
+                if received.is_err() {
+                    direct_eof = true;
+                    failed = true;
+                }
+                if let (Ok((read, from)), Some(buffer)) = (received, direct_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let target = outbound::Target {
+                            host: from.ip().to_string(),
+                            port: from.port(),
+                        };
+                        let mut reply = outbound::udp::reply_header(&target);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (ss.as_ref(), ss_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if ss.is_some() && !ss_eof => {
+                match &received {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        // The server ended the association (EOF or bad key).
+                        ss_eof = true;
+                        failed = true;
+                    }
+                    Err(_) => {
+                        ss_eof = true;
+                        failed = true;
+                    }
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, ss_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (trojan.as_mut(), trojan_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if trojan.is_some() && !trojan_eof => {
+                match &received {
+                    Ok(Some(_)) => {}
+                    // EOF or a broken stream: the server rejected the
+                    // association (for example a wrong password).
+                    Ok(None) | Err(_) => {
+                        trojan_eof = true;
+                        failed = true;
+                    }
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, trojan_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+    info!(session = id, "UDP association closed");
+    if failed {
+        Err(SessionOutcome::Failed)
+    } else {
+        Ok(())
+    }
+}
+
+fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
+    match protocol {
+        crate::proxies::Protocol::Socks5(_) => "socks5",
+        crate::proxies::Protocol::Http(_) => "http",
+        crate::proxies::Protocol::Shadowsocks(_) => "ss (udp: false)",
+        crate::proxies::Protocol::Trojan(_) => "trojan (udp: false)",
+        crate::proxies::Protocol::Vless(_) => "vless",
+        crate::proxies::Protocol::Anytls(_) => "anytls",
     }
 }
 
