@@ -2,7 +2,7 @@ import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import { createDemoBackend } from './lib/demo'
-import { SETTINGS_CATEGORIES, SETTINGS_INDEX, searchSettings } from './lib/settings/catalog'
+import { SETTINGS_CATEGORIES, SETTINGS_INDEX, SETTINGS_PANES, searchSettings } from './lib/settings/catalog'
 import type { Store } from './lib/store'
 
 // Settings 3.0: categories by task, a searchable index, and rows that apply at once.
@@ -38,8 +38,10 @@ describe('settings catalog', () => {
   const desktop = { android: false, windows: true, linux: false, mac: false }
   const android = { android: true, windows: false, linux: false, mac: false }
 
-  it('indexes every row under a category that exists', () => {
-    const ids = new Set(SETTINGS_CATEGORIES.map((category) => category.id))
+  it('indexes every row under a pane that exists, and shows every pane on some page', () => {
+    const ids = new Set(SETTINGS_PANES.map((pane) => pane.id))
+    expect(SETTINGS_CATEGORIES.map((category) => category.id)).toEqual(['general', 'network', 'behavior', 'kernel', 'backup'])
+    expect(new Set(SETTINGS_CATEGORIES.flatMap((category) => category.panes))).toEqual(ids)
     for (const entry of SETTINGS_INDEX) expect(ids.has(entry.tab)).toBe(true)
     expect(new Set(SETTINGS_INDEX.map((entry) => entry.id)).size).toBe(SETTINGS_INDEX.length)
   })
@@ -54,16 +56,20 @@ describe('settings catalog', () => {
 })
 
 describe('settings page', () => {
-  it('opens on 通用 with a category rail grouped by task', async () => {
+  it('opens on 通用 with a five-page rail, and folds the panes of 网络', async () => {
     const { wrapper } = await mountApp()
     storeOf(wrapper).go('settings')
     await flushPromises()
     const rail = wrapper.find('[data-testid="settings-tabs"]')
-    expect(rail.findAll('.settings-nav-label').map((label) => label.text())).toEqual(['流量接管', '网络与内核', '应用'])
+    expect(rail.findAll('.settings-nav-item').map((item) => item.text())).toEqual(['通用', '网络', '代理与测速', '内核', '数据与关于'])
     expect(rail.find('[aria-current="page"]').attributes('data-value')).toBe('general')
     await rail.find('[data-value="network"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('.settings-pane-head h2').text()).toBe('网络与端口')
+    expect(wrapper.find('.settings-pane-head h2').text()).toBe('网络')
+    // The first pane is open; the others stay folded but mounted for search.
+    const folds = wrapper.findAll('.pane-fold')
+    expect(folds.map((fold) => fold.attributes('data-pane-fold'))).toEqual(['proxy', 'tun', 'network', 'dns'])
+    expect(folds.map((fold) => (fold.element as HTMLDetailsElement).open)).toEqual([true, false, false, false])
     expect(wrapper.find('[data-pane="network"] [data-testid="mixed-port-input"]').exists()).toBe(true)
   })
 
@@ -125,7 +131,9 @@ describe('settings page', () => {
     expect(wrapper.find('[data-testid="open-proxy"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="open-tun"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="open-apps"]').exists()).toBe(true)
-    const labels = wrapper.findAll('.sgroup-head h3').map((label) => label.text())
-    expect(labels).toEqual(['流量接管', '网络与内核', '应用'])
+    expect(wrapper.findAll('.srow-cat')).toHaveLength(6)
+    await wrapper.find('[data-testid="open-network"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.pane-fold').map((fold) => fold.attributes('data-pane-fold'))).toEqual(['network', 'dns'])
   })
 })

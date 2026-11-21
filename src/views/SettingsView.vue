@@ -1,27 +1,20 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onBeforeUnmount, ref, watch, type Component } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import TrafficStatsDialog from '../components/TrafficStatsDialog.vue'
 import {
-  SECTION_LABELS,
   categoryOf,
+  paneOf,
   searchSettings,
   visibleCategories,
+  visiblePanes,
   type CategoryId,
   type SettingsCategory,
   type SettingsEntry,
 } from '../lib/settings/catalog'
 import { tr } from '../lib/i18n'
 import { useStore } from '../lib/store'
-import AboutPane from './settings/AboutPane.vue'
-import BehaviorPane from './settings/BehaviorPane.vue'
-import DataPane from './settings/DataPane.vue'
-import DnsPane from './settings/DnsPane.vue'
-import GeneralPane from './settings/GeneralPane.vue'
-import KernelPane from './settings/KernelPane.vue'
-import NetworkPane from './settings/NetworkPane.vue'
-import ProxyPane from './settings/ProxyPane.vue'
-import TunPane from './settings/TunPane.vue'
+import PaneStack from './settings/PaneStack.vue'
 
 /**
  * Settings shell (v3). Desktop: a category rail with search beside the pane.
@@ -32,18 +25,6 @@ import TunPane from './settings/TunPane.vue'
 const props = defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
-
-const PANES: Record<CategoryId, Component> = {
-  general: GeneralPane,
-  proxy: ProxyPane,
-  tun: TunPane,
-  network: NetworkPane,
-  behavior: BehaviorPane,
-  dns: DnsPane,
-  kernel: KernelPane,
-  backup: DataPane,
-  about: AboutPane,
-}
 
 const platform = computed(() => ({
   android: store.isAndroid.value,
@@ -56,29 +37,13 @@ const categories = computed(() => visibleCategories(platform.value))
 
 /** Phone root is the category list; desktop always shows a pane. */
 const atRoot = computed(() => props.compact && store.settingsTab.value === 'home')
-const active = computed<SettingsCategory>(() => {
-  const category = categoryOf(store.settingsTab.value)
-  return categories.value.some((item) => item.id === category.id) ? category : categories.value[0]!
-})
-const pane = computed(() => PANES[active.value.id])
-
-const groupedCategories = computed(() => {
-  const groups: { id: SettingsCategory['section']; label: string; items: SettingsCategory[] }[] = []
-  for (const category of categories.value) {
-    let group = groups.find((item) => item.id === category.section)
-    if (!group) {
-      group = { id: category.section, label: SECTION_LABELS[category.section](), items: [] }
-      groups.push(group)
-    }
-    group.items.push(category)
-  }
-  // Android takes over traffic per app (VpnService); that list stands in for the
-  // desktop proxy/TUN categories, so the group exists even with no category.
-  if (store.isAndroid.value && !groups.some((group) => group.id === 'takeover')) {
-    const at = groups.findIndex((group) => group.id === 'app') + 1
-    groups.splice(at, 0, { id: 'takeover', label: SECTION_LABELS.takeover(), items: [] })
-  }
-  return groups
+const active = computed<SettingsCategory>(() => categoryOf(store.settingsTab.value))
+const activePanes = computed(() => visiblePanes(active.value, platform.value).map((item) => item.id))
+/** Pane unfolded on a multi-pane page: the deep-linked one, otherwise the first. */
+const openPane = computed<CategoryId | undefined>(() => {
+  const tab = store.settingsTab.value
+  const list = activePanes.value
+  return tab !== active.value.id && list.includes(tab as CategoryId) ? (tab as CategoryId) : list[0]
 })
 
 function openCategory(id: CategoryId) {
@@ -94,17 +59,11 @@ function summary(id: CategoryId): string {
   switch (id) {
     case 'general':
       return store.theme.value === 'dark' ? tr('深色') : store.theme.value === 'light' ? tr('浅色') : tr('自动')
-    case 'proxy':
-      return s.system_proxy ? (s.settings.system_proxy.mode === 'pac' ? 'PAC' : tr('已开启')) : tr('关闭')
-    case 'tun':
-      return s.tun ? tr('已开启') : tr('关闭')
     case 'network':
       return `:${s.mixed_port ?? s.settings.mixed_port ?? s.config_values.mixed_port ?? 7890}`
-    case 'dns':
-      return s.settings.dns_override ? tr('已覆写') : tr('跟随配置')
     case 'kernel':
       return store.kernel.value.ready ? (store.kernel.value.version ?? tr('已安装')) : tr('未安装')
-    case 'about':
+    case 'backup':
       return store.app.value?.version ? `v${store.app.value.version}` : ''
     default:
       return ''
@@ -121,12 +80,17 @@ const appSummary = computed(() => {
 const query = ref('')
 const results = computed(() => searchSettings(query.value, platform.value))
 const searching = computed(() => query.value.trim().length > 0)
+/** Search results group by pane; a page with several panes names both. */
+function resultTitle(tab: CategoryId): string {
+  const category = categoryOf(tab)
+  return category.panes.length > 1 ? `${category.label()} · ${paneOf(tab).label()}` : category.label()
+}
 const resultGroups = computed(() => {
-  const groups: { category: SettingsCategory; entries: SettingsEntry[] }[] = []
+  const groups: { id: CategoryId; title: string; entries: SettingsEntry[] }[] = []
   for (const entry of results.value) {
-    let group = groups.find((item) => item.category.id === entry.tab)
+    let group = groups.find((item) => item.id === entry.tab)
     if (!group) {
-      group = { category: categories.value.find((item) => item.id === entry.tab)!, entries: [] }
+      group = { id: entry.tab, title: resultTitle(entry.tab), entries: [] }
       groups.push(group)
     }
     group.entries.push(entry)
@@ -150,6 +114,22 @@ function onSearchKey(event: KeyboardEvent) {
 }
 
 const content = ref<HTMLElement | null>(null)
+
+// Narrow windows fold the rail into a horizontal strip: let the mouse wheel scroll
+// it sideways and keep the active category visible.
+const navEl = ref<HTMLElement | null>(null)
+function onNavWheel(event: WheelEvent) {
+  const el = navEl.value
+  if (!el || el.scrollWidth <= el.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+  el.scrollLeft += event.deltaY
+  event.preventDefault()
+}
+watch(
+  () => active.value.id,
+  () => void nextTick(() => navEl.value?.querySelector<HTMLElement>('.settings-nav-item.active')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })),
+  { flush: 'post' },
+)
+
 function scrollToTop() {
   const main = document.querySelector('.main')
   if (main) main.scrollTop = 0
@@ -210,8 +190,8 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
 
       <div v-if="searching" ref="content" class="settings-results" data-testid="settings-results">
         <template v-if="resultGroups.length">
-          <section v-for="group in resultGroups" :key="group.category.id" class="sgroup">
-            <header class="sgroup-head"><h3>{{ group.category.label() }}</h3></header>
+          <section v-for="group in resultGroups" :key="group.id" class="sgroup">
+            <header class="sgroup-head"><h3>{{ group.title }}</h3></header>
             <div class="sgroup-card">
               <button v-for="entry in group.entries" :key="entry.id" type="button" class="srow srow-nav" :data-result="entry.id" @click="pick(entry)">
                 <div class="srow-main">
@@ -250,37 +230,36 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
           </button>
         </nav>
 
-        <section v-for="group in groupedCategories" :key="group.id" class="sgroup">
-          <header v-if="group.label" class="sgroup-head"><h3>{{ group.label }}</h3></header>
+        <section class="sgroup">
           <div class="sgroup-card">
-            <button
-              v-if="group.id === 'takeover' && store.isAndroid.value"
-              type="button"
-              class="srow srow-nav srow-cat"
-              data-testid="open-apps"
-              @click="store.go('apps')"
-            >
-              <span class="cat-icon green"><Icon name="apps" :size="17" /></span>
-              <div class="srow-main"><span class="srow-title">{{ tr('应用访问控制') }}</span></div>
-              <span class="srow-value">{{ appSummary }}</span>
-              <Icon name="chevron-right" :size="16" class="srow-chevron" />
-            </button>
-            <button
-              v-for="category in group.items"
-              :key="category.id"
-              type="button"
-              class="srow srow-nav srow-cat"
-              :data-testid="`open-${category.id}`"
-              @click="openCategory(category.id)"
-            >
-              <span class="cat-icon" :class="category.tone"><Icon :name="category.icon" :size="17" /></span>
-              <div class="srow-main">
-                <span class="srow-title">{{ category.label() }}</span>
-                <span class="srow-desc">{{ category.description() }}</span>
-              </div>
-              <span v-if="summary(category.id)" class="srow-value">{{ summary(category.id) }}</span>
-              <Icon name="chevron-right" :size="16" class="srow-chevron" />
-            </button>
+            <template v-for="category in categories" :key="category.id">
+              <button
+                type="button"
+                class="srow srow-nav srow-cat"
+                :data-testid="`open-${category.id}`"
+                @click="openCategory(category.id)"
+              >
+                <span class="cat-icon" :class="category.tone"><Icon :name="category.icon" :size="17" /></span>
+                <div class="srow-main">
+                  <span class="srow-title">{{ category.label() }}</span>
+                  <span class="srow-desc">{{ category.description() }}</span>
+                </div>
+                <span v-if="summary(category.id)" class="srow-value">{{ summary(category.id) }}</span>
+                <Icon name="chevron-right" :size="16" class="srow-chevron" />
+              </button>
+              <button
+                v-if="category.id === 'network' && store.isAndroid.value"
+                type="button"
+                class="srow srow-nav srow-cat"
+                data-testid="open-apps"
+                @click="store.go('apps')"
+              >
+                <span class="cat-icon green"><Icon name="apps" :size="17" /></span>
+                <div class="srow-main"><span class="srow-title">{{ tr('应用访问控制') }}</span></div>
+                <span class="srow-value">{{ appSummary }}</span>
+                <Icon name="chevron-right" :size="16" class="srow-chevron" />
+              </button>
+            </template>
           </div>
         </section>
         <p class="settings-foot">{{ tr('基于 Mihomo 内核的跨平台代理客户端 · GPL-3.0') }}</p>
@@ -294,8 +273,8 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
         </button>
         <h1>{{ active.label() }}</h1>
       </header>
-      <div ref="content" class="settings-pane" :data-pane="active.id">
-        <component :is="pane" :compact="compact" />
+      <div ref="content">
+        <PaneStack :key="active.id" :panes="activePanes" :open="openPane" :compact="compact" />
       </div>
     </template>
     <TrafficStatsDialog v-if="store.trafficStatsOpen.value" @close="store.trafficStatsOpen.value = false" />
@@ -318,12 +297,9 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
             @keydown="onSearchKey"
           />
         </label>
-        <nav class="settings-nav" data-testid="settings-tabs">
-          <template v-for="group in groupedCategories" :key="group.id">
-            <p v-if="group.label" class="settings-nav-label">{{ group.label }}</p>
+        <nav ref="navEl" class="settings-nav" data-testid="settings-tabs" @wheel="onNavWheel">
+          <template v-for="category in categories" :key="category.id">
             <button
-              v-for="category in group.items"
-              :key="category.id"
               type="button"
               class="settings-nav-item"
               :class="{ active: !searching && active.id === category.id }"
@@ -336,7 +312,7 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
               <span class="settings-nav-text">{{ category.label() }}</span>
             </button>
             <button
-              v-if="group.id === 'takeover' && store.isAndroid.value"
+              v-if="category.id === 'network' && store.isAndroid.value"
               type="button"
               class="settings-nav-item"
               data-testid="open-apps"
@@ -358,8 +334,8 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
             </div>
           </header>
           <div class="settings-results" data-testid="settings-results">
-            <section v-for="group in resultGroups" :key="group.category.id" class="sgroup">
-              <header class="sgroup-head"><h3>{{ group.category.label() }}</h3></header>
+            <section v-for="group in resultGroups" :key="group.id" class="sgroup">
+              <header class="sgroup-head"><h3>{{ group.title }}</h3></header>
               <div class="sgroup-card">
                 <button v-for="entry in group.entries" :key="entry.id" type="button" class="srow srow-nav" :data-result="entry.id" @click="pick(entry)">
                   <div class="srow-main">
@@ -380,9 +356,7 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
               <p class="muted">{{ active.description() }}</p>
             </div>
           </header>
-          <div class="settings-pane" :data-pane="active.id">
-            <component :is="pane" :key="active.id" :compact="compact" />
-          </div>
+          <PaneStack :key="active.id" :panes="activePanes" :open="openPane" :compact="compact" />
         </template>
       </div>
     </div>

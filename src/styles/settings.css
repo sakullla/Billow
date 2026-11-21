@@ -633,12 +633,19 @@ button.copy-chip:hover {
     flex-direction: row;
     gap: 4px;
     overflow-x: auto;
-    scrollbar-width: none;
-    margin: 0 -4px;
-    padding: 2px 4px 4px;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+    margin: 0 -8px;
+    padding: 6px 8px 10px;
+    scroll-padding-inline: 8px;
   }
   .settings-nav::-webkit-scrollbar {
-    display: none;
+    height: 6px;
+  }
+  .settings-nav::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: var(--border);
   }
   .settings-nav-label {
     display: none;
@@ -699,4 +706,65 @@ button.copy-chip:hover {
 /* Pane roots group a pane for tests and a11y without adding a layout box. */
 .pane-root {
   display: contents;
+}
+
+/* ── Pages with several panes: each pane folds behind a heading row ── */
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.pane-fold {
+  min-width: 0;
+}
+.pane-fold-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm), var(--card-highlight);
+  cursor: pointer;
+  list-style: none;
+  transition: background var(--dur-fast) var(--ease);
+}
+.pane-fold-head::-webkit-details-marker {
+  display: none;
+}
+.pane-fold-head:hover {
+  background: var(--hover);
+}
+.pane-fold-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pane-fold-text strong {
+  font-size: var(--text-md);
+  font-weight: 650;
+}
+.pane-fold-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+.pane-fold-chevron {
+  flex: none;
+  color: var(--text-3);
+  transition: transform var(--dur-base) var(--ease);
+}
+.pane-fold[open] > .pane-fold-head .pane-fold-chevron {
+  transform: rotate(90deg);
+}
+.pane-fold[open] > .settings-pane {
+  margin-top: 18px;
+  margin-bottom: 10px;
 }

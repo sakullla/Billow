@@ -51,7 +51,7 @@ describe('phone layout', () => {
 
     // The root is a list of categories; each says what is on without opening it.
     expect(wrapper.find('[data-testid="open-network"] .srow-value').text()).toBe(':7890')
-    expect(wrapper.find('[data-testid="open-dns"] .srow-value').text()).toBe('跟随配置')
+    expect(wrapper.find('[data-testid="open-dns"]').exists()).toBe(false)
     expect(wrapper.findAll('.page.settings > section.card')).toHaveLength(0)
 
     await wrapper.find('[data-testid="open-behavior"]').trigger('click')
@@ -74,7 +74,7 @@ describe('phone layout', () => {
     // Update status sits in the about page as a row under the version hero.
     await wrapper.find('[data-testid="settings-back"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[data-testid="open-about"]').trigger('click')
+    await wrapper.find('[data-testid="open-backup"]').trigger('click')
     await flushPromises()
     const about = wrapper.find('[data-testid="settings-about"]')
     expect(about.exists()).toBe(true)

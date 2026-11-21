@@ -18,46 +18,67 @@ export interface PlatformContext {
   mac: boolean
 }
 
+/** A settings page the user picks in the menu. It shows one or more panes. */
 export interface SettingsCategory {
   id: CategoryId
   label: () => string
   description: () => string
   icon: string
   tone: CategoryTone
-  section: 'app' | 'takeover' | 'core' | 'data'
+  /** Panes shown on this page, in order. More than one renders as foldable blocks. */
+  panes: readonly CategoryId[]
+}
+
+/** A block of related rows. Its id is what search results and deep links target. */
+export interface SettingsPane {
+  id: CategoryId
+  label: () => string
+  description: () => string
   when?: (ctx: PlatformContext) => boolean
 }
 
 const desktop = (ctx: PlatformContext) => !ctx.android
 
-export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
-  { id: 'general', label: () => tr('通用'), description: () => tr('外观、启动与快捷键'), icon: 'sliders', tone: 'gray', section: 'app' },
-  { id: 'proxy', label: () => tr('系统代理'), description: () => tr('代理主机、PAC 与绕过列表'), icon: 'monitor', tone: 'blue', section: 'takeover', when: desktop },
-  { id: 'tun', label: () => tr('TUN 模式'), description: () => tr('用虚拟网卡接管全部流量'), icon: 'shield', tone: 'indigo', section: 'takeover', when: desktop },
-  { id: 'network', label: () => tr('网络与端口'), description: () => tr('代理端口、局域网共享与 IPv6'), icon: 'network', tone: 'teal', section: 'core' },
-  { id: 'behavior', label: () => tr('代理与测速'), description: () => tr('节点切换、延迟测试、嗅探与订阅'), icon: 'zap', tone: 'amber', section: 'core' },
-  { id: 'dns', label: () => 'DNS', description: () => tr('上游服务器、解析策略与 Hosts'), icon: 'globe', tone: 'violet', section: 'core' },
-  { id: 'kernel', label: () => tr('内核'), description: () => tr('Mihomo 版本、日志与运行维护'), icon: 'cpu', tone: 'orange', section: 'core' },
-  { id: 'backup', label: () => tr('数据与备份'), description: () => tr('流量统计、出口 IP 与备份恢复'), icon: 'database', tone: 'green', section: 'data' },
-  { id: 'about', label: () => tr('关于'), description: () => tr('版本与应用更新'), icon: 'info', tone: 'slate', section: 'data' },
+export const SETTINGS_PANES: readonly SettingsPane[] = [
+  { id: 'general', label: () => tr('通用'), description: () => tr('外观、启动与快捷键') },
+  { id: 'proxy', label: () => tr('系统代理'), description: () => tr('代理主机、PAC 与绕过列表'), when: desktop },
+  { id: 'tun', label: () => tr('TUN 模式'), description: () => tr('用虚拟网卡接管全部流量'), when: desktop },
+  { id: 'network', label: () => tr('网络与端口'), description: () => tr('代理端口、局域网共享与 IPv6') },
+  { id: 'dns', label: () => 'DNS', description: () => tr('上游服务器、解析策略与 Hosts') },
+  { id: 'behavior', label: () => tr('代理与测速'), description: () => tr('节点切换、延迟测试、嗅探与订阅') },
+  { id: 'kernel', label: () => tr('内核'), description: () => tr('Mihomo 版本、日志与运行维护') },
+  { id: 'backup', label: () => tr('数据与备份'), description: () => tr('流量统计、出口 IP 与备份恢复') },
+  { id: 'about', label: () => tr('关于'), description: () => tr('版本与应用更新') },
 ]
 
-export const SECTION_LABELS: Record<SettingsCategory['section'], () => string> = {
-  app: () => '',
-  takeover: () => tr('流量接管'),
-  core: () => tr('网络与内核'),
-  data: () => tr('应用'),
+export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
+  { id: 'general', label: () => tr('通用'), description: () => tr('外观、启动与快捷键'), icon: 'sliders', tone: 'gray', panes: ['general'] },
+  { id: 'network', label: () => tr('网络'), description: () => tr('系统代理、TUN、端口与 DNS'), icon: 'network', tone: 'blue', panes: ['proxy', 'tun', 'network', 'dns'] },
+  { id: 'behavior', label: () => tr('代理与测速'), description: () => tr('节点切换、延迟测试、嗅探与订阅'), icon: 'zap', tone: 'amber', panes: ['behavior'] },
+  { id: 'kernel', label: () => tr('内核'), description: () => tr('Mihomo 版本、日志与运行维护'), icon: 'cpu', tone: 'orange', panes: ['kernel'] },
+  { id: 'backup', label: () => tr('数据与关于'), description: () => tr('流量统计、备份恢复与版本更新'), icon: 'database', tone: 'green', panes: ['backup', 'about'] },
+]
+
+export function visibleCategories(_ctx: PlatformContext): SettingsCategory[] {
+  return [...SETTINGS_CATEGORIES]
 }
 
-export function visibleCategories(ctx: PlatformContext): SettingsCategory[] {
-  return SETTINGS_CATEGORIES.filter((category) => !category.when || category.when(ctx))
+export function paneOf(id: CategoryId): SettingsPane {
+  return SETTINGS_PANES.find((pane) => pane.id === id) ?? SETTINGS_PANES[0]!
 }
 
+/** Panes of a category that exist on this platform. */
+export function visiblePanes(category: SettingsCategory, ctx: PlatformContext): SettingsPane[] {
+  return category.panes.map(paneOf).filter((pane) => !pane.when || pane.when(ctx))
+}
+
+/** The page that shows a tab. Pane ids (`dns`, `tun`, `about`...) resolve to their page. */
 export function categoryOf(tab: SettingsTab): SettingsCategory {
-  const id: CategoryId = tab === 'home' ? 'general' : tab
-  return SETTINGS_CATEGORIES.find((category) => category.id === id) ?? SETTINGS_CATEGORIES[0]!
+  if (tab === 'home') return SETTINGS_CATEGORIES[0]!
+  return (
+    SETTINGS_CATEGORIES.find((category) => category.id === tab || category.panes.includes(tab)) ?? SETTINGS_CATEGORIES[0]!
+  )
 }
-
 export interface SettingsEntry {
   /** Rendered as `data-setting` on the row. */
   id: string
@@ -163,13 +184,14 @@ export function searchSettings(query: string, ctx: PlatformContext): SettingsEnt
   const needle = query.trim().toLowerCase()
   if (!needle) return []
   const tokens = needle.split(/\s+/).filter(Boolean)
-  const categories = new Map(visibleCategories(ctx).map((category) => [category.id, category]))
+
   const scored: { entry: SettingsEntry; score: number }[] = []
   for (const entry of SETTINGS_INDEX) {
-    const category = categories.get(entry.tab)
-    if (!category || (entry.when && !entry.when(ctx))) continue
+    const pane = paneOf(entry.tab)
+    if ((pane.when && !pane.when(ctx)) || (entry.when && !entry.when(ctx))) continue
+    const category = categoryOf(entry.tab)
     const title = entry.title().toLowerCase()
-    const haystack = [title, entry.description?.() ?? '', entry.keywords ?? '', category.label()].join(' ').toLowerCase()
+    const haystack = [title, entry.description?.() ?? '', entry.keywords ?? '', category.label(), pane.label()].join(' ').toLowerCase()
     if (!tokens.every((token) => haystack.includes(token))) continue
     // Title hits first, prefix hits before infix ones.
     const score = title.startsWith(needle) ? 0 : title.includes(needle) ? 1 : 2
