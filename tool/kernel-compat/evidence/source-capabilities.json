@@ -1751,9 +1751,9 @@
           "cipher (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)",
           "password",
           "udp",
-          "dialer-proxy"
+          "dialer-proxy (one socks5 hop for UDP)"
         ],
-        "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt",
+        "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt; with `dialer-proxy` the datagrams travel through exactly one socks5 hop's UDP relay (any other chain fails at load time)",
         "notImplemented": [
           "plugin",
           "plugin-opts",
@@ -1967,7 +1967,7 @@
           "udp",
           "dialer-proxy"
         ],
-        "udp": "implemented: command 3 over TLS with `addr|length|CRLF|payload` frames",
+        "udp": "implemented: command 3 over TLS with `addr|length|CRLF|payload` frames; the server connection is established through the `dialer-proxy` chain exactly like TCP (one socks5 hop)",
         "notImplemented": [
           "grpc-opts",
           "reality-opts",

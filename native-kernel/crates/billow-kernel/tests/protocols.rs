@@ -2394,6 +2394,212 @@ async fn custom_ca_roots_are_installed_for_outbound_tls() {
 // UDP: the mixed inbound's SOCKS5 UDP ASSOCIATE and the ss datagram path.
 // ---------------------------------------------------------------------------
 
+/// Independent ss UDP server: decodes `salt || sealed(addr || payload)` with
+/// `TestAead`, forwards the payload to `echo_port` and returns the echo under
+/// the peer's own salt. Records what it decoded.
+async fn ss_udp_peer(
+    cipher: billow_kernel::proxies::SsCipher,
+    password: &'static str,
+    echo_port: u16,
+) -> (u16, Log) {
+    let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let server_port = server.local_addr().unwrap().port();
+    common::reserve_port(server_port);
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let log_task = log.clone();
+    tokio::spawn(async move {
+        let log = log_task;
+        let mut buffer = vec![0u8; 65535];
+        loop {
+            let Ok((read, from)) = server.recv_from(&mut buffer).await else {
+                return;
+            };
+            let salt_len = cipher.key_len();
+            if read <= salt_len {
+                continue;
+            }
+            let key = billow_kernel::keys::hkdf_sha1_with_salt(
+                &buffer[..salt_len],
+                &billow_kernel::keys::evp_bytes_to_key(password.as_bytes(), 32),
+                32,
+            );
+            let aead = TestAead::new(cipher, &key);
+            let mut body = buffer[salt_len..read].to_vec();
+            if aead.open(&[0u8; 12], &mut body).is_err() {
+                push(
+                    &log,
+                    Attempt {
+                        details: vec!["decode-error".into()],
+                        forwarded: false,
+                    },
+                );
+                continue;
+            }
+            let Some((target, header)) = billow_kernel::outbound::udp::parse_address(&body, 0)
+            else {
+                continue;
+            };
+            let payload = body[header..].to_vec();
+            push(
+                &log,
+                Attempt {
+                    details: vec![
+                        format!("target={}:{}", target.host, target.port),
+                        format!("payload={}", String::from_utf8_lossy(&payload)),
+                    ],
+                    forwarded: true,
+                },
+            );
+            let reply_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let _ = reply_socket
+                .send_to(&payload, ("127.0.0.1", echo_port))
+                .await;
+            let mut echo_reply = vec![0u8; 4096];
+            let Ok((n, _)) = reply_socket.recv_from(&mut echo_reply).await else {
+                continue;
+            };
+            let mut reply = billow_kernel::outbound::udp::address_header(&target);
+            reply.extend_from_slice(&echo_reply[..n]);
+            let mut salt = vec![0u8; salt_len];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
+            let key = billow_kernel::keys::hkdf_sha1_with_salt(
+                &salt,
+                &billow_kernel::keys::evp_bytes_to_key(password.as_bytes(), 32),
+                32,
+            );
+            let aead = TestAead::new(cipher, &key);
+            let mut sealed = reply;
+            aead.seal(&[0u8; 12], &mut sealed);
+            let mut packet = salt;
+            packet.extend_from_slice(&sealed);
+            let _ = server.send_to(&packet, from).await;
+        }
+    });
+    (server_port, log)
+}
+
+/// A SOCKS5 server that really serves `UDP ASSOCIATE`: the control connection
+/// answers with a relay socket, and every datagram is decoded to its target,
+/// forwarded, and the reply wrapped back. It records the targets it relayed to,
+/// which is how a chained test proves the hop was used.
+async fn socks5_udp_peer() -> (u16, Log) {
+    let (listener, addr) = spawn_tcp().await;
+    let relay = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let relay_addr = relay.local_addr().unwrap();
+    common::reserve_port(relay_addr.port());
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+
+    let relay_log = log.clone();
+    tokio::spawn(async move {
+        let mut buffer = vec![0u8; 65535];
+        loop {
+            let Ok((read, from)) = relay.recv_from(&mut buffer).await else {
+                return;
+            };
+            let Some(datagram) = billow_kernel::outbound::udp::parse_datagram(&buffer[..read])
+            else {
+                continue;
+            };
+            let payload = buffer[datagram.offset..read].to_vec();
+            let target = datagram.target.clone();
+            let resolved = match billow_kernel::outbound::udp::resolve(&target).await {
+                Ok(addr) => addr,
+                Err(_) => continue,
+            };
+            push(
+                &relay_log,
+                Attempt {
+                    details: vec![
+                        format!("udp-target={}:{}", target.host, target.port),
+                        format!("udp-bytes={}", payload.len()),
+                    ],
+                    forwarded: true,
+                },
+            );
+            let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let _ = socket.send_to(&payload, resolved).await;
+            let mut reply = vec![0u8; 65535];
+            let Ok(Ok((n, source))) =
+                tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut reply)).await
+            else {
+                continue;
+            };
+            let origin = billow_kernel::outbound::Target {
+                host: source.ip().to_string(),
+                port: source.port(),
+            };
+            let mut packet = vec![0u8, 0u8, 0u8];
+            packet.extend_from_slice(&billow_kernel::outbound::udp::address_header(&origin));
+            packet.extend_from_slice(&reply[..n]);
+            let _ = relay.send_to(&packet, from).await;
+        }
+    });
+
+    let control_log = log.clone();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let log = control_log.clone();
+            let relay_addr = relay_addr;
+            tokio::spawn(async move {
+                let mut greeting = [0u8; 2];
+                if stream.read_exact(&mut greeting).await.is_err() {
+                    return;
+                }
+                let mut methods = vec![0u8; greeting[1] as usize];
+                if stream.read_exact(&mut methods).await.is_err() {
+                    return;
+                }
+                stream.write_all(&[0x05, 0x00]).await.ok();
+                let mut request = [0u8; 4];
+                if stream.read_exact(&mut request).await.is_err() {
+                    return;
+                }
+                // Consume the client's hint address and port.
+                let skip = match request[3] {
+                    0x01 => 4,
+                    0x04 => 16,
+                    0x03 => {
+                        let mut len = [0u8; 1];
+                        if stream.read_exact(&mut len).await.is_err() {
+                            return;
+                        }
+                        len[0] as usize
+                    }
+                    _ => return,
+                };
+                let mut discard = vec![0u8; skip + 2];
+                if stream.read_exact(&mut discard).await.is_err() {
+                    return;
+                }
+                if request[1] != 0x03 {
+                    stream
+                        .write_all(&[0x05, 0x07, 0, 1, 0, 0, 0, 0, 0, 0])
+                        .await
+                        .ok();
+                    return;
+                }
+                let mut reply = vec![0x05, 0x00, 0x00, 0x01];
+                reply.extend_from_slice(&relay_addr.ip().to_string().parse::<std::net::Ipv4Addr>().unwrap().octets());
+                reply.extend_from_slice(&relay_addr.port().to_be_bytes());
+                if stream.write_all(&reply).await.is_err() {
+                    return;
+                }
+                push(
+                    &log,
+                    Attempt {
+                        details: vec!["udp-associate".into()],
+                        forwarded: true,
+                    },
+                );
+                // The association lives as long as this control connection.
+                let mut scratch = [0u8; 64];
+                while stream.read(&mut scratch).await.unwrap_or(0) > 0 {}
+            });
+        }
+    });
+    (addr.port(), log)
+}
+
 /// A UDP echo on loopback; returns its port and the payload counter.
 async fn udp_echo() -> (u16, Arc<AtomicU64>) {
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -2442,6 +2648,19 @@ fn udp_roundtrip(
     wait: Duration,
 ) -> Option<Vec<u8>> {
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp_exchange(&socket, relay, target, payload, wait)
+}
+
+/// One datagram exchange on an existing client socket: the association pins the
+/// first source address it sees (RFC 1928), so a client that sends twice must
+/// reuse its socket.
+fn udp_exchange(
+    socket: &std::net::UdpSocket,
+    relay: std::net::SocketAddr,
+    target: std::net::SocketAddr,
+    payload: &[u8],
+    wait: Duration,
+) -> Option<Vec<u8>> {
     let mut packet = vec![0u8, 0u8, 0u8, 0x01];
     match target.ip() {
         std::net::IpAddr::V4(v4) => packet.extend_from_slice(&v4.octets()),
@@ -2506,59 +2725,8 @@ async fn shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead() {
     // the datagram framing: `salt || sealed(addr || payload)` both ways.
     let cipher = billow_kernel::proxies::SsCipher::Aes256Gcm;
     let password = "ss-udp-password";
-    let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let server_port = server.local_addr().unwrap().port();
-    common::reserve_port(server_port);
     let (echo_port, _) = udp_echo().await;
-    tokio::spawn(async move {
-        let mut buffer = vec![0u8; 65535];
-        loop {
-            let Ok((read, from)) = server.recv_from(&mut buffer).await else {
-                return;
-            };
-            let salt_len = cipher.key_len();
-            if read <= salt_len {
-                continue;
-            }
-            let key = billow_kernel::keys::hkdf_sha1_with_salt(
-                &buffer[..salt_len],
-                &billow_kernel::keys::evp_bytes_to_key(password.as_bytes(), 32),
-                32,
-            );
-            let aead = TestAead::new(cipher, &key);
-            let mut body = buffer[salt_len..read].to_vec();
-            if aead.open(&[0u8; 12], &mut body).is_err() {
-                continue;
-            }
-            // body = SOCKS5 address header + payload; echo the payload back.
-            let Some((target, header)) = billow_kernel::outbound::udp::parse_address(&body, 0)
-            else {
-                continue;
-            };
-            let payload = &body[header..];
-            let reply_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let _ = reply_socket.send_to(payload, ("127.0.0.1", echo_port)).await;
-            let mut echo_reply = vec![0u8; 4096];
-            let Ok((n, _)) = reply_socket.recv_from(&mut echo_reply).await else {
-                continue;
-            };
-            let mut reply = billow_kernel::outbound::udp::address_header(&target);
-            reply.extend_from_slice(&echo_reply[..n]);
-            let mut salt = vec![0u8; salt_len];
-            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
-            let key = billow_kernel::keys::hkdf_sha1_with_salt(
-                &salt,
-                &billow_kernel::keys::evp_bytes_to_key(password.as_bytes(), 32),
-                32,
-            );
-            let aead = TestAead::new(cipher, &key);
-            let mut sealed = reply;
-            aead.seal(&[0u8; 12], &mut sealed);
-            let mut packet = salt;
-            packet.extend_from_slice(&sealed);
-            let _ = server.send_to(&packet, from).await;
-        }
-    });
+    let (server_port, _log) = ss_udp_peer(cipher, password, echo_port).await;
     let dir = scratch("ss-udp");
     let path = dir.join("kernel.yaml");
     std::fs::write(
@@ -2576,6 +2744,155 @@ async fn shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead() {
     let reply = udp_roundtrip(relay, target, b"ss-udp-tagged", Duration::from_secs(3))
         .expect("the ss datagram must come back");
     assert_eq!(reply, b"ss-udp-tagged");
+    drop(control);
+    kernel.stop().unwrap();
+}
+
+
+/// `ss` + `udp: true` + `dialer-proxy: hop`: the datagrams must travel through
+/// the SOCKS5 hop's UDP relay, not straight to the server. The hop's own log
+/// proves the chain (it names the ss server as its target).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shadowsocks_udp_goes_through_the_dialer_proxy_hop() {
+    let cipher = billow_kernel::proxies::SsCipher::Aes256Gcm;
+    let password = "chained-ss-pw";
+    let (echo_port, _) = udp_echo().await;
+    let (ss_port, ss_log) = ss_udp_peer(cipher, password, echo_port).await;
+    let (hop_port, hop_log) = socks5_udp_peer().await;
+    let dir = scratch("ss-udp-chain");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: exit, type: ss, server: 127.0.0.1, port: {ss_port}, cipher: aes-256-gcm, password: {password}, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}}}\nrules:\n  - 'MATCH,exit'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let reply = udp_roundtrip(relay, target, b"chained-udp", Duration::from_secs(3))
+        .expect("the chained ss datagram must come back");
+    assert_eq!(reply, b"chained-udp");
+    let hop_details = detail(&hop_log);
+    assert!(
+        hop_details.contains(&"udp-associate".to_string()),
+        "the hop must see a UDP association: {hop_details:?}"
+    );
+    assert!(
+        hop_details.contains(&format!("udp-target=127.0.0.1:{ss_port}")),
+        "the hop must relay to the ss server, not the kernel: {hop_details:?}"
+    );
+    let ss_details = detail(&ss_log);
+    assert!(
+        ss_details.iter().any(|d| d == "payload=chained-udp"),
+        "the ss peer must decode the payload: {ss_details:?}"
+    );
+    drop(control);
+    kernel.stop().unwrap();
+}
+
+/// A trojan UDP peer whose stream ends after each reply: the association must
+/// reconnect on the next datagram instead of staying deaf (the EOF flag must be
+/// reset when the transport is dropped).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trojan_udp_reconnects_after_the_server_closes_the_stream() {
+    let cert = require_cert("trojan-udp-reconnect");
+    let acceptor = tls_acceptor(&cert);
+    let (listener, addr) = spawn_tcp().await;
+    let (echo_port, _) = udp_echo().await;
+    let connections = Arc::new(AtomicU64::new(0));
+    let counter = connections.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                let Ok(mut stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::Relaxed);
+                // Trojan header: password line, then command + address + CRLF.
+                let mut bytes = Vec::new();
+                let mut byte = [0u8; 1];
+                let mut crlfs = 0;
+                while crlfs < 2 {
+                    if stream.read(&mut byte).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    bytes.push(byte[0]);
+                    if bytes.ends_with(b"\r\n") {
+                        crlfs += 1;
+                    }
+                }
+                // Serve exactly one UDP frame, echo it, then close the stream.
+                // Frame: ATYP | address | port(2) | length(2) | CRLF | payload.
+                let mut atyp = [0u8; 1];
+                if stream.read_exact(&mut atyp).await.is_err() {
+                    return;
+                }
+                let skip = match atyp[0] {
+                    0x01 => 4,
+                    0x04 => 16,
+                    0x03 => {
+                        let mut len = [0u8; 1];
+                        stream.read_exact(&mut len).await.unwrap();
+                        len[0] as usize
+                    }
+                    _ => return,
+                };
+                let mut rest = vec![0u8; skip + 2 + 2 + 2];
+                if stream.read_exact(&mut rest).await.is_err() {
+                    return;
+                }
+                let port = u16::from_be_bytes([rest[skip], rest[skip + 1]]);
+                let length = u16::from_be_bytes([rest[skip + 2], rest[skip + 3]]) as usize;
+                let mut payload = vec![0u8; length];
+                if stream.read_exact(&mut payload).await.is_err() {
+                    return;
+                }
+                let mut frame = Vec::new();
+                frame.push(0x01);
+                frame.extend_from_slice(&[127, 0, 0, 1]);
+                frame.extend_from_slice(&port.to_be_bytes());
+                frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+                frame.extend_from_slice(b"\r\n");
+                frame.extend_from_slice(&payload);
+                let _ = stream.write_all(&frame).await;
+                let _ = stream.flush().await;
+                // End the stream: the kernel must notice and reconnect.
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    let dir = scratch("trojan-udp-reconnect");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: t, type: trojan, server: 127.0.0.1, port: {}, password: pw, sni: localhost, skip-cert-verify: true, udp: true}}\nrules:\n  - 'MATCH,t'\n",
+            free_port(),
+            addr.port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let first = udp_exchange(&client, relay, target, b"first", Duration::from_secs(3))
+        .expect("the first datagram must be answered");
+    assert_eq!(first, b"first");
+    // Give the kernel a moment to observe the server's EOF, then send again.
+    std::thread::sleep(Duration::from_millis(150));
+    let second = udp_exchange(&client, relay, target, b"second", Duration::from_secs(3))
+        .expect("the association must reconnect and answer the second datagram");
+    assert_eq!(second, b"second");
+    assert!(
+        connections.load(Ordering::Relaxed) >= 2,
+        "the trojan server must have been reconnected"
+    );
     drop(control);
     kernel.stop().unwrap();
 }

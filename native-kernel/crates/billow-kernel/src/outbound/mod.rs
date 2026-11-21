@@ -221,6 +221,12 @@ async fn dial_with_rest(
     }
 }
 
+/// Join the two halves of a tunnel into one stream (used when a protocol
+/// connection itself is established through a `dialer-proxy` chain).
+pub(crate) fn joined(read: tokio::io::ReadHalf<BoxStream>, write: tokio::io::WriteHalf<BoxStream>) -> BoxStream {
+    Box::new(Joined { read, write })
+}
+
 /// A stream built from a generic reader/writer pair.
 struct Joined {
     read: tokio::io::ReadHalf<BoxStream>,

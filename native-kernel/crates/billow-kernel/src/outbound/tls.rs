@@ -162,6 +162,19 @@ pub async fn wrap(
     settings: &TlsSettings,
     tls: &ClientTls,
 ) -> io::Result<TlsStream<TcpStream>> {
+    wrap_stream(stream, server, settings, tls).await
+}
+
+/// TLS over any established byte stream (a `dialer-proxy` tunnel, a socket).
+pub async fn wrap_stream<S>(
+    stream: S,
+    server: &str,
+    settings: &TlsSettings,
+    tls: &ClientTls,
+) -> io::Result<TlsStream<S>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let name = settings.sni.clone().unwrap_or_else(|| server.to_string());
     let server_name = ServerName::try_from(name.clone()).map_err(|e| {
         io::Error::new(

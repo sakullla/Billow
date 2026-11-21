@@ -131,40 +131,115 @@ pub async fn resolve(target: &Target) -> io::Result<SocketAddr> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "destination resolved to no address"))
 }
 
+/// How a proxy server connection is reached for datagrams: directly, or
+/// through the first `dialer-proxy` hop (a SOCKS5 UDP association), matching
+/// Mihomo's `proxydialer.ListenPacket`.
+enum PacketTransport {
+    Direct {
+        socket: UdpSocket,
+        server: SocketAddr,
+    },
+    Socks5 {
+        association: super::socks5::Socks5Udp,
+        server: Target,
+    },
+}
+
+impl PacketTransport {
+    async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        match self {
+            PacketTransport::Direct { socket, server } => {
+                socket.send_to(payload, *server).await.map(|_| ())
+            }
+            PacketTransport::Socks5 { association, server } => {
+                association.send(server, payload).await
+            }
+        }
+    }
+
+    async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        match self {
+            PacketTransport::Direct { socket, server } => {
+                let (read, from) = socket.recv_from(buffer).await?;
+                // Only the configured server may answer this association.
+                if from != *server {
+                    return Ok(None);
+                }
+                Ok(Some(read))
+            }
+            PacketTransport::Socks5 { association, server } => {
+                match association.recv(buffer).await? {
+                    Some((from, len)) if from.host == server.host && from.port == server.port => {
+                        Ok(Some(len))
+                    }
+                    _ => Ok(None),
+                }
+            }
+        }
+    }
+}
+
 /// Shadowsocks AEAD-2017 datagrams for one association.
 pub struct SsUdp {
-    socket: UdpSocket,
+    transport: PacketTransport,
     codec: super::shadowsocks::SsDatagram,
 }
 
 impl SsUdp {
-    pub async fn connect(option: &ShadowsocksOutbound) -> Result<SsUdp, DialError> {
+    /// `via` is the `dialer-proxy` chain of the matched proxy (first element
+    /// is the proxy itself). A single socks5 hop carries the datagrams; any
+    /// other chain is refused here and was already refused at load time.
+    pub async fn connect(
+        option: &ShadowsocksOutbound,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
+        tls: &super::tls::ClientTls,
+    ) -> Result<SsUdp, DialError> {
         debug_assert!(option.udp);
-        let server = resolve(&Target {
+        let server = Target {
             host: option.server.clone(),
             port: option.port,
-        })
-        .await
-        .map_err(|source| DialError::Resolve {
-            host: option.server.clone(),
-            source,
-        })?;
-        let bind = if server.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-        let socket = UdpSocket::bind(bind)
-            .await
-            .map_err(|source| DialError::Connect {
-                addr: bind.to_string(),
-                source,
-            })?;
-        socket
-            .connect(server)
-            .await
-            .map_err(|source| DialError::Connect {
-                addr: server.to_string(),
-                source,
-            })?;
+        };
+        let transport = match via.len() {
+            1 => {
+                let resolved = resolve(&server).await.map_err(|source| DialError::Resolve {
+                    host: server.host.clone(),
+                    source,
+                })?;
+                let bind = if resolved.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+                let socket = UdpSocket::bind(bind)
+                    .await
+                    .map_err(|source| DialError::Connect {
+                        addr: bind.to_string(),
+                        source,
+                    })?;
+                PacketTransport::Direct {
+                    socket,
+                    server: resolved,
+                }
+            }
+            2 => match &via[1].protocol {
+                crate::proxies::Protocol::Socks5(hop) => PacketTransport::Socks5 {
+                    association: super::socks5::Socks5Udp::connect(hop, timeout, tls).await?,
+                    server,
+                },
+                other => {
+                    return Err(DialError::Chain(format!(
+                        "udp through {}({}): only a socks5 hop can carry a UDP association",
+                        via[1].name,
+                        other_type(other)
+                    )))
+                }
+            },
+            _ => {
+                return Err(DialError::Chain(format!(
+                    "udp with a multi-hop dialer-proxy chain ({} hops) is not implemented (at most one socks5 hop)",
+                    via.len() - 1
+                )))
+            }
+        };
         Ok(SsUdp {
-            socket,
+            transport,
             codec: super::shadowsocks::SsDatagram {
                 cipher: option.cipher,
                 password: option.password.expose().to_string(),
@@ -173,16 +248,18 @@ impl SsUdp {
     }
 
     /// Seal `target || payload` into one datagram and send it.
-    pub async fn send(&self, target: &Target, payload: &[u8]) -> io::Result<()> {
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
         let mut plain = address_header(target);
         plain.extend_from_slice(payload);
         let packet = self.codec.encode(&plain);
-        self.socket.send(&packet).await.map(|_| ())
+        self.transport.send(&packet).await
     }
 
     /// Receive and open one datagram; returns the sender and the payload.
-    pub async fn recv(&self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
-        let read = self.socket.recv(buffer).await?;
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        let Some(read) = self.transport.recv(buffer).await? else {
+            return Ok(None);
+        };
         let plain = match self.codec.decode(&buffer[..read]) {
             Ok(plain) => plain,
             // A datagram from the wrong key (or a tampered one) is dropped.
@@ -197,6 +274,17 @@ impl SsUdp {
     }
 }
 
+fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
+    match protocol {
+        crate::proxies::Protocol::Socks5(_) => "socks5",
+        crate::proxies::Protocol::Http(_) => "http",
+        crate::proxies::Protocol::Shadowsocks(_) => "ss",
+        crate::proxies::Protocol::Trojan(_) => "trojan",
+        crate::proxies::Protocol::Vless(_) => "vless",
+        crate::proxies::Protocol::Anytls(_) => "anytls",
+    }
+}
+
 /// Trojan UDP association: one TLS stream carrying `cmd = 3` and frames of
 /// `addr | length(2) | CRLF | payload` in both directions.
 pub struct TrojanUdp {
@@ -206,12 +294,46 @@ pub struct TrojanUdp {
 }
 
 impl TrojanUdp {
+    /// `via` is the `dialer-proxy` chain of the matched proxy. The server
+    /// connection is TCP, so it is established exactly like the TCP path (a
+    /// socks5 hop carries it) and then carries the UDP frames.
     pub async fn connect(
         option: &TrojanOutbound,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
         tls: &ClientTls,
     ) -> Result<TrojanUdp, DialError> {
-        let tcp = connect_tcp(&option.server, option.port).await?;
-        let stream = super::tls::wrap(tcp, &option.server, &option.tls_settings, tls)
+        let server_stream: BoxStream = match via.len() {
+            1 => Box::new(connect_tcp(&option.server, option.port).await?),
+            2 => match &via[1].protocol {
+                crate::proxies::Protocol::Socks5(hop) => {
+                    let (read, write) = super::socks5::tunnel(
+                        hop,
+                        &option.server,
+                        option.port,
+                        &[],
+                        timeout,
+                        tls,
+                    )
+                    .await?;
+                    super::joined(read, write)
+                }
+                other => {
+                    return Err(DialError::Chain(format!(
+                        "udp through {}({}): only a socks5 hop can carry a UDP association",
+                        via[1].name,
+                        other_type(other)
+                    )))
+                }
+            },
+            _ => {
+                return Err(DialError::Chain(format!(
+                    "udp with a multi-hop dialer-proxy chain ({} hops) is not implemented (at most one socks5 hop)",
+                    via.len() - 1
+                )))
+            }
+        };
+        let stream = super::tls::wrap_stream(server_stream, &option.server, &option.tls_settings, tls)
             .await
             .map_err(|e| handshake("trojan-udp tls", e))?;
         let mut stream: BoxStream = match &option.network {

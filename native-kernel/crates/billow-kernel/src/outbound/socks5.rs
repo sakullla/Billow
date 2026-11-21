@@ -1,7 +1,7 @@
 //! SOCKS5 outbound (RFC 1928 + RFC 1929 username/password), optionally over TLS.
 
 use std::io;
-
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -86,7 +86,15 @@ async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
     option: &Socks5Outbound,
     target: &Target,
 ) -> io::Result<()> {
-    let mut request = Vec::new();
+    authenticate(stream, option).await?;
+    request(stream, 0x01, target).await.map(|_| ())
+}
+
+/// RFC 1928 method negotiation plus RFC 1929 authentication.
+async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    option: &Socks5Outbound,
+) -> io::Result<()> {
     if option.username.is_some() {
         stream.write_all(&[0x05, 0x02, 0x00, 0x02]).await?;
     } else {
@@ -137,7 +145,17 @@ async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
             ));
         }
     }
-    request.extend_from_slice(&[0x05, 0x01, 0x00]);
+    Ok(())
+}
+
+/// Send one CONNECT/UDP-ASSOCIATE request and return the server's bound address.
+async fn request<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    command: u8,
+    target: &Target,
+) -> io::Result<SocketAddr> {
+    let mut request = Vec::with_capacity(3 + 3 + target.host.len());
+    request.extend_from_slice(&[0x05, command, 0x00]);
     request.extend_from_slice(&SocksAddr::encode(target));
     stream.write_all(&request).await?;
     let mut reply = [0u8; 4];
@@ -160,20 +178,44 @@ async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
             0x08 => "address type not supported",
             _ => "unknown",
         };
+        let command = if command == 0x03 { "UDP ASSOCIATE" } else { "CONNECT" };
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
-            format!("SOCKS5 CONNECT failed: {reason} ({:#04x})", reply[1]),
+            format!("SOCKS5 {command} failed: {reason} ({:#04x})", reply[1]),
         ));
     }
-    // Skip BND.ADDR/BND.PORT.
-    let mut skip = match reply[3] {
-        0x01 => 4 + 2,
+    // BND.ADDR/BND.PORT: the relay the client must use for UDP.
+    let host = match reply[3] {
+        0x01 => {
+            let mut addr = [0u8; 4];
+            stream.read_exact(&mut addr).await?;
+            IpAddr::from(addr)
+        }
+        0x04 => {
+            let mut addr = [0u8; 16];
+            stream.read_exact(&mut addr).await?;
+            IpAddr::from(addr)
+        }
         0x03 => {
             let mut len = [0u8; 1];
             stream.read_exact(&mut len).await?;
-            len[0] as usize + 2
+            let mut name = vec![0u8; len[0] as usize];
+            stream.read_exact(&mut name).await?;
+            match String::from_utf8_lossy(&name).parse::<IpAddr>() {
+                Ok(ip) => ip,
+                // A named relay is unusual; resolve it through the system.
+                Err(_) => {
+                    let name = String::from_utf8_lossy(&name).to_string();
+                    let mut port = [0u8; 2];
+                    stream.read_exact(&mut port).await?;
+                    let addrs = tokio::net::lookup_host((name.as_str(), u16::from_be_bytes(port)))
+                        .await?;
+                    return addrs.into_iter().next().ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "relay name resolved to nothing")
+                    });
+                }
+            }
         }
-        0x04 => 16 + 2,
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -181,11 +223,101 @@ async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
             ))
         }
     };
-    let mut discard = [0u8; 18];
-    while skip > 0 {
-        let n = skip.min(discard.len());
-        stream.read_exact(&mut discard[..n]).await?;
-        skip -= n;
+    let mut port = [0u8; 2];
+    stream.read_exact(&mut port).await?;
+    Ok(SocketAddr::new(host, u16::from_be_bytes(port)))
+}
+
+/// Client side of SOCKS5 `UDP ASSOCIATE`: the control connection stays open for
+/// the lifetime of the association and each datagram is sent to the relay the
+/// server named, wrapped in the RFC 1928 UDP request header.
+pub struct Socks5Udp {
+    socket: tokio::net::UdpSocket,
+    relay: SocketAddr,
+    _control: BoxStream,
+}
+
+impl Socks5Udp {
+    pub async fn connect(
+        option: &Socks5Outbound,
+        timeout: Duration,
+        tls: &ClientTls,
+    ) -> Result<Socks5Udp, DialError> {
+        let (tcp, _) = connect_hop(&option.server, option.port).await?;
+        let mut control: BoxStream = if option.tls {
+            let stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
+                .await
+                .map_err(|e| handshake("socks5-udp tls", e))?;
+            Box::new(stream)
+        } else {
+            Box::new(tcp)
+        };
+        let inner = async {
+            authenticate(&mut control, option).await?;
+            let any = Target {
+                host: "0.0.0.0".to_string(),
+                port: 0,
+            };
+            request(&mut control, 0x03, &any).await
+        };
+        let relay = match tokio::time::timeout(timeout, inner).await {
+            Ok(Ok(relay)) => relay,
+            Ok(Err(e)) => return Err(handshake("socks5-udp", e)),
+            Err(_) => return Err(DialError::Timeout(timeout)),
+        };
+        // The relay may be reported as 0.0.0.0 when the server does not know its
+        // external address; use the server's address in that case.
+        let relay = if relay.ip().is_unspecified() {
+            let ip = if let Ok(ip) = option.server.parse::<IpAddr>() {
+                ip
+            } else {
+                super::resolve(&option.server, option.port)
+                    .await
+                    .map(|addr| addr.ip())
+                    .map_err(|e| handshake("socks5-udp relay", io::Error::other(format!("{e}"))))?
+            };
+            SocketAddr::new(ip, relay.port())
+        } else {
+            relay
+        };
+        let bind = if relay.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        let socket = tokio::net::UdpSocket::bind(bind)
+            .await
+            .map_err(|source| DialError::Connect {
+                addr: bind.to_string(),
+                source,
+            })?;
+        Ok(Socks5Udp {
+            socket,
+            relay,
+            _control: control,
+        })
     }
-    Ok(())
+
+    pub fn relay(&self) -> SocketAddr {
+        self.relay
+    }
+
+    /// Send one payload to `target` through the relay.
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        let mut packet = vec![0u8, 0u8, 0u8];
+        packet.extend_from_slice(&SocksAddr::encode(target));
+        packet.extend_from_slice(payload);
+        self.socket.send_to(&packet, self.relay).await.map(|_| ())
+    }
+
+    /// Receive one relayed datagram; `None` when it is not from the relay.
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        let (read, from) = self.socket.recv_from(buffer).await?;
+        if from != self.relay {
+            return Ok(None);
+        }
+        let Some(datagram) = super::udp::parse_datagram(&buffer[..read]) else {
+            return Ok(None);
+        };
+        let payload = &buffer[datagram.offset..read];
+        let len = payload.len();
+        buffer.copy_within(datagram.offset..read, 0);
+        Ok(Some((datagram.target, len)))
+    }
 }

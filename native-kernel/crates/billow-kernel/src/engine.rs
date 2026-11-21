@@ -480,6 +480,26 @@ enum SessionOutcome {
     Failed,
 }
 
+/// The `dialer-proxy` chain of `proxy`, starting with the proxy itself. The
+/// loader has already rejected unknown references and cycles.
+fn chain_for<'a>(
+    config: &'a Config,
+    proxy: &'a crate::proxies::Proxy,
+) -> Vec<&'a crate::proxies::Proxy> {
+    let mut hops = vec![proxy];
+    let mut current = proxy.dialer_proxy();
+    while let Some(name) = current {
+        match config.proxies.iter().find(|candidate| candidate.name == name) {
+            Some(next) => {
+                hops.push(next);
+                current = next.dialer_proxy();
+            }
+            None => break,
+        }
+    }
+    hops
+}
+
 async fn serve_request(
     mut client: TcpStream,
     peer: SocketAddr,
@@ -560,16 +580,7 @@ async fn serve_request(
             (Box::new(stream) as Box<dyn outbound::Stream>, peer, "DIRECT")
         }
         Some(proxy) => {
-            // Follow `dialer-proxy` from the matched proxy; the loader has
-            // already rejected unknown references and cycles.
-            let mut hops: Vec<&crate::proxies::Proxy> = Vec::new();
-            let mut current = Some(proxy);
-            while let Some(hop) = current {
-                hops.push(hop);
-                current = hop
-                    .dialer_proxy()
-                    .and_then(|name| config.proxies.iter().find(|p| p.name == name));
-            }
+            let hops = chain_for(config, proxy);
             let target = outbound::Target { host: request.host.clone(), port: request.port };
             match tokio::time::timeout(
                 limits.dial_timeout,
@@ -711,14 +722,17 @@ async fn serve_udp_associate(
         if direct_eof {
             direct = None;
             direct_buf = None;
+            direct_eof = false;
         }
         if ss_eof {
             ss = None;
             ss_buf = None;
+            ss_eof = false;
         }
         if trojan_eof {
             trojan = None;
             trojan_buf = None;
+            trojan_eof = false;
         }
         tokio::select! {
             biased;
@@ -801,7 +815,15 @@ async fn serve_udp_associate(
                     Some(proxy) => match &proxy.protocol {
                         crate::proxies::Protocol::Shadowsocks(option) if option.udp => {
                             if ss.is_none() {
-                                match outbound::udp::SsUdp::connect(option).await {
+                                let hops = chain_for(config, proxy);
+                            match outbound::udp::SsUdp::connect(
+                                option,
+                                &hops,
+                                limits.dial_timeout,
+                                &context.tls,
+                            )
+                            .await
+                            {
                                     Ok(association) => {
                                         ss = Some(association);
                                         ss_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
@@ -813,11 +835,19 @@ async fn serve_udp_associate(
                                     }
                                 }
                             }
-                            ss.as_ref().expect("connected above").send(&datagram.target, payload).await
+                            ss.as_mut().expect("connected above").send(&datagram.target, payload).await
                         }
                         crate::proxies::Protocol::Trojan(option) if option.udp => {
                             if trojan.is_none() {
-                                match outbound::udp::TrojanUdp::connect(option, &context.tls).await {
+                                let hops = chain_for(config, proxy);
+                                match outbound::udp::TrojanUdp::connect(
+                                    option,
+                                    &hops,
+                                    limits.dial_timeout,
+                                    &context.tls,
+                                )
+                                .await
+                                {
                                     Ok(association) => {
                                         trojan = Some(association);
                                         trojan_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
@@ -878,24 +908,19 @@ async fn serve_udp_associate(
                 }
             }
             received = async {
-                match (ss.as_ref(), ss_buf.as_mut()) {
+                match (ss.as_mut(), ss_buf.as_mut()) {
                     (Some(association), Some(buffer)) => {
                         association.recv(buffer.as_mut_slice()).await
                     }
                     _ => std::future::pending().await,
                 }
             }, if ss.is_some() && !ss_eof => {
-                match &received {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        // The server ended the association (EOF or bad key).
-                        ss_eof = true;
-                        failed = true;
-                    }
-                    Err(_) => {
-                        ss_eof = true;
-                        failed = true;
-                    }
+                // `Ok(None)` is one dropped datagram (a foreign or tampered
+                // packet), not the end of the association; only a socket error
+                // retires it.
+                if received.is_err() {
+                    ss_eof = true;
+                    failed = true;
                 }
                 if let (Ok(Some((from, read))), Some(buffer)) = (received, ss_buf.as_ref()) {
                     if let Some(client_udp) = client_udp {

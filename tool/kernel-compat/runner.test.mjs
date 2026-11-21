@@ -159,6 +159,17 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   }
   assert.match(peers.command, /KC_MIHOMO_BIN=\/|KC_MIHOMO_BIN=[A-Z]:\\/)
   assert.equal(peers.result.passed, peers.result.cases)
+  assert.ok(
+    allCases.some((name) => name.includes('chained_ss_udp')),
+    'the chained UDP case against the peer is recorded',
+  )
+  // The option matrix is the recorded comparison with Mihomo's own `-t`: no-op
+  // forms accepted by both, enabled forms rejected by the kernel.
+  const matrix = await readFile(resolve(here, 'evidence', 'option-matrix.txt'), 'utf8')
+  assert.match(matrix, /no-op cases: [1-9]\d*, enabled cases: [1-9]\d*, problems: 0/)
+  assert.ok(matrix.split('\n').some((line) => /^noop .*rust=accept mihomo=accept/.test(line)))
+  assert.ok(matrix.split('\n').some((line) => /^enabled .*rust=reject mihomo=accept/.test(line)))
+  assert.equal(matrix.split('\n').some((line) => line.startsWith('PROBLEM')), false)
   // Every proxy type the index marks unimplemented must name an owner, so a
   // family cannot silently disappear from the scope.
   for (const entry of index.proxies) {

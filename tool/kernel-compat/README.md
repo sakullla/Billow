@@ -22,10 +22,10 @@ node tool/kernel-compat/capability.mjs --cache tool/kernel-compat/.cache \
 # Rust kernel CLI (workspace member billow-kernel-cli, binary billow-kernel)
 cargo build --release --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel-cli
 
-# Option rejection: every key the Rust mapping marks unimplemented must fail
-# the kernel's own --check with the field named (exit 1 if one is accepted)
+# Option matrix: no-op forms must load in both engines, enabled forms must be
+# rejected by the kernel with the field named (exit 1 on any violation)
 node tool/kernel-compat/option-probe.mjs --rust <path-to-billow-kernel> \
-  --out tool/kernel-compat/evidence/option-rejection.txt
+  --mihomo <path-to-mihomo> --out tool/kernel-compat/evidence/option-matrix.txt
 
 # Differential run; pass each kernel explicitly (repeatable --fixture, --report-name)
 node tool/kernel-compat/runner.mjs \
@@ -99,9 +99,12 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   after many cases in one test process, so the suite is run serially and rerun once in that
   case — a rerun is never recorded as a first-attempt pass.
 
-`evidence/option-rejection.txt` is the probe's output: one line per option,
-each rejected by `--check` with the option named. It is regenerated with
-`option-probe.mjs` and fails (exit 1) if a future option table admits one.
+`evidence/option-matrix.txt` is the probe's output, one line per option with the
+Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo
+configuration that the kernel rejects is a compatibility failure), `enabled`
+rows must be rejected by the kernel with the field named; Mihomo's own verdict is
+recorded so a form Mihomo already rejects is not counted as a gap. The probe
+exits 1 on any violation.
 
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every

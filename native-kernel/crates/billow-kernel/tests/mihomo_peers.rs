@@ -154,6 +154,7 @@ fn start_mihomo(
     sink_port: u16,
     listeners: &str,
     rule: &str,
+    socks_port: Option<u16>,
 ) -> Option<Mihomo> {
     let dir = std::env::temp_dir().join(format!(
         "billow-peers-{}-{}",
@@ -166,8 +167,11 @@ fn start_mihomo(
     let listeners = listeners
         .replace("CERT", "cert.pem")
         .replace("KEY", "key.pem");
+    let socks_line = socks_port
+        .map(|port| format!("socks-port: {port}\n"))
+        .unwrap_or_default();
     let config = format!(
-        "mixed-port: {}\nlog-level: debug\nproxies:\n  - {{name: sink-http, type: http, server: 127.0.0.1, port: {sink_port}}}\n  - {{name: sink-direct, type: direct}}\nrules:\n  - {rule}\nlisteners:\n{listeners}",
+        "mixed-port: {}\n{socks_line}log-level: debug\nproxies:\n  - {{name: sink-http, type: http, server: 127.0.0.1, port: {sink_port}}}\n  - {{name: sink-direct, type: direct}}\nrules:\n  - {rule}\nlisteners:\n{listeners}",
         free_port()
     );
     std::fs::write(dir.join("config.yaml"), &config).ok()?;
@@ -476,7 +480,14 @@ where
         return;
     };
     let sink = Sink::start();
-    let Some(mihomo) = start_mihomo(bin, certs, sink.port, listeners, "MATCH,sink-http") else {
+    let Some(mihomo) = start_mihomo(
+        bin,
+        certs,
+        sink.port,
+        listeners,
+        "MATCH,sink-http",
+        None,
+    ) else {
         panic!("{test}: Mihomo did not start its listeners");
     };
     let ports = listener_ports(
@@ -504,6 +515,16 @@ fn with_udp_peer<F>(test: &str, listeners: &str, body: F)
 where
     F: FnOnce(&Mihomo, &[u16]),
 {
+    with_udp_peer_on(test, listeners, "MATCH,sink-direct", None, body)
+}
+
+/// [`with_udp_peer`] with an explicit ruleset and an optional global
+/// `socks-port` (Mihomo starts a UDP relay on it, which is what a chained UDP
+/// case needs as its hop).
+fn with_udp_peer_on<F>(test: &str, listeners: &str, rule: &str, socks_port: Option<u16>, body: F)
+where
+    F: FnOnce(&Mihomo, &[u16]),
+{
     install_kernel_log();
     static SERIAL: Mutex<()> = Mutex::new(());
     let _serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -515,7 +536,7 @@ where
         skip(test, "provide the openssl CLI or KC_CERT_DIR with cert.pem/key.pem");
         return;
     };
-    let Some(mihomo) = start_mihomo(bin, certs, free_port(), listeners, "MATCH,sink-direct") else {
+    let Some(mihomo) = start_mihomo(bin, certs, free_port(), listeners, rule, socks_port) else {
         panic!("{test}: Mihomo did not start its listeners");
     };
     let ports = listener_ports(
@@ -525,7 +546,11 @@ where
     );
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mihomo, &ports)));
     if let Err(panic) = outcome {
-        eprintln!("--- {test}: peer config ---\n{}", mihomo.config);
+        eprintln!(
+            "--- {test}: peer config ---\n{}\n--- peer log ---\n{}",
+            mihomo.config,
+            mihomo.log()
+        );
         std::panic::resume_unwind(panic);
     }
 }
@@ -1221,6 +1246,48 @@ fn trojan_udp_wrong_password_never_reaches_the_echo() {
         );
         assert!(echo.received().is_empty(), "the echo must not be reached");
     });
+}
+
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn chained_ss_udp_rejected_by_the_hop_never_reaches_the_echo() {
+    // The hop's ruleset REJECTs the datagram it is asked to relay. A kernel
+    // that dialled the ss server directly (ignoring `dialer-proxy`) would reach
+    // the echo, so this is the proof that the UDP association uses the chain.
+    // (A positive chained case against this peer is impossible on loopback:
+    // Mihomo's own loopback detector refuses to forward a datagram that came
+    // from its own socks UDP listener to a local destination. The positive
+    // chain is covered by the two controlled hops in tests/protocols.rs.)
+    let ss_port = free_port();
+    let hop_port = free_port();
+    let listeners = listener(
+        "shadowsocks",
+        ss_port,
+        &format!(", cipher: aes-256-gcm, password: \"{SS_PASSWORD}\""),
+    );
+    with_udp_peer_on(
+        "ss-udp-chain-reject",
+        &listeners,
+        "MATCH,REJECT",
+        Some(hop_port),
+        |_mihomo, _| {
+            let echo = UdpEcho::start();
+            let (running, _) = start_kernel(&format!(
+                "  - {{name: p0, type: ss, server: 127.0.0.1, port: {ss_port}, cipher: aes-256-gcm, password: \"{SS_PASSWORD}\", udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}}}\n"
+            ));
+            let (_control, relay) = udp_associate(running.proxy);
+            let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+            assert!(
+                try_datagram(relay, target, b"must-be-rejected-at-the-hop").is_none(),
+                "the hop rejects the datagram, so no reply may come back"
+            );
+            assert!(
+                echo.received().is_empty(),
+                "the echo must not be reached: the datagram went through the hop"
+            );
+        },
+    );
 }
 
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]

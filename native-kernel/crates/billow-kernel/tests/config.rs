@@ -242,7 +242,7 @@ fn unimplemented_protocol_and_option_name_the_field() {
     let e = proxy_err("proxies:\n  - {name: s1, type: hysteria2, server: x, port: 1, up: 100}\nrules: ['MATCH,DIRECT']\n");
     assert!(e.starts_with("unsupported"), "{e}");
     assert!(e.contains("proxies[0] (name=s1, type=hysteria2)"), "{e}");
-    let e = proxy_err("proxies:\n  - {name: v, type: vless, server: x, port: 1, uuid: 9d0cb9d0964f4ef6897d6c6b3ccf9e68, reality-opts: {public-key: k}}\nrules: ['MATCH,DIRECT']\n");
+    let e = proxy_err("proxies:\n  - {name: v, type: vless, server: x, port: 1, uuid: 9d0cb9d0964f4ef6897d6c6b3ccf9e68, tls: true, reality-opts: {public-key: k}}\nrules: ['MATCH,DIRECT']\n");
     assert!(
         e.contains("option 'reality-opts' is not implemented"),
         "{e}"
@@ -275,15 +275,15 @@ fn unimplemented_protocol_and_option_name_the_field() {
 fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
     let cases: &[(&str, &str, &str)] = &[
         ("socks5", "server: 127.0.0.1, port: 1", "udp: true"),
-        ("socks5", "server: 127.0.0.1, port: 1", "fingerprint: chrome"),
-        ("socks5", "server: 127.0.0.1, port: 1", "certificate: x.pem"),
-        ("socks5", "server: 127.0.0.1, port: 1", "private-key: k.pem"),
-        ("socks5", "server: 127.0.0.1, port: 1", "name-cert-verify: x"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "fingerprint: chrome"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "certificate: x.pem"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "private-key: k.pem"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "name-cert-verify: x"),
         ("socks5", "server: 127.0.0.1, port: 1", "ip-version: ipv4"),
-        ("http", "server: 127.0.0.1, port: 1", "fingerprint: chrome"),
-        ("http", "server: 127.0.0.1, port: 1", "certificate: x.pem"),
-        ("http", "server: 127.0.0.1, port: 1", "private-key: k.pem"),
-        ("http", "server: 127.0.0.1, port: 1", "name-cert-verify: x"),
+        ("http", "server: 127.0.0.1, port: 1, tls: true", "fingerprint: chrome"),
+        ("http", "server: 127.0.0.1, port: 1, tls: true", "certificate: x.pem"),
+        ("http", "server: 127.0.0.1, port: 1, tls: true", "private-key: k.pem"),
+        ("http", "server: 127.0.0.1, port: 1, tls: true", "name-cert-verify: x"),
         ("http", "server: 127.0.0.1, port: 1", "ip-version: ipv4"),
         ("http", "server: 127.0.0.1, port: 1", "udp: true"),
         (
@@ -295,11 +295,6 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "ss",
             "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
             "udp-over-tcp-version: 2",
-        ),
-        (
-            "ss",
-            "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
-            "client-fingerprint: chrome",
         ),
         (
             "ss",
@@ -327,27 +322,27 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "ip-version: ipv4"),
         (
             "vless",
-            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
             "ech-opts: {enable: true}",
         ),
         (
             "vless",
-            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
             "shadow-tls-opts: {password: p}",
         ),
         (
             "vless",
-            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
             "restls-opts: {password: p}",
         ),
         (
             "vless",
-            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
             "jls-opts: {password: p}",
         ),
         (
             "vless",
-            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
+            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
             "client-fingerprint: chrome",
         ),
         (
@@ -429,6 +424,135 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "proxies:\n  - {{name: p, type: {kind}, {base}, {option}}}\nrules: ['MATCH,p']\n"
         );
         assert_eq!(proxy_err(&yaml), "ok", "{kind}/{option} should load");
+    }
+}
+
+
+/// `udp: true` with a `dialer-proxy` must be explicit about the hop: a UDP
+/// association can only be carried by a SOCKS5 hop, and a longer chain is not
+/// implemented. Both cases fail at load time so `--check` shows it, instead of
+/// a UDP association silently dialling the server directly.
+#[test]
+fn udp_with_a_dialer_proxy_requires_one_socks5_hop() {
+    let socks_hop = |extra: &str| {
+        format!(
+            "proxies:\n  - {{name: exit, type: ss, server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: 2{extra}}}\nrules: ['MATCH,exit']\n"
+        )
+    };
+    assert_eq!(proxy_err(&socks_hop("")), "ok", "a single socks5 hop is supported");
+    let loaded = load_config(&socks_hop(""), "t").unwrap();
+    assert!(loaded.config.proxies[0].udp_enabled());
+
+    // A hop without a UDP association is refused, naming both sides.
+    let e = proxy_err(
+        "proxies:\n  - {name: exit, type: ss, server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p, udp: true, dialer-proxy: hop}\n  - {name: hop, type: vless, server: 127.0.0.1, port: 2, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true}\nrules: ['MATCH,exit']\n",
+    );
+    assert!(e.starts_with("unsupported"), "{e}");
+    assert!(e.contains("proxies[0] (name=exit, type=ss)"), "{e}");
+    assert!(e.contains("dialer-proxy' 'hop' (type=vless)"), "{e}");
+    assert!(e.contains("only a socks5 hop can carry a UDP association"), "{e}");
+
+    // A second hop would need nested associations.
+    let e = proxy_err(
+        "proxies:\n  - {name: exit, type: ss, server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p, udp: true, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 2, dialer-proxy: hop2}\n  - {name: hop2, type: socks5, server: 127.0.0.1, port: 3}\nrules: ['MATCH,exit']\n",
+    );
+    assert!(e.contains("multi-hop 'dialer-proxy' chain is not implemented"), "{e}");
+
+    // TCP-only proxies keep the old behaviour (the chain is validated at dial
+    // time); `udp: false` does not trigger the UDP rule.
+    assert_eq!(
+        proxy_err(
+            "proxies:\n  - {name: exit, type: ss, server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p, dialer-proxy: hop}\n  - {name: hop, type: vless, server: 127.0.0.1, port: 2, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true}\nrules: ['MATCH,exit']\n"
+        ),
+        "ok"
+    );
+}
+
+/// Mihomo accepts these forms and does nothing with them (`-t` passes), so the
+/// kernel must accept them too: rejecting a valid configuration is a
+/// compatibility failure. The behaviour-changing form of each key still fails.
+#[test]
+fn noop_option_forms_mihomo_accepts_are_loaded() {
+    let noops: &[(&str, &str, &str)] = &[
+        // TLS-only options with TLS off are ignored by Mihomo.
+        ("socks5", "server: 127.0.0.1, port: 1", "skip-cert-verify: true"),
+        ("socks5", "server: 127.0.0.1, port: 1", "sni: example.org"),
+        ("socks5", "server: 127.0.0.1, port: 1", "alpn: [h2]"),
+        ("socks5", "server: 127.0.0.1, port: 1", "fingerprint: chrome"),
+        ("socks5", "server: 127.0.0.1, port: 1", "certificate: x.pem"),
+        ("http", "server: 127.0.0.1, port: 1", "skip-cert-verify: true"),
+        ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "ech-opts: {enable: true}"),
+        // Disabled/empty values.
+        ("socks5", "server: 127.0.0.1, port: 1", "smux: {enabled: false}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "grpc-opts: {}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "ech-opts: {enable: false}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "fingerprint: ''"),
+        ("socks5", "server: 127.0.0.1, port: 1", "tfo: false"),
+        ("socks5", "server: 127.0.0.1, port: 1", "mptcp: false"),
+        ("socks5", "server: 127.0.0.1, port: 1", "interface-name: ''"),
+        ("socks5", "server: 127.0.0.1, port: 1", "routing-mark: 0"),
+        ("socks5", "server: 127.0.0.1, port: 1", "udp-over-tcp: false"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "grpc-opts: {}"),
+        // A transport block for a transport the configuration did not select
+        // is ignored by Mihomo even when it has content.
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "grpc-opts: {grpc-service-name: svc}"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p, network: ws, ws-opts: {path: /ws}", "http-opts: {path: [/x]}"),
+        ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "h2-opts: {host: [h.example]}"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ech-opts: {enable: false}"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "smux: {enabled: false}"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {}"),
+        ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "grpc-opts: {}"),
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "idle-session-timeout: 0"),
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "client-metadata: ''"),
+        ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "plugin: ''"),
+        ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "plugin-opts: {}"),
+    ];
+    for (kind, base, option) in noops {
+        let yaml = format!(
+            "proxies:\n  - {{name: p, type: {kind}, {base}, {option}}}\nrules: ['MATCH,p']\n"
+        );
+        assert_eq!(proxy_err(&yaml), "ok", "{kind}/{option} must load");
+    }
+
+    // `reality-opts`/`jls-opts` require fields: Mihomo's own `-t` rejects the
+    // empty block, so the kernel rejects it too (even with TLS off).
+    for (kind, base, option) in [
+        ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68", "reality-opts: {}"),
+        ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {}"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "jls-opts: {}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "jls-opts: {}"),
+    ] {
+        let key = option.split(':').next().unwrap_or_default();
+        let yaml = format!(
+            "proxies:\n  - {{name: p, type: {kind}, {base}, {option}}}\nrules: ['MATCH,p']\n"
+        );
+        let e = proxy_err(&yaml);
+        assert!(e.starts_with("unsupported"), "{kind}/{key}: {e}");
+        assert!(e.contains(&format!("option '{key}'")), "{kind}/{key}: {e}");
+    }
+
+    // The same keys with a value that changes behaviour still fail.
+    let enabled: &[(&str, &str, &str)] = &[
+        ("socks5", "server: 127.0.0.1, port: 1", "smux: {enabled: true}"),
+        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "ech-opts: {enable: true}"),
+        ("socks5", "server: 127.0.0.1, port: 1", "tfo: true"),
+        ("socks5", "server: 127.0.0.1, port: 1", "routing-mark: 100"),
+        ("socks5", "server: 127.0.0.1, port: 1", "udp-over-tcp: true"),
+        ("socks5", "server: 127.0.0.1, port: 1", "interface-name: eth0"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "smux: {enabled: true}"),
+        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {enabled: true}"),
+        ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {public-key: k}"),
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "idle-session-timeout: 30"),
+        ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "plugin: obfs"),
+    ];
+    for (kind, base, option) in enabled {
+        let key = option.split(':').next().unwrap_or_default();
+        let yaml = format!(
+            "proxies:\n  - {{name: p, type: {kind}, {base}, {option}}}\nrules: ['MATCH,p']\n"
+        );
+        let e = proxy_err(&yaml);
+        assert!(e.starts_with("unsupported"), "{kind}/{key}: {e}");
+        assert!(e.contains(&format!("option '{key}'")), "{kind}/{key}: {e}");
     }
 }
 

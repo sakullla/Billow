@@ -118,7 +118,12 @@ identities of the servers are logged as the session exit.
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
 is rejected at load time or at dial time with a `[unsupported]`/chain error,
-never silently bypassed.
+never silently bypassed. UDP follows the same rule: a `udp: true` proxy with a
+`dialer-proxy` must name exactly one SOCKS5 hop, whose UDP relay carries the
+datagrams (TCP and UDP then take the same path, matching Mihomo's
+`proxydialer.ListenPacket`). Anything else - a hop without a UDP association,
+or a longer chain that would need nested associations - fails at load time with
+the hop named, instead of a UDP association dialling the server directly.
 
 ### UDP
 
@@ -129,8 +134,8 @@ is evaluated by the same rule set as TCP before it is forwarded. Per family:
 | family | UDP behaviour |
 | --- | --- |
 | `DIRECT` / `REJECT` | forwarded from one unconnected UDP socket per address family (wildcard-bound, so a loopback listener still reaches remote targets) / dropped before any socket |
-| `ss` with `udp: true` | AEAD-2017 datagrams to the server, replies decrypted and returned with their source address |
-| `trojan` with `udp: true` | command `3` over TLS, `addr|length|CRLF|payload` frames both ways |
+| `ss` with `udp: true` | AEAD-2017 datagrams to the server (directly, or through one SOCKS5 `dialer-proxy` hop), replies decrypted and returned with their source address |
+| `trojan` with `udp: true` | command `3` over TLS (the server connection is established through the `dialer-proxy` chain like TCP), `addr|length|CRLF|payload` frames both ways |
 | `socks5`, `http`, `vless`, `anytls` | **no association**: `udp: true` is rejected at load time; `udp: false` (or absent) loads, and an association routed to such a proxy drops the datagram and logs it |
 
 `vless` UDP would need `packet-addr`/XUDP, `anytls` needs UoT, and a SOCKS5
@@ -186,10 +191,25 @@ The rule is mechanical: `reject_unknown` accepts only keys the parser read and
 honoured, so a new option cannot be "documented as rejected" while being let
 through by an option table. The only keys accepted without an effect are
 boolean no-ops that ask for nothing (`udp: false`, `disable-reuse: false`,
-`packet-addr: false`, `xudp: false`, `v2ray-http-upgrade-fast-open: false`);
-their `true` form fails with the key named. `tool/kernel-compat/option-probe.mjs`
-probes every rejected key through the CLI's own `--check` and records the
-result in `tool/kernel-compat/evidence/option-rejection.txt`.
+`packet-addr: false`, `xudp: false`, `v2ray-http-upgrade-fast-open: false`),
+empty blocks (`grpc-opts: {}`, `ech-opts: {enable: false}`, `smux: {enabled:
+false}`, `ss-opts: {}`, `shadow-tls-opts: {}`, `restls-opts: {}`, `plugin-opts:
+{}`) and TLS-only options when TLS is off (`skip-cert-verify`, `sni`, `alpn`,
+`fingerprint`, `certificate`, `private-key`, `name-cert-verify`,
+`client-fingerprint`, `ech-opts`, `reality-opts`). `reality-opts` and
+`jls-opts` are the exception: Mihomo itself rejects an empty block (required
+fields), so the kernel rejects it too.
+
+A transport block for a transport the configuration did not select
+(`grpc-opts`, `http-opts`, `h2-opts`, `xhttp-opts` with `network: tcp|ws`) is
+ignored by Mihomo even when it has content, so it is accepted here too; the
+selected transport itself (`network: grpc|http|h2|xhttp`) is rejected.
+
+`tool/kernel-compat/option-probe.mjs` runs the matrix against the pinned
+Mihomo `-t`: every no-op form must be accepted by both engines, and every
+enabled form must be rejected by the kernel with the field named (Mihomo's own
+verdict is recorded; forms it rejects need no implementation). The result and
+its counts are in `tool/kernel-compat/evidence/option-matrix.txt`.
 
 ## CLI
 

@@ -237,9 +237,51 @@ impl fmt::Display for Proxy {
     }
 }
 
+/// Values that ask for nothing, as the pinned decoder accepts them: a disabled
+/// boolean, an empty string, an empty list/map, or a map whose every value is
+/// itself such a no-op (for example `smux: {enabled: false}` or
+/// `ech-opts: {enable: false}`). Such a key changes no behaviour in Mihomo, so
+/// rejecting it would reject a valid configuration (R2); it is accepted and
+/// ignored instead.
+fn is_noop_value(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => true,
+        serde_yaml::Value::Bool(flag) => !*flag,
+        serde_yaml::Value::String(text) => text.is_empty(),
+        serde_yaml::Value::Number(number) => number.as_i64() == Some(0) || number.as_u64() == Some(0),
+        serde_yaml::Value::Sequence(items) => items.iter().all(is_noop_value),
+        serde_yaml::Value::Mapping(map) => map.iter().all(|(_, item)| is_noop_value(item)),
+        serde_yaml::Value::Tagged(tagged) => is_noop_value(&tagged.value),
+    }
+}
+
+/// Blocks Mihomo validates even when empty: `reality-opts` requires a
+/// `public-key` and `jls-opts` a `password`/`username`, so their empty form is
+/// not a no-op - Mihomo's own `-t` rejects it.
+const REQUIRED_FIELDS: &[&str] = &["reality-opts", "jls-opts"];
+
+/// Options that only shape a TLS handshake. With TLS off, Mihomo ignores them,
+/// so they are no-ops for `socks5`/`http` (and `vless` without `tls: true`).
+fn is_tls_option(key: &str) -> bool {
+    matches!(
+        key,
+        "sni"
+            | "skip-cert-verify"
+            | "alpn"
+            | "name-cert-verify"
+            | "fingerprint"
+            | "certificate"
+            | "private-key"
+            | "client-fingerprint"
+            | "ech-opts"
+            | "reality-opts"
+    )
+}
+
 /// Option tables from the pinned source. An option that is present in the
 /// mapping but listed as unsupported fails; an unknown key fails too (Mihomo's
-/// decoder errors with `invalid map key`).
+/// decoder errors with `invalid map key`). A key whose value is a no-op (see
+/// [`is_noop_value`]) is accepted, because Mihomo accepts it and does nothing.
 const COMMON_UNSUPPORTED: &[&str] = &[
     "tfo",
     "mptcp",
@@ -295,7 +337,58 @@ pub fn parse_proxies(value: &serde_yaml::Value) -> Result<Vec<Proxy>, ConfigErro
         proxies.push(proxy);
     }
     validate_dialer_chain(&proxies)?;
+    validate_udp_chains(&proxies)?;
     Ok(proxies)
+}
+
+/// A `udp: true` proxy with a `dialer-proxy` needs one SOCKS5 hop: its UDP
+/// relay is the only association this kernel can build, and that is what
+/// Mihomo's `proxydialer.ListenPacket` uses. Rejecting anything else here makes
+/// the limitation visible in `--check` instead of letting a UDP association
+/// dial the server directly while TCP goes through the chain.
+fn validate_udp_chains(proxies: &[Proxy]) -> Result<(), ConfigError> {
+    let index = |name: &str| proxies.iter().position(|proxy| proxy.name == name);
+    for (i, proxy) in proxies.iter().enumerate() {
+        if !proxy.udp_enabled() {
+            continue;
+        }
+        let mut hops: Vec<&Proxy> = vec![proxy];
+        while hops.len() < 9 {
+            let next = hops
+                .last()
+                .and_then(|hop| hop.dialer_proxy())
+                .and_then(index);
+            match next {
+                Some(next) if !hops.iter().any(|hop| std::ptr::eq(*hop, &proxies[next])) => {
+                    hops.push(&proxies[next]);
+                }
+                _ => break,
+            }
+        }
+        match hops.len() {
+            1 => {}
+            2 => {
+                let hop = hops[1];
+                if !matches!(hop.protocol, Protocol::Socks5(_)) {
+                    return Err(ConfigError::Unsupported(format!(
+                        "proxies[{i}] (name={}, type={}): option 'udp' with 'dialer-proxy' '{}' (type={}) is not implemented: only a socks5 hop can carry a UDP association",
+                        proxy.name,
+                        proxy.type_name(),
+                        hop.name,
+                        hop.type_name()
+                    )));
+                }
+            }
+            _ => {
+                return Err(ConfigError::Unsupported(format!(
+                    "proxies[{i}] (name={}, type={}): option 'udp' with a multi-hop 'dialer-proxy' chain is not implemented (at most one socks5 hop)",
+                    proxy.name,
+                    proxy.type_name()
+                )))
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `dialer-proxy` must name a configured proxy (Mihomo also accepts group
@@ -507,20 +600,10 @@ impl<'a> Entry<'a> {
     }
 
     /// `ws-opts` / `grpc-opts` / `h2-opts` / `http-opts` / `reality-opts` blocks.
-    /// Only `ws-opts` with the common fields is implemented; a present block is
-    /// otherwise rejected before looking at its fields.
+    /// Only `ws-opts` with the common fields is implemented; the other blocks
+    /// are left to [`Entry::reject_unknown`], which rejects them when they
+    /// carry content and accepts the empty/disabled form Mihomo accepts.
     fn ws_settings(&mut self) -> Result<WsSettings, ConfigError> {
-        for key in [
-            "reality-opts",
-            "grpc-opts",
-            "http-opts",
-            "h2-opts",
-            "xhttp-opts",
-        ] {
-            if self.get(key).is_some() {
-                return Err(self.unsupported(format!("option '{key}' is not implemented")));
-            }
-        }
         let default_ws = || WsSettings {
             path: "/".to_string(),
             ..WsSettings::default()
@@ -621,7 +704,12 @@ impl<'a> Entry<'a> {
                 }
             }
         }
-        if ws.max_early_data > 0 || ws.early_data_header_name.is_some() {
+        if ws.max_early_data > 0
+            || ws
+                .early_data_header_name
+                .as_deref()
+                .is_some_and(|name| !name.is_empty())
+        {
             return Err(self.unsupported("ws early data ('ws-opts.max-early-data' / 'ws-opts.early-data-header-name') is not implemented"));
         }
         if !ws.path.starts_with('/') {
@@ -639,13 +727,49 @@ impl<'a> Entry<'a> {
     /// rejects it too). Only keys in `used` - the ones the parser read and
     /// honoured - pass, which is what keeps the capability statements in
     /// `tool/kernel-compat/evidence/rust-mapping.json` honest.
-    fn reject_unknown(&self, mihomo_options: &[&str]) -> Result<(), ConfigError> {
-        for (key, _) in self.mapping {
+    fn reject_unknown(
+        &self,
+        mihomo_options: &[&str],
+        tls_enabled: bool,
+        network: Option<&str>,
+    ) -> Result<(), ConfigError> {
+        for (key, value) in self.mapping {
             let Some(key) = key.as_str() else {
                 return Err(self.invalid("option names must be strings"));
             };
             let key = key.replace('_', "-");
             if self.used.contains(&key) {
+                continue;
+            }
+            // A transport block for a transport the configuration did not
+            // select is ignored by Mihomo (only the selected `network` is
+            // read), so it changes nothing here either.
+            if let Some(selected) = network {
+                let transport = match key.as_str() {
+                    "grpc-opts" => Some("grpc"),
+                    "http-opts" => Some("http"),
+                    "h2-opts" => Some("h2"),
+                    "xhttp-opts" => Some("xhttp"),
+                    _ => None,
+                };
+                if let Some(transport) = transport {
+                    if transport != selected {
+                        continue;
+                    }
+                }
+            }
+            if REQUIRED_FIELDS.contains(&key.as_str()) && is_noop_value(value) {
+                return Err(self.unsupported(format!(
+                    "option '{key}' must set its required fields (Mihomo rejects the empty block)"
+                )));
+            }
+            // A TLS-only option with TLS off is ignored by Mihomo, and a value
+            // that asks for nothing is ignored as well: both are valid
+            // configurations, so they load and have no effect here either.
+            if !tls_enabled && is_tls_option(&key) {
+                continue;
+            }
+            if is_noop_value(value) {
                 continue;
             }
             if COMMON_UNSUPPORTED.contains(&key.as_str()) || mihomo_options.contains(&key.as_str())
@@ -743,13 +867,7 @@ fn parse_socks5(entry: &mut Entry<'_>) -> Result<Socks5Outbound, ConfigError> {
         "private-key",
         "ip-version",
     ];
-    entry.reject_unknown(&allowed)?;
-    if tls_settings.skip_cert_verify && !tls {
-        // Mihomo ignores skip-cert-verify without tls; say so instead of pretending.
-        return Err(entry.unsupported(
-            "option 'skip-cert-verify' without 'tls: true' has no effect and is not implemented",
-        ));
-    }
+    entry.reject_unknown(&allowed, tls, None)?;
     if password.is_some() && username.is_none() {
         return Err(entry.invalid("option 'password' requires 'username'"));
     }
@@ -800,12 +918,7 @@ fn parse_http(entry: &mut Entry<'_>) -> Result<HttpOutbound, ConfigError> {
         "headers",
         "ip-version",
     ];
-    entry.reject_unknown(&allowed)?;
-    if tls_settings.skip_cert_verify && !tls {
-        return Err(entry.unsupported(
-            "option 'skip-cert-verify' without 'tls: true' has no effect and is not implemented",
-        ));
-    }
+    entry.reject_unknown(&allowed, tls, None)?;
     if password.is_some() && username.is_none() {
         return Err(entry.invalid("option 'password' requires 'username'"));
     }
@@ -850,7 +963,9 @@ fn parse_shadowsocks(entry: &mut Entry<'_>) -> Result<ShadowsocksOutbound, Confi
     let udp = entry.bool("udp")?.unwrap_or(false);
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let plugin = entry.string("plugin")?;
-    let has_plugin_opts = entry.get("plugin-opts").is_some();
+    let has_plugin_opts = entry
+        .get("plugin-opts")
+        .is_some_and(|value| !is_noop_value(value));
     let allowed = [
         "dialer-proxy",
         "name",
@@ -867,7 +982,7 @@ fn parse_shadowsocks(entry: &mut Entry<'_>) -> Result<ShadowsocksOutbound, Confi
         "client-fingerprint",
         "ip-version",
     ];
-    entry.reject_unknown(&allowed)?;
+    entry.reject_unknown(&allowed, false, None)?;
     if let Some(plugin) = plugin.filter(|p| !p.is_empty()) {
         return Err(entry.unsupported(format!(
             "option 'plugin' value '{plugin}' is not implemented"
@@ -898,6 +1013,7 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
         .string("network")?
         .unwrap_or_else(|| "tcp".to_string());
     let ws = entry.ws_settings()?;
+    let selected = network.clone();
     let network = match network.as_str() {
         "tcp" => TrojanNetwork::Tcp,
         "ws" => TrojanNetwork::Ws(ws),
@@ -936,7 +1052,7 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
         "client-fingerprint",
         "ip-version",
     ];
-    entry.reject_unknown(&allowed)?;
+    entry.reject_unknown(&allowed, true, Some(selected.as_str()))?;
     Ok(TrojanOutbound {
         server,
         port,
@@ -975,6 +1091,7 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
         .string("network")?
         .unwrap_or_else(|| "tcp".to_string());
     let ws = entry.ws_settings()?;
+    let selected = network.clone();
     let network = match network.as_str() {
         "tcp" => VlessNetwork::Tcp,
         "ws" => VlessNetwork::Ws(ws),
@@ -997,7 +1114,10 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
         }
     }
     for key in ["packet-encoding", "ws-headers"] {
-        if entry.get(key).is_some() {
+        if entry
+            .get(key)
+            .is_some_and(|value| !is_noop_value(value))
+        {
             return Err(entry.unsupported(format!("option '{key}' is not implemented")));
         }
     }
@@ -1037,7 +1157,7 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
         "client-fingerprint",
         "ip-version",
     ];
-    entry.reject_unknown(&allowed)?;
+    entry.reject_unknown(&allowed, tls, Some(selected.as_str()))?;
     Ok(VlessOutbound {
         server,
         port,
@@ -1062,7 +1182,10 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
         "idle-session-timeout",
         "min-idle-session",
     ] {
-        if entry.get(key).is_some() {
+        if entry
+            .get(key)
+            .is_some_and(|value| !is_noop_value(value))
+        {
             return Err(entry.unsupported(format!("option '{key}' is not implemented")));
         }
     }
@@ -1099,7 +1222,7 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
         "jls-opts",
         "ip-version",
     ];
-    entry.reject_unknown(&allowed)?;
+    entry.reject_unknown(&allowed, true, None)?;
     Ok(AnytlsOutbound {
         server,
         port,

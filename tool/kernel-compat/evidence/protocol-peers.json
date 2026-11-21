@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 21,
-    "passed": 21,
+    "cases": 22,
+    "passed": 22,
     "failed": 0
   },
   "families": {
@@ -66,12 +66,13 @@
         ],
         "negative": [
           "shadowsocks_wrong_password_never_reaches_the_sink",
-          "shadowsocks_udp_wrong_password_never_reaches_the_echo"
+          "shadowsocks_udp_wrong_password_never_reaches_the_echo",
+          "chained_ss_udp_rejected_by_the_hop_never_reaches_the_echo"
         ]
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: shadowsocks, aes-256-gcm (the listener serves TCP and UDP)",
-      "notes": "TCP uses the AEAD-2017 stream framing and both directions; UDP uses one AEAD datagram per packet with the peer's own salt. The UDP peer's ruleset forwards DIRECT to the loopback UDP echo because the sink is a TCP proxy. The loopback peer test `shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead` covers aes-256-gcm with an independent decoder; `shadowsocks_aes_256_gcm_roundtrip` / `..._chacha20_ietf_poly1305_roundtrip` cover the other ciphers over TCP."
+      "notes": "TCP uses the AEAD-2017 stream framing and both directions; UDP uses one AEAD datagram per packet with the peer's own salt. The UDP peer's ruleset forwards DIRECT to the loopback UDP echo because the sink is a TCP proxy. The loopback peer test `shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead` covers aes-256-gcm with an independent decoder; `shadowsocks_aes_256_gcm_roundtrip` / `..._chacha20_ietf_poly1305_roundtrip` cover the other ciphers over TCP. A `udp: true` proxy with `dialer-proxy` sends its datagrams through the hop's SOCKS5 UDP relay (Mihomo's global `socks-port` serves UDP); the peer case with `MATCH,REJECT` at the hop proves the chain is used, because a direct association would have reached the echo."
     },
     "trojan": {
       "status": "pass",
@@ -132,18 +133,21 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "two Mihomo listeners (mixed as the exit hop, socks as the first hop)",
-      "notes": "only a socks5 hop can carry another hop; a closed first hop fails the dial instead of falling back to DIRECT, and other chains are rejected at load time or with a chain error"
+      "notes": "only a socks5 hop can carry another hop; a closed first hop fails the dial instead of falling back to DIRECT, and other chains are rejected at load time or with a chain error. UDP follows the same chain (see ss and loopbackOnlyEvidence.chained_udp_positive)."
     }
   },
   "loopbackOnlyEvidence": {
     "custom_tls_roots": "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls starts a private CA and a server certificate it signs, then runs trojan, vless and socks5-tls with and without `tls: {custom-cert: [<ca>]}`: without the anchor every handshake fails, with it every tunnel reaches the echo. It is loopback because the peer needs a certificate this test controls.",
-    "udp_direct_and_reject": "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject covers the inbound relay, DIRECT forwarding and a REJECT rule without an external process."
+    "udp_direct_and_reject": "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject covers the inbound relay, DIRECT forwarding and a REJECT rule without an external process.",
+    "chained_udp_positive": "tests/protocols.rs::shadowsocks_udp_goes_through_the_dialer_proxy_hop uses two controlled hops (a SOCKS5 UDP server that relays, and an independent ss UDP server) and asserts the hop saw the association and relayed to the ss server. A positive chained case against Mihomo on loopback is not possible: its own loopback detector refuses to forward a datagram that came from its socks UDP listener to a local destination, so the peer case is the rejecting one.",
+    "trojan_udp_reconnect": "tests/protocols.rs::trojan_udp_reconnects_after_the_server_closes_the_stream proves that a server-closed UDP stream is retired and re-established on the next datagram of the same association."
   },
   "notCovered": [
     "UDP for socks5, vless (packet-addr/XUDP) and anytls (UoT): `udp: true` is rejected at load time; no UDP association exists for those families",
     "fragmented SOCKS5 UDP datagrams (FRAG != 0) are dropped instead of reassembled",
     "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
     "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
-    "protocol families this slice does not implement (vmess, ssr, hysteria/hysteria2, tuic, wireguard, ...): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented"
+    "protocol families this slice does not implement (vmess, ssr, hysteria/hysteria2, tuic, wireguard, ...): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented",
+    "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead"
   ]
 }
