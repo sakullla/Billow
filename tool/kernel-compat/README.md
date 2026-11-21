@@ -110,16 +110,26 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   `native-kernel/tests/quic_peers.rs` because the pinned tree has no Hysteria
   v1 listener. `evidence/t10-feasibility.json` records each family's status,
   the QUIC dependency profile (quinn 0.11.12, offline cache, missing
-  h3/qpack/JLS/WireGuard/mesh crates), the device/TUN ownership (T6/T7) and
+  h3/qpack/WireGuard/mesh crates), the device/TUN ownership (T6/T7) and
   the memory note T7 uses for the 40 MB budget. The TUIC/Hysteria2 wrong
   password cases are in the same matrix; the `quic_peers` cases are part of the
   default suite. `crates/billow-kernel-cli/tests/family_cli.rs` drives a real
   `billow-kernel` process tunnel through TUIC, Hysteria v1 and Hysteria2. The
-  option matrix now includes the three T10 families (184 no-op / 215 enabled,
+  option matrix includes the three T10 families (184 no-op / 215 enabled,
   problems 0), including the Hysteria2 `up` rejection and the TUIC
   `request-timeout` use; `t10-feasibility.json` also records the Hysteria v1
-  peer gap (no pinned Mihomo listener) and the follow-up owners for
-  shadowquic/device families.
+  peer gap (no pinned Mihomo listener).
+
+  T15 added `shadowquic` to the pinned-Mihomo matrix: TCP, UDP over QUIC
+  datagrams, UDP over `udp-over-stream`, and a wrong-password case. JLS has no
+  Rust crate, so `src/outbound/jls.rs` implements the seal in-tree and
+  `peers/shadowquic-jls-vectors` uses the locked `jls-tls` package only to emit
+  real hello vectors (committed under
+  `native-kernel/crates/billow-kernel/tests/data/`). The option matrix now has
+  224 no-op / 248 enabled cases with 0 problems, including the shadowquic
+  `zero-rtt`/`quic-versions: v2`/Brutal rejections. `t10-feasibility.json`
+  records shadowquic as implemented by T15; the remaining follow-up owners are
+  the device families.
 
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo

@@ -144,6 +144,20 @@ pub struct QuicOptions {
     pub datagrams: bool,
     /// `disable-sni`: send no SNI and accept any certificate (TUIC).
     pub disable_sni: bool,
+    /// Per-stream receive window (local flow control, not a wire format).
+    pub stream_receive_window: u32,
+    /// Per-connection receive window (local flow control).
+    pub connection_receive_window: u32,
+    /// Send window (local flow control).
+    pub send_window: u32,
+    /// Inbound stream limits; `None` keeps quinn's defaults.
+    pub max_concurrent_uni_streams: Option<u64>,
+    pub max_concurrent_bidi_streams: Option<u64>,
+    /// DPLPMTUD on/off (`disable-mtu-discovery: true` turns it off).
+    pub mtu_discovery: bool,
+    /// QUIC datagram buffers when `datagrams` is set.
+    pub datagram_receive_buffer: Option<usize>,
+    pub datagram_send_buffer: Option<usize>,
 }
 
 impl QuicOptions {
@@ -154,6 +168,14 @@ impl QuicOptions {
             keep_alive: None,
             datagrams: false,
             disable_sni: false,
+            stream_receive_window: 512 * 1024,
+            connection_receive_window: 2 * 1024 * 1024,
+            send_window: 2 * 1024 * 1024,
+            max_concurrent_uni_streams: None,
+            max_concurrent_bidi_streams: None,
+            mtu_discovery: true,
+            datagram_receive_buffer: None,
+            datagram_send_buffer: None,
         }
     }
 }
@@ -180,6 +202,84 @@ pub async fn connect(
             ),
         });
     }
+    let rustls_config = tls::quic_client_config(settings, tls, &options.alpn, !options.disable_sni)
+        .map_err(|source| DialError::Handshake {
+            protocol: "quic tls",
+            source,
+        })?;
+    let quic_crypto =
+        QuicClientConfig::try_from(rustls_config).map_err(|e| DialError::Handshake {
+            protocol: "quic tls",
+            source: io::Error::new(io::ErrorKind::InvalidInput, e.to_string()),
+        })?;
+    connect_with_crypto(
+        server,
+        address,
+        port,
+        settings,
+        options,
+        timeout,
+        Arc::new(quic_crypto),
+    )
+    .await
+}
+
+/// Establish one ShadowQUIC QUIC connection: the same transport as
+/// [`connect`], but with the JLS-sealing TLS session and the JLS-aware
+/// certificate verifier.
+pub async fn connect_jls(
+    server: &str,
+    address: &str,
+    port: u16,
+    settings: &TlsSettings,
+    tls: &ClientTls,
+    options: &QuicOptions,
+    timeout: Duration,
+    credentials: &super::jls::JlsCredentials,
+) -> Result<(Connection, Endpoint), DialError> {
+    if options.alpn.is_empty() {
+        return Err(DialError::Handshake {
+            protocol: "quic",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a QUIC handshake needs at least one ALPN protocol",
+            ),
+        });
+    }
+    let state = Arc::new(super::jls::JlsState::new());
+    let rustls_config = tls::jls_quic_client_config(tls, &options.alpn, state.clone()).map_err(
+        |source| DialError::Handshake {
+            protocol: "shadowquic tls",
+            source,
+        },
+    )?;
+    let quic_crypto =
+        QuicClientConfig::try_from(rustls_config).map_err(|e| DialError::Handshake {
+            protocol: "shadowquic tls",
+            source: io::Error::new(io::ErrorKind::InvalidInput, e.to_string()),
+        })?;
+    let crypto = super::jls::JlsClientConfig::new(quic_crypto, credentials.clone(), state);
+    connect_with_crypto(
+        server,
+        address,
+        port,
+        settings,
+        options,
+        timeout,
+        Arc::new(crypto),
+    )
+    .await
+}
+
+async fn connect_with_crypto(
+    server: &str,
+    address: &str,
+    port: u16,
+    settings: &TlsSettings,
+    options: &QuicOptions,
+    timeout: Duration,
+    crypto: Arc<dyn quinn::crypto::ClientConfig>,
+) -> Result<(Connection, Endpoint), DialError> {
     let target = super::resolve(address, port).await?;
     let bind: SocketAddr = if target.is_ipv4() {
         SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 0)
@@ -191,17 +291,7 @@ pub async fn connect(
         source,
     })?;
 
-    let rustls_config = tls::quic_client_config(settings, tls, &options.alpn, !options.disable_sni)
-        .map_err(|source| DialError::Handshake {
-            protocol: "quic tls",
-            source,
-        })?;
-    let quic_crypto =
-        QuicClientConfig::try_from(rustls_config).map_err(|e| DialError::Handshake {
-            protocol: "quic tls",
-            source: io::Error::new(io::ErrorKind::InvalidInput, e.to_string()),
-        })?;
-    let mut client_config = ClientConfig::new(Arc::new(quic_crypto));
+    let mut client_config = ClientConfig::new(crypto);
     let mut transport = TransportConfig::default();
     // T7's 40 MB iOS budget: the quinn defaults are 1.25 MB per stream
     // receive window, a 10 MB send window and an unbounded connection receive
@@ -209,9 +299,18 @@ pub async fn connect(
     // cap them here and record the numbers in evidence/t10-feasibility.json.
     // Window sizes are local flow-control choices and do not change the wire
     // protocol.
-    transport.stream_receive_window(VarInt::from_u32(512 * 1024));
-    transport.receive_window(VarInt::from_u32(2 * 1024 * 1024));
-    transport.send_window(2 * 1024 * 1024);
+    transport.stream_receive_window(VarInt::from_u32(options.stream_receive_window));
+    transport.receive_window(VarInt::from_u32(options.connection_receive_window));
+    transport.send_window(options.send_window as u64);
+    if let Some(streams) = options.max_concurrent_uni_streams {
+        transport.max_concurrent_uni_streams(VarInt::from_u64(streams).unwrap_or(VarInt::MAX));
+    }
+    if let Some(streams) = options.max_concurrent_bidi_streams {
+        transport.max_concurrent_bidi_streams(VarInt::from_u64(streams).unwrap_or(VarInt::MAX));
+    }
+    if !options.mtu_discovery {
+        transport.mtu_discovery_config(None);
+    }
     if let Some(idle) = options.max_idle_timeout {
         let idle = quinn::IdleTimeout::try_from(idle).map_err(|_| DialError::Handshake {
             protocol: "quic",
@@ -224,8 +323,12 @@ pub async fn connect(
     }
     transport.keep_alive_interval(options.keep_alive);
     if options.datagrams {
-        transport.datagram_receive_buffer_size(Some(64 * 1024));
-        transport.datagram_send_buffer_size(64 * 1024);
+        transport.datagram_receive_buffer_size(Some(
+            options.datagram_receive_buffer.unwrap_or(64 * 1024).max(1200),
+        ));
+        transport.datagram_send_buffer_size(
+            options.datagram_send_buffer.unwrap_or(64 * 1024).max(1200),
+        );
     }
     client_config.transport_config(Arc::new(transport));
 

@@ -161,6 +161,9 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
     assert.equal(mapping.proxies[type]?.status, 'partial', `${type} is implemented for TCP with its gaps named`)
     assert.match(mapping.proxies[type]?.reason ?? '', /rejected at load/, `${type} names the rejected pieces`)
   }
+  // T15 delivered shadowquic as a partial family (TCP/UDP + JLS, named
+  // zero-rtt/QUIC-v2/Brutal rejections); it must not be claimed as fully
+  // implemented. masque is partial and the device families are unimplemented.
   for (const type of ['masque', 'shadowquic', 'wireguard', 'tailscale', 'zerotier', 'easytier', 'openvpn']) {
     assert.notEqual(mapping.proxies[type]?.status, 'implemented', `${type} must not be claimed`)
   }

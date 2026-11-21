@@ -148,6 +148,41 @@ pub fn quic_client_config(
     client_config_with(settings, tls, alpn, true, enable_sni)
 }
 
+/// ShadowQUIC's JLS client configuration: TLS 1.3 only, the recorded-random
+/// provider, a verifier that accepts the camouflage certificate after JLS
+/// authentication, and no resumption (JLS requires no PSK binder and a real
+/// `0-RTT` handshake would need the pinned session marker). The SNI/certificate
+/// name is passed separately to `Endpoint::connect_with`; the pinned type has
+/// no `skip-cert-verify` option, and an unauthenticated peer cannot reach the
+/// verifier anyway because the JLS wrapper aborts on a bad ServerHello.
+pub fn jls_quic_client_config(
+    tls: &ClientTls,
+    alpn: &[String],
+    state: Arc<crate::outbound::jls::JlsState>,
+) -> io::Result<Arc<ClientConfig>> {
+    use rustls::client::WebPkiServerVerifier;
+
+    let provider = crate::outbound::jls::provider();
+    let inner: Arc<dyn ServerCertVerifier> = WebPkiServerVerifier::builder_with_provider(
+        Arc::new(tls.roots().clone()),
+        provider.clone(),
+    )
+    .build()
+    .map_err(io::Error::other)?;
+    let verifier = Arc::new(crate::outbound::jls::JlsVerifier::new(inner, state));
+    let builder = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(io::Error::other)?;
+    let mut config = builder
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    config.alpn_protocols = alpn.iter().map(|a| a.as_bytes().to_vec()).collect();
+    config.enable_sni = true;
+    config.resumption = rustls::client::Resumption::disabled();
+    Ok(Arc::new(config))
+}
+
 fn client_config_with(
     settings: &TlsSettings,
     tls: &ClientTls,

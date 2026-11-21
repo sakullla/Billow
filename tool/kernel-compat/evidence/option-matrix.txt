@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 204, enabled cases: 241, problems: 0
+# no-op cases: 224, enabled cases: 248, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 # skipped: masque (- the pinned base requires private-key/public-key (Cloudflare WARP CONNECT-IP registration) that this kernel rejects; the RFC 9298 CONNECT-UDP subset is verified in tests/quic_peers.rs and the boundary is in evidence/t14-feasibility.json)
 
@@ -209,6 +209,26 @@ noop    sudoku  http-mask-mode               rust=accept mihomo=accept
 noop    sudoku  httpmask                     rust=accept mihomo=accept
 noop    sudoku  enable-pure-downlink         rust=accept mihomo=accept
 noop    sudoku  http-mask                    rust=accept mihomo=accept
+noop    shadowquic tfo                          rust=accept mihomo=accept
+noop    shadowquic mptcp                        rust=accept mihomo=accept
+noop    shadowquic interface-name               rust=accept mihomo=accept
+noop    shadowquic routing-mark                 rust=accept mihomo=accept
+noop    shadowquic ip-version                   rust=accept mihomo=accept
+noop    shadowquic zero-rtt                     rust=accept mihomo=accept
+noop    shadowquic udp-over-stream              rust=accept mihomo=accept
+noop    shadowquic disable-mtu-discovery        rust=accept mihomo=accept
+noop    shadowquic cwnd                         rust=accept mihomo=accept
+noop    shadowquic cwnd                         rust=accept mihomo=accept
+noop    shadowquic up                           rust=accept mihomo=accept
+noop    shadowquic down                         rust=accept mihomo=accept
+noop    shadowquic keep-alive-interval          rust=accept mihomo=accept
+noop    shadowquic recv-window                  rust=accept mihomo=accept
+noop    shadowquic recv-window-conn             rust=accept mihomo=accept
+noop    shadowquic max-datagram-frame-size      rust=accept mihomo=accept
+noop    shadowquic max-open-streams             rust=accept mihomo=accept
+noop    shadowquic quic-versions                rust=accept mihomo=accept
+noop    shadowquic skip-cert-verify             rust=accept mihomo=accept
+noop    shadowquic udp                          rust=accept mihomo=accept
 enabled socks5  udp                          rust=reject mihomo=accept
 enabled socks5  fingerprint                  rust=reject mihomo=accept
 enabled socks5  certificate                  rust=reject mihomo=reject
@@ -450,3 +470,10 @@ enabled sudoku  mptcp                        rust=reject mihomo=accept
 enabled sudoku  interface-name               rust=reject mihomo=accept
 enabled sudoku  routing-mark                 rust=reject mihomo=accept
 enabled sudoku  ip-version                   rust=reject mihomo=accept
+enabled shadowquic zero-rtt                     rust=reject mihomo=accept
+enabled shadowquic quic-versions                rust=reject mihomo=accept
+enabled shadowquic congestion-controller        rust=reject mihomo=accept
+enabled shadowquic bbr-profile                  rust=reject mihomo=accept
+enabled shadowquic cwnd                         rust=reject mihomo=accept
+enabled shadowquic up                           rust=reject mihomo=accept
+enabled shadowquic down                         rust=reject mihomo=accept

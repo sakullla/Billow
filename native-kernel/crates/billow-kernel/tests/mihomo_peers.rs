@@ -351,11 +351,14 @@ impl Drop for Running {
 
 /// Kernel with one rule: `MATCH,<proxy name>` (the proxy is the first entry).
 fn start_kernel(proxies: &str) -> (Running, String) {
+    start_kernel_with_limits(proxies, Limits::default())
+}
+
+fn start_kernel_with_limits(proxies: &str, limits: Limits) -> (Running, String) {
     let port = free_port();
     let yaml =
         format!("mixed-port: {port}\nlog-level: warn\nproxies:\n{proxies}rules:\n  - 'MATCH,p0'\n");
-    let (kernel, _) =
-        Kernel::start_from_yaml(&yaml, None, Limits::default()).expect("kernel starts");
+    let (kernel, _) = Kernel::start_from_yaml(&yaml, None, limits).expect("kernel starts");
     let proxy = kernel.listen_addr();
     (
         Running {
@@ -641,6 +644,45 @@ fn udp_associate(proxy: SocketAddr) -> (TcpStream, SocketAddr) {
     let ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
     let port = u16::from_be_bytes([reply[8], reply[9]]);
     (stream, SocketAddr::from((ip, port)))
+}
+
+/// Send several SOCKS5 UDP datagrams from one association socket. The kernel
+/// binds the RFC 1928 association to the first source port, so each packet in
+/// one case must come from the same socket; the replies are matched as a set.
+fn send_datagrams(relay: SocketAddr, target: SocketAddr, payloads: &[&[u8]]) {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    for payload in payloads {
+        let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+        packet.extend_from_slice(
+            &target
+                .ip()
+                .to_string()
+                .parse::<std::net::Ipv4Addr>()
+                .unwrap()
+                .octets(),
+        );
+        packet.extend_from_slice(&target.port().to_be_bytes());
+        packet.extend_from_slice(payload);
+        socket.send_to(&packet, relay).unwrap();
+    }
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut buffer = [0u8; 65535];
+    let mut seen = Vec::new();
+    for _ in payloads {
+        let (read, _) = socket.recv_from(&mut buffer).expect("no UDP reply through the kernel");
+        let (host, offset) = parse_udp_reply(&buffer[..read]);
+        assert_eq!(host, target);
+        seen.push(buffer[offset..read].to_vec());
+    }
+    for payload in payloads {
+        assert!(
+            seen.iter().any(|packet| packet == payload),
+            "the kernel did not return a {} byte datagram",
+            payload.len()
+        );
+    }
 }
 
 /// Send one SOCKS5 UDP datagram (RSV RSV FRAG ATYP ADDR PORT payload).
@@ -1872,6 +1914,135 @@ fn hysteria2_unreachable_target_is_refused() {
         let (status, _) = connect(running.proxy, "127.0.0.1:1", b"must-not-arrive");
         assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
     });
+}
+
+// ---------------------------------------------------------------------------
+// shadowquic (T15): JLS replaces the TLS random, so the pinned listener needs a
+// camouflage upstream (`jls-upstream`) for unauthenticated traffic. The tests
+// keep a loopback UDP socket there; only authenticated packets reach the
+// listener's tunnel.
+// ---------------------------------------------------------------------------
+
+const SHADOWQUIC_USER: &str = "alice";
+const SHADOWQUIC_PASSWORD: &str = "shadowquic-listener-secret";
+
+fn shadowquic_listener(port: u16, upstream_port: u16) -> String {
+    format!(
+        "  - {{name: in-shadowquic, type: shadowquic, listen: 127.0.0.1, port: {port}, users: [{{username: {SHADOWQUIC_USER}, password: \"{SHADOWQUIC_PASSWORD}\"}}], jls-upstream: {{addr: 127.0.0.1:{upstream_port}}}}}\n"
+    )
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowquic_outbound_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let upstream = std::net::UdpSocket::bind("127.0.0.1:0").expect("camouflage upstream");
+    let listeners = shadowquic_listener(port, upstream.local_addr().unwrap().port());
+    with_quic_peer("shadowquic", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: shadowquic, server: 127.0.0.1, port: {port}, username: {SHADOWQUIC_USER}, password: \"{SHADOWQUIC_PASSWORD}\", sni: localhost}}\n"
+        ));
+        let marker = "marker-shadowquic-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("shadowquic", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+    drop(upstream);
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowquic_wrong_password_never_reaches_the_sink() {
+    let port = free_port();
+    let upstream = std::net::UdpSocket::bind("127.0.0.1:0").expect("camouflage upstream");
+    let listeners = shadowquic_listener(port, upstream.local_addr().unwrap().port());
+    with_quic_peer("shadowquic-wrong", &listeners, |sink, _mihomo| {
+        let limits = Limits {
+            dial_timeout: Duration::from_secs(2),
+            ..Limits::default()
+        };
+        let (running, _) = start_kernel_with_limits(
+            &format!(
+                "  - {{name: p0, type: shadowquic, server: 127.0.0.1, port: {port}, username: {SHADOWQUIC_USER}, password: \"wrong-password\", sni: localhost}}\n"
+            ),
+            limits,
+        );
+        let (status, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        assert_eq!(
+            status, "HTTP/1.1 502 Bad Gateway",
+            "the unauthenticated handshake is forwarded to the camouflage upstream and fails before the tunnel reply"
+        );
+        expect_not_reached("shadowquic-wrong-password", sink);
+    });
+    drop(upstream);
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowquic_udp_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let upstream = std::net::UdpSocket::bind("127.0.0.1:0").expect("camouflage upstream");
+    let listeners = shadowquic_listener(port, upstream.local_addr().unwrap().port());
+    let echo = UdpEcho::start();
+    let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+    with_quic_peer_rule("shadowquic-udp", &listeners, "MATCH,sink-direct", |_sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: shadowquic, server: 127.0.0.1, port: {port}, username: {SHADOWQUIC_USER}, password: \"{SHADOWQUIC_PASSWORD}\", sni: localhost}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let marker = b"marker-shadowquic-udp";
+        // Datagrams are bounded by the path MTU (quinn starts at 1200), not
+        // only by max-datagram-frame-size; 1000 bytes plus the 2-byte id fits.
+        let large = vec![b'x'; 1000];
+        send_datagrams(relay, target, &[marker, &large]);
+        assert!(
+            echo.received().iter().any(|packet| packet == marker),
+            "the UDP echo did not receive the shadowquic datagram"
+        );
+        assert!(
+            echo.received().iter().any(|packet| packet == &large),
+            "the UDP echo did not receive the 1000-byte shadowquic datagram"
+        );
+    });
+    drop(upstream);
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowquic_udp_over_stream_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let upstream = std::net::UdpSocket::bind("127.0.0.1:0").expect("camouflage upstream");
+    let listeners = shadowquic_listener(port, upstream.local_addr().unwrap().port());
+    let echo = UdpEcho::start();
+    let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+    with_quic_peer_rule("shadowquic-udp-stream", &listeners, "MATCH,sink-direct", |_sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: shadowquic, server: 127.0.0.1, port: {port}, username: {SHADOWQUIC_USER}, password: \"{SHADOWQUIC_PASSWORD}\", sni: localhost, udp-over-stream: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let marker = b"marker-shadowquic-udp-stream";
+        // The stream carrier uses a u16 length per payload, independent of the
+        // datagram frame size; a 4000-byte packet must round-trip whole.
+        let large = vec![b'y'; 4000];
+        send_datagrams(relay, target, &[marker, &large]);
+        assert!(
+            echo.received().iter().any(|packet| packet == marker),
+            "the UDP echo did not receive the shadowquic stream-mode datagram"
+        );
+        assert!(
+            echo.received().iter().any(|packet| packet == &large),
+            "the UDP echo did not receive the 4000-byte stream-mode datagram"
+        );
+    });
+    drop(upstream);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 {
   "format": "kernel-protocol-peers",
   "version": 2,
-  "generatedAt": "2026-11-21T12:00:00Z",
+  "generatedAt": "2026-11-22T00:00:00Z",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 57,
-    "passed": 57,
+    "cases": 61,
+    "passed": 61,
     "failed": 0
   },
   "families": {
@@ -330,6 +330,22 @@
       "peer": "listeners: type: sudoku with the default (entropy table, pure downlink, legacy HTTP mask) and the configured variants (prefer_ascii, up_ascii_down_entropy, custom-table(s), enable-pure-downlink: false, disable-http-mask, aead-method)",
       "notes": "wire-compatible port of the pinned transport/sudoku: the table shuffle uses Go's math/rand (rngSource + rngCooked), so the 288-grid order matches; both pure and packed downlink codecs, the record layer (chacha20-poly1305/aes-128-gcm/none) and the KIP X25519/HKDF handshake are covered. `tool/kernel-compat/peers/sudoku-vectors` is the locked Go codec used by `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` to check both directions (pinned encode -> Rust decode, Rust encode -> pinned decode, with and without padding) for entropy/ascii/directional/custom tables. HTTP tunnel modes (`stream`/`poll`/`ws`), `multiplex: on` and UoT are rejected at load with the reason recorded."
     },
+    "shadowquic": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "shadowquic_outbound_reaches_the_receiving_side_through_mihomo",
+          "shadowquic_udp_reaches_the_receiving_side_through_mihomo",
+          "shadowquic_udp_over_stream_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "shadowquic_wrong_password_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: shadowquic with a `users: [{username, password}]` account and a loopback UDP `jls-upstream` camouflage socket; the peer runs the pinned jls-tls/jls-quic-go listener",
+      "notes": "the JLS ClientHello/ServerHello `random` seal is an independent Rust implementation of the locked jls-tls algorithm (`src/outbound/jls.rs`), cross-checked against real messages emitted by the pinned Go package in `tool/kernel-compat/peers/shadowquic-jls-vectors` (vectors committed at `native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt`). The QUIC transport is quinn 0.11; the custom ClientHello random is injected by a recorded-random replay of rustls's own ClientHello, and the replay is checked byte-for-byte before the connection proceeds. UDP is covered in both pinned carriers (QUIC datagrams and `udp-over-stream`). A datagram payload is bounded by the path MTU as well as `max-datagram-frame-size` (quinn starts at 1200 bytes); a larger payload fails with a named error and `udp-over-stream` carries large packets as u16-length frames. A wrong password is forwarded to the camouflage upstream and the client aborts before sending a request; the kernel reports 502. `zero-rtt`, QUIC `v2`, `congestion-controller`, `bbr-profile`, a non-default `cwnd`, `up`/`down` (Brutal) and `dialer-proxy` are rejected at load with the reason recorded."
+    },
     "masque": {
       "status": "pass",
       "cases": {
@@ -364,7 +380,7 @@
     "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
     "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
     "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
-    "families still unimplemented after T14 (shadowquic, the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case."
+    "families still unimplemented after T15 (the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case. shadowquic is partial: TCP/UDP and JLS are covered above; zero-rtt and the Brutal congestion options are rejected by name."
   ],
   "t9": {
     "date": "2026-11-21",
@@ -460,7 +476,6 @@
       "hysteria2"
     ],
     "rejected": [
-      "shadowquic",
       "wireguard",
       "tailscale",
       "zerotier",
@@ -479,7 +494,8 @@
       "tailscale/zerotier/easytier/openvpn: control plane + netstack; device/TUN ownership is T6/T7"
     ],
     "memory": "quinn 0.11.12; one endpoint/connection per dial. T7 must measure the iOS extension against 40,000,000 bytes.",
-    "cli": "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs drives one real process tunnel through tuic, hysteria and hysteria2."
+    "cli": "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs drives one real process tunnel through tuic, hysteria and hysteria2.",
+    "note": "shadowquic was rejected by T10 and is implemented by T15 (see t15); the device families remain T10 rejections."
   },
   "t14": {
     "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers masque",
@@ -490,5 +506,26 @@
     },
     "evidence": "tool/kernel-compat/evidence/t14-feasibility.json",
     "note": "T14 delivered the RFC 9298 CONNECT-UDP subset over the T10 quinn profile and recorded the CONNECT-IP/IP-stack gap for T9/T7. The six default-suite cases above were run three times on macOS arm64; no pinned Mihomo masque peer exists."
+  },
+  "t15": {
+    "date": "2026-11-22",
+    "implemented": [
+      "shadowquic"
+    ],
+    "run": {
+      "command": "tool/kernel-compat/peer-tests.sh",
+      "result": "61 passed, 0 failed, 0 ignored",
+      "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
+    },
+    "dependencyDecision": "No JLS crate is in the offline cargo cache. T15 implements the JLS AES-256-GCM random seal in src/outbound/jls.rs from the locked jls-tls behaviour; the Go package is used only as a vector generator in tool/kernel-compat/peers/shadowquic-jls-vectors. quinn-proto and typenum became direct dependencies (already in the lockfile) for the Session wrapper and the 32-byte GCM nonce. No GPL code was copied: jls-tls is Go BSD-3-Clause, and only observed wire messages (vectors) are used.",
+    "gaps": [
+      "zero-rtt: true",
+      "quic-versions: v2",
+      "congestion-controller",
+      "bbr-profile",
+      "non-default cwnd",
+      "up/down (Brutal)",
+      "dialer-proxy"
+    ]
   }
 }

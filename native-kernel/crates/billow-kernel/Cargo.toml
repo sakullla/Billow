@@ -27,6 +27,7 @@ hkdf.workspace = true
 hmac.workspace = true
 http.workspace = true
 quinn.workspace = true
+quinn-proto.workspace = true
 rand.workspace = true
 russh.workspace = true
 ring.workspace = true
@@ -42,6 +43,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-rustls.workspace = true
 tracing.workspace = true
+typenum.workspace = true
 uuid.workspace = true
 x25519-dalek.workspace = true
 

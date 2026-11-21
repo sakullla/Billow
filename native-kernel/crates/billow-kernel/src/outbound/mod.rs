@@ -16,9 +16,11 @@ pub mod h3;
 pub mod http;
 pub mod hysteria;
 pub mod hysteria2;
+pub mod jls;
 pub mod masque;
 pub mod mieru;
 pub mod shadowsocks;
+pub mod shadowquic;
 pub mod snell;
 pub mod socks5;
 pub mod smux;
@@ -391,6 +393,10 @@ async fn dial_inner(
         Protocol::Masque(p) => {
             refuse_chain(via, "masque")?;
             masque::dial(p, target, tls, timeout).await
+        }
+        Protocol::ShadowQuic(p) => {
+            refuse_chain(via, "shadowquic")?;
+            shadowquic::dial(p, target, tls, timeout).await
         }
     }
 }

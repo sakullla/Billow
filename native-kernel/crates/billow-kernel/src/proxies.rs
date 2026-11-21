@@ -333,6 +333,36 @@ pub struct SnellObfs {
     pub host: String,
 }
 
+/// ShadowQUIC (`adapter/outbound/shadowquic.go` + `transport/shadowquic`):
+/// QUIC with JLS authentication. The pinned client has no `tls` or
+/// `skip-cert-verify` option (JLS replaces certificate verification) and no
+/// `udp` option (the base outbound advertises UDP unconditionally). Options
+/// that only select the private mihomo Brutal congestion controller are
+/// rejected by name because quinn has no Brutal controller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowQuicOutbound {
+    pub server: String,
+    pub port: u16,
+    /// JLS account (`username`/`password`); empty values are accepted and
+    /// simply fail authentication against a real server.
+    pub username: String,
+    pub password: String,
+    /// Certificates are camouflage after JLS authentication; `sni` still
+    /// selects the name that is sent.
+    pub sni: Option<String>,
+    pub alpn: Vec<String>,
+    pub udp_over_stream: bool,
+    /// `keep-alive-interval` in milliseconds; 0 disables keep-alive.
+    pub keep_alive_interval: u64,
+    /// `recv-window-conn`; the kernel's budget default when the option is 0.
+    pub recv_window_conn: u32,
+    /// `recv-window`; the kernel's budget default when the option is 0.
+    pub recv_window: u32,
+    pub disable_mtu_discovery: bool,
+    pub max_datagram_frame_size: usize,
+    pub max_open_streams: u64,
+}
+
 /// MASQUE (RFC 9298 CONNECT-UDP over HTTP/3). Only the CONNECT-UDP data path
 /// is implemented: one QUIC/HTTP/3 association, one request stream per
 /// destination, UDP payloads in `DATAGRAM` capsules. The pinned adapter's
@@ -644,6 +674,7 @@ pub enum Protocol {
     Mieru(MieruOutbound),
     Sudoku(SudokuOutbound),
     Masque(MasqueOutbound),
+    ShadowQuic(ShadowQuicOutbound),
 }
 
 impl Protocol {
@@ -667,6 +698,7 @@ impl Protocol {
             Protocol::Mieru(p) => p.dialer_proxy.as_deref(),
             Protocol::Sudoku(p) => p.dialer_proxy.as_deref(),
             Protocol::Masque(_) => None,
+            Protocol::ShadowQuic(_) => None,
         }
     }
 }
@@ -692,6 +724,7 @@ impl Proxy {
             Protocol::Mieru(_) => "mieru",
             Protocol::Sudoku(_) => "sudoku",
             Protocol::Masque(_) => "masque",
+            Protocol::ShadowQuic(_) => "shadowquic",
         }
     }
 
@@ -720,6 +753,7 @@ impl Proxy {
             ),
             Protocol::Sudoku(p) => (&p.server, p.port),
             Protocol::Masque(p) => (&p.server, p.port),
+            Protocol::ShadowQuic(p) => (&p.server, p.port),
         }
     }
 
@@ -732,6 +766,7 @@ impl Proxy {
             Protocol::Ssr(p) => p.udp,
             Protocol::GostRelay(p) => p.udp,
             Protocol::Masque(p) => p.udp,
+            Protocol::ShadowQuic(_) => true,
             _ => false,
         }
     }
@@ -1470,11 +1505,7 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "mieru" => Protocol::Mieru(parse_mieru(&mut entry)?),
         "sudoku" => Protocol::Sudoku(parse_sudoku(&mut entry)?),
         "masque" => Protocol::Masque(parse_masque(&mut entry)?),
-        "shadowquic" => {
-            return Err(entry.unsupported(
-                "protocol type 'shadowquic' is not implemented: the pinned client (transport/shadowquic + jls-tls) requires JLS, a custom TLS extension and a modified QUIC stack; rustls/quinn cannot express it, and no JLS crate is in the offline cargo cache",
-            ))
-        }
+        "shadowquic" => Protocol::ShadowQuic(parse_shadowquic(&mut entry)?),
         "wireguard" => {
             return Err(entry.unsupported(
                 "protocol type 'wireguard' is not implemented: the pinned outbound terminates WireGuard (Noise IK, cookie, transport keys) and exposes TCP/UDP through a gVisor netstack; this kernel has no WireGuard transport or IP stack (device/TUN ownership is T6/T7) and no boringtun/wireguard crate is in the offline cargo cache",
@@ -1503,7 +1534,7 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
 
         other => {
             return Err(ConfigError::Unsupported(format!(
-                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2, mieru, sudoku, masque)",
+                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2, mieru, sudoku, masque, shadowquic)",
                 entry.prefix()
             )))
         }
@@ -3257,6 +3288,212 @@ fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
     })
 }
 
+/// ShadowQUIC (`adapter/outbound/shadowquic.go`). Option policy:
+///
+/// * transport tuning (`recv-window*`, `max-open-streams`,
+///   `max-datagram-frame-size`, `disable-mtu-discovery`, `keep-alive-interval`,
+///   `alpn`, `sni`, `udp-over-stream`) is applied to the quinn endpoint;
+/// * the pinned defaults for `quic-versions` are v1; quinn 0.11 implements
+///   only v1, so a `v2` request is rejected by name;
+/// * `zero-rtt` needs the pinned session ticket + JLS marker (0-RTT only works
+///   after an authenticated ticket), so `true` is rejected;
+/// * `congestion-controller`, `cwnd`, `bbr-profile`, `up` and `down` select
+///   mihomo's private Brutal controller, which quinn does not have; only their
+///   no-op values are accepted.
+fn parse_shadowquic(entry: &mut Entry<'_>) -> Result<ShadowQuicOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let username = entry.string("username")?.unwrap_or_default();
+    let password = entry.string("password")?.unwrap_or_default();
+    let sni = entry.string("sni")?.filter(|value| !value.is_empty());
+    let alpn = entry.string_list("alpn")?;
+    let udp_over_stream = entry.bool("udp-over-stream")?.unwrap_or(false);
+
+    if entry.bool("zero-rtt")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'zero-rtt' is not implemented: 0-RTT needs the pinned JLS-marked TLS session ticket and a resumption cache; this client always performs a full authenticated handshake",
+        ));
+    }
+
+    let keep_alive_interval = match entry.int("keep-alive-interval")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'keep-alive-interval' must not be negative"))
+        }
+        Some(value) => value as u64,
+        None => 0,
+    };
+
+    let quic_versions = entry.string_list("quic-versions")?;
+    for version in &quic_versions {
+        let normalized = version.trim().to_ascii_lowercase().replace('_', "-");
+        match normalized.as_str() {
+            "v1" | "1" | "rfc9000" | "rfc-9000" => {}
+            "v2" | "2" | "rfc9369" | "rfc-9369" => {
+                return Err(entry.unsupported(
+                    "option 'quic-versions' value 'v2' is not implemented: quinn 0.11 supports QUIC v1 only",
+                ))
+            }
+            other => {
+                return Err(entry.invalid(format!(
+                    "option 'quic-versions' value '{other}' is invalid (supported: v1)"
+                )))
+            }
+        }
+    }
+
+    if entry
+        .string("congestion-controller")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(
+            "option 'congestion-controller' is not implemented: the pinned client selects quic-go's BBR/cubic with a custom initial window; this kernel uses quinn's default controller",
+        ));
+    }
+    if entry
+        .string("bbr-profile")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(
+            "option 'bbr-profile' is not implemented: it selects a mihomo BBR profile and quinn has no BBR controller",
+        ));
+    }
+    match entry.int("cwnd")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'cwnd' must not be negative"))
+        }
+        Some(value) if value != 0 && value != 32 => {
+            return Err(entry.unsupported(
+                "option 'cwnd' is not implemented: it changes the Brutal/BBR initial congestion window (the pinned default is 32) and quinn does not expose that controller",
+            ))
+        }
+        _ => {}
+    }
+    for key in ["up", "down"] {
+        if let Some(value) = entry.string(key)? {
+            if stream_rate_nonzero(&value) {
+                return Err(entry.unsupported(format!(
+                    "option '{key}' is not implemented: it enables mihomo's private Brutal bandwidth negotiation; quinn has no Brutal congestion controller, so the option could not be honoured"
+                )));
+            }
+        }
+    }
+
+    let recv_window_conn = match entry.int("recv-window-conn")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'recv-window-conn' must not be negative"))
+        }
+        Some(value) if value > i64::from(u32::MAX) => {
+            return Err(entry.invalid("option 'recv-window-conn' is too large"))
+        }
+        Some(value) if value > 0 => value as u32,
+        _ => 512 * 1024,
+    };
+    let recv_window = match entry.int("recv-window")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'recv-window' must not be negative"))
+        }
+        Some(value) if value > i64::from(u32::MAX) => {
+            return Err(entry.invalid("option 'recv-window' is too large"))
+        }
+        Some(value) if value > 0 => value as u32,
+        _ => 2 * 1024 * 1024,
+    };
+    let disable_mtu_discovery = entry.bool("disable-mtu-discovery")?.unwrap_or(false);
+    let max_datagram_frame_size = match entry.int("max-datagram-frame-size")? {
+        Some(value) if value < 0 || value > 0xffff => {
+            return Err(entry.invalid(
+                "option 'max-datagram-frame-size' must be between 0 and 65535",
+            ))
+        }
+        Some(value) if value > 0 => value as usize,
+        _ => 1400,
+    };
+    let max_open_streams = match entry.int("max-open-streams")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'max-open-streams' must not be negative"))
+        }
+        Some(value) if value > 0 => value as u64,
+        _ => 1024,
+    };
+    if entry
+        .string("dialer-proxy")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(
+            "option 'dialer-proxy' is not implemented for shadowquic: a QUIC endpoint cannot be reached through the supported socks5 TCP hop, so the server is always dialled locally",
+        ));
+    }
+
+    let allowed = [
+        "name",
+        "type",
+        "server",
+        "port",
+        "username",
+        "password",
+        "sni",
+        "alpn",
+        "quic-versions",
+        "udp-over-stream",
+        "zero-rtt",
+        "keep-alive-interval",
+        "congestion-controller",
+        "up",
+        "down",
+        "cwnd",
+        "bbr-profile",
+        "recv-window-conn",
+        "recv-window",
+        "disable-mtu-discovery",
+        "max-datagram-frame-size",
+        "max-open-streams",
+    ];
+    entry.reject_unknown(&allowed, true, None)?;
+    Ok(ShadowQuicOutbound {
+        server,
+        port,
+        username,
+        password,
+        sni,
+        alpn,
+        udp_over_stream,
+        keep_alive_interval,
+        recv_window_conn,
+        recv_window,
+        disable_mtu_discovery,
+        max_datagram_frame_size,
+        max_open_streams,
+    })
+}
+
+/// `utils.StringToBps` treats an unparsable string as 0, so only a non-zero
+/// parse is a behaviour-changing Brutal request. Parse the common `N`, `N bps`,
+/// `N Kbps/Mbps/Gbps` forms; an unknown suffix is 0 like the pinned helper.
+fn stream_rate_nonzero(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return false;
+    }
+    let split = value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(value.len());
+    let (number, suffix) = value.split_at(split);
+    let Ok(number) = number.parse::<u64>() else {
+        return false;
+    };
+    let suffix = suffix.trim();
+    if number == 0 {
+        return false;
+    }
+    matches!(
+        suffix,
+        "" | "bps" | "kbps" | "mbps" | "gbps" | "tbps" | "k" | "m" | "g" | "t"
+    )
+}
+
 fn display(raw: &str) -> String {
     if raw.is_empty() {
         "-".to_string()
@@ -3286,6 +3523,7 @@ pub fn supported_protocol_names() -> &'static [&'static str] {
         "mieru",
         "sudoku",
         "masque",
+        "shadowquic",
     ]
 }
 

@@ -97,9 +97,13 @@
       ]
     },
     "shadowquic": {
-      "status": "rejected-by-name",
-      "reason": "the pinned client uses JLS, a custom TLS extension, and a modified QUIC stack (jls-tls + jls-quic-go); rustls/quinn cannot express it and no JLS crate is in the offline cache",
-      "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)"
+      "status": "implemented-by-T15",
+      "reason": "T15 implemented the JLS random seal clean-room over quinn 0.11 (a recorded-random replay of rustls's own ClientHello); the locked jls-tls package is used only as a vector generator. TCP and UDP (datagrams and udp-over-stream) pass against the pinned listener; zero-rtt, QUIC v2 and the Brutal congestion options remain named rejections.",
+      "evidence": [
+        "native-kernel/crates/billow-kernel/src/outbound/jls.rs",
+        "native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt",
+        "tool/kernel-compat/evidence/protocol-peers.json#families.shadowquic"
+      ]
     },
     "wireguard": {
       "status": "rejected-by-name",
@@ -147,7 +151,7 @@
     "boundary": "success, wrong auth, base64 auth, invalid rates, unsupported options"
   },
   "followUpOwners": {
-    "shadowquic": "needs a JLS/QUIC dependency decision (jls-tls + jls-quic-go equivalent). T10 rejects it by name; a new task or a T9 follow-up must own it. T9 outcome 2 ('仍有有效配置不支持则 T9 不通过') fails if it remains unsupported at integration.",
+    "shadowquic": "resolved by T15 (partial: TCP/UDP + JLS); zero-rtt, QUIC v2 and Brutal congestion options stay named rejections and need a T9 follow-up only if a valid configuration requires them.",
     "deviceFamilies": "wireguard, tailscale, zerotier, easytier and openvpn need a protocol-adaptation task (Noise IK/transport, mesh control planes, OpenVPN) plus the T6/T7 IP-stack/device layer. T6/T7 own only device/TUN; T10 rejects the six types by name and does not implement them. A new task or a T9 follow-up must own them, otherwise T9 integration fails.",
     "note": "These six families are explicit T10 rejections, not a compatibility claim. The recommendation is to add them to T9's integration scope or split a new task before T9 closes."
   }

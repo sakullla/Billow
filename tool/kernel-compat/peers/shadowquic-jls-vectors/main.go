@@ -1,0 +1,167 @@
+// Command shadowquic-jls-vectors prints real JLS ClientHello/ServerHello
+// messages produced by the pinned `jls-tls` package. The Rust kernel's JLS
+// implementation verifies its AES-256-GCM random sealing against these bytes,
+// so the primitive is checked against the locked Go code rather than only
+// against itself.
+//
+//	cd tool/kernel-compat/peers/shadowquic-jls-vectors
+//	GOFLAGS=-mod=mod GOPROXY=off go run . > ../../../../native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	tls "github.com/metacubex/jls-tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"net"
+	"os"
+	"time"
+)
+
+const (
+	username = "jls-vector-user"
+	password = "jls-vector-password"
+)
+
+type capture struct {
+	net.Conn
+	read  bytes.Buffer
+	write bytes.Buffer
+}
+
+func (c *capture) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	c.read.Write(b[:n])
+	return n, err
+}
+
+func (c *capture) Write(b []byte) (int, error) {
+	c.write.Write(b)
+	return c.Conn.Write(b)
+}
+
+// firstHandshake returns the first complete handshake message in a TLS record
+// stream (the ClientHello and ServerHello are both sent as the first record in
+// the clear).
+func firstHandshake(stream []byte) ([]byte, error) {
+	if len(stream) < 5 || stream[0] != 22 {
+		return nil, fmt.Errorf("first record is not a handshake (%d bytes, type %d)", len(stream), stream[0])
+	}
+	recordLen := int(stream[3])<<8 | int(stream[4])
+	if len(stream) < 5+recordLen {
+		return nil, fmt.Errorf("short handshake record")
+	}
+	payload := stream[5 : 5+recordLen]
+	if len(payload) < 4 {
+		return nil, fmt.Errorf("short handshake message")
+	}
+	total := 4 + int(payload[1])<<16 + int(payload[2])<<8 + int(payload[3])
+	if len(payload) < total {
+		return nil, fmt.Errorf("incomplete handshake message (%d of %d)", len(payload), total)
+	}
+	return payload[:total], nil
+}
+
+func selfSigned() (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "shadowquic-jls-vector"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+func main() {
+	cert, err := selfSigned()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	clientNet, serverNet := net.Pipe()
+	clientCap := &capture{Conn: clientNet}
+	serverCap := &capture{Conn: serverNet}
+
+	serverCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"h3"},
+		JLSConfig: &tls.JLSConfig{
+			Enable: true,
+			Users:  []tls.JLSUser{{Username: username, Password: password}},
+		},
+	}
+	clientCfg := &tls.Config{
+		// JLS authentication replaces chain verification, exactly like the
+		// pinned ShadowQUIC client.
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS13,
+		NextProtos:         []string{"h3"},
+		JLSConfig: &tls.JLSConfig{
+			Enable: true,
+			User:   tls.JLSUser{Username: username, Password: password},
+		},
+	}
+
+	serverDone := make(chan error, 1)
+	go func() {
+		server := tls.Server(serverCap, serverCfg)
+		serverDone <- server.Handshake()
+	}()
+	client := tls.Client(clientCap, clientCfg)
+	if err := client.Handshake(); err != nil {
+		fmt.Fprintf(os.Stderr, "client handshake: %v\n", err)
+		os.Exit(1)
+	}
+	if err := <-serverDone; err != nil {
+		fmt.Fprintf(os.Stderr, "server handshake: %v\n", err)
+		os.Exit(1)
+	}
+	state := client.ConnectionState()
+	if state.JLS.Status != tls.JLSAuthenticated {
+		fmt.Fprintf(os.Stderr, "JLS did not authenticate: %v\n", state.JLS.Status)
+		os.Exit(1)
+	}
+
+	clientHello, err := firstHandshake(clientCap.write.Bytes())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "client hello: %v\n", err)
+		os.Exit(1)
+	}
+	serverHello, err := firstHandshake(clientCap.read.Bytes())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server hello: %v\n", err)
+		os.Exit(1)
+	}
+
+	out := bufio.NewWriter(os.Stdout)
+	fmt.Fprintf(out, "username=%s\n", username)
+	fmt.Fprintf(out, "password=%s\n", password)
+	fmt.Fprintf(out, "client_hello=%s\n", hex.EncodeToString(clientHello))
+	fmt.Fprintf(out, "server_hello=%s\n", hex.EncodeToString(serverHello))
+	out.Flush()
+}

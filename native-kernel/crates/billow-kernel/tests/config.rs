@@ -288,9 +288,9 @@ rules:
 
 #[test]
 fn unimplemented_protocol_and_option_name_the_field() {
-    let e = proxy_err("proxies:\n  - {name: s1, type: shadowquic, server: x, port: 1}\nrules: ['MATCH,DIRECT']\n");
+    let e = proxy_err("proxies:\n  - {name: s1, type: wireguard, server: x, port: 1}\nrules: ['MATCH,DIRECT']\n");
     assert!(e.starts_with("unsupported"), "{e}");
-    assert!(e.contains("proxies[0] (name=s1, type=shadowquic)"), "{e}");
+    assert!(e.contains("proxies[0] (name=s1, type=wireguard)"), "{e}");
     let e = proxy_err("proxies:\n  - {name: v, type: vless, server: x, port: 1, uuid: 9d0cb9d0964f4ef6897d6c6b3ccf9e68, tls: true, reality-opts: {public-key: k}}\nrules: ['MATCH,DIRECT']\n");
     assert!(
         e.contains("option 'reality-opts' is not implemented"),
@@ -982,8 +982,58 @@ fn ssr_options_are_strict() {
 }
 
 #[test]
+fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
+    let yaml = "proxies:\n  - {name: sq, type: shadowquic, server: 127.0.0.1, port: 443, username: alice, password: secret, sni: example.org, alpn: [h3], udp-over-stream: true, keep-alive-interval: 1500, recv-window-conn: 65536, recv-window: 131072, disable-mtu-discovery: true, max-datagram-frame-size: 1400, max-open-streams: 8}\nrules: ['MATCH,sq']\n";
+    let loaded = load_config(yaml, "test.yaml").expect("shadowquic options load");
+    let proxy = &loaded.config.proxies[0];
+    assert_eq!(proxy.type_name(), "shadowquic");
+    assert!(proxy.udp_enabled());
+    match &proxy.protocol {
+        billow_kernel::proxies::Protocol::ShadowQuic(option) => {
+            assert_eq!(option.server, "127.0.0.1");
+            assert_eq!(option.port, 443);
+            assert_eq!(option.username, "alice");
+            assert_eq!(option.password, "secret");
+            assert_eq!(option.sni.as_deref(), Some("example.org"));
+            assert_eq!(option.alpn, vec!["h3".to_string()]);
+            assert!(option.udp_over_stream);
+            assert_eq!(option.keep_alive_interval, 1500);
+            assert_eq!(option.recv_window_conn, 65536);
+            assert_eq!(option.recv_window, 131072);
+            assert!(option.disable_mtu_discovery);
+            assert_eq!(option.max_datagram_frame_size, 1400);
+            assert_eq!(option.max_open_streams, 8);
+        }
+        other => panic!("expected shadowquic, got {other:?}"),
+    }
+
+    // The pinned type has no `tls`, `skip-cert-verify` or `udp` key; Mihomo
+    // ignores them, so the same file must load (R2).
+    let ignored = "proxies:\n  - {name: sq, type: shadowquic, server: x, port: 1, tls: false, skip-cert-verify: true, udp: false, name-cert-verify: x}\nrules: ['MATCH,sq']\n";
+    assert_eq!(err_tag(ignored), "ok");
+
+    for (extra, field) in [
+        ("zero-rtt: true", "zero-rtt"),
+        ("congestion-controller: bbr", "congestion-controller"),
+        ("bbr-profile: aggressive", "bbr-profile"),
+        ("cwnd: 64", "cwnd"),
+        ("up: 50 Mbps", "up"),
+        ("down: 50 Mbps", "down"),
+        ("quic-versions: [v2]", "quic-versions"),
+        ("dialer-proxy: p2", "dialer-proxy"),
+    ] {
+        let yaml = format!(
+            "proxies:\n  - {{name: sq, type: shadowquic, server: x, port: 1, {extra}}}\n  - {{name: p2, type: direct}}\nrules: ['MATCH,sq']\n"
+        );
+        let error = proxy_err(&yaml);
+        assert!(error.contains(field), "{extra}: {error}");
+        assert!(error.contains("not implemented"), "{extra}: {error}");
+    }
+}
+
+#[test]
 fn deferred_families_name_their_decision() {
-    for (kind, needle) in [("shadowquic", "JLS"), ("wireguard", "WireGuard")] {
+    for (kind, needle) in [("wireguard", "WireGuard")] {
         let yaml = format!("proxies:\n  - {{name: p, type: {kind}, server: x, port: 1}}\nrules: ['MATCH,p']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("type={kind}")), "{kind}: {e}");

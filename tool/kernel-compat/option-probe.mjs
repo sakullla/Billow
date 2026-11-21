@@ -75,6 +75,10 @@ const bases = {
     on: null,
   },
   sudoku: { off: 'server: 127.0.0.1, port: 1, key: k', on: null },
+  shadowquic: {
+    off: 'server: 127.0.0.1, port: 1, username: alice, password: p',
+    on: null,
+  },
 }
 
 const tlsOnly = new Set([
@@ -150,7 +154,9 @@ const enabled = []
 for (const [type, entry] of Object.entries(mapping.proxies)) {
   // T10's families are exercised explicitly below; the generic valueFor()
   // shapes do not match their required fields (`protocol`, `ports`, ...).
-  if (['tuic', 'hysteria', 'hysteria2'].includes(type)) continue
+  // shadowquic is explicit for the same reason: `quic-versions` is a list and
+  // `up`/`down` are rate strings.
+  if (['tuic', 'hysteria', 'hysteria2', 'shadowquic'].includes(type)) continue
   for (const option of entry.notImplemented ?? []) {
     const parsed = /^([a-z0-9.-]+)(?::\s*true)?$/.exec(option)
     if (!parsed) continue
@@ -268,7 +274,18 @@ const t13Enabled = [
   ['sudoku', 'routing-mark', 'routing-mark: 100'],
   ['sudoku', 'ip-version', 'ip-version: ipv4'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
-const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled]
+// T15 shadowquic: explicit enabled forms (a list for `quic-versions` and rate
+// strings for `up`/`down`).
+const t15Enabled = [
+  ['shadowquic', 'zero-rtt', 'zero-rtt: true'],
+  ['shadowquic', 'quic-versions', 'quic-versions: [v2]'],
+  ['shadowquic', 'congestion-controller', 'congestion-controller: bbr'],
+  ['shadowquic', 'bbr-profile', 'bbr-profile: aggressive'],
+  ['shadowquic', 'cwnd', 'cwnd: 64'],
+  ['shadowquic', 'up', 'up: 50 Mbps'],
+  ['shadowquic', 'down', 'down: 50 Mbps'],
+].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
+const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled, ...t15Enabled]
 
 // No-op forms Mihomo accepts (checked against the binary when provided).
 const noops = []
@@ -408,6 +425,33 @@ add('sudoku', 'http-mask-mode', 'legacy')
 add('sudoku', 'httpmask', '{disable: false}')
 add('sudoku', 'enable-pure-downlink', 'true')
 add('sudoku', 'http-mask', 'true')
+
+// T15 shadowquic: no-op forms accepted by both engines.
+for (const type of ['shadowquic']) {
+  add(type, 'tfo', 'false')
+  add(type, 'mptcp', 'false')
+  add(type, 'interface-name', "''")
+  add(type, 'routing-mark', '0')
+  add(type, 'ip-version', "''")
+  add(type, 'zero-rtt', 'false')
+  add(type, 'udp-over-stream', 'false')
+  add(type, 'disable-mtu-discovery', 'false')
+  add(type, 'cwnd', '0')
+  add(type, 'cwnd', '32')
+  add(type, 'up', "''")
+  add(type, 'down', "''")
+  add(type, 'keep-alive-interval', '0')
+  add(type, 'recv-window', '0')
+  add(type, 'recv-window-conn', '0')
+  add(type, 'max-datagram-frame-size', '0')
+  add(type, 'max-open-streams', '0')
+  add(type, 'quic-versions', '[]')
+  // The pinned ShadowQuicOption does not declare tls/skip-cert-verify/udp;
+  // Mihomo ignores them and the kernel leaves them unread for the same reason.
+  add(type, 'skip-cert-verify', 'true')
+  add(type, 'udp', 'false')
+}
+// Enabled forms: every one must be rejected by name.
 
 function parseArgs(argv) {
   const options = { rust: null, mihomo: null, out: null }

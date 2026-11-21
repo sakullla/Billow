@@ -172,6 +172,7 @@ dependencies = [
  "hmac",
  "http",
  "quinn",
+ "quinn-proto",
  "rand 0.8.8",
  "ring",
  "russh",
@@ -187,6 +188,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "typenum",
  "uuid",
  "x25519-dalek",
 ]

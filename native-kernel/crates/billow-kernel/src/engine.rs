@@ -705,6 +705,7 @@ async fn serve_udp_associate(
     let mut gost: Option<outbound::gost_relay::GostRelayUdp> = None;
     let mut gost_target: Option<outbound::Target> = None;
     let mut masque: Option<outbound::masque::MasqueUdp> = None;
+    let mut shadowquic: Option<outbound::shadowquic::ShadowQuicUdp> = None;
     // One datagram buffer for the client, plus one reply buffer per transport
     // that is actually used: a direct-only association never allocates the ss
     // or trojan buffer.
@@ -715,6 +716,7 @@ async fn serve_udp_associate(
     let mut ssr_buf: Option<Vec<u8>> = None;
     let mut gost_buf: Option<Vec<u8>> = None;
     let mut masque_buf: Option<Vec<u8>> = None;
+    let mut shadowquic_buf: Option<Vec<u8>> = None;
     let mut control_probe = [0u8; 1];
     let mut failed = false;
     let mut idle_deadline = tokio::time::Instant::now() + limits.udp_idle_timeout;
@@ -727,6 +729,7 @@ async fn serve_udp_associate(
     let mut ssr_eof = false;
     let mut gost_eof = false;
     let mut masque_eof = false;
+    let mut shadowquic_eof = false;
 
     'associate: loop {
         if direct_eof {
@@ -759,6 +762,11 @@ async fn serve_udp_associate(
             masque = None;
             masque_buf = None;
             masque_eof = false;
+        }
+        if shadowquic_eof {
+            shadowquic = None;
+            shadowquic_buf = None;
+            shadowquic_eof = false;
         }
         tokio::select! {
             biased;
@@ -969,6 +977,32 @@ async fn serve_udp_associate(
                                 .send(&datagram.target, payload)
                                 .await
                         }
+                        crate::proxies::Protocol::ShadowQuic(option) => {
+                            if shadowquic.is_none() {
+                                match outbound::shadowquic::ShadowQuicUdp::connect(
+                                    option,
+                                    &context.tls,
+                                    limits.dial_timeout,
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        shadowquic = Some(association);
+                                        shadowquic_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "shadowquic UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            shadowquic
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&datagram.target, payload)
+                                .await
+                        }
                         other => {
                             // The pinned outbound has no UDP association this
                             // kernel implements for this family; dropping is a
@@ -1133,6 +1167,30 @@ async fn serve_udp_associate(
                     }
                 }
             }
+            received = async {
+                match (shadowquic.as_mut(), shadowquic_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if shadowquic.is_some() && !shadowquic_eof => {
+                match &received {
+                    Ok(None) | Err(_) => {
+                        shadowquic_eof = true;
+                        failed = true;
+                    }
+                    Ok(Some(_)) => {}
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, shadowquic_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
         }
     }
     info!(session = id, "UDP association closed");
@@ -1163,6 +1221,7 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
         crate::proxies::Protocol::Mieru(_) => "mieru (udp: false)",
         crate::proxies::Protocol::Sudoku(_) => "sudoku (udp: false)",
         crate::proxies::Protocol::Masque(_) => "masque (udp: false)",
+        crate::proxies::Protocol::ShadowQuic(_) => "shadowquic",
     }
 }
 

@@ -443,6 +443,19 @@ fn process_loads_t13_outbounds() {
 /// stack), and the process stays up; the UDP path is exercised in
 /// `tests/quic_peers.rs` against the controlled HTTP/3 peer.
 #[test]
+fn process_loads_t15_shadowquic() {
+    let port = free_port();
+    let mut kernel = KernelProcess::start_body(
+        "proxies:\n  - {name: sq, type: shadowquic, server: 127.0.0.1, port: 1, username: alice, password: secret, sni: localhost, udp-over-stream: false}\nrules:\n  - 'MATCH,sq'\n",
+        port,
+    );
+    let output = kernel.sigint();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sq=shadowquic"), "{stdout}");
+}
+
+#[test]
 fn process_loads_t14_masque() {
     let masque_port = free_port();
     let port = free_port();

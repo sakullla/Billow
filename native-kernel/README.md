@@ -20,11 +20,14 @@ and `sudoku` (TCP with the legacy HTTP mask, the pure and packed downlink
 codecs and the KIP handshake). T14 added `masque` as an RFC 9298 CONNECT-UDP
 client over HTTP/3, reusing the T10 `quinn` profile for the UDP association;
 the pinned Cloudflare WARP CONNECT-IP flow (`cf-connect-ip` + a userspace IP
-stack) is rejected by name. `shadowquic` (JLS-TLS) and the device families
+stack) is rejected by name. T15 added `shadowquic`: the JLS ClientHello /
+ServerHello random seal is an independent implementation of the locked
+`jls-tls` algorithm, injected into rustls's own ClientHello through a
+recorded-random replay, over the same `quinn` transport. The device families
 (`wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn`) are rejected by
-name, with device/TUN ownership assigned to T6/T7. The T10/T14 families are
-partial: their gaps are named in [Not implemented](#not-implemented) and in
-`tool/kernel-compat/evidence/rust-mapping.json`.
+name, with device/TUN ownership assigned to T6/T7. The T10/T14/T15 families
+are partial: their gaps are named in [Not implemented](#not-implemented) and
+in `tool/kernel-compat/evidence/rust-mapping.json`.
 **Not implemented yet** (rejected with
 `[unsupported]`, never ignored): DNS and `hosts`, proxy groups and providers,
 the control API (`external-controller`, `proxy-providers`, rules beyond the
@@ -45,6 +48,7 @@ native-kernel/
     │   ├── src/outbound/           # socks5, http, ss, trojan, vless, anytls, vmess, snell,
     │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, sudoku/
     │   │                           # (codec, record, kip, table, go_rand), masque,
+    │   │                           # shadowquic + jls (recorded-random TLS hook),
     │   │                           # quic, h3 + tls, ws, h2
     │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid,
     │   │                           # sudoku key-material canonicalisation
@@ -55,6 +59,7 @@ native-kernel/
     │   ├── examples/embed.rs       # embedding example
     │   └── tests/                  # config, protocols (loopback peers + sudoku codec
     │                               # vectors), sessions, mihomo_peers (pinned Mihomo),
+    │                               # data/shadowquic-jls.txt (locked JLS hello vectors),
     │                               # cli/family args, common/ helpers
     └── billow-kernel-cli/          # binary `billow-kernel`
         └── tests/cli.rs            # drives the real process: inbound, outbound, restart
@@ -206,15 +211,16 @@ the association ends with its control connection or after
 
 The pinned parser lists 28 outbound types. Thirteen are implemented
 (`ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`, `vmess`, `snell`,
-`trusttunnel`, `gost-relay`, `ssr`, `mieru`, `sudoku`) and two are partial
+`trusttunnel`, `gost-relay`, `ssr`, `mieru`, `sudoku`) and three are partial
 (`ssh`, which opens one client per dial and rejects private-key file paths;
-`masque`, which implements CONNECT-UDP but not the pinned CONNECT-IP/IP stack).
+`masque`, which implements CONNECT-UDP but not the pinned CONNECT-IP/IP stack;
+`shadowquic`, which implements TCP/UDP and JLS but rejects `zero-rtt`, QUIC
+`v2` and the private Brutal congestion options).
 The remaining types are rejected by name at load time, so no configuration is
 silently reduced:
 
 | families | why not here | task / decision |
 | --- | --- | --- |
-| `shadowquic` | QUIC with JLS, a custom TLS extension; the pinned client uses `jls-tls` + a modified `jls-quic-go`. `rustls`/`quinn` cannot express the extension and no JLS crate is in the offline cache | **T10 rejected by name**; implement only with a JLS-capable TLS/QUIC stack |
 | `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols that terminate a tunnel and expose TCP/UDP through an IP stack (gVisor in the pinned build); device/TUN ownership is T6/T7, and no WireGuard/mesh/OpenVPN crate is in the offline cache | **T10 rejected by name**; device/TUN ownership is T6/T7, the transport would be a separate task |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
 
@@ -240,6 +246,39 @@ reason. Because the pinned options describe that WARP registration, an
 RFC 9298 endpoint is configured with `server`/`port` plus `udp: true` and has
 no `private-key`/`public-key`; the evidence file records this as the boundary
 rather than claiming the pinned shape.
+
+T15's `shadowquic` is an independent implementation of the JLS random seal,
+written from the locked `jls-tls` behaviour and observed on the wire. JLS is not
+an RFC 6066 extension: it replaces the 32-byte TLS 1.3 ClientHello/ServerHello
+`random` with `AES-256-GCM(SHA-256(password || hello-with-zero-random),
+SHA-256(username || hello-with-zero-random), random[0..16])`. `rustls` does not
+expose a ClientHello hook, so the client builds the hello twice with a recorded
+OS-seeded randomness stream and substitutes the one fill that produced the
+`random`; the replay is checked byte-for-byte against the dry hello before the
+connection proceeds. The locked `jls-tls` package is used only by
+`tool/kernel-compat/peers/shadowquic-jls-vectors` to emit real hello vectors
+(`native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt`); no Go
+code is linked or copied. The wire format was derived from the BSD-3-Clause
+`jls-tls` package (the pinned dependency) and observed handshakes; no GPL-3.0
+Mihomo code was copied. The QUIC wire format is ordinary QUIC v1 (the pinned
+`jls-quic-go` modifications are the server-side camouflage forwarding and the
+TLS hook), so `quinn` carries it unchanged. TCP uses `CommandConnect` + a
+SOCKS5 address; UDP uses `CommandAssociateDatagram` + QUIC datagrams or
+`CommandAssociateStream` + one uni stream per destination. QUIC datagram
+payloads are bounded by the path MTU as well as `max-datagram-frame-size`
+(quinn starts at 1200 bytes); a larger payload fails with a named error and
+`udp-over-stream` carries large packets as `u16`-length frames. `quinn-proto` and
+`typenum` became direct dependencies for the session wrapper and the 32-byte
+GCM nonce; both versions were already in the lockfile (no new download).
+`recv-window-conn`/`recv-window` default to the kernel's T7 budget (512 KiB
+stream / 2 MiB connection) instead of the pinned 1.57 MiB / 6.4 MiB initial
+windows; these are local flow-control choices, not wire fields. `rustls` still
+verifies the CertificateVerify signature after JLS
+authentication (the pinned Go client skips it), but a real server's camouflage
+certificate is a valid key pair, so the handshake succeeds; the pinned peer
+tests confirm it. A JLS failure aborts before any shadowquic request is sent,
+even if `skip-cert-verify` was supplied (the pinned type does not declare that
+key, so it is ignored like Mihomo ignores it).
 
 The remaining gaps are named in [Not implemented](#not-implemented):
 `ssh` rejects private-key file paths and opens one SSH client per dial;
@@ -296,8 +335,13 @@ pinned CONNECT-IP/WARP pieces (`private-key`, `public-key`, `uri`, `ip`,
 `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve`, `dns`), both non-HTTP/3
 networks (`h2`, `h3-l4proxy`), the congestion knobs and `dialer-proxy` (a QUIC
 endpoint is dialled locally); its `udp: false` form loads and refuses every
-dial. `shadowquic` and the device families are
-rejected as whole types with the missing stack named (JLS-TLS, WireGuard
+dial. `shadowquic` rejects `zero-rtt` (JLS 0-RTT needs the pinned
+authenticated session ticket), `quic-versions: v2` (quinn 0.11 implements v1
+only), `congestion-controller`/`bbr-profile`/a non-default `cwnd`/`up`/`down`
+(the private Brutal controller is not in quinn) and `dialer-proxy`; its
+`skip-cert-verify`/`udp`/`tls` keys are not declared by the pinned type, so
+they load and are ignored exactly as Mihomo ignores them. The device families
+are rejected as whole types with the missing stack named (WireGuard
 Noise/IP stack, mesh control planes, OpenVPN), never loaded as if compatible.
 `udp: false` is accepted for a family that has no UDP association because it
 states the same thing this kernel does; `udp` is not a
@@ -520,7 +564,15 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   directional, custom, rotation), the packed downlink and all three record
   AEAD methods, and the negative cases are a wrong key/password and a
   mismatched sudoku table type plus the private-key/public-key pair.
-  `tool/kernel-compat/peer-tests.sh` now runs 57 cases in total. T14's
+  T15 added 4 shadowquic cases: TCP, UDP over QUIC datagrams, UDP over
+  `udp-over-stream`, and a wrong-password case that is forwarded to the
+  camouflage upstream and never reaches the sink. The JLS seal is also
+  cross-checked against real hello messages from the locked Go package via
+  `tool/kernel-compat/peers/shadowquic-jls-vectors`; the vectors are committed
+  at `native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt` and
+  consumed by `src/outbound/jls.rs::tests::verifies_locked_jls_client_and_server_hellos`
+  (a default-suite test; the generator needs `go` and the module cache).
+  `tool/kernel-compat/peer-tests.sh` now runs 61 cases in total. T14's
   `masque` has no Mihomo listener (the pinned adapter is a Cloudflare WARP
   client) and no reachable HTTP/3 masque endpoint offline, so its six cases run
   against the controlled HTTP/3 peer in the default `tests/quic_peers.rs` suite
@@ -561,9 +613,10 @@ Owner material and are not modified by the kernel tasks. The concrete blockers
 and next steps for the families still deferred by T10 are in
 `tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers mieru
 and sudoku, T14's covers `masque` (the CONNECT-UDP subset and the CONNECT-IP
-gap recorded in `evidence/t14-feasibility.json`). With T14 the T9 list has an
-entry for every family, though `masque` remains partial and `shadowquic` is
-still rejected; neither is claimed as compatible.
+gap recorded in `evidence/t14-feasibility.json`), and T15's covers
+`shadowquic` (the JLS subset and its named rejections). With T15 the T9 list
+has an entry for every family, though `masque` and `shadowquic` remain partial;
+neither is claimed as compatible.
 
 ## Controlled verification commands
 
@@ -597,8 +650,15 @@ tool/kernel-compat/family-peers.sh
   created per dial; there is no connection pool yet. The dependency profile is
   recorded in `tool/kernel-compat/evidence/rust-mapping.json` (`quicProfile`)
   and `protocol-peers.json` (`t10`); T7 must measure the whole iOS extension
-  against the 40,000,000-byte budget. `h3`/`qpack`, JLS, WireGuard, mesh and
-  OpenVPN crates are not in the offline cargo cache.
+  against the 40,000,000-byte budget. There is no JLS crate and no
+  WireGuard/mesh/OpenVPN crate in the offline cargo cache; `shadowquic`
+  implements the JLS seal in-tree and the locked Go package is a vector
+  generator only. `quinn-proto` and `typenum` are direct dependencies because
+  the JLS session wrapper needs `quinn_proto::crypto::Session` and the
+  32-byte GCM nonce; both were already in the lockfile. The JLS ClientHello is
+  produced by a recorded-random replay of rustls's own hello; if a future
+  rustls changes the draw order the replay check aborts the connection with a
+  named error instead of sending an unauthenticated request.
 - Outbound TLS uses `rustls` with the platform trust store plus configured
   extra roots. `tls: {custom-cert}` roots are process-wide: a second kernel in
   the same process with different roots is rejected instead of silently keeping

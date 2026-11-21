@@ -2289,8 +2289,46 @@
       "constructor": "outbound.NewShadowQuic",
       "source": "adapter/parser.go:114",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "the pinned client (transport/shadowquic + jls-tls) needs JLS, a custom TLS extension and a modified QUIC stack; rustls/quinn cannot express it and no JLS crate is in the offline cargo cache"
+        "status": "partial",
+        "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with a clean-room JLS random seal; `zero-rtt`, QUIC `v2` and the private Brutal congestion options are rejected by name because quinn has no Brutal controller/JLS 0-RTT ticket",
+        "options": [
+          "server",
+          "port",
+          "username",
+          "password",
+          "sni",
+          "alpn",
+          "quic-versions",
+          "udp-over-stream",
+          "keep-alive-interval",
+          "recv-window-conn",
+          "recv-window",
+          "disable-mtu-discovery",
+          "max-datagram-frame-size",
+          "max-open-streams"
+        ],
+        "notImplemented": [
+          "zero-rtt: true",
+          "quic-versions: v2",
+          "congestion-controller",
+          "cwnd",
+          "bbr-profile",
+          "up",
+          "down",
+          "dialer-proxy"
+        ],
+        "evidence": [
+          "src/outbound/jls.rs::tests::verifies_locked_jls_client_and_server_hellos",
+          "src/outbound/jls.rs::tests::replay_returns_recorded_bytes_and_the_override",
+          "src/outbound/shadowquic.rs::tests::address_round_trip",
+          "tests/config.rs::shadowquic_transport_options_are_parsed_and_jls_gaps_named",
+          "tests/mihomo_peers.rs::shadowquic_outbound_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::shadowquic_wrong_password_never_reaches_the_sink",
+          "tests/mihomo_peers.rs::shadowquic_udp_reaches_the_receiving_side_through_mihomo",
+          "tests/mihomo_peers.rs::shadowquic_udp_over_stream_reaches_the_receiving_side_through_mihomo",
+          "crates/billow-kernel-cli/tests/cli.rs::process_loads_t15_shadowquic"
+        ],
+        "notes": "recv-window defaults follow the kernel T7 budget (512 KiB stream / 2 MiB connection) rather than the pinned 1.57 MiB / 6.4 MiB initial windows; those are local flow-control choices, not wire fields. max-datagram-frame-size sizes the datagram buffers; the usable datagram payload is also path-MTU-bound, so larger UDP packets use udp-over-stream."
       }
     },
     {
@@ -3901,8 +3939,8 @@
   },
   "coverage": {
     "mapped": 24,
-    "partial": 14,
-    "unimplemented": 117,
+    "partial": 15,
+    "unimplemented": 116,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }
