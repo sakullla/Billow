@@ -23,6 +23,15 @@ const catalog = computed(() => snap.value.node_catalog)
 const listed = computed(() => listedGroups(catalog.value))
 const allGroupsHidden = computed(() => catalog.value.length > 0 && listed.value.length === 0)
 const mode = computed(() => snap.value.mode)
+const modeListed = computed(() => {
+  if (mode.value === 'global') {
+    const globalGroup = listed.value.find((group) => group.name === 'GLOBAL')
+    return globalGroup
+      ? [globalGroup, ...listed.value.filter((group) => group.name !== 'GLOBAL')]
+      : listed.value
+  }
+  return listed.value.filter((group) => group.name !== 'GLOBAL')
+})
 const busyKeys = computed(() => Object.keys(store.busy).join('\0'))
 
 type Sort = 'default' | 'delay' | 'name'
@@ -135,7 +144,7 @@ function openAuto(name: string) {
   void locate(name, 'smooth')
 }
 
-const hiddenAutoCount = computed(() => listed.value.filter((group) => autoHidden(group)).length)
+const hiddenAutoCount = computed(() => modeListed.value.filter((group) => autoHidden(group)).length)
 /** Read once at setup so the first paint already has the right groups expanded (R26). */
 const storedOpen = readOpen()
 const open = ref<Set<string>>(storedOpen ?? defaultOpen())
@@ -169,7 +178,13 @@ function manifest(): NodeGroup[] {
 
 /** The group a first visit opens: the selected manual group, else the first manual one (R26). */
 function currentManualGroup(): NodeGroup | null {
-  const manual = manifest().filter((group) => group.kind === 'manual')
+  const manual = manifest().filter(
+    (group) => group.kind === 'manual' && (mode.value === 'global' || group.name !== 'GLOBAL'),
+  )
+  if (mode.value === 'global') {
+    const globalGroup = manual.find((group) => group.name === 'GLOBAL')
+    if (globalGroup) return globalGroup
+  }
   return manual.find((group) => Boolean(group.now)) ?? manual[0] ?? null
 }
 
@@ -274,9 +289,7 @@ function sorted(nodes: NodeItem[]): NodeItem[] {
 }
 
 const groups = computed(() => {
-  const source = mode.value === 'global'
-    ? listed.value
-    : listed.value.filter((group) => group.name !== 'GLOBAL')
+  const source = modeListed.value
   return source
     .filter((group) => !autoHidden(group))
     .map((group): ViewGroup => {
@@ -308,7 +321,7 @@ const matchCount = computed(() =>
 /** Groups share nodes, so the page total counts distinct names instead of row copies. */
 const distinctNodeCount = computed(() => {
   const seen = new Set<string>()
-  listed.value.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
+  modeListed.value.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
   return seen.size
 })
 
@@ -367,7 +380,7 @@ const groupNamesSet = computed(() => new Set(catalog.value.map((group) => group.
 const failedNodeCount = computed(() => {
   const seen = new Set<string>()
   let count = 0
-  for (const group of listed.value) {
+  for (const group of modeListed.value) {
     if (autoHidden(group)) continue
     for (const node of group.nodes) {
       if (groupNamesSet.value.has(node.name) || seen.has(node.name)) continue
@@ -656,6 +669,10 @@ onMounted(() => {
       }
       return
     }
+    if (mode.value === 'global' && modeListed.value.some((group) => group.name === 'GLOBAL') && !open.value.has('GLOBAL')) {
+      open.value = new Set([...open.value, 'GLOBAL'])
+      persistOpen()
+    }
     // Only a first visit scrolls to the default group; a saved state stays where the user left it.
     // When that group already leads the list, scrolling would only hide the page head and its
     // 全部测速 action, so the page stays at the top.
@@ -665,6 +682,16 @@ onMounted(() => {
 })
 
 watch(() => store.focusGroup.value, (name) => void locate(name, 'smooth'))
+
+watch(
+  [mode, () => modeListed.value.some((group) => group.name === 'GLOBAL')],
+  ([nextMode, hasGlobal], [prevMode]) => {
+    if (nextMode === 'global' && hasGlobal && prevMode !== 'global' && !open.value.has('GLOBAL')) {
+      open.value = new Set([...open.value, 'GLOBAL'])
+      persistOpen()
+    }
+  },
+)
 
 function measureToolbar() {
   toolbarHeight.value = Math.ceil(toolbarEl.value?.getBoundingClientRect().height ?? 0)
@@ -708,7 +735,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       <div>
         <h1>{{ tr('代理') }}</h1>
         <p class="muted small" :title="hiddenAutoCount ? tr('另有 {0} 个自动组由内核择优，未单独列出', { 0: hiddenAutoCount }) : undefined">
-          <template v-if="listed.length">{{ listed.length - hiddenAutoCount }} {{ tr('个代理组 ·') }} {{ distinctNodeCount }} {{ tr('个节点') }}</template>
+          <template v-if="modeListed.length">{{ modeListed.length - hiddenAutoCount }} {{ tr('个代理组 ·') }} {{ distinctNodeCount }} {{ tr('个节点') }}</template>
           <template v-else-if="allGroupsHidden">{{ tr('配置中的代理组均已隐藏') }}</template>
           <template v-else>{{ snap.nodes_notice ? tr(snap.nodes_notice) : tr('没有代理组') }}</template>
         </p>

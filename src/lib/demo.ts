@@ -599,9 +599,22 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     if (state.logs.length > 1000) state.logs.splice(0, state.logs.length - 1000)
   }
 
+  function catalogGroupsDef(): { name: string; type: string; proxies: string[] }[] {
+    const base = groupsDef()
+    if (state.mode !== 'global' || base.some((group) => group.name === 'GLOBAL')) return base
+    const proxies = [
+      ...base.map((group) => group.name),
+      ...names.filter((name) => !base.some((group) => group.name === name)),
+      'DIRECT',
+      'REJECT',
+    ]
+    return [{ name: 'GLOBAL', type: 'select', proxies }, ...base]
+  }
+
   function catalog(): NodeGroup[] {
     if (!state.active_id) return []
-    return groupsDef().map((group) => {
+    const defs = catalogGroupsDef()
+    return defs.map((group) => {
       const manual = group.type === 'select'
       const canPin = pinnable(group.type)
       const pinned = canPin ? fixed.get(group.name) ?? null : null
@@ -627,7 +640,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
             delay_ms: delay ?? null,
             failed: delay === null,
             selected: name === now,
-            node_type: types.get(name) ?? groupsDef().find((g) => g.name === name)?.type ?? (name === 'DIRECT' ? 'direct' : ''),
+            node_type:
+              types.get(name) ??
+              defs.find((g) => g.name === name)?.type ??
+              (name === 'DIRECT' ? 'direct' : name === 'REJECT' ? 'reject' : ''),
             tags: isChained ? [...baseTags, 'chained'] : baseTags,
             ...(isChained ? { dialer_proxy: '香港 01' } : {}),
           }
@@ -1468,7 +1484,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async testGroup(group) {
       if (options.latin) group = delatinName(group)
-      const def = groupsDef().find((item) => item.name === group)
+      const def = catalogGroupsDef().find((item) => item.name === group)
       if (!state.kernel_running) state.nodes_error = '内核没有运行'
       else {
         state.nodes_error = null

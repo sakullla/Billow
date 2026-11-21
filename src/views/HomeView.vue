@@ -76,9 +76,20 @@ const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${
 
 const showAllGroups = ref(false)
 /** Config `hidden: true` groups stay out of the picker; chains below still pass through them (R29). */
-const allManualGroups = computed(() => snap.value.node_catalog.filter((group) => group.kind === 'manual' && !group.hidden))
+const allManualGroups = computed(() =>
+  snap.value.node_catalog.filter(
+    (group) => group.kind === 'manual' && !group.hidden && (snap.value.mode === 'global' || group.name !== 'GLOBAL'),
+  ),
+)
 /** The groups card also lists url-test / fallback groups, which can be pinned like select groups (R28). */
-const allPickableGroups = computed(() => snap.value.node_catalog.filter((group) => canPickNode(group) && !group.hidden))
+const allPickableGroups = computed(() => {
+  const list = snap.value.node_catalog.filter(
+    (group) => canPickNode(group) && !group.hidden && (snap.value.mode === 'global' || group.name !== 'GLOBAL'),
+  )
+  if (snap.value.mode !== 'global') return list
+  const globalGroup = list.find((group) => group.name === 'GLOBAL')
+  return globalGroup ? [globalGroup, ...list.filter((group) => group.name !== 'GLOBAL')] : list
+})
 const manualGroups = computed(() => (showAllGroups.value ? allPickableGroups.value : allPickableGroups.value.slice(0, 8)))
 const hiddenGroupCount = computed(() => Math.max(0, allPickableGroups.value.length - 8))
 const primaryGroup = computed(() => {

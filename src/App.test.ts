@@ -3514,4 +3514,48 @@ describe('App', () => {
     expect(store.snapshot.value.connected).toBe(true)
     expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(false)
   })
+
+  it('supports selecting the GLOBAL node after switching outbound mode on Home and Proxies', async () => {
+    localStorage.clear()
+    const { wrapper, backend } = await mountApp({}, 1280)
+    const selectSpy = vi.spyOn(backend, 'selectNode')
+
+    // Rule mode: GLOBAL is hidden from Home groups card
+    expect(wrapper.find('[data-testid="groups-card"] [data-group="GLOBAL"]').exists()).toBe(false)
+
+    // Switch to global mode on Home: hero node capsule and first group tile point to GLOBAL
+    await wrapper.find('[data-testid="mode-segmented"] [data-value="global"]').trigger('click')
+    await settle(200)
+    expect(wrapper.find('[data-testid="hero-node-pill"]').text()).toContain('GLOBAL')
+    const homeGroups = wrapper.findAll('[data-testid="groups-card"] [data-group]')
+    expect(homeGroups[0]?.attributes('data-group')).toBe('GLOBAL')
+
+    // Pick a GLOBAL node from Home's in-place node picker
+    await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
+    await flushPromises()
+    const picker = document.body.querySelector<HTMLElement>('[data-testid="home-node-picker"]')
+    expect(picker?.getAttribute('data-group')).toBe('GLOBAL')
+    document.body.querySelector<HTMLElement>('[data-testid="picker-node-日本 01"]')?.click()
+    await settle(200)
+    expect(selectSpy).toHaveBeenCalledWith('GLOBAL', '日本 01')
+    expect(wrapper.find('[data-testid="hero-node-pill"]').text()).toContain('日本 01')
+
+    // Navigate to Proxies: GLOBAL leads the list and is automatically expanded
+    storeOf(wrapper).go('proxies')
+    await flushPromises()
+    const cards = wrapper.findAll('[data-group-card]')
+    expect(cards[0]?.attributes('data-group-card')).toBe('GLOBAL')
+    expect(cards[0]?.classes('open')).toBe(true)
+
+    // Pick another GLOBAL node in Proxies
+    await cards[0]!.find('[data-testid="node-select-香港 02"]').trigger('click')
+    await settle(200)
+    expect(selectSpy).toHaveBeenCalledWith('GLOBAL', '香港 02')
+    expect(cards[0]!.find('.group-now-name').text()).toContain('香港 02')
+
+    // Switch back to rule mode in Proxies: GLOBAL disappears
+    await wrapper.find('.proxies .head-actions [data-value="rule"]').trigger('click')
+    await settle(200)
+    expect(wrapper.find('[data-group-card="GLOBAL"]').exists()).toBe(false)
+  })
 })

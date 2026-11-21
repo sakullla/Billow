@@ -8,6 +8,7 @@ const CHAINED_TAG: &str = "chained";
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
+pub const GLOBAL_GROUP: &str = "GLOBAL";
 pub const NEED_PROFILE: &str = "需要先添加或更新配置";
 pub const NO_NODES: &str = "还没有可显示的节点。";
 pub const NO_MATCH: &str = "没有匹配的节点";
@@ -165,6 +166,68 @@ pub fn runtime_catalog(value: &serde_json::Value) -> Result<RuntimeCatalog, Stri
 
 pub fn resolved_groups(value: &Value, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
     merge_runtime_groups(parse_proxy_groups(value), runtime)
+}
+
+pub fn synthesize_global_group(value: &Value, groups: &[ParsedGroup]) -> Option<ParsedGroup> {
+    if groups.iter().any(|group| group.name == GLOBAL_GROUP) {
+        return None;
+    }
+    let mut proxies = Vec::new();
+    for group in groups {
+        if !proxies.iter().any(|item| item == &group.name) {
+            proxies.push(group.name.clone());
+        }
+    }
+    for name in proxy_names(value) {
+        if !proxies.iter().any(|item| item == &name) {
+            proxies.push(name);
+        }
+    }
+    if proxies.is_empty() {
+        return None;
+    }
+    for builtin in ["DIRECT", "REJECT"] {
+        if !proxies.iter().any(|item| item == builtin) {
+            proxies.push(builtin.to_string());
+        }
+    }
+    Some(ParsedGroup {
+        name: GLOBAL_GROUP.to_string(),
+        manual: true,
+        proxies,
+        group_type: "select".to_string(),
+        icon: None,
+        pinnable: false,
+        hidden: false,
+    })
+}
+
+pub fn global_group(value: &Value, groups: &[ParsedGroup], runtime: &RuntimeCatalog) -> Option<ParsedGroup> {
+    if groups.iter().any(|group| group.name == GLOBAL_GROUP) {
+        return None;
+    }
+    if let Some(members) = runtime.members.get(GLOBAL_GROUP) {
+        if !members.is_empty() {
+            return Some(ParsedGroup {
+                name: GLOBAL_GROUP.to_string(),
+                manual: true,
+                proxies: members.clone(),
+                group_type: "select".to_string(),
+                icon: None,
+                pinnable: false,
+                hidden: false,
+            });
+        }
+    }
+    synthesize_global_group(value, groups)
+}
+
+pub fn resolved_groups_with_global(value: &Value, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
+    let mut groups = resolved_groups(value, runtime);
+    if let Some(global) = global_group(value, &groups, runtime) {
+        groups.insert(0, global);
+    }
+    groups
 }
 
 pub fn merge_runtime_groups(mut groups: Vec<ParsedGroup>, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
@@ -1490,5 +1553,46 @@ proxy-groups:
         let seen = handle.join().unwrap();
         assert!(seen[0].starts_with("PATCH /configs HTTP/1.1"));
         assert!(seen[0].contains(r#"{"mode":"global"}"#));
+    }
+
+    #[test]
+    fn global_group_synthesizes_offline_and_uses_runtime_members() {
+        let yaml = r#"
+proxies:
+  - { name: HK, type: ss, server: 1.1.1.1, port: 443 }
+  - { name: JP, type: ss, server: 1.1.1.2, port: 443 }
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [HK, JP]
+"#;
+        let doc: Value = serde_yaml::from_str(yaml).unwrap();
+        let offline = resolved_groups_with_global(&doc, &RuntimeCatalog::default());
+        assert_eq!(offline[0].name, GLOBAL_GROUP);
+        assert!(offline[0].manual);
+        assert_eq!(offline[0].proxies, vec!["Proxy", "HK", "JP", "DIRECT", "REJECT"]);
+
+        let runtime = runtime_catalog(&serde_json::json!({
+            "proxies": {
+                "GLOBAL": { "type": "Selector", "all": ["DIRECT", "Proxy", "HK", "JP"], "now": "DIRECT" },
+                "Proxy": { "type": "Selector", "all": ["HK", "JP"], "now": "HK" }
+            }
+        }))
+        .unwrap();
+        let online = resolved_groups_with_global(&doc, &runtime);
+        assert_eq!(online[0].name, GLOBAL_GROUP);
+        assert_eq!(online[0].proxies, vec!["DIRECT", "Proxy", "HK", "JP"]);
+
+        let explicit_yaml = r#"
+proxies:
+  - { name: HK, type: ss, server: 1.1.1.1, port: 443 }
+proxy-groups:
+  - name: GLOBAL
+    type: select
+    proxies: [HK, DIRECT]
+"#;
+        let explicit_doc: Value = serde_yaml::from_str(explicit_yaml).unwrap();
+        let explicit = resolved_groups_with_global(&explicit_doc, &RuntimeCatalog::default());
+        assert_eq!(explicit.iter().filter(|group| group.name == GLOBAL_GROUP).count(), 1);
     }
 }

@@ -124,6 +124,7 @@ struct Profile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NodeMetadata {
     groups: Vec<ParsedGroup>,
+    global_group: Option<ParsedGroup>,
     types: BTreeMap<String, nodes::ProxyInfo>,
     config: ConfigValues,
 }
@@ -133,8 +134,11 @@ impl Profile {
         self.node_metadata.get_or_init(|| {
             let value = document_value(self)?;
             let flag = |name: &str| mapping_get(&value, name).and_then(Value::as_bool);
+            let groups = nodes::parse_proxy_groups(&value);
+            let global_group = nodes::synthesize_global_group(&value, &groups);
             Some(NodeMetadata {
-                groups: nodes::parse_proxy_groups(&value),
+                groups,
+                global_group,
                 types: nodes::proxy_infos(&value),
                 config: ConfigValues {
                     mixed_port: read_i64(&value, "mixed-port").or_else(|| read_i64(&value, "port")),
@@ -4223,7 +4227,7 @@ impl ProfileBook {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
-        let parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
+        let parsed = nodes::resolved_groups_with_global(&document, &self.runtime_catalog);
         let Some(found) = parsed.iter().find(|item| item.name == group_name) else {
             self.nodes_error = Some("没有这个代理组".to_string());
             return self.snapshot();
@@ -4340,7 +4344,7 @@ impl ProfileBook {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
-        let parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
+        let parsed = nodes::resolved_groups_with_global(&document, &self.runtime_catalog);
         let Some(found) = parsed.iter().find(|item| item.name == group_name) else {
             self.nodes_error = Some("没有这个代理组".to_string());
             return self.snapshot();
@@ -4390,7 +4394,7 @@ impl ProfileBook {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
-        let parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
+        let parsed = nodes::resolved_groups_with_global(&document, &self.runtime_catalog);
         let Some(found) = parsed.iter().find(|item| item.name == group.trim()) else {
             self.nodes_error = Some("没有这个代理组".to_string());
             return self.snapshot();
@@ -4418,7 +4422,7 @@ impl ProfileBook {
                 // A named proxy has one result for the chosen test URL, even
                 // when several groups list it. Keep the final snapshot aligned
                 // with the streamed per-node overlay.
-                let groups = self.tested_groups(index).unwrap_or_default();
+                let groups = self.delay_target_groups(index).unwrap_or_default();
                 self.record_delays(&profile_id, &groups, results);
                 self.nodes_error = None;
             }
@@ -4456,16 +4460,50 @@ impl ProfileBook {
         let Some(metadata) = profile.node_metadata() else {
             return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
         };
-        if metadata.groups.is_empty() {
+        let is_global = self.mode.as_deref() == Some("global");
+        let has_config_global = metadata.groups.iter().any(|group| group.name == nodes::GLOBAL_GROUP);
+        let synthetic_global = if is_global && !has_config_global {
+            if let Some(members) = self.runtime_catalog.members.get(nodes::GLOBAL_GROUP).filter(|list| !list.is_empty()) {
+                Some((
+                    ParsedGroup {
+                        name: nodes::GLOBAL_GROUP.to_string(),
+                        manual: true,
+                        proxies: Vec::new(),
+                        group_type: "select".to_string(),
+                        icon: None,
+                        pinnable: false,
+                        hidden: false,
+                    },
+                    members.as_slice(),
+                ))
+            } else {
+                metadata
+                    .global_group
+                    .as_ref()
+                    .map(|group| (group.clone(), group.proxies.as_slice()))
+            }
+        } else {
+            None
+        };
+        if metadata.groups.is_empty() && synthetic_global.is_none() {
             return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
         }
         // Borrow provider members and protocol maps. The UI owns sorting and
         // filtering, so a second full catalog would only create unused copies.
-        let catalog: Vec<NodeGroupView> = metadata.groups.iter().map(|group| {
+        let mut catalog: Vec<NodeGroupView> = Vec::with_capacity(metadata.groups.len() + usize::from(synthetic_global.is_some()));
+        if let Some((global_group, members)) = synthetic_global {
+            catalog.push(self.present_group(profile, &global_group, members, &metadata.types));
+        }
+        for group in &metadata.groups {
             let members = self.runtime_catalog.members.get(&group.name)
                 .map(Vec::as_slice).unwrap_or(&group.proxies);
-            self.present_group(profile, group, members, &metadata.types)
-        }).collect();
+            let view = self.present_group(profile, group, members, &metadata.types);
+            if is_global && view.name == nodes::GLOBAL_GROUP {
+                catalog.insert(0, view);
+            } else {
+                catalog.push(view);
+            }
+        }
         let query = self.node_query.trim().to_lowercase();
         let unmatched = !query.is_empty() && !catalog.iter().any(|group| {
             group.nodes.iter().any(|node| node.name.to_lowercase().contains(&query))
@@ -4610,7 +4648,8 @@ impl ProfileBook {
             return;
         };
         let mut pinned = Vec::new();
-        for group in nodes::resolved_groups(&document, &self.runtime_catalog) {
+        let mut selected_applied = Vec::new();
+        for group in nodes::resolved_groups_with_global(&document, &self.runtime_catalog) {
             let saved = if group.manual {
                 &profile.selected
             } else if group.pinnable {
@@ -4623,14 +4662,21 @@ impl ProfileBook {
             };
             if group.proxies.iter().any(|item| item == node)
                 && kernel.select_proxy(&group.name, node).is_ok()
-                && group.pinnable
             {
-                pinned.push((group.name.clone(), node.clone()));
+                if group.pinnable {
+                    pinned.push((group.name.clone(), node.clone()));
+                } else {
+                    selected_applied.push((group.name.clone(), node.clone()));
+                }
             }
         }
         // Keep the saved pin even when the kernel refuses it now; the next reload tries again.
         for (group, node) in pinned {
             self.runtime_catalog.fixed.insert(group.clone(), node.clone());
+            self.runtime_catalog.now.insert(group.clone(), node.clone());
+            self.auto_now.insert(group, node);
+        }
+        for (group, node) in selected_applied {
             self.runtime_catalog.now.insert(group.clone(), node.clone());
             self.auto_now.insert(group, node);
         }
@@ -5709,10 +5755,34 @@ impl ProfileBook {
         }
     }
 
-    fn tested_groups(&self, index: usize) -> Option<Vec<(String, Vec<String>)>> {
+    fn delay_target_groups(&self, index: usize) -> Option<Vec<(String, Vec<String>)>> {
         let document = document_value(&self.profiles[index])?;
         Some(
-            nodes::resolved_groups(&document, &self.runtime_catalog)
+            nodes::resolved_groups_with_global(&document, &self.runtime_catalog)
+                .into_iter()
+                .map(|group| {
+                    let mut members = group.proxies;
+                    if let Some(now) = self.auto_now.get(&group.name) {
+                        if !members.iter().any(|item| item == now) {
+                            members.push(now.clone());
+                        }
+                    }
+                    (group.name, members)
+                })
+                .collect(),
+        )
+    }
+
+    fn tested_groups(&self, index: usize) -> Option<Vec<(String, Vec<String>)>> {
+        let document = document_value(&self.profiles[index])?;
+        let mut parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
+        if parsed.is_empty() && self.mode.as_deref() == Some("global") {
+            if let Some(global) = nodes::global_group(&document, &parsed, &self.runtime_catalog) {
+                parsed.push(global);
+            }
+        }
+        Some(
+            parsed
                 .into_iter()
                 .map(|group| {
                     let mut members = group.proxies;
@@ -5765,7 +5835,8 @@ impl ProfileBook {
             on_progress(name, delay, failed, tested, total);
         }) {
             Ok(results) => {
-                self.record_delays(&profile_id, &groups, results);
+                let target_groups = self.delay_target_groups(index).unwrap_or(groups);
+                self.record_delays(&profile_id, &target_groups, results);
                 self.nodes_error = None;
             }
             Err(message) => {
@@ -5785,7 +5856,7 @@ impl ProfileBook {
             self.nodes_error = Some(NEED_PROFILE.to_string());
             return self.snapshot();
         };
-        let Some(groups) = self.tested_groups(index) else {
+        let Some(groups) = self.delay_target_groups(index) else {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
@@ -10919,5 +10990,126 @@ proxy-groups:
         for permission in ["allow-close-connections", "allow-dns-query"] {
             assert!(permissions.iter().any(|item| item.as_str() == Some(permission)), "{permission}");
         }
+    }
+
+    #[test]
+    fn switching_to_global_mode_exposes_and_selects_global_group() {
+        #[derive(Default)]
+        struct GlobalKernel {
+            running: bool,
+            mode: String,
+            global_now: String,
+            selected_calls: Vec<(String, String)>,
+        }
+        impl KernelLaunch for GlobalKernel {
+            fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+                self.running = true;
+                if self.global_now.is_empty() {
+                    self.global_now = "DIRECT".to_string();
+                }
+                Ok(())
+            }
+            fn running(&mut self) -> bool {
+                self.running
+            }
+            fn set_mode(&mut self, mode: &str) -> Result<(), String> {
+                self.mode = mode.to_string();
+                Ok(())
+            }
+            fn select_proxy(&mut self, group: &str, node: &str) -> Result<(), String> {
+                self.selected_calls.push((group.to_string(), node.to_string()));
+                if group == "GLOBAL" {
+                    self.global_now = node.to_string();
+                }
+                Ok(())
+            }
+            fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
+                if !self.running {
+                    return nodes::RuntimeCatalog::default();
+                }
+                let mut catalog = nodes::RuntimeCatalog::default();
+                catalog.members.insert(
+                    "GLOBAL".to_string(),
+                    vec!["DIRECT".into(), "Proxy".into(), "HK".into(), "JP".into()],
+                );
+                catalog.now.insert("GLOBAL".to_string(), self.global_now.clone());
+                catalog.members.insert("Proxy".to_string(), vec!["HK".into(), "JP".into()]);
+                catalog.now.insert("Proxy".to_string(), "HK".to_string());
+                catalog
+            }
+            fn probe_delays(&mut self, _group: &str, nodes: &[String]) -> Result<Vec<nodes::NodeDelay>, String> {
+                Ok(nodes
+                    .iter()
+                    .map(|name| nodes::NodeDelay {
+                        name: name.clone(),
+                        delay_ms: Some(if name == "JP" { 42 } else { 88 }),
+                    })
+                    .collect())
+            }
+        }
+
+        let dir = temp_dir("global-mode-selection");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        let mut kernel = GlobalKernel::default();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let yaml = r#"
+mode: rule
+mixed-port: 7890
+proxies:
+  - { name: HK, type: ss, server: 1.1.1.1, port: 443 }
+  - { name: JP, type: ss, server: 1.1.1.2, port: 443 }
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [HK, JP]
+"#;
+        let added = book.add_local("Test", yaml);
+        let id = added.profiles[0].id.clone();
+
+        // Offline: rule mode hides synthetic GLOBAL; switching to global exposes it and allows pre-selection.
+        let enabled = book.enable(&id, &RejectSource, &mut kernel);
+        assert!(enabled.node_catalog.iter().all(|group| group.name != "GLOBAL"));
+
+        let global_offline = book.set_outbound_mode("global", &mut kernel);
+        assert_eq!(global_offline.mode.as_deref(), Some("global"));
+        assert_eq!(global_offline.node_catalog[0].name, "GLOBAL");
+
+        let preselected = book.select_node("GLOBAL", "JP", &mut kernel);
+        assert!(preselected.nodes_error.is_none());
+        assert_eq!(preselected.node_catalog[0].now, "JP");
+
+        // Connecting replays the saved GLOBAL choice onto the live kernel and reflects it immediately.
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.kernel_running);
+        assert_eq!(connected.node_catalog[0].name, "GLOBAL");
+        assert_eq!(connected.node_catalog[0].now, "JP");
+        assert!(kernel.selected_calls.iter().any(|(g, n)| g == "GLOBAL" && n == "JP"));
+
+        // Testing delays propagates results to GLOBAL as well.
+        let tested = book.test_all_with_progress(&mut kernel, &mut |_, _, _, _, _| {});
+        assert_eq!(
+            tested.node_catalog[0]
+                .nodes
+                .iter()
+                .find(|node| node.name == "JP")
+                .and_then(|node| node.delay_ms),
+            Some(42)
+        );
+
+        // Live selection in global mode updates the kernel; switching back to rule hides GLOBAL and remembers it.
+        let switched_node = book.select_node("GLOBAL", "HK", &mut kernel);
+        assert!(switched_node.nodes_error.is_none());
+        assert_eq!(switched_node.node_catalog[0].now, "HK");
+        assert_eq!(kernel.global_now, "HK");
+
+        let back_to_rule = book.set_outbound_mode("rule", &mut kernel);
+        assert!(back_to_rule.node_catalog.iter().all(|group| group.name != "GLOBAL"));
+
+        let back_to_global = book.set_outbound_mode("global", &mut kernel);
+        assert_eq!(back_to_global.node_catalog[0].name, "GLOBAL");
+        assert_eq!(back_to_global.node_catalog[0].now, "HK");
     }
 }
