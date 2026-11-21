@@ -5,7 +5,7 @@
 //! point is covered end to end, not just by loading the configuration.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,16 +16,21 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener as TokioListener;
 
 fn free_port() -> u16 {
+    // Kernel listener ports come from a range the OS does not use for
+    // ephemeral binds (macOS and Linux pick `bind(0)` ports above 32,000), so a
+    // peer's `bind(0)` cannot grab a just-released port before the kernel
+    // binds it. The registry keeps the number unique within this process; a
+    // busy slot is skipped.
     static PORTS: std::sync::Mutex<Option<std::collections::BTreeSet<u16>>> =
         std::sync::Mutex::new(None);
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(24_000);
     loop {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let slot = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let port = 24_000 + slot.wrapping_sub(24_000) % 8_000;
         let mut ports = PORTS.lock().unwrap_or_else(|p| p.into_inner());
-        if ports.get_or_insert_with(std::collections::BTreeSet::new).insert(port) {
+        let ports = ports.get_or_insert_with(std::collections::BTreeSet::new);
+        if !ports.contains(&port) && TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            ports.insert(port);
             return port;
         }
     }
@@ -66,20 +71,53 @@ fn start_cli(body: &str, port: u16) -> Child {
         format!("mixed-port: {port}\nlog-level: warn\n{body}"),
     )
     .unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
+    // Keep the kernel's stderr in a file rather than /dev/null: a bind failure
+    // or an early exit is then reported with its own message instead of as a
+    // later ConnectionRefused.
+    let stderr_path = dir.join("stderr.log");
+    let stderr = std::fs::File::create(&stderr_path).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
         .arg(&config)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr))
         .spawn()
         .expect("spawn billow-kernel");
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        if let Some(status) = child.try_wait().expect("wait for billow-kernel") {
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+            panic!("kernel exited with {status} before listening on {port}: {stderr}");
+        }
+        if kernel_ready(port) {
             return child;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    panic!("kernel never listened on {port}");
+    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("kernel never listened on {port}: {stderr}");
+}
+
+/// A bare TCP connect only proves *some* listener owns the port. The mixed
+/// inbound's SOCKS5 method negotiation proves the kernel itself is serving, and
+/// the read timeout keeps a foreign listener from stalling the probe.
+fn kernel_ready(port: u16) -> bool {
+    let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+    if stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .is_err()
+    {
+        return false;
+    }
+    if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
+        return false;
+    }
+    let mut reply = [0u8; 2];
+    stream.read_exact(&mut reply).is_ok() && reply == [0x05, 0x00]
 }
 
 fn stop_cli(mut child: Child) {
@@ -87,8 +125,28 @@ fn stop_cli(mut child: Child) {
     let _ = child.wait();
 }
 
+/// Connect to the CLI's listener, retrying a refused connection for a short
+/// while. `start_cli` already waits for the SOCKS5 handshake, so a refusal here
+/// is a transient scheduling/port-reuse race, not a protocol verdict; a kernel
+/// that is gone still fails within the deadline.
+fn connect_retry(proxy: SocketAddr) -> std::io::Result<TcpStream> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match TcpStream::connect_timeout(&proxy, Duration::from_secs(1)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn http_connect(proxy: SocketAddr, authority: &str) -> std::io::Result<(TcpStream, String)> {
-    let mut stream = TcpStream::connect(proxy)?;
+    let mut stream = connect_retry(proxy)?;
     stream.write_all(
         format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes(),
     )?;
@@ -149,8 +207,10 @@ fn spawn_gost_peer() -> u16 {
                     if kind == 0x02 {
                         let (host, rest) = match payload[0] {
                             0x01 => (
-                                std::net::Ipv4Addr::new(payload[1], payload[2], payload[3], payload[4])
-                                    .to_string(),
+                                std::net::Ipv4Addr::new(
+                                    payload[1], payload[2], payload[3], payload[4],
+                                )
+                                .to_string(),
                                 &payload[5..],
                             ),
                             0x03 => (
@@ -216,12 +276,8 @@ fn spawn_ssr_peer(cipher: billow_kernel::proxies::SsrCipher, password: &'static 
                             return;
                         }
                     }
-                    let mut stream = billow_kernel::outbound::ssr::SsrStream::new(
-                        tcp,
-                        cipher,
-                        key,
-                        server_iv,
-                    );
+                    let mut stream =
+                        billow_kernel::outbound::ssr::SsrStream::new(tcp, cipher, key, server_iv);
                     // Bound the address read: garbage (a wrong password) must
                     // not wait for bytes the client never sends.
                     let address = async {
@@ -256,7 +312,8 @@ fn spawn_ssr_peer(cipher: billow_kernel::proxies::SsrCipher, password: &'static 
                     else {
                         return;
                     };
-                    let Ok(mut upstream) = tokio::net::TcpStream::connect((host.as_str(), port)).await
+                    let Ok(mut upstream) =
+                        tokio::net::TcpStream::connect((host.as_str(), port)).await
                     else {
                         return;
                     };
@@ -371,8 +428,10 @@ fn spawn_gost_mux_peer() -> u16 {
                     if kind == 0x02 {
                         let (host, rest) = match payload[0] {
                             0x01 => (
-                                std::net::Ipv4Addr::new(payload[1], payload[2], payload[3], payload[4])
-                                    .to_string(),
+                                std::net::Ipv4Addr::new(
+                                    payload[1], payload[2], payload[3], payload[4],
+                                )
+                                .to_string(),
                                 &payload[5..],
                             ),
                             0x03 => (
@@ -669,7 +728,14 @@ fn make_quic_cert(name: &str) -> QuicCert {
         .arg(&key)
         .arg("-out")
         .arg(&cert)
-        .args(["-days", "1", "-subj", "/CN=billow-cli-quic", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"])
+        .args([
+            "-days",
+            "1",
+            "-subj",
+            "/CN=billow-cli-quic",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1,DNS:localhost",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -741,7 +807,10 @@ fn spawn_tuic_cli_peer(password: &'static str) -> u16 {
                         .is_err()
                         || expected != header[18..50]
                     {
-                        connection.close(quinn::VarInt::from_u32(0xffff_fff1), b"AuthenticationFailed");
+                        connection.close(
+                            quinn::VarInt::from_u32(0xffff_fff1),
+                            b"AuthenticationFailed",
+                        );
                         return;
                     }
                     let Ok((mut send, mut recv)) = connection.accept_bi().await else {
@@ -981,10 +1050,14 @@ fn spawn_hysteria2_cli_peer(password: &'static str) -> u16 {
                         return;
                     };
                     let headers = loop {
-                        let Some(frame_type) = h3::read_varint_async(&mut auth_recv).await.ok().flatten() else {
+                        let Some(frame_type) =
+                            h3::read_varint_async(&mut auth_recv).await.ok().flatten()
+                        else {
                             return;
                         };
-                        let Some(length) = h3::read_varint_async(&mut auth_recv).await.ok().flatten() else {
+                        let Some(length) =
+                            h3::read_varint_async(&mut auth_recv).await.ok().flatten()
+                        else {
                             return;
                         };
                         let mut payload = vec![0u8; length as usize];
@@ -1020,14 +1093,16 @@ fn spawn_hysteria2_cli_peer(password: &'static str) -> u16 {
                     if frame_type != Some(0x401) {
                         return;
                     }
-                    let Some(addr_len) = h3::read_varint_async(&mut recv).await.ok().flatten() else {
+                    let Some(addr_len) = h3::read_varint_async(&mut recv).await.ok().flatten()
+                    else {
                         return;
                     };
                     let mut addr = vec![0u8; addr_len as usize];
                     if recv.read_exact(&mut addr).await.is_err() {
                         return;
                     }
-                    let Some(padding_len) = h3::read_varint_async(&mut recv).await.ok().flatten() else {
+                    let Some(padding_len) = h3::read_varint_async(&mut recv).await.ok().flatten()
+                    else {
                         return;
                     };
                     let mut padding = vec![0u8; padding_len as usize];
@@ -1076,5 +1151,195 @@ fn cli_process_tunnels_through_hysteria2() {
         tunnel(port, echo_port, b"cli-hysteria2-marker"),
         b"cli-hysteria2-marker".to_vec()
     );
+    stop_cli(child);
+}
+
+// ---------------------------------------------------------------------------
+// MASQUE CONNECT-UDP peer (RFC 9298). The CLI process is the client and the
+// peer uses the library's h3 codec for brevity; the independent wire-format
+// check (its own QPACK/capsule codec) lives in tests/quic_peers.rs.
+// ---------------------------------------------------------------------------
+
+fn spawn_masque_cli_peer() -> u16 {
+    use billow_kernel::outbound::h3;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let cert = make_quic_cert("masque");
+            let endpoint = quinn::Endpoint::server(
+                quic_server_config(&cert, b"h3"),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .unwrap();
+            tx.send(endpoint.local_addr().unwrap().port()).unwrap();
+            while let Some(incoming) = endpoint.accept().await {
+                tokio::spawn(async move {
+                    let Ok(connection) = incoming.await else {
+                        return;
+                    };
+                    // Server control stream: SETTINGS_ENABLE_CONNECT_PROTOCOL.
+                    let Ok(mut control) = connection.open_uni().await else {
+                        return;
+                    };
+                    let mut settings = Vec::new();
+                    h3::encode_varint(0x08, &mut settings);
+                    h3::encode_varint(1, &mut settings);
+                    let mut frame = Vec::new();
+                    h3::encode_varint(0x04, &mut frame);
+                    h3::encode_varint(settings.len() as u64, &mut frame);
+                    frame.extend_from_slice(&settings);
+                    if control.write_all(&[0x00]).await.is_err()
+                        || control.write_all(&frame).await.is_err()
+                    {
+                        return;
+                    }
+                    let _control = control;
+                    let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                        return;
+                    };
+                    let mut headers = false;
+                    while let Ok(Some((frame_type, _))) = h3::read_frame(&mut recv).await {
+                        if frame_type == 0x01 {
+                            headers = true;
+                            break;
+                        }
+                    }
+                    if !headers {
+                        return;
+                    }
+                    let block =
+                        h3::encode_field_section(&[(":status", "200"), ("capsule-protocol", "?1")]);
+                    let mut response = Vec::new();
+                    h3::encode_varint(0x01, &mut response);
+                    h3::encode_varint(block.len() as u64, &mut response);
+                    response.extend_from_slice(&block);
+                    if send.write_all(&response).await.is_err() {
+                        return;
+                    }
+                    let mut pending = Vec::new();
+                    while let Ok(Some((frame_type, data))) = h3::read_frame(&mut recv).await {
+                        if frame_type != 0x00 {
+                            continue;
+                        }
+                        pending.extend_from_slice(&data);
+                        while let Some((capsule_type, value)) = masque_cli_capsule(&mut pending) {
+                            if capsule_type != 0x00 {
+                                continue;
+                            }
+                            let mut pos = 0;
+                            let Some(context) = h3::decode_varint(&value, &mut pos) else {
+                                return;
+                            };
+                            if context != 0 {
+                                return;
+                            }
+                            let payload = &value[pos..];
+                            let mut capsule = Vec::new();
+                            h3::encode_varint(0x00, &mut capsule);
+                            h3::encode_varint((1 + payload.len()) as u64, &mut capsule);
+                            h3::encode_varint(0, &mut capsule);
+                            capsule.extend_from_slice(payload);
+                            let mut frame = Vec::new();
+                            h3::encode_varint(0x00, &mut frame);
+                            h3::encode_varint(capsule.len() as u64, &mut frame);
+                            frame.extend_from_slice(&capsule);
+                            if send.write_all(&frame).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    });
+    rx.recv().unwrap()
+}
+
+fn masque_cli_capsule(buffer: &mut Vec<u8>) -> Option<(u64, Vec<u8>)> {
+    use billow_kernel::outbound::h3;
+    let mut pos = 0;
+    let kind = h3::decode_varint(buffer, &mut pos)?;
+    let length = h3::decode_varint(buffer, &mut pos)? as usize;
+    let end = pos.checked_add(length)?;
+    if buffer.len() < end {
+        return None;
+    }
+    let value = buffer[pos..end].to_vec();
+    buffer.drain(..end);
+    Some((kind, value))
+}
+
+fn masque_udp_associate(proxy: SocketAddr) -> (TcpStream, SocketAddr) {
+    let mut control =
+        TcpStream::connect_timeout(&proxy, Duration::from_secs(5)).expect("UDP control");
+    control
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    control.write_all(&[0x05, 0x01, 0x00]).unwrap();
+    let mut selection = [0u8; 2];
+    control.read_exact(&mut selection).unwrap();
+    control
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .unwrap();
+    let mut reply = [0u8; 10];
+    control.read_exact(&mut reply).unwrap();
+    assert_eq!(reply[1], 0, "UDP associate refused: {reply:02x?}");
+    let ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
+    let port = u16::from_be_bytes([reply[8], reply[9]]);
+    (control, SocketAddr::from((ip, port)))
+}
+
+fn masque_udp_exchange(
+    socket: &UdpSocket,
+    relay: SocketAddr,
+    target: SocketAddr,
+    payload: &[u8],
+    wait: Duration,
+) -> Option<Vec<u8>> {
+    let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+    match target.ip() {
+        std::net::IpAddr::V4(v4) => packet.extend_from_slice(&v4.octets()),
+        _ => return None,
+    }
+    packet.extend_from_slice(&target.port().to_be_bytes());
+    packet.extend_from_slice(payload);
+    socket.send_to(&packet, relay).ok()?;
+    socket.set_read_timeout(Some(wait)).ok()?;
+    let mut buffer = [0u8; 65535];
+    let (read, _) = socket.recv_from(&mut buffer).ok()?;
+    assert!(read > 10, "reply too short: {read}");
+    Some(buffer[10..read].to_vec())
+}
+
+/// The shipped process forwards a UDP datagram through a masque CONNECT-UDP
+/// outbound: start the real `billow-kernel`, open a SOCKS5 `UDP ASSOCIATE`,
+/// send one datagram and read the controlled HTTP/3 peer's echo.
+#[test]
+fn cli_process_tunnels_udp_through_masque() {
+    let peer_port = spawn_masque_cli_peer();
+    let port = free_port();
+    let child = start_cli(
+        &format!(
+            "proxies:\n  - {{name: p, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, skip-cert-verify: true}}\nrules:\n  - 'MATCH,p'\n"
+        ),
+        port,
+    );
+    let (control, relay) = masque_udp_associate(format!("127.0.0.1:{port}").parse().unwrap());
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(
+        &socket,
+        relay,
+        target,
+        b"cli-masque-marker",
+        Duration::from_secs(10),
+    )
+    .expect("a CONNECT-UDP datagram through the CLI must echo");
+    assert_eq!(reply, b"cli-masque-marker");
+    drop(control);
     stop_cli(child);
 }

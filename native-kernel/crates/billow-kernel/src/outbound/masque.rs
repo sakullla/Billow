@@ -27,17 +27,25 @@
 //!    handed back to the SOCKS5 UDP association.
 //!
 //! Capsule types other than `DATAGRAM` are ignored as RFC 9297 requires; a
-//! non-zero context ID, a truncated capsule or a non-`?1`/non-2xx response is
-//! reported as an error and the flow is not used. HTTP Datagrams (QUIC
-//! datagram frames) are not advertised, so the peer must use capsules; server
-//! push, the WebTransport capsule protocol and 0-RTT are not implemented.
+//! non-zero context ID, a truncated capsule, a capsule larger than one UDP
+//! datagram (65,535 payload bytes plus the context ID) or a non-`?1`/non-2xx
+//! response is reported as an error and the flow is not used. Each flow holds
+//! at most `FLOW_QUEUE * 65,535` queued payloads and
+//! `MAX_CAPSULE + MAX_DATA_FRAME` bytes of unparsed capsule data, and at most
+//! `MAX_CONCURRENT_DESTINATIONS` flows are open per association; the worst-case
+//! totals are in `tool/kernel-compat/evidence/t14-feasibility.json`. HTTP
+//! Datagrams (QUIC datagram frames) are not advertised, so the peer must use
+//! capsules; server push, the WebTransport capsule protocol and 0-RTT are not
+//! implemented.
 //!
 //! TCP over masque needs CONNECT-IP (RFC 9484) plus an IP stack, and the
 //! pinned `h2`/`h3-l4proxy` modes are Cloudflare specific; both are refused
-//! with a named error rather than silently dropped.
+//! with a named error rather than silently dropped (CONNECT-IP is T18).
 
 use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -52,17 +60,32 @@ use crate::proxies::MasqueOutbound;
 /// Capsule type `DATAGRAM` (RFC 9297 §3.5, used by RFC 9298 for UDP payloads).
 pub const CAPSULE_DATAGRAM: u64 = 0x00;
 
-/// Upper bound for one capsule value; a UDP payload is at most 65,535 bytes and
-/// the capsule adds only varints.
-const MAX_CAPSULE: usize = 4 * 1024 * 1024;
+/// One UDP payload is at most 65,535 bytes (the IPv4/IPv6 UDP length limit).
+const MAX_UDP_PAYLOAD: usize = 65_535;
 
-/// One request stream (flow) per destination; the association refuses new
+/// Upper bound for one capsule *value*: a UDP payload plus the context ID
+/// varint (at most 8 bytes for a 62-bit value). A larger capsule cannot be a
+/// UDP datagram and is refused instead of being buffered.
+const MAX_CAPSULE: usize = MAX_UDP_PAYLOAD + 8;
+
+/// Upper bound for one HTTP/3 DATA frame read from a CONNECT-UDP stream: one
+/// maximal capsule plus its type/length varints. Bounding the frame (not just
+/// the capsule) keeps the reader's buffer from allocating quinn's 1 MiB frame
+/// limit before the capsule check can run.
+const MAX_DATA_FRAME: usize = MAX_CAPSULE + 16;
+
+/// One request stream (flow) per destination. The association refuses new
 /// destinations beyond this bound so a hostile rule set cannot open unbounded
-/// QUIC streams on one connection.
-const MAX_FLOWS: usize = 64;
+/// QUIC streams on one connection. Memory is bounded by this cap: each flow
+/// holds at most `FLOW_QUEUE * 65,535` queued outbound payloads and
+/// `MAX_CAPSULE + MAX_DATA_FRAME` bytes of unparsed inbound capsule data (see
+/// `tool/kernel-compat/evidence/t14-feasibility.json`).
+pub const MAX_CONCURRENT_DESTINATIONS: usize = 32;
 
-/// Queued datagrams per flow in each direction.
-const FLOW_QUEUE: usize = 16;
+/// Queued datagrams per flow in each direction. Two slots keep the worst-case
+/// per-flow buffer at ~128 KiB; a full queue applies backpressure to the
+/// association instead of growing without bound.
+const FLOW_QUEUE: usize = 2;
 
 /// One received UDP payload and the destination it was sent to.
 struct Inbound {
@@ -70,10 +93,29 @@ struct Inbound {
     payload: Vec<u8>,
 }
 
-/// The write half of one CONNECT-UDP flow. The reader task and the QUIC
-/// streams live in their own tasks; the association only forwards payloads.
+/// The write half of one CONNECT-UDP flow plus its liveness marker. The reader
+/// task clears `alive` when the peer ends the request stream or the capsule
+/// stream becomes unusable; the association then prunes the entry instead of
+/// letting closed flows exhaust `MAX_CONCURRENT_DESTINATIONS`.
 struct Flow {
     outgoing: mpsc::Sender<Vec<u8>>,
+    alive: Arc<AtomicBool>,
+}
+
+impl Flow {
+    fn is_dead(&self) -> bool {
+        !self.alive.load(Ordering::Acquire) || self.outgoing.is_closed()
+    }
+}
+
+/// Clears the flow's liveness marker on every exit path of the reader task,
+/// including early `return`s and panics.
+struct DeadOnDrop(Arc<AtomicBool>);
+
+impl Drop for DeadOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// A live RFC 9298 CONNECT-UDP association for the SOCKS5 UDP relay.
@@ -214,6 +256,7 @@ impl MasqueUdp {
         let (outgoing, mut queue) = mpsc::channel::<Vec<u8>>(FLOW_QUEUE);
         let inbound = self.inbound_tx.clone();
         let reader_target = target.clone();
+        let alive = Arc::new(AtomicBool::new(true));
         // Writer: one capsule per payload, then a graceful FIN when the flow is
         // dropped. A failed write ends the task, which closes the queue so the
         // association reopens the flow on the next datagram.
@@ -228,10 +271,16 @@ impl MasqueUdp {
         });
         // Reader: DATA frames carry the capsule byte stream; capsules may span
         // DATA frames, so the bytes are buffered until a whole capsule is here.
+        let reader_alive = alive.clone();
         tokio::spawn(async move {
+            // Every exit path (peer FIN, malformed capsule, oversized frame)
+            // marks the flow dead so `flow_sender` can reclaim it.
+            let _dead = DeadOnDrop(reader_alive);
             let mut recv = recv;
             let mut pending: Vec<u8> = Vec::new();
-            while let Ok(Some((frame_type, data))) = h3::read_frame(&mut recv).await {
+            while let Ok(Some((frame_type, data))) =
+                h3::read_frame_limited(&mut recv, MAX_DATA_FRAME as u64).await
+            {
                 if frame_type != 0x00 {
                     continue;
                 }
@@ -263,62 +312,68 @@ impl MasqueUdp {
                         }
                     }
                 }
-                if pending.len() > MAX_CAPSULE {
-                    debug!("masque capsule buffer exceeded {MAX_CAPSULE} bytes; flow closed");
+                if pending.len() > MAX_CAPSULE + MAX_DATA_FRAME {
+                    debug!(
+                        "masque capsule buffer exceeded {} bytes; flow closed",
+                        MAX_CAPSULE + MAX_DATA_FRAME
+                    );
                     return;
                 }
             }
         });
-        Ok(Flow { outgoing })
+        Ok(Flow { outgoing, alive })
     }
 
+    /// Get a live sender for `target`, opening a request stream when needed.
+    /// Closed flows (peer FIN, reader protocol error, writer failure) are
+    /// pruned for *every* destination before the cap is checked, so a peer
+    /// that ends streams cannot pin the association at `MAX_CONCURRENT_DESTINATIONS`.
     async fn flow_sender(&mut self, target: &Target) -> io::Result<mpsc::Sender<Vec<u8>>> {
-        let dead = self
-            .flows
-            .get(target)
-            .map(|flow| flow.outgoing.is_closed())
-            .unwrap_or(false);
-        if dead {
-            self.flows.remove(target);
+        self.flows.retain(|_, flow| !flow.is_dead());
+        if let Some(flow) = self.flows.get(target) {
+            return Ok(flow.outgoing.clone());
         }
-        if !self.flows.contains_key(target) {
-            if self.flows.len() >= MAX_FLOWS {
-                return Err(io::Error::other(format!(
-                    "masque: at most {MAX_FLOWS} concurrent CONNECT-UDP destinations per association"
-                )));
-            }
-            let flow = self.open_flow(target).await.map_err(io::Error::other)?;
-            self.flows.insert(target.clone(), flow);
+        if self.flows.len() >= MAX_CONCURRENT_DESTINATIONS {
+            return Err(io::Error::other(format!(
+                "masque: at most {MAX_CONCURRENT_DESTINATIONS} concurrent CONNECT-UDP destinations per association"
+            )));
         }
-        Ok(self
-            .flows
-            .get(target)
-            .expect("flow was inserted above")
-            .outgoing
-            .clone())
+        let flow = self.open_flow(target).await.map_err(io::Error::other)?;
+        let sender = flow.outgoing.clone();
+        self.flows.insert(target.clone(), flow);
+        Ok(sender)
     }
 
     /// Send one UDP payload to `target`, opening the CONNECT-UDP flow when this
     /// is the first datagram for that destination.
     pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
-        if payload.len() + 1 > MAX_CAPSULE {
+        if payload.len() > MAX_UDP_PAYLOAD {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "masque datagram is too large",
+                format!("masque datagram is larger than the {MAX_UDP_PAYLOAD}-byte UDP limit"),
             ));
         }
-        let mut sender = self.flow_sender(target).await?;
-        if sender.send(payload.to_vec()).await.is_err() {
-            // The flow was closed by the peer or its writer failed; open a new
-            // request stream for the same destination (UDP is connectionless).
-            self.flows.remove(target);
-            sender = self.flow_sender(target).await?;
-            sender
-                .send(payload.to_vec())
-                .await
-                .map_err(|_| io::Error::other("masque CONNECT-UDP flow closed"))?;
+        let sender = self.flow_sender(target).await?;
+        // A full queue waits for the writer; bound that wait so a peer that
+        // stops reading cannot stall the whole UDP association indefinitely.
+        match tokio::time::timeout(self.timeout, sender.send(payload.to_vec())).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) | Err(_) => {
+                // The flow was closed by the peer or its writer failed (or the
+                // writer did not drain in time); open a new request stream for
+                // the same destination since UDP is connectionless.
+                self.flows.remove(target);
+                let reopened = self.flow_sender(target).await?;
+                match tokio::time::timeout(self.timeout, reopened.send(payload.to_vec())).await {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(_)) => Err(io::Error::other("masque CONNECT-UDP flow closed")),
+                    Err(_) => Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "masque CONNECT-UDP flow did not drain",
+                    )),
+                }
+            }
         }
-        Ok(())
     }
 
     /// Receive one UDP payload; returns the destination it belongs to. A
@@ -597,5 +652,53 @@ mod tests {
         h3::encode_varint(CAPSULE_DATAGRAM, &mut buffer);
         h3::encode_varint(MAX_CAPSULE as u64 + 1, &mut buffer);
         assert!(next_capsule(&mut buffer).is_err());
+    }
+
+    #[test]
+    fn a_full_udp_datagram_fits_the_capsule_cap() {
+        let payload = vec![0xAB; MAX_UDP_PAYLOAD];
+        let frame = datagram_frame(&payload);
+        let mut pos = 0;
+        assert_eq!(h3::decode_varint(&frame, &mut pos), Some(0x00)); // DATA
+        let length = h3::decode_varint(&frame, &mut pos).unwrap();
+        let mut capsules = frame[pos..pos + length as usize].to_vec();
+        let (kind, value) = next_capsule(&mut capsules).unwrap().unwrap();
+        assert_eq!(kind, CAPSULE_DATAGRAM);
+        assert_eq!(datagram_payload(&value).unwrap().len(), MAX_UDP_PAYLOAD);
+        assert!(capsules.is_empty());
+    }
+
+    #[test]
+    fn closed_flows_are_visible_for_reclamation() {
+        // A live flow is not pruned; a reader exit (DeadOnDrop), a dropped
+        // writer receiver, or an explicit shutdown all mark it dead.
+        let alive = Arc::new(AtomicBool::new(true));
+        let (outgoing, _receiver) = mpsc::channel::<Vec<u8>>(1);
+        let flow = Flow {
+            outgoing,
+            alive: alive.clone(),
+        };
+        assert!(!flow.is_dead());
+        drop(flow);
+
+        let (outgoing, _receiver) = mpsc::channel::<Vec<u8>>(1);
+        let flow = Flow {
+            outgoing,
+            alive: alive.clone(),
+        };
+        assert!(!flow.is_dead());
+        {
+            let _dead = DeadOnDrop(alive.clone());
+        }
+        assert!(flow.is_dead(), "a reader exit must mark the flow dead");
+
+        let receiver_gone = Arc::new(AtomicBool::new(true));
+        let (outgoing, receiver) = mpsc::channel::<Vec<u8>>(1);
+        drop(receiver);
+        let flow = Flow {
+            outgoing,
+            alive: receiver_gone,
+        };
+        assert!(flow.is_dead(), "a failed writer must mark the flow dead");
     }
 }

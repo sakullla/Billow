@@ -1082,6 +1082,12 @@ enum MasqueMode {
     NoExtendedConnect,
     /// A 200 without `capsule-protocol: ?1`: there is no datagram framing.
     NoCapsuleProtocol,
+    /// Echo one datagram, then end the request stream: the client must notice
+    /// the FIN and open a new stream for the next datagram.
+    CloseAfterEcho,
+    /// Echo every datagram, then end the request stream after `delay`; used to
+    /// hold `MAX_CONCURRENT_DESTINATIONS` flows open and then close them all.
+    CloseAfter(Duration),
 }
 
 async fn handle_masque_request(
@@ -1128,13 +1134,35 @@ async fn handle_masque_request(
         MasqueMode::NoCapsuleProtocol => {
             peer_write_headers(&mut send, &[(":status", "200")]).await?;
         }
-        MasqueMode::Accept | MasqueMode::NoExtendedConnect => {
+        MasqueMode::Accept
+        | MasqueMode::NoExtendedConnect
+        | MasqueMode::CloseAfterEcho
+        | MasqueMode::CloseAfter(_) => {
             peer_write_headers(&mut send, &[(":status", "200"), ("capsule-protocol", "?1")])
                 .await?;
         }
     }
+    let close_at = match mode {
+        MasqueMode::CloseAfter(delay) => Some(tokio::time::Instant::now() + delay),
+        _ => None,
+    };
     let mut pending = Vec::new();
-    while let Some((frame_type, data)) = peer_read_frame(&mut recv).await? {
+    loop {
+        let frame = if let Some(close_at) = close_at {
+            tokio::select! {
+                _ = tokio::time::sleep_until(close_at) => {
+                    let _ = send.finish();
+                    note(&log, "closed=1");
+                    return Ok(());
+                }
+                frame = peer_read_frame(&mut recv) => frame?,
+            }
+        } else {
+            peer_read_frame(&mut recv).await?
+        };
+        let Some((frame_type, data)) = frame else {
+            return Ok(());
+        };
         if frame_type != 0x00 {
             continue;
         }
@@ -1166,6 +1194,11 @@ async fn handle_masque_request(
                     put_varint(capsule.len() as u64, &mut frame);
                     frame.extend_from_slice(&capsule);
                     send.write_all(&frame).await?;
+                    if matches!(mode, MasqueMode::CloseAfterEcho) {
+                        let _ = send.finish();
+                        note(&log, "closed=1");
+                        return Ok(());
+                    }
                 }
                 // Unknown capsule types are ignored, as RFC 9297 requires.
                 Ok(Some(_)) => {}
@@ -1173,7 +1206,6 @@ async fn handle_masque_request(
             }
         }
     }
-    Ok(())
 }
 
 async fn spawn_masque_peer(mode: MasqueMode, cert: Cert) -> (u16, PeerLog) {
@@ -1286,6 +1318,38 @@ fn masque_udp_exchange(
     let (read, _) = socket.recv_from(&mut buffer).ok()?;
     assert!(read > 10, "reply too short: {read}");
     Some(buffer[10..read].to_vec())
+}
+
+/// Send one datagram repeatedly until a reply arrives or `within` expires. A
+/// closed flow is reclaimed on the next send, so this exercises the recovery
+/// path without depending on how quickly the reader sees the peer's FIN.
+fn masque_udp_exchange_retry(
+    socket: &std::net::UdpSocket,
+    relay: std::net::SocketAddr,
+    target: std::net::SocketAddr,
+    payload: &[u8],
+    within: Duration,
+) -> Option<Vec<u8>> {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        if let Some(reply) =
+            masque_udp_exchange(socket, relay, target, payload, Duration::from_millis(400))
+        {
+            return Some(reply);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn masque_path_count(log: &PeerLog, path: &str) -> usize {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.as_str() == path)
+        .count()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1455,5 +1519,77 @@ async fn masque_requires_the_capsule_protocol_in_the_response() {
     assert!(reply.is_none(), "capsules were not negotiated: {reply:?}");
     assert!(wait_for_peer_log(&log, "method=CONNECT").await, "{log:?}");
     assert!(!peer_log_has(&log, "datagram "), "{log:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_reopens_a_request_stream_the_peer_ended() {
+    let cert = make_cert("masque-reopen");
+    let (peer_port, log) = spawn_masque_peer(MasqueMode::CloseAfterEcho, cert).await;
+    let mut kernel = start_masque_kernel(peer_port, true, true);
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let first = masque_udp_exchange_retry(
+        &socket,
+        relay,
+        target,
+        b"first-open",
+        Duration::from_secs(5),
+    )
+    .expect("the first CONNECT-UDP flow must echo");
+    assert_eq!(first, b"first-open");
+    // The peer ended the first request stream after echoing. The association
+    // must notice the FIN, reclaim the flow and open a new request stream for
+    // the same destination instead of writing into the dead one.
+    let second = masque_udp_exchange_retry(
+        &socket,
+        relay,
+        target,
+        b"second-open",
+        Duration::from_secs(5),
+    )
+    .unwrap_or_else(|| panic!("a closed flow was not reopened: {log:?}"));
+    assert_eq!(second, b"second-open");
+    let path = "path=/.well-known/masque/udp/198.51.100.7/5353/";
+    assert_eq!(masque_path_count(&log, path), 2, "{log:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_reclaims_peer_closed_flows_for_new_destinations() {
+    use billow_kernel::outbound::masque::MAX_CONCURRENT_DESTINATIONS;
+
+    let cert = make_cert("masque-reclaim");
+    let (peer_port, log) =
+        spawn_masque_peer(MasqueMode::CloseAfter(Duration::from_secs(2)), cert).await;
+    let mut kernel = start_masque_kernel(peer_port, true, true);
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    // Open one flow per destination and keep every stream open (the peer only
+    // echoes), so the association reaches its flow cap.
+    for index in 0..MAX_CONCURRENT_DESTINATIONS {
+        let target: SocketAddr = format!("198.51.100.{}:5353", index + 1).parse().unwrap();
+        let reply = masque_udp_exchange(&socket, relay, target, b"fill", Duration::from_secs(5))
+            .unwrap_or_else(|| panic!("flow {index} did not echo: {log:?}"));
+        assert_eq!(reply, b"fill");
+    }
+    // The peer ends every stream two seconds after it was opened; once all of
+    // them are closed, a destination beyond the cap must still be reachable.
+    std::thread::sleep(Duration::from_millis(2400));
+    let fresh: SocketAddr = "203.0.113.250:9999".parse().unwrap();
+    let reply = masque_udp_exchange_retry(
+        &socket,
+        relay,
+        fresh,
+        b"after-closed",
+        Duration::from_secs(5),
+    )
+    .unwrap_or_else(|| panic!("closed flows pinned the association at the cap: {log:?}"));
+    assert_eq!(reply, b"after-closed");
+    assert!(
+        masque_path_count(&log, "path=/.well-known/masque/udp/203.0.113.250/9999/",) >= 1,
+        "{log:?}"
+    );
     kernel.stop().unwrap();
 }

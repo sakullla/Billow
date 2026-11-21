@@ -327,7 +327,9 @@
       "status": "pass",
       "cases": {
         "positive": [
-          "masque_connect_udp_forwards_datagrams_per_destination"
+          "masque_connect_udp_forwards_datagrams_per_destination",
+          "masque_reopens_a_request_stream_the_peer_ended",
+          "masque_reclaims_peer_closed_flows_for_new_destinations"
         ],
         "negative": [
           "masque_connect_udp_refusal_fails_without_a_reply",
@@ -339,7 +341,7 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/quic_peers.rs",
       "peer": "a controlled HTTP/3 peer in tests/quic_peers.rs (quinn server, ALPN h3, its own QPACK/capsule codec, SETTINGS_ENABLE_CONNECT_PROTOCOL); no pinned listener",
-      "notes": "T14 implements RFC 9298 CONNECT-UDP, not the pinned Cloudflare WARP CONNECT-IP flow: the pinned `adapter/outbound/masque.go` has no `listeners:` mode and its endpoint (`cf-connect-ip` after ECDSA pinning and a generated client certificate) is not reachable offline, so no pinned-binary interop is claimed. The positive case opens two destinations on one association and checks the proxy `:authority`, the expanded `/.well-known/masque/udp/<host>/<port>/` path, `:protocol connect-udp`, `capsule-protocol: ?1` and a DATAGRAM capsule echo. The negative cases cover a 403 response, a peer without extended CONNECT, a 200 without the capsule protocol, an untrusted certificate, and the named refusal of TCP (CONNECT-IP needs an IP stack). Prior flakiness/rerun policy: these are default-suite loopback cases, run three times for T14 with no failures."
+      "notes": "T14 implements RFC 9298 CONNECT-UDP, not the pinned Cloudflare WARP CONNECT-IP flow: the pinned `adapter/outbound/masque.go` has no `listeners:` mode and its endpoint (`cf-connect-ip` after ECDSA pinning and a generated client certificate) is not reachable offline, so no pinned-binary interop is claimed. The positive cases open destinations on one association, check the proxy `:authority`, the expanded `/.well-known/masque/udp/<host>/<port>/` path, `:protocol connect-udp`, `capsule-protocol: ?1` and a DATAGRAM capsule echo, reopen a request stream the peer ended for the same destination, and recover a new destination after 32 held-open flows were closed by the peer. The negative cases cover a 403 response, a peer without extended CONNECT, a 200 without the capsule protocol, an untrusted certificate, and the named refusal of TCP (CONNECT-IP needs an IP stack). The CLI success path is family_cli.rs::cli_process_tunnels_udp_through_masque (SOCKS5 UDP ASSOCIATE through the shipped process). Default-suite cases were run three consecutive times for T14 with no failure or hang."
     }
   },
   "loopbackOnlyEvidence": {
@@ -349,7 +351,7 @@
     "trojan_udp_reconnect": "tests/protocols.rs::trojan_udp_reconnects_after_the_server_closes_the_stream proves that a server-closed UDP stream is retired and re-established on the next datagram of the same association.",
     "chained_trojan_udp_positive": "tests/protocols.rs::trojan_udp_goes_through_the_dialer_proxy_hop uses a controlled SOCKS5 TCP hop and a trojan UDP peer, and asserts the hop carried the server connection and the peer served the payload.",
     "domain_server_chained_udp": "tests/protocols.rs::shadowsocks_udp_chained_with_a_domain_server_keeps_the_replies configures `server: localhost` behind a hop: the hop resolves the name and reports the IP in its reply header, so the kernel compares resolved addresses instead of the configured string.",
-    "masque_connect_udp": "tests/quic_peers.rs drives the kernel's SOCKS5 UDP association through a controlled HTTP/3 CONNECT-UDP peer (two destinations, refusal, missing extended CONNECT, missing capsule negotiation, untrusted certificate, TCP refusal). A Mihomo peer is impossible: the pinned masque adapter is a Cloudflare WARP CONNECT-IP client with no listener, and its WARP endpoint needs an internet-accessible registration."
+    "masque_connect_udp": "tests/quic_peers.rs drives the kernel's SOCKS5 UDP association through a controlled HTTP/3 CONNECT-UDP peer (per-destination flows, refusal, missing extended CONNECT, missing capsule negotiation, untrusted certificate, TCP refusal, same-destination reopen after the peer FIN, and a 33rd destination after 32 closed flows). A Mihomo peer is impossible: the pinned masque adapter is a Cloudflare WARP CONNECT-IP client with no listener. The shipped CLI's SOCKS5 UDP ASSOCIATE is covered by family_cli.rs::cli_process_tunnels_udp_through_masque."
   },
   "notCovered": [
     "UDP for socks5, vless (packet-addr/XUDP), anytls (UoT), gost-relay and ssr: `udp: true` is rejected at load time; no UDP association exists for those families",
@@ -479,12 +481,13 @@
   "t14": {
     "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers masque",
     "result": {
-      "cases": 6,
-      "passed": 6,
+      "cases": 8,
+      "passed": 8,
       "failed": 0
     },
+    "cli": "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_udp_through_masque",
     "evidence": "tool/kernel-compat/evidence/t14-feasibility.json",
-    "note": "T14 delivered the RFC 9298 CONNECT-UDP subset over the T10 quinn profile and recorded the CONNECT-IP/IP-stack gap for T9/T7. The six default-suite cases above were run three times on macOS arm64; no pinned Mihomo masque peer exists."
+    "note": "T14 delivered the RFC 9298 CONNECT-UDP subset over the T10 quinn profile, bounded its per-association memory (32 destinations, 2-slot queues, one-datagram capsule/frame caps), made closed flows reclaimable, and recorded the CONNECT-IP/IP-stack gap for T18/T9/T7. The eight default-suite cases were run three times on macOS arm64; no pinned Mihomo masque peer exists."
   },
   "t15": {
     "date": "2026-11-22",

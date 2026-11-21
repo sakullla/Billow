@@ -15,7 +15,9 @@
 //! trailers or 0-RTT.
 //!
 //! The static table and the RFC 7541 Huffman table are copied from the pinned
-//! Go modules (`qpack@v0.6.0/static_table.go`, `x/net/http2/hpack/tables.go`).
+//! Go modules (`qpack@v0.6.0/static_table.go`, `x/net/http2/hpack/tables.go`);
+//! their copyright, conditions and disclaimer are in
+//! `native-kernel/THIRD_PARTY_NOTICES.md` (MIT and BSD-3-Clause).
 
 use std::collections::HashMap;
 use std::io;
@@ -226,10 +228,13 @@ pub async fn read_response(recv: &mut RecvStream) -> io::Result<Response> {
     }
 }
 
-/// Read one HTTP/3 frame. `Ok(None)` is the end of the stream. Frames are
-/// length-prefixed and may carry a DATA payload (the capsule protocol's bytes
-/// for CONNECT-UDP).
-pub async fn read_frame(recv: &mut RecvStream) -> io::Result<Option<(u64, Vec<u8>)>> {
+/// Read one HTTP/3 frame, accepting a payload of at most `max` bytes.
+/// `Ok(None)` is the end of the stream. Frames are length-prefixed and may
+/// carry a DATA payload (the capsule protocol's bytes for CONNECT-UDP).
+pub async fn read_frame_limited(
+    recv: &mut RecvStream,
+    max: u64,
+) -> io::Result<Option<(u64, Vec<u8>)>> {
     let Some(frame_type) = read_varint_async(recv).await? else {
         return Ok(None);
     };
@@ -239,7 +244,7 @@ pub async fn read_frame(recv: &mut RecvStream) -> io::Result<Option<(u64, Vec<u8
             "HTTP/3 frame length",
         ));
     };
-    if length > 1 << 20 {
+    if length > max {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "HTTP/3 frame too large",
@@ -248,6 +253,11 @@ pub async fn read_frame(recv: &mut RecvStream) -> io::Result<Option<(u64, Vec<u8
     let mut payload = vec![0u8; length as usize];
     recv.read_exact(&mut payload).await.map_err(map_io)?;
     Ok(Some((frame_type, payload)))
+}
+
+/// Read one HTTP/3 frame (the general 1 MiB bound).
+pub async fn read_frame(recv: &mut RecvStream) -> io::Result<Option<(u64, Vec<u8>)>> {
+    read_frame_limited(recv, 1 << 20).await
 }
 
 /// Parse a SETTINGS frame payload; unknown identifiers are ignored as RFC 9114

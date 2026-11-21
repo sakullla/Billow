@@ -8,18 +8,21 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn free_port() -> u16 {
-    // Unique within this process: the OS reuses a released ephemeral port at
-    // once and the tests here run in parallel.
+    // Kernel listener ports come from a range the OS does not use for
+    // ephemeral binds (macOS and Linux pick `bind(0)` ports above 32,000), so a
+    // peer's `bind(0)` cannot grab a just-released port before the kernel
+    // binds it. The registry keeps the number unique within this process; a
+    // busy slot is skipped.
     static PORTS: std::sync::Mutex<Option<std::collections::BTreeSet<u16>>> =
         std::sync::Mutex::new(None);
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(24_000);
     loop {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let slot = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let port = 24_000 + slot.wrapping_sub(24_000) % 8_000;
         let mut ports = PORTS.lock().unwrap_or_else(|p| p.into_inner());
-        if ports.get_or_insert_with(std::collections::BTreeSet::new).insert(port) {
+        let ports = ports.get_or_insert_with(std::collections::BTreeSet::new);
+        if !ports.contains(&port) && TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            ports.insert(port);
             return port;
         }
     }
@@ -44,7 +47,6 @@ fn spawn_echo() -> u16 {
     });
     port
 }
-
 
 /// Minimal SOCKS5 server for the CLI test: it dials the requested target and
 /// relays bytes, recording the target it accepted. The CLI process is the
@@ -97,9 +99,7 @@ fn spawn_socks5_peer() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
                 let mut port = [0u8; 2];
                 stream.read_exact(&mut port).unwrap();
                 let port = u16::from_be_bytes(port);
-                log.lock()
-                    .unwrap()
-                    .push(format!("{host}:{port}"));
+                log.lock().unwrap().push(format!("{host}:{port}"));
                 let Ok(mut upstream) = TcpStream::connect((host.as_str(), port)) else {
                     let _ = stream.write_all(&[0x05, 0x05, 0, 1, 0, 0, 0, 0, 0, 0]);
                     return;
@@ -110,7 +110,8 @@ fn spawn_socks5_peer() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
                 {
                     return;
                 }
-                let (mut up_r, mut stream_w) = (upstream.try_clone().unwrap(), stream.try_clone().unwrap());
+                let (mut up_r, mut stream_w) =
+                    (upstream.try_clone().unwrap(), stream.try_clone().unwrap());
                 let back = std::thread::spawn(move || {
                     let _ = std::io::copy(&mut stream, &mut upstream);
                 });
@@ -146,13 +147,13 @@ impl KernelProcess {
             format!("mixed-port: {port}\nlog-level: info\n{body}"),
         )
         .unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
             .arg(&config)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn billow-kernel");
-        wait_for_port(port);
+        wait_for_port(port, &mut child);
         KernelProcess { child, config }
     }
 
@@ -201,19 +202,76 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> std::process::Outp
     }
 }
 
-fn wait_for_port(port: u16) {
+fn wait_for_port(port: u16, child: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        if let Some(status) = child.try_wait().expect("wait for billow-kernel") {
+            // The process has exited, so draining the pipes cannot block.
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            if let Some(mut out) = child.stdout.take() {
+                let _ = out.read_to_string(&mut stdout);
+            }
+            if let Some(mut err) = child.stderr.take() {
+                let _ = err.read_to_string(&mut stderr);
+            }
+            panic!(
+                "kernel exited with {status} before listening on {port}: {stdout}
+{stderr}"
+            );
+        }
+        if kernel_ready(port) {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    let _ = child.kill();
+    let _ = child.wait();
     panic!("kernel never listened on {port}");
 }
 
+/// A bare TCP connect only proves *some* listener owns the port; the mixed
+/// inbound's SOCKS5 method negotiation proves the kernel itself is serving.
+/// The read timeout keeps a foreign listener from stalling the probe.
+fn kernel_ready(port: u16) -> bool {
+    let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+    if stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .is_err()
+    {
+        return false;
+    }
+    if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
+        return false;
+    }
+    let mut reply = [0u8; 2];
+    stream.read_exact(&mut reply).is_ok() && reply == [0x05, 0x00]
+}
+
+/// Connect to the kernel's listener, retrying a refused connection for a short
+/// while (the listener can be up a moment after the readiness probe under load;
+/// a kernel that is gone still fails within the deadline).
+fn connect_retry(proxy: SocketAddr) -> std::io::Result<TcpStream> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match TcpStream::connect_timeout(&proxy, Duration::from_secs(1)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn http_connect(proxy: SocketAddr, authority: &str) -> std::io::Result<(TcpStream, String)> {
-    let mut stream = TcpStream::connect(proxy)?;
+    let mut stream = connect_retry(proxy)?;
     stream.write_all(
         format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes(),
     )?;
@@ -231,7 +289,7 @@ fn http_connect(proxy: SocketAddr, authority: &str) -> std::io::Result<(TcpStrea
 }
 
 fn socks5_connect(proxy: SocketAddr, host: &str, port: u16) -> std::io::Result<TcpStream> {
-    let mut stream = TcpStream::connect(proxy)?;
+    let mut stream = connect_retry(proxy)?;
     stream.write_all(&[0x05, 0x01, 0x00])?;
     let mut selection = [0u8; 2];
     stream.read_exact(&mut selection)?;
@@ -363,7 +421,10 @@ fn process_forwards_through_a_protocol_outbound() {
     let proxy: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let (mut tunnel, status) = http_connect(proxy, &format!("127.0.0.1:{echo_port}")).unwrap();
     assert_eq!(status, "HTTP/1.1 200 Connection Established");
-    assert_eq!(roundtrip(&mut tunnel, b"cli-through-socks5"), b"cli-through-socks5");
+    assert_eq!(
+        roundtrip(&mut tunnel, b"cli-through-socks5"),
+        b"cli-through-socks5"
+    );
     assert_eq!(
         seen.lock().unwrap().as_slice(),
         [format!("127.0.0.1:{echo_port}")]
@@ -454,7 +515,10 @@ fn process_loads_mieru_and_rejects_sudoku() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("type 'sudoku' is not implemented"), "{stderr}");
+    assert!(
+        stderr.contains("type 'sudoku' is not implemented"),
+        "{stderr}"
+    );
     assert!(stderr.contains("GPL-3.0 derivative"), "{stderr}");
     assert!(stderr.contains("T17"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);

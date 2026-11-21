@@ -23,7 +23,7 @@ type stays rejected (see [Not implemented](#not-implemented)). T14 added
 `masque` as an RFC 9298 CONNECT-UDP client over HTTP/3, reusing the T10
 `quinn` profile for the UDP association;
 the pinned Cloudflare WARP CONNECT-IP flow (`cf-connect-ip` + a userspace IP
-stack) is rejected by name. T15 added `shadowquic`: the JLS ClientHello /
+stack) is rejected by name and owned by T18. T15 added `shadowquic`: the JLS ClientHello /
 ServerHello random seal is an independent implementation of the locked
 `jls-tls` algorithm, injected into rustls's own ClientHello through a
 recorded-random replay, over the same `quinn` transport. T16 added the
@@ -169,7 +169,7 @@ identities of the servers are logged as the session exit.
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
 | `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
-| `masque` | RFC 9298 CONNECT-UDP over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): extended CONNECT (`SETTINGS_ENABLE_CONNECT_PROTOCOL`), one request stream per destination (`:protocol connect-udp`, `/.well-known/masque/udp/<host>/<port>/`), `capsule-protocol: ?1`, `DATAGRAM` capsules with context ID 0, `sni`/`skip-cert-verify`/`handshake-timeout`, one QUIC connection per UDP association | `udp: true`: CONNECT-UDP flows | controlled HTTP/3 peer in `tests/quic_peers.rs` (request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate); no Mihomo listener exists and the pinned adapter is a Cloudflare WARP CONNECT-IP client |
+| `masque` | RFC 9298 CONNECT-UDP over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): extended CONNECT (`SETTINGS_ENABLE_CONNECT_PROTOCOL`), one request stream per destination (`:protocol connect-udp`, `/.well-known/masque/udp/<host>/<port>/`), `capsule-protocol: ?1`, `DATAGRAM` capsules with context ID 0 (at most one UDP datagram per capsule), at most 32 destinations per association, a DATA frame larger than one maximal capsule refused, closed flows reclaimed, `sni`/`skip-cert-verify`/`handshake-timeout`, one QUIC connection per UDP association | `udp: true`: CONNECT-UDP flows | controlled HTTP/3 peer in `tests/quic_peers.rs` (request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate, peer-FIN reopen, 32 closed flows then a new destination) plus the shipped CLI's SOCKS5 UDP ASSOCIATE in `family_cli.rs`; no Mihomo listener exists and the pinned adapter is a Cloudflare WARP CONNECT-IP client |
 
 The mieru module the pinned outbound wraps is GPL-3.0: this repository contains
 no mieru source, links no mieru code and derives nothing from its
@@ -228,17 +228,24 @@ the association ends with its control connection or after
 
 ### Protocol families outside this slice
 
-The pinned parser lists 28 outbound types. Twelve are implemented
-(`ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`, `vmess`, `snell`,
-`trusttunnel`, `gost-relay`, `ssr`, `mieru`) and five are partial
-(`ssh`, which opens one client per dial and rejects private-key file paths;
-`masque`, which implements CONNECT-UDP but not the pinned CONNECT-IP/IP stack;
-`shadowquic`, which implements TCP/UDP and JLS but rejects `zero-rtt`, QUIC
-`v2` and the private Brutal congestion options; `wireguard` and `openvpn`,
-whose protocol transports are implemented but whose TCP/UDP dial needs the
-T6/T7 userspace IP stack and TUN device).
-The remaining mesh types are rejected by name at load time, so no configuration is
-silently reduced:
+The pinned parser lists 28 outbound types, matching the status recorded in
+`tool/kernel-compat/evidence/rust-mapping.json`:
+
+- **implemented (11)**: `ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`,
+  `vmess`, `snell`, `trusttunnel`, `gost-relay`, `ssr`;
+- **partial (9)**: `ssh` (one client per dial, no private-key file paths),
+  `mieru` and `masque` (TCP slice / CONNECT-UDP only), `tuic`, `hysteria` and
+  `hysteria2` (their T10 gaps), `shadowquic` (TCP/UDP and JLS, but `zero-rtt`,
+  QUIC `v2` and the private Brutal congestion options are rejected), and
+  `wireguard`/`openvpn` (protocol transports implemented, TCP/UDP dial needs
+  the T6/T7 userspace IP stack and TUN device);
+- **unimplemented (4)**: `sudoku` (the clean-room port is blocked; rejected by
+  name) and the mesh families `tailscale`, `zerotier`, `easytier`;
+- **built-ins (4)**: `direct`, `dns`, `reject` and `rematch` as `proxies`
+  entries (T5).
+
+Every unimplemented type is rejected by name at load time, so no configuration
+is silently reduced:
 
 | families | why not here | task / decision |
 | --- | --- | --- |
@@ -262,14 +269,20 @@ is vendored). The pinned `adapter/outbound/masque.go` is a Cloudflare WARP
 client: it sends `:protocol cf-connect-ip` after pinning the endpoint's ECDSA
 key and presenting a generated client certificate, then terminates the returned
 IP packets in a userspace stack (`connect-ip-go`/mipstack or gVisor). That is
-what serves TCP, and it is not implemented here: the `private-key`,
+what serves TCP, and it is not implemented here (T18): the `private-key`,
 `public-key`, `uri`, `network: h2|h3-l4proxy`, `ip`, `ipv6`, `mtu`,
 `ip-stack`, `remote-dns-resolve` and `dns` options are rejected by name at load
 time, and a TCP dial through `masque` fails with the CONNECT-IP/IP-stack
 reason. Because the pinned options describe that WARP registration, an
 RFC 9298 endpoint is configured with `server`/`port` plus `udp: true` and has
 no `private-key`/`public-key`; the evidence file records this as the boundary
-rather than claiming the pinned shape.
+rather than claiming the pinned shape. One association opens at most 32
+destination streams, each with a two-payload queue and a one-datagram capsule
+and DATA-frame bound (65,535-byte UDP payload; a larger DATA frame is refused); the worst-case per-association
+memory, including T10's QUIC windows, is recorded for T7
+(`tool/kernel-compat/evidence/t14-feasibility.json`) and is below 20 MB
+(decimal) for one association; T7 must cap concurrent associations. CONNECT-IP, the IP stack and the pinned WARP
+shape are T18.
 
 T15's `shadowquic` is an independent implementation of the JLS random seal,
 written from the locked `jls-tls` behaviour and observed on the wire. JLS is not
@@ -326,8 +339,8 @@ workspace `rust-version` to 1.89 instead of shipping an inconsistent MSRV.
 `03-execution-plan.md`
 defines T9/T11 (non-QUIC), T10 (QUIC), T16 (device-family protocol halves;
 device/TUN and the IP stack remain T6/T7) and T5's integration of their output. The capability index
-records the implemented families as `implemented`, the T11 ones as `partial`
-with the missing options, and the rest as `unimplemented`; none can be
+records each family at the status the kernel actually reaches: `implemented`,
+`partial` (with the missing options named) or `unimplemented`; none can be
 reported as compatible.
 
 ### Not implemented

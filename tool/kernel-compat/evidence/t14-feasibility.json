@@ -53,7 +53,7 @@
       "target_host keeps DNS/IPv4 literals and percent-encodes an IPv6 literal's colons (RFC 9298 §3); :authority is the proxy's authority (RFC 9298 §3.4)",
       "2xx response with Capsule-Protocol: ?1 required; capsules run in HTTP/3 DATA frames; DATAGRAM capsules (type 0x00) carry context ID 0 then the UDP payload",
       "unknown capsule types are ignored (RFC 9297 §3.3); a non-zero context ID, truncated capsule or oversized capsule closes that flow only",
-      "at most 64 destinations per association; a closed flow is reopened on the next datagram to the same destination"
+      "at most 32 destinations per association (MAX_CONCURRENT_DESTINATIONS); a closed flow (peer FIN, malformed capsule, oversized frame, writer failure) is marked dead by the reader task and pruned before the cap is checked, and reopened on the next datagram to the same destination"
     ],
     "rejectedAtLoad": [
       "private-key / public-key (WARP endpoint pinning and client certificate)",
@@ -76,7 +76,9 @@
       "WebTransport",
       "0-RTT",
       "connection pooling",
-      "congestion-controller / cwnd / bbr-profile"
+      "congestion-controller / cwnd / bbr-profile",
+      "DATA frames larger than one maximal capsule (~64 KiB) are refused (local bound)",
+      "more than 32 concurrent destinations per association (local bound)"
     ]
   },
   "quicDependencyProfile": {
@@ -94,7 +96,7 @@
       "connect-ip-go / mipstack / gVisor equivalents: no CONNECT-IP client or userspace IP stack",
       "uritemplate: not needed (the RFC 9298 default template is the only one implemented)"
     ],
-    "memory": "Per UDP association: one UDP Endpoint and one QUIC Connection with T10's caps (stream receive window 512 KiB, connection receive 2 MiB, send window 2 MiB), the HTTP/3 control/QPACK send streams, the retained peer control/QPACK streams, one bidirectional request stream per destination (at most 64) and two 16-slot datagram queues per flow. No pool, no HTTP Datagram buffers (datagrams are not advertised). T7 must measure the whole iOS extension against 40,000,000 bytes; this file records the dependency and caps, not a device measurement."
+    "memory": "Per UDP association: one UDP Endpoint and one QUIC Connection with T10's caps (stream receive window 512 KiB, connection receive 2 MiB, send window 2 MiB), the HTTP/3 control/QPACK send streams, the retained peer control/QPACK streams, and at most 32 bidirectional request streams (MAX_CONCURRENT_DESTINATIONS). App-level buffers are bounded per flow: an outbound queue of FLOW_QUEUE (2) x 65,535 B = 131,070 B; an inbound capsule buffer of MAX_CAPSULE (65,543 B) + MAX_DATA_FRAME (65,559 B) = 131,102 B; while a maximal capsule is parsed, the predecessor DATA frame (65,559 B), the capsule value (65,543 B) and the payload copy (65,535 B) can coexist, so one flow peaks at about 459 KB. 32 flows peak at about 14.7 MB, plus the shared inbound queue (2 x 65,535 B) and QUIC's 2 MiB receive + 2 MiB send windows. Approximate worst case for one association: 19 MB decimal (<20 MB), excluding allocator overhead and the rest of the iOS extension. The engine creates one association per SOCKS5 UDP ASSOCIATE session and Limits.max_sessions defaults to 256: T7/T6 must cap concurrent masque associations (or lower max_sessions) to keep the whole extension within 40,000,000 bytes; this file records the per-association bounds, not a device measurement. No pool, no HTTP Datagram buffers (datagrams are not advertised)."
   },
   "verification": {
     "defaultSuite": {
@@ -106,26 +108,32 @@
         "tests/quic_peers.rs::masque_requires_extended_connect_advertisement (no request stream is opened)",
         "tests/quic_peers.rs::masque_requires_the_capsule_protocol_in_the_response",
         "tests/quic_peers.rs::masque_connect_udp_verifies_the_server_certificate_by_default",
-        "tests/quic_peers.rs::masque_tcp_dial_is_refused_by_name (inbound 502)"
+        "tests/quic_peers.rs::masque_tcp_dial_is_refused_by_name (inbound 502)",
+        "tests/quic_peers.rs::masque_reopens_a_request_stream_the_peer_ended (peer FIN -> dead-flow reclamation -> new stream for the same destination)",
+        "tests/quic_peers.rs::masque_reclaims_peer_closed_flows_for_new_destinations (32 held-open flows closed by the peer; a 33rd destination still opens)"
       ],
-      "repeat": "the six cases were run three consecutive times on macOS arm64 with no failure (2.8-3.3 s per run)",
+      "repeat": "the eight cases were run three consecutive times on macOS arm64 with no failure or hang",
       "unit": [
         "src/outbound/masque.rs::tests::connect_udp_path_follows_rfc9298",
         "src/outbound/masque.rs::tests::authority_is_the_proxy_not_the_target",
         "src/outbound/masque.rs::tests::datagram_is_a_capsule_inside_a_data_frame",
         "src/outbound/masque.rs::tests::partial_capsules_are_buffered_until_complete",
         "src/outbound/masque.rs::tests::unknown_capsules_are_skipped_and_bad_context_is_refused",
-        "src/outbound/masque.rs::tests::a_capsule_longer_than_the_cap_is_refused"
+        "src/outbound/masque.rs::tests::a_capsule_longer_than_the_cap_is_refused",
+        "src/outbound/masque.rs::tests::a_full_udp_datagram_fits_the_capsule_cap",
+        "src/outbound/masque.rs::tests::closed_flows_are_visible_for_reclamation"
       ],
       "configAndCli": [
         "tests/config.rs::masque_accepts_the_connect_udp_subset",
         "tests/config.rs::masque_rejects_the_pinned_connect_ip_options_by_name",
-        "crates/billow-kernel-cli/tests/cli.rs::process_loads_t14_masque"
-      ]
+        "crates/billow-kernel-cli/tests/cli.rs::process_loads_t14_masque",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_udp_through_masque (successful SOCKS5 UDP ASSOCIATE through the real billow-kernel process and a controlled HTTP/3 peer)"
+      ],
+      "harness": "the CLI harnesses no longer take kernel ports from the OS ephemeral range: cli.rs and family_cli.rs allocate 24000-31999 (outside macOS/Linux ephemeral ranges, so a peer's bind(0) cannot steal a just-released port), probe readiness with the SOCKS5 method negotiation, detect an early kernel exit with its stderr, and retry a refused connect for 3 s. Five consecutive full-suite runs after the change were green; the earlier 1-in-5 ConnectionRefused at cli_process_tunnels_through_ssr was a harness port race, not a protocol failure."
     },
     "controlledPeer": {
       "where": "tests/quic_peers.rs",
-      "what": "a quinn HTTP/3 server with an independent QPACK/capsule codec; SETTINGS_ENABLE_CONNECT_PROTOCOL; 200 + capsule-protocol ?1 and DATAGRAM echo, or 403 / no extended CONNECT / no capsule protocol",
+      "what": "a quinn HTTP/3 server with an independent QPACK/capsule codec; SETTINGS_ENABLE_CONNECT_PROTOCOL; 200 + capsule-protocol ?1 and DATAGRAM echo, or 403 / no extended CONNECT / no capsule protocol; CloseAfterEcho and CloseAfter(delay) modes for dead-flow reclamation",
       "whyNotPinnedMihomo": "the pinned masque adapter is a client for Cloudflare WARP with no `listeners:` mode; an offline WARP endpoint does not exist, so no pinned-binary interop is claimed"
     },
     "optionMatrix": {
@@ -134,12 +142,13 @@
     }
   },
   "decisionsForT9": [
-    "T14 delivers a real but partial masque: CONNECT-UDP works and is peer-verified; CONNECT-IP/TCP is not implemented. A configuration whose masque entry uses private-key/public-key (every WARP configuration) is rejected by name, so T9 cannot count masque as compatible and must keep it in the unsupported list.",
-    "If T9 needs the pinned shape, the dependency decision is a CONNECT-IP client + userspace IP stack (or a T7-owned stack exposed to the outbound). The pinned reference is metacubex/connect-ip-go + metacubex/mipstack (or gVisor); no such crate is available offline."
+    "The T14 recipe was narrowed to the RFC 9298 CONNECT-UDP subset; CONNECT-IP, the IP stack and the pinned Cloudflare WARP config shape are T18 (depends on T14). T14's subset is real but partial: a WARP-style masque configuration (private-key/public-key/uri/ip/ipv6/mtu/ip-stack/dns) is rejected by name until T18, so T9 must not count masque as compatible.",
+    "If T9 needs the pinned shape, the dependency decision is T18's CONNECT-IP client + userspace IP stack (pinned reference: metacubex/connect-ip-go + metacubex/mipstack or gVisor); no such crate is available offline.",
+    "The CONNECT-UDP subset shares the HTTP/3 client in src/outbound/h3.rs with Hysteria2; T18 should extend the same control-stream/settings surface rather than adding a second HTTP/3 implementation."
   ],
   "decisionsForT7": [
-    "The memory caps are in quicDependencyProfile.memory; T7 must measure the extension RSS on a device and can reclaim a masque association when its idle timeout fires (the engine drops the association and MasqueUdp::drop closes the QUIC connection).",
+    "The per-association worst case is recorded in quicDependencyProfile.memory (~19 MB decimal: 32 destination flows, 2-slot queues, one-datagram capsule/frame caps, plus T10's QUIC windows). T7 must measure the extension RSS and cap concurrent masque associations (one per SOCKS5 UDP ASSOCIATE; Limits.max_sessions defaults to 256); a dropped association closes its QUIC connection in MasqueUdp::drop and its flow tasks end with it.",
     "iOS Network Extension builds link quinn/rustls the same way as T10; no extra C dependency was added."
   ],
-  "license": "The client is written from RFC 9298/9297/9220/9114 and uses no pinned Go source (connect-ip-go, metacubex/http, quic-go). The QPACK static table and Huffman table in src/outbound/h3.rs were already copied from MIT/BSD-licensed Go modules for T10."
+  "license": "The client is written from RFC 9298/9297/9220/9114 and uses no pinned Go source (connect-ip-go, metacubex/http, quic-go). The QPACK static table and Huffman table in src/outbound/h3.rs are copied from the MIT-licensed metacubex/qpack static_table.go (Copyright 2019 Marten Seemann) and the BSD-3-Clause golang.org/x/net/http2/hpack tables (Copyright 2014 The Go Authors); the full copyright, conditions and disclaimer are in native-kernel/THIRD_PARTY_NOTICES.md."
 }
