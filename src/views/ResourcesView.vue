@@ -813,7 +813,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <Modal v-if="geoOpen" :title="tr('GEO 数据库')" :subtitle="tr('GEOIP、GEOSITE 规则使用的地域与域名数据')" @close="geoOpen = false">
+    <Modal :open="geoOpen" :title="tr('GEO 数据库')" :subtitle="tr('GEOIP、GEOSITE 规则使用的地域与域名数据')" @close="geoOpen = false">
       <div class="geo-sheet" data-testid="geo-settings">
         <ul class="geo-file-list" data-testid="geo-file-list">
           <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }">
@@ -954,15 +954,15 @@ onMounted(() => {
     </Modal>
 
     <Modal
-      v-if="detail"
+      :open="Boolean(detail)"
       wide
-      :title="detail.row.name"
-      :subtitle="detail.row.kind === 'proxy'
+      :title="detail?.row.name ?? ''"
+      :subtitle="detail ? (detail.row.kind === 'proxy'
         ? tr('代理集 · {0} 个节点', { 0: detail.data ? detail.data.total : detail.row.count })
-        : tr('规则集 · {0} 条规则{1}{2}', { 0: (detail.data?.total || detail.row.count).toLocaleString(), 1: detail.row.behavior ? ` · ${detail.row.behavior}` : '', 2: ruleFormat(detail.row) ? ` · ${ruleFormat(detail.row)}` : '' })"
+        : tr('规则集 · {0} 条规则{1}{2}', { 0: (detail.data?.total || detail.row.count).toLocaleString(), 1: detail.row.behavior ? ` · ${detail.row.behavior}` : '', 2: ruleFormat(detail.row) ? ` · ${ruleFormat(detail.row)}` : '' })) : ''"
       @close="closeProviderDetail"
     >
-      <div class="provider-detail" data-testid="provider-detail">
+      <div v-if="detail" class="provider-detail" data-testid="provider-detail">
         <div v-if="detail.data?.source && detail.data.source !== 'inline'" class="detail-source-row">
           <p class="muted small mono ellipsis detail-source grow" :title="detail.data.source">{{ detail.data.source }}</p>
           <button
@@ -1046,23 +1046,23 @@ onMounted(() => {
           <Icon name="chevron-left" :size="15" />{{ tr('返回连接') }} </button>
         <button type="button" class="btn ghost" data-testid="close-provider-detail" @click="closeProviderDetail">{{ tr('关闭') }}</button>
         <button
-          v-if="detail.row.kind === 'proxy'"
+          v-if="detail && detail.row.kind === 'proxy'"
           type="button"
           class="btn primary"
           :disabled="!snap.kernel_running || fruitless(detail.row)"
           :aria-busy="fruitless(detail.row) || undefined"
-          @click="single(detail.row, 'healthcheck').then(() => detail && openDetail(detail.row))"
+          @click="detail && single(detail.row, 'healthcheck').then(() => detail && openDetail(detail.row))"
         >
           <span v-if="fruitless(detail.row)" class="spinner sm" aria-hidden="true" />
           <Icon v-else name="zap" :size="15" />{{ fruitless(detail.row) ? tr('检查中') : tr('健康检查') }}
         </button>
         <button
-          v-else-if="!isInline(detail.row)"
+          v-else-if="detail && !isInline(detail.row)"
           type="button"
           class="btn primary"
           :disabled="!snap.kernel_running || fruitless(detail.row)"
           :aria-busy="fruitless(detail.row) || undefined"
-          @click="single(detail.row, 'update').then(() => detail && openDetail(detail.row))"
+          @click="detail && single(detail.row, 'update').then(() => detail && openDetail(detail.row))"
         >
           <span v-if="fruitless(detail.row)" class="spinner sm" aria-hidden="true" />
           <Icon v-else name="refresh" :size="15" />{{ fruitless(detail.row) ? tr('更新中') : tr('更新规则集') }}

@@ -333,6 +333,8 @@ function onPrimary() {
 
 const portCopied = ref(false)
 let portCopiedTimer: ReturnType<typeof setTimeout> | null = null
+const exitIpCopied = ref(false)
+let exitIpCopiedTimer: ReturnType<typeof setTimeout> | null = null
 
 async function onCopyProxyEnv() {
   await store.copyProxyEnv()
@@ -341,6 +343,18 @@ async function onCopyProxyEnv() {
   portCopiedTimer = setTimeout(() => {
     portCopied.value = false
     portCopiedTimer = null
+  }, 1600)
+}
+
+async function onCopyExitIp() {
+  const ip = store.exitIp.value?.ip
+  if (!ip) return
+  await store.copyText(ip, t('exitIp.copied'))
+  exitIpCopied.value = true
+  if (exitIpCopiedTimer) clearTimeout(exitIpCopiedTimer)
+  exitIpCopiedTimer = setTimeout(() => {
+    exitIpCopied.value = false
+    exitIpCopiedTimer = null
   }, 1600)
 }
 
@@ -357,6 +371,8 @@ function toggleTunTile() {
 onBeforeUnmount(() => {
   if (portCopiedTimer) clearTimeout(portCopiedTimer)
   portCopiedTimer = null
+  if (exitIpCopiedTimer) clearTimeout(exitIpCopiedTimer)
+  exitIpCopiedTimer = null
 })
 </script>
 
@@ -772,11 +788,12 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="exit-ip-value mono"
+                  :class="{ copied: exitIpCopied }"
                   :title="t('exitIp.copy')"
                   data-testid="exit-ip-copy"
-                  @click="store.copyText(store.exitIp.value.ip, t('exitIp.copied'))"
+                  @click="onCopyExitIp"
                 >
-                  <span data-testid="exit-ip-value">{{ store.exitIp.value.ip }}</span><Icon name="copy" :size="12" class="exit-ip-copy-icon" />
+                  <span data-testid="exit-ip-value">{{ store.exitIp.value.ip }}</span><Icon :name="exitIpCopied ? 'check' : 'copy'" :size="12" class="exit-ip-copy-icon" />
                 </button>
                 <p class="muted small ellipsis exit-ip-line">
                   <span data-testid="exit-ip-region" :title="t('exitIp.region', { region: store.exitIp.value.region || '—' })">{{ store.exitIp.value.region || '—' }}</span>
@@ -850,7 +867,7 @@ onBeforeUnmount(() => {
                   <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="20" /></span>
                   <div class="group-row-text">
                     <span class="group-row-head">
-                      <span class="group-row-name">{{ group.name }}</span>
+                      <span class="group-row-name" :title="group.name">{{ group.name }}</span>
                       <span v-if="autoTypeLabel(group)" class="tag sm" data-testid="home-group-type">{{ autoTypeLabel(group) }}</span>
                       <span
                         v-if="group.fixed"
@@ -891,7 +908,7 @@ onBeforeUnmount(() => {
                     </span>
                   </div>
                   <div class="group-row-text">
-                    <span class="group-row-name">{{ group.name }}</span>
+                    <span class="group-row-name" :title="group.name">{{ group.name }}</span>
                     <span class="group-row-now">
                       <ChainPath :hops="hopsOf(group)" :groups="groupNames" fold data-testid="home-group-now" />
                       <Icon name="chevron-right" :size="13" class="group-tile-arrow" />
@@ -1043,8 +1060,19 @@ onBeforeUnmount(() => {
 }
 
 .exit-ip-value:hover .exit-ip-copy-icon,
-.exit-ip-value:focus-visible .exit-ip-copy-icon {
+.exit-ip-value:focus-visible .exit-ip-copy-icon,
+.exit-ip-value.copied .exit-ip-copy-icon {
   opacity: 1;
+}
+
+.exit-ip-value.copied .exit-ip-copy-icon {
+  color: var(--good);
+}
+
+@media (hover: none) {
+  .exit-ip-copy-icon {
+    opacity: 0.55;
+  }
 }
 
 .exit-ip-line {

@@ -113,6 +113,33 @@ const desktopWindow = computed(() => Boolean(app.value && app.value.autostart !=
     </SettingsRow>
   </SettingsSection>
 
+  <SettingsSection v-if="app" :title="tr('首页与统计')" data-testid="settings-network">
+    <SettingsRow :title="t('settings.exitIp.auto')" :description="t('settings.exitIp.detail')" setting="exit-ip" data-testid="auto-exit-ip-setting">
+      <Toggle
+        :model-value="app.auto_exit_ip"
+        :label="t('settings.exitIp.auto')"
+        data-testid="auto-exit-ip-toggle"
+        @update:model-value="store.setAutoExitIp"
+      />
+    </SettingsRow>
+    <SettingsRow
+      :title="t('settings.traffic.title')"
+      setting="traffic-history"
+      data-testid="traffic-history-setting"
+    >
+      <template #description>
+        {{ t('settings.traffic.detail', { days: store.trafficStats.value?.retention_days ?? 90 }) }} ·
+        <button type="button" class="link-btn" data-testid="open-traffic-stats" @click="store.openTrafficStats">{{ t('settings.traffic.open') }}</button>
+      </template>
+      <Toggle
+        :model-value="app.traffic_history"
+        :label="t('settings.traffic.record')"
+        data-testid="traffic-history-toggle"
+        @update:model-value="store.setTrafficRecording"
+      />
+    </SettingsRow>
+  </SettingsSection>
+
   <SettingsSection v-if="openShortcuts && !compact" :title="tr('键盘')">
     <SettingsRow
       nav

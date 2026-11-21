@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import type { Component } from 'vue'
-import Icon from '../../components/Icon.vue'
+import { computed, type Component } from 'vue'
+import { tr } from '../../lib/i18n'
 import { paneOf, type CategoryId } from '../../lib/settings/catalog'
+import { useStore } from '../../lib/store'
 import AboutPane from './AboutPane.vue'
 import BehaviorPane from './BehaviorPane.vue'
 import DataPane from './DataPane.vue'
@@ -13,17 +14,33 @@ import ProxyPane from './ProxyPane.vue'
 import TunPane from './TunPane.vue'
 
 /**
- * The panes of one settings page. A page with a single pane renders it as is;
- * a page with several (网络, 数据与关于) folds each pane behind a heading row so
- * the page opens short and the user unfolds only what they need. Folded panes
- * stay mounted, so search and deep links can still find their rows.
+ * Renders the panes belonging to one settings category:
+ * - Single pane: rendered directly.
+ * - `layout === 'tabs'` (System Proxy & TUN): crisp segmented switcher with live status dots, zero accordions.
+ * - `layout === 'stack'` (Backup & About): flat vertical sections, everything immediately visible.
  */
-defineProps<{
+const props = defineProps<{
   panes: readonly CategoryId[]
-  /** Pane unfolded when the page opens. */
-  open?: CategoryId
+  layout?: 'tabs' | 'stack'
+  /** Active sub-tab when `layout === 'tabs'`. */
+  activePane?: CategoryId
   compact?: boolean
 }>()
+
+const emit = defineEmits<{ select: [id: CategoryId] }>()
+
+const store = useStore()
+const snap = computed(() => store.snapshot.value)
+
+const currentSubPane = computed<CategoryId>(() =>
+  props.activePane && props.panes.includes(props.activePane) ? props.activePane : props.panes[0]!,
+)
+
+function subTabStatus(id: CategoryId): { on: boolean; label: string } | null {
+  if (id === 'proxy') return { on: snap.value.system_proxy, label: snap.value.system_proxy ? tr('已开启') : tr('已关闭') }
+  if (id === 'tun') return { on: snap.value.tun, label: snap.value.tun ? tr('已开启') : tr('已关闭') }
+  return null
+}
 
 const PANES: Record<CategoryId, Component> = {
   general: GeneralPane,
@@ -42,18 +59,39 @@ const PANES: Record<CategoryId, Component> = {
   <div v-if="panes.length === 1" class="settings-pane" :data-pane="panes[0]">
     <component :is="PANES[panes[0]!]" :compact="compact" />
   </div>
-  <div v-else class="settings-stack">
-    <details v-for="id in panes" :key="id" class="pane-fold" :open="open === id" :data-pane-fold="id">
-      <summary class="pane-fold-head">
-        <span class="pane-fold-text">
-          <strong>{{ paneOf(id).label() }}</strong>
-          <span>{{ paneOf(id).description() }}</span>
+  <div v-else-if="layout === 'tabs'" class="settings-subtabs-wrap">
+    <div class="settings-subtabs" role="tablist" :aria-label="tr('子分类')" data-testid="settings-subtabs">
+      <button
+        v-for="id in panes"
+        :key="id"
+        type="button"
+        role="tab"
+        class="settings-subtab"
+        :class="{ active: currentSubPane === id }"
+        :aria-selected="currentSubPane === id"
+        :data-subtab="id"
+        :data-testid="`subtab-${id}`"
+        @click="emit('select', id)"
+      >
+        <span class="settings-subtab-label">{{ paneOf(id).label() }}</span>
+        <span
+          v-if="subTabStatus(id)"
+          class="settings-subtab-state"
+          :class="{ on: subTabStatus(id)!.on }"
+          :data-testid="`pane-status-${id}`"
+        >
+          <span class="settings-subtab-dot" aria-hidden="true" />
+          {{ subTabStatus(id)!.label }}
         </span>
-        <Icon name="chevron-right" :size="16" class="pane-fold-chevron" />
-      </summary>
-      <div class="settings-pane" :data-pane="id">
-        <component :is="PANES[id]" :compact="compact" />
-      </div>
-    </details>
+      </button>
+    </div>
+    <div :key="currentSubPane" class="settings-pane" :data-pane="currentSubPane">
+      <component :is="PANES[currentSubPane]" :compact="compact" />
+    </div>
+  </div>
+  <div v-else class="settings-pane settings-flat-stack">
+    <div v-for="id in panes" :key="id" class="settings-pane-block" :data-pane="id">
+      <component :is="PANES[id]" :compact="compact" />
+    </div>
   </div>
 </template>

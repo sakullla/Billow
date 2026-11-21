@@ -664,10 +664,10 @@ onBeforeUnmount(() => { ++loadId })
     </div>
 
     <ContextMenu
-      v-if="ctxMenu"
-      :x="ctxMenu.x"
-      :y="ctxMenu.y"
-      :items="ctxMenu.items"
+      :open="Boolean(ctxMenu)"
+      :x="ctxMenu?.x ?? 0"
+      :y="ctxMenu?.y ?? 0"
+      :items="ctxMenu?.items ?? []"
       :label="tr('规则操作')"
       @select="onContextSelect"
       @close="ctxMenu = null"

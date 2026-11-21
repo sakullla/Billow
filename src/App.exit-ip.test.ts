@@ -193,22 +193,22 @@ describe('Exit IP lookup (R40)', () => {
     expect(wrapper.find('[data-testid="exit-ip-card"]').exists()).toBe(false)
   })
 
-  it('puts exit IP and traffic history together under 数据与备份 → 隐私与统计 on desktop', async () => {
+  it('puts exit IP and traffic history together under 通用 → 首页与统计 on desktop', async () => {
     const { wrapper } = await mountApp()
     const store = storeOf(wrapper)
-    store.openSettings('backup')
+    store.openSettings('general')
     await flushPromises()
 
     const network = wrapper.find('[data-testid="settings-network"]')
     expect(network.exists()).toBe(true)
-    expect(network.text()).toContain('隐私与统计')
+    expect(network.text()).toContain('首页与统计')
     const setting = network.find('[data-testid="auto-exit-ip-setting"]')
     expect(setting.text()).toContain('ip.sb')
     expect(setting.text()).toContain('ipinfo.io')
     expect(setting.find('[data-testid="auto-exit-ip-toggle"]').attributes('aria-checked')).toBe('false')
     expect(wrapper.find('[data-testid="node-switch-settings"] [data-testid="auto-exit-ip-setting"]').exists()).toBe(false)
 
-    // Traffic history lives under Network too (R43): off by default, stats entry reachable, no duplicate row.
+    // Traffic history lives under Home & Stats too (R43): off by default, stats entry reachable, no duplicate row.
     const traffic = network.find('[data-testid="traffic-history-setting"]')
     expect(traffic.exists()).toBe(true)
     expect(traffic.find('[data-testid="traffic-history-toggle"]').attributes('aria-checked')).toBe('false')
@@ -217,13 +217,13 @@ describe('Exit IP lookup (R40)', () => {
     expect(wrapper.findAll('[data-testid="traffic-history-setting"]')).toHaveLength(1)
   })
 
-  it('reaches the same group on the phone through the 数据与备份 category', async () => {
+  it('reaches the same group on the phone through the 通用 category', async () => {
     const { wrapper } = await mountApp({}, 390)
     const store = storeOf(wrapper)
     store.go('settings')
     await flushPromises()
     expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(false)
-    await wrapper.find('[data-testid="open-backup"]').trigger('click')
+    await wrapper.find('[data-testid="open-general"]').trigger('click')
     await flushPromises()
 
     const network = wrapper.find('[data-testid="settings-network"]')

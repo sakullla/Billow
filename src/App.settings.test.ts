@@ -40,7 +40,7 @@ describe('settings catalog', () => {
 
   it('indexes every row under a pane that exists, and shows every pane on some page', () => {
     const ids = new Set(SETTINGS_PANES.map((pane) => pane.id))
-    expect(SETTINGS_CATEGORIES.map((category) => category.id)).toEqual(['general', 'network', 'behavior', 'kernel', 'backup'])
+    expect(SETTINGS_CATEGORIES.map((category) => category.id)).toEqual(['general', 'proxy', 'network', 'behavior', 'dns', 'kernel', 'backup'])
     expect(new Set(SETTINGS_CATEGORIES.flatMap((category) => category.panes))).toEqual(ids)
     for (const entry of SETTINGS_INDEX) expect(ids.has(entry.tab)).toBe(true)
     expect(new Set(SETTINGS_INDEX.map((entry) => entry.id)).size).toBe(SETTINGS_INDEX.length)
@@ -56,20 +56,23 @@ describe('settings catalog', () => {
 })
 
 describe('settings page', () => {
-  it('opens on 通用 with a five-page rail, and folds the panes of 网络', async () => {
+  it('opens on 通用 with top category tabs, and switches 系统代理 / TUN via sub-tabs without accordions', async () => {
     const { wrapper } = await mountApp()
     storeOf(wrapper).go('settings')
     await flushPromises()
-    const rail = wrapper.find('[data-testid="settings-tabs"]')
-    expect(rail.findAll('.settings-nav-item').map((item) => item.text())).toEqual(['通用', '网络', '代理与测速', '内核', '数据与关于'])
-    expect(rail.find('[aria-current="page"]').attributes('data-value')).toBe('general')
-    await rail.find('[data-value="network"]').trigger('click')
+    const tabs = wrapper.find('[data-testid="settings-tabs"]')
+    expect(tabs.findAll('.settings-tab').map((item) => item.text())).toEqual(['通用', '系统与 TUN', '端口与网络', '代理与测速', 'DNS', '内核', '备份与关于'])
+    expect(tabs.find('[aria-current="page"]').attributes('data-value')).toBe('general')
+    await tabs.find('[data-value="proxy"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('.settings-pane-head h2').text()).toBe('网络')
-    // The first pane is open; the others stay folded but mounted for search.
-    const folds = wrapper.findAll('.pane-fold')
-    expect(folds.map((fold) => fold.attributes('data-pane-fold'))).toEqual(['proxy', 'tun', 'network', 'dns'])
-    expect(folds.map((fold) => (fold.element as HTMLDetailsElement).open)).toEqual([true, false, false, false])
+    expect(wrapper.find('[data-testid="subtab-proxy"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-testid="proxy-settings"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="subtab-tun"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="subtab-tun"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-testid="tun-settings"]').exists()).toBe(true)
+    await tabs.find('[data-value="network"]').trigger('click')
+    await flushPromises()
     expect(wrapper.find('[data-pane="network"] [data-testid="mixed-port-input"]').exists()).toBe(true)
   })
 
@@ -99,9 +102,31 @@ describe('settings page', () => {
     const search = wrapper.find('[data-testid="settings-search"]')
     await search.setValue('zzzz')
     expect(wrapper.find('.settings-pane-head').text()).toContain('没有找到“zzzz”相关的设置')
+    expect(wrapper.find('[data-testid="clear-settings-search"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="reset-settings-search"]').exists()).toBe(true)
     await search.trigger('keydown', { key: 'Escape' })
     expect((search.element as HTMLInputElement).value).toBe('')
     expect(wrapper.find('[data-testid="settings-results"]').exists()).toBe(false)
+  })
+
+  it('highlights search matches and shows live status badges on System Proxy / TUN sub-tabs', async () => {
+    const { wrapper } = await mountApp()
+    const store = storeOf(wrapper)
+    store.go('settings')
+    await flushPromises()
+
+    const search = wrapper.find('[data-testid="settings-search"]')
+    await search.setValue('端口')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="settings-results"] mark').text()).toBe('端口')
+    await wrapper.find('[data-testid="clear-settings-search"]').trigger('click')
+    await flushPromises()
+    expect((search.element as HTMLInputElement).value).toBe('')
+
+    await wrapper.find('[data-value="proxy"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="pane-status-proxy"]').text()).toBe('已关闭')
+    expect(wrapper.find('[data-testid="pane-status-tun"]').text()).toBe('已关闭')
   })
 
   it('jumps from the effective config straight to the row that changes a value', async () => {
@@ -131,9 +156,10 @@ describe('settings page', () => {
     expect(wrapper.find('[data-testid="open-proxy"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="open-tun"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="open-apps"]').exists()).toBe(true)
-    expect(wrapper.findAll('.srow-cat')).toHaveLength(6)
+    expect(wrapper.find('[data-testid="open-dns"]').exists()).toBe(true)
+    expect(wrapper.findAll('.srow-cat')).toHaveLength(7)
     await wrapper.find('[data-testid="open-network"]').trigger('click')
     await flushPromises()
-    expect(wrapper.findAll('.pane-fold').map((fold) => fold.attributes('data-pane-fold'))).toEqual(['network', 'dns'])
+    expect(wrapper.find('[data-pane="network"]').exists()).toBe(true)
   })
 })

@@ -25,8 +25,14 @@ export interface SettingsCategory {
   description: () => string
   icon: string
   tone: CategoryTone
-  /** Panes shown on this page, in order. More than one renders as foldable blocks. */
+  /** Panes shown on this page, in order. */
   panes: readonly CategoryId[]
+  /** How multi-pane categories present their panes: segmented sub-tabs or flat stacked sections. */
+  layout?: 'tabs' | 'stack'
+  /** Optional platform visibility guard (e.g., System Proxy & TUN is desktop-only). */
+  when?: (ctx: PlatformContext) => boolean
+  /** Grouping on the phone root list. */
+  group: 'network' | 'app'
 }
 
 /** A block of related rows. Its id is what search results and deep links target. */
@@ -40,27 +46,29 @@ export interface SettingsPane {
 const desktop = (ctx: PlatformContext) => !ctx.android
 
 export const SETTINGS_PANES: readonly SettingsPane[] = [
-  { id: 'general', label: () => tr('通用'), description: () => tr('外观、启动与快捷键') },
+  { id: 'general', label: () => tr('通用'), description: () => tr('外观、启动、统计与快捷键') },
   { id: 'proxy', label: () => tr('系统代理'), description: () => tr('代理主机、PAC 与绕过列表'), when: desktop },
   { id: 'tun', label: () => tr('TUN 模式'), description: () => tr('用虚拟网卡接管全部流量'), when: desktop },
-  { id: 'network', label: () => tr('网络与端口'), description: () => tr('代理端口、局域网共享与 IPv6') },
-  { id: 'dns', label: () => 'DNS', description: () => tr('上游服务器、解析策略与 Hosts') },
+  { id: 'network', label: () => tr('端口与网络'), description: () => tr('代理端口、局域网共享与 IPv6') },
   { id: 'behavior', label: () => tr('代理与测速'), description: () => tr('节点切换、延迟测试、嗅探与订阅') },
+  { id: 'dns', label: () => 'DNS', description: () => tr('上游服务器、解析策略与 Hosts') },
   { id: 'kernel', label: () => tr('内核'), description: () => tr('Mihomo 版本、日志与运行维护') },
-  { id: 'backup', label: () => tr('数据与备份'), description: () => tr('流量统计、出口 IP 与备份恢复') },
+  { id: 'backup', label: () => tr('备份与同步'), description: () => tr('本地备份与 WebDAV 云端同步') },
   { id: 'about', label: () => tr('关于'), description: () => tr('版本与应用更新') },
 ]
 
 export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
-  { id: 'general', label: () => tr('通用'), description: () => tr('外观、启动与快捷键'), icon: 'sliders', tone: 'gray', panes: ['general'] },
-  { id: 'network', label: () => tr('网络'), description: () => tr('系统代理、TUN、端口与 DNS'), icon: 'network', tone: 'blue', panes: ['proxy', 'tun', 'network', 'dns'] },
-  { id: 'behavior', label: () => tr('代理与测速'), description: () => tr('节点切换、延迟测试、嗅探与订阅'), icon: 'zap', tone: 'amber', panes: ['behavior'] },
-  { id: 'kernel', label: () => tr('内核'), description: () => tr('Mihomo 版本、日志与运行维护'), icon: 'cpu', tone: 'orange', panes: ['kernel'] },
-  { id: 'backup', label: () => tr('数据与关于'), description: () => tr('流量统计、备份恢复与版本更新'), icon: 'database', tone: 'green', panes: ['backup', 'about'] },
+  { id: 'general', label: () => tr('通用'), description: () => tr('外观、启动、统计与快捷键'), icon: 'sliders', tone: 'gray', panes: ['general'], group: 'app' },
+  { id: 'proxy', label: () => tr('系统与 TUN'), description: () => tr('系统代理与 TUN 虚拟网卡'), icon: 'shield', tone: 'indigo', panes: ['proxy', 'tun'], layout: 'tabs', when: desktop, group: 'network' },
+  { id: 'network', label: () => tr('端口与网络'), description: () => tr('代理端口、局域网共享与 IPv6'), icon: 'network', tone: 'blue', panes: ['network'], group: 'network' },
+  { id: 'behavior', label: () => tr('代理与测速'), description: () => tr('节点切换、延迟测试、嗅探与订阅'), icon: 'zap', tone: 'amber', panes: ['behavior'], group: 'network' },
+  { id: 'dns', label: () => 'DNS', description: () => tr('上游服务器、解析策略与 Hosts'), icon: 'globe', tone: 'teal', panes: ['dns'], group: 'network' },
+  { id: 'kernel', label: () => tr('内核'), description: () => tr('Mihomo 版本、日志与运行维护'), icon: 'cpu', tone: 'orange', panes: ['kernel'], group: 'app' },
+  { id: 'backup', label: () => tr('备份与关于'), description: () => tr('备份恢复、版本与更新'), icon: 'database', tone: 'green', panes: ['backup', 'about'], layout: 'stack', group: 'app' },
 ]
 
-export function visibleCategories(_ctx: PlatformContext): SettingsCategory[] {
-  return [...SETTINGS_CATEGORIES]
+export function visibleCategories(ctx: PlatformContext): SettingsCategory[] {
+  return SETTINGS_CATEGORIES.filter((category) => !category.when || category.when(ctx))
 }
 
 export function paneOf(id: CategoryId): SettingsPane {
@@ -169,9 +177,10 @@ export const SETTINGS_INDEX: readonly SettingsEntry[] = [
   { id: 'kernel-restart', tab: 'kernel', title: () => tr('重启内核'), keywords: 'restart 重启' },
   { id: 'kernel-gc', tab: 'kernel', title: () => tr('回收内存'), keywords: 'gc memory 内存' },
   { id: 'kernel-reset', tab: 'kernel', title: () => tr('全部跟随配置'), keywords: 'reset follow 恢复 覆盖' },
-  // 数据与备份
-  { id: 'exit-ip', tab: 'backup', title: () => tr('自动查询出口 IP'), keywords: 'exit ip 出口 ip.sb' },
-  { id: 'traffic-history', tab: 'backup', title: () => tr('流量历史'), keywords: 'traffic history stats usage 流量 统计' },
+  // 通用（首页与统计）
+  { id: 'exit-ip', tab: 'general', title: () => tr('自动查询出口 IP'), keywords: 'exit ip 出口 ip.sb' },
+  { id: 'traffic-history', tab: 'general', title: () => tr('流量历史'), keywords: 'traffic history stats usage 流量 统计' },
+  // 备份与同步
   { id: 'backup-file', tab: 'backup', title: () => tr('备份文件'), keywords: 'backup export import restore 备份 导出 导入 恢复' },
   { id: 'webdav', tab: 'backup', title: () => 'WebDAV', keywords: 'webdav cloud sync 云端 同步' },
   // 关于

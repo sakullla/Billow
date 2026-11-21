@@ -1340,7 +1340,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </ul>
     </div>
 
-    <Modal v-if="selecting !== null" :title="tr('连接详情')" :subtitle="selectedHost" @close="closeDetail()">
+    <Modal :open="selecting !== null" :title="tr('连接详情')" :subtitle="selectedHost" @close="closeDetail()">
       <p
         v-if="detailGone"
         class="detail-status"
@@ -1495,7 +1495,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </template>
     </Modal>
 
-    <Modal v-if="confirmAll" :title="confirmIds ? tr('关闭筛选结果') : tr('全部关闭')" @close="confirmAll = false">
+    <Modal :open="confirmAll" :title="confirmIds ? tr('关闭筛选结果') : tr('全部关闭')" @close="confirmAll = false">
       <p class="small" data-testid="close-connections-count"> {{ tr('关闭') }} {{ confirmCount }} {{ tr('条连接') }}<template v-if="confirmIds">{{ tr('（仅当前筛选结果）') }}</template>{{ tr('，已建立的连接会立即中断。') }} </p>
       <template #footer>
         <button type="button" class="btn ghost" data-testid="cancel-disconnect-all" @click="confirmAll = false">{{ tr('取消') }}</button>
@@ -1504,10 +1504,10 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
     </Modal>
 
     <ContextMenu
-      v-if="ctxMenu"
-      :x="ctxMenu.x"
-      :y="ctxMenu.y"
-      :items="ctxMenu.items"
+      :open="Boolean(ctxMenu)"
+      :x="ctxMenu?.x ?? 0"
+      :y="ctxMenu?.y ?? 0"
+      :items="ctxMenu?.items ?? []"
       :label="tr('连接操作')"
       @select="onContextSelect"
       @close="ctxMenu = null"

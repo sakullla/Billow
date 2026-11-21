@@ -261,6 +261,31 @@ function openInProxies() {
   emit('close')
   store.go('proxies', group.name)
 }
+
+function onSearchKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && query.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    query.value = ''
+    return
+  }
+  if (event.key === 'ArrowDown') {
+    const first = document.querySelector<HTMLElement>('[data-testid="node-picker-list"] [data-picker-node]:not(:disabled)')
+    if (first) {
+      event.preventDefault()
+      first.focus({ preventScroll: true })
+    }
+    return
+  }
+  if (event.key === 'Enter' && queryTokens.value.length > 0 && filteredNodes.value.length > 0) {
+    event.preventDefault()
+    if (filteredNodes.value.length === 1 && !rowDisabled.value) {
+      void pickNode(filteredNodes.value[0]!)
+      return
+    }
+    document.querySelector<HTMLElement>('[data-testid="node-picker-list"] [data-picker-node]:not(:disabled)')?.focus({ preventScroll: true })
+  }
+}
 </script>
 
 <template>
@@ -307,6 +332,7 @@ function openInProxies() {
             :aria-label="tr('搜索节点、协议或 UDP')"
             :disabled="isSwitching"
             data-testid="node-picker-search"
+            @keydown="onSearchKeydown"
           />
           <button
             v-if="query"

@@ -259,7 +259,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'network'
           >
             <Icon name="more" />
           </button>
-          <Menu v-if="moreOpen" :items="moreItems" :label="tr('日志操作')" @select="onMore" @close="moreOpen = false" />
+          <Menu :open="moreOpen" :items="moreItems" :label="tr('日志操作')" @select="onMore" @close="moreOpen = false" />
         </div>
         <template v-else>
           <label class="wrap-field small muted" data-testid="wrap-field">
@@ -310,6 +310,7 @@ const conflictAction = computed<{ message: string; label: string; tab: 'network'
         </button>
       </div>
       <Segmented v-model="filter" :options="filterOptions" size="sm" :label="tr('日志级别')" />
+      <button v-if="isFiltered" type="button" class="btn ghost sm" data-testid="reset-log-toolbar" @click="resetFilters"> {{ tr('重置') }} </button>
     </div>
 
     <div v-if="conflictAction" class="banner error log-conflict" role="alert" data-testid="log-conflict">
@@ -382,11 +383,13 @@ const conflictAction = computed<{ message: string; label: string; tab: 'network'
           </button>
         </div>
       </div>
-      <button v-if="!follow" type="button" class="jump" data-testid="log-jump" @click="toBottom(true)">
-        <Icon name="down" :size="14" />{{ tr('最新') }} </button>
+      <Transition name="menu-pop">
+        <button v-if="!follow" type="button" class="jump" data-testid="log-jump" @click="toBottom(true)">
+          <Icon name="down" :size="14" />{{ tr('最新') }} </button>
+      </Transition>
     </div>
 
-    <Modal v-if="confirmClear" :title="tr('清空日志')" @close="confirmClear = false">
+    <Modal :open="confirmClear" :title="tr('清空日志')" @close="confirmClear = false">
       <p class="small">{{ tr('将清空当前') }} {{ snap.logs.length }} {{ tr('条日志，操作无法撤销。') }}</p>
       <template #footer>
         <button type="button" class="btn ghost" data-testid="cancel-clear-logs" @click="confirmClear = false">{{ tr('取消') }}</button>

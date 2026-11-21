@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import TrafficStatsDialog from '../components/TrafficStatsDialog.vue'
+import { highlightTokens } from '../lib/search'
 import {
   categoryOf,
   paneOf,
@@ -17,10 +19,10 @@ import { useStore } from '../lib/store'
 import PaneStack from './settings/PaneStack.vue'
 
 /**
- * Settings shell (v3). Desktop: a category rail with search beside the pane.
- * Phone: a category list that drills into one pane at a time. Each pane owns
- * its own state; toggles and choices apply at once, lists and multi-field
- * forms open an editor dialog with explicit 保存 / 取消.
+ * Settings shell (v4):
+ * - Desktop: single-column header with inline search + sticky horizontal category tabs
+ *   (no second left sidebar beside the app rail, no nested pane accordions).
+ * - Phone: grouped category sections below the quick-tools grid, drilling into flat panes.
  */
 const props = defineProps<{ compact?: boolean }>()
 const store = useStore()
@@ -34,16 +36,23 @@ const platform = computed(() => ({
   mac: store.isMac.value,
 }))
 const categories = computed(() => visibleCategories(platform.value))
+const phoneGroups = computed(() => [
+  { id: 'network' as const, label: tr('代理与网络'), items: categories.value.filter((c) => c.group === 'network') },
+  { id: 'app' as const, label: tr('应用与内核'), items: categories.value.filter((c) => c.group === 'app') },
+])
 
-/** Phone root is the category list; desktop always shows a pane. */
+/** Phone root is the category list; desktop always shows a category. */
 const atRoot = computed(() => props.compact && store.settingsTab.value === 'home')
-const active = computed<SettingsCategory>(() => categoryOf(store.settingsTab.value))
+const active = computed<SettingsCategory>(() => {
+  const cat = categoryOf(store.settingsTab.value)
+  if (!cat.when || cat.when(platform.value)) return cat
+  return categories.value[0]!
+})
 const activePanes = computed(() => visiblePanes(active.value, platform.value).map((item) => item.id))
-/** Pane unfolded on a multi-pane page: the deep-linked one, otherwise the first. */
-const openPane = computed<CategoryId | undefined>(() => {
+const activeSubPane = computed<CategoryId>(() => {
   const tab = store.settingsTab.value
   const list = activePanes.value
-  return tab !== active.value.id && list.includes(tab as CategoryId) ? (tab as CategoryId) : list[0]
+  return list.includes(tab as CategoryId) ? (tab as CategoryId) : list[0]!
 })
 
 function openCategory(id: CategoryId) {
@@ -53,14 +62,27 @@ function openCategory(id: CategoryId) {
   void nextTick(scrollToTop)
 }
 
-/** One-word state per category on the phone list, so the list answers "what is on?". */
+function selectSubPane(id: CategoryId) {
+  store.settingsFocus.value = null
+  store.settingsTab.value = id
+}
+
+/** One-word live summary per category on the phone list. */
 function summary(id: CategoryId): string {
   const s = snap.value
   switch (id) {
     case 'general':
       return store.theme.value === 'dark' ? tr('深色') : store.theme.value === 'light' ? tr('浅色') : tr('自动')
+    case 'proxy': {
+      const on: string[] = []
+      if (s.system_proxy) on.push(tr('系统代理'))
+      if (s.tun) on.push('TUN')
+      return on.length ? on.join(' · ') : tr('已关闭')
+    }
     case 'network':
       return `:${s.mixed_port ?? s.settings.mixed_port ?? s.config_values.mixed_port ?? 7890}`
+    case 'dns':
+      return s.settings.dns_override ? tr('已覆写') : tr('跟随配置')
     case 'kernel':
       return store.kernel.value.ready ? (store.kernel.value.version ?? tr('已安装')) : tr('未安装')
     case 'backup':
@@ -80,7 +102,6 @@ const appSummary = computed(() => {
 const query = ref('')
 const results = computed(() => searchSettings(query.value, platform.value))
 const searching = computed(() => query.value.trim().length > 0)
-/** Search results group by pane; a page with several panes names both. */
 function resultTitle(tab: CategoryId): string {
   const category = categoryOf(tab)
   return category.panes.length > 1 ? `${category.label()} · ${paneOf(tab).label()}` : category.label()
@@ -115,8 +136,7 @@ function onSearchKey(event: KeyboardEvent) {
 
 const content = ref<HTMLElement | null>(null)
 
-// Narrow windows fold the rail into a horizontal strip: let the mouse wheel scroll
-// it sideways and keep the active category visible.
+// Horizontal tab strip: let the mouse wheel scroll sideways when narrow and keep the active tab visible.
 const navEl = ref<HTMLElement | null>(null)
 function onNavWheel(event: WheelEvent) {
   const el = navEl.value
@@ -126,7 +146,7 @@ function onNavWheel(event: WheelEvent) {
 }
 watch(
   () => active.value.id,
-  () => void nextTick(() => navEl.value?.querySelector<HTMLElement>('.settings-nav-item.active')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })),
+  () => void nextTick(() => navEl.value?.querySelector<HTMLElement>('.settings-tab.active')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })),
   { flush: 'post' },
 )
 
@@ -136,7 +156,7 @@ function scrollToTop() {
 }
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
-/** Scroll a row into view, unfolding its group first, and flash it once. */
+/** Scroll a row into view, unfolding any inner advanced group first, and flash it once. */
 async function revealSetting(id: string) {
   await nextTick()
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
@@ -166,7 +186,7 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
 </script>
 
 <template>
-  <!-- ───────── Phone: category list ───────── -->
+  <!-- ───────── Phone: grouped category list ───────── -->
   <div v-if="compact" class="page settings settings-phone" :class="{ 'settings-root': atRoot }">
     <template v-if="atRoot">
       <header class="page-head settings-phone-head">
@@ -186,6 +206,16 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
           data-testid="settings-search"
           @keydown="onSearchKey"
         />
+        <button
+          v-if="query"
+          type="button"
+          class="icon-btn xs"
+          :aria-label="tr('清空搜索')"
+          data-testid="clear-settings-search"
+          @click.prevent="query = ''"
+        >
+          <Icon name="x" :size="13" />
+        </button>
       </label>
 
       <div v-if="searching" ref="content" class="settings-results" data-testid="settings-results">
@@ -195,15 +225,33 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
             <div class="sgroup-card">
               <button v-for="entry in group.entries" :key="entry.id" type="button" class="srow srow-nav" :data-result="entry.id" @click="pick(entry)">
                 <div class="srow-main">
-                  <span class="srow-title">{{ entry.title() }}</span>
-                  <span v-if="entry.description" class="srow-desc">{{ entry.description() }}</span>
+                  <span class="srow-title">
+                    <template v-for="(part, idx) in highlightTokens(entry.title(), query)" :key="idx">
+                      <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                    </template>
+                  </span>
+                  <span v-if="entry.description" class="srow-desc">
+                    <template v-for="(part, idx) in highlightTokens(entry.description(), query)" :key="idx">
+                      <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                    </template>
+                  </span>
                 </div>
                 <Icon name="chevron-right" :size="16" class="srow-chevron" />
               </button>
             </div>
           </section>
         </template>
-        <p v-else class="settings-empty">{{ tr('没有找到“{0}”相关的设置', { 0: query.trim() }) }}</p>
+        <EmptyState
+          v-else
+          compact
+          variant="no-match"
+          :title="tr('没有找到“{0}”相关的设置', { 0: query.trim() })"
+          :description="tr('换一个关键词，或清空搜索查看全部分类。')"
+        >
+          <template #action>
+            <button type="button" class="btn ghost sm" data-testid="reset-settings-search" @click="query = ''">{{ tr('清空搜索') }}</button>
+          </template>
+        </EmptyState>
       </div>
 
       <template v-else>
@@ -230,9 +278,10 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
           </button>
         </nav>
 
-        <section class="sgroup">
+        <section v-for="group in phoneGroups" :key="group.id" class="sgroup">
+          <header class="sgroup-head"><h3>{{ group.label }}</h3></header>
           <div class="sgroup-card">
-            <template v-for="category in categories" :key="category.id">
+            <template v-for="category in group.items" :key="category.id">
               <button
                 type="button"
                 class="srow srow-nav srow-cat"
@@ -244,7 +293,8 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
                   <span class="srow-title">{{ category.label() }}</span>
                   <span class="srow-desc">{{ category.description() }}</span>
                 </div>
-                <span v-if="summary(category.id)" class="srow-value">{{ summary(category.id) }}</span>
+                <span v-if="category.id === 'backup' && store.appUpdate.offer.value" class="tag accent sm">{{ tr('更新') }}</span>
+                <span v-else-if="summary(category.id)" class="srow-value">{{ summary(category.id) }}</span>
                 <Icon name="chevron-right" :size="16" class="srow-chevron" />
               </button>
               <button
@@ -274,91 +324,139 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
         <h1>{{ active.label() }}</h1>
       </header>
       <div ref="content">
-        <PaneStack :key="active.id" :panes="activePanes" :open="openPane" :compact="compact" />
+        <PaneStack
+          :key="active.id"
+          :panes="activePanes"
+          :layout="active.layout"
+          :active-pane="activeSubPane"
+          :compact="compact"
+          @select="selectSubPane"
+        />
       </div>
     </template>
     <TrafficStatsDialog v-if="store.trafficStatsOpen.value" @close="store.trafficStatsOpen.value = false" />
   </div>
 
-  <!-- ───────── Desktop: rail + pane ───────── -->
+  <!-- ───────── Desktop: clean single-column header + sticky top tabs ───────── -->
   <div v-else class="page settings settings-desktop">
-    <div class="settings-layout">
-      <aside class="settings-rail" :aria-label="tr('设置分类')">
-        <h1 class="settings-rail-title">{{ tr('设置') }}</h1>
-        <label class="settings-search">
-          <Icon name="search" :size="15" />
-          <input
-              v-model="query"
-            type="search"
-            data-page-search
-            :placeholder="tr('搜索设置')"
-            :aria-label="tr('搜索设置')"
-            data-testid="settings-search"
-            @keydown="onSearchKey"
-          />
-        </label>
-        <nav ref="navEl" class="settings-nav" data-testid="settings-tabs" @wheel="onNavWheel">
-          <template v-for="category in categories" :key="category.id">
-            <button
-              type="button"
-              class="settings-nav-item"
-              :class="{ active: !searching && active.id === category.id }"
-              :aria-current="!searching && active.id === category.id ? 'page' : undefined"
-              :data-value="category.id"
-              :data-testid="`open-${category.id}`"
-              @click="openCategory(category.id)"
-            >
-              <span class="cat-icon sm" :class="category.tone"><Icon :name="category.icon" :size="15" /></span>
-              <span class="settings-nav-text">{{ category.label() }}</span>
-            </button>
-            <button
-              v-if="category.id === 'network' && store.isAndroid.value"
-              type="button"
-              class="settings-nav-item"
-              data-testid="open-apps"
-              @click="store.go('apps')"
-            >
-              <span class="cat-icon sm green"><Icon name="apps" :size="15" /></span>
-              <span class="settings-nav-text">{{ tr('应用访问控制') }}</span>
-            </button>
-          </template>
-        </nav>
-      </aside>
+    <header class="page-head settings-head">
+      <div>
+        <h1>{{ tr('设置') }}</h1>
+        <p class="muted small">{{ searching ? tr('搜索全部设置项') : active.description() }}</p>
+      </div>
+      <label class="settings-search settings-head-search">
+        <Icon name="search" :size="15" />
+        <input
+          v-model="query"
+          type="search"
+          data-page-search
+          :placeholder="tr('搜索设置')"
+          :aria-label="tr('搜索设置')"
+          data-testid="settings-search"
+          @keydown="onSearchKey"
+        />
+        <kbd v-if="!query" class="search-kbd" aria-hidden="true">/</kbd>
+        <button
+          v-else
+          type="button"
+          class="icon-btn xs"
+          :aria-label="tr('清空搜索')"
+          data-testid="clear-settings-search"
+          @click.prevent="query = ''"
+        >
+          <Icon name="x" :size="13" />
+        </button>
+      </label>
+    </header>
 
-      <div ref="content" class="settings-content">
-        <template v-if="searching">
-          <header class="settings-pane-head">
-            <div>
-              <h2>{{ tr('搜索结果') }}</h2>
-              <p class="muted">{{ results.length ? tr('找到 {0} 项', { 0: results.length }) : tr('没有找到“{0}”相关的设置', { 0: query.trim() }) }}</p>
-            </div>
-          </header>
-          <div class="settings-results" data-testid="settings-results">
+    <nav
+      ref="navEl"
+      class="settings-tabs-bar"
+      :aria-label="tr('设置分类')"
+      data-testid="settings-tabs"
+      @wheel="onNavWheel"
+    >
+      <template v-for="category in categories" :key="category.id">
+        <button
+          type="button"
+          class="settings-tab"
+          :class="{ active: !searching && active.id === category.id }"
+          :aria-current="!searching && active.id === category.id ? 'page' : undefined"
+          :data-value="category.id"
+          :data-testid="`open-${category.id}`"
+          @click="openCategory(category.id)"
+        >
+          <Icon :name="category.icon" :size="15" />
+          <span>{{ category.label() }}</span>
+          <span v-if="category.id === 'backup' && store.appUpdate.offer.value" class="tag accent sm">{{ tr('更新') }}</span>
+        </button>
+        <button
+          v-if="category.id === 'network' && store.isAndroid.value"
+          type="button"
+          class="settings-tab"
+          data-testid="open-apps"
+          @click="store.go('apps')"
+        >
+          <Icon name="apps" :size="15" />
+          <span>{{ tr('应用访问控制') }}</span>
+        </button>
+      </template>
+    </nav>
+
+    <div ref="content" class="settings-content">
+      <template v-if="searching">
+        <header class="settings-pane-head">
+          <div>
+            <h2>{{ tr('搜索结果') }}</h2>
+            <p class="muted">{{ results.length ? tr('找到 {0} 项', { 0: results.length }) : tr('没有找到“{0}”相关的设置', { 0: query.trim() }) }}</p>
+          </div>
+        </header>
+        <div class="settings-results" data-testid="settings-results">
+          <template v-if="resultGroups.length">
             <section v-for="group in resultGroups" :key="group.id" class="sgroup">
               <header class="sgroup-head"><h3>{{ group.title }}</h3></header>
               <div class="sgroup-card">
                 <button v-for="entry in group.entries" :key="entry.id" type="button" class="srow srow-nav" :data-result="entry.id" @click="pick(entry)">
                   <div class="srow-main">
-                    <span class="srow-title">{{ entry.title() }}</span>
-                    <span v-if="entry.description" class="srow-desc">{{ entry.description() }}</span>
+                    <span class="srow-title">
+                      <template v-for="(part, idx) in highlightTokens(entry.title(), query)" :key="idx">
+                        <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                      </template>
+                    </span>
+                    <span v-if="entry.description" class="srow-desc">
+                      <template v-for="(part, idx) in highlightTokens(entry.description(), query)" :key="idx">
+                        <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                      </template>
+                    </span>
                   </div>
                   <Icon name="chevron-right" :size="16" class="srow-chevron" />
                 </button>
               </div>
             </section>
-          </div>
-        </template>
-        <template v-else>
-          <header class="settings-pane-head">
-            <span class="cat-icon lg" :class="active.tone"><Icon :name="active.icon" :size="20" /></span>
-            <div>
-              <h2>{{ active.label() }}</h2>
-              <p class="muted">{{ active.description() }}</p>
-            </div>
-          </header>
-          <PaneStack :key="active.id" :panes="activePanes" :open="openPane" :compact="compact" />
-        </template>
-      </div>
+          </template>
+          <EmptyState
+            v-else
+            compact
+            variant="no-match"
+            :title="tr('没有找到匹配的设置')"
+            :description="tr('换一个关键词，或清空搜索查看全部分类。')"
+          >
+            <template #action>
+              <button type="button" class="btn ghost sm" data-testid="reset-settings-search" @click="query = ''">{{ tr('清空搜索') }}</button>
+            </template>
+          </EmptyState>
+        </div>
+      </template>
+      <template v-else>
+        <PaneStack
+          :key="active.id"
+          :panes="activePanes"
+          :layout="active.layout"
+          :active-pane="activeSubPane"
+          :compact="compact"
+          @select="selectSubPane"
+        />
+      </template>
     </div>
     <TrafficStatsDialog v-if="store.trafficStatsOpen.value" @close="store.trafficStatsOpen.value = false" />
   </div>

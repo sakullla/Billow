@@ -49,9 +49,9 @@ describe('phone layout', () => {
     storeOf(wrapper).go('settings')
     await flushPromises()
 
-    // The root is a list of categories; each says what is on without opening it.
+    // The root is a grouped list of categories; each says what is on without opening it.
     expect(wrapper.find('[data-testid="open-network"] .srow-value').text()).toBe(':7890')
-    expect(wrapper.find('[data-testid="open-dns"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-dns"] .srow-value').text()).toBe('跟随配置')
     expect(wrapper.findAll('.page.settings > section.card')).toHaveLength(0)
 
     await wrapper.find('[data-testid="open-behavior"]').trigger('click')

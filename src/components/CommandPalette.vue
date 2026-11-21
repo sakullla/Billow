@@ -58,14 +58,14 @@ const props = withDefaults(
     pages: () =>
       PAGES.map((page) => ({ id: page.id, get label() { return page.label }, icon: page.icon })),
     settings: () => [
-      { id: 'general', get label() { return tr('通用设置') }, get description() { return tr('外观、启动与快捷键') }, icon: 'sliders' },
+      { id: 'general', get label() { return tr('通用设置') }, get description() { return tr('外观、启动、统计与快捷键') }, icon: 'sliders' },
       { id: 'proxy', get label() { return tr('系统代理设置') }, get description() { return tr('代理主机、PAC 模式与绕过列表') }, icon: 'monitor' },
       { id: 'tun', get label() { return tr('TUN 设置') }, get description() { return tr('栈、DNS 劫持与 MTU') }, icon: 'shield' },
-      { id: 'network', get label() { return tr('网络与端口') }, get description() { return tr('代理端口、局域网共享与 IPv6') }, icon: 'network' },
+      { id: 'network', get label() { return tr('端口与网络') }, get description() { return tr('代理端口、局域网共享与 IPv6') }, icon: 'network' },
       { id: 'behavior', get label() { return tr('代理与测速') }, get description() { return tr('节点切换、延迟测试与嗅探') }, icon: 'zap' },
       { id: 'dns', get label() { return tr('DNS 设置') }, get description() { return tr('Fake-IP、解析策略与 Hosts') }, icon: 'globe' },
       { id: 'kernel', get label() { return tr('内核设置') }, get description() { return tr('Mihomo 版本、日志与运行维护') }, icon: 'cpu' },
-      { id: 'backup', get label() { return tr('数据与备份') }, get description() { return tr('流量统计、出口 IP 与备份恢复') }, icon: 'database' },
+      { id: 'backup', get label() { return tr('备份与关于') }, get description() { return tr('备份恢复、版本与更新') }, icon: 'database' },
     ],
     profiles: () => [],
     nodeCatalog: () => [],
@@ -444,7 +444,7 @@ function choose(entry: PaletteEntry) {
   if (entry.disabled) return
   if (entry.kind === 'page') emit('navigate', entry.id)
   // Traffic stats are a dialog opened from the general settings section (R43).
-  else if (entry.kind === 'setting' && entry.id === 'traffic-stats') emit('open-settings', 'backup', 'traffic-history')
+  else if (entry.kind === 'setting' && entry.id === 'traffic-stats') emit('open-settings', 'general', 'traffic-history')
   else if (entry.kind === 'setting') emit('open-settings', entry.id)
   else if (entry.kind === 'profile') emit('select-profile', entry.id)
   else if (entry.kind === 'group') emit('open-group', entry.id)

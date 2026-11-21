@@ -787,15 +787,15 @@ describe('App', () => {
     await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="settings-tabs"]').exists()).toBe(false)
-    // Five pages, not nine: DNS, TUN and the system proxy live inside 网络.
-    expect(wrapper.findAll('.settings-root .srow-cat')).toHaveLength(5)
-    expect(wrapper.find('[data-testid="open-dns"]').exists()).toBe(false)
+    // Seven grouped categories on desktop-compact (General, System & TUN, Ports & Network, Proxy & Speed, DNS, Kernel, Backup & About).
+    expect(wrapper.findAll('.settings-root .srow-cat')).toHaveLength(7)
+    expect(wrapper.find('[data-testid="open-dns"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="open-network"]').text()).toContain(':7890')
-    await wrapper.find('[data-testid="open-network"]').trigger('click')
+    await wrapper.find('[data-testid="open-dns"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('.settings-subhead h1').text()).toBe('网络')
+    expect(wrapper.find('.settings-subhead h1').text()).toBe('DNS')
     expect(wrapper.find('[data-testid="dns-settings"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="open-network"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-dns"]').exists()).toBe(false)
     await wrapper.find('[data-testid="settings-back"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="open-network"]').text()).toContain(':7890')
@@ -820,7 +820,7 @@ describe('App', () => {
     const { wrapper } = await mountApp()
     await wrapper.find('.sidebar [data-page="settings"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
     await flushPromises()
     const toggle = wrapper.find('[data-testid="dns-override"]')
     expect(toggle.attributes('aria-checked')).toBe('false')
@@ -3131,7 +3131,9 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="save-port"]').exists()).toBe(false)
 
     // A focused TUN field survives polling ticks too, and commits when it loses focus.
-    await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="proxy"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="subtab-tun"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').trigger('click')
     const mtuInput = wrapper.find('input[aria-label="MTU"]')
@@ -3147,7 +3149,7 @@ describe('App', () => {
     )
 
     // The DNS server editor keeps its draft while the snapshot keeps refreshing.
-    await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="dns-enhanced-mode"] [data-value="redir-host"]').trigger('click')
     await settle(600)
@@ -3368,7 +3370,7 @@ describe('App', () => {
 
     await wrapper.find('.sidebar [data-page="settings"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
     await flushPromises()
 
     // Advanced rows apply one at a time; each save builds on the previous one.

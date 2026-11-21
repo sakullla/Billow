@@ -128,6 +128,33 @@ describe('Core workflow polish (R1–R2)', () => {
       expect(wrapper.find('[data-group-card="流媒体"]').classes()).toContain('open')
     })
 
+    it('clears search on Escape before closing and picks the sole matching node on Enter', async () => {
+      const { wrapper, backend } = await mountApp()
+      await connect(wrapper)
+      const selectSpy = vi.spyOn(backend, 'selectNode')
+
+      await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
+      await flushPromises()
+      const search = body().find('[data-testid="node-picker-search"]')
+      await search.setValue('日本 01')
+      await flushPromises()
+      expect(body().findAll('[data-picker-node]')).toHaveLength(1)
+
+      // Escape clears the query while keeping the modal open
+      await search.trigger('keydown', { key: 'Escape' })
+      await flushPromises()
+      expect((search.element as HTMLInputElement).value).toBe('')
+      expect(body().find('[data-testid="home-node-picker"]').exists()).toBe(true)
+
+      // Typing a unique match and pressing Enter picks it immediately
+      await search.setValue('日本 01')
+      await flushPromises()
+      await search.trigger('keydown', { key: 'Enter' })
+      await settle(400)
+      expect(selectSpy).toHaveBeenCalledWith('节点选择', '日本 01')
+      expect(body().find('[data-testid="home-node-picker"]').exists()).toBe(false)
+    })
+
     it('locks switching against duplicate clicks and close, keeps modal open with inline retry on failure', async () => {
       const { wrapper, backend } = await mountApp()
       await connect(wrapper)
