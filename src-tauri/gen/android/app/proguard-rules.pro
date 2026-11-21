@@ -1,6 +1,10 @@
 # Add project specific ProGuard rules here.
 -keep class app.billow.client.BillowVpnBridge { *; }
 -keep class app.billow.client.BillowVpnService { *; }
+# Rust looks up this class and static method by name to update the VPN notification.
+-keep class app.billow.client.BillowStatus {
+    public static void publish(android.content.Context, java.lang.String, java.lang.String, long, long, java.lang.String, java.lang.String);
+}
 # You can control the set of applied configuration files using the
 # proguardFiles setting in build.gradle.
 #

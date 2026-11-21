@@ -22,14 +22,19 @@ class BillowVpnService : VpnService() {
         super.onCreate()
         // The background toggle and the revoke path need this instance to update
         // the notification the moment Rust publishes (R41).
-        BillowStatus.service = this
-        startForeground(BillowStatus.VPN_NOTIFICATION, notification(BillowStatus.current(this)))
+        // publish() is static and synchronized; a newer state must render after startForeground.
+        synchronized(BillowStatus::class.java) {
+            val current = BillowStatus.current(this)
+            val starting = if (current.state == BillowStatus.DISCONNECTED) {
+                current.copy(state = BillowStatus.CONNECTING)
+            } else current
+            startForeground(BillowStatus.VPN_NOTIFICATION, notification(starting))
+            BillowStatus.service = this
+        }
     }
 
     override fun onDestroy() {
-        tunnel?.close()
-        tunnel = null
-        BillowVpnBridge.reportFd(-1)
+        closeTunnel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (BillowStatus.service === this) BillowStatus.service = null
         super.onDestroy()
@@ -90,6 +95,15 @@ class BillowVpnService : VpnService() {
             .build()
     }
 
+    @Synchronized
+    fun closeTunnel() {
+        val opened = tunnel ?: return
+        opened.close()
+        tunnel = null
+        BillowVpnBridge.reportFd(-1)
+    }
+
+    @Synchronized
     fun establishTun(packages: List<String>, only: Boolean): Int? {
         val builder = Builder()
             .setSession("Billow")
@@ -109,7 +123,7 @@ class BillowVpnService : VpnService() {
             }
         }
         val opened = builder.establish() ?: return null
-        android.system.Os.fcntlInt(opened.fileDescriptor, android.system.OsConstants.F_SETFD, 0)
+        android.system.Os.fcntlInt(opened.fileDescriptor, android.system.OsConstants.F_SETFD, android.system.OsConstants.FD_CLOEXEC)
         tunnel?.close()
         tunnel = opened
         return opened.fd
@@ -180,6 +194,8 @@ class BillowVpnBridge {
 
         @JvmStatic
         fun stop(context: Context) {
+            // Android keeps an established VPN bound after stopService until its fd closes.
+            BillowStatus.service?.closeTunnel()
             context.stopService(Intent(context, BillowVpnService::class.java))
         }
 

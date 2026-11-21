@@ -1749,6 +1749,12 @@ impl ProcessRuntime {
             crate::bundled_geo::seed(&apk, &self.work_dir)?;
         }
         let mut command = Command::new(&path);
+        let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
+        let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
+        #[cfg(target_os = "android")]
+        if tun {
+            takeover::inherit_vpn_tunnel(&mut command, read_i64(&config["tun"], "file-descriptor"))?;
+        }
         command.arg("-d").arg(&self.home_dir);
         command
             .arg("-f")
@@ -1821,9 +1827,7 @@ impl ProcessRuntime {
         } else { spawn_normal()? };
         #[cfg(not(target_os = "windows"))]
         let streams = spawn_normal()?;
-        let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
         let mixed = read_i64(&config, "mixed-port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
-        let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
         self.started = Some(Instant::now());
         self.exit_detail = None;
         self.launched_kernel = Some(path);

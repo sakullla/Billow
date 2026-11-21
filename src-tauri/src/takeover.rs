@@ -1199,6 +1199,26 @@ static VPN_READY: Condvar = Condvar::new();
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static VPN_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(target_os = "android")]
+pub fn inherit_vpn_tunnel(command: &mut std::process::Command, configured_fd: Option<i64>) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let fd = VPN_FD.load(Ordering::SeqCst);
+    if fd < 0 || configured_fd != Some(i64::from(fd)) {
+        return Err("VPN 没有建立".to_string());
+    }
+    // Only the kernel that uses this tunnel may inherit it. An idle kernel started
+    // during disconnect would otherwise keep Android's VPN and its service bound.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 // Rust worker threads attach with the system class loader. Resolve our bridge through
 // the Activity's loader, otherwise FindClass throws and terminates the app on connect.
 #[cfg(target_os = "android")]
