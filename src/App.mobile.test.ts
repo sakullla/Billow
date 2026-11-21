@@ -44,6 +44,22 @@ afterEach(() => {
 })
 
 describe('phone layout', () => {
+  it('keeps a quiet, tappable latency slot on untested proxy rows', async () => {
+    const { wrapper, backend } = await mountPhone({ platform: 'android' })
+    await connect(wrapper)
+    const testNode = vi.spyOn(backend, 'testNode')
+    storeOf(wrapper).go('proxies')
+    await settle(100)
+    const slot = wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"] .delay')
+    expect(slot.classes()).toContain('untested')
+    // The zap glyph is kept for desktop hover; phones hide it and draw a dash in its place.
+    expect(slot.find('.delay-zap').exists()).toBe(true)
+    expect(slot.text()).toBe('')
+    await slot.trigger('click')
+    await settle(50)
+    expect(testNode).toHaveBeenCalledWith('日本 02')
+  })
+
   it('lists categories with their state, and keeps each category in grouped list rows', async () => {
     const { wrapper, backend } = await mountPhone()
     storeOf(wrapper).go('settings')

@@ -5817,17 +5817,18 @@ html[data-keyboard] .compact .page {
   display: none;
 }
 
+/* Phone list: inset rounded rows, so the selected tint and the dividers share one edge (R2). */
 .compact .nodes:not(.dense) {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
-  padding: 4px 0;
+  padding: 4px 6px;
   background: var(--surface);
 }
 .compact .nodes:not(.dense) .node {
-  min-height: 54px;
-  padding: 9px 12px 9px 16px;
+  min-height: 56px;
+  padding: 8px 8px 8px 12px;
   border: 0;
-  border-radius: 0;
+  border-radius: 12px;
   background: transparent;
   box-shadow: none;
 }
@@ -5835,8 +5836,8 @@ html[data-keyboard] .compact .page {
   content: '';
   position: absolute;
   top: 0;
-  left: 16px;
-  right: 12px;
+  left: 12px;
+  right: 8px;
   height: 1px;
   background: var(--border);
 }
@@ -5844,19 +5845,18 @@ html[data-keyboard] .compact .page {
   background: var(--accent-soft);
 }
 .compact .nodes:not(.dense) .node.selected::before {
-  left: 0;
-  border-radius: 0 3px 3px 0;
+  content: none;
 }
 .compact .nodes:not(.dense) .node.selected + .node::after,
 .compact .nodes:not(.dense) .node.selected::after {
   display: none;
 }
+/* One line per name, the same as the Home picker; the full name stays in the tooltip. */
 .compact .nodes:not(.dense) .node-name {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--text-base);
   line-height: var(--leading-tight);
 }
@@ -8186,11 +8186,31 @@ details.cfg-section[open] .cfg-fold-icon {
 .compact .page.proxies .nodes:not(.dense) .node,
 .compact .page.proxies .nodes:not(.dense) .node:hover:not(.selected):not(.locked) {
   border: 0;
-  border-radius: 0;
+  border-radius: 12px;
   background: transparent;
+}
+/* On phones the health note may wrap under the name; the flex gap separates it, not a leading dot. */
+.compact .group-count + .group-health::before {
+  content: none;
 }
 .compact .page.proxies .nodes:not(.dense) .node.selected {
   background: var(--accent-soft);
+}
+.compact .page.proxies .nodes:not(.dense) .node.selected .node-name {
+  color: var(--accent-ink);
+}
+.compact .page.proxies .nodes:not(.dense) .node.selected .node-check {
+  display: none;
+}
+/* Untested latency on phones: a quiet dash, still the tap target for a single test (R7). */
+.compact .page.proxies .node .delay.untested .delay-zap {
+  display: none;
+}
+.compact .page.proxies .node .delay.untested:not([aria-busy='true'])::after {
+  content: '—';
+  color: var(--text-3);
+  font-family: var(--mono);
+  opacity: 0.75;
 }
 
 /* Settings › 关于: the project link replaces the local data path. */
@@ -8306,9 +8326,6 @@ details.cfg-section[open] .cfg-fold-icon {
   animation: locate-row-cue 1.6s var(--ease) both;
 }
 
-.compact .page.proxies .nodes:not(.dense) .node.selected {
-  box-shadow: inset 3px 0 0 var(--accent);
-}
 .compact .page.proxies .nodes:not(.dense) .node:active:not(.locked) {
   background: var(--hover);
 }

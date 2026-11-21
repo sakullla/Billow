@@ -1240,7 +1240,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             >
               <template v-if="store.pendingTests.value.has(node.name)"><span class="spinner xs" /><span class="sr-only">{{ tr('测速中') }}</span></template>
               <template v-else-if="nodeDelay(node)">{{ nodeDelay(node) }}</template>
-              <Icon v-else name="zap" :size="13" />
+              <Icon v-else name="zap" :size="13" class="delay-zap" />
             </button>
           </div>
         </template>
