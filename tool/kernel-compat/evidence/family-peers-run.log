@@ -18,14 +18,14 @@ chain_b sizes=[105 116 299 426 982 1219] sizes2=[45 76 85 85 136 275 482 558 818
 pinned client accepted 36 protocol/obfs combinations
 == Rust client against the same Go peer (matrix, auth failure, large payloads, UDP) ==
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
-     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-2749f92c224bd143)
+     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-e5dff88b4868b095)
 
 running 7 tests
 test ssr_go_server_rejects_a_wrong_password ... ok
 test ssr_go_server_relays_the_client_frames ... ok
 test ssr_plugin_matrix_relays_with_every_protocol_and_obfs ... ok
 test ssr_plugin_protocol_param_and_large_payloads ... ok
-test ssr_plugin_wrong_password_never_relays ... peer: address: auth_sha1_v4 decode data wrong length
+test ssr_plugin_wrong_password_never_relays ... peer: address: EOF
 peer: address: auth_aes128 wrong head mac
 peer: address: auth_aes128 wrong head mac
 peer: address: auth_chain wrong client hash
@@ -34,29 +34,29 @@ ok
 test ssr_udp_reaches_the_echo_for_every_protocol ... ok
 test ssr_udp_wrong_password_never_reaches_the_echo ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.48s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.70s
 
 == CLI process: SSR plugin tunnel ==
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
-     Running tests/family_cli.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/family_cli-5e86c04ba068a387)
+     Running tests/family_cli.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/family_cli-ee596f8c9f7a1553)
 
 running 1 test
 test cli_process_tunnels_through_an_ssr_plugin ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.75s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.51s
 
 == pinned gost relay dialer against the controlled peer ==
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-b66d06dcffef1a91)
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-6f386e55c634b4c5)
 
 running 1 test
 test gost_relay_pinned_dialer_accepts_the_controlled_peer ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.51s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.52s
 
 == controlled Rust peers (gost-relay incl. udp/mux, ssh, ssr origin/plain) ==
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-b66d06dcffef1a91)
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-6f386e55c634b4c5)
 
 running 10 tests
 test gost_relay_mux_and_udp_share_the_smux_session ... ok
@@ -70,10 +70,10 @@ test gost_relay_pinned_dialer_accepts_the_controlled_peer ... ignored, needs the
 test gost_relay_udp_relays_datagrams_to_the_bound_target ... ok
 test gost_relay_udp_without_the_option_is_refused_by_the_server ... ok
 
-test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 39 filtered out; finished in 2.01s
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 39 filtered out; finished in 2.09s
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-b66d06dcffef1a91)
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-6f386e55c634b4c5)
 
 running 4 tests
 test ssh_outbound_password_auth_relays_direct_tcpip ... ok
@@ -81,21 +81,21 @@ test ssh_outbound_pinned_host_key_must_match_the_server ... ok
 test ssh_outbound_public_key_auth_relays_direct_tcpip ... ok
 test ssh_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.84s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.89s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-b66d06dcffef1a91)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-6f386e55c634b4c5)
 
 running 3 tests
 test ssr_outbound_origin_plain_relays_with_aes_256_cfb ... ok
 test ssr_outbound_rc4_md5_and_dummy_ciphers_relay ... ok
 test ssr_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 3.24s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 3.29s
 
 == controlled WireGuard peer (locked metacubex/wireguard-go device, fake TUN) ==
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/wireguard_peer.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/wireguard_peer-dd2508b6afede2f4)
+     Running tests/wireguard_peer.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/wireguard_peer-2b26fbdf5d25da79)
 
 running 5 tests
 test an_unregistered_client_key_is_rejected ... ok
@@ -104,11 +104,11 @@ test packets_over_the_mtu_and_short_buffers_are_named_errors ... ok
 test preshared_key_is_mixed_into_the_handshake ... ok
 test wrong_peer_public_key_fails_the_handshake ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.92s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.94s
 
 == OpenVPN 2.7.9 peer (--dev null, real TLS/key-method-2/data channel) ==
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/openvpn_peer.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/openvpn_peer-bdeed2bce16a2325)
+     Running tests/openvpn_peer.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/openvpn_peer-532c66d1a512a7c4)
 
 running 4 tests
 test a_missing_client_certificate_fails_authentication ... ok
@@ -116,5 +116,18 @@ test an_untrusted_server_certificate_is_rejected ... ok
 test control_channel_pushes_and_the_data_keys_decrypt_a_keepalive ... ok
 test no_common_data_cipher_is_a_named_failure ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.89s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.70s
+
+== T19 mesh peers (locked zerotier-go and tailscale; EasyTier rejected) ==
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests/mesh_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mesh_peers-118e3903e4841092)
+
+running 3 tests
+test tailscale_control_noise_and_http2 ... controlbase ok
+controlbase: decrypting machine key: chacha20poly1305: message authentication failed
+ok
+test tailscale_derp_greeting_and_ping ... ok
+test zerotier_hello_success_and_failure ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.75s
 

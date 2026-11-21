@@ -1,8 +1,9 @@
 {
   "format": "kernel-t16-feasibility",
-  "version": 1,
+  "version": 2,
   "date": "2026-11-22",
   "task": "T16",
+  "scope": "WireGuard and OpenVPN protocol adapters/configuration semantics. The tailscale/zerotier/easytier control planes were split out to T19; T16 no longer claims or rejects them (see tool/kernel-compat/evidence/t19-mesh.md).",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -36,7 +37,7 @@
         "BasicOption tfo/mptcp/interface-name/routing-mark/ip-version (no-op values still load as Mihomo ignores them)"
       ],
       "deviceLayer": "The transport exposes send_packet/recv_packet of IP datagrams; TCP/UDP sockets, the userspace IP stack and TUN ownership are T6/T7, so `dial()` returns an explicit handshake error naming that gap. The same split exists in the pinned adapter (wireguard-go device + mips/gVisor stack).",
-      "dependencyDecision": "No boringtun/wireguard crate is in the offline cargo cache. The protocol is implemented in-tree with crates already available offline: `blake2` 0.10.6 (new direct dependency, already in Cargo.lock), `x25519-dalek` 2.0, `chacha20poly1305` 0.10, `rand` 0.8. No GPL code is copied.",
+      "dependencyDecision": "No boringtun/wireguard crate is in the offline cargo cache. The protocol is implemented in-tree with crates already available offline: `blake2` 0.10.6 (new direct dependency, already in Cargo.lock), `x25519-dalek` 2.0, `chacha20poly1305` 0.10, `rand` 0.8. No GPL code is vendored or linked; the pinned GPL adapter was read for option facts only (see sourceConsultation).",
       "peer": {
         "kind": "controlled userspace WireGuard device built from the locked metacubex/wireguard-go",
         "module": "github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f",
@@ -77,7 +78,7 @@
         "ip-stack mode/congestion-controller, remote-dns-resolve/dns, dialer-proxy"
       ],
       "deviceLayer": "The data channel exposes decrypted IP payloads; TCP/UDP sockets and the TUN/IP stack are T6/T7, so `dial()` names that gap. `OpenVpnTunnel` is the interface for that layer.",
-      "dependencyDecision": "No OpenVPN crate is in the offline cargo cache. The protocol is implemented in-tree with existing dependencies (rustls 0.23 + ring, tokio/rustls-pemfile, aes-gcm, chacha20poly1305, hmac, sha1, plus the small MD5 in keys.rs). The real peer is the OpenVPN 2.7.9 Homebrew binary; it is a test-only external process and is never linked. No code is copied.",
+      "dependencyDecision": "No OpenVPN crate is in the offline cargo cache. The protocol is implemented in-tree with existing dependencies (rustls 0.23 + ring, tokio/rustls-pemfile, aes-gcm, chacha20poly1305, hmac, sha1, plus the small MD5 in keys.rs). The real peer is the OpenVPN 2.7.9 Homebrew binary; it is a test-only external process and is never linked. No source is vendored or copied line-by-line; the pinned GPL transport was read for wire facts only (see sourceConsultation).",
       "peer": {
         "kind": "OpenVPN 2.7.9 server with --dev null (no TUN/root)",
         "binary": "KC_OPENVPN_BIN or /opt/homebrew/opt/openvpn/sbin/openvpn or PATH",
@@ -96,54 +97,36 @@
         ],
         "result": "4 passed, 0 failed (KC_OPENVPN_BIN=<bin> cargo test --locked --test openvpn_peer -- --ignored --test-threads=1)"
       }
-    },
-    "tailscale": {
-      "status": "rejected",
-      "reason": "The pinned outbound (with_gvisor) embeds the Tailscale control plane (controlplane.tailscale.com Noise control protocol, node-key registration, DERP relays) plus a gVisor netstack. The data path is WireGuard, whose transport T16 implements, but peer discovery/authentication needs the control plane and no Tailscale Rust crate is in the offline cargo cache (only the Go tailscale.com module is cached). Device/TUN and the IP stack are T6/T7.",
-      "dependencyDecision": "No crate/build available offline: `tailscale`, `tailscale-rs`, `tailscale_wireguard` are absent from the cargo cache and Cargo.lock. Implementing the control protocol from scratch is out of scope for a verifiable subset; rejected by name with this reason. No Go code copied.",
-      "platform": "not applicable until the control plane exists"
-    },
-    "zerotier": {
-      "status": "rejected",
-      "reason": "The pinned outbound wraps zerotier-go: Curve25519 identity, planet/root servers, the VL1/VL2 transport and control protocol, Salsa20/Poly1305 crypto, and a gVisor netstack. No Zerotier Rust crate is in the offline cargo cache and no local planet/controller is available; device/TUN and the IP stack are T6/T7.",
-      "dependencyDecision": "No `zerotier`/`zerotier-sys`/`libzt` crate or library in the offline cache; rejected by name. Salsa20/poly1305 primitives alone are insufficient without the control protocol.",
-      "platform": "not applicable until the control protocol exists"
-    },
-    "easytier": {
-      "status": "rejected",
-      "reason": "The pinned outbound embeds the easytier-go host/instance: peer discovery, encryption, KCP/QUIC proxies and a netstack. Upstream EasyTier is written in Rust, but no `easytier` crate (or its workspace crates) is in the offline cargo cache, and device/TUN and the IP stack are T6/T7.",
-      "dependencyDecision": "The cached tree contains only the Go `easytier-go` module from the locked Mihomo build, not the Rust crate; a network fetch would be required. Rejected by name.",
-      "platform": "not applicable until the crate is available and pinned"
     }
+  },
+  "outOfScope": {
+    "mesh": "tailscale/zerotier/easytier moved to T19 (evidence/t19-mesh.md). The old T16 mesh-parity log is historical and its status is updated to point at T19; T16 makes no claim about those families."
+  },
+  "sourceConsultation": {
+    "files_read": [
+      "pinned Mihomo adapter/outbound/wireguard.go (option names/defaults/rejections)",
+      "pinned Mihomo transport/openvpn (wire field order, ping constant, AEAD layout, implicit IV source)"
+    ],
+    "copied": "none: no Go/C source or characteristic Go identifier is vendored, linked, or present in native-kernel; all grep hits are documentation citations",
+    "limitation": "This is not a certified clean-room. The pinned GPL-3.0 code was read for functional facts; the Rust modules are independent expressions verified as black boxes, but no formal spec/observer separation was performed.",
+    "record": "tool/kernel-compat/evidence/t16-provenance.md"
   },
   "commands": [
     "cargo test --offline --locked --manifest-path native-kernel/Cargo.toml",
     "tool/kernel-compat/family-peers.sh wireguard_peer",
     "tool/kernel-compat/family-peers.sh openvpn_peer",
+    "node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo> --out tool/kernel-compat/evidence/option-matrix.txt",
     "node --test tool/kernel-compat/runner.test.mjs"
   ],
-  "gaps": [
-    "T6/T7 must provide the userspace IP stack and TUN device that turns WireGuard/OpenVPN IP packets into TCP/UDP streams; until then both `dial()` paths refuse with that named gap.",
-    "WireGuard automatic rekey is initiator-only (the client rekeys before 120 s); responding to a server-initiated handshake is not implemented.",
-    "OpenVPN tls-auth/tls-crypt control protection, CBC data ciphers, compression and rekey/soft-reset handling are not implemented and are rejected or left to a later task.",
-    "Tailscale/ZeroTier/EasyTier control planes and their IP stacks are explicitly rejected; no compatible Rust dependency is available offline.",
-    "Platform peer runs: only macOS arm64; other platforms compile from the same code paths but were not run."
-  ],
-  "meshParity": {
-    "command": "tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 -t -d <dir> -f <family>.yaml",
-    "log": "tool/kernel-compat/evidence/t16-mesh-parity.log",
-    "result": "the pinned binary accepts one valid configuration per mesh family; the Rust kernel rejects each by name and records the missing control plane",
-    "rustTest": "tests/config.rs::mesh_control_planes_reject_configs_the_pinned_binary_accepts_by_name"
-  },
   "results": {
     "defaultSuite": {
       "command": "cargo test --offline --locked --manifest-path native-kernel/Cargo.toml",
-      "result": "all green (after the T13-A3 sudoku removal): 85 lib unit tests, 37 config, 48 protocols, 18 quic_peers, 11 sessions, 1 shadowquic_stream, 7 cli, 7 family_cli, 1 doc-test; 8 ignore-marked peer families",
-      "hermetic": "yes: the default suite starts no network peer; the ignored cases need KC_WIREGUARD_PEER_BIN/KC_OPENVPN_BIN"
+      "result": "all green: 97 lib unit tests (1 ignored), 37 config, 48 protocols (1 ignored), 20 quic_peers, 11 sessions, 1 shadowquic_stream, 7 cli, 8 family_cli (1 ignored), 1 doc-test; ignored peer suites: mihomo_peers 50, independent_peers 7, mesh_peers 3, wireguard_peer 5, openvpn_peer 4",
+      "hermetic": "yes: the default suite starts no network peer; the ignored cases need KC_WIREGUARD_PEER_BIN/KC_OPENVPN_BIN (and the other peer env vars)"
     },
     "familyPeers": {
       "command": "tool/kernel-compat/family-peers.sh",
-      "result": "exit 0; wireguard 5/5, openvpn 4/4, plus the pre-existing gost/ssh/ssr groups (the Sudoku group was removed in T13-A3)",
+      "result": "exit 0; wireguard 5/5, openvpn 4/4, T19 mesh peers 3/3, plus the pre-existing gost/ssh/ssr groups (the Sudoku group was removed in T13-A3)",
       "log": "tool/kernel-compat/evidence/family-peers-run.log"
     },
     "mihomoPeers": {
@@ -154,6 +137,19 @@
     "runnerTest": {
       "command": "node --test tool/kernel-compat/runner.test.mjs",
       "result": "10 passed, 0 failed"
+    },
+    "optionMatrix": {
+      "command": "node tool/kernel-compat/option-probe.mjs --rust ~/.cache/cargo-target/release/billow-kernel --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 --out tool/kernel-compat/evidence/option-matrix.txt",
+      "result": "no-op cases: 237, enabled cases: 263, problems: 0; skipped: masque (pinned CONNECT-IP base is rejected by the RFC 9298 CONNECT-UDP subset)",
+      "log": "tool/kernel-compat/evidence/option-matrix.txt",
+      "coverage": "wireguard and openvpn now have explicit bases and rows; wireguard's base carries ip/private-key/peers, openvpn's carries username/password and an inline CA fixture so both engines can classify the options. Every enabled wireguard/openvpn row is rejected by name; no-op rows load in both engines."
     }
-  }
+  },
+  "gaps": [
+    "T6/T7 must provide the userspace IP stack and TUN device that turns WireGuard/OpenVPN IP packets into TCP/UDP streams; until then both `dial()` paths refuse with that named gap.",
+    "WireGuard automatic rekey is initiator-only (the client rekeys before 120 s); responding to a server-initiated handshake is not implemented.",
+    "OpenVPN tls-auth/tls-crypt control protection, CBC data ciphers, compression and rekey/soft-reset handling are not implemented and are rejected or left to a later task.",
+    "Platform peer runs: only macOS arm64; other platforms compile from the same code paths but were not run.",
+    "The mesh control planes are T19, not T16 (the historical t16-mesh-parity.log is superseded)."
+  ]
 }

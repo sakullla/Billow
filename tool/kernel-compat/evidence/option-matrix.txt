@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 213, enabled cases: 239, problems: 0
+# no-op cases: 237, enabled cases: 263, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 # skipped: masque (- the pinned base requires private-key/public-key (Cloudflare WARP CONNECT-IP registration) that this kernel rejects; the RFC 9298 CONNECT-UDP subset is verified in tests/quic_peers.rs and the boundary is in evidence/t14-feasibility.json)
 
@@ -218,6 +218,30 @@ noop    shadowquic max-open-streams             rust=accept mihomo=accept
 noop    shadowquic quic-versions                rust=accept mihomo=accept
 noop    shadowquic skip-cert-verify             rust=accept mihomo=accept
 noop    shadowquic udp                          rust=accept mihomo=accept
+noop    wireguard udp                          rust=accept mihomo=accept
+noop    wireguard tfo                          rust=accept mihomo=accept
+noop    wireguard mptcp                        rust=accept mihomo=accept
+noop    wireguard interface-name               rust=accept mihomo=accept
+noop    wireguard routing-mark                 rust=accept mihomo=accept
+noop    wireguard ip-version                   rust=accept mihomo=accept
+noop    wireguard ip-stack                     rust=accept mihomo=accept
+noop    openvpn udp                          rust=accept mihomo=accept
+noop    openvpn tfo                          rust=accept mihomo=accept
+noop    openvpn mptcp                        rust=accept mihomo=accept
+noop    openvpn interface-name               rust=accept mihomo=accept
+noop    openvpn routing-mark                 rust=accept mihomo=accept
+noop    openvpn ip-version                   rust=accept mihomo=accept
+noop    openvpn ip-stack                     rust=accept mihomo=accept
+noop    wireguard workers                      rust=accept mihomo=accept
+noop    wireguard mtu                          rust=accept mihomo=accept
+noop    wireguard persistent-keepalive         rust=accept mihomo=accept
+noop    openvpn comp-lzo                     rust=accept mihomo=accept
+noop    openvpn ping                         rust=accept mihomo=accept
+noop    openvpn ping-restart                 rust=accept mihomo=accept
+noop    openvpn tran-window                  rust=accept mihomo=accept
+noop    openvpn handshake-timeout            rust=accept mihomo=accept
+noop    openvpn mtu                          rust=accept mihomo=accept
+noop    openvpn key-direction                rust=accept mihomo=accept
 enabled socks5  udp                          rust=reject mihomo=accept
 enabled socks5  fingerprint                  rust=reject mihomo=accept
 enabled socks5  certificate                  rust=reject mihomo=reject
@@ -457,3 +481,27 @@ enabled shadowquic mptcp                        rust=reject mihomo=accept
 enabled shadowquic interface-name               rust=reject mihomo=accept
 enabled shadowquic routing-mark                 rust=reject mihomo=accept
 enabled shadowquic ip-version                   rust=reject mihomo=accept
+enabled wireguard amnezia-wg-option            rust=reject mihomo=accept
+enabled wireguard ip-stack.mode                rust=reject mihomo=accept
+enabled wireguard ip-stack.congestion-controller rust=reject mihomo=accept
+enabled wireguard remote-dns-resolve           rust=reject mihomo=accept
+enabled wireguard dns                          rust=reject mihomo=accept
+enabled wireguard refresh-server-ip-interval   rust=reject mihomo=accept
+enabled wireguard dialer-proxy                 rust=reject mihomo=reject
+enabled wireguard tfo                          rust=reject mihomo=accept
+enabled wireguard mptcp                        rust=reject mihomo=accept
+enabled wireguard interface-name               rust=reject mihomo=accept
+enabled wireguard routing-mark                 rust=reject mihomo=accept
+enabled wireguard ip-version                   rust=reject mihomo=accept
+enabled openvpn tls-auth                     rust=reject mihomo=reject
+enabled openvpn tls-crypt                    rust=reject mihomo=reject
+enabled openvpn tls-crypt-v2                 rust=reject mihomo=reject
+enabled openvpn comp-lzo                     rust=reject mihomo=accept
+enabled openvpn cipher                       rust=reject mihomo=accept
+enabled openvpn data-ciphers                 rust=reject mihomo=accept
+enabled openvpn dev                          rust=reject mihomo=reject
+enabled openvpn ip-stack.mode                rust=reject mihomo=accept
+enabled openvpn ip-stack.congestion-controller rust=reject mihomo=accept
+enabled openvpn remote-dns-resolve           rust=reject mihomo=accept
+enabled openvpn dns                          rust=reject mihomo=accept
+enabled openvpn dialer-proxy                 rust=reject mihomo=reject

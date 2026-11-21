@@ -2263,7 +2263,7 @@
           "tool/kernel-compat/evidence/t16-feasibility.json"
         ],
         "notes": "Both peer forms load: `peers:` and the embedded top-level server/port/public-key form. `allowed-ips` defaults to 0.0.0.0/0 and/or ::/0 from ip/ipv6 in the single-peer form; `mtu` defaults to 1408. The transport is initiator-only for rekeys (it rekeys before the responder's 120 s window); answering a server-initiated handshake is not implemented.",
-        "license": "No wireguard/boringtun crate and no GPL source copied; the locked MIT wireguard-go device is a test peer only. See tool/kernel-compat/evidence/t16-provenance.md."
+        "license": "No wireguard/boringtun crate; no Go source vendored, linked, or translated. The locked MIT wireguard-go device is a test peer only. The pinned adapter/outbound/wireguard.go (GPL-3.0) was read for option names/defaults; this is source consultation, not a certified clean-room. Audit and limits: tool/kernel-compat/evidence/t16-provenance.md."
       }
     },
     {
@@ -2781,8 +2781,9 @@
           "tls-crypt",
           "tls-crypt-v2",
           "comp-lzo: yes|adaptive",
-          "cipher/data-ciphers with CBC",
-          "dev other than tun",
+          "cipher: CBC",
+          "data-ciphers: CBC",
+          "dev: non-tun",
           "ip-stack.mode: mips|gvisor",
           "ip-stack.congestion-controller",
           "remote-dns-resolve",
@@ -2801,7 +2802,7 @@
           "tool/kernel-compat/evidence/t16-feasibility.json"
         ],
         "notes": "`ca` is an inline PEM and is required; the server chain is verified against it without a hostname check (matching the pinned client). `cert`/`key` are inline PEM and optional; without them the server may reject the TLS client (observed as a bounded handshake timeout). The data ciphers are AES-128-GCM, AES-256-GCM and CHACHA20-POLY1305; AES-192-GCM and CBC are not implemented.",
-        "license": "No OpenVPN crate and no OpenVPN/Mihomo source copied. The GPL-2.0 OpenVPN binary is a test peer only; provenance in tool/kernel-compat/evidence/t16-provenance.md."
+        "license": "No OpenVPN crate; no OpenVPN/Mihomo source vendored, linked, or copied line-by-line. The GPL-2.0 OpenVPN binary is a test peer only. The pinned transport/openvpn (GPL-3.0) was read for functional wire facts; this is not a certified clean-room. Audit and limits: tool/kernel-compat/evidence/t16-provenance.md."
       }
     },
     {
@@ -2809,8 +2810,31 @@
       "constructor": "outbound.NewTailscale",
       "source": "adapter/parser.go:205",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "the pinned outbound (with_gvisor) embeds the tailscale.com control plane and a gVisor netstack; device/TUN ownership is T6/T7 and no Rust tailscale stack is available offline"
+        "status": "partial",
+        "reason": "The control-base Noise IK transport, the HTTP/2 /machine/map request and the DERP greeting/client-info/ping/packet frames are implemented in src/outbound/tailscale.rs and verified against a controlled peer built from the locked BSD-3-Clause tailscale module. Node registration is not implemented, so hostname/auth-key/state-dir/ephemeral/accept-routes:true/exit-node/exit-node-allow-lan-access:true are rejected at load. TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device, so dial() refuses with that gap named.",
+        "options": [
+          "hostname",
+          "auth-key",
+          "control-url",
+          "state-dir",
+          "ephemeral",
+          "udp",
+          "accept-routes",
+          "exit-node",
+          "exit-node-allow-lan-access"
+        ],
+        "evidence": [
+          "src/outbound/tailscale.rs::tests::nacl_box_roundtrips_and_rejects_tampering",
+          "src/outbound/tailscale.rs::tests::control_records_use_the_pinned_framing",
+          "src/outbound/tailscale.rs::tests::initiation_has_the_pinned_header",
+          "src/outbound/tailscale.rs::tests::derp_server_key_body_starts_with_the_magic",
+          "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
+          "tests/mesh_peers.rs::tailscale_control_noise_and_http2",
+          "tests/mesh_peers.rs::tailscale_derp_greeting_and_ping",
+          "tool/kernel-compat/evidence/t19-mesh.md"
+        ],
+        "notes": "control-url is used by the protocol layer; the control server key is a library parameter. Registration-only options are explicit rejections, not silently accepted. Basic socket-shaping options and dialer-proxy are rejected with the T6/T7 boundary.",
+        "license": "No Tailscale source is copied or linked; the locked BSD-3-Clause module is a test peer only. See tool/kernel-compat/evidence/t19-mesh.md."
       }
     },
     {
@@ -2818,8 +2842,36 @@
       "constructor": "outbound.NewZeroTier",
       "source": "adapter/parser.go:212",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "the pinned outbound wraps zerotier-go (identity, planet, control protocol, crypto) plus a gVisor netstack; device/TUN ownership is T6/T7 and no Rust zerotier stack is available offline"
+        "status": "partial",
+        "reason": "Identity generation/parsing (address proof of work), planet/moon parsing, VL1 packet armor (Salsa20/12 + Poly1305 and protocol-13 extended HELLO), HELLO/OK/WHOIS/ECHO and the VL2 frame payload are implemented in src/outbound/zerotier.rs and verified against a controlled peer built from the locked MPL-2.0 zerotier-go module. An explicit ip-stack, remote-dns-resolve/dns, remote trace and the TCP fallback transport (force/non-empty relay) are rejected with the T6/T7/T5 boundary. TCP/UDP through the network needs the T6/T7 userspace IP stack, and the controller membership exchange is T5, so dial() refuses with that gap named.",
+        "options": [
+          "network",
+          "state-dir",
+          "identity-secret",
+          "planet",
+          "mtu",
+          "physical-mtu",
+          "udp",
+          "low-bandwidth",
+          "encrypted-hello",
+          "primary-port",
+          "secondary-port",
+          "tcp-fallback-mode",
+          "tcp-fallback-relay",
+          "orbit"
+        ],
+        "evidence": [
+          "src/outbound/zerotier.rs::tests::identity_generation_and_text_roundtrip",
+          "src/outbound/zerotier.rs::tests::packet_armor_roundtrips_and_rejects_tampering",
+          "src/outbound/zerotier.rs::tests::hello_has_the_pinned_payload_shape",
+          "src/outbound/zerotier.rs::tests::world_parser_reads_roots_and_rejects_truncation",
+          "src/outbound/zerotier.rs::tests::network_ids_and_vl2_frames",
+          "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
+          "tests/mesh_peers.rs::zerotier_hello_success_and_failure",
+          "tool/kernel-compat/evidence/t19-mesh.md"
+        ],
+        "notes": "tcp-fallback-mode auto/disable with an empty relay is accepted because it asks for no transport; force or a non-empty relay is rejected. The controller membership/config verbs are T5.",
+        "license": "No ZeroTier source is copied or linked; the locked MPL-2.0 module is a test peer only. See tool/kernel-compat/evidence/t19-mesh.md."
       }
     },
     {
@@ -2828,7 +2880,11 @@
       "source": "adapter/parser.go:219",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "the pinned outbound embeds the easytier-go host/instance (peer discovery, encryption, KCP/QUIC proxies) plus a netstack; device/TUN ownership is T6/T7 and no Rust easytier stack is available offline"
+        "reason": "T19 rejected the whole type: the pinned core derives `network_secret_digest` inside its wasm artifact and that derivation is not reproducible from the offline source/crate cache. A placeholder digest is reset by the real core, so neither the cleartext host/discovery path nor `enable-encryption: true` is loaded as compatible. Device/TUN remains T6/T7.",
+        "evidence": [
+          "tests/config.rs::mesh_control_planes_load_the_pinned_shapes"
+        ],
+        "notes": "Rejected at configuration load with the digest gap named; no protocol object or peer is exposed as compatible."
       }
     }
   ],
@@ -4005,8 +4061,8 @@
   },
   "coverage": {
     "mapped": 24,
-    "partial": 16,
-    "unimplemented": 115,
+    "partial": 18,
+    "unimplemented": 113,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }

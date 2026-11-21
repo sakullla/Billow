@@ -735,7 +735,10 @@ tool/kernel-compat/family-peers.sh
   `rustls`+`ring`, `aes-gcm`, `chacha20poly1305`, `hmac`/`sha1` and the MD5
   already in `keys.rs`. Their peer runs are macOS arm64 only (the OpenVPN
   binary is the Homebrew 2.7.9 bottle; the WireGuard peer is built from the
-  cached MIT module). `quinn-proto` and `typenum` are direct dependencies because
+  cached MIT module). The pinned GPL-3.0 adapters were read for option/wire
+  facts only; no source is vendored or linked, and the audit plus its
+  clean-room limits are in `tool/kernel-compat/evidence/t16-provenance.md`.
+  `quinn-proto` and `typenum` are direct dependencies because
   the JLS session wrapper needs `quinn_proto::crypto::Session` and the
   32-byte GCM nonce; both were already in the lockfile. The JLS ClientHello is
   produced by a recorded-random replay of rustls's own hello; if a future

@@ -61,7 +61,11 @@ for the Rust Noise IK/transport implementation. The upstream file headers say
 is a test program and is not linked into or shipped with the kernel. The Rust
 implementation in `crates/billow-kernel/src/outbound/wireguard.rs` is a new
 expression of the public WireGuard whitepaper protocol (Noise IK, BLAKE2s,
-ChaCha20-Poly1305, X25519); no Go source is copied or translated.
+ChaCha20-Poly1305, X25519). No Go source is vendored, linked, or translated;
+the pinned `adapter/outbound/wireguard.go` (GPL-3.0) was read for option
+names/defaults, not as code. This is source consultation, not a certified
+clean-room; the audit and its limits are in
+`tool/kernel-compat/evidence/t16-provenance.md`.
 
 ## OpenVPN 2.7.9 (test peer only)
 
@@ -69,15 +73,22 @@ ChaCha20-Poly1305, X25519); no Go source is copied or translated.
 binary (Homebrew arm64 bottle, GPL-2.0) with `--dev null` as a black-box peer.
 It is never linked or distributed with the kernel. The Rust control/data
 channel in `crates/billow-kernel/src/outbound/openvpn.rs` was written from the
-public OpenVPN wire protocol; no OpenVPN source is vendored or translated. The
-exact peer command, version and certification/authentication cases are in
+public OpenVPN wire protocol. No OpenVPN or Mihomo source is vendored, linked,
+or copied line-by-line, but this is **not** a certified clean-room: the pinned
+Mihomo `transport/openvpn` (GPL-3.0) was read for functional wire facts (field
+order, the ping constant, the AEAD layout and the implicit IV source). That
+consultation, the exact audit commands and their limits are recorded in
+`tool/kernel-compat/evidence/t16-provenance.md`. The exact peer command,
+version and certification/authentication cases are in
 `tool/kernel-compat/evidence/t16-feasibility.json` and
 `tool/kernel-compat/evidence/protocol-peers.json#t16`.
 
 ## Mihomo `transport/shadowquic`
 
 The pinned Mihomo v1.19.34 tree is GPL-3.0. No Mihomo source is vendored,
-linked, or copied into the Rust kernel. The ShadowQUIC framing was implemented
+linked, or copied into the Rust kernel (T16's read-only consultation of
+`transport/openvpn` for protocol facts is recorded in its own section above;
+that is source consultation, not inclusion). The ShadowQUIC framing was implemented
 from the observable data path (SOCKS5 address format, command bytes, `u16` id
 and length framing, QUIC RFC 9000) and verified against the pinned Mihomo
 listener as a black-box peer. The process record, including the residual

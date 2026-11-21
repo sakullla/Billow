@@ -976,7 +976,7 @@
         "tool/kernel-compat/evidence/t16-feasibility.json"
       ],
       "notes": "Both peer forms load: `peers:` and the embedded top-level server/port/public-key form. `allowed-ips` defaults to 0.0.0.0/0 and/or ::/0 from ip/ipv6 in the single-peer form; `mtu` defaults to 1408. The transport is initiator-only for rekeys (it rekeys before the responder's 120 s window); answering a server-initiated handshake is not implemented.",
-      "license": "No wireguard/boringtun crate and no GPL source copied; the locked MIT wireguard-go device is a test peer only. See tool/kernel-compat/evidence/t16-provenance.md."
+      "license": "No wireguard/boringtun crate; no Go source vendored, linked, or translated. The locked MIT wireguard-go device is a test peer only. The pinned adapter/outbound/wireguard.go (GPL-3.0) was read for option names/defaults; this is source consultation, not a certified clean-room. Audit and limits: tool/kernel-compat/evidence/t16-provenance.md."
     },
     "tailscale": {
       "status": "partial",
@@ -1076,8 +1076,9 @@
         "tls-crypt",
         "tls-crypt-v2",
         "comp-lzo: yes|adaptive",
-        "cipher/data-ciphers with CBC",
-        "dev other than tun",
+        "cipher: CBC",
+        "data-ciphers: CBC",
+        "dev: non-tun",
         "ip-stack.mode: mips|gvisor",
         "ip-stack.congestion-controller",
         "remote-dns-resolve",
@@ -1096,7 +1097,7 @@
         "tool/kernel-compat/evidence/t16-feasibility.json"
       ],
       "notes": "`ca` is an inline PEM and is required; the server chain is verified against it without a hostname check (matching the pinned client). `cert`/`key` are inline PEM and optional; without them the server may reject the TLS client (observed as a bounded handshake timeout). The data ciphers are AES-128-GCM, AES-256-GCM and CHACHA20-POLY1305; AES-192-GCM and CBC are not implemented.",
-      "license": "No OpenVPN crate and no OpenVPN/Mihomo source copied. The GPL-2.0 OpenVPN binary is a test peer only; provenance in tool/kernel-compat/evidence/t16-provenance.md."
+      "license": "No OpenVPN crate; no OpenVPN/Mihomo source vendored, linked, or copied line-by-line. The GPL-2.0 OpenVPN binary is a test peer only. The pinned transport/openvpn (GPL-3.0) was read for functional wire facts; this is not a certified clean-room. Audit and limits: tool/kernel-compat/evidence/t16-provenance.md."
     }
   },
   "listeners": {
@@ -1224,7 +1225,7 @@
         "owner": "T5",
         "reason": "rule-engine adapter"
       },
-      "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters (mesh families rejected). T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku`; T17's clean-room attempt stayed rejected because the protocol is not publicly specified (evidence/t17-cleanroom.md). T5 owns the built-in direct/dns/reject/rematch adapters.",
+      "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters; T19 implemented the tailscale/zerotier adapters and rejected easytier by name. T13 added mieru (clean-room TCP single session) and removed its earlier sudoku port, which was a GPL-3.0 derivative of the pinned `transport/sudoku`; T17's clean-room attempt stayed rejected because the protocol is not publicly specified (evidence/t17-cleanroom.md). T5 owns the built-in direct/dns/reject/rematch adapters.",
       "sudoku": {
         "owner": "T17 (clean-room attempt: blocked, needs an Owner decision)",
         "reason": "the A1 port was a GPL-3.0 derivative of `transport/sudoku` (table/record/KIP/HTTP mask translated from the pinned tree) and was removed in T13-A3. T17 implemented nothing new: the pinned peer rejects a foreign handshake with INVALID_SUDOKU_MAP_MISS, the same plaintext under one key is encoded differently on every connection (the codebook is key-derived and randomized), and the table derivation, KIP key schedule and record epochs appear only in the GPL-3.0 implementation. Reproducing them needs the Owner's decision recorded in evidence/t17-cleanroom.md#decision-needed"

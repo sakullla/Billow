@@ -78,6 +78,17 @@ const bases = {
     off: 'server: 127.0.0.1, port: 1, username: alice, password: p',
     on: null,
   },
+  // T16: the transport adapters load and reject their documented gaps; the
+  // bases satisfy each pinned type's required fields (a WireGuard peer and an
+  // inline CA). A real self-signed CA fixture is used so Mihomo parses it.
+  wireguard: {
+    off: 'ip: 10.13.13.2, private-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, peers: [{server: 127.0.0.1, port: 1, public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, allowed-ips: [0.0.0.0/0]}]',
+    on: 'ip: 10.13.13.2, private-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, peers: [{server: 127.0.0.1, port: 1, public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, allowed-ips: [0.0.0.0/0]}]',
+  },
+  openvpn: {
+    off: 'server: 127.0.0.1, port: 1, username: u, password: p, ca: "-----BEGIN CERTIFICATE-----\\nMIIBeDCCAR6gAwIBAgIUNGxTOw8p4EwO9gCDn0yLtj+cTSEwCgYIKoZIzj0EAwIw\\nIjEgMB4GA1UEAwwXQmlsbG93IE9wdGlvbiBNYXRyaXggQ0EwHhcNMjYxMTIxMjMx\\nNzE5WhcNMzYxMTE4MjMxNzE5WjAiMSAwHgYDVQQDDBdCaWxsb3cgT3B0aW9uIE1h\\ndHJpeCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCwKe7m/tSYnofl9zXGB\\n6imRADX7EOIt14x3sj8Q/Q6z8LFfLclUHxwQhCKZVSLU0OFzZ0OEX8E4JfzTh5Fz\\nvEijMjAwMB0GA1UdDgQWBBQ0WIDTOFy2zdCN8RfgUCVQqwz69DAPBgNVHRMBAf8E\\nBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIAXkgPSMN+BkP+IuwAiVTPUx/r8sv2v4\\nR/iS/uiN/Q0XAiEA2sVdFi6rQvNnpbPOlU0qXOPYZOK4KKNG/w4+o+JVVrA=\\n-----END CERTIFICATE-----"',
+    on: 'server: 127.0.0.1, port: 1, username: u, password: p, ca: "-----BEGIN CERTIFICATE-----\\nMIIBeDCCAR6gAwIBAgIUNGxTOw8p4EwO9gCDn0yLtj+cTSEwCgYIKoZIzj0EAwIw\\nIjEgMB4GA1UEAwwXQmlsbG93IE9wdGlvbiBNYXRyaXggQ0EwHhcNMjYxMTIxMjMx\\nNzE5WhcNMzYxMTE4MjMxNzE5WjAiMSAwHgYDVQQDDBdCaWxsb3cgT3B0aW9uIE1h\\ndHJpeCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCwKe7m/tSYnofl9zXGB\\n6imRADX7EOIt14x3sj8Q/Q6z8LFfLclUHxwQhCKZVSLU0OFzZ0OEX8E4JfzTh5Fz\\nvEijMjAwMB0GA1UdDgQWBBQ0WIDTOFy2zdCN8RfgUCVQqwz69DAPBgNVHRMBAf8E\\nBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIAXkgPSMN+BkP+IuwAiVTPUx/r8sv2v4\\nR/iS/uiN/Q0XAiEA2sVdFi6rQvNnpbPOlU0qXOPYZOK4KKNG/w4+o+JVVrA=\\n-----END CERTIFICATE-----"',
+  },
 }
 
 const tlsOnly = new Set([
@@ -155,7 +166,7 @@ for (const [type, entry] of Object.entries(mapping.proxies)) {
   // shapes do not match their required fields (`protocol`, `ports`, ...).
   // shadowquic is explicit for the same reason: `quic-versions` is a list and
   // `up`/`down` are rate strings.
-  if (['tuic', 'hysteria', 'hysteria2', 'shadowquic'].includes(type)) continue
+  if (['tuic', 'hysteria', 'hysteria2', 'shadowquic', 'wireguard', 'openvpn'].includes(type)) continue
   for (const option of entry.notImplemented ?? []) {
     const parsed = /^([a-z0-9.-]+)(?::\s*true)?$/.exec(option)
     if (!parsed) continue
@@ -282,7 +293,35 @@ const t15Enabled = [
   ['shadowquic', 'routing-mark', 'routing-mark: 100'],
   ['shadowquic', 'ip-version', 'ip-version: ipv4'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
-const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled, ...t15Enabled]
+// T16 families: explicit forms, because the generic `{enabled: true}` shape is
+// not valid for `amnezia-wg-option`, `ip-stack`, `dns` or `dialer-proxy`.
+const t16Enabled = [
+  ['wireguard', 'amnezia-wg-option', 'amnezia-wg-option: {jc: 4}'],
+  ['wireguard', 'ip-stack.mode', 'ip-stack: {mode: gvisor}'],
+  ['wireguard', 'ip-stack.congestion-controller', 'ip-stack: {congestion-controller: bbr}'],
+  ['wireguard', 'remote-dns-resolve', 'remote-dns-resolve: true'],
+  ['wireguard', 'dns', 'dns: [1.1.1.1]'],
+  ['wireguard', 'refresh-server-ip-interval', 'refresh-server-ip-interval: 10'],
+  ['wireguard', 'dialer-proxy', 'dialer-proxy: p'],
+  ['wireguard', 'tfo', 'tfo: true'],
+  ['wireguard', 'mptcp', 'mptcp: true'],
+  ['wireguard', 'interface-name', 'interface-name: eth0'],
+  ['wireguard', 'routing-mark', 'routing-mark: 100'],
+  ['wireguard', 'ip-version', 'ip-version: ipv4'],
+  ['openvpn', 'tls-auth', 'tls-auth: secret'],
+  ['openvpn', 'tls-crypt', 'tls-crypt: secret'],
+  ['openvpn', 'tls-crypt-v2', 'tls-crypt-v2: secret'],
+  ['openvpn', 'comp-lzo', 'comp-lzo: yes'],
+  ['openvpn', 'cipher', 'cipher: AES-128-CBC'],
+  ['openvpn', 'data-ciphers', 'data-ciphers: [AES-128-CBC]'],
+  ['openvpn', 'dev', 'dev: tap'],
+  ['openvpn', 'ip-stack.mode', 'ip-stack: {mode: gvisor}'],
+  ['openvpn', 'ip-stack.congestion-controller', 'ip-stack: {congestion-controller: bbr}'],
+  ['openvpn', 'remote-dns-resolve', 'remote-dns-resolve: true'],
+  ['openvpn', 'dns', 'dns: [1.1.1.1]'],
+  ['openvpn', 'dialer-proxy', 'dialer-proxy: p'],
+].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
+const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled, ...t15Enabled, ...t16Enabled]
 
 // No-op forms Mihomo accepts (checked against the binary when provided).
 const noops = []
@@ -443,6 +482,27 @@ for (const type of ['shadowquic']) {
   add(type, 'skip-cert-verify', 'true')
   add(type, 'udp', 'false')
 }
+// T16 families: no-op forms accepted by both engines.
+for (const type of ['wireguard', 'openvpn']) {
+  add(type, 'udp', 'false')
+  add(type, 'tfo', 'false')
+  add(type, 'mptcp', 'false')
+  add(type, 'interface-name', "''")
+  add(type, 'routing-mark', '0')
+  add(type, 'ip-version', "''")
+  add(type, 'ip-stack', '{}')
+}
+add('wireguard', 'workers', '0')
+add('wireguard', 'mtu', '0')
+add('wireguard', 'persistent-keepalive', '0')
+add('openvpn', 'comp-lzo', 'no')
+add('openvpn', 'ping', '0')
+add('openvpn', 'ping-restart', '0')
+add('openvpn', 'tran-window', '0')
+add('openvpn', 'handshake-timeout', '0')
+add('openvpn', 'mtu', '0')
+add('openvpn', 'key-direction', "''")
+
 // Enabled forms: every one must be rejected by name.
 
 function parseArgs(argv) {

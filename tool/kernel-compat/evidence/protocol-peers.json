@@ -535,18 +535,13 @@
       "wireguard (transport)",
       "openvpn (control + data channel)"
     ],
-    "rejected": [
-      "tailscale",
-      "zerotier",
-      "easytier"
-    ],
     "run": {
       "command": "tool/kernel-compat/family-peers.sh",
       "result": "wireguard_peer 5 passed, openvpn_peer 4 passed, 0 failed",
       "log": "tool/kernel-compat/evidence/family-peers-run.log",
-      "note": "The default `cargo test --locked` suite is green and hermetic; the peer cases are #[ignore]d and only run through the script. The mesh families have no peer because their control planes are unavailable offline."
+      "note": "The default `cargo test --locked` suite is green and hermetic; the peer cases are #[ignore]d and only run through the script. Mesh peers belong to T19, not this section."
     },
-    "dependencyDecision": "WireGuard: no wireguard/boringtun crate offline; implemented in-tree with blake2 0.10.6 (new direct dependency, already in Cargo.lock), x25519-dalek, chacha20poly1305 and rand. OpenVPN: no Rust crate offline; implemented in-tree with rustls/ring, aes-gcm, chacha20poly1305, hmac/sha1 and the small MD5 already in keys.rs. The peers are the locked MIT metacubex/wireguard-go device and the OpenVPN 2.7.9 Homebrew binary; neither is linked.",
+    "dependencyDecision": "WireGuard: no wireguard/boringtun crate offline; implemented in-tree with blake2 0.10.6 (new direct dependency, already in Cargo.lock), x25519-dalek, chacha20poly1305 and rand. OpenVPN: no Rust crate offline; implemented in-tree with rustls/ring, aes-gcm, chacha20poly1305, hmac/sha1 and the small MD5 already in keys.rs. The peers are the locked MIT metacubex/wireguard-go device and the OpenVPN 2.7.9 Homebrew binary; neither is linked. No source is vendored or copied line-by-line; the pinned GPL adapters were read for functional facts (not a certified clean-room; see t16-provenance.md).",
     "cases": {
       "positive": [
         "wireguard: handshake_and_icmp_round_trip_through_the_locked_peer",
@@ -566,7 +561,15 @@
     "license": {
       "wireguard_peer": "metacubex/wireguard-go MIT, golang.org/x/crypto BSD-3-Clause; test program only.",
       "openvpn_peer": "OpenVPN 2.7.9 binary GPL-2.0; test process only, not linked.",
-      "kernel": "MIT; provenance and the no-copy audit are in tool/kernel-compat/evidence/t16-provenance.md."
+      "kernel": "MIT; no GPL source is vendored or linked. The pinned GPL-3.0 adapters were read for functional wire facts; provenance and the no-copy audit limits are in tool/kernel-compat/evidence/t16-provenance.md."
+    },
+    "outOfScope": {
+      "families": [
+        "tailscale",
+        "zerotier",
+        "easytier"
+      ],
+      "note": "Moved to T19 (evidence/t19-mesh.md); T16 only covers wireguard/openvpn."
     }
   },
   "t17": {
