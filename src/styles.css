@@ -8355,13 +8355,15 @@ details.cfg-section[open] .cfg-fold-icon {
   border-bottom: 1px solid var(--border);
 }
 .modal-body:has(> .node-picker) {
-  padding-bottom: calc(14px + var(--safe-bottom));
+  padding-bottom: 14px;
 }
 
+/* Body keeps a readable width; on narrow sheets the actions wrap to a second line. */
 .node-picker-summary {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   min-height: 48px;
   padding: 6px 6px 6px 8px;
   border-radius: 12px;
@@ -8377,20 +8379,26 @@ details.cfg-section[open] .cfg-fold-icon {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1 1 auto;
+  flex: 1 1 150px;
   min-width: 0;
-  overflow: hidden;
+}
+.node-picker-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
 }
 .node-picker-summary-body .tag {
   flex: none;
 }
 .node-picker-chain {
   flex: 1 1 0;
-  min-width: 0;
+  min-width: 56px;
   font-size: var(--text-sm);
   font-weight: 600;
 }
-.node-picker-summary > .delay {
+.node-picker-summary-body > .delay {
   flex: none;
 }
 .node-picker-unfix,
@@ -8529,7 +8537,7 @@ details.cfg-section[open] .cfg-fold-icon {
 
 /* Latency pill sized like the proxy page rows; tint comes from redesign.css (R1). */
 .node-picker-row > .delay,
-.node-picker-summary > .delay {
+.node-picker-summary-body > .delay {
   min-width: 52px;
   height: 26px;
   padding: 0 9px;

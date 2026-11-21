@@ -349,13 +349,14 @@ function onSearchKeydown(event: KeyboardEvent) {
               fold
             />
             <span v-else class="muted small">{{ tr('未选择节点') }}</span>
+            <span
+              v-if="currentDelay.tone !== 'none'"
+              class="delay mono"
+              :class="currentDelay.tone"
+              data-testid="node-picker-current-delay"
+            >{{ currentDelay.text }}</span>
           </div>
-          <span
-            v-if="currentDelay.tone !== 'none'"
-            class="delay mono"
-            :class="currentDelay.tone"
-            data-testid="node-picker-current-delay"
-          >{{ currentDelay.text }}</span>
+          <div class="node-picker-summary-actions">
           <button
             v-if="group.fixed"
             type="button"
@@ -380,6 +381,7 @@ function onSearchKeydown(event: KeyboardEvent) {
           >
             <span>{{ tr('代理页') }}</span><Icon name="chevron-right" :size="14" />
           </button>
+          </div>
         </div>
 
         <div class="node-picker-toolbar">
@@ -411,7 +413,11 @@ function onSearchKeydown(event: KeyboardEvent) {
             class="btn ghost sm node-picker-tool"
             :disabled="testDisabled"
             :aria-busy="testingGroup || undefined"
-            :aria-label="testingGroup ? tr('测速中') : tr('测试该组延迟')"
+            :aria-label="testingGroup
+              ? store.testProgress.value.total > 0
+                ? tr('测速中 ({0}/{1})', { 0: store.testProgress.value.tested, 1: store.testProgress.value.total })
+                : tr('测速中')
+              : tr('测试该组延迟')"
             :title="snap.kernel_running ? tr('测试该组延迟') : tr('连接后才能测速')"
             data-testid="node-picker-test"
             @click="store.testGroup(group.name)"

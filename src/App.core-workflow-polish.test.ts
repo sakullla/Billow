@@ -351,6 +351,26 @@ describe('Core workflow polish (R1–R2)', () => {
       expect(meta.findAll('.node-tag').map((tag) => tag.text())).toContain('UDP')
     })
 
+    it('keeps the pinned node, status tags and actions in separate summary slots for a fixed group', async () => {
+      const { wrapper } = await mountApp({}, 390)
+      await connect(wrapper)
+      void storeOf(wrapper).selectNode('自动选择', '德国 02')
+      await settle(800)
+      await wrapper.find('[data-testid="groups-card"] [data-group="自动选择"]').trigger('click')
+      await flushPromises()
+
+      const summary = body().find('.node-picker-summary')
+      const info = summary.find('.node-picker-summary-body')
+      expect(info.text()).toContain('自动')
+      expect(info.find('[data-testid="node-picker-fixed-tag"]').text()).toBe('已固定')
+      expect(info.find('[data-testid="chain-path"]').text()).toContain('德国 02')
+      // Actions sit in their own wrapping group so they never squeeze the chain out.
+      const actions = summary.find('.node-picker-summary-actions')
+      expect(actions.find('[data-testid="node-picker-unfix"]').exists()).toBe(true)
+      expect(actions.find('[data-testid="node-picker-open-proxies"]').exists()).toBe(true)
+      expect(info.find('[data-testid="node-picker-unfix"]').exists()).toBe(false)
+    })
+
     it('scrolls the active node into view on open without moving focus on touch screens', async () => {
       const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
         matches: query.includes('coarse'),
