@@ -332,20 +332,111 @@ impl SsrCipher {
     }
 }
 
+/// SSR protocol plugin (`transport/ssr/protocol`). `origin` is a pass-through;
+/// the others add an authentication block and per-record integrity checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SsrProtocolKind {
+    Origin,
+    AuthSha1V4,
+    AuthAes128Md5,
+    AuthAes128Sha1,
+    AuthChainA,
+    AuthChainB,
+}
+
+impl SsrProtocolKind {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "origin" => Some(SsrProtocolKind::Origin),
+            "auth_sha1_v4" => Some(SsrProtocolKind::AuthSha1V4),
+            "auth_aes128_md5" => Some(SsrProtocolKind::AuthAes128Md5),
+            "auth_aes128_sha1" => Some(SsrProtocolKind::AuthAes128Sha1),
+            "auth_chain_a" => Some(SsrProtocolKind::AuthChainA),
+            "auth_chain_b" => Some(SsrProtocolKind::AuthChainB),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SsrProtocolKind::Origin => "origin",
+            SsrProtocolKind::AuthSha1V4 => "auth_sha1_v4",
+            SsrProtocolKind::AuthAes128Md5 => "auth_aes128_md5",
+            SsrProtocolKind::AuthAes128Sha1 => "auth_aes128_sha1",
+            SsrProtocolKind::AuthChainA => "auth_chain_a",
+            SsrProtocolKind::AuthChainB => "auth_chain_b",
+        }
+    }
+
+    /// The plugin's own overhead, added to the obfs overhead.
+    pub fn overhead(self) -> usize {
+        match self {
+            SsrProtocolKind::Origin => 0,
+            SsrProtocolKind::AuthSha1V4 => 7,
+            SsrProtocolKind::AuthAes128Md5 | SsrProtocolKind::AuthAes128Sha1 => 9,
+            SsrProtocolKind::AuthChainA | SsrProtocolKind::AuthChainB => 4,
+        }
+    }
+}
+
+/// SSR obfs plugin (`transport/ssr/obfs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SsrObfsKind {
+    Plain,
+    HttpSimple,
+    HttpPost,
+    RandomHead,
+    Tls12TicketAuth,
+    Tls12TicketFastAuth,
+}
+
+impl SsrObfsKind {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "plain" => Some(SsrObfsKind::Plain),
+            "http_simple" => Some(SsrObfsKind::HttpSimple),
+            "http_post" => Some(SsrObfsKind::HttpPost),
+            "random_head" => Some(SsrObfsKind::RandomHead),
+            "tls1.2_ticket_auth" => Some(SsrObfsKind::Tls12TicketAuth),
+            "tls1.2_ticket_fastauth" => Some(SsrObfsKind::Tls12TicketFastAuth),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SsrObfsKind::Plain => "plain",
+            SsrObfsKind::HttpSimple => "http_simple",
+            SsrObfsKind::HttpPost => "http_post",
+            SsrObfsKind::RandomHead => "random_head",
+            SsrObfsKind::Tls12TicketAuth => "tls1.2_ticket_auth",
+            SsrObfsKind::Tls12TicketFastAuth => "tls1.2_ticket_fastauth",
+        }
+    }
+
+    /// The obfs overhead the protocol plugin folds into its padding schedule.
+    pub fn overhead(self) -> usize {
+        match self {
+            SsrObfsKind::Tls12TicketAuth | SsrObfsKind::Tls12TicketFastAuth => 5,
+            _ => 0,
+        }
+    }
+}
+
 /// ShadowsocksR (`adapter/outbound/shadowsocksr.go`). The SSR stack is
-/// cipher + obfs + protocol; this kernel implements the stream ciphers, the
-/// `origin` protocol and the `plain` obfs. Other protocol/obfs plugins are
-/// rejected by name instead of being skipped.
+/// cipher + obfs + protocol; every stream cipher, protocol and obfs the pinned
+/// type registers is implemented here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SsrOutbound {
     pub server: String,
     pub port: u16,
     pub password: Secret,
     pub cipher: SsrCipher,
-    pub protocol: String,
+    pub protocol: SsrProtocolKind,
     pub protocol_param: Option<String>,
-    pub obfs: String,
+    pub obfs: SsrObfsKind,
     pub obfs_param: Option<String>,
+    pub udp: bool,
     pub dialer_proxy: Option<String>,
 }
 
@@ -372,8 +463,8 @@ pub struct SshOutbound {
 
 /// Gost relay v2 (`transport/gost/relay.go`): a versioned request header with
 /// optional user authentication and target address, then the raw byte stream.
-/// Only the TCP relay and the optional TLS wrapper are implemented; UDP and
-/// smux multiplexing are rejected by name.
+/// The TCP relay, the UDP association and the optional TLS and smux wrappers
+/// are implemented.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GostRelayOutbound {
     pub server: String,
@@ -383,6 +474,11 @@ pub struct GostRelayOutbound {
     pub forward: bool,
     pub tls: bool,
     pub tls_settings: TlsSettings,
+    /// `mux: true` wraps the server connection in an smux session (one stream
+    /// per dial).
+    pub mux: bool,
+    /// `udp: true` allows UDP associations.
+    pub udp: bool,
     pub username: Option<Secret>,
     pub password: Option<Secret>,
     pub dialer_proxy: Option<String>,
@@ -538,6 +634,8 @@ impl Proxy {
         match &self.protocol {
             Protocol::Shadowsocks(p) => p.udp,
             Protocol::Trojan(p) => p.udp,
+            Protocol::Ssr(p) => p.udp,
+            Protocol::GostRelay(p) => p.udp,
             _ => false,
         }
     }
@@ -1992,11 +2090,9 @@ fn parse_trusttunnel(entry: &mut Entry<'_>) -> Result<TrustTunnelOutbound, Confi
 }
 
 /// ShadowsocksR (`adapter/outbound/shadowsocksr.go`). The pinned type requires
-/// `cipher`, `password`, `protocol` and `obfs`; only the stream ciphers plus
-/// `protocol: origin` and `obfs: plain` are implemented here. The SSR plugin
-/// layers (`auth_*`, `tls1.2_ticket_*`, `http_simple`, ...) are rejected by
-/// name so no configuration is loaded as compatible with a layer that would
-/// change the wire format.
+/// `cipher`, `password`, `protocol` and `obfs`; every cipher, protocol and obfs
+/// value it registers is implemented, and `udp: true` opens the pinned UDP
+/// association (protocol plugin over the cipher, no obfs).
 fn parse_ssr(entry: &mut Entry<'_>) -> Result<SsrOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
@@ -2009,26 +2105,21 @@ fn parse_ssr(entry: &mut Entry<'_>) -> Result<SsrOutbound, ConfigError> {
     let password = entry
         .string("password")?
         .ok_or_else(|| entry.invalid("missing required option 'password' (Mihomo requires it)"))?;
-    let protocol = entry.required_string("protocol")?;
-    if protocol != "origin" {
-        return Err(entry.unsupported(format!(
-            "option 'protocol' value '{protocol}' is not implemented (origin)"
-        )));
-    }
-    let obfs = entry.required_string("obfs")?;
-    if obfs != "plain" {
-        return Err(entry.unsupported(format!(
-            "option 'obfs' value '{obfs}' is not implemented (plain)"
-        )));
-    }
-    // `origin`/`plain` ignore their parameter in the pinned implementation.
+    let protocol_name = entry.required_string("protocol")?;
+    let protocol = SsrProtocolKind::from_name(&protocol_name).ok_or_else(|| {
+        entry.unsupported(format!(
+            "option 'protocol' value '{protocol_name}' is not implemented (origin, auth_sha1_v4, auth_aes128_md5, auth_aes128_sha1, auth_chain_a, auth_chain_b)"
+        ))
+    })?;
+    let obfs_name = entry.required_string("obfs")?;
+    let obfs = SsrObfsKind::from_name(&obfs_name).ok_or_else(|| {
+        entry.unsupported(format!(
+            "option 'obfs' value '{obfs_name}' is not implemented (plain, http_simple, http_post, random_head, tls1.2_ticket_auth, tls1.2_ticket_fastauth)"
+        ))
+    })?;
     let protocol_param = entry.string("protocol-param")?.filter(|s| !s.is_empty());
     let obfs_param = entry.string("obfs-param")?.filter(|s| !s.is_empty());
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'udp' is not implemented for ssr (no UDP association)",
-        ));
-    }
+    let udp = entry.bool("udp")?.unwrap_or(false);
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let allowed = [
         "dialer-proxy",
@@ -2055,6 +2146,7 @@ fn parse_ssr(entry: &mut Entry<'_>) -> Result<SsrOutbound, ConfigError> {
         protocol_param,
         obfs,
         obfs_param,
+        udp,
         dialer_proxy,
     })
 }
@@ -2146,13 +2238,14 @@ fn parse_ssh(entry: &mut Entry<'_>) -> Result<SshOutbound, ConfigError> {
 
 /// Gost relay (`adapter/outbound/gost_relay.go`, `transport/gost/relay.go`):
 /// TCP relay with optional TLS, user authentication and target-address
-/// feature. `udp` and `mux` are declared by the pinned type but need a UDP
-/// association or an smux session this kernel does not implement.
+/// feature, plus the `udp` association and the `mux` smux session.
 fn parse_gost_relay(entry: &mut Entry<'_>) -> Result<GostRelayOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
     let forward = entry.bool("forward")?.unwrap_or(false);
     let tls = entry.bool("tls")?.unwrap_or(false);
+    let mux = entry.bool("mux")?.unwrap_or(false);
+    let udp = entry.bool("udp")?.unwrap_or(false);
     let tls_settings = entry.tls_settings(true, false)?;
     let username = entry
         .string("username")?
@@ -2163,16 +2256,6 @@ fn parse_gost_relay(entry: &mut Entry<'_>) -> Result<GostRelayOutbound, ConfigEr
         .filter(|value| !value.is_empty())
         .map(Secret::new);
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'udp' is not implemented for gost-relay (no UDP association)",
-        ));
-    }
-    if entry.bool("mux")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'mux' is not implemented for gost-relay (no smux session)",
-        ));
-    }
     let allowed = [
         "dialer-proxy",
         "name",
@@ -2201,6 +2284,8 @@ fn parse_gost_relay(entry: &mut Entry<'_>) -> Result<GostRelayOutbound, ConfigEr
         forward,
         tls,
         tls_settings,
+        mux,
+        udp,
         username,
         password,
         dialer_proxy,

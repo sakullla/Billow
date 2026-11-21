@@ -872,9 +872,14 @@ fn gost_relay_options_are_strict() {
         "t",
     )
     .expect("disabled forms load");
+    // The UDP association and the smux session are implemented, so their
+    // enabled forms load.
+    load_config(
+        "proxies:\n  - {name: gr, type: gost-relay, server: 127.0.0.1, port: 9000, udp: true, mux: true}\nrules: ['MATCH,gr']\n",
+        "t",
+    )
+    .expect("udp and mux load");
     for (field, value) in [
-        ("udp", "true"),
-        ("mux", "true"),
         ("name-cert-verify", "example.org"),
         ("fingerprint", "sha256"),
         ("certificate", "cert.pem"),
@@ -939,11 +944,25 @@ fn ssr_options_are_strict() {
         "t",
     )
     .expect("dummy cipher with an empty password and udp: false loads");
+    // Every protocol and obfs the pinned type registers is implemented, and
+    // `udp: true` opens the pinned association.
+    for (protocol, obfs) in [
+        ("auth_sha1_v4", "plain"),
+        ("auth_aes128_md5", "http_simple"),
+        ("auth_aes128_sha1", "http_post"),
+        ("auth_chain_a", "random_head"),
+        ("auth_chain_b", "tls1.2_ticket_auth"),
+        ("origin", "tls1.2_ticket_fastauth"),
+    ] {
+        let yaml = format!(
+            "proxies:\n  - {{name: sr, type: ssr, server: 127.0.0.1, port: 1, cipher: aes-256-cfb, password: p, protocol: {protocol}, obfs: {obfs}, udp: true}}\nrules: ['MATCH,sr']\n"
+        );
+        load_config(&yaml, "t").unwrap_or_else(|e| panic!("{protocol}/{obfs}: {e}"));
+    }
     for (field, value) in [
-        ("protocol", "auth_chain_a"),
-        ("obfs", "tls1.2_ticket_auth"),
+        ("protocol", "auth_chain_c"),
+        ("obfs", "tls1.3_ticket_auth"),
         ("cipher", "aes-256-gcm"),
-        ("udp", "true"),
         ("tfo", "true"),
     ] {
         // protocol/obfs/cipher are required, so replace the base value

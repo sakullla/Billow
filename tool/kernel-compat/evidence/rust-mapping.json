@@ -466,8 +466,8 @@
       ]
     },
     "gost-relay": {
-      "status": "partial",
-      "reason": "TCP relay with optional TLS, username/password authentication and `forward`; the UDP association and smux multiplexing the pinned type also declares are rejected by name.",
+      "status": "implemented",
+      "reason": "TCP relay with optional TLS, username/password authentication, `forward`, the UDP association and the version-1 smux session. The controlled peer is the loopback relay v2 server in tests/protocols.rs, written from transport/gost/relay.go; the smux frame layout is pinned by a unit test.",
       "options": [
         "server",
         "port",
@@ -477,12 +477,12 @@
         "skip-cert-verify",
         "username",
         "password",
+        "udp (one association bound to one target; `length(u16 BE) || payload` frames)",
+        "mux (smux DefaultConfig version 1, keep-alive disabled, one stream per dial)",
         "dialer-proxy"
       ],
-      "udp": "not implemented: `udp: true` is rejected (no UDP association); `udp: false` loads",
+      "udp": "implemented: `udp: true` opens the pinned association (command 0x81, network feature 1, address feature = the bound target); a server that refuses it produces no reply and no DIRECT fallback",
       "notImplemented": [
-        "udp: true",
-        "mux: true",
         "name-cert-verify",
         "fingerprint",
         "certificate",
@@ -497,12 +497,18 @@
       "evidence": [
         "src/outbound/gost_relay.rs::tests::ipv4_request_layout_matches_the_pinned_encoder",
         "src/outbound/gost_relay.rs::tests::domain_and_auth_features_follow_the_pinned_order",
+        "src/outbound/gost_relay.rs::tests::udp_request_sets_the_flag_and_the_udp_network",
         "src/outbound/gost_relay.rs::tests::forward_omits_the_address_feature",
+        "src/outbound/smux.rs::tests::a_frame_header_matches_the_pinned_layout",
         "tests/protocols.rs::gost_relay_outbound_relays_to_the_address_feature_target",
         "tests/protocols.rs::gost_relay_outbound_sends_user_auth_and_forward_omits_the_address",
         "tests/protocols.rs::gost_relay_outbound_wrong_credentials_never_reach_the_target",
         "tests/protocols.rs::gost_relay_outbound_rejects_a_bad_response_version",
         "tests/protocols.rs::gost_relay_outbound_over_tls_relays_and_verifies_the_certificate",
+        "tests/protocols.rs::gost_relay_udp_relays_datagrams_to_the_bound_target",
+        "tests/protocols.rs::gost_relay_udp_without_the_option_is_refused_by_the_server",
+        "tests/protocols.rs::gost_relay_mux_relays_over_one_smux_stream",
+        "tests/protocols.rs::gost_relay_mux_and_udp_share_the_smux_session",
         "tests/config.rs::gost_relay_options_are_strict",
         "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_gost_relay"
       ]
@@ -541,24 +547,22 @@
       ]
     },
     "ssr": {
-      "status": "partial",
-      "reason": "all pinned stream ciphers plus `protocol: origin` and `obfs: plain`; the SSR protocol/obfs plugins (auth_sha1_v4, auth_aes128_*, auth_chain_*, http_simple, http_post, random_head, tls1.2_ticket_*) are rejected by name. Framing is verified against an independent Go server built from the pinned shadowstream package.",
+      "status": "implemented",
+      "reason": "every pinned stream cipher plus every protocol plugin (origin, auth_sha1_v4, auth_aes128_md5, auth_aes128_sha1, auth_chain_a, auth_chain_b), every obfs plugin (plain, http_simple, http_post, random_head, tls1.2_ticket_auth, tls1.2_ticket_fastauth) and the UDP association. The wire format is checked against an independent Go peer built from the pinned packages (`tool/kernel-compat/peers/ssr-plugins`), which also runs the pinned client packages against itself.",
       "options": [
         "server",
         "port",
         "password",
         "cipher (rc4-md5, aes-128/192/256-cfb, aes-128/192/256-ctr, chacha20, chacha20-ietf, xchacha20, none)",
-        "protocol: origin",
-        "protocol-param (ignored by origin)",
-        "obfs: plain",
-        "obfs-param (ignored by plain)",
+        "protocol: origin/auth_sha1_v4/auth_aes128_md5/auth_aes128_sha1/auth_chain_a/auth_chain_b",
+        "protocol-param (user id and key; the plugin's own parsing)",
+        "obfs: plain/http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth",
+        "obfs-param (http host/body, tls SNI)",
+        "udp (the pinned cipher.PacketConn + protocol.PacketConn association; no obfs layer, as in the pinned outbound)",
         "dialer-proxy"
       ],
-      "udp": "not implemented: `udp: true` is rejected (no UDP association); `udp: false` loads",
+      "udp": "implemented: `udp: true` opens the pinned association (IV || cipher(protocol packet), SOCKS5 address inside, no obfs); verified for every protocol against the Go peer and rejected for a wrong password",
       "notImplemented": [
-        "protocol: auth_sha1_v4/auth_aes128_md5/auth_aes128_sha1/auth_chain_a/auth_chain_b",
-        "obfs: http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth",
-        "udp: true",
         "ip-version",
         "tfo",
         "mptcp",
@@ -567,15 +571,25 @@
       ],
       "evidence": [
         "src/outbound/ssr.rs::tests::stream_ciphers_match_the_pinned_go_vectors",
-        "src/outbound/ssr.rs::tests::cfb_roundtrips_across_chunk_boundaries",
-        "src/outbound/ssr.rs::tests::ctr_and_rc4_roundtrip",
+        "src/outbound/ssr.rs::dial_wire_tests::origin_plain_writes_the_iv_then_the_address_and_payload",
+        "src/outbound/ssr/protocol.rs::tests::crc32_and_adler32_match_the_go_reference_values",
+        "src/outbound/ssr/protocol.rs::tests::hmac_md5_matches_rfc_2202_case_1",
+        "src/outbound/ssr/protocol.rs::tests::hmac_sha1_matches_rfc_2202_case_1",
+        "src/outbound/ssr/protocol.rs::tests::xor_shift_sequence_matches_the_pinned_generator",
+        "src/outbound/ssr/protocol.rs::tests::chain_b_padding_schedule_matches_the_pinned_generator",
+        "src/outbound/ssr/obfs.rs::tests::http_head_carries_the_url_encoded_first_chunk",
+        "src/outbound/ssr/obfs.rs::tests::tls_hello_has_the_pinned_record_and_handshake_headers",
         "tests/protocols.rs::ssr_outbound_origin_plain_relays_with_aes_256_cfb",
         "tests/protocols.rs::ssr_outbound_rc4_md5_and_dummy_ciphers_relay",
         "tests/protocols.rs::ssr_outbound_wrong_password_never_reaches_the_target",
         "tests/config.rs::ssr_options_are_strict",
-        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssr",
         "tests/independent_peers.rs::ssr_go_server_relays_the_client_frames",
-        "tests/independent_peers.rs::ssr_go_server_rejects_a_wrong_password"
+        "tests/independent_peers.rs::ssr_plugin_matrix_relays_with_every_protocol_and_obfs",
+        "tests/independent_peers.rs::ssr_plugin_wrong_password_never_relays",
+        "tests/independent_peers.rs::ssr_plugin_protocol_param_and_large_payloads",
+        "tests/independent_peers.rs::ssr_udp_reaches_the_echo_for_every_protocol",
+        "tests/independent_peers.rs::ssr_udp_wrong_password_never_reaches_the_echo",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssr"
       ]
     },
     "mieru": {
@@ -936,9 +950,10 @@
     }
   },
   "unmappedNotes": [
-    "Every proxy type outside the six implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it (T9 non-QUIC, T10 QUIC/device, T5 built-ins).",
+    "Every proxy type outside the implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it (T9 non-QUIC, T10 QUIC/device, T5 built-ins).",
     "Every other listener type (tun, redir, tproxy, mixed with TLS, ...) is rejected through the top-level keys that would enable it.",
-    "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it."
+    "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it.",
+    "T12 closed the SSR plugin layers (every pinned protocol/obfs plus the UDP association) and the gost-relay UDP association and smux session; the remaining SSR/gost-relay options are the transport knobs Mihomo accepts and ignores (ip-version/tfo/mptcp/interface-name/routing-mark) and gost-relay's certificate pinning knobs."
   ],
   "ignoredByPinnedVersion": {
     "note": "Keys the pinned type does not declare (or declares only as a no-op in the given configuration) are accepted and ignored, exactly as Mihomo ignores them. They are not compatibility gaps.",

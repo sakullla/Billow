@@ -3203,6 +3203,10 @@ struct GostMode {
     require_auth: Option<(String, String)>,
     forward: Option<u16>,
     bad_version: bool,
+    /// Wrap the relay in an smux session (the client must send SYN first).
+    mux: bool,
+    /// Accept the UDP association command.
+    udp: bool,
 }
 
 fn parse_gost_addr(bytes: &[u8]) -> Option<(String, u16)> {
@@ -3269,110 +3273,434 @@ async fn gost_peer(mode: GostMode, tls_cert: Option<&Cert>) -> (u16, Log) {
 
 async fn serve_gost<S>(mut stream: S, mode: GostMode, log: Log)
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
-                let mut header = [0u8; 4];
-                if stream.read_exact(&mut header).await.is_err() {
-                    return;
-                }
-                let version = header[0];
-                let mut features = vec![0u8; u16::from_be_bytes([header[2], header[3]]) as usize];
-                if stream.read_exact(&mut features).await.is_err() {
-                    return;
-                }
-                let mut pos = 0;
-                let mut auth: Option<(String, String)> = None;
-                let mut addr: Option<(String, u16)> = None;
-                let mut network: u16 = 0xffff;
-                while pos + 3 <= features.len() {
-                    let kind = features[pos];
-                    let len = u16::from_be_bytes([features[pos + 1], features[pos + 2]]) as usize;
-                    let payload = &features[pos + 3..pos + 3 + len];
-                    match kind {
-                        0x01 => {
-                            let ulen = payload[0] as usize;
-                            let user = String::from_utf8_lossy(&payload[1..1 + ulen]).into_owned();
-                            let plen = payload[1 + ulen] as usize;
-                            let pass = String::from_utf8_lossy(
-                                &payload[2 + ulen..2 + ulen + plen],
-                            )
-                            .into_owned();
-                            auth = Some((user, pass));
-                        }
-                        0x02 => addr = parse_gost_addr(payload),
-                        0x04 => network = u16::from_be_bytes([payload[0], payload[1]]),
-                        _ => {}
-                    }
-                    pos += 3 + len;
-                }
-                if mode.bad_version {
-                    let _ = stream.write_all(&[0x02, 0x00, 0x00, 0x00]).await;
-                    push(
-                        &log,
-                        Attempt {
-                            details: vec!["bad-version-sent".to_string()],
-                            forwarded: false,
-                        },
-                    );
-                    return;
-                }
-                if let Some((user, pass)) = &mode.require_auth {
-                    if auth.as_ref() != Some(&(user.clone(), pass.clone())) {
-                        let _ = stream.write_all(&[0x01, 0x02, 0x00, 0x00]).await;
-                        push(
-                            &log,
-                            Attempt {
-                                details: vec![format!("unauthorized auth={auth:?}")],
-                                forwarded: false,
-                            },
-                        );
-                        return;
-                    }
-                }
-                let target = match (addr, mode.forward) {
-                    (Some(addr), _) => addr,
-                    (None, Some(port)) => ("127.0.0.1".to_string(), port),
-                    (None, None) => {
-                        let _ = stream.write_all(&[0x01, 0x01, 0x00, 0x00]).await;
-                        push(
-                            &log,
-                            Attempt {
-                                details: vec!["missing-address".to_string()],
-                                forwarded: false,
-                            },
-                        );
-                        return;
-                    }
-                };
-                let upstream = match TcpStream::connect((target.0.as_str(), target.1)).await {
-                    Ok(upstream) => upstream,
-                    Err(e) => {
-                        let _ = stream.write_all(&[0x01, 0x06, 0x00, 0x00]).await;
-                        push(
-                            &log,
-                            Attempt {
-                                details: vec![format!("target-error={e}")],
-                                forwarded: false,
-                            },
-                        );
-                        return;
-                    }
-                };
-                let _ = stream.write_all(&[0x01, 0x00, 0x00, 0x00]).await;
+    if mode.mux {
+        match smux_accept(&mut stream).await {
+            Ok(mut mux) => {
                 push(
                     &log,
                     Attempt {
-                        details: vec![
-                            format!("version={version}"),
-                            format!("network={network}"),
-                            format!("target={}:{}", target.0, target.1),
-                            format!("auth={auth:?}"),
-                        ],
-                        forwarded: true,
+                        details: vec!["smux-syn".to_string()],
+                        forwarded: false,
                     },
                 );
-                let mut upstream = upstream;
-                let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+                serve_relay(&mut mux, mode, log).await
+            }
+            Err(e) => push(
+                &log,
+                Attempt {
+                    details: vec![format!("smux-error={e}")],
+                    forwarded: false,
+                },
+            ),
+        }
+        return;
+    }
+    serve_relay(&mut stream, mode, log).await;
+}
+
+async fn serve_relay<S>(stream: &mut S, mode: GostMode, log: Log)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut header = [0u8; 4];
+    if stream.read_exact(&mut header).await.is_err() {
+        return;
+    }
+    let version = header[0];
+    let command = header[1];
+    let mut features = vec![0u8; u16::from_be_bytes([header[2], header[3]]) as usize];
+    if stream.read_exact(&mut features).await.is_err() {
+        return;
+    }
+    let mut pos = 0;
+    let mut auth: Option<(String, String)> = None;
+    let mut addr: Option<(String, u16)> = None;
+    let mut network: u16 = 0xffff;
+    while pos + 3 <= features.len() {
+        let kind = features[pos];
+        let len = u16::from_be_bytes([features[pos + 1], features[pos + 2]]) as usize;
+        let payload = &features[pos + 3..pos + 3 + len];
+        match kind {
+            0x01 => {
+                let ulen = payload[0] as usize;
+                let user = String::from_utf8_lossy(&payload[1..1 + ulen]).into_owned();
+                let plen = payload[1 + ulen] as usize;
+                let pass =
+                    String::from_utf8_lossy(&payload[2 + ulen..2 + ulen + plen]).into_owned();
+                auth = Some((user, pass));
+            }
+            0x02 => addr = parse_gost_addr(payload),
+            0x04 => network = u16::from_be_bytes([payload[0], payload[1]]),
+            _ => {}
+        }
+        pos += 3 + len;
+    }
+    if mode.bad_version {
+        let _ = stream.write_all(&[0x02, 0x00, 0x00, 0x00]).await;
+        push(
+            &log,
+            Attempt {
+                details: vec!["bad-version-sent".to_string()],
+                forwarded: false,
+            },
+        );
+        return;
+    }
+    if let Some((user, pass)) = &mode.require_auth {
+        if auth.as_ref() != Some(&(user.clone(), pass.clone())) {
+            let _ = stream.write_all(&[0x01, 0x02, 0x00, 0x00]).await;
+            push(
+                &log,
+                Attempt {
+                    details: vec![format!("unauthorized auth={auth:?}")],
+                    forwarded: false,
+                },
+            );
+            return;
+        }
+    }
+    let target = match (addr, mode.forward) {
+        (Some(addr), _) => addr,
+        (None, Some(port)) => ("127.0.0.1".to_string(), port),
+        (None, None) => {
+            let _ = stream.write_all(&[0x01, 0x01, 0x00, 0x00]).await;
+            push(
+                &log,
+                Attempt {
+                    details: vec!["missing-address".to_string()],
+                    forwarded: false,
+                },
+            );
+            return;
+        }
+    };
+    if command & 0x80 != 0 {
+        serve_relay_udp(stream, &mode, &log, version, command, network, target, auth).await;
+        return;
+    }
+    let upstream = match TcpStream::connect((target.0.as_str(), target.1)).await {
+        Ok(upstream) => upstream,
+        Err(e) => {
+            let _ = stream.write_all(&[0x01, 0x06, 0x00, 0x00]).await;
+            push(
+                &log,
+                Attempt {
+                    details: vec![format!("target-error={e}")],
+                    forwarded: false,
+                },
+            );
+            return;
+        }
+    };
+    let _ = stream.write_all(&[0x01, 0x00, 0x00, 0x00]).await;
+    push(
+        &log,
+        Attempt {
+            details: vec![
+                format!("version={version}"),
+                format!("network={network}"),
+                format!("target={}:{}", target.0, target.1),
+                format!("auth={auth:?}"),
+            ],
+            forwarded: true,
+        },
+    );
+    let mut upstream = upstream;
+    let _ = tokio::io::copy_bidirectional(stream, &mut upstream).await;
+}
+
+/// The UDP association: `length(u16 BE) || payload` in both directions, one
+/// bound target, matching `relayPacketConn`.
+async fn serve_relay_udp<S>(
+    stream: &mut S,
+    mode: &GostMode,
+    log: &Log,
+    version: u8,
+    command: u8,
+    network: u16,
+    target: (String, u16),
+    auth: Option<(String, String)>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if !mode.udp || network != 0x0001 {
+        let _ = stream.write_all(&[0x01, 0x01, 0x00, 0x00]).await;
+        push(
+            log,
+            Attempt {
+                details: vec![format!("udp-unsupported network={network}")],
+                forwarded: false,
+            },
+        );
+        return;
+    }
+    let bind = if target.0.contains(':') { "[::]:0" } else { "127.0.0.1:0" };
+    let socket = match tokio::net::UdpSocket::bind(bind).await {
+        Ok(socket) => socket,
+        Err(e) => {
+            let _ = stream.write_all(&[0x01, 0x08, 0x00, 0x00]).await;
+            push(
+                log,
+                Attempt {
+                    details: vec![format!("udp-bind-error={e}")],
+                    forwarded: false,
+                },
+            );
+            return;
+        }
+    };
+    let _ = stream.write_all(&[0x01, 0x00, 0x00, 0x00]).await;
+    push(
+        log,
+        Attempt {
+            details: vec![
+                format!("version={version}"),
+                format!("command=0x{command:02x}"),
+                format!("network={network}"),
+                format!("target={}:{}", target.0, target.1),
+                format!("auth={auth:?}"),
+            ],
+            forwarded: true,
+        },
+    );
+    loop {
+        let mut len = [0u8; 2];
+        if stream.read_exact(&mut len).await.is_err() {
+            return;
+        }
+        let length = u16::from_be_bytes(len) as usize;
+        let mut payload = vec![0u8; length];
+        if stream.read_exact(&mut payload).await.is_err() {
+            return;
+        }
+        if socket
+            .send_to(&payload, (target.0.as_str(), target.1))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let mut reply = vec![0u8; 65_535];
+        let Ok(read) = socket.recv(&mut reply).await else {
+            return;
+        };
+        let mut frame = Vec::with_capacity(2 + read);
+        frame.extend_from_slice(&(read as u16).to_be_bytes());
+        frame.extend_from_slice(&reply[..read]);
+        if stream.write_all(&frame).await.is_err() {
+            return;
+        }
+        let _ = stream.flush().await;
+    }
+}
+
+/// Server side of one smux session: accept the SYN and relay one stream. The
+/// frame layout is the version-1 one from `github.com/metacubex/smux`
+/// (`version(1) command(1) length(u16 LE) stream id(u32 LE) payload`).
+struct SmuxPeer<'a, S> {
+    inner: &'a mut S,
+    sid: u32,
+    under: Vec<u8>,
+    decoded: Vec<u8>,
+    decoded_pos: usize,
+    pending: Vec<u8>,
+    pending_pos: usize,
+    fin: bool,
+    fin_sent: bool,
+}
+
+async fn smux_accept<S>(inner: &mut S) -> io::Result<SmuxPeer<'_, S>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut header = [0u8; 8];
+    inner.read_exact(&mut header).await?;
+    if header[0] != 1 || header[1] != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected an smux SYN frame",
+        ));
+    }
+    let sid = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+    Ok(SmuxPeer {
+        inner,
+        sid,
+        under: Vec::new(),
+        decoded: Vec::new(),
+        decoded_pos: 0,
+        pending: Vec::new(),
+        pending_pos: 0,
+        fin: false,
+        fin_sent: false,
+    })
+}
+
+impl<'a, S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for SmuxPeer<'a, S> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+        loop {
+            if this.decoded_pos < this.decoded.len() {
+                let available = this.decoded.len() - this.decoded_pos;
+                let take = available.min(buf.remaining());
+                let start = this.decoded_pos;
+                buf.put_slice(&this.decoded[start..start + take]);
+                this.decoded_pos += take;
+                return std::task::Poll::Ready(Ok(()));
+            }
+            this.decoded.clear();
+            this.decoded_pos = 0;
+            let mut consumed = 0;
+            while this.under.len() >= consumed + 8 {
+                let frame = &this.under[consumed..];
+                let cmd = frame[1];
+                let length = u16::from_le_bytes([frame[2], frame[3]]) as usize;
+                let sid = u32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
+                if this.under.len() < consumed + 8 + length {
+                    break;
+                }
+                let payload = this.under[consumed + 8..consumed + 8 + length].to_vec();
+                consumed += 8 + length;
+                match cmd {
+                    2 if sid == this.sid && !payload.is_empty() => {
+                        this.decoded.extend_from_slice(&payload)
+                    }
+                    1 if sid == this.sid => this.fin = true,
+                    _ => {}
+                }
+            }
+            if consumed > 0 {
+                this.under.drain(..consumed);
+            }
+            if !this.decoded.is_empty() {
+                continue;
+            }
+            if this.fin {
+                return std::task::Poll::Ready(Ok(()));
+            }
+            let mut scratch = [0u8; 4096];
+            let mut piece = tokio::io::ReadBuf::new(&mut scratch);
+            match std::pin::Pin::new(&mut *this.inner).poll_read(cx, &mut piece) {
+                std::task::Poll::Ready(Ok(())) => {
+                    let filled = piece.filled().to_vec();
+                    if filled.is_empty() {
+                        return std::task::Poll::Ready(Ok(()));
+                    }
+                    this.under.extend_from_slice(&filled);
+                }
+                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+    }
+}
+
+impl<'a, S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for SmuxPeer<'a, S> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        while this.pending_pos < this.pending.len() {
+            match std::pin::Pin::new(&mut *this.inner).poll_write(cx, &this.pending[this.pending_pos..]) {
+                std::task::Poll::Ready(Ok(0)) => {
+                    return std::task::Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "smux peer stopped accepting bytes",
+                    )))
+                }
+                std::task::Poll::Ready(Ok(n)) => this.pending_pos += n,
+                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+        this.pending.clear();
+        this.pending_pos = 0;
+        let mut rest = buf;
+        while !rest.is_empty() {
+            let size = rest.len().min(32768);
+            let mut header = [0u8; 8];
+            header[0] = 1;
+            header[1] = 2;
+            header[2..4].copy_from_slice(&(size as u16).to_le_bytes());
+            header[4..8].copy_from_slice(&this.sid.to_le_bytes());
+            this.pending.extend_from_slice(&header);
+            this.pending.extend_from_slice(&rest[..size]);
+            rest = &rest[size..];
+        }
+        while this.pending_pos < this.pending.len() {
+            match std::pin::Pin::new(&mut *this.inner).poll_write(cx, &this.pending[this.pending_pos..]) {
+                std::task::Poll::Ready(Ok(0)) => {
+                    return std::task::Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "smux peer stopped accepting bytes",
+                    )))
+                }
+                std::task::Poll::Ready(Ok(n)) => this.pending_pos += n,
+                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => break,
+            }
+        }
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+        while this.pending_pos < this.pending.len() {
+            match std::pin::Pin::new(&mut *this.inner).poll_write(cx, &this.pending[this.pending_pos..]) {
+                std::task::Poll::Ready(Ok(0)) => {
+                    return std::task::Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "smux peer stopped accepting bytes",
+                    )))
+                }
+                std::task::Poll::Ready(Ok(n)) => this.pending_pos += n,
+                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+        std::pin::Pin::new(&mut *this.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if !this.fin_sent {
+            this.fin_sent = true;
+            let mut header = [0u8; 8];
+            header[0] = 1;
+            header[1] = 1;
+            header[4..8].copy_from_slice(&this.sid.to_le_bytes());
+            this.pending.extend_from_slice(&header);
+        }
+        while this.pending_pos < this.pending.len() {
+            match std::pin::Pin::new(&mut *this.inner)
+                .poll_write(cx, &this.pending[this.pending_pos..])
+            {
+                std::task::Poll::Ready(Ok(0)) => {
+                    return std::task::Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "smux peer stopped accepting bytes",
+                    )))
+                }
+                std::task::Poll::Ready(Ok(n)) => this.pending_pos += n,
+                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+        std::pin::Pin::new(&mut *this.inner).poll_shutdown(cx)
+    }
 }
 
 async fn gost_roundtrip(proxy: SocketAddr, target: &str, payload: &[u8]) -> io::Result<Vec<u8>> {
@@ -3424,7 +3752,9 @@ async fn gost_relay_outbound_sends_user_auth_and_forward_omits_the_address() {
         require_auth: Some(("relay-user".into(), "relay-pass".into())),
         forward: Some(target_port),
         bad_version: false,
-    };
+        mux: false,
+        udp: false,
+        };
     let (peer_port, log) = gost_peer(mode, None).await;
     let dir = scratch("gost-forward");
     let (mut kernel, _) = start_kernel(
@@ -3859,6 +4189,146 @@ async fn ssh_outbound_pinned_host_key_must_match_the_server() {
         .await
         .unwrap();
     assert_eq!(back, payload.to_vec());
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_udp_relays_datagrams_to_the_bound_target() {
+    let mode = GostMode {
+        udp: true,
+        ..GostMode::default()
+    };
+    let (peer_port, log) = gost_peer(mode, None).await;
+    let (echo_port, received) = udp_echo().await;
+    let dir = scratch("gost-udp");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}, udp: true}}\n"
+        ),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let payload = b"gost-udp-tagged";
+    let reply = udp_roundtrip(relay, target, payload, Duration::from_secs(3))
+        .expect("a UDP association must relay the datagram");
+    assert_eq!(reply, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(
+        details
+            .iter()
+            .any(|d| d == "command=0x81" && details.iter().any(|n| n == "network=1")),
+        "{details:?}"
+    );
+    drop(control);
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_udp_without_the_option_is_refused_by_the_server() {
+    // The peer refuses the UDP association when it has no UDP support; the
+    // kernel must not fall back to DIRECT and no datagram may arrive.
+    let (peer_port, log) = gost_peer(GostMode::default(), None).await;
+    let (echo_port, received) = udp_echo().await;
+    let dir = scratch("gost-udp-refused");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}, udp: true}}\n"
+        ),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    assert!(
+        udp_roundtrip(relay, target, b"gost-udp-refused", Duration::from_millis(700)).is_none(),
+        "a refused association must not produce a reply"
+    );
+    assert_eq!(received.load(Ordering::Relaxed), 0);
+    let details = detail(&log);
+    assert!(
+        details.iter().any(|d| d.starts_with("udp-unsupported")),
+        "{details:?}"
+    );
+    drop(control);
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_mux_relays_over_one_smux_stream() {
+    let mode = GostMode {
+        mux: true,
+        ..GostMode::default()
+    };
+    let (peer_port, log) = gost_peer(mode, None).await;
+    let (target_port, received) = echo_target().await;
+    let dir = scratch("gost-mux");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}, mux: true}}\n"
+        ),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    let payload = b"gost-mux-tagged";
+    let back = gost_roundtrip(
+        kernel.listen_addr(),
+        &format!("127.0.0.1:{target_port}"),
+        payload,
+    )
+    .await
+    .expect("mux relay");
+    assert_eq!(back, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(details.iter().any(|d| d == "smux-syn"), "{details:?}");
+    assert!(
+        details
+            .iter()
+            .any(|d| d == &format!("target=127.0.0.1:{target_port}")),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gost_relay_mux_and_udp_share_the_smux_session() {
+    let mode = GostMode {
+        mux: true,
+        udp: true,
+        ..GostMode::default()
+    };
+    let (peer_port, log) = gost_peer(mode, None).await;
+    let (echo_port, received) = udp_echo().await;
+    let dir = scratch("gost-mux-udp");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: gr, type: gost-relay, server: 127.0.0.1, port: {peer_port}, mux: true, udp: true}}\n"
+        ),
+        "gr",
+        limits(),
+    )
+    .unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let payload = b"gost-mux-udp";
+    let reply = udp_roundtrip(relay, target, payload, Duration::from_secs(3))
+        .expect("mux UDP association");
+    assert_eq!(reply, payload.to_vec());
+    wait_for(&received, payload.len() as u64).await;
+    let details = detail(&log);
+    assert!(details.iter().any(|d| d == "smux-syn"), "{details:?}");
+    assert!(details.iter().any(|d| d == "command=0x81"), "{details:?}");
+    drop(control);
     kernel.stop().unwrap();
 }
 

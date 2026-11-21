@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 184, enabled cases: 215, problems: 0
+# no-op cases: 184, enabled cases: 212, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
@@ -314,8 +314,6 @@ enabled trusttunnel tfo                          rust=reject mihomo=accept
 enabled trusttunnel mptcp                        rust=reject mihomo=accept
 enabled trusttunnel interface-name               rust=reject mihomo=accept
 enabled trusttunnel routing-mark                 rust=reject mihomo=accept
-enabled gost-relay udp                          rust=reject mihomo=accept
-enabled gost-relay mux                          rust=reject mihomo=reject
 enabled gost-relay name-cert-verify             rust=reject mihomo=accept
 enabled gost-relay fingerprint                  rust=reject mihomo=accept
 enabled gost-relay certificate                  rust=reject mihomo=accept
@@ -331,7 +329,6 @@ enabled ssh     tfo                          rust=reject mihomo=accept
 enabled ssh     mptcp                        rust=reject mihomo=accept
 enabled ssh     interface-name               rust=reject mihomo=accept
 enabled ssh     routing-mark                 rust=reject mihomo=accept
-enabled ssr     udp                          rust=reject mihomo=accept
 enabled ssr     ip-version                   rust=reject mihomo=accept
 enabled ssr     tfo                          rust=reject mihomo=accept
 enabled ssr     mptcp                        rust=reject mihomo=accept

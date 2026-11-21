@@ -1,13 +1,11 @@
-//! ShadowsocksR outbound: stream cipher + `protocol: origin` + `obfs: plain`.
+//! ShadowsocksR outbound: the stream cipher plus the SSR plugin layers.
 //!
 //! The SSR outbound is a stack of three layers in the pinned implementation:
 //! the stream cipher (`shadowstream`), the obfs wrapper and the protocol
-//! wrapper. This kernel implements the cipher layer for every stream cipher the
-//! pinned SSR type accepts, and the `origin`/`plain` pass-through layers. The
-//! client writes a random IV, then the SOCKS5 target address, then the payload;
-//! replies are the reverse. The plugin layers that would change the framing
-//! (`auth_*`, `auth_chain_*`, `tls1.2_ticket_*`, `http_simple`, ...) are
-//! rejected at load time by `proxies.rs`, never silently skipped.
+//! wrapper. This module owns the cipher layer ([`SsrStream`]) and the datagram
+//! codec; `obfs` and `protocol` own the plugin layers. The client writes a
+//! random IV, then the obfs framing, then the protocol records that carry the
+//! SOCKS5 target address and the payload; replies are the reverse.
 //!
 //! Cipher vectors in the unit tests come from the pinned Go implementation
 //! (`transport/shadowsocks/shadowstream`), recorded by
@@ -26,33 +24,42 @@ use super::{connect_tcp, handshake, BoxStream, DialError, Dialed, SocksAddr, Tar
 use crate::keys::{evp_bytes_to_key, md5};
 use crate::proxies::{SsrCipher, SsrOutbound};
 
+pub mod obfs;
+pub mod protocol;
+
 const MAX_READ_IV: usize = 24;
 
 pub async fn dial(option: &SsrOutbound, target: &Target) -> Result<Dialed, DialError> {
-    let mut tcp = connect_tcp(&option.server, option.port).await?;
+    let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("ssr", e))?;
     let key = evp_bytes_to_key(option.password.expose().as_bytes(), option.cipher.key_len());
-    let stream: BoxStream = match option.cipher {
-        SsrCipher::Dummy => Box::new(tcp),
-        cipher => {
-            let mut iv = vec![0u8; cipher.iv_len()];
-            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut iv);
-            tokio::io::AsyncWriteExt::write_all(&mut tcp, &iv)
-                .await
-                .map_err(|e| handshake("ssr iv", e))?;
-            Box::new(SsrStream::new(tcp, cipher, key, iv))
-        }
-    };
-    let mut stream = stream;
-    // `protocol: origin` is a pass-through; its only client-side work is the
-    // initial target address, written through the cipher stream.
+    let iv_size = option.cipher.iv_len();
+    let mut iv = vec![0u8; iv_size];
+    if iv_size > 0 {
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut iv);
+    }
+    // The obfs layer is the outermost wrapper: the cipher's IV travels inside
+    // it (URL-encoded for `http_simple`, in the Finished record for
+    // `tls1.2_ticket_auth`), exactly as in the pinned client.
+    let obfs = obfs::build(option, key.clone(), iv_size, Box::new(tcp) as BoxStream);
+    let overhead = option.obfs.overhead() + option.protocol.overhead();
+    let cipher = SsrStream::client(obfs, option.cipher, key.clone(), iv.clone());
+    let protocol = protocol::build(option, key, iv, overhead);
+    let mut stream = protocol::ProtocolStream::new(cipher, protocol);
+    // Every protocol writes the target address through its first record; the
+    // `origin` plugin has no other client-side work.
     tokio::io::AsyncWriteExt::write_all(&mut stream, &SocksAddr::encode(target))
         .await
         .map_err(|e| handshake("ssr address", e))?;
+    // `tls1.2_ticket_auth` and `random_head` finish their handshake on the
+    // first flush (the pinned client does it on the first read).
     tokio::io::AsyncWriteExt::flush(&mut stream)
         .await
         .map_err(|e| handshake("ssr flush", e))?;
-    Ok(Dialed { stream, server })
+    Ok(Dialed {
+        stream: Box::new(stream),
+        server,
+    })
 }
 
 /// One SSR stream: the cipher state is lazily initialised for reads (the IV
@@ -83,6 +90,14 @@ impl<S> SsrStream<S> {
             pending: Vec::new(),
             pending_pos: 0,
         }
+    }
+
+    /// Client constructor: the IV is queued in front of the first write, so it
+    /// travels through the obfs layer instead of straight to the socket.
+    pub fn client(inner: S, cipher: SsrCipher, key: Vec<u8>, write_iv: Vec<u8>) -> Self {
+        let mut stream = SsrStream::new(inner, cipher, key, write_iv.clone());
+        stream.pending = write_iv;
+        stream
     }
 
     fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>>
@@ -278,14 +293,14 @@ impl Ctr {
     }
 }
 
-struct Rc4 {
+pub(crate) struct Rc4 {
     state: [u8; 256],
     i: u8,
     j: u8,
 }
 
 impl Rc4 {
-    fn new(key: &[u8]) -> Rc4 {
+    pub(crate) fn new(key: &[u8]) -> Rc4 {
         let mut state = [0u8; 256];
         for (index, slot) in state.iter_mut().enumerate() {
             *slot = index as u8;
@@ -300,7 +315,7 @@ impl Rc4 {
         Rc4 { state, i: 0, j: 0 }
     }
 
-    fn xor(&mut self, data: &mut [u8]) {
+    pub(crate) fn xor(&mut self, data: &mut [u8]) {
         for byte in data {
             self.i = self.i.wrapping_add(1);
             self.j = self.j.wrapping_add(self.state[self.i as usize]);
@@ -311,8 +326,7 @@ impl Rc4 {
     }
 }
 
-enum Keystream {
-    Dummy,
+enum Keystream {    Dummy,
     Rc4(Rc4),
     Cfb(Cfb),
     Ctr(Ctr),
@@ -378,6 +392,39 @@ impl Keystream {
             Keystream::XChaCha(state) => state.apply_keystream(data),
         }
     }
+}
+
+/// One SSR datagram: a random IV followed by the ciphertext (`shadowstream`'s
+/// `Pack`). `dummy` has no IV.
+pub(crate) fn pack_datagram(cipher: SsrCipher, key: &[u8], plain: &[u8]) -> Vec<u8> {
+    let iv_size = cipher.iv_len();
+    let mut out = vec![0u8; iv_size + plain.len()];
+    if iv_size > 0 {
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut out[..iv_size]);
+    }
+    out[iv_size..].copy_from_slice(plain);
+    let mut state = Keystream::new(cipher, key, &out[..iv_size], true);
+    state.xor(&mut out[iv_size..]);
+    out
+}
+
+/// Open one SSR datagram; a packet shorter than the IV is refused.
+pub(crate) fn unpack_datagram(
+    cipher: SsrCipher,
+    key: &[u8],
+    packet: &[u8],
+) -> io::Result<Vec<u8>> {
+    let iv_size = cipher.iv_len();
+    if packet.len() < iv_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ssr datagram shorter than its IV",
+        ));
+    }
+    let mut plain = packet[iv_size..].to_vec();
+    let mut state = Keystream::new(cipher, key, &packet[..iv_size], false);
+    state.xor(&mut plain);
+    Ok(plain)
 }
 
 #[cfg(test)]
@@ -487,5 +534,64 @@ mod tests {
         let mut data = b"plain".to_vec();
         state.xor(&mut data);
         assert_eq!(data, b"plain".to_vec());
+    }
+}
+
+#[cfg(test)]
+mod dial_wire_tests {
+    use super::*;
+    use crate::proxies::{SsrCipher, SsrObfsKind, SsrProtocolKind};
+    use tokio::io::AsyncReadExt;
+
+    fn option(protocol: SsrProtocolKind, obfs: SsrObfsKind) -> SsrOutbound {
+        SsrOutbound {
+            server: "127.0.0.1".into(),
+            port: 1,
+            password: crate::keys::Secret::new("p"),
+            cipher: SsrCipher::Aes256Cfb,
+            protocol,
+            protocol_param: None,
+            obfs,
+            obfs_param: None,
+            udp: false,
+            dialer_proxy: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn origin_plain_writes_the_iv_then_the_address_and_payload() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut option = option(SsrProtocolKind::Origin, SsrObfsKind::Plain);
+        option.server = "127.0.0.1".into();
+        option.port = addr.port();
+        let client = {
+            let option = option.clone();
+            tokio::spawn(async move {
+                let target = Target {
+                    host: "1.2.3.4".into(),
+                    port: 80,
+                };
+                dial(&option, &target).await.map(|d| d.stream)
+            })
+        };
+        let (mut server, _) = listener.accept().await.unwrap();
+        let mut iv = [0u8; 16];
+        server.read_exact(&mut iv).await.unwrap();
+        let mut encrypted = [0u8; 7];
+        server.read_exact(&mut encrypted).await.unwrap();
+        let key = crate::keys::evp_bytes_to_key(b"p", 32);
+        let mut state = Keystream::new(SsrCipher::Aes256Cfb, &key, &iv, false);
+        let mut plain = encrypted.to_vec();
+        state.xor(&mut plain);
+        assert_eq!(plain, vec![1, 1, 2, 3, 4, 0, 80]);
+        let stream = client.await.unwrap().unwrap();
+        let (_r, mut stream) = tokio::io::split(stream);
+        tokio::io::AsyncWriteExt::write_all(&mut stream, b"marker").await.unwrap();
+        let mut more = [0u8; 6];
+        server.read_exact(&mut more).await.unwrap();
+        let mut plain = more.to_vec();
+        state.xor(&mut plain);
+        assert_eq!(plain, b"marker".to_vec());
     }
 }

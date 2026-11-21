@@ -9,31 +9,52 @@ RC4-MD5        iv=30313233343536373839616263646566 cipher=4e8974fe4bca9c275fe6ed
 CHACHA20       iv=3031323334353637 cipher=103f61df371541818a14d56c0848e1c210
 CHACHA20-IETF  iv=303132333435363738396162 cipher=02c1ab8d0d96b7ce763f212c7f85a1386a
 XCHACHA20      iv=303132333435363738396162636465663031323334353637 cipher=63d6daa424afc78a6f0ed041efd39daf31
-== independent Go SSR server ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
-     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-cbb749b417ee1395)
+== independent Go SSR server (origin/plain) ==
+== independent Go SSR plugin peer ==
+-- pinned XorShift128Plus vectors --
+xorshift seed=07*16 values=[9983012281162304137 9983012414829509192 7749566919588107026 6130972981263191596] with-length-100=[15602647799304538188 4206497952017397991]
+chain_b sizes=[105 116 299 426 982 1219] sizes2=[45 76 85 85 136 275 482 558 818 1161 1202 1254]
+-- pinned client packages against the plugin peer (every protocol x obfs) --
+pinned client accepted 36 protocol/obfs combinations
+== Rust client against the same Go peer (matrix, auth failure, large payloads, UDP) ==
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-762088087e1c228d)
 
-running 2 tests
+running 7 tests
 test ssr_go_server_rejects_a_wrong_password ... ok
 test ssr_go_server_relays_the_client_frames ... ok
+test ssr_plugin_matrix_relays_with_every_protocol_and_obfs ... ok
+test ssr_plugin_protocol_param_and_large_payloads ... ok
+test ssr_plugin_wrong_password_never_relays ... peer: address: auth_sha1_v4 decode data wrong length
+peer: address: auth_aes128 wrong head mac
+peer: address: auth_aes128 wrong head mac
+peer: address: auth_chain wrong client hash
+peer: address: auth_chain wrong client hash
+ok
+test ssr_udp_reaches_the_echo_for_every_protocol ... ok
+test ssr_udp_wrong_password_never_reaches_the_echo ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.23s
 
-== controlled Rust peers (gost-relay, ssh, ssr) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-17a4a1358b980635)
+== controlled Rust peers (gost-relay incl. udp/mux, ssh, ssr origin/plain) ==
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-f9f450e82c6593cb)
 
-running 5 tests
+running 9 tests
+test gost_relay_mux_and_udp_share_the_smux_session ... ok
+test gost_relay_mux_relays_over_one_smux_stream ... ok
 test gost_relay_outbound_over_tls_relays_and_verifies_the_certificate ... ok
 test gost_relay_outbound_rejects_a_bad_response_version ... ok
 test gost_relay_outbound_relays_to_the_address_feature_target ... ok
 test gost_relay_outbound_sends_user_auth_and_forward_omits_the_address ... ok
 test gost_relay_outbound_wrong_credentials_never_reach_the_target ... ok
+test gost_relay_udp_relays_datagrams_to_the_bound_target ... ok
+test gost_relay_udp_without_the_option_is_refused_by_the_server ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.63s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 39 filtered out; finished in 1.77s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-17a4a1358b980635)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-f9f450e82c6593cb)
 
 running 4 tests
 test ssh_outbound_password_auth_relays_direct_tcpip ... ok
@@ -41,15 +62,15 @@ test ssh_outbound_pinned_host_key_must_match_the_server ... ok
 test ssh_outbound_public_key_auth_relays_direct_tcpip ... ok
 test ssh_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.60s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.69s
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
-     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-17a4a1358b980635)
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-f9f450e82c6593cb)
 
 running 3 tests
 test ssr_outbound_origin_plain_relays_with_aes_256_cfb ... ok
 test ssr_outbound_rc4_md5_and_dummy_ciphers_relay ... ok
 test ssr_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 2.97s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 3.07s
 

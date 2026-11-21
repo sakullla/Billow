@@ -332,8 +332,117 @@ impl SsUdp {
     }
 }
 
-fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
-    match protocol {
+/// ShadowsocksR datagrams for one association (`ssr.cipher.PacketConn` then
+/// `ssr.protocol.PacketConn` in the pinned outbound): each datagram is
+/// `IV || cipher(protocol packet)` and the protocol packet carries the SOCKS5
+/// address plus the payload. The obfs layer is not used on the UDP path.
+pub struct SsrUdp {
+    transport: PacketTransport,
+    cipher: crate::proxies::SsrCipher,
+    key: Vec<u8>,
+    protocol: Box<dyn super::ssr::protocol::Protocol>,
+}
+
+impl SsrUdp {
+    pub async fn connect(
+        option: &crate::proxies::SsrOutbound,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
+        tls: &super::tls::ClientTls,
+    ) -> Result<SsrUdp, DialError> {
+        debug_assert!(option.udp);
+        let server = Target {
+            host: option.server.clone(),
+            port: option.port,
+        };
+        let resolved = resolve_all(&server)
+            .await
+            .map_err(|source| DialError::Resolve {
+                host: server.host.clone(),
+                source,
+            })?;
+        let transport = match via.len() {
+            1 => {
+                let bind = if resolved[0].is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+                let socket = UdpSocket::bind(bind)
+                    .await
+                    .map_err(|source| DialError::Connect {
+                        addr: bind.to_string(),
+                        source,
+                    })?;
+                PacketTransport::Direct {
+                    socket,
+                    server: resolved[0],
+                }
+            }
+            2 => match &via[1].protocol {
+                crate::proxies::Protocol::Socks5(hop) => PacketTransport::Socks5 {
+                    association: super::socks5::Socks5Udp::connect(hop, timeout, tls).await?,
+                    server_addrs: resolved,
+                },
+                other => {
+                    return Err(DialError::Chain(format!(
+                        "udp through {}({}): only a socks5 hop can carry a UDP association",
+                        via[1].name,
+                        other_type(other)
+                    )))
+                }
+            },
+            _ => {
+                return Err(DialError::Chain(format!(
+                    "udp with a multi-hop dialer-proxy chain ({} hops) is not implemented (at most one socks5 hop)",
+                    via.len() - 1
+                )))
+            }
+        };
+        let key = crate::keys::evp_bytes_to_key(
+            option.password.expose().as_bytes(),
+            option.cipher.key_len(),
+        );
+        let overhead = option.obfs.overhead() + option.protocol.overhead();
+        let protocol = super::ssr::protocol::build(option, key.clone(), Vec::new(), overhead);
+        Ok(SsrUdp {
+            transport,
+            cipher: option.cipher,
+            key,
+            protocol,
+        })
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        let mut plain = address_header(target);
+        plain.extend_from_slice(payload);
+        let mut packet = Vec::new();
+        self.protocol.encode_packet(&plain, &mut packet)?;
+        let datagram = super::ssr::pack_datagram(self.cipher, &self.key, &packet);
+        self.transport.send(&datagram).await
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        let Some(read) = self.transport.recv(buffer).await? else {
+            return Ok(None);
+        };
+        let packet = match super::ssr::unpack_datagram(self.cipher, &self.key, &buffer[..read]) {
+            Ok(packet) => packet,
+            Err(_) => return Ok(None),
+        };
+        let plain = match self.protocol.decode_packet(&packet) {
+            Ok(plain) => plain,
+            Err(_) => return Ok(None),
+        };
+        let Some((target, header)) = parse_address(&plain, 0) else {
+            return Ok(None);
+        };
+        let payload = &plain[header..];
+        if payload.len() > buffer.len() {
+            return Ok(None);
+        }
+        buffer[..payload.len()].copy_from_slice(payload);
+        Ok(Some((target, payload.len())))
+    }
+}
+
+fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {    match protocol {
         crate::proxies::Protocol::Socks5(_) => "socks5",
         crate::proxies::Protocol::Http(_) => "http",
         crate::proxies::Protocol::Shadowsocks(_) => "ss",

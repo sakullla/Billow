@@ -130,10 +130,24 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   check('groups', new Set(index.groups.map((entry) => entry.type)), mapping.groups)
   check('rules', new Set(index.rules.map((entry) => entry.type)), mapping.rules)
   check('configFields', new Set(index.configFields.map((field) => field.name)), mapping.configFields)
-  for (const type of ['ss', 'socks5', 'http', 'trojan', 'vless', 'anytls', 'vmess', 'snell', 'trusttunnel']) {
+  for (const type of [
+    'ss',
+    'socks5',
+    'http',
+    'trojan',
+    'vless',
+    'anytls',
+    'vmess',
+    'snell',
+    'trusttunnel',
+    // T12 completed the SSR plugin layers and the gost-relay UDP association
+    // and smux session.
+    'ssr',
+    'gost-relay',
+  ]) {
     assert.equal(mapping.proxies[type]?.status, 'implemented', `${type} is implemented and tested`)
   }
-  for (const type of ['ssr', 'ssh', 'gost-relay', 'tuic', 'hysteria', 'hysteria2']) {
+  for (const type of ['ssh', 'tuic', 'hysteria', 'hysteria2']) {
     assert.equal(mapping.proxies[type]?.status, 'partial', `${type} is partially implemented with the gaps named`)
   }
   for (const type of ['mieru', 'masque', 'sudoku', 'shadowquic', 'wireguard', 'tailscale', 'zerotier', 'easytier', 'openvpn']) {

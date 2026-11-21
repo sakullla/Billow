@@ -1,7 +1,7 @@
 {
   "format": "kernel-protocol-peers",
   "version": 2,
-  "generatedAt": "2026-11-21T11:20:15Z",
+  "generatedAt": "2026-11-21T12:00:00Z",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -191,16 +191,20 @@
         "positive": [
           "gost_relay_outbound_relays_to_the_address_feature_target",
           "gost_relay_outbound_sends_user_auth_and_forward_omits_the_address",
-          "gost_relay_outbound_over_tls_relays_and_verifies_the_certificate"
+          "gost_relay_outbound_over_tls_relays_and_verifies_the_certificate",
+          "gost_relay_udp_relays_datagrams_to_the_bound_target",
+          "gost_relay_mux_relays_over_one_smux_stream",
+          "gost_relay_mux_and_udp_share_the_smux_session"
         ],
         "negative": [
           "gost_relay_outbound_wrong_credentials_never_reach_the_target",
-          "gost_relay_outbound_rejects_a_bad_response_version"
+          "gost_relay_outbound_rejects_a_bad_response_version",
+          "gost_relay_udp_without_the_option_is_refused_by_the_server"
         ]
       },
       "command": "native-kernel/crates/billow-kernel/tests/protocols.rs (controlled loopback relay v2 server; tool/kernel-compat/family-peers.sh)",
-      "peer": "controlled gost relay v2 server in tests/protocols.rs, written from transport/gost/relay.go: version-1 header, auth/address/network features, status reply, TCP relay; TLS uses the test's private certificate",
-      "notes": "The pinned Mihomo has no relay listener. The peer is an independent server-side implementation of the pinned wire format; the client vectors in src/outbound/gost_relay.rs pin the exact bytes. UDP and smux are rejected at load time."
+      "peer": "controlled gost relay v2 server in tests/protocols.rs, written from transport/gost/relay.go: request/response header, auth, address and network features, the UDP association (`length(u16 BE) || payload`) and a version-1 smux session (SYN/PSH/FIN frames)",
+      "notes": "the UDP association is bound to one target like relayPacketConn, so a new destination replaces it; a server that refuses the UDP command produces no reply and the kernel never falls back to DIRECT. The smux session is the pinned `DefaultConfig` version 1 with keep-alive disabled, one stream per dial."
     },
     "ssh": {
       "status": "pass",
@@ -225,16 +229,21 @@
         "positive": [
           "ssr_outbound_origin_plain_relays_with_aes_256_cfb",
           "ssr_outbound_rc4_md5_and_dummy_ciphers_relay",
-          "ssr_go_server_relays_the_client_frames"
+          "ssr_go_server_relays_the_client_frames",
+          "ssr_plugin_matrix_relays_with_every_protocol_and_obfs",
+          "ssr_plugin_protocol_param_and_large_payloads",
+          "ssr_udp_reaches_the_echo_for_every_protocol"
         ],
         "negative": [
           "ssr_outbound_wrong_password_never_reaches_the_target",
-          "ssr_go_server_rejects_a_wrong_password"
+          "ssr_go_server_rejects_a_wrong_password",
+          "ssr_plugin_wrong_password_never_relays",
+          "ssr_udp_wrong_password_never_reaches_the_echo"
         ]
       },
-      "command": "native-kernel/crates/billow-kernel/tests/protocols.rs + native-kernel/crates/billow-kernel/tests/independent_peers.rs (controlled Rust server and independent Go server; tool/kernel-compat/family-peers.sh)",
-      "peer": "controlled SSR server for `protocol: origin`/`obfs: plain` in tests/protocols.rs, plus the independent Go server in tool/kernel-compat/peers/ssr-server (pinned `shadowstream` IV/cipher/address framing), plus pinned Go cipher vectors",
-      "notes": "The pinned Mihomo has no SSR listener. The cipher layer is pinned byte-for-byte by Go vectors for every stream cipher; the peer proves IV placement, address framing and bidirectional relay. The auth_*/obfs plugin layers are rejected at load time, so this is recorded as a partial family."
+      "command": "native-kernel/crates/billow-kernel/tests/protocols.rs + tests/independent_peers.rs; tool/kernel-compat/family-peers.sh",
+      "peer": "two independent Go peers. `peers/ssr-server` (origin/plain, built on the pinned shadowstream package) and `peers/ssr-plugins`, the server side of every pinned protocol and obfs plugin plus the UDP association, written from the pinned client code with the roles swapped. `peers/ssr-plugins -client` runs the *pinned* obfs/protocol packages as a client, and family-peers.sh requires it to accept the peer for all 36 protocol/obfs combinations before the Rust matrix runs.",
+      "notes": "the plugin matrix covers all 6 protocols x 6 obfs; the wrong-password cases run for every auth plugin with plain and tls1.2_ticket_auth; the protocol-param case exercises the user id/key path with payloads larger than the 8100/2800-byte record split; UDP has no obfs layer in the pinned outbound and is verified for every protocol. The Go peer derives the server framing from the pinned client code (the locked tree has no SSR listener) and documents the two pinned quirks it mirrors: the client discards two bytes of the server's first auth_chain record, and the auth_chain UDP reply hashes auth+uid while the request hashes auth only."
     },
     "tuic": {
       "status": "pass",

@@ -1,11 +1,17 @@
 //! Gost relay v2 outbound (`transport/gost/relay.go`).
 //!
-//! The client opens a TCP connection (optionally wrapped in TLS), writes one
-//! version-1 request header with up to three features - user authentication,
-//! target address and network - and then reads the four-byte response header.
-//! After a `status ok` the connection is the relayed byte stream. `forward:
-//! true` omits the address feature so the relay server uses its own forward
-//! target, which is how the pinned relay dialer treats `forward`.
+//! The client opens a TCP connection (optionally wrapped in TLS and in an smux
+//! session), writes one version-1 request header with up to three features -
+//! user authentication, target address and network - and then reads the
+//! four-byte response header. After a `status ok` the connection is the relayed
+//! byte stream. `forward: true` omits the address feature so the relay server
+//! uses its own forward target, which is how the pinned relay dialer treats
+//! `forward`.
+//!
+//! The UDP association is the same request with `command = CONNECT|0x80` and
+//! the `udp` network feature: the address feature then names the one target the
+//! association is bound to, and each datagram is `length(u16 BE) payload` in
+//! both directions (`relayPacketConn`).
 //!
 //! The wire format is small and fully specified by the pinned source; the
 //! unit vectors below are copied from it and the controlled peer in
@@ -17,12 +23,13 @@ use std::net::IpAddr;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{connect_tcp, handshake, tls, BoxStream, DialError, Dialed, Target};
+use super::{connect_tcp, handshake, smux, tls, BoxStream, DialError, Dialed, Target};
 use super::tls::ClientTls;
 use crate::proxies::GostRelayOutbound;
 
 const RELAY_VERSION: u8 = 0x01;
 const CMD_CONNECT: u8 = 0x01;
+const FLAG_UDP: u8 = 0x80;
 
 const FEATURE_USER_AUTH: u8 = 0x01;
 const FEATURE_ADDR: u8 = 0x02;
@@ -33,6 +40,7 @@ const ADDR_DOMAIN: u8 = 0x03;
 const ADDR_IPV6: u8 = 0x04;
 
 const NETWORK_TCP: u16 = 0x0000;
+const NETWORK_UDP: u16 = 0x0001;
 
 const STATUS_OK: u8 = 0x00;
 
@@ -43,18 +51,7 @@ pub async fn dial(
     target: &Target,
     tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
-    let tcp = connect_tcp(&option.server, option.port).await?;
-    let server = tcp.peer_addr().map_err(|e| handshake("gost-relay", e))?;
-    let mut stream: BoxStream = if option.tls {
-        Box::new(
-            tls::wrap(tcp, &option.server, &option.tls_settings, tls)
-                .await
-                .map_err(|e| handshake("gost-relay tls", e))?,
-        )
-    } else {
-        Box::new(tcp)
-    };
-
+    let (mut stream, server) = connect_stream(option, tls).await?;
     let request = request_header(option, target).map_err(|e| handshake("gost-relay", e))?;
     stream
         .write_all(&request)
@@ -67,9 +64,123 @@ pub async fn dial(
     Ok(Dialed { stream, server })
 }
 
+/// One UDP association, bound to `target` exactly like the pinned
+/// `relayPacketConn` (a datagram for another address is refused).
+pub struct GostRelayUdp {
+    stream: BoxStream,
+    read_buf: Vec<u8>,
+    target: Target,
+}
+
+impl GostRelayUdp {
+    pub async fn connect(
+        option: &GostRelayOutbound,
+        target: &Target,
+        tls: &ClientTls,
+    ) -> Result<GostRelayUdp, DialError> {
+        debug_assert!(option.udp);
+        let (mut stream, _) = connect_stream(option, tls).await?;
+        let request = request_header_for(option, Some(target), true)
+            .map_err(|e| handshake("gost-relay", e))?;
+        stream
+            .write_all(&request)
+            .await
+            .map_err(|e| handshake("gost-relay", e))?;
+        stream.flush().await.map_err(|e| handshake("gost-relay", e))?;
+        read_connect_response(&mut stream)
+            .await
+            .map_err(|e| handshake("gost-relay", e))?;
+        Ok(GostRelayUdp {
+            stream,
+            read_buf: Vec::new(),
+            target: target.clone(),
+        })
+    }
+
+    pub fn target(&self) -> &Target {
+        &self.target
+    }
+
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        if payload.len() > 0xFFFF {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "gost relay udp packet too large",
+            ));
+        }
+        let mut frame = Vec::with_capacity(2 + payload.len());
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.stream.write_all(&frame).await?;
+        self.stream.flush().await
+    }
+
+    /// One reply datagram; a datagram larger than `buffer` is truncated, as the
+    /// pinned `ReadFrom` does.
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        loop {
+            if self.read_buf.len() >= 2 {
+                let length = u16::from_be_bytes([self.read_buf[0], self.read_buf[1]]) as usize;
+                if self.read_buf.len() >= 2 + length {
+                    let payload = &self.read_buf[2..2 + length];
+                    let copied = payload.len().min(buffer.len());
+                    buffer[..copied].copy_from_slice(&payload[..copied]);
+                    self.read_buf.drain(..2 + length);
+                    return Ok(Some(copied));
+                }
+            }
+            let mut chunk = [0u8; 4096];
+            let read = self.stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(None);
+            }
+            self.read_buf.extend_from_slice(&chunk[..read]);
+            if self.read_buf.len() > 4 * 65_535 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "gost relay udp frame buffer exceeded",
+                ));
+            }
+        }
+    }
+}
+
+/// Open the relay server connection: TCP, optional TLS and optional smux.
+async fn connect_stream(
+    option: &GostRelayOutbound,
+    tls: &ClientTls,
+) -> Result<(BoxStream, std::net::SocketAddr), DialError> {
+    let tcp = connect_tcp(&option.server, option.port).await?;
+    let server = tcp.peer_addr().map_err(|e| handshake("gost-relay", e))?;
+    let mut stream: BoxStream = if option.tls {
+        Box::new(
+            tls::wrap(tcp, &option.server, &option.tls_settings, tls)
+                .await
+                .map_err(|e| handshake("gost-relay tls", e))?,
+        )
+    } else {
+        Box::new(tcp)
+    };
+    if option.mux {
+        let session = smux::open(stream)
+            .await
+            .map_err(|e| handshake("gost-relay smux", e))?;
+        stream = Box::new(session);
+    }
+    Ok((stream, server))
+}
+
 /// Encode the version-1 request: `[version, command, len_hi, len_lo]` followed
 /// by the feature list. `forward` drops the address feature.
 fn request_header(option: &GostRelayOutbound, target: &Target) -> io::Result<Vec<u8>> {
+    request_header_for(option, Some(target), false)
+}
+
+fn request_header_for(
+    option: &GostRelayOutbound,
+    target: Option<&Target>,
+    udp: bool,
+) -> io::Result<Vec<u8>> {
     let mut features = Vec::new();
     let username = option.username.as_ref().map(|s| s.expose()).unwrap_or("");
     let password = option.password.as_ref().map(|s| s.expose()).unwrap_or("");
@@ -88,19 +199,23 @@ fn request_header(option: &GostRelayOutbound, target: &Target) -> io::Result<Vec
         features.extend_from_slice(&encode_feature(FEATURE_USER_AUTH, &payload)?);
     }
     if !option.forward {
-        let address = encode_address(&target.host, target.port)?;
-        features.extend_from_slice(&encode_feature(FEATURE_ADDR, &address)?);
+        if let Some(target) = target {
+            let address = encode_address(&target.host, target.port)?;
+            features.extend_from_slice(&encode_feature(FEATURE_ADDR, &address)?);
+        }
     }
-    features.extend_from_slice(&encode_feature(FEATURE_NETWORK, &NETWORK_TCP.to_be_bytes())?);
+    let network = if udp { NETWORK_UDP } else { NETWORK_TCP };
+    features.extend_from_slice(&encode_feature(FEATURE_NETWORK, &network.to_be_bytes())?);
     if features.len() > MAX_FEATURE_LIST {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "gost relay feature list too large",
         ));
     }
+    let command = if udp { CMD_CONNECT | FLAG_UDP } else { CMD_CONNECT };
     let mut out = Vec::with_capacity(4 + features.len());
     out.push(RELAY_VERSION);
-    out.push(CMD_CONNECT);
+    out.push(command);
     out.extend_from_slice(&(features.len() as u16).to_be_bytes());
     out.extend_from_slice(&features);
     Ok(out)
@@ -211,6 +326,8 @@ mod tests {
             forward,
             tls: false,
             tls_settings: Default::default(),
+            mux: false,
+            udp: false,
             username: user.map(Secret::new),
             password: pass.map(Secret::new),
             dialer_proxy: None,
@@ -245,6 +362,17 @@ mod tests {
             hex(&request),
             "0101001c0100040175017002000d0309612e6578616d706c6501bb0400020000"
         );
+    }
+
+    #[test]
+    fn udp_request_sets_the_flag_and_the_udp_network() {
+        let target = Target {
+            host: "1.2.3.4".into(),
+            port: 53,
+        };
+        let request = request_header_for(&option(false, None, None), Some(&target), true).unwrap();
+        // command 0x81, then the address feature and the udp network feature.
+        assert_eq!(hex(&request), "0181000f020007010102030400350400020001");
     }
 
     #[test]

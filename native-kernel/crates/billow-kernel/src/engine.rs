@@ -701,6 +701,9 @@ async fn serve_udp_associate(
     let mut direct_v4 = true;
     let mut ss: Option<outbound::udp::SsUdp> = None;
     let mut trojan: Option<outbound::udp::TrojanUdp> = None;
+    let mut ssr: Option<outbound::udp::SsrUdp> = None;
+    let mut gost: Option<outbound::gost_relay::GostRelayUdp> = None;
+    let mut gost_target: Option<outbound::Target> = None;
     // One datagram buffer for the client, plus one reply buffer per transport
     // that is actually used: a direct-only association never allocates the ss
     // or trojan buffer.
@@ -708,6 +711,8 @@ async fn serve_udp_associate(
     let mut direct_buf: Option<Vec<u8>> = None;
     let mut ss_buf: Option<Vec<u8>> = None;
     let mut trojan_buf: Option<Vec<u8>> = None;
+    let mut ssr_buf: Option<Vec<u8>> = None;
+    let mut gost_buf: Option<Vec<u8>> = None;
     let mut control_probe = [0u8; 1];
     let mut failed = false;
     let mut idle_deadline = tokio::time::Instant::now() + limits.udp_idle_timeout;
@@ -717,6 +722,8 @@ async fn serve_udp_associate(
     let mut direct_eof = false;
     let mut ss_eof = false;
     let mut trojan_eof = false;
+    let mut ssr_eof = false;
+    let mut gost_eof = false;
 
     'associate: loop {
         if direct_eof {
@@ -733,6 +740,17 @@ async fn serve_udp_associate(
             trojan = None;
             trojan_buf = None;
             trojan_eof = false;
+        }
+        if ssr_eof {
+            ssr = None;
+            ssr_buf = None;
+            ssr_eof = false;
+        }
+        if gost_eof {
+            gost = None;
+            gost_buf = None;
+            gost_target = None;
+            gost_eof = false;
         }
         tokio::select! {
             biased;
@@ -861,6 +879,62 @@ async fn serve_udp_associate(
                             }
                             trojan.as_mut().expect("connected above").send(&datagram.target, payload).await
                         }
+                        crate::proxies::Protocol::Ssr(option) if option.udp => {
+                            if ssr.is_none() {
+                                let hops = chain_for(config, proxy);
+                                match outbound::udp::SsrUdp::connect(
+                                    option,
+                                    &hops,
+                                    limits.dial_timeout,
+                                    &context.tls,
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        ssr = Some(association);
+                                        ssr_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "ssr UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            ssr.as_mut()
+                                .expect("connected above")
+                                .send(&datagram.target, payload)
+                                .await
+                        }
+                        crate::proxies::Protocol::GostRelay(option) if option.udp => {
+                            // The pinned relay binds one association to one
+                            // target, so a new destination replaces the
+                            // association (and its in-flight replies).
+                            let reuse = gost_target.as_ref() == Some(&datagram.target);
+                            if !reuse {
+                                gost = None;
+                                gost_target = None;
+                                match outbound::gost_relay::GostRelayUdp::connect(
+                                    option,
+                                    &datagram.target,
+                                    &context.tls,
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        gost = Some(association);
+                                        gost_target = Some(datagram.target.clone());
+                                        gost_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "gost-relay UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            gost.as_mut().expect("connected above").send(payload).await
+                        }
                         other => {
                             // The pinned outbound has no UDP association this
                             // kernel implements for this family; dropping is a
@@ -951,6 +1025,53 @@ async fn serve_udp_associate(
                 if let (Ok(Some((from, read))), Some(buffer)) = (received, trojan_buf.as_ref()) {
                     if let Some(client_udp) = client_udp {
                         let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (ssr.as_mut(), ssr_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if ssr.is_some() && !ssr_eof => {
+                if received.is_err() {
+                    ssr_eof = true;
+                    failed = true;
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, ssr_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (gost.as_mut(), gost_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if gost.is_some() && !gost_eof => {
+                match &received {
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        gost_eof = true;
+                        failed = true;
+                    }
+                }
+                if let (Ok(Some(read)), Some(buffer), Some(bound)) =
+                    (received, gost_buf.as_ref(), gost_target.as_ref())
+                {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(bound);
                         reply.extend_from_slice(&buffer[..read]);
                         let _ = relay.send_to(&reply, client_udp).await;
                         counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
