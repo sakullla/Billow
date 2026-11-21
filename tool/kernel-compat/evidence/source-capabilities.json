@@ -2290,7 +2290,7 @@
       "source": "adapter/parser.go:114",
       "rustMapping": {
         "status": "partial",
-        "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with a clean-room JLS random seal; `zero-rtt`, QUIC `v2` and the private Brutal congestion options are rejected by name because quinn has no Brutal controller/JLS 0-RTT ticket",
+        "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with an independent JLS random seal and a protocol-level transport; provenance is in tool/kernel-compat/evidence/t15-cleanroom.md; `zero-rtt`, QUIC `v2` and the private Brutal congestion options are rejected by name because quinn has no Brutal controller/JLS 0-RTT ticket",
         "options": [
           "server",
           "port",
@@ -2315,7 +2315,12 @@
           "bbr-profile",
           "up",
           "down",
-          "dialer-proxy"
+          "dialer-proxy",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "ip-version"
         ],
         "evidence": [
           "src/outbound/jls.rs::tests::verifies_locked_jls_client_and_server_hellos",
@@ -2326,9 +2331,12 @@
           "tests/mihomo_peers.rs::shadowquic_wrong_password_never_reaches_the_sink",
           "tests/mihomo_peers.rs::shadowquic_udp_reaches_the_receiving_side_through_mihomo",
           "tests/mihomo_peers.rs::shadowquic_udp_over_stream_reaches_the_receiving_side_through_mihomo",
-          "crates/billow-kernel-cli/tests/cli.rs::process_loads_t15_shadowquic"
+          "crates/billow-kernel-cli/tests/cli.rs::process_loads_t15_shadowquic",
+          "tests/shadowquic_stream.rs::udp_over_stream_reopens_a_stopped_uni_stream_and_control",
+          "tool/kernel-compat/evidence/t15-cleanroom.md"
         ],
-        "notes": "recv-window defaults follow the kernel T7 budget (512 KiB stream / 2 MiB connection) rather than the pinned 1.57 MiB / 6.4 MiB initial windows; those are local flow-control choices, not wire fields. max-datagram-frame-size sizes the datagram buffers; the usable datagram payload is also path-MTU-bound, so larger UDP packets use udp-over-stream."
+        "notes": "recv-window defaults follow the kernel T7 budget (512 KiB stream / 2 MiB connection) rather than the pinned 1.57 MiB / 6.4 MiB initial windows; those are local flow-control choices, not wire fields. max-datagram-frame-size sizes the datagram buffers; the usable datagram payload is also path-MTU-bound, so larger UDP packets use udp-over-stream.",
+        "license": "JLS vectors: BSD-3-Clause (Copyright 2009 The Go Authors), full text in native-kernel/THIRD_PARTY_NOTICES.md. ShadowQUIC transport: no GPL-3.0 source copied; provenance and the residual source-consultation caveat are recorded in tool/kernel-compat/evidence/t15-cleanroom.md."
       }
     },
     {

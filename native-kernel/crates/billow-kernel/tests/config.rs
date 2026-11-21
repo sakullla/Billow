@@ -1021,6 +1021,11 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
         ("down: 50 Mbps", "down"),
         ("quic-versions: [v2]", "quic-versions"),
         ("dialer-proxy: p2", "dialer-proxy"),
+        ("tfo: true", "tfo"),
+        ("mptcp: true", "mptcp"),
+        ("interface-name: eth0", "interface-name"),
+        ("routing-mark: 100", "routing-mark"),
+        ("ip-version: ipv4", "ip-version"),
     ] {
         let yaml = format!(
             "proxies:\n  - {{name: sq, type: shadowquic, server: x, port: 1, {extra}}}\n  - {{name: p2, type: direct}}\nrules: ['MATCH,sq']\n"

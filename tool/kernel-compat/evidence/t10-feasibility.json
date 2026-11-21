@@ -98,11 +98,13 @@
     },
     "shadowquic": {
       "status": "implemented-by-T15",
-      "reason": "T15 implemented the JLS random seal clean-room over quinn 0.11 (a recorded-random replay of rustls's own ClientHello); the locked jls-tls package is used only as a vector generator. TCP and UDP (datagrams and udp-over-stream) pass against the pinned listener; zero-rtt, QUIC v2 and the Brutal congestion options remain named rejections.",
+      "reason": "T15 implemented the JLS random seal independently over quinn 0.11 (a recorded-random replay of rustls's own ClientHello); the locked jls-tls package is used only as a vector generator. TCP and UDP (datagrams and udp-over-stream) pass against the pinned listener; zero-rtt, QUIC v2 and the Brutal congestion options remain named rejections. License: jls-tls is BSD-3-Clause (THIRD_PARTY_NOTICES.md); the transport provenance/no-copy audit is in t15-cleanroom.md.",
       "evidence": [
         "native-kernel/crates/billow-kernel/src/outbound/jls.rs",
         "native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt",
-        "tool/kernel-compat/evidence/protocol-peers.json#families.shadowquic"
+        "tool/kernel-compat/evidence/protocol-peers.json#families.shadowquic",
+        "native-kernel/THIRD_PARTY_NOTICES.md",
+        "tool/kernel-compat/evidence/t15-cleanroom.md"
       ]
     },
     "wireguard": {

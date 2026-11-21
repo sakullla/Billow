@@ -125,11 +125,14 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   Rust crate, so `src/outbound/jls.rs` implements the seal in-tree and
   `peers/shadowquic-jls-vectors` uses the locked `jls-tls` package only to emit
   real hello vectors (committed under
-  `native-kernel/crates/billow-kernel/tests/data/`). The option matrix now has
-  224 no-op / 248 enabled cases with 0 problems, including the shadowquic
-  `zero-rtt`/`quic-versions: v2`/Brutal rejections. `t10-feasibility.json`
-  records shadowquic as implemented by T15; the remaining follow-up owners are
-  the device families.
+  `native-kernel/crates/billow-kernel/tests/data/`). The full BSD-3-Clause
+  license for `jls-tls` is in `native-kernel/THIRD_PARTY_NOTICES.md`; the
+  ShadowQUIC transport provenance, black-box observation matrix and no-copy
+  audit (with its residual caveat) are in `evidence/t15-cleanroom.md`. The
+  option matrix now has 224 no-op / 253 enabled cases with 0 problems,
+  including the shadowquic `zero-rtt`/`quic-versions: v2`/Brutal/BasicOption
+  rejections. `t10-feasibility.json` records shadowquic as implemented by T15;
+  the remaining follow-up owners are the device families.
 
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo

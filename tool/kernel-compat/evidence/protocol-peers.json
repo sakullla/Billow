@@ -344,7 +344,7 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: shadowquic with a `users: [{username, password}]` account and a loopback UDP `jls-upstream` camouflage socket; the peer runs the pinned jls-tls/jls-quic-go listener",
-      "notes": "the JLS ClientHello/ServerHello `random` seal is an independent Rust implementation of the locked jls-tls algorithm (`src/outbound/jls.rs`), cross-checked against real messages emitted by the pinned Go package in `tool/kernel-compat/peers/shadowquic-jls-vectors` (vectors committed at `native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt`). The QUIC transport is quinn 0.11; the custom ClientHello random is injected by a recorded-random replay of rustls's own ClientHello, and the replay is checked byte-for-byte before the connection proceeds. UDP is covered in both pinned carriers (QUIC datagrams and `udp-over-stream`). A datagram payload is bounded by the path MTU as well as `max-datagram-frame-size` (quinn starts at 1200 bytes); a larger payload fails with a named error and `udp-over-stream` carries large packets as u16-length frames. A wrong password is forwarded to the camouflage upstream and the client aborts before sending a request; the kernel reports 502. `zero-rtt`, QUIC `v2`, `congestion-controller`, `bbr-profile`, a non-default `cwnd`, `up`/`down` (Brutal) and `dialer-proxy` are rejected at load with the reason recorded."
+      "notes": "the JLS ClientHello/ServerHello `random` seal is an independent Rust implementation of the locked jls-tls algorithm (`src/outbound/jls.rs`), cross-checked against real messages emitted by the pinned Go package in `tool/kernel-compat/peers/shadowquic-jls-vectors` (vectors committed at `native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt`). The QUIC transport is quinn 0.11; the custom ClientHello random is injected by a recorded-random replay of rustls's own ClientHello, and the replay is checked byte-for-byte before the connection proceeds. UDP is covered in both pinned carriers (QUIC datagrams and `udp-over-stream`). A datagram payload is bounded by the path MTU as well as `max-datagram-frame-size` (quinn starts at 1200 bytes); a larger payload fails with a named error and `udp-over-stream` carries large packets as u16-length frames. A wrong password is forwarded to the camouflage upstream and the client aborts before sending a request; the kernel reports 502. `zero-rtt`, QUIC `v2`, `congestion-controller`, `bbr-profile`, a non-default `cwnd`, `up`/`down` (Brutal) and `dialer-proxy` are rejected at load with the reason recorded. The BasicOption knobs (tfo/mptcp/interface-name/routing-mark/ip-version) are rejected when enabled and accepted as no-ops; the option matrix covers both forms."
     },
     "masque": {
       "status": "pass",
@@ -514,10 +514,11 @@
     ],
     "run": {
       "command": "tool/kernel-compat/peer-tests.sh",
-      "result": "61 passed, 0 failed, 0 ignored",
-      "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
+      "result": "61 passed, 0 failed, 0 ignored (mihomo_peers)",
+      "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
+      "note": "The peer-tests.sh matrix has 61 cases (4 shadowquic). The stream-repair case tests/shadowquic_stream.rs::udp_over_stream_reopens_a_stopped_uni_stream_and_control is part of the default cargo suite and uses a controlled quinn peer."
     },
-    "dependencyDecision": "No JLS crate is in the offline cargo cache. T15 implements the JLS AES-256-GCM random seal in src/outbound/jls.rs from the locked jls-tls behaviour; the Go package is used only as a vector generator in tool/kernel-compat/peers/shadowquic-jls-vectors. quinn-proto and typenum became direct dependencies (already in the lockfile) for the Session wrapper and the 32-byte GCM nonce. No GPL code was copied: jls-tls is Go BSD-3-Clause, and only observed wire messages (vectors) are used.",
+    "dependencyDecision": "No JLS crate is in the offline cargo cache. T15 implements the JLS AES-256-GCM random seal in src/outbound/jls.rs from the locked jls-tls behaviour; the Go package is used only as a vector generator in tool/kernel-compat/peers/shadowquic-jls-vectors. quinn-proto and typenum became direct dependencies (already in the lockfile) for the Session wrapper and the 32-byte GCM nonce. No GPL code was copied.",
     "gaps": [
       "zero-rtt: true",
       "quic-versions: v2",
@@ -525,7 +526,25 @@
       "bbr-profile",
       "non-default cwnd",
       "up/down (Brutal)",
-      "dialer-proxy"
-    ]
+      "dialer-proxy",
+      "tfo/mptcp/interface-name/routing-mark/ip-version (BasicOption, rejected by name; no-op values load)"
+    ],
+    "license": {
+      "jls_tls": "BSD-3-Clause (Copyright 2009 The Go Authors); complete copyright/conditions/disclaimer in native-kernel/THIRD_PARTY_NOTICES.md. Used only to generate committed test vectors; the Rust implementation does not link or copy it.",
+      "shadowquic_transport": "No GPL-3.0 source vendored, linked, or copied. Provenance, black-box observation matrix and no-copy audit (with the residual source-consultation caveat) in tool/kernel-compat/evidence/t15-cleanroom.md.",
+      "kernel": "MIT (workspace); the notices above apply only to the referenced package and vector material."
+    },
+    "cases": {
+      "positive": [
+        "shadowquic_outbound_reaches_the_receiving_side_through_mihomo",
+        "shadowquic_udp_reaches_the_receiving_side_through_mihomo",
+        "shadowquic_udp_over_stream_reaches_the_receiving_side_through_mihomo",
+        "udp_over_stream_reopens_a_stopped_uni_stream_and_control"
+      ],
+      "negative": [
+        "shadowquic_wrong_password_never_reaches_the_sink",
+        "shadowquic_transport_options_are_parsed_and_jls_gaps_named"
+      ]
+    }
   }
 }

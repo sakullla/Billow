@@ -1,8 +1,14 @@
-//! ShadowQUIC outbound (`adapter/outbound/shadowquic.go`,
-//! `transport/shadowquic`).
+//! ShadowQUIC outbound (QUIC v1 only with this quinn build).
 //!
-//! The transport is ordinary QUIC v1/v2 as far as the wire is concerned; the
-//! authentication is the JLS TLS-random seal implemented in [`super::jls`].
+//! The framing below is an independent Rust implementation of the observable
+//! ShadowQUIC data path: a command byte + SOCKS5 address on a bidirectional
+//! stream for TCP, and a command byte + unspecified address on a control
+//! stream with `u16` id mappings for UDP (QUIC datagrams or one uni stream per
+//! destination with `u16` lengths). The process and the black-box observations
+//! are recorded in `tool/kernel-compat/evidence/t15-cleanroom.md`; no GPL-3.0
+//! source is vendored, linked, or copied. The JLS license/text is in
+//! `native-kernel/THIRD_PARTY_NOTICES.md`.
+//!
 //! One QUIC connection carries every session:
 //!
 //! ```text
@@ -176,6 +182,9 @@ pub async fn dial(
 struct Shared {
     state: std::sync::Mutex<SharedState>,
     inbound: mpsc::Sender<(Target, Vec<u8>)>,
+    /// Incremented for every new control stream; an old reader must not write
+    /// stale id mappings into the new association.
+    generation: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -217,6 +226,16 @@ impl Shared {
         }
     }
 
+    /// Drop every id mapping when a new control stream replaces the old
+    /// association. In-flight datagrams of the old association are discarded
+    /// instead of being attributed to an id the new peer may reuse.
+    fn reset(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.ids.clear();
+        state.pending.clear();
+        state.pending_bytes = 0;
+    }
+
     async fn map(&self, id: u16, target: Target) {
         let pending = {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -238,6 +257,8 @@ pub struct ShadowQuicUdp {
     connection: Connection,
     endpoint: Endpoint,
     control: Option<SendStream>,
+    shared: std::sync::Arc<Shared>,
+    command: u8,
     inbound: mpsc::Receiver<(Target, Vec<u8>)>,
     over_stream: bool,
     max_datagram: usize,
@@ -291,99 +312,43 @@ impl ShadowQuicUdp {
             &credentials,
         )
         .await?;
-        let (mut send, mut recv) = match tokio::time::timeout(timeout, connection.open_bi()).await {
-            Ok(Ok(pair)) => pair,
-            Ok(Err(e)) => return Err(handshake(io::ErrorKind::ConnectionAborted, e.to_string())),
-            Err(_) => return Err(DialError::Timeout(timeout)),
-        };
         let command = if option.udp_over_stream {
             COMMAND_ASSOCIATE_STREAM
         } else {
             COMMAND_ASSOCIATE_DATAGRAM
         };
-        let mut request = Vec::with_capacity(8);
-        request.push(command);
-        request.extend_from_slice(&UNSPECIFIED_ADDRESS);
-        if let Err(e) = send.write_all(&request).await {
-            return Err(handshake(io::ErrorKind::BrokenPipe, e.to_string()));
+        match tokio::time::timeout(
+            timeout,
+            build_association(
+                connection,
+                endpoint,
+                command,
+                option.max_datagram_frame_size,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|e| handshake(io::ErrorKind::Other, e.to_string())),
+            Err(_) => Err(DialError::Timeout(timeout)),
         }
+    }
 
-        // The pinned client queues 128 packets per association. This kernel is
-        // also the iOS extension (T7's 40 MB budget), so the receive queue is
-        // bounded to 32 packets (at most ~2 MB with 64 KiB payloads) and the
-        // connection's flow-control windows remain the T10 caps.
-        let (inbound_tx, inbound) = mpsc::channel(32);
-        let shared = std::sync::Arc::new(Shared {
-            state: std::sync::Mutex::new(SharedState::default()),
-            inbound: inbound_tx,
-        });
-        // The control stream maps both directions' ids.
-        let control_shared = shared.clone();
-        tokio::spawn(async move {
-            loop {
-                let target = match read_address(&mut recv).await {
-                    Ok(target) => target,
-                    Err(_) => return,
-                };
-                let id = match recv.read_u16().await {
-                    Ok(id) => id,
-                    Err(_) => return,
-                };
-                control_shared.map(id, target).await;
-            }
-        });
-
-        let buffer_limit = if option.udp_over_stream {
-            MAX_UDP_PACKET
+    /// Build an association over an already-authenticated connection. The
+    /// production path reaches it through [`connect`]; tests use it with a
+    /// plain quinn connection to exercise stream-reopen recovery without JLS.
+    #[doc(hidden)]
+    pub async fn from_connection_for_test(
+        connection: Connection,
+        endpoint: Endpoint,
+        over_stream: bool,
+        max_datagram: usize,
+    ) -> io::Result<ShadowQuicUdp> {
+        let command = if over_stream {
+            COMMAND_ASSOCIATE_STREAM
         } else {
-            option.max_datagram_frame_size
+            COMMAND_ASSOCIATE_DATAGRAM
         };
-        if option.udp_over_stream {
-            let streams = connection.clone();
-            let streams_shared = shared.clone();
-            tokio::spawn(async move {
-                loop {
-                    let stream = match streams.accept_uni().await {
-                        Ok(stream) => stream,
-                        Err(_) => return,
-                    };
-                    let reader_shared = streams_shared.clone();
-                    tokio::spawn(async move {
-                        read_datagram_stream(stream, reader_shared, buffer_limit).await;
-                    });
-                }
-            });
-        } else {
-            let datagrams = connection.clone();
-            let datagram_shared = shared.clone();
-            tokio::spawn(async move {
-                loop {
-                    let packet = match datagrams.read_datagram().await {
-                        Ok(packet) => packet,
-                        Err(_) => return,
-                    };
-                    if packet.len() < 2 {
-                        continue;
-                    }
-                    let id = u16::from_be_bytes([packet[0], packet[1]]);
-                    datagram_shared
-                        .deliver(id, packet[2..].to_vec(), buffer_limit)
-                        .await;
-                }
-            });
-        }
-
-        Ok(ShadowQuicUdp {
-            connection,
-            endpoint,
-            control: Some(send),
-            inbound,
-            over_stream: option.udp_over_stream,
-            max_datagram: option.max_datagram_frame_size,
-            send_ids: HashMap::new(),
-            next_id: 0,
-            uni: HashMap::new(),
-        })
+        build_association(connection, endpoint, command, max_datagram).await
     }
 
     fn alloc_id(&mut self) -> io::Result<u16> {
@@ -402,34 +367,46 @@ impl ShadowQuicUdp {
             Some(id) => id,
             None => {
                 let id = self.alloc_id()?;
-                let control = self.control.as_mut().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotConnected, "association closed")
-                })?;
                 let mut entry = SocksAddr::encode(target);
                 entry.extend_from_slice(&id.to_be_bytes());
-                control.write_all(&entry).await?;
+                self.write_control(&entry).await?;
                 self.send_ids.insert(target.clone(), id);
                 id
             }
         };
 
         if self.over_stream {
-            let stream = match self.uni.get_mut(target) {
-                Some(stream) => stream,
-                None => {
-                    let mut stream = self
-                        .connection
-                        .open_uni()
+            // A peer may stop/reset a uni stream at any time (the pinned server
+            // closes its per-destination stream when the association is torn
+            // down). Remove the cached stream and rebuild it once; the id
+            // mapping itself stays on the control stream.
+            for attempt in 0..2 {
+                let mut stream = match self.uni.remove(target) {
+                    Some(stream) => stream,
+                    None => self.open_uni(id).await?,
+                };
+                let written = async {
+                    stream.write_u16(payload.len() as u16).await?;
+                    stream
+                        .write_all(payload)
                         .await
-                        .map_err(|e| io::Error::other(e.to_string()))?;
-                    stream.write_all(&id.to_be_bytes()).await?;
-                    self.uni.insert(target.clone(), stream);
-                    self.uni.get_mut(target).expect("inserted above")
+                        .map_err(|e| io::Error::other(e.to_string()))
                 }
-            };
-            stream.write_u16(payload.len() as u16).await?;
-            stream.write_all(payload).await?;
-            Ok(())
+                .await;
+                match written {
+                    Ok(()) => {
+                        self.uni.insert(target.clone(), stream);
+                        return Ok(());
+                    }
+                    Err(error) if attempt == 0 => {
+                        // Dropping the stream sends its reset; the next loop
+                        // opens a fresh uni stream with the same id.
+                        let _ = error;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            unreachable!("the loop returns on success or the second error")
         } else {
             // `max_datagram_frame_size` is the configured frame limit; the
             // usable payload is also bounded by the path MTU, which quinn
@@ -458,6 +435,60 @@ impl ShadowQuicUdp {
         }
     }
 
+    /// Open one client-to-server uni stream and write its id.
+    async fn open_uni(&self, id: u16) -> io::Result<SendStream> {
+        let mut stream = self
+            .connection
+            .open_uni()
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        stream
+            .write_all(&id.to_be_bytes())
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        Ok(stream)
+    }
+
+    /// Write one control entry, reopening the control stream (and the server
+    /// association) once if the old stream was closed by the peer.
+    async fn write_control(&mut self, entry: &[u8]) -> io::Result<()> {
+        if let Some(control) = self.control.as_mut() {
+            match control.write_all(entry).await {
+                Ok(()) => return Ok(()),
+                Err(_) => {
+                    // The write half was stopped/reset; drop it and rebuild the
+                    // whole association below.
+                    self.control = None;
+                }
+            }
+        }
+        self.reopen_control().await?;
+        self.control
+            .as_mut()
+            .expect("reopen_control installs a stream")
+            .write_all(entry)
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))
+    }
+
+    /// Re-create the control stream and re-register every live target id. The
+    /// peer treats a new control stream as a new association, so cached uni
+    /// streams belong to the old one and are dropped.
+    async fn reopen_control(&mut self) -> io::Result<()> {
+        self.uni.clear();
+        self.shared.reset();
+        let mut send = open_control(&self.connection, self.command, self.shared.clone()).await?;
+        for (target, id) in &self.send_ids {
+            let mut entry = SocksAddr::encode(target);
+            entry.extend_from_slice(&id.to_be_bytes());
+            send.write_all(&entry)
+                .await
+                .map_err(|e| io::Error::other(e.to_string()))?;
+        }
+        self.control = Some(send);
+        Ok(())
+    }
+
     /// Receive one UDP payload; returns the destination it belongs to.
     pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
         loop {
@@ -479,6 +510,124 @@ impl ShadowQuicUdp {
             .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
         Ok(SocketAddr::new(ip, 0))
     }
+}
+
+/// Open the initial bidirectional control stream and its reader.
+async fn open_control(
+    connection: &Connection,
+    command: u8,
+    shared: std::sync::Arc<Shared>,
+) -> io::Result<SendStream> {
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let generation = shared
+        .generation
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+        + 1;
+    let mut request = Vec::with_capacity(8);
+    request.push(command);
+    request.extend_from_slice(&UNSPECIFIED_ADDRESS);
+    send.write_all(&request)
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    tokio::spawn(async move {
+        loop {
+            let target = match read_address(&mut recv).await {
+                Ok(target) => target,
+                Err(_) => return,
+            };
+            let id = match recv.read_u16().await {
+                Ok(id) => id,
+                Err(_) => return,
+            };
+            if shared.generation.load(std::sync::atomic::Ordering::Acquire) != generation {
+                return;
+            }
+            shared.map(id, target).await;
+        }
+    });
+    Ok(send)
+}
+
+/// Start the carrier readers for one association.
+fn spawn_data_readers(
+    connection: &Connection,
+    over_stream: bool,
+    shared: std::sync::Arc<Shared>,
+    buffer_limit: usize,
+) {
+    if over_stream {
+        let streams = connection.clone();
+        tokio::spawn(async move {
+            loop {
+                let stream = match streams.accept_uni().await {
+                    Ok(stream) => stream,
+                    Err(_) => return,
+                };
+                let reader_shared = shared.clone();
+                tokio::spawn(async move {
+                    read_datagram_stream(stream, reader_shared, buffer_limit).await;
+                });
+            }
+        });
+    } else {
+        let datagrams = connection.clone();
+        tokio::spawn(async move {
+            loop {
+                let packet = match datagrams.read_datagram().await {
+                    Ok(packet) => packet,
+                    Err(_) => return,
+                };
+                if packet.len() < 2 {
+                    continue;
+                }
+                let id = u16::from_be_bytes([packet[0], packet[1]]);
+                shared.deliver(id, packet[2..].to_vec(), buffer_limit).await;
+            }
+        });
+    }
+}
+
+/// Build one association over a connected QUIC transport.
+async fn build_association(
+    connection: Connection,
+    endpoint: Endpoint,
+    command: u8,
+    max_datagram: usize,
+) -> io::Result<ShadowQuicUdp> {
+    // The pinned client queues 128 packets per association. This kernel is
+    // also the iOS extension (T7's 40 MB budget), so the receive queue is
+    // bounded to 32 packets (at most ~2 MB with 64 KiB payloads) and the
+    // connection's flow-control windows remain the T10 caps.
+    let (inbound_tx, inbound) = mpsc::channel(32);
+    let shared = std::sync::Arc::new(Shared {
+        state: std::sync::Mutex::new(SharedState::default()),
+        inbound: inbound_tx,
+        generation: std::sync::atomic::AtomicU64::new(0),
+    });
+    let control = open_control(&connection, command, shared.clone()).await?;
+    let over_stream = command == COMMAND_ASSOCIATE_STREAM;
+    let buffer_limit = if over_stream {
+        MAX_UDP_PACKET
+    } else {
+        max_datagram
+    };
+    spawn_data_readers(&connection, over_stream, shared.clone(), buffer_limit);
+    Ok(ShadowQuicUdp {
+        connection,
+        endpoint,
+        control: Some(control),
+        shared,
+        command,
+        inbound,
+        over_stream,
+        max_datagram,
+        send_ids: HashMap::new(),
+        next_id: 0,
+        uni: HashMap::new(),
+    })
 }
 
 impl Drop for ShadowQuicUdp {

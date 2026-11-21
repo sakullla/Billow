@@ -284,6 +284,11 @@ const t15Enabled = [
   ['shadowquic', 'cwnd', 'cwnd: 64'],
   ['shadowquic', 'up', 'up: 50 Mbps'],
   ['shadowquic', 'down', 'down: 50 Mbps'],
+  ['shadowquic', 'tfo', 'tfo: true'],
+  ['shadowquic', 'mptcp', 'mptcp: true'],
+  ['shadowquic', 'interface-name', 'interface-name: eth0'],
+  ['shadowquic', 'routing-mark', 'routing-mark: 100'],
+  ['shadowquic', 'ip-version', 'ip-version: ipv4'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
 const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled, ...t15Enabled]
 

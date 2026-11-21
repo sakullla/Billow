@@ -59,6 +59,7 @@ native-kernel/
     │   ├── examples/embed.rs       # embedding example
     │   └── tests/                  # config, protocols (loopback peers + sudoku codec
     │                               # vectors), sessions, mihomo_peers (pinned Mihomo),
+    │                               # shadowquic_stream (stream/control reopen),
     │                               # data/shadowquic-jls.txt (locked JLS hello vectors),
     │                               # cli/family args, common/ helpers
     └── billow-kernel-cli/          # binary `billow-kernel`
@@ -258,16 +259,24 @@ OS-seeded randomness stream and substitutes the one fill that produced the
 connection proceeds. The locked `jls-tls` package is used only by
 `tool/kernel-compat/peers/shadowquic-jls-vectors` to emit real hello vectors
 (`native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt`); no Go
-code is linked or copied. The wire format was derived from the BSD-3-Clause
-`jls-tls` package (the pinned dependency) and observed handshakes; no GPL-3.0
-Mihomo code was copied. The QUIC wire format is ordinary QUIC v1 (the pinned
+code is linked or copied. The pinned `jls-tls` package is BSD-3-Clause
+(Copyright 2009 The Go Authors); its complete copyright, conditions and
+disclaimer are in `native-kernel/THIRD_PARTY_NOTICES.md`. The transport framing
+provenance, the black-box observation matrix and the no-copy audit — including
+the residual caveat that the first framing constants were confirmed against the
+pinned GPL source — are in
+`tool/kernel-compat/evidence/t15-cleanroom.md`; no GPL-3.0 source is vendored,
+linked, or copied. The QUIC wire format is ordinary QUIC v1 (the pinned
 `jls-quic-go` modifications are the server-side camouflage forwarding and the
 TLS hook), so `quinn` carries it unchanged. TCP uses `CommandConnect` + a
 SOCKS5 address; UDP uses `CommandAssociateDatagram` + QUIC datagrams or
 `CommandAssociateStream` + one uni stream per destination. QUIC datagram
 payloads are bounded by the path MTU as well as `max-datagram-frame-size`
 (quinn starts at 1200 bytes); a larger payload fails with a named error and
-`udp-over-stream` carries large packets as `u16`-length frames. `quinn-proto` and
+`udp-over-stream` carries large packets as `u16`-length frames. A peer-stopped
+uni stream is detected on the next write and reopened; a closed control stream
+is rebuilt with all live target ids re-registered. Both paths are covered by
+`tests/shadowquic_stream.rs` against an independent quinn peer. `quinn-proto` and
 `typenum` became direct dependencies for the session wrapper and the 32-byte
 GCM nonce; both versions were already in the lockfile (no new download).
 `recv-window-conn`/`recv-window` default to the kernel's T7 budget (512 KiB
@@ -572,7 +581,10 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   at `native-kernel/crates/billow-kernel/tests/data/shadowquic-jls.txt` and
   consumed by `src/outbound/jls.rs::tests::verifies_locked_jls_client_and_server_hellos`
   (a default-suite test; the generator needs `go` and the module cache).
-  `tool/kernel-compat/peer-tests.sh` now runs 61 cases in total. T14's
+  `tests/shadowquic_stream.rs` is a default-suite controlled quinn peer that
+  stops a client uni stream and closes the control send half; it proves the
+  client reopens the uni stream and rebuilds the control association with the
+  live ids. `tool/kernel-compat/peer-tests.sh` now runs 61 cases in total. T14's
   `masque` has no Mihomo listener (the pinned adapter is a Cloudflare WARP
   client) and no reachable HTTP/3 masque endpoint offline, so its six cases run
   against the controlled HTTP/3 peer in the default `tests/quic_peers.rs` suite
