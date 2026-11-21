@@ -822,3 +822,638 @@ async fn hysteria2_up_is_rejected_at_load() {
     let empty = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, up: ''}\nrules:\n  - MATCH,h2\n";
     assert!(billow_kernel::load_config(empty, "hysteria2-up-empty.yaml").is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// MASQUE CONNECT-UDP peer (RFC 9298 over HTTP/3).
+//
+// The peer is a quinn server with an independent HTTP/3/QPACK codec: it checks
+// the CONNECT-UDP request headers, answers 200 + `capsule-protocol: ?1` and
+// echoes every `DATAGRAM` capsule. The pinned Mihomo adapter is a Cloudflare
+// WARP CONNECT-IP client with no listener and no reachable endpoint offline,
+// so the controlled peer is the verification target; the evidence records why.
+// ---------------------------------------------------------------------------
+
+type PeerLog = Arc<Mutex<Vec<String>>>;
+
+fn note(log: &PeerLog, line: impl Into<String>) {
+    log.lock().unwrap().push(line.into());
+}
+
+fn peer_log_has(log: &PeerLog, needle: &str) -> bool {
+    log.lock().unwrap().iter().any(|line| line.contains(needle))
+}
+
+async fn wait_for_peer_log(log: &PeerLog, needle: &str) -> bool {
+    for _ in 0..300 {
+        if peer_log_has(log, needle) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+fn put_varint(value: u64, out: &mut Vec<u8>) {
+    if value < 64 {
+        out.push(value as u8);
+    } else if value < 16_384 {
+        out.extend_from_slice(&((value as u16) | 0x4000).to_be_bytes());
+    } else if value < 1_073_741_824 {
+        out.extend_from_slice(&((value as u32) | 0x8000_0000).to_be_bytes());
+    } else {
+        out.extend_from_slice(&(value | 0xc000_0000_0000_0000).to_be_bytes());
+    }
+}
+
+fn take_varint(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+    let first = *bytes.get(*pos)?;
+    let length = 1usize << (first >> 6);
+    let mut value = u64::from(first & 0x3f);
+    for index in 1..length {
+        value = (value << 8) | u64::from(*bytes.get(*pos + index)?);
+    }
+    *pos += length;
+    Some(value)
+}
+
+fn put_prefixed(out: &mut Vec<u8>, prefix_bits: u8, first: u8, value: usize) {
+    let max = (1usize << prefix_bits) - 1;
+    if value < max {
+        out.push(first | value as u8);
+        return;
+    }
+    out.push(first | max as u8);
+    let mut rest = value - max;
+    while rest >= 128 {
+        out.push((rest % 128) as u8 | 0x80);
+        rest /= 128;
+    }
+    out.push(rest as u8);
+}
+
+fn take_prefixed(bytes: &[u8], pos: &mut usize, prefix_bits: u8) -> Option<usize> {
+    let max = (1usize << prefix_bits) - 1;
+    let mut value = usize::from(*bytes.get(*pos)?) & max;
+    *pos += 1;
+    if value < max {
+        return Some(value);
+    }
+    let mut shift = 0;
+    loop {
+        let byte = *bytes.get(*pos)?;
+        *pos += 1;
+        value += usize::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+        shift += 7;
+        if shift > 56 {
+            return None;
+        }
+    }
+}
+
+/// QPACK field section with literal names/values (the form the client sends)
+/// and the static table's indexed `:status` entries (the form this peer could
+/// send; it uses literal names instead). Written from the RFC 9204 field-line
+/// encodings, not shared with the client's codec.
+fn peer_encode_headers(headers: &[(&str, &str)]) -> Vec<u8> {
+    let mut out = vec![0x00, 0x00];
+    for (name, value) in headers {
+        put_prefixed(&mut out, 3, 0x20, name.len());
+        out.extend_from_slice(name.as_bytes());
+        put_prefixed(&mut out, 7, 0x00, value.len());
+        out.extend_from_slice(value.as_bytes());
+    }
+    out
+}
+
+fn peer_decode_headers(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
+    let mut pos = 0;
+    let required = take_prefixed(bytes, &mut pos, 8).ok_or("insert count")?;
+    if required != 0 {
+        return Err("dynamic table reference".to_string());
+    }
+    // Delta Base: 7-bit prefix with a sign bit.
+    let _ = take_prefixed(bytes, &mut pos, 7).ok_or("delta base")?;
+    let mut fields = Vec::new();
+    while pos < bytes.len() {
+        let first = bytes[pos];
+        if first & 0x80 != 0 {
+            // Indexed static field: only :status values are needed here.
+            let index = take_prefixed(bytes, &mut pos, 6).ok_or("indexed field")?;
+            if first & 0x40 == 0 {
+                return Err("dynamic indexed field".to_string());
+            }
+            let status = match index {
+                24 => "103",
+                25 => "200",
+                26 => "304",
+                27 => "404",
+                28 => "503",
+                63 => "100",
+                64 => "204",
+                65 => "206",
+                66 => "302",
+                67 => "400",
+                68 => "403",
+                69 => "421",
+                70 => "425",
+                71 => "500",
+                _ => return Err(format!("static index {index} not decoded by the peer")),
+            };
+            fields.push((":status".to_string(), status.to_string()));
+        } else if first & 0x40 != 0 {
+            return Err("static name reference is not used by the client".to_string());
+        } else if first & 0x20 != 0 {
+            if first & 0x08 != 0 {
+                return Err("Huffman is not used by the client".to_string());
+            }
+            let length = take_prefixed(bytes, &mut pos, 3).ok_or("literal name length")?;
+            let end = pos + length;
+            let name = bytes.get(pos..end).ok_or("literal name")?;
+            pos = end;
+            let name = String::from_utf8(name.to_vec()).map_err(|_| "name is not UTF-8")?;
+            if bytes.get(pos).is_none() {
+                return Err("missing value".to_string());
+            }
+            let huffman = bytes[pos] & 0x80 != 0;
+            if huffman {
+                return Err("Huffman value is not used by the client".to_string());
+            }
+            let length = take_prefixed(bytes, &mut pos, 7).ok_or("value length")?;
+            let end = pos + length;
+            let value = bytes.get(pos..end).ok_or("value")?;
+            pos = end;
+            fields.push((
+                name,
+                String::from_utf8(value.to_vec()).map_err(|_| "value is not UTF-8")?,
+            ));
+        } else {
+            return Err("post-base field line".to_string());
+        }
+    }
+    Ok(fields)
+}
+
+async fn peer_read_varint(recv: &mut quinn::RecvStream) -> io::Result<Option<u64>> {
+    let mut first = [0u8; 1];
+    match recv.read(&mut first).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(io::Error::other(e.to_string())),
+    }
+    let extra = 1usize << (first[0] >> 6);
+    let mut raw = vec![first[0]];
+    if extra > 1 {
+        let mut rest = vec![0u8; extra - 1];
+        recv.read_exact(&mut rest)
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        raw.extend_from_slice(&rest);
+    }
+    let mut pos = 0;
+    Ok(take_varint(&raw, &mut pos))
+}
+
+async fn peer_read_frame(recv: &mut quinn::RecvStream) -> io::Result<Option<(u64, Vec<u8>)>> {
+    let Some(frame_type) = peer_read_varint(recv).await? else {
+        return Ok(None);
+    };
+    let Some(length) = peer_read_varint(recv).await? else {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "HTTP/3 frame length",
+        ));
+    };
+    if length > 1 << 20 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
+    }
+    let mut payload = vec![0u8; length as usize];
+    recv.read_exact(&mut payload)
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(Some((frame_type, payload)))
+}
+
+async fn peer_write_headers(
+    send: &mut quinn::SendStream,
+    headers: &[(&str, &str)],
+) -> io::Result<()> {
+    let block = peer_encode_headers(headers);
+    let mut frame = Vec::new();
+    put_varint(0x01, &mut frame);
+    put_varint(block.len() as u64, &mut frame);
+    frame.extend_from_slice(&block);
+    send.write_all(&frame)
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))
+}
+
+/// Take one complete capsule; `Ok(None)` means the bytes so far are partial.
+fn peer_take_capsule(buffer: &mut Vec<u8>) -> Result<Option<(u64, Vec<u8>)>, ()> {
+    let mut pos = 0;
+    let Some(kind) = take_varint(buffer, &mut pos) else {
+        return Ok(None);
+    };
+    let Some(length) = take_varint(buffer, &mut pos) else {
+        return Ok(None);
+    };
+    let length = length as usize;
+    let Some(end) = pos.checked_add(length) else {
+        return Err(());
+    };
+    if buffer.len() < end {
+        return Ok(None);
+    }
+    let value = buffer[pos..end].to_vec();
+    buffer.drain(..end);
+    Ok(Some((kind, value)))
+}
+
+#[derive(Clone, Copy)]
+enum MasqueMode {
+    Accept,
+    Refuse(u16),
+    /// No `SETTINGS_ENABLE_CONNECT_PROTOCOL`: extended CONNECT is unusable.
+    NoExtendedConnect,
+    /// A 200 without `capsule-protocol: ?1`: there is no datagram framing.
+    NoCapsuleProtocol,
+}
+
+async fn handle_masque_request(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    mode: MasqueMode,
+    log: PeerLog,
+) -> io::Result<()> {
+    let mut fields = None;
+    while let Some((frame_type, payload)) = peer_read_frame(&mut recv).await? {
+        if frame_type == 0x01 {
+            fields =
+                Some(peer_decode_headers(&payload).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("QPACK: {e}"))
+                })?);
+            break;
+        }
+    }
+    let fields =
+        fields.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no HEADERS frame"))?;
+    let get = |name: &str| {
+        fields
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or("")
+    };
+    note(&log, format!("method={}", get(":method")));
+    note(&log, format!("protocol={}", get(":protocol")));
+    note(&log, format!("scheme={}", get(":scheme")));
+    note(&log, format!("authority={}", get(":authority")));
+    note(&log, format!("path={}", get(":path")));
+    note(
+        &log,
+        format!("capsule-protocol={}", get("capsule-protocol")),
+    );
+    match mode {
+        MasqueMode::Refuse(status) => {
+            peer_write_headers(&mut send, &[(":status", &status.to_string())]).await?;
+            let _ = send.finish();
+            note(&log, format!("refused={status}"));
+            return Ok(());
+        }
+        MasqueMode::NoCapsuleProtocol => {
+            peer_write_headers(&mut send, &[(":status", "200")]).await?;
+        }
+        MasqueMode::Accept | MasqueMode::NoExtendedConnect => {
+            peer_write_headers(&mut send, &[(":status", "200"), ("capsule-protocol", "?1")])
+                .await?;
+        }
+    }
+    let mut pending = Vec::new();
+    while let Some((frame_type, data)) = peer_read_frame(&mut recv).await? {
+        if frame_type != 0x00 {
+            continue;
+        }
+        pending.extend_from_slice(&data);
+        loop {
+            match peer_take_capsule(&mut pending) {
+                Ok(None) => break,
+                Ok(Some((0x00, value))) => {
+                    let mut pos = 0;
+                    let Some(context) = take_varint(&value, &mut pos) else {
+                        return Ok(());
+                    };
+                    let payload = &value[pos..];
+                    note(
+                        &log,
+                        format!(
+                            "datagram context={context} bytes={} payload={}",
+                            payload.len(),
+                            String::from_utf8_lossy(payload)
+                        ),
+                    );
+                    let mut capsule = Vec::new();
+                    put_varint(0x00, &mut capsule);
+                    put_varint((1 + payload.len()) as u64, &mut capsule);
+                    put_varint(0, &mut capsule);
+                    capsule.extend_from_slice(payload);
+                    let mut frame = Vec::new();
+                    put_varint(0x00, &mut frame);
+                    put_varint(capsule.len() as u64, &mut frame);
+                    frame.extend_from_slice(&capsule);
+                    send.write_all(&frame).await?;
+                }
+                // Unknown capsule types are ignored, as RFC 9297 requires.
+                Ok(Some(_)) => {}
+                Err(()) => return Ok(()),
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn spawn_masque_peer(mode: MasqueMode, cert: Cert) -> (u16, PeerLog) {
+    let port = free_udp_port();
+    let endpoint = quinn::Endpoint::server(
+        server_config(&cert, b"h3"),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    )
+    .expect("MASQUE QUIC peer endpoint");
+    let log: PeerLog = Arc::new(Mutex::new(Vec::new()));
+    let shared = log.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let log = shared.clone();
+            tokio::spawn(async move {
+                let connection = match incoming.await {
+                    Ok(connection) => connection,
+                    Err(e) => {
+                        note(&log, format!("handshake-failed={e}"));
+                        return;
+                    }
+                };
+                // Server control stream: SETTINGS with ENABLE_CONNECT_PROTOCOL.
+                let mut control = match connection.open_uni().await {
+                    Ok(stream) => stream,
+                    Err(_) => return,
+                };
+                let mut settings = Vec::new();
+                if !matches!(mode, MasqueMode::NoExtendedConnect) {
+                    put_varint(0x08, &mut settings);
+                    put_varint(1, &mut settings);
+                }
+                let mut frame = Vec::new();
+                put_varint(0x04, &mut frame);
+                put_varint(settings.len() as u64, &mut frame);
+                frame.extend_from_slice(&settings);
+                if control.write_all(&[0x00]).await.is_err()
+                    || control.write_all(&frame).await.is_err()
+                {
+                    return;
+                }
+                let mut keep = vec![control];
+                for kind in [0x02u8, 0x03u8] {
+                    if let Ok(mut stream) = connection.open_uni().await {
+                        let _ = stream.write_all(&[kind]).await;
+                        keep.push(stream);
+                    }
+                }
+                while let Ok((send, recv)) = connection.accept_bi().await {
+                    let log = log.clone();
+                    tokio::spawn(async move {
+                        let _ = handle_masque_request(send, recv, mode, log).await;
+                    });
+                }
+            });
+        }
+    });
+    (port, log)
+}
+
+fn start_masque_kernel(peer_port: u16, skip_verify: bool, udp: bool) -> Kernel {
+    let yaml = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: {udp}, skip-cert-verify: {skip_verify}}}\nrules:\n  - MATCH,mq\n",
+        free_port()
+    );
+    let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits())
+        .unwrap_or_else(|e| panic!("kernel rejected the masque config: {e}\n{yaml}"));
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    kernel
+}
+
+fn masque_udp_associate(proxy: SocketAddr) -> (std::net::TcpStream, std::net::SocketAddr) {
+    use std::io::{Read as _, Write as _};
+    let mut control =
+        std::net::TcpStream::connect_timeout(&proxy, Duration::from_secs(5)).expect("control");
+    control
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    control.write_all(&[0x05, 0x01, 0x00]).unwrap();
+    let mut selection = [0u8; 2];
+    control.read_exact(&mut selection).unwrap();
+    control
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .unwrap();
+    let mut reply = [0u8; 10];
+    control.read_exact(&mut reply).unwrap();
+    assert_eq!(reply[1], 0, "UDP associate refused: {reply:02x?}");
+    let ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
+    let port = u16::from_be_bytes([reply[8], reply[9]]);
+    (control, std::net::SocketAddr::from((ip, port)))
+}
+
+fn masque_udp_exchange(
+    socket: &std::net::UdpSocket,
+    relay: std::net::SocketAddr,
+    target: std::net::SocketAddr,
+    payload: &[u8],
+    wait: Duration,
+) -> Option<Vec<u8>> {
+    let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+    match target.ip() {
+        std::net::IpAddr::V4(v4) => packet.extend_from_slice(&v4.octets()),
+        _ => return None,
+    }
+    packet.extend_from_slice(&target.port().to_be_bytes());
+    packet.extend_from_slice(payload);
+    socket.send_to(&packet, relay).ok()?;
+    socket.set_read_timeout(Some(wait)).ok()?;
+    let mut buffer = [0u8; 65535];
+    let (read, _) = socket.recv_from(&mut buffer).ok()?;
+    assert!(read > 10, "reply too short: {read}");
+    Some(buffer[10..read].to_vec())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_udp_forwards_datagrams_per_destination() {
+    let cert = make_cert("masque-udp");
+    let (peer_port, log) = spawn_masque_peer(MasqueMode::Accept, cert).await;
+    let mut kernel = start_masque_kernel(peer_port, true, true);
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let first: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(&socket, relay, first, b"masque-one", Duration::from_secs(5))
+        .expect("a CONNECT-UDP datagram must come back");
+    assert_eq!(reply, b"masque-one");
+    let second: SocketAddr = "203.0.113.9:9999".parse().unwrap();
+    let reply = masque_udp_exchange(
+        &socket,
+        relay,
+        second,
+        b"masque-two",
+        Duration::from_secs(5),
+    )
+    .expect("the second destination opens its own CONNECT-UDP request");
+    assert_eq!(reply, b"masque-two");
+
+    assert!(
+        wait_for_peer_log(&log, "datagram context=0 bytes=10 payload=masque-one").await,
+        "{log:?}"
+    );
+    let lines = log.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|line| line == "method=CONNECT"),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "protocol=connect-udp"),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|line| line == "scheme=https"), "{lines:?}");
+    // RFC 9298 §3.4: `:authority` is the proxy's, not the target's.
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == &format!("authority=127.0.0.1:{peer_port}")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("authority=198.51.100.7")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "path=/.well-known/masque/udp/198.51.100.7/5353/"),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "path=/.well-known/masque/udp/203.0.113.9/9999/"),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "capsule-protocol=?1"),
+        "{lines:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_udp_refusal_fails_without_a_reply() {
+    let cert = make_cert("masque-refuse");
+    let (peer_port, log) = spawn_masque_peer(MasqueMode::Refuse(403), cert).await;
+    let mut kernel = start_masque_kernel(peer_port, true, true);
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(
+        &socket,
+        relay,
+        target,
+        b"must-not-arrive",
+        Duration::from_secs(2),
+    );
+    assert!(
+        reply.is_none(),
+        "a refused CONNECT-UDP must not echo: {reply:?}"
+    );
+    assert!(wait_for_peer_log(&log, "refused=403").await, "{log:?}");
+    assert!(
+        peer_log_has(&log, "path=/.well-known/masque/udp/198.51.100.7/5353/"),
+        "{log:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_udp_verifies_the_server_certificate_by_default() {
+    let cert = make_cert("masque-tls");
+    let (peer_port, log) = spawn_masque_peer(MasqueMode::Accept, cert).await;
+    let mut kernel = start_masque_kernel(peer_port, false, true);
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(&socket, relay, target, b"tls", Duration::from_secs(2));
+    assert!(
+        reply.is_none(),
+        "a self-signed peer must be refused without skip-cert-verify: {reply:?}"
+    );
+    assert!(wait_for_peer_log(&log, "handshake-failed").await, "{log:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_tcp_dial_is_refused_by_name() {
+    // No peer is needed: the TCP path is refused before any connection.
+    let port = free_udp_port();
+    let mut kernel = start_masque_kernel(port, true, true);
+    let (tunnel, status) = common::http_connect(kernel.listen_addr(), "127.0.0.1:9")
+        .await
+        .unwrap();
+    drop(tunnel);
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_requires_extended_connect_advertisement() {
+    let cert = make_cert("masque-no-connect");
+    let (peer_port, log) = spawn_masque_peer(MasqueMode::NoExtendedConnect, cert).await;
+    let mut kernel = start_masque_kernel(peer_port, true, true);
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(
+        &socket,
+        relay,
+        target,
+        b"no-connect",
+        Duration::from_secs(2),
+    );
+    assert!(
+        reply.is_none(),
+        "extended CONNECT was not advertised: {reply:?}"
+    );
+    // The client must refuse before opening a request stream.
+    assert!(!peer_log_has(&log, "method="), "{log:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_requires_the_capsule_protocol_in_the_response() {
+    let cert = make_cert("masque-no-capsule");
+    let (peer_port, log) = spawn_masque_peer(MasqueMode::NoCapsuleProtocol, cert).await;
+    let mut kernel = start_masque_kernel(peer_port, true, true);
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(
+        &socket,
+        relay,
+        target,
+        b"no-capsule",
+        Duration::from_secs(2),
+    );
+    assert!(reply.is_none(), "capsules were not negotiated: {reply:?}");
+    assert!(wait_for_peer_log(&log, "method=CONNECT").await, "{log:?}");
+    assert!(!peer_log_has(&log, "datagram "), "{log:?}");
+    kernel.stop().unwrap();
+}

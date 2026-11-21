@@ -150,6 +150,10 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   for (const type of ['ssh', 'tuic', 'hysteria', 'hysteria2']) {
     assert.equal(mapping.proxies[type]?.status, 'partial', `${type} is partially implemented with the gaps named`)
   }
+  // T14 delivered RFC 9298 CONNECT-UDP and rejects the pinned CONNECT-IP flow
+  // by name, so masque is partial, never implemented.
+  assert.equal(mapping.proxies.masque?.status, 'partial')
+  assert.match(mapping.proxies.masque?.reason ?? '', /CONNECT-IP/)
   // T13 delivered the TCP slice of both families; the rejected pieces are
   // named in their `reason`/`notImplemented` lists, so neither is claimed in
   // full.

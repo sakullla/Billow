@@ -436,3 +436,30 @@ fn process_loads_t13_outbounds() {
     assert!(stdout.contains("mi=mieru"), "{stdout}");
     assert!(stdout.contains("su=sudoku"), "{stdout}");
 }
+
+/// T14 family in the shipped process: a masque CONNECT-UDP outbound loads from
+/// the same configuration surface as the library and appears in the identity
+/// line. A TCP tunnel routed to it is refused by name (CONNECT-IP needs an IP
+/// stack), and the process stays up; the UDP path is exercised in
+/// `tests/quic_peers.rs` against the controlled HTTP/3 peer.
+#[test]
+fn process_loads_t14_masque() {
+    let masque_port = free_port();
+    let port = free_port();
+    let kernel = KernelProcess::start_body(
+        &format!(
+            "proxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {masque_port}, udp: true, skip-cert-verify: true}}\nrules:\n  - 'MATCH,mq'\n"
+        ),
+        port,
+    );
+    let proxy: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let (mut tunnel, status) = http_connect(proxy, "127.0.0.1:9").unwrap();
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    let _ = tunnel.write_all(b"unused");
+    drop(tunnel);
+    let mut kernel = kernel;
+    let output = kernel.sigint();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("mq=masque"), "{stdout}");
+}

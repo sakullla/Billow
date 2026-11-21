@@ -16,6 +16,7 @@ pub mod h3;
 pub mod http;
 pub mod hysteria;
 pub mod hysteria2;
+pub mod masque;
 pub mod mieru;
 pub mod shadowsocks;
 pub mod snell;
@@ -52,7 +53,7 @@ pub trait Stream: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> Stream for T {}
 
 /// One dial target as requested by the inbound.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Target {
     pub host: String,
     pub port: u16,
@@ -386,6 +387,10 @@ async fn dial_inner(
         Protocol::Sudoku(p) => {
             refuse_chain(via, "sudoku")?;
             sudoku::dial(p, target).await
+        }
+        Protocol::Masque(p) => {
+            refuse_chain(via, "masque")?;
+            masque::dial(p, target, tls, timeout).await
         }
     }
 }

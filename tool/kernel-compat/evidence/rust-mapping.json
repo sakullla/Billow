@@ -637,8 +637,77 @@
       ]
     },
     "masque": {
-      "status": "unimplemented",
-      "reason": "HTTP/3 CONNECT-IP/CONNECT-UDP needs the QUIC stack and an IP stack aligned with T10/T7; T11 deferred it"
+      "status": "partial",
+      "reason": "T14 implements the RFC 9298 CONNECT-UDP subset over HTTP/3: extended CONNECT, one request stream per destination, `capsule-protocol: ?1` and DATAGRAM capsules (context ID 0) carried in HTTP/3 DATA frames; the UDP association is wired into the engine. The pinned `adapter/outbound/masque.go` is a Cloudflare WARP CONNECT-IP client (`cf-connect-ip`, ECDSA key pinning, a generated client certificate and a userspace IP stack) and is rejected at load: `private-key`, `public-key`, `uri`, `network: h2|h3-l4proxy`, `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` are named. TCP through masque needs CONNECT-IP plus an IP stack and is refused at dial with that reason. One QUIC connection per UDP association (no pooling), capsules rather than HTTP Datagrams, no server push/WebTransport/0-RTT.",
+      "options": [
+        "server",
+        "port",
+        "sni",
+        "skip-cert-verify",
+        "handshake-timeout",
+        "udp",
+        "name-cert-verify"
+      ],
+      "udp": "implemented for CONNECT-UDP: one request stream per destination, DATAGRAM capsules with context ID 0, at most 64 concurrent destinations per association; oversized/malformed capsules and a non-zero context ID close only that flow",
+      "rejectedAtLoad": [
+        "private-key",
+        "public-key",
+        "uri",
+        "network: h2",
+        "network: h3-l4proxy",
+        "ip",
+        "ipv6",
+        "mtu",
+        "ip-stack",
+        "remote-dns-resolve",
+        "dns",
+        "congestion-controller",
+        "cwnd",
+        "bbr-profile",
+        "dialer-proxy"
+      ],
+      "notImplemented": [
+        "CONNECT-IP (RFC 9484)",
+        "cf-connect-ip",
+        "HTTP/2 CONNECT-IP (`network: h2`)",
+        "h3-l4proxy (`network: h3-l4proxy`)",
+        "TCP over masque (needs an IP stack)",
+        "IPv6 target literals in the RFC 9298 path are supported; the CONNECT-IP local IPv6 address is not",
+        "QUIC datagram (HTTP Datagram) transport",
+        "server push",
+        "WebTransport",
+        "0-RTT",
+        "connection pooling",
+        "congestion-controller",
+        "cwnd",
+        "bbr-profile",
+        "dialer-proxy",
+        "remote-dns-resolve",
+        "dns",
+        "ip-stack"
+      ],
+      "notes": [
+        "the client is written from RFC 9298, RFC 9297, RFC 9220 and RFC 9114; no pinned Go code (metacubex/connect-ip-go, metacubex/http, quic-go) is vendored or linked",
+        "the controlled peer in tests/quic_peers.rs has its own HTTP/3/QPACK/capsule codec; the pinned Mihomo adapter has no listener, so no pinned-binary interop is claimed",
+        "T7 memory: the association uses the T10 quinn profile (stream receive window 512 KiB, connection receive 2 MiB, send 2 MiB) plus one request stream per destination and small queued datagram buffers; the caps are recorded for the 40,000,000-byte budget, not measured on a device",
+        "`name-cert-verify` is a pinned placeholder that verifies nothing, so it is accepted as a no-op"
+      ],
+      "evidence": [
+        "src/outbound/masque.rs::tests::connect_udp_path_follows_rfc9298",
+        "src/outbound/masque.rs::tests::authority_is_the_proxy_not_the_target",
+        "src/outbound/masque.rs::tests::datagram_is_a_capsule_inside_a_data_frame",
+        "src/outbound/masque.rs::tests::partial_capsules_are_buffered_until_complete",
+        "src/outbound/masque.rs::tests::unknown_capsules_are_skipped_and_bad_context_is_refused",
+        "tests/config.rs::masque_accepts_the_connect_udp_subset",
+        "tests/config.rs::masque_rejects_the_pinned_connect_ip_options_by_name",
+        "tests/quic_peers.rs::masque_connect_udp_forwards_datagrams_per_destination",
+        "tests/quic_peers.rs::masque_connect_udp_refusal_fails_without_a_reply",
+        "tests/quic_peers.rs::masque_connect_udp_verifies_the_server_certificate_by_default",
+        "tests/quic_peers.rs::masque_requires_extended_connect_advertisement",
+        "tests/quic_peers.rs::masque_requires_the_capsule_protocol_in_the_response",
+        "tests/quic_peers.rs::masque_tcp_dial_is_refused_by_name",
+        "crates/billow-kernel-cli/tests/cli.rs::process_loads_t14_masque"
+      ]
     },
     "sudoku": {
       "status": "partial",
@@ -978,7 +1047,7 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC) and leaves shadowquic (JLS-TLS) and the device families wireguard/tailscale/zerotier/easytier/openvpn explicitly rejected by name, with device/TUN ownership in T6/T7. T13 added mieru (TCP sessions) and sudoku (TCP, legacy HTTP mask). T9 owns masque; T5 owns the built-in direct/dns/reject/rematch adapters.",
+    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC) and leaves shadowquic (JLS-TLS) and the device families wireguard/tailscale/zerotier/easytier/openvpn explicitly rejected by name, with device/TUN ownership in T6/T7. T13 added mieru (TCP sessions) and sudoku (TCP, legacy HTTP mask). T14 added masque as an RFC 9298 CONNECT-UDP subset (the pinned Cloudflare WARP CONNECT-IP flow is rejected inside the type); T9 owns the remaining gaps and T5 owns the built-in direct/dns/reject/rematch adapters.",
     "entries": {
       "shadowquic": {
         "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
@@ -1003,10 +1072,6 @@
       "openvpn": {
         "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
         "reason": "OpenVPN control/data channels + gVisor netstack; T6/T7 own device/TUN, no Rust stack offline. T10 rejects it by name; protocol adaptation needs a new task or T9 follow-up."
-      },
-      "masque": {
-        "owner": "T9",
-        "reason": "HTTP/3 CONNECT-IP/CONNECT-UDP with an IP stack (or HTTP/2 capsules); the QUIC/IP-stack dependency profile overlaps T10 and is not in the workspace MSRV 1.85 profile. Decision needed: align the QUIC stack with T10/T7 memory measurements before implementing."
       },
       "direct": {
         "owner": "T5",
@@ -1067,9 +1132,9 @@
   "quicProfile": {
     "crate": "quinn 0.11.12 (quinn-proto 0.11.19, quinn-udp 0.5.16)",
     "features": "default-features = false, runtime-tokio + rustls-ring + log",
-    "tls": "rustls 0.23, TLS 1.3 only, ALPN per family (h3 for TUIC/Hysteria2, hysteria for Hysteria v1)",
-    "offlineSource": "local cargo registry cache; no h3/qpack/JLS/wireguard crate is cached",
-    "memory": "one Endpoint + one Connection per dial; transport windows capped to stream receive 512 KiB, connection receive 2 MiB, send 2 MiB, datagram buffers 64 KiB (quinn defaults: 1.25 MB / VarInt::MAX / 10 MB / ~1 MB). T7 must measure the whole iOS extension against the 40,000,000-byte budget; this task records the dependency and the caps, not a device measurement.",
+    "tls": "rustls 0.23, TLS 1.3 only, ALPN per family (h3 for TUIC/Hysteria2/masque, hysteria for Hysteria v1)",
+    "offlineSource": "local cargo registry cache; no h3/qpack/connect-ip/IP-stack/JLS/wireguard crate is cached",
+    "memory": "one Endpoint + one Connection per dial (masque: per UDP association); transport windows capped to stream receive 512 KiB, connection receive 2 MiB, send 2 MiB, datagram buffers 64 KiB (quinn defaults: 1.25 MB / VarInt::MAX / 10 MB / ~1 MB). masque adds one request stream per destination (at most 64) with two small datagram queues each and the in-tree HTTP/3 control/QPACK streams. T7 must measure the whole iOS extension against the 40,000,000-byte budget; these tasks record the dependency and the caps, not a device measurement.",
     "platform": "macOS arm64 loopback and pinned-Mihomo runs; Linux/Android/iOS compile from the same code path; Windows compiles but no run is recorded"
   }
 }

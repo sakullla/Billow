@@ -160,6 +160,8 @@ for (const [type, entry] of Object.entries(mapping.proxies)) {
     // rejected), so neither can be enabled at the proxy level.
     if (key.includes('.')) continue
     if (transportBlocks.has(key) || key === 'plugin-opts') continue
+    // Families without a comparable base (masque) are named in `skipped`.
+    if (!bases[type]) continue
     let base = tlsOnly.has(key) ? bases[type].on : bases[type].off
     if (!base) continue // the family has no TLS, so a TLS-only key cannot be enabled
     // SSR's protocol/obfs are required fields: replace the base value instead
@@ -461,12 +463,23 @@ function runCase({ type, key, base, option }, expectReject, group) {
 for (const entry of noops) runCase(entry, false, 'noop')
 for (const entry of allEnabled) runCase(entry, true, 'enabled')
 
+// A family the matrix cannot compare: its pinned base configuration itself
+// selects behaviour this kernel rejects, so every row would report the base's
+// rejection instead of the option under test. It is named here rather than
+// dropped silently.
+const skipped = [
+  [
+    'masque',
+    'the pinned base requires private-key/public-key (Cloudflare WARP CONNECT-IP registration) that this kernel rejects; the RFC 9298 CONNECT-UDP subset is verified in tests/quic_peers.rs and the boundary is in evidence/t14-feasibility.json',
+  ],
+]
 const header = [
   '# Proxy option matrix: no-op forms must load, enabled forms must be rejected.',
   `# rust: ${binary}`,
   `# mihomo: ${mihomo ?? '(not provided: only the Rust verdict was checked)'}`,
   `# no-op cases: ${noops.length}, enabled cases: ${allEnabled.length}, problems: ${problems.length}`,
   '# command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>',
+  ...skipped.map(([type, reason]) => `# skipped: ${type} (- ${reason})`),
   '',
 ]
 const text = [...header, ...lines, ...(problems.length ? ['', ...problems.map((problem) => `PROBLEM ${problem}`)] : [])].join('\n') + '\n'

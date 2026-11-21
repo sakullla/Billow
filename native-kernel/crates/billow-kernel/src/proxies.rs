@@ -333,6 +333,24 @@ pub struct SnellObfs {
     pub host: String,
 }
 
+/// MASQUE (RFC 9298 CONNECT-UDP over HTTP/3). Only the CONNECT-UDP data path
+/// is implemented: one QUIC/HTTP/3 association, one request stream per
+/// destination, UDP payloads in `DATAGRAM` capsules. The pinned adapter's
+/// Cloudflare WARP CONNECT-IP flow (`private-key`/`public-key`, `uri`, `ip`,
+/// `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve`/`dns`) and the `h2` /
+/// `h3-l4proxy` networks are rejected by name at load time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MasqueOutbound {
+    pub server: String,
+    pub port: u16,
+    pub tls_settings: TlsSettings,
+    /// `handshake-timeout` in seconds; 0 keeps the dial timeout.
+    pub handshake_timeout: u64,
+    /// `udp`: CONNECT-UDP is the only implemented mode, so `false` leaves an
+    /// outbound that refuses every dial explicitly.
+    pub udp: bool,
+}
+
 /// ShadowsocksR stream cipher (`transport/shadowsocks/shadowstream`). Only the
 /// stream ciphers are reachable from SSR; AEAD ciphers are not in Mihomo's SSR
 /// cipher list.
@@ -625,6 +643,7 @@ pub enum Protocol {
     Hysteria2(Hysteria2Outbound),
     Mieru(MieruOutbound),
     Sudoku(SudokuOutbound),
+    Masque(MasqueOutbound),
 }
 
 impl Protocol {
@@ -647,6 +666,7 @@ impl Protocol {
             Protocol::Hysteria2(p) => p.dialer_proxy.as_deref(),
             Protocol::Mieru(p) => p.dialer_proxy.as_deref(),
             Protocol::Sudoku(p) => p.dialer_proxy.as_deref(),
+            Protocol::Masque(_) => None,
         }
     }
 }
@@ -671,6 +691,7 @@ impl Proxy {
             Protocol::Hysteria2(_) => "hysteria2",
             Protocol::Mieru(_) => "mieru",
             Protocol::Sudoku(_) => "sudoku",
+            Protocol::Masque(_) => "masque",
         }
     }
 
@@ -698,6 +719,7 @@ impl Proxy {
                     .unwrap_or(0),
             ),
             Protocol::Sudoku(p) => (&p.server, p.port),
+            Protocol::Masque(p) => (&p.server, p.port),
         }
     }
 
@@ -709,6 +731,7 @@ impl Proxy {
             Protocol::Trojan(p) => p.udp,
             Protocol::Ssr(p) => p.udp,
             Protocol::GostRelay(p) => p.udp,
+            Protocol::Masque(p) => p.udp,
             _ => false,
         }
     }
@@ -1446,6 +1469,7 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "hysteria2" => Protocol::Hysteria2(parse_hysteria2(&mut entry)?),
         "mieru" => Protocol::Mieru(parse_mieru(&mut entry)?),
         "sudoku" => Protocol::Sudoku(parse_sudoku(&mut entry)?),
+        "masque" => Protocol::Masque(parse_masque(&mut entry)?),
         "shadowquic" => {
             return Err(entry.unsupported(
                 "protocol type 'shadowquic' is not implemented: the pinned client (transport/shadowquic + jls-tls) requires JLS, a custom TLS extension and a modified QUIC stack; rustls/quinn cannot express it, and no JLS crate is in the offline cargo cache",
@@ -1477,14 +1501,9 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
             ))
         }
 
-        "masque" => {
-            return Err(entry.unsupported(
-                "protocol type 'masque' is not implemented: HTTP/3 CONNECT-IP/CONNECT-UDP needs the QUIC stack and an IP stack aligned with T10/T7; T11 deferred it",
-            ))
-        }
         other => {
             return Err(ConfigError::Unsupported(format!(
-                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2, mieru)",
+                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2, mieru, sudoku, masque)",
                 entry.prefix()
             )))
         }
@@ -3100,6 +3119,144 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     })
 }
 
+/// MASQUE (`adapter/outbound/masque.go` + `transport/masque`): the pinned
+/// adapter is a Cloudflare WARP client that pins the endpoint key, presents a
+/// generated ECDSA certificate and sends `cf-connect-ip` (RFC 9484) into a
+/// userspace IP stack. This kernel implements the RFC 9298 CONNECT-UDP data
+/// path instead (see `outbound/masque.rs`), so every option that only selects
+/// the CONNECT-IP/WARP flow is rejected by name instead of being dropped.
+fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    if let Some(network) = entry.string("network")?.filter(|value| !value.is_empty()) {
+        let mode = match network.as_str() {
+            "h2" => "HTTP/2 CONNECT-IP",
+            "h3-l4proxy" => "the h3-l4proxy L4 client",
+            _ => "a non-HTTP/3 transport",
+        };
+        return Err(entry.unsupported(format!(
+            "option 'network' value '{network}' ({mode}) is not implemented: it belongs to the pinned Cloudflare WARP CONNECT-IP adapter; this kernel implements RFC 9298 CONNECT-UDP over HTTP/3"
+        )));
+    }
+    for key in ["private-key", "public-key"] {
+        if entry
+            .string(key)?
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            return Err(entry.unsupported(format!(
+                "option '{key}' is not implemented: the pinned adapter uses the ECDSA key pair for the Cloudflare WARP client certificate and endpoint pinning (cf-connect-ip); this kernel implements RFC 9298 CONNECT-UDP and does not use that registration"
+            )));
+        }
+    }
+    if let Some(uri) = entry.string("uri")?.filter(|value| !value.is_empty()) {
+        return Err(entry.unsupported(format!(
+            "option 'uri' value '{uri}' is not implemented: it selects the pinned CONNECT-IP request URI; CONNECT-UDP derives the request path from the destination"
+        )));
+    }
+    for key in ["ip", "ipv6"] {
+        if entry
+            .string(key)?
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            return Err(entry.unsupported(format!(
+                "option '{key}' is not implemented: it configures the pinned CONNECT-IP tunnel's local address and needs an IP stack (RFC 9484); this kernel implements CONNECT-UDP only"
+            )));
+        }
+    }
+    if entry.int("mtu")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported(
+            "option 'mtu' is not implemented: it sizes the pinned CONNECT-IP IP stack; CONNECT-UDP keeps UDP payloads whole",
+        ));
+    }
+    if entry
+        .block("ip-stack")?
+        .is_some_and(|block| !block.is_empty())
+    {
+        return Err(entry.unsupported(
+            "option 'ip-stack' is not implemented: it selects the pinned CONNECT-IP userspace stack (mips/gVisor); this kernel has no IP stack",
+        ));
+    }
+    if entry.bool("remote-dns-resolve")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'remote-dns-resolve' is not implemented: it resolves through the pinned CONNECT-IP tunnel's own resolver",
+        ));
+    }
+    if !entry.string_list("dns")?.is_empty() {
+        return Err(entry.unsupported(
+            "option 'dns' is not implemented: it configures the pinned CONNECT-IP tunnel's resolver",
+        ));
+    }
+    if entry
+        .string("congestion-controller")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+        || entry
+            .string("bbr-profile")?
+            .filter(|value| !value.is_empty())
+            .is_some()
+        || entry.int("cwnd")?.unwrap_or(0) != 0
+    {
+        return Err(entry.unsupported(
+            "options 'congestion-controller'/'cwnd'/'bbr-profile' are not implemented: one QUIC connection per UDP association, with quinn's default congestion controller",
+        ));
+    }
+    if entry
+        .string("dialer-proxy")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(
+            "option 'dialer-proxy' is not implemented for masque: a QUIC endpoint cannot be reached through the supported socks5 TCP hop, so the server is always dialled locally",
+        ));
+    }
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let handshake_timeout = match entry.int("handshake-timeout")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'handshake-timeout' must not be negative"))
+        }
+        Some(value) => value as u64,
+        None => 0,
+    };
+    let tls_settings = entry.tls_settings(true, false)?;
+    // A pinned placeholder: the adapter sets the option but never verifies a
+    // certificate name (it pins the endpoint key instead), so it is a no-op.
+    let _ = entry.string("name-cert-verify")?;
+    let allowed = [
+        "name",
+        "type",
+        "server",
+        "port",
+        "private-key",
+        "public-key",
+        "ip",
+        "ipv6",
+        "uri",
+        "sni",
+        "mtu",
+        "udp",
+        "handshake-timeout",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "network",
+        "congestion-controller",
+        "cwnd",
+        "bbr-profile",
+        "ip-stack",
+        "remote-dns-resolve",
+        "dns",
+    ];
+    entry.reject_unknown(&allowed, true, None)?;
+    Ok(MasqueOutbound {
+        server,
+        port,
+        tls_settings,
+        handshake_timeout,
+        udp,
+    })
+}
+
 fn display(raw: &str) -> String {
     if raw.is_empty() {
         "-".to_string()
@@ -3111,8 +3268,24 @@ fn display(raw: &str) -> String {
 /// Names of supported protocols, for diagnostics.
 pub fn supported_protocol_names() -> &'static [&'static str] {
     &[
-        "socks5", "http", "ss", "trojan", "vless", "anytls", "vmess", "snell", "trusttunnel",
-        "gost-relay", "ssh", "ssr", "tuic", "hysteria", "hysteria2",
+        "socks5",
+        "http",
+        "ss",
+        "trojan",
+        "vless",
+        "anytls",
+        "vmess",
+        "snell",
+        "trusttunnel",
+        "gost-relay",
+        "ssh",
+        "ssr",
+        "tuic",
+        "hysteria",
+        "hysteria2",
+        "mieru",
+        "sudoku",
+        "masque",
     ]
 }
 

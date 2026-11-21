@@ -983,17 +983,65 @@ fn ssr_options_are_strict() {
 
 #[test]
 fn deferred_families_name_their_decision() {
-    for (kind, needle) in [
-        ("masque", "QUIC stack"),
-        ("shadowquic", "JLS"),
-        ("wireguard", "WireGuard"),
-    ] {
+    for (kind, needle) in [("shadowquic", "JLS"), ("wireguard", "WireGuard")] {
         let yaml = format!("proxies:\n  - {{name: p, type: {kind}, server: x, port: 1}}\nrules: ['MATCH,p']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("type={kind}")), "{kind}: {e}");
         assert!(e.contains("is not implemented"), "{kind}: {e}");
         assert!(e.contains(needle), "{kind}: {e}");
     }
+}
+
+#[test]
+fn masque_accepts_the_connect_udp_subset() {
+    // RFC 9298 CONNECT-UDP: the QUIC/HTTP/3 association carries UDP only, so
+    // the loadable shape is the server plus TLS and the association switch.
+    for body in [
+        "server: 127.0.0.1, port: 443, udp: true".to_string(),
+        "server: 127.0.0.1, port: 443, udp: true, sni: masque.example, skip-cert-verify: true".to_string(),
+        "server: 127.0.0.1, port: 443, udp: true, handshake-timeout: 5".to_string(),
+        // The pinned placeholder does nothing (the adapter pins the endpoint
+        // key instead of verifying a name), so it loads and is ignored.
+        "server: 127.0.0.1, port: 443, udp: true, name-cert-verify: example.org".to_string(),
+        // `udp: false` loads as in Mihomo; every dial then refuses by name.
+        "server: 127.0.0.1, port: 443".to_string(),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: m, type: masque, {body}}}\nrules: ['MATCH,m']\n");
+        load_config(&yaml, "t").unwrap_or_else(|e| panic!("{body}: {e}"));
+    }
+}
+
+#[test]
+fn masque_rejects_the_pinned_connect_ip_options_by_name() {
+    for (body, needle) in [
+        ("server: x, port: 1, udp: true, private-key: abc", "option 'private-key'"),
+        ("server: x, port: 1, udp: true, public-key: abc", "option 'public-key'"),
+        ("server: x, port: 1, udp: true, uri: https://cloudflareaccess.com", "option 'uri'"),
+        ("server: x, port: 1, udp: true, ip: 172.16.0.2", "option 'ip'"),
+        ("server: x, port: 1, udp: true, ipv6: fd10::2", "option 'ipv6'"),
+        ("server: x, port: 1, udp: true, mtu: 1280", "option 'mtu'"),
+        ("server: x, port: 1, udp: true, ip-stack: {mode: gvisor}", "option 'ip-stack'"),
+        ("server: x, port: 1, udp: true, remote-dns-resolve: true", "option 'remote-dns-resolve'"),
+        ("server: x, port: 1, udp: true, dns: [1.1.1.1]", "option 'dns'"),
+        ("server: x, port: 1, udp: true, network: h2", "option 'network' value 'h2'"),
+        ("server: x, port: 1, udp: true, network: h3-l4proxy", "h3-l4proxy"),
+        ("server: x, port: 1, udp: true, congestion-controller: bbr", "congestion-controller"),
+        ("server: x, port: 1, udp: true, cwnd: 32", "cwnd"),
+        ("server: x, port: 1, udp: true, bbr-profile: standard", "bbr-profile"),
+        ("server: x, port: 1, udp: true, dialer-proxy: hop", "option 'dialer-proxy'"),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: m, type: masque, {body}}}\nrules: ['MATCH,m']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(needle), "{body}: {e}");
+    }
+    // An empty value asks for nothing and loads, as in Mihomo.
+    load_config(
+        "proxies:\n  - {name: m, type: masque, server: x, port: 1, udp: true, ip: '', ipv6: '', uri: '', network: '', private-key: '', public-key: '', mtu: 0, ip-stack: {}}\nrules: ['MATCH,m']\n",
+        "t",
+    )
+    .expect("empty CONNECT-IP values are no-ops");
+    let e = proxy_err("proxies:\n  - {name: m, type: masque, server: x, port: 1, udp: true, handshake-timeout: -1}\nrules: ['MATCH,m']\n");
+    assert!(e.contains("handshake-timeout"), "{e}");
 }
 
 #[test]

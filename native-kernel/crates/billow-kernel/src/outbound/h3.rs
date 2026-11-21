@@ -1,10 +1,14 @@
-//! Minimal HTTP/3 client used only by the Hysteria2 authentication request
-//! (`sing-quic/hysteria2/client.go` posts to `https://hysteria/auth`).
+//! Minimal HTTP/3 client used by the Hysteria2 authentication request
+//! (`sing-quic/hysteria2/client.go` posts to `https://hysteria/auth`) and the
+//! MASQUE CONNECT-UDP request (RFC 9298).
 //!
-//! It implements exactly the subset the auth exchange needs: a client control
+//! It implements exactly the subset those exchanges need: a client control
 //! stream with SETTINGS, QPACK encoder/decoder streams, one request stream with
-//! a HEADERS frame and a response HEADERS frame. The pinned server's QPACK
-//! encoder (github.com/metacubex/qpack) uses the static table and Huffman
+//! a HEADERS frame and a response HEADERS frame. [`Session::open_with_settings`]
+//! additionally reads the peer's control stream SETTINGS (RFC 9220 extended
+//! CONNECT is only usable when the server advertises it) and keeps the peer's
+//! unidirectional streams open for the connection lifetime. The pinned server's
+//! QPACK encoder (github.com/metacubex/qpack) uses the static table and Huffman
 //! literals only, so the decoder here supports indexed static fields, literal
 //! names/references and Huffman strings; a dynamic-table insert count is
 //! rejected instead of being guessed. There is no request body, server push,
@@ -38,34 +42,104 @@ impl Response {
 /// One HTTP/3 connection's control streams, kept open for the QUIC
 /// connection's lifetime (the Hysteria2 session reuses the connection for its
 /// TCP streams after authentication).
+///
+/// `server_settings` is `Some` only for a session opened with
+/// [`Session::open_with_settings`]; the peer's unidirectional streams are then
+/// retained so the connection-level flow-control window is not left unread
+/// (dropping the session closes them).
 pub struct Session {
     connection: Connection,
     hold: Vec<SendStream>,
+    /// The peer's unidirectional streams; retained so their flow-control
+    /// windows do not stall the connection (dropping them is a protocol error
+    /// for the control stream).
+    #[allow(dead_code)]
+    server_streams: Vec<RecvStream>,
+    server_settings: Option<Settings>,
+}
+
+/// The HTTP/3 SETTINGS values this client reads (RFC 9114 §7.2.8,
+/// RFC 9220 §3, RFC 9297 §3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Settings {
+    /// `SETTINGS_ENABLE_CONNECT_PROTOCOL` (0x08): the peer accepts extended
+    /// CONNECT, which CONNECT-UDP needs.
+    pub enable_connect_protocol: bool,
+    /// `SETTINGS_H3_DATAGRAM` (0x33): the peer supports HTTP Datagrams.
+    pub h3_datagram: bool,
 }
 
 impl Session {
     pub async fn open(connection: Connection, _endpoint: Endpoint) -> io::Result<Session> {
-        let mut hold = Vec::new();
-        // Client control stream: stream type 0x00, SETTINGS frame (empty).
-        let mut control = open_uni(&connection).await?;
-        control
-            .write_all(&[0x00, 0x04, 0x00])
-            .await
-            .map_err(map_io)?;
-        hold.push(control);
-        // QPACK encoder stream (0x02) and decoder stream (0x03), empty.
-        let mut encoder = open_uni(&connection).await?;
-        encoder.write_all(&[0x02]).await.map_err(map_io)?;
-        hold.push(encoder);
-        let mut decoder = open_uni(&connection).await?;
-        decoder.write_all(&[0x03]).await.map_err(map_io)?;
-        hold.push(decoder);
-        Ok(Session { connection, hold })
+        let hold = control_streams(&connection, &[]).await?;
+        Ok(Session {
+            connection,
+            hold,
+            server_streams: Vec::new(),
+            server_settings: None,
+        })
     }
 
-    /// Send one request (no body) and return its response headers.
-    pub async fn request(&self, headers: &[(&str, &str)]) -> io::Result<Response> {
-        let (mut send, mut recv) = self
+    /// Open the client control/QPACK streams with `settings` and then wait for
+    /// the peer's control stream SETTINGS. The peer's other unidirectional
+    /// streams are retained for the connection's lifetime.
+    pub async fn open_with_settings(
+        connection: Connection,
+        _endpoint: Endpoint,
+        settings: &[(u64, u64)],
+    ) -> io::Result<Session> {
+        let hold = control_streams(&connection, settings).await?;
+        let mut server_streams = Vec::new();
+        let mut control = loop {
+            let stream = connection.accept_uni().await.map_err(map_io)?;
+            let mut stream = stream;
+            match read_varint_async(&mut stream).await? {
+                Some(0x00) => break stream,
+                // A stream that ends before its type is not a usable control
+                // stream; keep waiting like an unknown type.
+                _ => server_streams.push(stream),
+            }
+        };
+        let server_settings = loop {
+            let Some((frame_type, payload)) = read_frame(&mut control).await? else {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "HTTP/3 peer closed its control stream before SETTINGS",
+                ));
+            };
+            if frame_type == 0x04 {
+                break parse_settings(&payload)?;
+            }
+        };
+        // The control stream must stay open for the connection lifetime
+        // (closing it is H3_CLOSED_CRITICAL_STREAM); keep it with the others.
+        server_streams.push(control);
+        Ok(Session {
+            connection,
+            hold,
+            server_streams,
+            server_settings: Some(server_settings),
+        })
+    }
+
+    pub fn settings(&self) -> Option<Settings> {
+        self.server_settings
+    }
+
+    /// Close the underlying QUIC connection (application close code). Used when
+    /// an association is dropped so its request streams do not outlive it.
+    pub fn close(&self, code: u32, reason: &str) {
+        self.connection
+            .close(quinn::VarInt::from_u32(code), reason.as_bytes());
+    }
+
+    /// Open one request stream and write its HEADERS frame. The caller owns the
+    /// receive half, which carries the response and any DATA frames (capsules).
+    pub async fn open_request(
+        &self,
+        headers: &[(&str, &str)],
+    ) -> io::Result<(SendStream, RecvStream)> {
+        let (mut send, recv) = self
             .connection
             .open_bi()
             .await
@@ -76,56 +150,131 @@ impl Session {
         encode_varint(block.len() as u64, &mut frame);
         frame.extend_from_slice(&block);
         send.write_all(&frame).await.map_err(map_io)?;
+        Ok((send, recv))
+    }
+
+    /// Send one request (no body) and return its response headers.
+    pub async fn request(&self, headers: &[(&str, &str)]) -> io::Result<Response> {
+        let (mut send, mut recv) = self.open_request(headers).await?;
         send.finish()
             .map_err(|e| io::Error::other(format!("finish request: {e}")))?;
-
-        loop {
-            let Some(frame_type) = read_varint_async(&mut recv).await? else {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "HTTP/3 stream ended before HEADERS",
-                ));
-            };
-            let Some(length) = read_varint_async(&mut recv).await? else {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "HTTP/3 frame length",
-                ));
-            };
-            if length > 1 << 20 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "HTTP/3 frame too large",
-                ));
-            }
-            let mut payload = vec![0u8; length as usize];
-            recv.read_exact(&mut payload).await.map_err(map_io)?;
-            match frame_type {
-                0x01 => {
-                    let fields = decode_field_section(&payload).map_err(|e| {
-                        io::Error::new(io::ErrorKind::InvalidData, format!("QPACK: {e}"))
-                    })?;
-                    let status = fields
-                        .iter()
-                        .find(|(name, _)| name == ":status")
-                        .and_then(|(_, value)| value.parse::<u16>().ok())
-                        .ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::InvalidData, "response has no :status")
-                        })?;
-                    return Ok(Response {
-                        status,
-                        headers: fields,
-                    });
-                }
-                // DATA, SETTINGS and unknown extension frames are skipped.
-                _ => continue,
-            }
-        }
+        read_response(&mut recv).await
     }
 
     pub fn into_hold(self) -> Vec<SendStream> {
         self.hold
     }
+}
+
+/// Open the client control stream (0x00) with a SETTINGS frame carrying the
+/// given values, then the QPACK encoder (0x02) and decoder (0x03) streams.
+async fn control_streams(
+    connection: &Connection,
+    settings: &[(u64, u64)],
+) -> io::Result<Vec<SendStream>> {
+    let mut hold = Vec::new();
+    let mut payload = Vec::new();
+    for (id, value) in settings {
+        encode_varint(*id, &mut payload);
+        encode_varint(*value, &mut payload);
+    }
+    let mut frame = Vec::new();
+    encode_varint(0x04, &mut frame); // SETTINGS
+    encode_varint(payload.len() as u64, &mut frame);
+    frame.extend_from_slice(&payload);
+    let mut control = open_uni(connection).await?;
+    control.write_all(&[0x00]).await.map_err(map_io)?;
+    control.write_all(&frame).await.map_err(map_io)?;
+    hold.push(control);
+    let mut encoder = open_uni(connection).await?;
+    encoder.write_all(&[0x02]).await.map_err(map_io)?;
+    hold.push(encoder);
+    let mut decoder = open_uni(connection).await?;
+    decoder.write_all(&[0x03]).await.map_err(map_io)?;
+    hold.push(decoder);
+    Ok(hold)
+}
+
+/// Read the response HEADERS frame of a request stream, skipping other frames
+/// and 1xx informational responses.
+pub async fn read_response(recv: &mut RecvStream) -> io::Result<Response> {
+    loop {
+        let Some((frame_type, payload)) = read_frame(recv).await? else {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "HTTP/3 stream ended before HEADERS",
+            ));
+        };
+        if frame_type != 0x01 {
+            // DATA, SETTINGS and unknown extension frames are skipped.
+            continue;
+        }
+        let fields = decode_field_section(&payload)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("QPACK: {e}")))?;
+        let status = fields
+            .iter()
+            .find(|(name, _)| name == ":status")
+            .and_then(|(_, value)| value.parse::<u16>().ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "response has no :status"))?;
+        if (100..200).contains(&status) {
+            continue;
+        }
+        return Ok(Response {
+            status,
+            headers: fields,
+        });
+    }
+}
+
+/// Read one HTTP/3 frame. `Ok(None)` is the end of the stream. Frames are
+/// length-prefixed and may carry a DATA payload (the capsule protocol's bytes
+/// for CONNECT-UDP).
+pub async fn read_frame(recv: &mut RecvStream) -> io::Result<Option<(u64, Vec<u8>)>> {
+    let Some(frame_type) = read_varint_async(recv).await? else {
+        return Ok(None);
+    };
+    let Some(length) = read_varint_async(recv).await? else {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "HTTP/3 frame length",
+        ));
+    };
+    if length > 1 << 20 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP/3 frame too large",
+        ));
+    }
+    let mut payload = vec![0u8; length as usize];
+    recv.read_exact(&mut payload).await.map_err(map_io)?;
+    Ok(Some((frame_type, payload)))
+}
+
+/// Parse a SETTINGS frame payload; unknown identifiers are ignored as RFC 9114
+/// requires.
+pub fn parse_settings(payload: &[u8]) -> io::Result<Settings> {
+    let mut settings = Settings::default();
+    let mut pos = 0;
+    while pos < payload.len() {
+        let Some(id) = decode_varint(payload, &mut pos) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated SETTINGS identifier",
+            ));
+        };
+        let Some(value) = decode_varint(payload, &mut pos) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated SETTINGS value",
+            ));
+        };
+        match id {
+            0x08 => settings.enable_connect_protocol = value != 0,
+            0x33 => settings.h3_datagram = value != 0,
+            _ => {}
+        }
+    }
+    Ok(settings)
 }
 
 async fn open_uni(connection: &Connection) -> io::Result<SendStream> {
@@ -155,8 +304,7 @@ pub fn encode_varint(value: u64, out: &mut Vec<u8>) {
     }
 }
 
-#[cfg(test)]
-fn decode_varint(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+pub fn decode_varint(bytes: &[u8], pos: &mut usize) -> Option<u64> {
     let first = *bytes.get(*pos)?;
     let length = 1 << (first >> 6);
     let mut value = u64::from(first & 0x3f);
@@ -553,6 +701,22 @@ mod tests {
         assert_eq!(static_entry(17).unwrap(), (":method", "GET"));
         assert_eq!(static_entry(25).unwrap(), (":status", "200"));
         assert_eq!(static_entry(98).unwrap(), ("x-frame-options", "sameorigin"));
+    }
+
+    #[test]
+    fn settings_read_extended_connect_and_ignore_unknown_ids() {
+        let mut payload = Vec::new();
+        encode_varint(0x08, &mut payload);
+        encode_varint(1, &mut payload);
+        encode_varint(0x33, &mut payload);
+        encode_varint(0, &mut payload);
+        encode_varint(0x1234, &mut payload); // unknown, ignored
+        encode_varint(9, &mut payload);
+        let settings = parse_settings(&payload).unwrap();
+        assert!(settings.enable_connect_protocol);
+        assert!(!settings.h3_datagram);
+        // A truncated pair is an error, not a default.
+        assert!(parse_settings(&payload[..payload.len() - 1]).is_err());
     }
 
     #[test]

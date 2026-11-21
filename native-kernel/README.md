@@ -17,12 +17,14 @@ added the QUIC families `tuic` (v5 `uuid`/`password`), `hysteria` (v1) and
 `hysteria2` (HTTP/3 auth + TCP), all over `quinn` 0.11. T13 added `mieru`
 (single-session TCP, an independent implementation of the published protocol)
 and `sudoku` (TCP with the legacy HTTP mask, the pure and packed downlink
-codecs and the KIP handshake). `shadowquic` (JLS-TLS) and the device families
+codecs and the KIP handshake). T14 added `masque` as an RFC 9298 CONNECT-UDP
+client over HTTP/3, reusing the T10 `quinn` profile for the UDP association;
+the pinned Cloudflare WARP CONNECT-IP flow (`cf-connect-ip` + a userspace IP
+stack) is rejected by name. `shadowquic` (JLS-TLS) and the device families
 (`wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn`) are rejected by
-name, with device/TUN ownership assigned to T6/T7. The T10 families are
+name, with device/TUN ownership assigned to T6/T7. The T10/T14 families are
 partial: their gaps are named in [Not implemented](#not-implemented) and in
-`tool/kernel-compat/evidence/rust-mapping.json`. `masque` remains rejected by
-name with the decision recorded below.
+`tool/kernel-compat/evidence/rust-mapping.json`.
 **Not implemented yet** (rejected with
 `[unsupported]`, never ignored): DNS and `hosts`, proxy groups and providers,
 the control API (`external-controller`, `proxy-providers`, rules beyond the
@@ -42,7 +44,8 @@ native-kernel/
     │   ├── src/proxies.rs          # strict `proxies:` option tables
     │   ├── src/outbound/           # socks5, http, ss, trojan, vless, anytls, vmess, snell,
     │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, sudoku/
-    │   │                           # (codec, record, kip, table, go_rand) + tls, ws, h2
+    │   │                           # (codec, record, kip, table, go_rand), masque,
+    │   │                           # quic, h3 + tls, ws, h2
     │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid,
     │   │                           # sudoku key-material canonicalisation
     │   ├── src/rules.rs            # rule set evaluation
@@ -149,6 +152,7 @@ identities of the servers are logged as the session exit.
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
 | `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
 | `sudoku` | table obfuscation (Go `math/rand` shuffle, entropy/ASCII/directional/custom layouts, `custom-tables` rotation with the KIP hint), record layer (`chacha20-poly1305`, `aes-128-gcm`, `none`), KIP X25519/HKDF handshake, pure and packed downlink, legacy HTTP mask (`http-mask`, `path-root`, `disable-http-mask`) | no | `listeners: type: sudoku` across entropy/ASCII/directional/custom/rotating tables, packed downlink, all three AEAD methods, with and without the HTTP mask, wrong key, mismatched table type; plus the locked Go codec vectors in both directions |
+| `masque` | RFC 9298 CONNECT-UDP over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): extended CONNECT (`SETTINGS_ENABLE_CONNECT_PROTOCOL`), one request stream per destination (`:protocol connect-udp`, `/.well-known/masque/udp/<host>/<port>/`), `capsule-protocol: ?1`, `DATAGRAM` capsules with context ID 0, `sni`/`skip-cert-verify`/`handshake-timeout`, one QUIC connection per UDP association | `udp: true`: CONNECT-UDP flows | controlled HTTP/3 peer in `tests/quic_peers.rs` (request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate); no Mihomo listener exists and the pinned adapter is a Cloudflare WARP CONNECT-IP client |
 
 The mieru module the pinned outbound wraps is GPL-3.0: this repository contains
 no mieru source, links no mieru code and derives nothing from its
@@ -202,14 +206,14 @@ the association ends with its control connection or after
 
 The pinned parser lists 28 outbound types. Thirteen are implemented
 (`ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`, `vmess`, `snell`,
-`trusttunnel`, `gost-relay`, `ssr`, `mieru`, `sudoku`) and one is partial
-(`ssh`, which opens one client per dial and rejects private-key file paths).
-The rest are rejected by name at load time, so no configuration is silently
-reduced:
+`trusttunnel`, `gost-relay`, `ssr`, `mieru`, `sudoku`) and two are partial
+(`ssh`, which opens one client per dial and rejects private-key file paths;
+`masque`, which implements CONNECT-UDP but not the pinned CONNECT-IP/IP stack).
+The remaining types are rejected by name at load time, so no configuration is
+silently reduced:
 
 | families | why not here | task / decision |
 | --- | --- | --- |
-| `masque` | HTTP/3 CONNECT-IP/CONNECT-UDP with an IP stack (or HTTP/2 capsules); the QUIC/IP-stack dependency profile overlaps T10 | **T14**: align the QUIC stack with T10/T7 before implementing (the 40 MB budget is measured there) |
 | `shadowquic` | QUIC with JLS, a custom TLS extension; the pinned client uses `jls-tls` + a modified `jls-quic-go`. `rustls`/`quinn` cannot express the extension and no JLS crate is in the offline cache | **T10 rejected by name**; implement only with a JLS-capable TLS/QUIC stack |
 | `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols that terminate a tunnel and expose TCP/UDP through an IP stack (gVisor in the pinned build); device/TUN ownership is T6/T7, and no WireGuard/mesh/OpenVPN crate is in the offline cache | **T10 rejected by name**; device/TUN ownership is T6/T7, the transport would be a separate task |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
@@ -221,6 +225,21 @@ peer), and `sudoku` reproduces the locked `transport/sudoku` wire format,
 including Go's `math/rand` shuffle that orders the 288-grid table (the seeds
 table is reproduced from Go's BSD-3-Clause `math/rand`). Their rejected pieces
 are named in [Not implemented](#not-implemented).
+
+T14's `masque` is the RFC 9298 CONNECT-UDP subset, written from the RFCs over
+the same `quinn`/`rustls` stack as T10 (no `h3`/`connect-ip-go`/IP-stack code
+is vendored). The pinned `adapter/outbound/masque.go` is a Cloudflare WARP
+client: it sends `:protocol cf-connect-ip` after pinning the endpoint's ECDSA
+key and presenting a generated client certificate, then terminates the returned
+IP packets in a userspace stack (`connect-ip-go`/mipstack or gVisor). That is
+what serves TCP, and it is not implemented here: the `private-key`,
+`public-key`, `uri`, `network: h2|h3-l4proxy`, `ip`, `ipv6`, `mtu`,
+`ip-stack`, `remote-dns-resolve` and `dns` options are rejected by name at load
+time, and a TCP dial through `masque` fails with the CONNECT-IP/IP-stack
+reason. Because the pinned options describe that WARP registration, an
+RFC 9298 endpoint is configured with `server`/`port` plus `udp: true` and has
+no `private-key`/`public-key`; the evidence file records this as the boundary
+rather than claiming the pinned shape.
 
 The remaining gaps are named in [Not implemented](#not-implemented):
 `ssh` rejects private-key file paths and opens one SSH client per dial;
@@ -272,7 +291,12 @@ quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, congestion/window tuning;
 `udp: true`, the multiplexing levels (one session per underlay) and
 `traffic-pattern` (padding/nonce/low-entropy shaping); `sudoku` rejects the
 HTTP tunnel modes (`stream`/`poll`/`ws`, a mihomo extension over the protocol),
-`multiplex: on` (the session mux) and `udp: true` (UoT). `shadowquic` and the device families are
+`multiplex: on` (the session mux) and `udp: true` (UoT). `masque` rejects the
+pinned CONNECT-IP/WARP pieces (`private-key`, `public-key`, `uri`, `ip`,
+`ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve`, `dns`), both non-HTTP/3
+networks (`h2`, `h3-l4proxy`), the congestion knobs and `dialer-proxy` (a QUIC
+endpoint is dialled locally); its `udp: false` form loads and refuses every
+dial. `shadowquic` and the device families are
 rejected as whole types with the missing stack named (JLS-TLS, WireGuard
 Noise/IP stack, mesh control planes, OpenVPN), never loaded as if compatible.
 `udp: false` is accepted for a family that has no UDP association because it
@@ -409,13 +433,17 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
 
 - `tests/config.rs` — parsing, strict option tables, error tags.
 - `tests/sessions.rs` — inbound sessions, half-close, stop/restart, limits.
-- `tests/quic_peers.rs` — T10 QUIC loopback peers: TUIC v5 (auth token, domain
-  and IP targets, wrong password, v4 token rejection, unimplemented options,
-  `request-timeout` bounding a blocked stream open) and Hysteria v1 (control
-  hello, `auth-str` and base64 auth, wrong auth, port-hopping/XPlus/faketcp
-  rejection, rate validation), plus the Hysteria2 `up` rejection. The peers are
-  `quinn` servers written from the pinned Go framing; they need `openssl` for
-  the loopback certificate.
+- `tests/quic_peers.rs` — T10/T14 QUIC loopback peers: TUIC v5 (auth token,
+  domain and IP targets, wrong password, v4 token rejection, unimplemented
+  options, `request-timeout` bounding a blocked stream open), Hysteria v1
+  (control hello, `auth-str` and base64 auth, wrong auth,
+  port-hopping/XPlus/faketcp rejection, rate validation), the Hysteria2 `up`
+  rejection, and the MASQUE CONNECT-UDP peer (request headers and proxy
+  authority, one flow per destination, capsule echo, a refused request, a peer
+  without extended CONNECT, a 200 without the capsule protocol, an untrusted
+  certificate, and the named TCP refusal). The peers are `quinn` servers
+  written from the pinned Go framing or the RFCs; they need `openssl` for the
+  loopback certificate.
 - `tests/protocols.rs` — loopback peers for socks5/http/ss/trojan/vless
   (tcp, websocket, `v2ray-http-upgrade`), trojan websocket, the SOCKS5
   `UDP ASSOCIATE` relay (DIRECT, REJECT and ss datagrams), a private-CA TLS
@@ -492,7 +520,12 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   directional, custom, rotation), the packed downlink and all three record
   AEAD methods, and the negative cases are a wrong key/password and a
   mismatched sudoku table type plus the private-key/public-key pair.
-  `tool/kernel-compat/peer-tests.sh` now runs 57 cases in total. The sudoku
+  `tool/kernel-compat/peer-tests.sh` now runs 57 cases in total. T14's
+  `masque` has no Mihomo listener (the pinned adapter is a Cloudflare WARP
+  client) and no reachable HTTP/3 masque endpoint offline, so its six cases run
+  against the controlled HTTP/3 peer in the default `tests/quic_peers.rs` suite
+  and are recorded under `families.masque` in `protocol-peers.json`; the
+  dependency/memory boundary is in `evidence/t14-feasibility.json`. The sudoku
   wire format is additionally checked in both directions against the locked Go
   codec:
   `tool/kernel-compat/peers/sudoku-vectors` builds the table from
@@ -526,9 +559,11 @@ The immutable coordination inputs are in `docs/coordination/`: `t11-handoff.md`
 `t13-handoff.md` (mieru and sudoku) and `t14-handoff.md` (masque). They are
 Owner material and are not modified by the kernel tasks. The concrete blockers
 and next steps for the families still deferred by T10 are in
-`tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers the
-two families delivered here (mieru and sudoku), and the only family left
-without an implementation from the T9 list is `masque` (T14).
+`tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers mieru
+and sudoku, T14's covers `masque` (the CONNECT-UDP subset and the CONNECT-IP
+gap recorded in `evidence/t14-feasibility.json`). With T14 the T9 list has an
+entry for every family, though `masque` remains partial and `shadowquic` is
+still rejected; neither is claimed as compatible.
 
 ## Controlled verification commands
 

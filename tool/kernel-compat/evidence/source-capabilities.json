@@ -2571,8 +2571,77 @@
       "constructor": "outbound.NewMasque",
       "source": "adapter/parser.go:184",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "HTTP/3 CONNECT-IP/CONNECT-UDP needs the QUIC stack and an IP stack aligned with T10/T7; T11 deferred it"
+        "status": "partial",
+        "reason": "T14 implements the RFC 9298 CONNECT-UDP subset over HTTP/3: extended CONNECT, one request stream per destination, `capsule-protocol: ?1` and DATAGRAM capsules (context ID 0) carried in HTTP/3 DATA frames; the UDP association is wired into the engine. The pinned `adapter/outbound/masque.go` is a Cloudflare WARP CONNECT-IP client (`cf-connect-ip`, ECDSA key pinning, a generated client certificate and a userspace IP stack) and is rejected at load: `private-key`, `public-key`, `uri`, `network: h2|h3-l4proxy`, `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` are named. TCP through masque needs CONNECT-IP plus an IP stack and is refused at dial with that reason. One QUIC connection per UDP association (no pooling), capsules rather than HTTP Datagrams, no server push/WebTransport/0-RTT.",
+        "options": [
+          "server",
+          "port",
+          "sni",
+          "skip-cert-verify",
+          "handshake-timeout",
+          "udp",
+          "name-cert-verify"
+        ],
+        "udp": "implemented for CONNECT-UDP: one request stream per destination, DATAGRAM capsules with context ID 0, at most 64 concurrent destinations per association; oversized/malformed capsules and a non-zero context ID close only that flow",
+        "rejectedAtLoad": [
+          "private-key",
+          "public-key",
+          "uri",
+          "network: h2",
+          "network: h3-l4proxy",
+          "ip",
+          "ipv6",
+          "mtu",
+          "ip-stack",
+          "remote-dns-resolve",
+          "dns",
+          "congestion-controller",
+          "cwnd",
+          "bbr-profile",
+          "dialer-proxy"
+        ],
+        "notImplemented": [
+          "CONNECT-IP (RFC 9484)",
+          "cf-connect-ip",
+          "HTTP/2 CONNECT-IP (`network: h2`)",
+          "h3-l4proxy (`network: h3-l4proxy`)",
+          "TCP over masque (needs an IP stack)",
+          "IPv6 target literals in the RFC 9298 path are supported; the CONNECT-IP local IPv6 address is not",
+          "QUIC datagram (HTTP Datagram) transport",
+          "server push",
+          "WebTransport",
+          "0-RTT",
+          "connection pooling",
+          "congestion-controller",
+          "cwnd",
+          "bbr-profile",
+          "dialer-proxy",
+          "remote-dns-resolve",
+          "dns",
+          "ip-stack"
+        ],
+        "notes": [
+          "the client is written from RFC 9298, RFC 9297, RFC 9220 and RFC 9114; no pinned Go code (metacubex/connect-ip-go, metacubex/http, quic-go) is vendored or linked",
+          "the controlled peer in tests/quic_peers.rs has its own HTTP/3/QPACK/capsule codec; the pinned Mihomo adapter has no listener, so no pinned-binary interop is claimed",
+          "T7 memory: the association uses the T10 quinn profile (stream receive window 512 KiB, connection receive 2 MiB, send 2 MiB) plus one request stream per destination and small queued datagram buffers; the caps are recorded for the 40,000,000-byte budget, not measured on a device",
+          "`name-cert-verify` is a pinned placeholder that verifies nothing, so it is accepted as a no-op"
+        ],
+        "evidence": [
+          "src/outbound/masque.rs::tests::connect_udp_path_follows_rfc9298",
+          "src/outbound/masque.rs::tests::authority_is_the_proxy_not_the_target",
+          "src/outbound/masque.rs::tests::datagram_is_a_capsule_inside_a_data_frame",
+          "src/outbound/masque.rs::tests::partial_capsules_are_buffered_until_complete",
+          "src/outbound/masque.rs::tests::unknown_capsules_are_skipped_and_bad_context_is_refused",
+          "tests/config.rs::masque_accepts_the_connect_udp_subset",
+          "tests/config.rs::masque_rejects_the_pinned_connect_ip_options_by_name",
+          "tests/quic_peers.rs::masque_connect_udp_forwards_datagrams_per_destination",
+          "tests/quic_peers.rs::masque_connect_udp_refusal_fails_without_a_reply",
+          "tests/quic_peers.rs::masque_connect_udp_verifies_the_server_certificate_by_default",
+          "tests/quic_peers.rs::masque_requires_extended_connect_advertisement",
+          "tests/quic_peers.rs::masque_requires_the_capsule_protocol_in_the_response",
+          "tests/quic_peers.rs::masque_tcp_dial_is_refused_by_name",
+          "crates/billow-kernel-cli/tests/cli.rs::process_loads_t14_masque"
+        ]
       }
     },
     {
@@ -3832,8 +3901,8 @@
   },
   "coverage": {
     "mapped": 24,
-    "partial": 13,
-    "unimplemented": 118,
+    "partial": 14,
+    "unimplemented": 117,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }

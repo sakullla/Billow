@@ -3,6 +3,7 @@
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
 # no-op cases: 204, enabled cases: 241, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
+# skipped: masque (- the pinned base requires private-key/public-key (Cloudflare WARP CONNECT-IP registration) that this kernel rejects; the RFC 9298 CONNECT-UDP subset is verified in tests/quic_peers.rs and the boundary is in evidence/t14-feasibility.json)
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
 noop    socks5  sni                          rust=accept mihomo=accept

@@ -329,6 +329,24 @@
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: sudoku with the default (entropy table, pure downlink, legacy HTTP mask) and the configured variants (prefer_ascii, up_ascii_down_entropy, custom-table(s), enable-pure-downlink: false, disable-http-mask, aead-method)",
       "notes": "wire-compatible port of the pinned transport/sudoku: the table shuffle uses Go's math/rand (rngSource + rngCooked), so the 288-grid order matches; both pure and packed downlink codecs, the record layer (chacha20-poly1305/aes-128-gcm/none) and the KIP X25519/HKDF handshake are covered. `tool/kernel-compat/peers/sudoku-vectors` is the locked Go codec used by `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` to check both directions (pinned encode -> Rust decode, Rust encode -> pinned decode, with and without padding) for entropy/ascii/directional/custom tables. HTTP tunnel modes (`stream`/`poll`/`ws`), `multiplex: on` and UoT are rejected at load with the reason recorded."
+    },
+    "masque": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "masque_connect_udp_forwards_datagrams_per_destination"
+        ],
+        "negative": [
+          "masque_connect_udp_refusal_fails_without_a_reply",
+          "masque_connect_udp_verifies_the_server_certificate_by_default",
+          "masque_requires_extended_connect_advertisement",
+          "masque_requires_the_capsule_protocol_in_the_response",
+          "masque_tcp_dial_is_refused_by_name"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/quic_peers.rs",
+      "peer": "a controlled HTTP/3 peer in tests/quic_peers.rs (quinn server, ALPN h3, its own QPACK/capsule codec, SETTINGS_ENABLE_CONNECT_PROTOCOL); no pinned listener",
+      "notes": "T14 implements RFC 9298 CONNECT-UDP, not the pinned Cloudflare WARP CONNECT-IP flow: the pinned `adapter/outbound/masque.go` has no `listeners:` mode and its endpoint (`cf-connect-ip` after ECDSA pinning and a generated client certificate) is not reachable offline, so no pinned-binary interop is claimed. The positive case opens two destinations on one association and checks the proxy `:authority`, the expanded `/.well-known/masque/udp/<host>/<port>/` path, `:protocol connect-udp`, `capsule-protocol: ?1` and a DATAGRAM capsule echo. The negative cases cover a 403 response, a peer without extended CONNECT, a 200 without the capsule protocol, an untrusted certificate, and the named refusal of TCP (CONNECT-IP needs an IP stack). Prior flakiness/rerun policy: these are default-suite loopback cases, run three times for T14 with no failures."
     }
   },
   "loopbackOnlyEvidence": {
@@ -337,7 +355,8 @@
     "chained_udp_positive": "tests/protocols.rs::shadowsocks_udp_goes_through_the_dialer_proxy_hop uses two controlled hops (a SOCKS5 UDP server that relays, and an independent ss UDP server) and asserts the hop saw the association and relayed to the ss server. A positive chained case against Mihomo on loopback is not possible: its own loopback detector refuses to forward a datagram that came from its socks UDP listener to a local destination, so the peer case is the rejecting one.",
     "trojan_udp_reconnect": "tests/protocols.rs::trojan_udp_reconnects_after_the_server_closes_the_stream proves that a server-closed UDP stream is retired and re-established on the next datagram of the same association.",
     "chained_trojan_udp_positive": "tests/protocols.rs::trojan_udp_goes_through_the_dialer_proxy_hop uses a controlled SOCKS5 TCP hop and a trojan UDP peer, and asserts the hop carried the server connection and the peer served the payload.",
-    "domain_server_chained_udp": "tests/protocols.rs::shadowsocks_udp_chained_with_a_domain_server_keeps_the_replies configures `server: localhost` behind a hop: the hop resolves the name and reports the IP in its reply header, so the kernel compares resolved addresses instead of the configured string."
+    "domain_server_chained_udp": "tests/protocols.rs::shadowsocks_udp_chained_with_a_domain_server_keeps_the_replies configures `server: localhost` behind a hop: the hop resolves the name and reports the IP in its reply header, so the kernel compares resolved addresses instead of the configured string.",
+    "masque_connect_udp": "tests/quic_peers.rs drives the kernel's SOCKS5 UDP association through a controlled HTTP/3 CONNECT-UDP peer (two destinations, refusal, missing extended CONNECT, missing capsule negotiation, untrusted certificate, TCP refusal). A Mihomo peer is impossible: the pinned masque adapter is a Cloudflare WARP CONNECT-IP client with no listener, and its WARP endpoint needs an internet-accessible registration."
   },
   "notCovered": [
     "UDP for socks5, vless (packet-addr/XUDP), anytls (UoT), gost-relay and ssr: `udp: true` is rejected at load time; no UDP association exists for those families",
@@ -345,7 +364,7 @@
     "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
     "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
     "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
-    "families still unimplemented after T11 (mieru, masque, sudoku, the QUIC/device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented"
+    "families still unimplemented after T14 (shadowquic, the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case."
   ],
   "t9": {
     "date": "2026-11-21",
@@ -461,5 +480,15 @@
     ],
     "memory": "quinn 0.11.12; one endpoint/connection per dial. T7 must measure the iOS extension against 40,000,000 bytes.",
     "cli": "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs drives one real process tunnel through tuic, hysteria and hysteria2."
+  },
+  "t14": {
+    "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers masque",
+    "result": {
+      "cases": 6,
+      "passed": 6,
+      "failed": 0
+    },
+    "evidence": "tool/kernel-compat/evidence/t14-feasibility.json",
+    "note": "T14 delivered the RFC 9298 CONNECT-UDP subset over the T10 quinn profile and recorded the CONNECT-IP/IP-stack gap for T9/T7. The six default-suite cases above were run three times on macOS arm64; no pinned Mihomo masque peer exists."
   }
 }

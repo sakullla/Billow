@@ -1,0 +1,145 @@
+{
+  "format": "kernel-t14-feasibility",
+  "task": "T14",
+  "workflow": "2026-11-20-native-rust-kernel",
+  "generatedAt": "2026-11-22T00:00:00Z",
+  "platform": {
+    "verified": [
+      "macos-aarch64"
+    ],
+    "compilesButNotRun": [
+      "linux-x86_64",
+      "linux-aarch64",
+      "android",
+      "ios-simulator"
+    ],
+    "windows": "compiles; the Windows session path is T6 and no Windows QUIC run has been recorded",
+    "note": "The masque peer is a loopback HTTP/3 server on macOS arm64. Nothing is claimed for a platform that was not run."
+  },
+  "pinnedImplementation": {
+    "source": "tool/kernel-compat/.cache/source/tree-v1.19.34",
+    "adapter": "adapter/outbound/masque.go (540 lines)",
+    "transport": "transport/masque/masque.go (224 lines) + transport/masque/client_h2.go (325 lines) + transport/masque/l4proxy.go (137 lines)",
+    "dependencies": [
+      "github.com/metacubex/connect-ip-go (CONNECT-IP client; vendored modifications for Cloudflare's non-RFC-compliant behaviour)",
+      "github.com/metacubex/http (HTTP/2 extended CONNECT for the h2 mode)",
+      "github.com/metacubex/quic-go + http3",
+      "github.com/metacubex/mipstack or gVisor (userspace IP stack, IPStackOption)",
+      "github.com/yosida95/uritemplate/v3"
+    ],
+    "shape": "Cloudflare WARP client: base64 ECDSA private key -> generated client certificate; public key pins the endpoint certificate; SNI defaults to consumer-masque.cloudflareclient.com and URI to https://cloudflareaccess.com; `:protocol cf-connect-ip`; ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT capsules; TCP/UDP are served by the internal IP stack. `network: h2` is an HTTP/2 CONNECT-IP variant and `network: h3-l4proxy` an L4 client; neither has a CONNECT-UDP path.",
+    "whyNotPorted": [
+      "no h3 / connect-ip / IP-stack crate is in the offline cargo cache",
+      "generating the WARP client certificate and pinning the endpoint key cannot be exercised without an internet-accessible WARP registration",
+      "terminating TCP over CONNECT-IP needs a userspace IP stack; T6/T7 own device/TUN but not an in-process TCP/IP stack",
+      "the pinned adapter has no `listeners:` mode, so the pinned binary cannot act as a masque peer"
+    ]
+  },
+  "implementedSubset": {
+    "status": "partial",
+    "protocol": "RFC 9298 CONNECT-UDP over HTTP/3 (RFC 9114) with the capsule protocol (RFC 9297) and extended CONNECT (RFC 9220)",
+    "files": [
+      "native-kernel/crates/billow-kernel/src/outbound/masque.rs",
+      "native-kernel/crates/billow-kernel/src/outbound/h3.rs (server SETTINGS, open request, frame reader)",
+      "native-kernel/crates/billow-kernel/src/proxies.rs (MasqueOutbound + strict option table)",
+      "native-kernel/crates/billow-kernel/src/engine.rs (SOCKS5 UDP association branch)",
+      "native-kernel/crates/billow-kernel/src/outbound/mod.rs (TCP refusal)",
+      "native-kernel/crates/billow-kernel/src/outbound/udp.rs (type name)"
+    ],
+    "wireBehaviour": [
+      "one QUIC connection per UDP association, ALPN h3, keep-alive 30 s, T10's capped transport windows",
+      "HTTP/3 client control stream SETTINGS with SETTINGS_ENABLE_CONNECT_PROTOCOL (0x08); the peer's control stream SETTINGS is read and required to advertise it",
+      "one request stream per destination: :method CONNECT, :protocol connect-udp, :scheme https, :authority <proxy authority>, :path /.well-known/masque/udp/<target_host>/<target_port>/, capsule-protocol: ?1, empty user-agent",
+      "target_host keeps DNS/IPv4 literals and percent-encodes an IPv6 literal's colons (RFC 9298 §3); :authority is the proxy's authority (RFC 9298 §3.4)",
+      "2xx response with Capsule-Protocol: ?1 required; capsules run in HTTP/3 DATA frames; DATAGRAM capsules (type 0x00) carry context ID 0 then the UDP payload",
+      "unknown capsule types are ignored (RFC 9297 §3.3); a non-zero context ID, truncated capsule or oversized capsule closes that flow only",
+      "at most 64 destinations per association; a closed flow is reopened on the next datagram to the same destination"
+    ],
+    "rejectedAtLoad": [
+      "private-key / public-key (WARP endpoint pinning and client certificate)",
+      "uri (CONNECT-IP request URI)",
+      "network: h2 / network: h3-l4proxy",
+      "ip / ipv6 / mtu / ip-stack / remote-dns-resolve / dns (CONNECT-IP/IP stack)",
+      "congestion-controller / cwnd / bbr-profile",
+      "dialer-proxy (a QUIC endpoint is dialled locally; the socks5 hop cannot carry it)"
+    ],
+    "rejectedAtDial": [
+      "TCP through masque: CONNECT-IP (RFC 9484) plus a userspace IP stack is not implemented; the dial fails with that reason (inbound 502), it never falls back to DIRECT"
+    ],
+    "notImplemented": [
+      "CONNECT-IP (RFC 9484) and cf-connect-ip",
+      "TCP (needs an IP stack)",
+      "HTTP/2 CONNECT-IP",
+      "h3-l4proxy",
+      "HTTP Datagram (QUIC datagram frame) transport; capsules only",
+      "server push",
+      "WebTransport",
+      "0-RTT",
+      "connection pooling",
+      "congestion-controller / cwnd / bbr-profile"
+    ]
+  },
+  "quicDependencyProfile": {
+    "crate": "quinn 0.11.12",
+    "transitive": [
+      "quinn-proto 0.11.19",
+      "quinn-udp 0.5.16",
+      "rustls 0.23.46 (ring)",
+      "in-tree minimal HTTP/3 + QPACK codec (src/outbound/h3.rs); no h3/h3-quinn crate is cached"
+    ],
+    "features": "default-features = false, runtime-tokio + rustls-ring + log (the same profile as T10)",
+    "offlineSource": "~/.cargo/registry/cache; no network access was used to build or test",
+    "notCached": [
+      "h3 / h3-quinn / hpack crates: the in-tree client is extended with server SETTINGS, request-stream opening and a frame reader",
+      "connect-ip-go / mipstack / gVisor equivalents: no CONNECT-IP client or userspace IP stack",
+      "uritemplate: not needed (the RFC 9298 default template is the only one implemented)"
+    ],
+    "memory": "Per UDP association: one UDP Endpoint and one QUIC Connection with T10's caps (stream receive window 512 KiB, connection receive 2 MiB, send window 2 MiB), the HTTP/3 control/QPACK send streams, the retained peer control/QPACK streams, one bidirectional request stream per destination (at most 64) and two 16-slot datagram queues per flow. No pool, no HTTP Datagram buffers (datagrams are not advertised). T7 must measure the whole iOS extension against 40,000,000 bytes; this file records the dependency and caps, not a device measurement."
+  },
+  "verification": {
+    "defaultSuite": {
+      "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
+      "result": "pass",
+      "masqueCases": [
+        "tests/quic_peers.rs::masque_connect_udp_forwards_datagrams_per_destination (two destinations on one association; proxy :authority, expanded path, :protocol, capsule-protocol; DATAGRAM echo)",
+        "tests/quic_peers.rs::masque_connect_udp_refusal_fails_without_a_reply (403)",
+        "tests/quic_peers.rs::masque_requires_extended_connect_advertisement (no request stream is opened)",
+        "tests/quic_peers.rs::masque_requires_the_capsule_protocol_in_the_response",
+        "tests/quic_peers.rs::masque_connect_udp_verifies_the_server_certificate_by_default",
+        "tests/quic_peers.rs::masque_tcp_dial_is_refused_by_name (inbound 502)"
+      ],
+      "repeat": "the six cases were run three consecutive times on macOS arm64 with no failure (2.8-3.3 s per run)",
+      "unit": [
+        "src/outbound/masque.rs::tests::connect_udp_path_follows_rfc9298",
+        "src/outbound/masque.rs::tests::authority_is_the_proxy_not_the_target",
+        "src/outbound/masque.rs::tests::datagram_is_a_capsule_inside_a_data_frame",
+        "src/outbound/masque.rs::tests::partial_capsules_are_buffered_until_complete",
+        "src/outbound/masque.rs::tests::unknown_capsules_are_skipped_and_bad_context_is_refused",
+        "src/outbound/masque.rs::tests::a_capsule_longer_than_the_cap_is_refused"
+      ],
+      "configAndCli": [
+        "tests/config.rs::masque_accepts_the_connect_udp_subset",
+        "tests/config.rs::masque_rejects_the_pinned_connect_ip_options_by_name",
+        "crates/billow-kernel-cli/tests/cli.rs::process_loads_t14_masque"
+      ]
+    },
+    "controlledPeer": {
+      "where": "tests/quic_peers.rs",
+      "what": "a quinn HTTP/3 server with an independent QPACK/capsule codec; SETTINGS_ENABLE_CONNECT_PROTOCOL; 200 + capsule-protocol ?1 and DATAGRAM echo, or 403 / no extended CONNECT / no capsule protocol",
+      "whyNotPinnedMihomo": "the pinned masque adapter is a client for Cloudflare WARP with no `listeners:` mode; an offline WARP endpoint does not exist, so no pinned-binary interop is claimed"
+    },
+    "optionMatrix": {
+      "command": "node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <pinned mihomo>",
+      "result": "204 no-op / 241 enabled cases, 0 problems; the matrix now prints `# skipped: masque (...)` because the pinned base requires the CONNECT-IP registration keys this kernel rejects"
+    }
+  },
+  "decisionsForT9": [
+    "T14 delivers a real but partial masque: CONNECT-UDP works and is peer-verified; CONNECT-IP/TCP is not implemented. A configuration whose masque entry uses private-key/public-key (every WARP configuration) is rejected by name, so T9 cannot count masque as compatible and must keep it in the unsupported list.",
+    "If T9 needs the pinned shape, the dependency decision is a CONNECT-IP client + userspace IP stack (or a T7-owned stack exposed to the outbound). The pinned reference is metacubex/connect-ip-go + metacubex/mipstack (or gVisor); no such crate is available offline."
+  ],
+  "decisionsForT7": [
+    "The memory caps are in quicDependencyProfile.memory; T7 must measure the extension RSS on a device and can reclaim a masque association when its idle timeout fires (the engine drops the association and MasqueUdp::drop closes the QUIC connection).",
+    "iOS Network Extension builds link quinn/rustls the same way as T10; no extra C dependency was added."
+  ],
+  "license": "The client is written from RFC 9298/9297/9220/9114 and uses no pinned Go source (connect-ip-go, metacubex/http, quic-go). The QPACK static table and Huffman table in src/outbound/h3.rs were already copied from MIT/BSD-licensed Go modules for T10."
+}
