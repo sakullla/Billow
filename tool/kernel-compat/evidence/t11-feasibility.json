@@ -1,0 +1,79 @@
+{
+  "format": "kernel-family-feasibility",
+  "version": 1,
+  "generatedAt": "2026-11-21",
+  "task": "T11",
+  "summary": "T11 delivered and verified the gost-relay/ssh/ssr subset. mieru, masque and sudoku were investigated against the locked v1.19.34 tree and the local module/crate caches; the concrete blockers and executable next steps are recorded here. They are not claimed as implemented.",
+  "completed": {
+    "gost-relay": "TCP/TLS/auth/forward; controlled Rust peer + CLI success tunnel; option matrix rows",
+    "ssh": "password/inline PEM/host-key/direct-tcpip; controlled russh peer + CLI success tunnel; MSRV raised to 1.89",
+    "ssr": "all pinned stream ciphers + origin/plain; independent Go server + Go cipher vectors + CLI success tunnel"
+  },
+  "families": {
+    "mieru": {
+      "source": {
+        "mihomo_wrapper": "tool/kernel-compat/.cache/source/tree-v1.19.34/adapter/outbound/mieru.go (361 lines)",
+        "module": "github.com/enfein/mieru/v3@v3.39.0 (local GOMODCACHE: /Users/yanggeng/go/pkg/mod/github.com/enfein/mieru/v3@v3.39.0, 3.7 MB)",
+        "protocol_doc": "docs/protocol.md (segment/metadata/low-entropy/UDP-associate specification)",
+        "protocol_source": "pkg/protocol (34 Go files, 10,717 lines including tests): session.go 1511, underlay_stream.go 910, mux.go 881, underlay_packet.go 859, metadata.go 362, segment.go 368, low_entropy.go 242, padding.go 214; pkg/cipher 1,843 lines"
+      },
+      "license": "GPL-3.0 (module LICENSE); Billow native-kernel is MIT",
+      "blockers": [
+        "No Rust port or wire-compatible crate exists in the tree; the protocol needs PBKDF2-SHA256 time-salt keys, XChaCha20-Poly1305 with nonce patching, 32-byte metadata, segment padding, optional low-entropy modes, session open/data/ack/close, flow-control windows and optional mux/handshake modes.",
+        "Vendoring the GPL-3.0 Go module into the MIT Rust crate is a licensing conflict. A Go test server can be built from the locked module as a separate process, but the client must be a clean-room implementation from docs/protocol.md plus Go vectors.",
+        "No controlled mieru server has been built in this attempt; the module is available locally but no config/peer harness exists yet."
+      ],
+      "next_steps": [
+        "T13 decision: clean-room TCP single-session client first (PBKDF2-SHA256, XChaCha20-Poly1305, session open/data/close, no mux/low-entropy), with Go-generated segment vectors; then UDP associate and mux.",
+        "Build the controlled server from the local module (e.g. `go run ./cmd/mita` with a generated config) as a separate GPL test fixture; record the build command and keep it out of the shipped Rust binary.",
+        "If the license/effort decision is to defer, keep the current explicit `[unsupported]` rejection and remove it from T11 compatibility claims."
+      ]
+    },
+    "masque": {
+      "source": {
+        "mihomo_wrapper": "tool/kernel-compat/.cache/source/tree-v1.19.34/adapter/outbound/masque.go (540 lines)",
+        "transport": "tool/kernel-compat/.cache/source/tree-v1.19.34/transport/masque (HTTP/3 CONNECT-IP/CONNECT-UDP)",
+        "imports": "github.com/metacubex/http, transport/masque, transport/tuic/common; HTTP/3 CONNECT-IP/CONNECT-UDP plus an IP stack"
+      },
+      "local_dependencies": {
+        "cached": "quinn 0.11.12, quinn-proto 0.11.19, quinn-udp 0.5.16",
+        "missing": "h3, h3-quinn, an IP stack crate; crates.io/network was unavailable during this attempt",
+        "note": "T10 has not pinned the shared QUIC dependency profile yet; T7 owns the 40 MB memory measurement."
+      },
+      "blockers": [
+        "HTTP/3 CONNECT-IP/CONNECT-UDP needs an h3 stack and an IP stack; only quinn is cached, so the dependency set cannot be built offline.",
+        "The QUIC/IP-stack memory profile must align with T10 and be measured by T7 before adoption; adding it silently would violate the shared dependency decision."
+      ],
+      "next_steps": [
+        "T14 (after T10 pins quinn/h3 versions): add h3 + h3-quinn + the chosen IP stack, implement CONNECT-UDP (RFC 9298) and CONNECT-IP (RFC 9484) with capsules, verify against a controlled HTTP/3 peer built from the locked quic-go tree or a Rust h3 server, and record RSS for T7.",
+        "If the dependency decision is not ready, keep the explicit rejection and do not claim masque compatibility."
+      ]
+    },
+    "sudoku": {
+      "source": {
+        "mihomo_wrapper": "tool/kernel-compat/.cache/source/tree-v1.19.34/adapter/outbound/sudoku.go (402 lines)",
+        "transport": "tool/kernel-compat/.cache/source/tree-v1.19.34/transport/sudoku (61 Go files, 13,577 lines including tests)",
+        "key_files": "handshake.go 537, early_handshake.go 340, kip.go 257, multiplex.go/multiplex_dialer.go, httpmask tunnel, crypto/, obfs/, tables.go/table_probe.go, uot.go"
+      },
+      "blockers": [
+        "13,577 lines of custom handshake/KIP/table-driven crypto/HTTP-mask/multiplexing; no Rust port or crate exists.",
+        "A partial port would not be wire-compatible; the handshake, table layout and KIP message framing are all required before any tunnel can be verified.",
+        "No controlled sudoku server harness exists in this attempt; the locked tree contains both sides but building and driving them is a separate task."
+      ],
+      "next_steps": [
+        "T13 split: (a) build a controlled server from the locked transport/sudoku and capture handshake/KIP vectors, (b) port the handshake + KIP + table layout for a single TCP session, (c) add HTTP mask and multiplexing, (d) verify success/auth-failure/boundary cases.",
+        "If the split is not approved, keep the explicit rejection and record sudoku as deferred rather than partially compatible."
+      ]
+    }
+  },
+  "plan_conflict": {
+    "observed": "docs/coordination/t13-handoff.md assigns mieru and sudoku to T13 and t14-handoff.md assigns masque to T14 (integration owner T11), while 03-execution-plan.md#tasks/T11 and 00-state.yaml still list all six families under T11.",
+    "request": "Owner/Runtime should reconcile the recipe/state with the coordination handoffs. T11 did not take T13/T14 ownership; this report records the blockers and next steps for those tasks."
+  },
+  "evidence_refs": [
+    "native-kernel/crates/billow-kernel/src/proxies.rs (explicit rejections for mieru/masque/sudoku)",
+    "native-kernel/crates/billow-kernel/tests/config.rs::deferred_t11_families_name_their_decision",
+    "docs/coordination/t13-handoff.md",
+    "docs/coordination/t14-handoff.md"
+  ]
+}

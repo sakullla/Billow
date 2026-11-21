@@ -17,3 +17,8 @@ billow-kernel = { path = "../billow-kernel" }
 clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tracing.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+russh.workspace = true
+tokio = { workspace = true, features = ["full"] }

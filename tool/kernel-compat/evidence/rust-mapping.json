@@ -503,7 +503,8 @@
         "tests/protocols.rs::gost_relay_outbound_wrong_credentials_never_reach_the_target",
         "tests/protocols.rs::gost_relay_outbound_rejects_a_bad_response_version",
         "tests/protocols.rs::gost_relay_outbound_over_tls_relays_and_verifies_the_certificate",
-        "tests/config.rs::gost_relay_options_are_strict"
+        "tests/config.rs::gost_relay_options_are_strict",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_gost_relay"
       ]
     },
     "ssh": {
@@ -535,12 +536,13 @@
         "tests/protocols.rs::ssh_outbound_wrong_password_never_reaches_the_target",
         "tests/protocols.rs::ssh_outbound_public_key_auth_relays_direct_tcpip",
         "tests/protocols.rs::ssh_outbound_pinned_host_key_must_match_the_server",
-        "tests/config.rs::ssh_options_are_strict"
+        "tests/config.rs::ssh_options_are_strict",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssh"
       ]
     },
     "ssr": {
       "status": "partial",
-      "reason": "all pinned stream ciphers plus `protocol: origin` and `obfs: plain`; the SSR protocol/obfs plugins (auth_sha1_v4, auth_aes128_*, auth_chain_*, http_simple, http_post, random_head, tls1.2_ticket_*) are rejected by name.",
+      "reason": "all pinned stream ciphers plus `protocol: origin` and `obfs: plain`; the SSR protocol/obfs plugins (auth_sha1_v4, auth_aes128_*, auth_chain_*, http_simple, http_post, random_head, tls1.2_ticket_*) are rejected by name. Framing is verified against an independent Go server built from the pinned shadowstream package.",
       "options": [
         "server",
         "port",
@@ -570,7 +572,10 @@
         "tests/protocols.rs::ssr_outbound_origin_plain_relays_with_aes_256_cfb",
         "tests/protocols.rs::ssr_outbound_rc4_md5_and_dummy_ciphers_relay",
         "tests/protocols.rs::ssr_outbound_wrong_password_never_reaches_the_target",
-        "tests/config.rs::ssr_options_are_strict"
+        "tests/config.rs::ssr_options_are_strict",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssr",
+        "tests/independent_peers.rs::ssr_go_server_relays_the_client_frames",
+        "tests/independent_peers.rs::ssr_go_server_rejects_a_wrong_password"
       ]
     },
     "mieru": {

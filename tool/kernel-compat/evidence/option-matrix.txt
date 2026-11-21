@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 114, enabled cases: 126, problems: 0
+# no-op cases: 146, enabled cases: 149, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
@@ -118,6 +118,38 @@ noop    anytls  udp-over-tcp                 rust=accept mihomo=accept
 noop    trojan  bogus                        rust=accept mihomo=accept
 noop    vless   ss-opts                      rust=accept mihomo=accept
 noop    anytls  client-metadata              rust=accept mihomo=accept
+noop    gost-relay tfo                          rust=accept mihomo=accept
+noop    gost-relay mptcp                        rust=accept mihomo=accept
+noop    gost-relay interface-name               rust=accept mihomo=accept
+noop    gost-relay routing-mark                 rust=accept mihomo=accept
+noop    gost-relay ip-version                   rust=accept mihomo=accept
+noop    ssh     tfo                          rust=accept mihomo=accept
+noop    ssh     mptcp                        rust=accept mihomo=accept
+noop    ssh     interface-name               rust=accept mihomo=accept
+noop    ssh     routing-mark                 rust=accept mihomo=accept
+noop    ssh     ip-version                   rust=accept mihomo=accept
+noop    ssr     tfo                          rust=accept mihomo=accept
+noop    ssr     mptcp                        rust=accept mihomo=accept
+noop    ssr     interface-name               rust=accept mihomo=accept
+noop    ssr     routing-mark                 rust=accept mihomo=accept
+noop    ssr     ip-version                   rust=accept mihomo=accept
+noop    gost-relay udp                          rust=accept mihomo=accept
+noop    ssr     udp                          rust=accept mihomo=accept
+noop    gost-relay forward                      rust=accept mihomo=accept
+noop    gost-relay mux                          rust=accept mihomo=accept
+noop    gost-relay sni                          rust=accept mihomo=accept
+noop    gost-relay skip-cert-verify             rust=accept mihomo=accept
+noop    gost-relay name-cert-verify             rust=accept mihomo=accept
+noop    gost-relay fingerprint                  rust=accept mihomo=accept
+noop    gost-relay certificate                  rust=accept mihomo=accept
+noop    gost-relay private-key                  rust=accept mihomo=accept
+noop    gost-relay client-fingerprint           rust=accept mihomo=accept
+noop    ssh     private-key                  rust=accept mihomo=accept
+noop    ssh     private-key-passphrase       rust=accept mihomo=accept
+noop    ssh     host-key                     rust=accept mihomo=accept
+noop    ssh     host-key-algorithms          rust=accept mihomo=accept
+noop    ssr     protocol-param               rust=accept mihomo=accept
+noop    ssr     obfs-param                   rust=accept mihomo=accept
 enabled socks5  udp                          rust=reject mihomo=accept
 enabled socks5  fingerprint                  rust=reject mihomo=accept
 enabled socks5  certificate                  rust=reject mihomo=reject
@@ -244,3 +276,26 @@ enabled trusttunnel tfo                          rust=reject mihomo=accept
 enabled trusttunnel mptcp                        rust=reject mihomo=accept
 enabled trusttunnel interface-name               rust=reject mihomo=accept
 enabled trusttunnel routing-mark                 rust=reject mihomo=accept
+enabled gost-relay udp                          rust=reject mihomo=accept
+enabled gost-relay mux                          rust=reject mihomo=reject
+enabled gost-relay name-cert-verify             rust=reject mihomo=accept
+enabled gost-relay fingerprint                  rust=reject mihomo=accept
+enabled gost-relay certificate                  rust=reject mihomo=accept
+enabled gost-relay private-key                  rust=reject mihomo=accept
+enabled gost-relay client-fingerprint           rust=reject mihomo=accept
+enabled gost-relay ip-version                   rust=reject mihomo=accept
+enabled gost-relay tfo                          rust=reject mihomo=accept
+enabled gost-relay mptcp                        rust=reject mihomo=accept
+enabled gost-relay interface-name               rust=reject mihomo=accept
+enabled gost-relay routing-mark                 rust=reject mihomo=accept
+enabled ssh     ip-version                   rust=reject mihomo=accept
+enabled ssh     tfo                          rust=reject mihomo=accept
+enabled ssh     mptcp                        rust=reject mihomo=accept
+enabled ssh     interface-name               rust=reject mihomo=accept
+enabled ssh     routing-mark                 rust=reject mihomo=accept
+enabled ssr     udp                          rust=reject mihomo=accept
+enabled ssr     ip-version                   rust=reject mihomo=accept
+enabled ssr     tfo                          rust=reject mihomo=accept
+enabled ssr     mptcp                        rust=reject mihomo=accept
+enabled ssr     interface-name               rust=reject mihomo=accept
+enabled ssr     routing-mark                 rust=reject mihomo=accept

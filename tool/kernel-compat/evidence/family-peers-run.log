@@ -9,8 +9,18 @@ RC4-MD5        iv=30313233343536373839616263646566 cipher=4e8974fe4bca9c275fe6ed
 CHACHA20       iv=3031323334353637 cipher=103f61df371541818a14d56c0848e1c210
 CHACHA20-IETF  iv=303132333435363738396162 cipher=02c1ab8d0d96b7ce763f212c7f85a1386a
 XCHACHA20      iv=303132333435363738396162636465663031323334353637 cipher=63d6daa424afc78a6f0ed041efd39daf31
+== independent Go SSR server ==
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-cbb749b417ee1395)
+
+running 2 tests
+test ssr_go_server_rejects_a_wrong_password ... ok
+test ssr_go_server_relays_the_client_frames ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
 == controlled Rust peers (gost-relay, ssh, ssr) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
      Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-17a4a1358b980635)
 
 running 5 tests
@@ -31,7 +41,7 @@ test ssh_outbound_pinned_host_key_must_match_the_server ... ok
 test ssh_outbound_public_key_auth_relays_direct_tcpip ... ok
 test ssh_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.58s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.60s
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
      Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-17a4a1358b980635)
@@ -41,5 +51,5 @@ test ssr_outbound_origin_plain_relays_with_aes_256_cfb ... ok
 test ssr_outbound_rc4_md5_and_dummy_ciphers_relay ... ok
 test ssr_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 2.89s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 2.97s
 

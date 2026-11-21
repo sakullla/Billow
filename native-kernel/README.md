@@ -198,10 +198,9 @@ ciphers. `ssh` uses `russh` 0.56 with the `ring` backend; `russh` 0.64
 requires Rust 1.89 and its default `aws-lc-rs` backend would add a C/CMake
 build, so it is not used. `russh` 0.56 declares MSRV 1.85 but its transitive
 `home` 0.5.12 declares 1.88 and the Windows-only `pageant` 0.2.5 declares 1.89
-(`uuid` 1.29.3 already declared 1.89 in the previous lock). The workspace MSRV
-decision (raise to 1.89 or pin compatible transitive versions) is still open
-and is recorded in the T11 result; the code compiles and every test runs on
-the current toolchain. `03-execution-plan.md`
+(`uuid` 1.29.3 already declared 1.89 in the previous lock), so T11 raised the
+workspace `rust-version` to 1.89 instead of shipping an inconsistent MSRV.
+`03-execution-plan.md`
 defines T9/T11 (non-QUIC), T10 (QUIC and device families) and T5's integration
 of their output. The capability index
 records the implemented families as `implemented`, the T11 ones as `partial`
@@ -374,7 +373,10 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   header/auth/forward/TLS/status), `ssh` (a real `russh` server with password,
   Ed25519 key and pinned-host-key cases) and `ssr` (origin/plain server plus
   pinned Go cipher vectors); they are also the explicit entry point of
-  `tool/kernel-compat/family-peers.sh`.
+  `tool/kernel-compat/family-peers.sh`. `family-peers.sh` additionally builds
+  the independent Go SSR server (`tool/kernel-compat/peers/ssr-server`) and
+  runs `tests/independent_peers.rs`, so IV/address/framing are checked against
+  the pinned `shadowstream` implementation rather than the Rust client code.
 - `tests/mihomo_peers.rs` — real-peer interop: each case starts the pinned
   Mihomo v1.19.34 binary with one `listeners:` entry, the Rust kernel dials it
   as a client and the test asserts what a controlled sink received (and, for
@@ -404,7 +406,9 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   (HTTP/2 CONNECT, domain target, wrong password), 36 cases in total.
   T11's `gost-relay`, `ssh` and `ssr` have no Mihomo listener, so their peer
   cases live in `tests/protocols.rs` and are recorded under
-  `controlledPeers` in `tool/kernel-compat/evidence/protocol-peers.json`.
+  `controlledPeers` in `tool/kernel-compat/evidence/protocol-peers.json`. The
+  CLI crate also drives a real success tunnel through each of the three
+  (`crates/billow-kernel-cli/tests/family_cli.rs`), not only a config load.
 
   Observed host behaviour: starting the peer for many cases in one test process
   occasionally ends with a case where the kernel established the tunnel but the
@@ -420,6 +424,17 @@ one Mihomo process at a time), because several in flight starve a
 just-accepted session on a loaded host and make a positive case look like a
 missing marker.
 
+## Coordination
+
+The immutable coordination inputs are in `docs/coordination/`: `t11-handoff.md`
+(this subset), `t12-handoff.md` (SSR plugin layers and gost UDP/smux),
+`t13-handoff.md` (mieru and sudoku) and `t14-handoff.md` (masque). They are
+Owner material and are not modified by the kernel tasks. The concrete blockers
+and next steps for the three deferred families are in
+`tool/kernel-compat/evidence/t11-feasibility.json`; the current
+`03-execution-plan.md`/`00-state.yaml` still list them under T11, so the
+Owner/Runtime must reconcile that with the T13/T14 handoffs.
+
 ## Controlled verification commands
 
 ```sh
@@ -434,7 +449,8 @@ node tool/kernel-compat/runner.mjs \
 node --test tool/kernel-compat/runner.test.mjs
 
 # controlled peers for the families with no Mihomo listener (gost-relay, ssh,
-# ssr) plus the pinned SSR cipher vectors; needs `go`
+# ssr), the independent Go SSR server and the pinned SSR cipher vectors;
+# needs `go`
 tool/kernel-compat/family-peers.sh
 ```
 

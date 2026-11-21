@@ -48,6 +48,15 @@ const bases = {
     off: 'server: 127.0.0.1, port: 1, username: u, password: p',
     on: 'server: 127.0.0.1, port: 1, username: u, password: p',
   },
+  'gost-relay': {
+    off: 'server: 127.0.0.1, port: 1',
+    on: 'server: 127.0.0.1, port: 1, tls: true',
+  },
+  ssh: { off: 'server: 127.0.0.1, port: 1, username: u', on: null },
+  ssr: {
+    off: 'server: 127.0.0.1, port: 1, cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain',
+    on: null,
+  },
 }
 
 const tlsOnly = new Set([
@@ -87,6 +96,8 @@ const valueFor = (key) => {
   if (key === 'packet-encoding') return 'xudp'
   if (key === 'ws-headers') return '{X-Probe: yes}'
   if (key === 'network') return 'grpc'
+  if (key === 'protocol') return 'auth_chain_a'
+  if (key === 'obfs') return 'tls1.2_ticket_auth'
   if (key === 'ss-opts') return '{enabled: true, password: p}'
   if (key === 'jls-opts') return '{password: p, username: u}'
   if (key === 'shadow-tls-opts' || key === 'restls-opts') return '{password: p}'
@@ -115,8 +126,16 @@ for (const [type, entry] of Object.entries(mapping.proxies)) {
     // rejected), so neither can be enabled at the proxy level.
     if (key.includes('.')) continue
     if (transportBlocks.has(key) || key === 'plugin-opts') continue
-    const base = tlsOnly.has(key) ? bases[type].on : bases[type].off
+    let base = tlsOnly.has(key) ? bases[type].on : bases[type].off
     if (!base) continue // the family has no TLS, so a TLS-only key cannot be enabled
+    // SSR's protocol/obfs are required fields: replace the base value instead
+    // of appending a duplicate key.
+    if (type === 'ssr' && key === 'protocol') {
+      base = 'server: 127.0.0.1, port: 1, cipher: aes-256-cfb, password: p, obfs: plain'
+    }
+    if (type === 'ssr' && key === 'obfs') {
+      base = 'server: 127.0.0.1, port: 1, cipher: aes-256-cfb, password: p, protocol: origin'
+    }
     enabled.push({ type, key, base, option: `${key}: ${valueFor(key)}` })
   }
 }
@@ -193,6 +212,27 @@ for (const type of ['trojan', 'vless', 'anytls']) add(type, 'udp-over-tcp', 'tru
 add('trojan', 'bogus', '{a: b}')
 add('vless', 'ss-opts', '{enabled: true, password: p}')
 add('anytls', 'client-metadata', "''")
+// T11 families: no-op forms accepted by both engines.
+for (const type of ['gost-relay', 'ssh', 'ssr']) {
+  add(type, 'tfo', 'false')
+  add(type, 'mptcp', 'false')
+  add(type, 'interface-name', "''")
+  add(type, 'routing-mark', '0')
+  add(type, 'ip-version', "''")
+}
+for (const type of ['gost-relay', 'ssr']) add(type, 'udp', 'false')
+add('gost-relay', 'forward', 'false')
+add('gost-relay', 'mux', 'false')
+for (const key of ['sni', 'skip-cert-verify', 'name-cert-verify', 'fingerprint', 'certificate', 'private-key', 'client-fingerprint']) {
+  const value = key === 'skip-cert-verify' ? 'true' : key === 'fingerprint' ? 'chrome' : key === 'certificate' ? 'x.pem' : key === 'private-key' ? 'k.pem' : 'example.org'
+  add('gost-relay', key, value)
+}
+add('ssh', 'private-key', "''")
+add('ssh', 'private-key-passphrase', "''")
+add('ssh', 'host-key', '[]')
+add('ssh', 'host-key-algorithms', '[]')
+add('ssr', 'protocol-param', "''")
+add('ssr', 'obfs-param', "''")
 
 function parseArgs(argv) {
   const options = { rust: null, mihomo: null, out: null }

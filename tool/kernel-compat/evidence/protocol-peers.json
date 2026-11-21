@@ -224,14 +224,16 @@
       "cases": {
         "positive": [
           "ssr_outbound_origin_plain_relays_with_aes_256_cfb",
-          "ssr_outbound_rc4_md5_and_dummy_ciphers_relay"
+          "ssr_outbound_rc4_md5_and_dummy_ciphers_relay",
+          "ssr_go_server_relays_the_client_frames"
         ],
         "negative": [
-          "ssr_outbound_wrong_password_never_reaches_the_target"
+          "ssr_outbound_wrong_password_never_reaches_the_target",
+          "ssr_go_server_rejects_a_wrong_password"
         ]
       },
-      "command": "native-kernel/crates/billow-kernel/tests/protocols.rs (controlled origin/plain SSR server; tool/kernel-compat/family-peers.sh)",
-      "peer": "controlled SSR server for `protocol: origin`/`obfs: plain` in tests/protocols.rs (IV + encrypted SOCKS address + relay), plus pinned Go cipher vectors from transport/shadowsocks/shadowstream via tool/kernel-compat/peers/ssr-cipher-vectors",
+      "command": "native-kernel/crates/billow-kernel/tests/protocols.rs + native-kernel/crates/billow-kernel/tests/independent_peers.rs (controlled Rust server and independent Go server; tool/kernel-compat/family-peers.sh)",
+      "peer": "controlled SSR server for `protocol: origin`/`obfs: plain` in tests/protocols.rs, plus the independent Go server in tool/kernel-compat/peers/ssr-server (pinned `shadowstream` IV/cipher/address framing), plus pinned Go cipher vectors",
       "notes": "The pinned Mihomo has no SSR listener. The cipher layer is pinned byte-for-byte by Go vectors for every stream cipher; the peer proves IV placement, address framing and bidirectional relay. The auth_*/obfs plugin layers are rejected at load time, so this is recorded as a partial family."
     }
   },
@@ -278,11 +280,12 @@
       "ssr"
     ],
     "result": {
-      "cases": 12,
-      "passed": 12,
+      "cases": 14,
+      "passed": 14,
       "failed": 0
     },
-    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr are independent server-side implementations of the pinned wire formats (the SSR cipher bytes are additionally pinned by Go vectors); ssh uses a real SSH server. The `result` above counts the test functions in family-peers.sh (gost 5, ssh 4, ssr 3)."
+    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server. `result` counts the 14 test functions in family-peers.sh (gost 5, ssh 4, ssr Rust 3, ssr independent Go 2).",
+    "cli": "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs drives one success tunnel through the real CLI process for gost-relay, ssh and ssr."
   },
   "t11": {
     "date": "2026-11-21",

@@ -33,6 +33,13 @@ printf '%s\n' "$vectors" | grep -q 'XCHACHA20 .*cipher=63d6daa424afc78a6f0ed041e
     exit 1
 }
 
+echo "== independent Go SSR server =="
+peer_bin=$(mktemp "${TMPDIR:-/tmp}/billow-ssr-server.XXXXXX")
+(cd "$root/tool/kernel-compat/peers/ssr-server" && GOFLAGS=-mod=mod go build -o "$peer_bin" .)
+KC_SSR_PEER_BIN="$peer_bin" cargo test \
+    --manifest-path "$root/native-kernel/Cargo.toml" --locked \
+    --test independent_peers -- --ignored --test-threads=1
+
 echo "== controlled Rust peers (gost-relay, ssh, ssr) =="
 if [ -n "$filter" ]; then
     cargo test --manifest-path "$root/native-kernel/Cargo.toml" --locked \

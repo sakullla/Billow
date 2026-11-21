@@ -5,11 +5,11 @@ members = ["crates/billow-kernel", "crates/billow-kernel-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-# Declared MSRV. T11's `russh` 0.56 declares 1.85 but pulls `home` 0.5.12
-# (declares 1.88) and the Windows-only `pageant` 0.2.5 (1.89); `uuid` 1.29.3
-# already declares 1.89. See the T11 concerns: either raise this to 1.89 or pin
-# those transitive crates once a compatible release is available.
-rust-version = "1.85"
+# MSRV raised to 1.89 by T11: `russh` 0.56 declares 1.85 but pulls `home`
+# 0.5.12 (1.88) and the Windows-only `pageant` 0.2.5 (1.89); `uuid` 1.29.3
+# already declares 1.89. The rest of the workspace compiles on 1.85, but a
+# single declared MSRV must cover every dependency.
+rust-version = "1.89"
 license = "MIT"
 publish = false
 
