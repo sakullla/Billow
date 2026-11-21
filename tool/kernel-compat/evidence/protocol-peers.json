@@ -1,7 +1,7 @@
 {
   "format": "kernel-protocol-peers",
   "version": 2,
-  "generatedAt": "2026-11-21",
+  "generatedAt": "2026-11-21T10:45:33Z",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 36,
-    "passed": 36,
+    "cases": 41,
+    "passed": 41,
     "failed": 0
   },
   "families": {
@@ -235,6 +235,50 @@
       "command": "native-kernel/crates/billow-kernel/tests/protocols.rs + native-kernel/crates/billow-kernel/tests/independent_peers.rs (controlled Rust server and independent Go server; tool/kernel-compat/family-peers.sh)",
       "peer": "controlled SSR server for `protocol: origin`/`obfs: plain` in tests/protocols.rs, plus the independent Go server in tool/kernel-compat/peers/ssr-server (pinned `shadowstream` IV/cipher/address framing), plus pinned Go cipher vectors",
       "notes": "The pinned Mihomo has no SSR listener. The cipher layer is pinned byte-for-byte by Go vectors for every stream cipher; the peer proves IV placement, address framing and bidirectional relay. The auth_*/obfs plugin layers are rejected at load time, so this is recorded as a partial family."
+    },
+    "tuic": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "tuic_v5_outbound_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "tuic_v5_wrong_password_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: tuic, users: {uuid: password}, certificate/private-key (UDP-only QUIC listener)",
+      "notes": "TUIC v5: one unidirectional auth stream with the TLS-exporter token, one bidirectional Connect stream per TCP target. The wrong-password case closes the QUIC connection with AuthenticationFailed before any stream reaches the sink. UDP relay modes are not implemented and are recorded in rust-mapping.json."
+    },
+    "hysteria2": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "hysteria2_outbound_reaches_the_receiving_side_through_mihomo"
+        ],
+        "negative": [
+          "hysteria2_wrong_password_never_reaches_the_sink",
+          "hysteria2_unreachable_target_is_refused"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: hysteria2, users: {name: password}, certificate/private-key (UDP-only QUIC listener)",
+      "notes": "Hysteria2: HTTP/3 POST /auth (status 233) followed by a 0x401 TCP request frame on a bidirectional stream. The Rust client implements the minimal HTTP/3/QPACK subset the auth exchange needs (static table + Huffman, no dynamic table). A wrong password is a non-233 status and is reported as a 502 before the tunnel reply."
+    },
+    "hysteria": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "hysteria_v1_tcp_roundtrip_and_target",
+          "hysteria_v1_base64_auth_roundtrip"
+        ],
+        "negative": [
+          "hysteria_v1_wrong_auth_fails_without_forwarding"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/quic_peers.rs",
+      "peer": "controlled quinn server implementing transport/hysteria/core/protocol.go (control hello + per-session request/response)",
+      "notes": "Hysteria v1 has no Mihomo listener in the pinned tree, so the peer is an independent implementation of the pinned binary framing. TCP, auth-str and base64 auth are covered; port hopping/XPlus/faketcp/wechat/UDP are rejected by name."
     }
   },
   "loopbackOnlyEvidence": {
@@ -311,5 +355,33 @@
       "ssr: only `protocol: origin` and `obfs: plain`; the auth_*/tls1.2_ticket_*/http_simple plugin layers are rejected by name.",
       "mieru, masque and sudoku remain unimplemented with the decisions in rust-mapping.json#familiesNotImplemented."
     ]
+  },
+  "t10": {
+    "status": "partial",
+    "implemented": [
+      "tuic",
+      "hysteria",
+      "hysteria2"
+    ],
+    "rejected": [
+      "shadowquic",
+      "wireguard",
+      "tailscale",
+      "zerotier",
+      "easytier",
+      "openvpn"
+    ],
+    "runs": [
+      "KC_MIHOMO_BIN=/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 cargo test --manifest-path native-kernel/Cargo.toml --locked --test mihomo_peers -- --ignored --test-threads=1 tuic",
+      "KC_MIHOMO_BIN=/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 cargo test --manifest-path native-kernel/Cargo.toml --locked --test mihomo_peers -- --ignored --test-threads=1 hysteria2",
+      "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers -- --test-threads=1"
+    ],
+    "dependencyGaps": [
+      "h3/qpack crate not in the offline cargo cache: Hysteria2 uses the in-tree minimal HTTP/3 client (outbound/h3.rs) instead",
+      "JLS-TLS: shadowquic rejected (no crate, rustls/quinn cannot express the extension)",
+      "WireGuard Noise IK/transport + IP stack: wireguard rejected; device/TUN ownership is T6/T7",
+      "tailscale/zerotier/easytier/openvpn: control plane + netstack; device/TUN ownership is T6/T7"
+    ],
+    "memory": "quinn 0.11.12; one endpoint/connection per dial. T7 must measure the iOS extension against 40,000,000 bytes."
   }
 }

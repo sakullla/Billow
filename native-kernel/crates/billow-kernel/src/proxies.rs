@@ -389,6 +389,60 @@ pub struct GostRelayOutbound {
 }
 
 
+/// Hysteria2 (`adapter/outbound/hysteria2.go`, `sing-quic/hysteria2`): HTTP/3
+/// authentication then one bidirectional QUIC stream per TCP session. Port
+/// hopping, the Salamander/Gecko obfuscators, realm and UDP are rejected by
+/// name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hysteria2Outbound {
+    pub server: String,
+    pub port: u16,
+    pub password: Secret,
+    pub tls_settings: TlsSettings,
+    pub alpn: Vec<String>,
+    pub send_bps: u64,
+    pub receive_bps: u64,
+    pub handshake_timeout: u64,
+    pub dialer_proxy: Option<String>,
+}
+
+/// Hysteria v1 (`adapter/outbound/hysteria.go`, `transport/hysteria/core`):
+/// QUIC with a binary control hello and one bidirectional stream per TCP
+/// session. Port hopping, the XPlus obfuscator, the `faketcp`/`wechat`
+/// transports and UDP datagrams are rejected by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HysteriaOutbound {
+    pub server: String,
+    pub port: u16,
+    pub auth: Vec<u8>,
+    pub tls_settings: TlsSettings,
+    pub alpn: Vec<String>,
+    pub send_bps: u64,
+    pub receive_bps: u64,
+    pub dialer_proxy: Option<String>,
+}
+
+/// TUIC v5 (`adapter/outbound/tuic.go`, `transport/tuic/v5`). One QUIC
+/// connection carries a unidirectional authentication stream (`uuid` +
+/// TLS-exporter token) and one bidirectional stream per TCP session. Only the
+/// v5 `uuid`/`password` form is implemented; the legacy v4 `token` form needs
+/// BLAKE3 and is rejected by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuicOutbound {
+    pub server: String,
+    pub port: u16,
+    pub uuid: [u8; 16],
+    pub password: Secret,
+    /// `ip`: dial this address while the certificate name stays `server`/`sni`.
+    pub ip: Option<String>,
+    pub tls_settings: TlsSettings,
+    pub alpn: Vec<String>,
+    pub disable_sni: bool,
+    pub heartbeat_interval: u64,
+    pub request_timeout: u64,
+    pub dialer_proxy: Option<String>,
+}
+
 /// One enabled proxy entry. `DIRECT` and `REJECT` are built in and cannot be
 /// redefined (Mihomo rejects the duplicate name).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -411,6 +465,9 @@ pub enum Protocol {
     GostRelay(GostRelayOutbound),
     Ssh(SshOutbound),
     Ssr(SsrOutbound),
+    Tuic(TuicOutbound),
+    Hysteria(HysteriaOutbound),
+    Hysteria2(Hysteria2Outbound),
 }
 
 impl Protocol {
@@ -428,6 +485,9 @@ impl Protocol {
             Protocol::GostRelay(p) => p.dialer_proxy.as_deref(),
             Protocol::Ssh(p) => p.dialer_proxy.as_deref(),
             Protocol::Ssr(p) => p.dialer_proxy.as_deref(),
+            Protocol::Tuic(p) => p.dialer_proxy.as_deref(),
+            Protocol::Hysteria(p) => p.dialer_proxy.as_deref(),
+            Protocol::Hysteria2(p) => p.dialer_proxy.as_deref(),
         }
     }
 }
@@ -447,6 +507,9 @@ impl Proxy {
             Protocol::GostRelay(_) => "gost-relay",
             Protocol::Ssh(_) => "ssh",
             Protocol::Ssr(_) => "ssr",
+            Protocol::Tuic(_) => "tuic",
+            Protocol::Hysteria(_) => "hysteria",
+            Protocol::Hysteria2(_) => "hysteria2",
         }
     }
 
@@ -464,6 +527,9 @@ impl Proxy {
             Protocol::GostRelay(p) => (&p.server, p.port),
             Protocol::Ssh(p) => (&p.server, p.port),
             Protocol::Ssr(p) => (&p.server, p.port),
+            Protocol::Tuic(p) => (&p.server, p.port),
+            Protocol::Hysteria(p) => (&p.server, p.port),
+            Protocol::Hysteria2(p) => (&p.server, p.port),
         }
     }
 
@@ -1189,6 +1255,39 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "gost-relay" => Protocol::GostRelay(parse_gost_relay(&mut entry)?),
         "ssh" => Protocol::Ssh(parse_ssh(&mut entry)?),
         "ssr" => Protocol::Ssr(parse_ssr(&mut entry)?),
+        "tuic" => Protocol::Tuic(parse_tuic(&mut entry)?),
+        "hysteria" => Protocol::Hysteria(parse_hysteria(&mut entry)?),
+        "hysteria2" => Protocol::Hysteria2(parse_hysteria2(&mut entry)?),
+        "shadowquic" => {
+            return Err(entry.unsupported(
+                "protocol type 'shadowquic' is not implemented: the pinned client (transport/shadowquic + jls-tls) requires JLS, a custom TLS extension and a modified QUIC stack; rustls/quinn cannot express it, and no JLS crate is in the offline cargo cache",
+            ))
+        }
+        "wireguard" => {
+            return Err(entry.unsupported(
+                "protocol type 'wireguard' is not implemented: the pinned outbound terminates WireGuard (Noise IK, cookie, transport keys) and exposes TCP/UDP through a gVisor netstack; this kernel has no WireGuard transport or IP stack (device/TUN ownership is T6/T7) and no boringtun/wireguard crate is in the offline cargo cache",
+            ))
+        }
+        "tailscale" => {
+            return Err(entry.unsupported(
+                "protocol type 'tailscale' is not implemented: the pinned outbound (with_gvisor) embeds the tailscale.com control plane and a gVisor netstack; device/TUN ownership is T6/T7 and no Rust tailscale stack is available offline",
+            ))
+        }
+        "zerotier" => {
+            return Err(entry.unsupported(
+                "protocol type 'zerotier' is not implemented: the pinned outbound wraps zerotier-go (identity, planet, control protocol, crypto) plus a gVisor netstack; device/TUN ownership is T6/T7 and no Rust zerotier stack is available offline",
+            ))
+        }
+        "easytier" => {
+            return Err(entry.unsupported(
+                "protocol type 'easytier' is not implemented: the pinned outbound embeds the easytier-go host/instance (peer discovery, encryption, KCP/QUIC proxies) plus a netstack; device/TUN ownership is T6/T7 and no Rust easytier stack is available offline",
+            ))
+        }
+        "openvpn" => {
+            return Err(entry.unsupported(
+                "protocol type 'openvpn' is not implemented: the pinned outbound implements OpenVPN (TLS control channel, data ciphers, tls-auth/tls-crypt) and exposes TCP/UDP through a gVisor netstack; device/TUN ownership is T6/T7 and no Rust OpenVPN stack is available offline",
+            ))
+        }
         "mieru" => {
             return Err(entry.unsupported(
                 "protocol type 'mieru' is not implemented: it wraps the external enfein/mieru v3.39.0 module (encrypted underlay, padding, multiplexing); T11 deferred it pending a vendor/port decision",
@@ -1206,7 +1305,7 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         }
         other => {
             return Err(ConfigError::Unsupported(format!(
-                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr)",
+                "{}: protocol type '{other}' is not implemented (implemented: socks5, http, ss, trojan, vless, anytls, vmess, snell, trusttunnel, gost-relay, ssh, ssr, tuic, hysteria, hysteria2)",
                 entry.prefix()
             )))
         }
@@ -2109,6 +2208,401 @@ fn parse_gost_relay(entry: &mut Entry<'_>) -> Result<GostRelayOutbound, ConfigEr
     })
 }
 
+/// Hysteria2 (`adapter/outbound/hysteria2.go`). `up`/`down` are optional
+/// rate hints; the HTTP/3 auth exchange and TCP streams are implemented.
+fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let password = Secret::new(entry.string("password")?.unwrap_or_default());
+    let tls_settings = entry.tls_settings(true, true)?;
+    let alpn = entry.string_list("alpn")?;
+    let up = entry.string("up")?.filter(|value| !value.is_empty());
+    let down = entry.string("down")?.filter(|value| !value.is_empty());
+    let send_bps = up
+        .as_deref()
+        .map(crate::outbound::hysteria::string_to_bps)
+        .unwrap_or(0);
+    let receive_bps = down
+        .as_deref()
+        .map(crate::outbound::hysteria::string_to_bps)
+        .unwrap_or(0);
+    if up.is_some() && send_bps == 0 {
+        return Err(entry.invalid(format!(
+            "option 'up' value '{}' is not a rate",
+            up.as_deref().unwrap_or_default()
+        )));
+    }
+    if down.is_some() && receive_bps == 0 {
+        return Err(entry.invalid(format!(
+            "option 'down' value '{}' is not a rate",
+            down.as_deref().unwrap_or_default()
+        )));
+    }
+    let handshake_timeout = match entry.int("handshake-timeout")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'handshake-timeout' must not be negative"))
+        }
+        Some(value) => value as u64,
+        None => 0,
+    };
+    if let Some(ports) = entry.string("ports")?.filter(|value| !value.is_empty()) {
+        return Err(entry.unsupported(format!(
+            "option 'ports' value '{ports}' is not implemented (port hopping)"
+        )));
+    }
+    if entry
+        .string("hop-interval")?
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Err(entry.unsupported("option 'hop-interval' is not implemented (port hopping)"));
+    }
+    if let Some(obfs) = entry.string("obfs")?.filter(|value| !value.is_empty()) {
+        return Err(entry.unsupported(format!(
+            "option 'obfs' value '{obfs}' is not implemented (Salamander/Gecko packet obfuscation)"
+        )));
+    }
+    // Only read when obfs is set; without it Mihomo ignores the password too.
+    let _ = entry.string("obfs-password")?;
+    // The packet-size knobs are only applied by the pinned client when an obfs
+    // is selected; without one they ask for nothing, so they load.
+    let _ = entry.int("obfs-min-packet-size")?;
+    let _ = entry.int("obfs-max-packet-size")?;
+    if entry.int("udp-mtu")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported("option 'udp-mtu' is not implemented (UDP relay)"));
+    }
+    for key in ["cwnd"] {
+        if entry.int(key)?.unwrap_or(0) != 0 {
+            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+        }
+    }
+    if entry
+        .string("bbr-profile")?
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Err(entry.unsupported("option 'bbr-profile' is not implemented"));
+    }
+    for key in [
+        "initial-stream-receive-window",
+        "max-stream-receive-window",
+        "initial-connection-receive-window",
+        "max-connection-receive-window",
+    ] {
+        if entry.int(key)?.unwrap_or(0) != 0 {
+            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+        }
+    }
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "ports",
+        "hop-interval",
+        "up",
+        "down",
+        "password",
+        "obfs",
+        "obfs-password",
+        "obfs-min-packet-size",
+        "obfs-max-packet-size",
+        "sni",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "alpn",
+        "cwnd",
+        "bbr-profile",
+        "udp-mtu",
+        "handshake-timeout",
+        "realm-opts",
+        "initial-stream-receive-window",
+        "max-stream-receive-window",
+        "initial-connection-receive-window",
+        "max-connection-receive-window",
+        "ech-opts",
+        "client-fingerprint",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, true, None)?;
+    Ok(Hysteria2Outbound {
+        server,
+        port,
+        password,
+        tls_settings,
+        alpn,
+        send_bps,
+        receive_bps,
+        handshake_timeout,
+        dialer_proxy,
+    })
+}
+
+/// Hysteria v1 (`adapter/outbound/hysteria.go`). `up` and `down` are required
+/// by the pinned type; they only tune congestion control, which this client
+/// leaves to quinn. Port hopping, the XPlus obfuscator, the `faketcp`/`wechat`
+/// transports and UDP datagrams are rejected by name.
+fn parse_hysteria(entry: &mut Entry<'_>) -> Result<HysteriaOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let up = entry.required_string("up")?;
+    let down = entry.required_string("down")?;
+    let up_speed = entry.int("up-speed")?.unwrap_or(0);
+    let down_speed = entry.int("down-speed")?.unwrap_or(0);
+    let send_bps = if up_speed != 0 {
+        (up_speed.max(0) as u64).saturating_mul(125_000)
+    } else {
+        crate::outbound::hysteria::string_to_bps(&up)
+    };
+    let receive_bps = if down_speed != 0 {
+        (down_speed.max(0) as u64).saturating_mul(125_000)
+    } else {
+        crate::outbound::hysteria::string_to_bps(&down)
+    };
+    if send_bps == 0 {
+        return Err(entry.invalid(format!(
+            "option 'up' value '{up}' is not a rate (use e.g. '50 Mbps' or '1000000')"
+        )));
+    }
+    if receive_bps == 0 {
+        return Err(entry.invalid(format!(
+            "option 'down' value '{down}' is not a rate (use e.g. '50 Mbps' or '1000000')"
+        )));
+    }
+    let auth = match entry.string("auth")?.filter(|value| !value.is_empty()) {
+        Some(encoded) => crate::outbound::hysteria::decode_base64(&encoded)
+            .map_err(|e| entry.invalid(format!("option 'auth': {e}")))?,
+        None => entry
+            .string("auth-str")?
+            .filter(|value| !value.is_empty())
+            .map(|value| value.into_bytes())
+            .unwrap_or_default(),
+    };
+    if let Some(protocol) = entry
+        .string("obfs-protocol")?
+        .or(entry.string("protocol")?)
+        .filter(|value| !value.is_empty())
+    {
+        if protocol != "udp" {
+            return Err(entry.unsupported(format!(
+                "option 'protocol' value '{protocol}' is not implemented (udp)"
+            )));
+        }
+    }
+    if let Some(obfs) = entry.string("obfs")?.filter(|value| !value.is_empty()) {
+        return Err(entry.unsupported(format!(
+            "option 'obfs' value '{obfs}' is not implemented (XPlus obfuscator)"
+        )));
+    }
+    if let Some(ports) = entry.string("ports")?.filter(|value| !value.is_empty()) {
+        return Err(entry.unsupported(format!(
+            "option 'ports' value '{ports}' is not implemented (port hopping)"
+        )));
+    }
+    if entry.int("hop-interval")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported("option 'hop-interval' is not implemented (port hopping)"));
+    }
+    for key in ["recv-window-conn", "recv-window"] {
+        if entry.int(key)?.unwrap_or(0) != 0 {
+            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+        }
+    }
+    if entry.bool("disable-mtu-discovery")?.unwrap_or(false) {
+        return Err(entry.unsupported("option 'disable-mtu-discovery' is not implemented"));
+    }
+    if entry.bool("fast-open")?.unwrap_or(false) {
+        return Err(entry.unsupported("option 'fast-open' is not implemented"));
+    }
+    let tls_settings = entry.tls_settings(true, true)?;
+    let alpn = entry.string_list("alpn")?;
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "ports",
+        "protocol",
+        "obfs-protocol",
+        "up",
+        "up-speed",
+        "down",
+        "down-speed",
+        "auth",
+        "auth-str",
+        "obfs",
+        "sni",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "alpn",
+        "recv-window-conn",
+        "recv-window",
+        "disable-mtu-discovery",
+        "fast-open",
+        "hop-interval",
+        "ech-opts",
+        "client-fingerprint",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, true, None)?;
+    Ok(HysteriaOutbound {
+        server,
+        port,
+        auth,
+        tls_settings,
+        alpn,
+        send_bps,
+        receive_bps,
+        dialer_proxy,
+    })
+}
+
+/// TUIC (`adapter/outbound/tuic.go`, `transport/tuic/v5`). `uuid`/`password`
+/// select the v5 protocol; the legacy v4 `token` (BLAKE3 TKN) is rejected.
+/// Options that only tune a pooled client (congestion controller, receive
+/// windows, MTU discovery, 0-RTT) or the UDP relay are rejected by name when
+/// they ask for something, instead of being silently ignored.
+fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    if let Some(token) = entry.string("token")?.filter(|value| !value.is_empty()) {
+        let _ = token;
+        return Err(entry.unsupported(
+            "option 'token' selects the legacy TUIC v4 protocol (BLAKE3 TKN), which is not implemented; use 'uuid' and 'password' (v5)",
+        ));
+    }
+    let uuid_raw = entry.string("uuid")?.unwrap_or_default();
+    let uuid = if uuid_raw.is_empty() {
+        [0u8; 16]
+    } else {
+        parse_uuid(&uuid_raw).map_err(|e| entry.invalid(format!("option 'uuid': {e}")))?
+    };
+    let password = Secret::new(entry.string("password")?.unwrap_or_default());
+    let ip = entry.string("ip")?.filter(|value| !value.is_empty());
+    let mut tls_settings = entry.tls_settings(true, true)?;
+    let disable_sni = entry.bool("disable-sni")?.unwrap_or(false);
+    // The pinned client sets both `ServerName = ""` and
+    // `InsecureSkipVerify = true` for `disable-sni` (TLS needs one of them).
+    if disable_sni {
+        tls_settings.skip_cert_verify = true;
+    }
+    let heartbeat_interval = match entry.int("heartbeat-interval")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'heartbeat-interval' must not be negative"))
+        }
+        Some(0) | None => 10_000,
+        Some(value) => value as u64,
+    };
+    let request_timeout = match entry.int("request-timeout")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'request-timeout' must not be negative"))
+        }
+        Some(0) | None => 8_000,
+        Some(value) => value as u64,
+    };
+    if let Some(mode) = entry.string("udp-relay-mode")?.filter(|value| !value.is_empty()) {
+        if mode == "quic" {
+            return Err(entry.unsupported(
+                "option 'udp-relay-mode: quic' is not implemented (TUIC UDP datagram relay)",
+            ));
+        }
+    }
+    for key in [
+        "congestion-controller",
+        "bbr-profile",
+        "max-udp-relay-packet-size",
+        "cwnd",
+        "recv-window-conn",
+        "recv-window",
+        "max-datagram-frame-size",
+        "udp-over-stream-version",
+    ] {
+        let requested = if key == "congestion-controller" || key == "bbr-profile" {
+            entry.string(key)?.filter(|value| !value.is_empty()).is_some()
+        } else {
+            entry.int(key)?.unwrap_or(0) != 0
+        };
+        if requested {
+            return Err(entry.unsupported(format!(
+                "option '{key}' is not implemented (one QUIC connection per dial; UDP relay and congestion tuning are not wired)"
+            )));
+        }
+    }
+    for key in [
+        "reduce-rtt",
+        "fast-open",
+        "disable-mtu-discovery",
+        "udp-over-stream",
+    ] {
+        if entry.bool(key)?.unwrap_or(false) {
+            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+        }
+    }
+    // A per-connection stream cap is trivially honoured: this client opens at
+    // most one bidirectional stream per dial, so any positive limit holds.
+    let _ = entry.int("max-open-streams")?;
+    let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
+    let allowed = [
+        "dialer-proxy",
+        "name",
+        "type",
+        "server",
+        "port",
+        "token",
+        "uuid",
+        "password",
+        "ip",
+        "heartbeat-interval",
+        "alpn",
+        "reduce-rtt",
+        "request-timeout",
+        "udp-relay-mode",
+        "congestion-controller",
+        "disable-sni",
+        "max-udp-relay-packet-size",
+        "fast-open",
+        "max-open-streams",
+        "cwnd",
+        "bbr-profile",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "recv-window-conn",
+        "recv-window",
+        "disable-mtu-discovery",
+        "max-datagram-frame-size",
+        "sni",
+        "ech-opts",
+        "udp-over-stream",
+        "udp-over-stream-version",
+        "client-fingerprint",
+        "ip-version",
+    ];
+    entry.reject_unknown(&allowed, true, None)?;
+    Ok(TuicOutbound {
+        server,
+        port,
+        uuid,
+        password,
+        ip,
+        tls_settings,
+        alpn: entry.string_list("alpn")?,
+        disable_sni,
+        heartbeat_interval,
+        request_timeout,
+        dialer_proxy,
+    })
+}
+
 fn display(raw: &str) -> String {
     if raw.is_empty() {
         "-".to_string()
@@ -2121,7 +2615,7 @@ fn display(raw: &str) -> String {
 pub fn supported_protocol_names() -> &'static [&'static str] {
     &[
         "socks5", "http", "ss", "trojan", "vless", "anytls", "vmess", "snell", "trusttunnel",
-        "gost-relay", "ssh", "ssr",
+        "gost-relay", "ssh", "ssr", "tuic", "hysteria", "hysteria2",
     ]
 }
 

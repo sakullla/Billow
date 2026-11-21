@@ -12,14 +12,17 @@ use tokio::net::{TcpListener, TcpStream};
 /// port out again at once, and tests run in parallel: without this registry a
 /// kernel could dial another test's endpoint and every positive case turns
 /// into a confusing 502 or a missing marker.
-static PORTS: std::sync::Mutex<Option<std::collections::BTreeSet<u16>>> = std::sync::Mutex::new(None);
+static PORTS: std::sync::Mutex<Option<std::collections::BTreeSet<u16>>> =
+    std::sync::Mutex::new(None);
 
 /// Claim `port` for this process; `false` when another test already has it.
 pub fn reserve_port(port: u16) -> bool {
     let mut ports = PORTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    ports.get_or_insert_with(std::collections::BTreeSet::new).insert(port)
+    ports
+        .get_or_insert_with(std::collections::BTreeSet::new)
+        .insert(port)
 }
 
 /// Ports handed out by [`free_port`]; the kernel and endpoints use distinct ones.
@@ -70,7 +73,9 @@ pub struct Endpoint {
 pub async fn spawn_endpoint(mode: EchoMode) -> Endpoint {
     let std_listener = bind_loopback();
     let port = std_listener.local_addr().unwrap().port();
-    std_listener.set_nonblocking(true).expect("nonblocking endpoint");
+    std_listener
+        .set_nonblocking(true)
+        .expect("nonblocking endpoint");
     let listener = TcpListener::from_std(std_listener).expect("adopt endpoint listener");
     let connections = std::sync::Arc::new(AtomicU64::new(0));
     let bytes_received = std::sync::Arc::new(AtomicU64::new(0));

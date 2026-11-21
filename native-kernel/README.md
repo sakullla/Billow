@@ -4,15 +4,19 @@ An embeddable proxy engine plus a standalone process entry. No Tauri or other
 GUI dependency; the library crate also builds as a `staticlib` so the iOS
 Network Extension (T3/T7) can link it directly.
 
-Status after T11: one mixed inbound on the configured address (TCP CONNECT,
+Status after T10: one mixed inbound on the configured address (TCP CONNECT,
 SOCKS5 and SOCKS5 `UDP ASSOCIATE`), a strict subset of the clash
 configuration, `DIRECT`/`REJECT` and the protocol outbounds below with their
 transports and UDP associations. T9 added `vmess` (AEAD header), `snell`
 (v1-v3) and `trusttunnel` (TLS + HTTP/2 CONNECT). T11 added `gost-relay`
 (relay v2: TCP/TLS/auth/`forward`), `ssh` (password and inline-PEM key auth,
 host-key pinning, `direct-tcpip`) and the `ssr` stream-cipher subset
-(`protocol: origin`, `obfs: plain`). Those three are partial: their gaps are
-named in [Not implemented](#not-implemented) and in
+(`protocol: origin`, `obfs: plain`). T10 added the QUIC families `tuic` (v5
+`uuid`/`password`), `hysteria` (v1) and `hysteria2` (HTTP/3 auth + TCP), all
+over `quinn` 0.11; `shadowquic` (JLS-TLS) and the device families
+(`wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn`) are rejected by
+name, with device/TUN ownership assigned to T6/T7. The T10 families are
+partial: their gaps are named in [Not implemented](#not-implemented) and in
 `tool/kernel-compat/evidence/rust-mapping.json`. `mieru`, `masque` and
 `sudoku` remain rejected by name with the decisions recorded below.
 **Not implemented yet** (rejected with
@@ -133,6 +137,9 @@ identities of the servers are logged as the session exit.
 | `gost-relay` | relay v2 over TCP, `tls: true` (`sni`, `skip-cert-verify`), `username`/`password`, `forward` (no address feature) | no | controlled relay-v2 server (header vectors + auth/forward/TLS/status cases); no Mihomo listener exists |
 | `ssh` | password and inline-PEM public-key auth, `private-key-passphrase`, `host-key` pinning, `host-key-algorithms`, one `direct-tcpip` channel per dial | no | controlled `russh` server (password/key/host-key cases); no Mihomo listener exists |
 | `ssr` | stream ciphers (`rc4-md5`, `aes-128/192/256-cfb`, `aes-128/192/256-ctr`, `chacha20`, `chacha20-ietf`, `xchacha20`, `none`), `protocol: origin`, `obfs: plain` | no | pinned Go cipher vectors + controlled origin/plain server; no Mihomo listener exists |
+| `tuic` | QUIC (`quinn` 0.11, TLS 1.3, ALPN `h3`), v5 `uuid`/`password` authentication via the TLS exporter, one TCP stream per dial, `ip`/`sni`/`skip-cert-verify`/`disable-sni`/`heartbeat-interval`/`request-timeout` | no | `listeners: type: tuic` (users map), wrong password; controlled `quinn` peer for the default suite |
+| `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
+| `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `up`/`down`, `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password |
 
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
@@ -186,8 +193,8 @@ reduced:
 | `mieru` | the pinned outbound wraps the external `enfein/mieru` v3.39.0 module (encrypted underlay, padding, handshake modes, multiplexing); no Rust port exists in this tree | **T11 deferred**: vendor/port the module or keep it explicitly deferred; a partial port would not be wire-compatible |
 | `masque` | HTTP/3 CONNECT-IP/CONNECT-UDP with an IP stack (or HTTP/2 capsules); the QUIC/IP-stack dependency profile overlaps T10 | **T11 deferred**: align the QUIC stack with T10/T7 before implementing (the 40 MB budget is measured there) |
 | `sudoku` | 13.6k lines of custom crypto/KIP/HTTP-mask/multiplexing in the pinned tree | **T11 deferred**: split into its own task or explicitly defer; a partial port would not be wire-compatible |
-| `hysteria`, `hysteria2`, `tuic`, `shadowquic` | QUIC-based transports (QUIC stack, congestion, UDP relay); a different dependency and memory profile | **T10** (QUIC/device families); the QUIC stack is measured against the 40 MB budget by T7 |
-| `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols with their own device/TUN ownership, which T6/T7 provide | **T10** (QUIC/device families) |
+| `shadowquic` | QUIC with JLS, a custom TLS extension; the pinned client uses `jls-tls` + a modified `jls-quic-go`. `rustls`/`quinn` cannot express the extension and no JLS crate is in the offline cache | **T10 rejected by name**; implement only with a JLS-capable TLS/QUIC stack |
+| `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols that terminate a tunnel and expose TCP/UDP through an IP stack (gVisor in the pinned build); device/TUN ownership is T6/T7, and no WireGuard/mesh/OpenVPN crate is in the offline cache | **T10 rejected by name**; device/TUN ownership is T6/T7, the transport would be a separate task |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
 
 The partial families have their remaining gaps named in
@@ -230,8 +237,17 @@ With the pinned option tables that means `tfo`, `mptcp`, `interface-name`,
 and `obfs: http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth`,
 and `udp: true` on
 `socks5`/`vless`/`anytls`/`vmess`/`snell`/`trusttunnel`/`gost-relay`/`ssr`
-(no UDP association for those families). `udp: false` is accepted for those
-families because it states the same thing this kernel does; `udp` is not a
+(no UDP association for those families). T10's families reject the options
+they do not implement by name: `tuic` `token` (v4/BLAKE3), `udp-relay-mode:
+quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, congestion/window tuning;
+`hysteria` `ports`/`hop-interval` (port hopping), `obfs` (XPlus),
+`protocol: faketcp|wechat`, `fast-open`, receive-window/MTU tuning;
+`hysteria2` `ports`/`hop-interval`, `obfs` (Salamander/Gecko), `realm-opts`,
+`udp-mtu`, congestion/window tuning. `shadowquic` and the device families are
+rejected as whole types with the missing stack named (JLS-TLS, WireGuard
+Noise/IP stack, mesh control planes, OpenVPN), never loaded as if compatible.
+`udp: false` is accepted for a family that has no UDP association because it
+states the same thing this kernel does; `udp` is not a
 Mihomo HTTP option at all and is rejected there. Unsupported protocol types are
 listed in the error message.
 
@@ -362,6 +378,12 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
 
 - `tests/config.rs` — parsing, strict option tables, error tags.
 - `tests/sessions.rs` — inbound sessions, half-close, stop/restart, limits.
+- `tests/quic_peers.rs` — T10 QUIC loopback peers: TUIC v5 (auth token, domain
+  and IP targets, wrong password, v4 token rejection, unimplemented options)
+  and Hysteria v1 (control hello, `auth-str` and base64 auth, wrong auth,
+  port-hopping/XPlus/faketcp rejection, rate validation). The peers are
+  `quinn` servers written from the pinned Go framing; they need `openssl` for
+  the loopback certificate.
 - `tests/protocols.rs` — loopback peers for socks5/http/ss/trojan/vless
   (tcp, websocket, `v2ray-http-upgrade`), trojan websocket, the SOCKS5
   `UDP ASSOCIATE` relay (DIRECT, REJECT and ss datagrams), a private-CA TLS
@@ -403,7 +425,10 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   summarised in `tool/kernel-compat/evidence/protocol-peers.json`; T9 added
   `vmess` (aes-128-gcm, chacha20-poly1305, `none`, websocket, domain target,
   wrong uuid), `snell` (v1, v2, v3 + http obfs, wrong psk) and `trusttunnel`
-  (HTTP/2 CONNECT, domain target, wrong password), 36 cases in total.
+  (HTTP/2 CONNECT, domain target, wrong password), 36 cases in total. T10
+  added TUIC v5 and Hysteria2 against their Mihomo listeners (success and wrong
+  password), 40 cases in total; Hysteria v1 has no Mihomo listener and is
+  covered by `tests/quic_peers.rs`.
   T11's `gost-relay`, `ssh` and `ssr` have no Mihomo listener, so their peer
   cases live in `tests/protocols.rs` and are recorded under
   `controlledPeers` in `tool/kernel-compat/evidence/protocol-peers.json`. The
@@ -457,10 +482,17 @@ tool/kernel-compat/family-peers.sh
 ## Platform notes
 
 - macOS arm64 is the platform where sessions and every protocol family were run
-  against the pinned Mihomo (T4/T9 evidence in
+  against the pinned Mihomo (T4/T9/T10 evidence in
   `tool/kernel-compat/evidence/protocol-peers.json`). Linux/Android compile
   from the same Unix code path; Windows compiles, but the platform session
   path (TUN/system proxy ownership, no `dup(2)` use anymore) is T6.
+- The QUIC families use `quinn` 0.11.12 (quinn-proto 0.11.19, quinn-udp
+  0.5.16) with `rustls` 0.23 and TLS 1.3 only. One endpoint and connection are
+  created per dial; there is no connection pool yet. The dependency profile is
+  recorded in `tool/kernel-compat/evidence/rust-mapping.json` (`quicProfile`)
+  and `protocol-peers.json` (`t10`); T7 must measure the whole iOS extension
+  against the 40,000,000-byte budget. `h3`/`qpack`, JLS, WireGuard, mesh and
+  OpenVPN crates are not in the offline cargo cache.
 - Outbound TLS uses `rustls` with the platform trust store plus configured
   extra roots. `tls: {custom-cert}` roots are process-wide: a second kernel in
   the same process with different roots is rejected instead of silently keeping

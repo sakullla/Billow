@@ -256,13 +256,16 @@ proxies:
   - {name: gr, type: gost-relay, server: 127.0.0.1, port: 9000, forward: true, tls: true, sni: gr.example, username: u, password: p}
   - {name: sh, type: ssh, server: 127.0.0.1, port: 22, username: u, password: p}
   - {name: sr, type: ssr, server: 127.0.0.1, port: 8388, cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain}
+  - {name: tq, type: tuic, server: 127.0.0.1, port: 8443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p, alpn: [h3]}
+  - {name: hy, type: hysteria, server: 127.0.0.1, port: 8443, up: 50 Mbps, down: 50 Mbps, auth-str: p}
+  - {name: hy2, type: hysteria2, server: 127.0.0.1, port: 8443, password: p, alpn: [h3]}
 rules:
   - DOMAIN,a.example,ss1
   - MATCH,h1
 "#;
     let loaded = load_config(yaml, "test.yaml").expect("accepted");
     let config = loaded.config;
-    assert_eq!(config.proxies.len(), 11);
+    assert_eq!(config.proxies.len(), 14);
     assert_eq!(config.proxies[0].type_name(), "socks5");
     assert_eq!(config.proxies[2].type_name(), "ss");
     assert!(config.proxies[2].udp_enabled());
@@ -272,19 +275,22 @@ rules:
     assert_eq!(config.proxies[8].type_name(), "gost-relay");
     assert_eq!(config.proxies[9].type_name(), "ssh");
     assert_eq!(config.proxies[10].type_name(), "ssr");
+    assert_eq!(config.proxies[11].type_name(), "tuic");
+    assert_eq!(config.proxies[12].type_name(), "hysteria");
+    assert_eq!(config.proxies[13].type_name(), "hysteria2");
     assert!(!config.proxies[5].udp_enabled());
     assert_eq!(config.action_name(billow_kernel::Action::Proxy(2)), "ss1");
     assert_eq!(config.action_name(billow_kernel::Action::Proxy(1)), "h1");
     assert!(config
         .feature_summary()
-        .contains("protocols=s5=socks5,h1=http,ss1=ss,tj=trojan,vl=vless,vm=vmess,sn=snell,tt=trusttunnel,gr=gost-relay,sh=ssh,sr=ssr"));
+        .contains("protocols=s5=socks5,h1=http,ss1=ss,tj=trojan,vl=vless,vm=vmess,sn=snell,tt=trusttunnel,gr=gost-relay,sh=ssh,sr=ssr,tq=tuic,hy=hysteria,hy2=hysteria2"));
 }
 
 #[test]
 fn unimplemented_protocol_and_option_name_the_field() {
-    let e = proxy_err("proxies:\n  - {name: s1, type: hysteria2, server: x, port: 1, up: 100}\nrules: ['MATCH,DIRECT']\n");
+    let e = proxy_err("proxies:\n  - {name: s1, type: shadowquic, server: x, port: 1}\nrules: ['MATCH,DIRECT']\n");
     assert!(e.starts_with("unsupported"), "{e}");
-    assert!(e.contains("proxies[0] (name=s1, type=hysteria2)"), "{e}");
+    assert!(e.contains("proxies[0] (name=s1, type=shadowquic)"), "{e}");
     let e = proxy_err("proxies:\n  - {name: v, type: vless, server: x, port: 1, uuid: 9d0cb9d0964f4ef6897d6c6b3ccf9e68, tls: true, reality-opts: {public-key: k}}\nrules: ['MATCH,DIRECT']\n");
     assert!(
         e.contains("option 'reality-opts' is not implemented"),

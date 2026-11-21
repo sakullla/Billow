@@ -27,6 +27,12 @@ hkdf = "0.12"
 http = "1"
 hmac = "0.12"
 rand = "0.8"
+# QUIC transport for the hysteria/tuic/shadowquic families (T10). Default
+# features are off: `platform-verifier` would add a second root-store backend
+# while the kernel already builds its rustls config from the platform store and
+# the configuration's extra anchors; `runtime-tokio` + `rustls-ring` is what
+# the engine uses.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 russh = { version = "0.56", default-features = false, features = ["ring"] }
 
 # TLS 1.2/1.3 client plus a server used only by the protocol-family tests.

@@ -1669,3 +1669,206 @@ fn trusttunnel_domain_target_is_resolved_by_the_mihomo_side() {
         assert_eq!(status, "HTTP/1.1 200 Connection Established");
     });
 }
+
+// ---------------------------------------------------------------------------
+// QUIC families: Mihomo's TUIC listener is UDP-only, so the readiness check
+// cannot probe it with a TCP connect. The process is given a short start-up
+// window instead, and a failure to reach the sink prints the peer log.
+// ---------------------------------------------------------------------------
+
+fn start_mihomo_quic(
+    bin: PathBuf,
+    certs: PathBuf,
+    sink_port: u16,
+    listeners: &str,
+    rule: &str,
+) -> Option<Mihomo> {
+    let dir = std::env::temp_dir().join(format!(
+        "billow-peers-quic-{}-{}",
+        std::process::id(),
+        free_port()
+    ));
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::copy(certs.join("cert.pem"), dir.join("cert.pem")).ok()?;
+    std::fs::copy(certs.join("key.pem"), dir.join("key.pem")).ok()?;
+    let listeners = listeners
+        .replace("CERT", "cert.pem")
+        .replace("KEY", "key.pem");
+    let config = format!(
+        "mixed-port: {}\nlog-level: debug\nproxies:\n  - {{name: sink-http, type: http, server: 127.0.0.1, port: {sink_port}}}\n  - {{name: sink-direct, type: direct}}\nrules:\n  - {rule}\nlisteners:\n{listeners}",
+        free_port()
+    );
+    std::fs::write(dir.join("config.yaml"), &config).ok()?;
+    let stdout = std::fs::File::create(dir.join("mihomo.log")).ok()?;
+    let stderr = stdout.try_clone().ok()?;
+    let mut child = Command::new(bin)
+        .arg("-d")
+        .arg(&dir)
+        .arg("-f")
+        .arg(dir.join("config.yaml"))
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .ok()?;
+    for _ in 0..60 {
+        if let Ok(Some(status)) = child.try_wait() {
+            panic!("Mihomo exited during QUIC start-up: {status}");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Some(Mihomo { child, dir, config })
+}
+
+fn with_quic_peer<F>(test: &str, listeners: &str, body: F)
+where
+    F: FnOnce(&Sink, &Mihomo),
+{
+    with_quic_peer_rule(test, listeners, "MATCH,sink-http", body)
+}
+
+fn with_quic_peer_rule<F>(test: &str, listeners: &str, rule: &str, body: F)
+where
+    F: FnOnce(&Sink, &Mihomo),
+{
+    static SERIAL: Mutex<()> = Mutex::new(());
+    let _serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    install_kernel_log();
+    let Some(bin) = mihomo_bin() else {
+        skip(test, "set KC_MIHOMO_BIN to the pinned Mihomo binary");
+        return;
+    };
+    let Some(certs) = cert_dir() else {
+        skip(test, "provide the openssl CLI or KC_CERT_DIR with cert.pem/key.pem");
+        return;
+    };
+    let sink = Sink::start();
+    let Some(mihomo) = start_mihomo_quic(bin, certs, sink.port, listeners, rule) else {
+        panic!("{test}: Mihomo did not start");
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&sink, &mihomo)));
+    if let Err(panic) = outcome {
+        eprintln!(
+            "--- {test}: sink port {} ---\nconfig ---\n{}\n--- peer log ---\n{}",
+            sink.port,
+            mihomo.config,
+            mihomo.log()
+        );
+        std::panic::resume_unwind(panic);
+    }
+}
+
+const TUIC_UUID: &str = "9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68";
+const TUIC_PASSWORD: &str = "tuic-listener-secret";
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn tuic_v5_outbound_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-tuic, type: tuic, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{{TUIC_UUID}: \"{TUIC_PASSWORD}\"}}}}\n"
+    );
+    with_quic_peer("tuic", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: tuic, server: 127.0.0.1, port: {port}, uuid: {TUIC_UUID}, password: \"{TUIC_PASSWORD}\", skip-cert-verify: true}}\n"
+        ));
+        let marker = "marker-tuic-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("tuic", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn tuic_v5_wrong_password_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-tuic, type: tuic, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{{TUIC_UUID}: \"{TUIC_PASSWORD}\"}}}}\n"
+    );
+    with_quic_peer("tuic-wrong", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: tuic, server: 127.0.0.1, port: {port}, uuid: {TUIC_UUID}, password: \"wrong-password\", skip-cert-verify: true}}\n"
+        ));
+        let (status, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        assert_eq!(
+            status, "HTTP/1.1 200 Connection Established",
+            "the TUIC listener closes the QUIC connection on a bad token; the kernel sees EOF on the relay"
+        );
+        expect_not_reached("tuic-wrong-password", sink);
+    });
+}
+
+const HYSTERIA2_PASSWORD: &str = "hysteria2-listener-secret";
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_outbound_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}}}\n"
+    );
+    with_quic_peer("hysteria2", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true}}\n"
+        ));
+        let marker = "marker-hysteria2-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("hysteria2", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_wrong_password_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}}}\n"
+    );
+    with_quic_peer("hysteria2-wrong", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {port}, password: \"wrong-password\", skip-cert-verify: true}}\n"
+        ));
+        let (status, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        assert_eq!(
+            status, "HTTP/1.1 502 Bad Gateway",
+            "HTTP/3 auth is a request/response, so the kernel reports the failure before the tunnel reply"
+        );
+        expect_not_reached("hysteria2-wrong-password", sink);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_unreachable_target_is_refused() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}}}\n"
+    );
+    with_quic_peer_rule("hysteria2-unreachable", &listeners, "MATCH,sink-direct", |_sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true}}\n"
+        ));
+        // Port 1 on loopback has no listener. With a DIRECT rule the listener
+        // itself dials the target, fails and returns a TCPResponse error, which
+        // the kernel reports as a 502 instead of a tunnel.
+        let (status, _) = connect(running.proxy, "127.0.0.1:1", b"must-not-arrive");
+        assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    });
+}

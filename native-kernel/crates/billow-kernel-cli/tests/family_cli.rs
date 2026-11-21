@@ -407,3 +407,193 @@ fn cli_process_tunnels_through_ssr() {
     );
     stop_cli(child);
 }
+
+// ---------------------------------------------------------------------------
+// TUIC v5 peer (QUIC) for the T10 CLI entry point.
+// ---------------------------------------------------------------------------
+
+struct QuicCert {
+    der: Vec<u8>,
+    key: PathBuf,
+    dir: PathBuf,
+}
+
+impl Drop for QuicCert {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn make_quic_cert(name: &str) -> QuicCert {
+    let dir = std::env::temp_dir().join(format!(
+        "billow-cli-quic-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let key = dir.join("key.pem");
+    let cert = dir.join("cert.pem");
+    let status = Command::new("openssl")
+        .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes"])
+        .arg("-keyout")
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .args(["-days", "1", "-subj", "/CN=billow-cli-quic", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("openssl is required for the QUIC CLI peer");
+    assert!(status.success());
+    let pem = std::fs::read_to_string(&cert).unwrap();
+    let der = rustls_pemfile::certs(&mut pem.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap()
+        .as_ref()
+        .to_vec();
+    QuicCert { der, key, dir }
+}
+
+fn quic_server_config(cert: &QuicCert) -> quinn::ServerConfig {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![rustls::pki_types::CertificateDer::from(cert.der.clone())],
+            rustls_pemfile::private_key(&mut std::io::BufReader::new(
+                std::fs::File::open(&cert.key).unwrap(),
+            ))
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    config.alpn_protocols = vec![b"h3".to_vec()];
+    let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(config).unwrap();
+    quinn::ServerConfig::with_crypto(Arc::new(crypto))
+}
+
+fn spawn_tuic_cli_peer(password: &'static str) -> u16 {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let cert = make_quic_cert("tuic");
+            let endpoint = quinn::Endpoint::server(
+                quic_server_config(&cert),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .unwrap();
+            tx.send(endpoint.local_addr().unwrap().port()).unwrap();
+            while let Some(incoming) = endpoint.accept().await {
+                tokio::spawn(async move {
+                    let Ok(connection) = incoming.await else {
+                        return;
+                    };
+                    let Ok(mut auth) = connection.accept_uni().await else {
+                        return;
+                    };
+                    let mut header = [0u8; 50];
+                    if auth.read_exact(&mut header).await.is_err() {
+                        return;
+                    }
+                    if header[0] != 0x05 || header[1] != 0x00 {
+                        return;
+                    }
+                    let mut expected = [0u8; 32];
+                    if connection
+                        .export_keying_material(&mut expected, &header[2..18], password.as_bytes())
+                        .is_err()
+                        || expected != header[18..50]
+                    {
+                        connection.close(quinn::VarInt::from_u32(0xffff_fff1), b"AuthenticationFailed");
+                        return;
+                    }
+                    let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                        return;
+                    };
+                    let mut head = [0u8; 2];
+                    if recv.read_exact(&mut head).await.is_err() || head != [0x05, 0x01] {
+                        return;
+                    }
+                    let mut kind = [0u8; 1];
+                    if recv.read_exact(&mut kind).await.is_err() {
+                        return;
+                    }
+                    let host = match kind[0] {
+                        0 => {
+                            let mut len = [0u8; 1];
+                            if recv.read_exact(&mut len).await.is_err() {
+                                return;
+                            }
+                            let mut name = vec![0u8; len[0] as usize];
+                            if recv.read_exact(&mut name).await.is_err() {
+                                return;
+                            }
+                            String::from_utf8_lossy(&name).into_owned()
+                        }
+                        1 => {
+                            let mut octets = [0u8; 4];
+                            if recv.read_exact(&mut octets).await.is_err() {
+                                return;
+                            }
+                            std::net::Ipv4Addr::from(octets).to_string()
+                        }
+                        2 => {
+                            let mut octets = [0u8; 16];
+                            if recv.read_exact(&mut octets).await.is_err() {
+                                return;
+                            }
+                            std::net::Ipv6Addr::from(octets).to_string()
+                        }
+                        _ => return,
+                    };
+                    let mut port = [0u8; 2];
+                    if recv.read_exact(&mut port).await.is_err() {
+                        return;
+                    }
+                    let port = u16::from_be_bytes(port);
+                    let Ok(upstream) = tokio::net::TcpStream::connect((host.as_str(), port)).await
+                    else {
+                        return;
+                    };
+                    let (mut up_r, mut up_w) = upstream.into_split();
+                    let up = tokio::spawn(async move {
+                        let _ = tokio::io::copy(&mut recv, &mut up_w).await;
+                        let _ = up_w.shutdown().await;
+                    });
+                    let _ = tokio::io::copy(&mut up_r, &mut send).await;
+                    let _ = send.finish();
+                    let _ = up.await;
+                });
+            }
+        });
+    });
+    rx.recv().unwrap()
+}
+
+#[test]
+fn cli_process_tunnels_through_tuic() {
+    let (echo_port, _seen) = spawn_echo();
+    let peer_port = spawn_tuic_cli_peer("cli-tuic-secret");
+    let port = free_port();
+    let child = start_cli(
+        &format!(
+            "proxies:\n  - {{name: p, type: tuic, server: 127.0.0.1, port: {peer_port}, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: cli-tuic-secret, skip-cert-verify: true}}\nrules:\n  - 'MATCH,p'\n"
+        ),
+        port,
+    );
+    assert_eq!(
+        tunnel(port, echo_port, b"cli-tuic-marker"),
+        b"cli-tuic-marker".to_vec()
+    );
+    stop_cli(child);
+}

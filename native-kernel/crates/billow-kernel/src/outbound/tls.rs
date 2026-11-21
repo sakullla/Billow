@@ -133,10 +133,39 @@ pub fn client_config(
     settings: &TlsSettings,
     tls: &ClientTls,
 ) -> io::Result<Arc<ClientConfig>> {
+    client_config_with(settings, tls, &settings.alpn, false, true)
+}
+
+/// TLS client configuration for a QUIC handshake: QUIC requires TLS 1.3 and a
+/// non-empty ALPN list, and `disable-sni` (TUIC) turns SNI off while keeping the
+/// certificate name for verification.
+pub fn quic_client_config(
+    settings: &TlsSettings,
+    tls: &ClientTls,
+    alpn: &[String],
+    enable_sni: bool,
+) -> io::Result<Arc<ClientConfig>> {
+    client_config_with(settings, tls, alpn, true, enable_sni)
+}
+
+fn client_config_with(
+    settings: &TlsSettings,
+    tls: &ClientTls,
+    alpn: &[String],
+    tls13_only: bool,
+    enable_sni: bool,
+) -> io::Result<Arc<ClientConfig>> {
     let provider = provider();
-    let builder = ClientConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()
-        .map_err(io::Error::other)?;
+    let builder = ClientConfig::builder_with_provider(provider.clone());
+    let builder = if tls13_only {
+        builder
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(io::Error::other)?
+    } else {
+        builder
+            .with_safe_default_protocol_versions()
+            .map_err(io::Error::other)?
+    };
     let mut config = if settings.skip_cert_verify {
         builder
             .dangerous()
@@ -147,11 +176,8 @@ pub fn client_config(
             .with_root_certificates(tls.roots().clone())
             .with_no_client_auth()
     };
-    config.alpn_protocols = settings
-        .alpn
-        .iter()
-        .map(|a| a.as_bytes().to_vec())
-        .collect();
+    config.alpn_protocols = alpn.iter().map(|a| a.as_bytes().to_vec()).collect();
+    config.enable_sni = enable_sni;
     Ok(Arc::new(config))
 }
 

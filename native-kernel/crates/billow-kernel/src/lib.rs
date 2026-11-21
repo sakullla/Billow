@@ -8,9 +8,11 @@
 //! alias) talking SOCKS5 CONNECT and HTTP CONNECT on one port, inbound
 //! `authentication`, inline rules `DOMAIN`, `DOMAIN-SUFFIX`, `GEOSITE`,
 //! `IP-CIDR`, `IP-CIDR6`, `MATCH` with `DIRECT`/`REJECT`, and protocol
-//! outbounds `socks5`, `http`, `ss` (AEAD 2017), `trojan`, `vless` and
-//! `anytls` with the transports they need (TLS, WebSocket, `dialer-proxy`
-//! through a socks5 hop). A rule or protocol option the kernel does not
+//! outbounds `socks5`, `http`, `ss` (AEAD 2017), `trojan`, `vless`,
+//! `anytls`, `vmess`, `snell`, `trusttunnel`, `gost-relay`, `ssh`, `ssr`,
+//! `tuic` (v5), `hysteria` (v1) and `hysteria2` with the transports they need
+//! (TLS, WebSocket, QUIC, HTTP/3 auth, `dialer-proxy` through a socks5 hop). A
+//! rule or protocol option the kernel does not
 //! implement fails configuration loading when its value asks for something; a
 //! key the pinned type does not declare is ignored exactly as Mihomo ignores
 //! it, so a valid upstream configuration loads. DNS, proxy groups, providers

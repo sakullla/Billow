@@ -25,6 +25,7 @@ h2.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
 http.workspace = true
+quinn.workspace = true
 rand.workspace = true
 russh.workspace = true
 ring.workspace = true

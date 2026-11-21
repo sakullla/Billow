@@ -19,6 +19,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tracing.workspace = true
 
 [dev-dependencies]
+quinn.workspace = true
 rand.workspace = true
 russh.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
 tokio = { workspace = true, features = ["full"] }

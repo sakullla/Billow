@@ -1,8 +1,8 @@
 peer: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
-     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-2716390d809b466d)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-aad23d3d4a4e8ef4)
 
-running 36 tests
+running 41 tests
 test anytls_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ok
 test chained_ss_udp_rejected_by_the_hop_never_reaches_the_echo ... ok
@@ -11,6 +11,9 @@ test dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo ... ok
 test dialer_proxy_chain_with_a_closed_first_hop_never_reaches_the_sink ... ok
 test http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo ... ok
 test http_outbound_wrong_password_never_reaches_the_sink ... ok
+test hysteria2_outbound_reaches_the_receiving_side_through_mihomo ... ok
+test hysteria2_unreachable_target_is_refused ... ok
+test hysteria2_wrong_password_never_reaches_the_sink ... ok
 test shadowsocks_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test shadowsocks_udp_reaches_the_receiving_side_through_mihomo ... ok
 test shadowsocks_udp_wrong_password_never_reaches_the_echo ... ok
@@ -28,6 +31,8 @@ test trojan_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ok
 test trusttunnel_domain_target_is_resolved_by_the_mihomo_side ... ok
 test trusttunnel_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test trusttunnel_wrong_password_never_reaches_the_sink ... ok
+test tuic_v5_outbound_reaches_the_receiving_side_through_mihomo ... ok
+test tuic_v5_wrong_password_never_reaches_the_sink ... ok
 test vless_outbound_over_tls_reaches_the_receiving_side_through_mihomo ... ok
 test vless_over_v2ray_http_upgrade_reaches_the_receiving_side_through_mihomo ... ok
 test vless_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
@@ -40,5 +45,5 @@ test vmess_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_wrong_uuid_never_reaches_the_sink ... ok
 
-test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.91s
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.17s
 

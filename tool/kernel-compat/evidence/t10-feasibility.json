@@ -1,0 +1,137 @@
+{
+  "format": "kernel-t10-feasibility",
+  "task": "T10",
+  "workflow": "2026-11-20-native-rust-kernel",
+  "generatedAt": "2026-11-21T00:00:00Z",
+  "platform": {
+    "verified": [
+      "macos-aarch64"
+    ],
+    "compilesButNotRun": [
+      "linux-x86_64",
+      "linux-aarch64",
+      "android",
+      "ios-simulator"
+    ],
+    "windows": "compiles; the Windows session path is T6 and no Windows QUIC run has been recorded",
+    "note": "All QUIC runs are loopback on macOS arm64. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run."
+  },
+  "quicDependencyProfile": {
+    "crate": "quinn 0.11.12",
+    "transitive": [
+      "quinn-proto 0.11.19",
+      "quinn-udp 0.5.16",
+      "rustls 0.23.46 (ring)",
+      "lru-slab 0.1.3",
+      "rustc-hash 2.1.3",
+      "rand 0.10.4 / rand_pcg 0.10.2 (quinn-proto only; the workspace keeps rand 0.8)",
+      "web-time 1.1.0"
+    ],
+    "features": "default-features = false, runtime-tokio + rustls-ring + log",
+    "offlineSource": "~/.cargo/registry/cache (the pinned index is available); no network access was used",
+    "notCached": [
+      "h3 / h3-quinn / qpack crates: Hysteria2 uses the in-tree minimal HTTP/3 client instead",
+      "JLS-TLS / jls-quic-go equivalents: shadowquic cannot be expressed with rustls/quinn",
+      "boringtun / wireguard / smoltcp / etherparse: no WireGuard transport or IP stack",
+      "tailscale / zerotier / easytier / openvpn crates: no mesh or OpenVPN stack"
+    ],
+    "memory": "Per dial: one UDP Endpoint and one QUIC Connection. Transport windows are capped for T7: stream receive 512 KiB, connection receive 2 MiB, send 2 MiB, datagram buffers 64 KiB, crypto buffer 16 KiB (quinn defaults are 1.25 MB / VarInt::MAX / 10 MB / ~1 MB). No pool is implemented. T7 must measure the whole iOS extension against 40,000,000 bytes; this file records the dependency and the chosen caps, not a device measurement."
+  },
+  "families": {
+    "tuic": {
+      "status": "partial",
+      "implemented": "TUIC v5 over QUIC: TLS 1.3 (ALPN h3), uuid/password authentication via the TLS exporter token, one bidirectional Connect stream per TCP target; ip/sni/skip-cert-verify/disable-sni/heartbeat-interval/request-timeout",
+      "rejected": [
+        "token (v4 / BLAKE3 TKN; no blake3 crate offline)",
+        "udp-relay-mode: quic",
+        "udp-over-stream",
+        "reduce-rtt",
+        "fast-open",
+        "congestion-controller / cwnd / bbr-profile",
+        "recv-window-conn / recv-window",
+        "disable-mtu-discovery",
+        "max-datagram-frame-size / max-udp-relay-packet-size"
+      ],
+      "peer": "pinned Mihomo listeners: type: tuic (users map) + a controlled quinn peer in tests/quic_peers.rs",
+      "verification": [
+        "tool/kernel-compat/peer-tests.sh (tuic_v5_outbound_reaches_the_receiving_side_through_mihomo, tuic_v5_wrong_password_never_reaches_the_sink)",
+        "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_tuic"
+      ]
+    },
+    "hysteria": {
+      "status": "partial",
+      "implemented": "Hysteria v1 over QUIC (ALPN hysteria): binary ClientHello/ServerHello on a control stream (auth/auth-str, up/down), one request stream per TCP target",
+      "rejected": [
+        "ports / hop-interval (port hopping)",
+        "obfs (XPlus)",
+        "protocol: faketcp / wechat",
+        "recv-window-conn / recv-window",
+        "disable-mtu-discovery",
+        "fast-open",
+        "UDP datagrams"
+      ],
+      "peer": "controlled quinn server implementing transport/hysteria/core/protocol.go (no Mihomo listener exists)",
+      "verification": [
+        "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers"
+      ]
+    },
+    "hysteria2": {
+      "status": "partial",
+      "implemented": "Hysteria2 over QUIC (ALPN h3): HTTP/3 POST /auth with Hysteria-Auth/Hysteria-CC-RX/Hysteria-Padding, status 233, then a 0x401 TCP request frame per session; up/down, handshake-timeout",
+      "rejected": [
+        "ports / hop-interval",
+        "obfs (Salamander/Gecko packet obfuscation needs a custom UDP socket wrapper)",
+        "realm-opts",
+        "udp-mtu / UDP relay",
+        "cwnd / bbr-profile",
+        "initial/max stream and connection receive windows"
+      ],
+      "peer": "pinned Mihomo listeners: type: hysteria2 (users map)",
+      "verification": [
+        "tool/kernel-compat/peer-tests.sh (hysteria2_outbound_reaches_the_receiving_side_through_mihomo, hysteria2_wrong_password_never_reaches_the_sink)"
+      ]
+    },
+    "shadowquic": {
+      "status": "rejected-by-name",
+      "reason": "the pinned client uses JLS, a custom TLS extension, and a modified QUIC stack (jls-tls + jls-quic-go); rustls/quinn cannot express it and no JLS crate is in the offline cache",
+      "owner": "T10 rejected; a JLS-capable TLS/QUIC stack would be a separate task"
+    },
+    "wireguard": {
+      "status": "rejected-by-name",
+      "reason": "the pinned outbound terminates WireGuard (Noise IK, cookie, transport keys) and exposes TCP/UDP through a gVisor netstack; this kernel has no WireGuard transport or IP stack, and no boringtun/wireguard crate is offline",
+      "owner": "device/TUN ownership is T6/T7; the transport would be a separate task"
+    },
+    "tailscale": {
+      "status": "rejected-by-name",
+      "reason": "the pinned outbound (with_gvisor) embeds the tailscale.com control plane and a gVisor netstack; no Rust tailscale stack is offline",
+      "owner": "device/TUN ownership is T6/T7"
+    },
+    "zerotier": {
+      "status": "rejected-by-name",
+      "reason": "the pinned outbound wraps zerotier-go (identity, planet, control protocol, crypto) plus a gVisor netstack; no Rust zerotier stack is offline",
+      "owner": "device/TUN ownership is T6/T7"
+    },
+    "easytier": {
+      "status": "rejected-by-name",
+      "reason": "the pinned outbound embeds the easytier-go host/instance (peer discovery, encryption, KCP/QUIC proxies) plus a netstack; no Rust easytier stack is offline",
+      "owner": "device/TUN ownership is T6/T7"
+    },
+    "openvpn": {
+      "status": "rejected-by-name",
+      "reason": "the pinned outbound implements OpenVPN (TLS control channel, data ciphers, tls-auth/tls-crypt) and exposes TCP/UDP through a gVisor netstack; no Rust OpenVPN stack is offline",
+      "owner": "device/TUN ownership is T6/T7"
+    }
+  },
+  "deviceLayerOwnership": {
+    "owner": "T6/T7",
+    "note": "T10 delivers only protocol adaptation and the verifiable transport. Device/TUN selection, descriptor ownership, routing and switching stay with T6 (desktop/Android) and T7 (iOS packetFlow). No family in this task installs a TUN device or claims device ownership."
+  },
+  "verification": {
+    "defaultSuite": "cargo test --manifest-path native-kernel/Cargo.toml --locked (green, hermetic; QUIC loopback peers need openssl)",
+    "pinnedMihomo": "tool/kernel-compat/peer-tests.sh: 41 cases, 41 passed (TUIC, Hysteria2 success/auth-failure/unreachable-target included)",
+    "controlledPeers": "tool/kernel-compat/family-peers.sh: T11 families + independent Go SSR server; Hysteria v1 is in tests/quic_peers.rs",
+    "harness": "node --test tool/kernel-compat/runner.test.mjs: 10 tests, 10 passed",
+    "cli": "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_tuic"
+  }
+}

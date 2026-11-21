@@ -104,6 +104,17 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   after many cases in one test process, so the suite is run serially and rerun once in that
   case — a rerun is never recorded as a first-attempt pass.
 
+  T10 added TUIC v5 and Hysteria2 to the same pinned-Mihomo matrix (their
+  listeners are UDP-only, so the readiness check waits for the process instead
+  of a TCP connect), plus Hysteria v1 against a controlled `quinn` server in
+  `native-kernel/tests/quic_peers.rs` because the pinned tree has no Hysteria
+  v1 listener. `evidence/t10-feasibility.json` records each family's status,
+  the QUIC dependency profile (quinn 0.11.12, offline cache, missing
+  h3/qpack/JLS/WireGuard/mesh crates), the device/TUN ownership (T6/T7) and
+  the memory note T7 uses for the 40 MB budget. The TUIC/Hysteria2 wrong
+  password cases are in the same matrix; the `quic_peers` cases are part of the
+  default suite.
+
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo
 configuration that the kernel rejects is a compatibility failure), `enabled`
