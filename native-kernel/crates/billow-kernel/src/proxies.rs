@@ -363,6 +363,112 @@ pub struct ShadowQuicOutbound {
     pub max_open_streams: u64,
 }
 
+/// One `peers:` entry of the pinned WireGuard outbound
+/// (`adapter/outbound/wireguard.go` `WireGuardPeerOption`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireguardPeerOutbound {
+    pub server: String,
+    pub port: u16,
+    /// Base64 of the peer's 32-byte Curve25519 public key.
+    pub public_key: String,
+    /// Base64 of the optional 32-byte pre-shared key.
+    pub preshared_key: Option<Secret>,
+    /// Exactly three reserved header bytes (WARP-style endpoints) or empty.
+    pub reserved: Vec<u8>,
+    /// CIDRs this peer is allowed to carry; the pinned single-peer form
+    /// defaults to `0.0.0.0/0` and/or `::/0` when `ip`/`ipv6` are set.
+    pub allowed_ips: Vec<String>,
+}
+
+/// WireGuard (`adapter/outbound/wireguard.go` + the pinned `wireguard-go`
+/// device and its userspace IP stack).
+///
+/// The Noise IK handshake and the transport data messages are implemented in
+/// `outbound/wireguard.rs` and verified against a controlled peer built from
+/// the locked `metacubex/wireguard-go` device. The IP stack, TUN device and
+/// the TCP/UDP socket layer inside the tunnel are the T6/T7 device layer: this
+/// outbound loads a valid configuration, validates its keys and then refuses
+/// every dial with that device gap named. `amnezia-wg-option`, an explicit
+/// `ip-stack` mode, `remote-dns-resolve`/`dns` and endpoint refresh are
+/// rejected at load because they ask for a device/stack feature this kernel
+/// does not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireguardOutbound {
+    /// Base64 of the local 32-byte Curve25519 private key.
+    pub private_key: Secret,
+    /// `ip`/`ipv6` local addresses (also the single-peer allowed-IP source).
+    pub ip: Option<String>,
+    pub ipv6: Option<String>,
+    /// Device worker count; 0 selects the pinned default. Used by T6/T7.
+    pub workers: u16,
+    /// Tunnel MTU, default 1408 as the pinned outbound.
+    pub mtu: u32,
+    /// States the UDP capability the device has; the transport is UDP.
+    pub udp: bool,
+    /// Keepalive interval in seconds (0 disables it).
+    pub persistent_keepalive: u16,
+    pub peers: Vec<WireguardPeerOutbound>,
+}
+
+/// OpenVPN (`adapter/outbound/openvpn.go` + `transport/openvpn`).
+///
+/// The control channel (UDP or TCP framing, hard reset, reliable ACK layer,
+/// TLS 1.3 client authentication, key-method 2 exchange and PUSH_REPLY) and
+/// the AEAD data channel are implemented in `outbound/openvpn.rs`. The pinned
+/// adapter then runs the data channel over a userspace IP stack; that device
+/// layer is T6/T7, so this outbound loads and validates a configuration and
+/// refuses every dial with the device gap named. `tls-auth`/`tls-crypt`,
+/// compression, CBC data ciphers and `tcp` are rejected at load with the
+/// missing piece named instead of being loaded as compatible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenVpnOutbound {
+    pub server: String,
+    pub port: u16,
+    /// `udp` (default) or `tcp`; the transport is UDP only in this kernel.
+    pub proto: String,
+    /// `tun` is the only device type the pinned adapter accepts.
+    pub dev: String,
+    /// Normalized primary cipher; `AES-128-GCM` when unset.
+    pub cipher: String,
+    /// `data-ciphers` offered for negotiation (normalized).
+    pub data_ciphers: Vec<String>,
+    pub data_cipher_fallback: Option<String>,
+    /// Normalized `auth` (data-channel HMAC/keying material); `SHA256` when unset.
+    pub auth: String,
+    /// `comp-lzo`; only the disabled form is implemented.
+    pub comp_lzo: String,
+    /// Inline CA certificate PEM (the pinned type has no path form).
+    pub ca: Secret,
+    pub cert: Option<Secret>,
+    pub key: Option<Secret>,
+    pub tls_auth: Option<Secret>,
+    pub key_direction: Option<String>,
+    pub tls_crypt: Option<Secret>,
+    pub tls_crypt_v2: Option<Secret>,
+    pub username: Option<Secret>,
+    pub password: Option<Secret>,
+    pub peer_info: Vec<(String, String)>,
+    pub ping: u16,
+    pub ping_restart: u16,
+    pub tran_window: i64,
+    pub handshake_timeout: u16,
+    pub mtu: u16,
+    pub udp: bool,
+    pub remote_dns_resolve: bool,
+    pub dns: Vec<String>,
+}
+
+impl OpenVpnOutbound {
+    /// The cipher the data channel starts with (first `data-ciphers` entry or
+    /// `cipher`).
+    pub fn primary_cipher(&self) -> &str {
+        self.data_ciphers
+            .first()
+            .map(String::as_str)
+            .unwrap_or(&self.cipher)
+    }
+}
+
 /// MASQUE (RFC 9298 CONNECT-UDP over HTTP/3). Only the CONNECT-UDP data path
 /// is implemented: one QUIC/HTTP/3 association, one request stream per
 /// destination, UDP payloads in `DATAGRAM` capsules. The pinned adapter's
@@ -675,6 +781,8 @@ pub enum Protocol {
     Sudoku(SudokuOutbound),
     Masque(MasqueOutbound),
     ShadowQuic(ShadowQuicOutbound),
+    Wireguard(WireguardOutbound),
+    OpenVpn(OpenVpnOutbound),
 }
 
 impl Protocol {
@@ -699,6 +807,8 @@ impl Protocol {
             Protocol::Sudoku(p) => p.dialer_proxy.as_deref(),
             Protocol::Masque(_) => None,
             Protocol::ShadowQuic(_) => None,
+            Protocol::Wireguard(_) => None,
+            Protocol::OpenVpn(_) => None,
         }
     }
 }
@@ -725,6 +835,8 @@ impl Proxy {
             Protocol::Sudoku(_) => "sudoku",
             Protocol::Masque(_) => "masque",
             Protocol::ShadowQuic(_) => "shadowquic",
+            Protocol::Wireguard(_) => "wireguard",
+            Protocol::OpenVpn(_) => "openvpn",
         }
     }
 
@@ -754,6 +866,12 @@ impl Proxy {
             Protocol::Sudoku(p) => (&p.server, p.port),
             Protocol::Masque(p) => (&p.server, p.port),
             Protocol::ShadowQuic(p) => (&p.server, p.port),
+            Protocol::Wireguard(p) => p
+                .peers
+                .first()
+                .map(|peer| (peer.server.as_str(), peer.port))
+                .unwrap_or(("", 0)),
+            Protocol::OpenVpn(p) => (&p.server, p.port),
         }
     }
 
@@ -1506,31 +1624,23 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "sudoku" => Protocol::Sudoku(parse_sudoku(&mut entry)?),
         "masque" => Protocol::Masque(parse_masque(&mut entry)?),
         "shadowquic" => Protocol::ShadowQuic(parse_shadowquic(&mut entry)?),
-        "wireguard" => {
-            return Err(entry.unsupported(
-                "protocol type 'wireguard' is not implemented: the pinned outbound terminates WireGuard (Noise IK, cookie, transport keys) and exposes TCP/UDP through a gVisor netstack; this kernel has no WireGuard transport or IP stack (device/TUN ownership is T6/T7) and no boringtun/wireguard crate is in the offline cargo cache",
-            ))
-        }
+        "wireguard" => Protocol::Wireguard(parse_wireguard(&mut entry)?),
         "tailscale" => {
             return Err(entry.unsupported(
-                "protocol type 'tailscale' is not implemented: the pinned outbound (with_gvisor) embeds the tailscale.com control plane and a gVisor netstack; device/TUN ownership is T6/T7 and no Rust tailscale stack is available offline",
+                "protocol type 'tailscale' is not implemented: the pinned outbound (with_gvisor) embeds the Tailscale control plane (controlplane.tailscale.com Noise control protocol, DERP relays, node-key registration) plus a gVisor netstack; its data path is WireGuard, which this kernel implements as a transport in outbound/wireguard.rs, but the control plane has no Rust crate in the offline cargo cache (only the Go tailscale.com module is cached) and device/TUN ownership is T6/T7",
             ))
         }
         "zerotier" => {
             return Err(entry.unsupported(
-                "protocol type 'zerotier' is not implemented: the pinned outbound wraps zerotier-go (identity, planet, control protocol, crypto) plus a gVisor netstack; device/TUN ownership is T6/T7 and no Rust zerotier stack is available offline",
+                "protocol type 'zerotier' is not implemented: the pinned outbound wraps zerotier-go (Curve25519 identity, planet/root servers, the VL1/VL2 control protocol and Salsa20/Poly1305 crypto) plus a gVisor netstack; no Zerotier Rust crate is in the offline cargo cache and device/TUN ownership is T6/T7",
             ))
         }
         "easytier" => {
             return Err(entry.unsupported(
-                "protocol type 'easytier' is not implemented: the pinned outbound embeds the easytier-go host/instance (peer discovery, encryption, KCP/QUIC proxies) plus a netstack; device/TUN ownership is T6/T7 and no Rust easytier stack is available offline",
+                "protocol type 'easytier' is not implemented: the pinned outbound embeds the easytier-go host/instance (peer discovery, encryption, KCP/QUIC proxies) plus a netstack; the upstream EasyTier project is Rust but no easytier crate is in the offline cargo cache and device/TUN ownership is T6/T7",
             ))
         }
-        "openvpn" => {
-            return Err(entry.unsupported(
-                "protocol type 'openvpn' is not implemented: the pinned outbound implements OpenVPN (TLS control channel, data ciphers, tls-auth/tls-crypt) and exposes TCP/UDP through a gVisor netstack; device/TUN ownership is T6/T7 and no Rust OpenVPN stack is available offline",
-            ))
-        }
+        "openvpn" => Protocol::OpenVpn(parse_openvpn(&mut entry)?),
 
         other => {
             return Err(ConfigError::Unsupported(format!(
@@ -3156,6 +3266,715 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
 /// userspace IP stack. This kernel implements the RFC 9298 CONNECT-UDP data
 /// path instead (see `outbound/masque.rs`), so every option that only selects
 /// the CONNECT-IP/WARP flow is rejected by name instead of being dropped.
+fn parse_wireguard(entry: &mut Entry<'_>) -> Result<WireguardOutbound, ConfigError> {
+    let private_key_text = entry.required_string("private-key")?;
+    if crate::outbound::wireguard::decode_key(&private_key_text).is_err() {
+        return Err(entry.invalid("option 'private-key' must be base64 of 32 bytes"));
+    }
+    let private_key = Secret::new(private_key_text);
+    let ip = entry.string("ip")?.filter(|value| !value.is_empty());
+    let ipv6 = entry.string("ipv6")?.filter(|value| !value.is_empty());
+    for (key, value) in [("ip", &ip), ("ipv6", &ipv6)] {
+        if let Some(value) = value {
+            if parse_wireguard_prefix(value).is_none() {
+                return Err(entry.invalid(format!(
+                    "option '{key}' value '{value}' is not an IP address or CIDR prefix"
+                )));
+            }
+        }
+    }
+    let workers = match entry.int("workers")? {
+        Some(value) if value < 0 => return Err(entry.invalid("option 'workers' must not be negative")),
+        Some(value) => u16::try_from(value)
+            .map_err(|_| entry.invalid("option 'workers' is too large"))?,
+        None => 0,
+    };
+    let mtu = match entry.int("mtu")? {
+        Some(value) if value < 0 => return Err(entry.invalid("option 'mtu' must not be negative")),
+        Some(value) => u32::try_from(value).map_err(|_| entry.invalid("option 'mtu' is too large"))?,
+        None => 0,
+    };
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let persistent_keepalive = match entry.int("persistent-keepalive")? {
+        Some(value) if !(0..=65535).contains(&value) => {
+            return Err(entry.invalid("option 'persistent-keepalive' must be in 0..=65535"))
+        }
+        Some(value) => value as u16,
+        None => 0,
+    };
+    if let Some(block) = entry.block("ip-stack")? {
+        for (key, value) in block {
+            let key = key
+                .as_str()
+                .ok_or_else(|| entry.invalid("ip-stack keys must be strings"))?;
+            match key {
+                "mode" => {
+                    let mode = value.as_str().unwrap_or("").to_ascii_lowercase();
+                    if !mode.is_empty() && mode != "auto" {
+                        return Err(entry.unsupported(format!(
+                            "option 'ip-stack.mode' value '{mode}' is not implemented: the userspace IP stack (mips/gVisor) and its TUN device belong to the T6/T7 device layer; the WireGuard transport itself is implemented and exposed to that layer"
+                        )));
+                    }
+                }
+                "congestion-controller" => {
+                    if value.as_str().is_some_and(|value| !value.is_empty()) {
+                        return Err(entry.unsupported(
+                            "option 'ip-stack.congestion-controller' is not implemented: it configures the T6/T7 userspace IP stack",
+                        ));
+                    }
+                }
+                other => {
+                    return Err(entry.unsupported(format!(
+                        "option 'ip-stack.{other}' is not implemented"
+                    )))
+                }
+            }
+        }
+    }
+    if entry
+        .block("amnezia-wg-option")?
+        .is_some_and(|block| !block.is_empty())
+    {
+        return Err(entry.unsupported(
+            "option 'amnezia-wg-option' is not implemented: AmneziaWG adds its own header obfuscation (jc/jmin/jmax/s1..s4/h1..h4, v1.5/v2/v3 variants) implemented by the pinned amneziawg-go device; no AmneziaWG crate or device is available offline, so this kernel speaks plain WireGuard only",
+        ));
+    }
+    if entry.bool("remote-dns-resolve")?.unwrap_or(false) {
+        return Err(entry.unsupported(
+            "option 'remote-dns-resolve' is not implemented: it resolves through the pinned userspace IP stack's resolver (T6/T7 device layer)",
+        ));
+    }
+    if !entry.string_list("dns")?.is_empty() {
+        return Err(entry.unsupported(
+            "option 'dns' is not implemented: it configures the pinned userspace IP stack's resolver (T6/T7 device layer)",
+        ));
+    }
+    if entry.int("refresh-server-ip-interval")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported(
+            "option 'refresh-server-ip-interval' is not implemented: it is a runtime endpoint-resolution loop around the pinned device; the transport resolves the peer endpoint once per connection",
+        ));
+    }
+    if entry
+        .string("dialer-proxy")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(
+            "option 'dialer-proxy' is not implemented for wireguard: the tunnel is one UDP socket and cannot be reached through the supported socks5 TCP hop",
+        ));
+    }
+
+    let mut peers = Vec::new();
+    if let Some(value) = entry.get("peers") {
+        let Some(sequence) = value.as_sequence() else {
+            if value.is_null() {
+                return finish_wireguard(entry, private_key, ip, ipv6, workers, mtu, udp, persistent_keepalive, Vec::new());
+            }
+            return Err(entry.invalid("option 'peers' must be a list"));
+        };
+        for (index, item) in sequence.iter().enumerate() {
+            let Some(mapping) = item.as_mapping() else {
+                return Err(entry.invalid(format!("option 'peers[{index}]' must be a mapping")));
+            };
+            peers.push(parse_wireguard_peer(entry, index, mapping)?);
+        }
+    }
+
+    if peers.is_empty() {
+        // The pinned type also accepts one peer at the top level (the
+        // `WireGuardPeerOption` fields are embedded in `WireGuardOption`).
+        let public_key = entry.string("public-key")?.filter(|value| !value.is_empty());
+        if let Some(public_key) = public_key {
+            if crate::outbound::wireguard::decode_key(&public_key).is_err() {
+                return Err(entry.invalid("option 'public-key' must be base64 of 32 bytes"));
+            }
+            let preshared_key = entry
+                .string("pre-shared-key")?
+                .filter(|value| !value.is_empty())
+                .map(Secret::new);
+            if let Some(key) = &preshared_key {
+                if crate::outbound::wireguard::decode_key(key.expose()).is_err() {
+                    return Err(entry.invalid(
+                        "option 'pre-shared-key' must be base64 of 32 bytes",
+                    ));
+                }
+            }
+            let reserved_value = entry.get("reserved");
+            let reserved = parse_wireguard_reserved(entry, "reserved", reserved_value)?;
+            let allowed_ips = entry.string_list("allowed-ips")?;
+            let allowed_ips = if allowed_ips.is_empty() {
+                let mut defaults = Vec::new();
+                if ip.is_some() {
+                    defaults.push("0.0.0.0/0".to_string());
+                }
+                if ipv6.is_some() {
+                    defaults.push("::/0".to_string());
+                }
+                defaults
+            } else {
+                allowed_ips
+            };
+            let server = entry.string("server")?.unwrap_or_default();
+            let port = match entry.int("port")? {
+                Some(value) if (1..=65535).contains(&value) => value as u16,
+                Some(_) => return Err(entry.invalid("option 'port' must be in 1..=65535")),
+                None => 0,
+            };
+            if server.is_empty() || port == 0 {
+                return Err(entry.invalid(
+                    "a single WireGuard peer needs 'server' and 'port' (or put the peer in 'peers')",
+                ));
+            }
+            peers.push(WireguardPeerOutbound {
+                server,
+                port,
+                public_key,
+                preshared_key,
+                reserved,
+                allowed_ips,
+            });
+        }
+    }
+
+    finish_wireguard(entry, private_key, ip, ipv6, workers, mtu, udp, persistent_keepalive, peers)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_wireguard(
+    entry: &mut Entry<'_>,
+    private_key: Secret,
+    ip: Option<String>,
+    ipv6: Option<String>,
+    workers: u16,
+    mtu: u32,
+    udp: bool,
+    persistent_keepalive: u16,
+    peers: Vec<WireguardPeerOutbound>,
+) -> Result<WireguardOutbound, ConfigError> {
+    if peers.is_empty() {
+        return Err(entry.invalid(
+            "missing required option 'peers' (or the single-peer 'public-key'/'server'/'port' form)",
+        ));
+    }
+    // The single-peer fields are part of the pinned type even when `peers:`
+    // is used; Mihomo ignores them then, so reading them is a no-op here.
+    let _ = entry.string("public-key")?;
+    let _ = entry.string("pre-shared-key")?;
+    let _ = entry.string_list("allowed-ips")?;
+    let _ = entry.string("server")?;
+    let _ = entry.int("port")?;
+    entry.get("reserved");
+    let allowed = [
+        "name",
+        "type",
+        "private-key",
+        "ip",
+        "ipv6",
+        "workers",
+        "mtu",
+        "udp",
+        "persistent-keepalive",
+        "ip-stack",
+        "amnezia-wg-option",
+        "peers",
+        "remote-dns-resolve",
+        "dns",
+        "refresh-server-ip-interval",
+        "server",
+        "port",
+        "public-key",
+        "pre-shared-key",
+        "reserved",
+        "allowed-ips",
+        "dialer-proxy",
+    ];
+    entry.reject_unknown(&allowed, false, None)?;
+    Ok(WireguardOutbound {
+        private_key,
+        ip,
+        ipv6,
+        workers,
+        mtu,
+        udp,
+        persistent_keepalive,
+        peers,
+    })
+}
+
+fn parse_wireguard_peer(
+    entry: &Entry<'_>,
+    index: usize,
+    mapping: &serde_yaml::Mapping,
+) -> Result<WireguardPeerOutbound, ConfigError> {
+    let mut server = None;
+    let mut port = 0u16;
+    let mut public_key = None;
+    let mut preshared_key = None;
+    let mut reserved_value = None;
+    let mut allowed_ips = Vec::new();
+    for (key, value) in mapping {
+        let Some(key) = key.as_str() else {
+            return Err(entry.invalid(format!("option 'peers[{index}]' keys must be strings")));
+        };
+        match key {
+            "server" => server = Some(wireguard_peer_string(value).unwrap_or_default()),
+            "port" => {
+                let parsed = match value {
+                    serde_yaml::Value::Number(number) => number.as_u64(),
+                    serde_yaml::Value::String(text) => text.parse::<u64>().ok(),
+                    _ => None,
+                };
+                port = match parsed {
+                    Some(value) if (1..=65535).contains(&value) => value as u16,
+                    Some(_) => {
+                        return Err(entry.invalid(format!(
+                            "option 'peers[{index}].port' must be in 1..=65535"
+                        )))
+                    }
+                    None => 0,
+                };
+            }
+            "public-key" => {
+                public_key = wireguard_peer_string(value);
+            }
+            "pre-shared-key" => {
+                preshared_key = wireguard_peer_string(value).map(Secret::new);
+            }
+            "reserved" => reserved_value = Some(value),
+            "allowed-ips" => {
+                if let serde_yaml::Value::Sequence(items) = value {
+                    for item in items {
+                        if let serde_yaml::Value::String(item) = item {
+                            allowed_ips.push(item.clone());
+                        } else {
+                            return Err(entry.invalid(format!(
+                                "option 'peers[{index}].allowed-ips' entries must be strings"
+                            )));
+                        }
+                    }
+                } else if !value.is_null() {
+                    return Err(entry.invalid(format!(
+                        "option 'peers[{index}].allowed-ips' must be a list"
+                    )));
+                }
+            }
+            // The pinned decoder tolerates keys it does not know, and the peer
+            // table above is complete for v1.19.34.
+            _ => {}
+        }
+    }
+    let public_key = public_key
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| entry.invalid(format!("missing required option 'peers[{index}].public-key'")))?;
+    if crate::outbound::wireguard::decode_key(&public_key).is_err() {
+        return Err(entry.invalid(format!(
+            "option 'peers[{index}].public-key' must be base64 of 32 bytes"
+        )));
+    }
+    if let Some(key) = &preshared_key {
+        if crate::outbound::wireguard::decode_key(key.expose()).is_err() {
+            return Err(entry.invalid(format!(
+                "option 'peers[{index}].pre-shared-key' must be base64 of 32 bytes"
+            )));
+        }
+    }
+    if allowed_ips.is_empty() {
+        return Err(entry.invalid(format!(
+            "missing required option 'peers[{index}].allowed-ips' (the pinned device rejects a peer without one)"
+        )));
+    }
+    for allowed in &allowed_ips {
+        if parse_wireguard_prefix(allowed).is_none() {
+            return Err(entry.invalid(format!(
+                "option 'peers[{index}].allowed-ips' value '{allowed}' is not an IP prefix"
+            )));
+        }
+    }
+    let reserved = parse_wireguard_reserved(entry, &format!("peers[{index}].reserved"), reserved_value)?;
+    let server = server.unwrap_or_default();
+    if server.is_empty() || port == 0 {
+        return Err(entry.invalid(format!(
+            "option 'peers[{index}]' needs 'server' and 'port'"
+        )));
+    }
+    Ok(WireguardPeerOutbound {
+        server,
+        port,
+        public_key,
+        preshared_key,
+        reserved,
+        allowed_ips,
+    })
+}
+
+fn wireguard_peer_string(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(text) => Some(text.clone()),
+        serde_yaml::Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn parse_wireguard_reserved(
+    entry: &Entry<'_>,
+    name: &str,
+    value: Option<&serde_yaml::Value>,
+) -> Result<Vec<u8>, ConfigError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_sequence() else {
+        if value.is_null() {
+            return Ok(Vec::new());
+        }
+        return Err(entry.invalid(format!("option '{name}' must be a list of three bytes")));
+    };
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+    if items.len() != 3 {
+        return Err(entry.invalid(format!(
+            "option '{name}' must have exactly 3 bytes (the pinned device rejects any other length)"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(3);
+    for item in items {
+        let byte = match item {
+            serde_yaml::Value::Number(number) => number.as_u64(),
+            serde_yaml::Value::String(text) => text.parse::<u64>().ok(),
+            _ => None,
+        };
+        match byte {
+            Some(byte) if byte <= 255 => bytes.push(byte as u8),
+            _ => {
+                return Err(entry.invalid(format!(
+                    "option '{name}' entries must be bytes in 0..=255"
+                )))
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn parse_wireguard_prefix(value: &str) -> Option<(std::net::IpAddr, u8)> {
+    use std::net::IpAddr;
+    match value.split_once('/') {
+        Some((address, prefix)) => {
+            let address = address.parse::<IpAddr>().ok()?;
+            let prefix = prefix.parse::<u8>().ok()?;
+            let max = if address.is_ipv4() { 32 } else { 128 };
+            (prefix <= max).then_some((address, prefix))
+        }
+        None => value.parse::<IpAddr>().ok().map(|address| {
+            let max = if address.is_ipv4() { 32 } else { 128 };
+            (address, max)
+        }),
+    }
+}
+
+fn openvpn_cipher(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_uppercase();
+    match normalized.as_str() {
+        "" => Some("AES-128-GCM".to_string()),
+        "AES-CBC" => Some("AES-128-CBC".to_string()),
+        "AES-128-GCM" | "AES-192-GCM" | "AES-256-GCM" | "CHACHA20-POLY1305"
+        | "AES-128-CBC" | "AES-192-CBC" | "AES-256-CBC" => Some(normalized),
+        _ => None,
+    }
+}
+
+fn openvpn_is_aead(cipher: &str) -> bool {
+    matches!(
+        cipher,
+        "AES-128-GCM" | "AES-192-GCM" | "AES-256-GCM" | "CHACHA20-POLY1305"
+    )
+}
+
+fn openvpn_auth(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_uppercase();
+    match normalized.as_str() {
+        "" => Some("SHA256".to_string()),
+        "MD5" | "SHA1" | "SHA256" | "SHA384" | "SHA512" => Some(normalized),
+        "SHA-1" => Some("SHA1".to_string()),
+        _ => None,
+    }
+}
+
+fn parse_openvpn(entry: &mut Entry<'_>) -> Result<OpenVpnOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    let proto = match entry.string("proto")?.unwrap_or_default() {
+        value if value.trim().is_empty() => "udp".to_string(),
+        value => match value.trim().to_ascii_lowercase().as_str() {
+            "udp" | "udp4" => "udp".to_string(),
+            "tcp" | "tcp-client" | "tcp4" | "tcp4-client" => "tcp".to_string(),
+            other => {
+                return Err(entry.unsupported(format!(
+                    "option 'proto' value '{other}' is not implemented (udp and tcp are supported)"
+                )))
+            }
+        },
+    };
+    let dev = entry.string("dev")?.unwrap_or_else(|| "tun".to_string());
+    if !dev.eq_ignore_ascii_case("tun") {
+        return Err(entry.unsupported(format!(
+            "option 'dev' value '{dev}' is not implemented: the pinned adapter accepts only 'tun'"
+        )));
+    }
+    let cipher = match entry.string("cipher")? {
+        Some(value) => openvpn_cipher(&value).ok_or_else(|| {
+            entry.invalid(format!("option 'cipher' value '{value}' is not an OpenVPN cipher"))
+        })?,
+        None => "AES-128-GCM".to_string(),
+    };
+    if !openvpn_is_aead(&cipher) {
+        return Err(entry.unsupported(format!(
+            "option 'cipher' value '{cipher}' is not implemented: the CBC data channel (CBC + HMAC padding) is not implemented; AEAD ciphers AES-128/192/256-GCM and CHACHA20-POLY1305 are"
+        )));
+    }
+    let mut data_ciphers = Vec::new();
+    // The pinned type is `[]string`; YAML usually supplies a sequence, but
+    // the Go decoder also accepts one colon-separated string.
+    let raw_data_ciphers = match entry.get("data-ciphers") {
+        Some(serde_yaml::Value::String(value)) => vec![value.clone()],
+        Some(serde_yaml::Value::Sequence(_)) => entry.string_list("data-ciphers")?,
+        Some(serde_yaml::Value::Null) | None => Vec::new(),
+        Some(other) => {
+            return Err(entry.invalid(format!(
+                "option 'data-ciphers' must be a list or a colon-separated string, found {}",
+                crate::config::kind_name(other)
+            )))
+        }
+    };
+    for value in raw_data_ciphers {
+        // The pinned option is a colon-separated list in each string.
+        for item in value.split(':') {
+            let normalized = openvpn_cipher(item).ok_or_else(|| {
+                entry.invalid(format!(
+                    "option 'data-ciphers' value '{item}' is not an OpenVPN cipher"
+                ))
+            })?;
+            if !openvpn_is_aead(&normalized) {
+                return Err(entry.unsupported(format!(
+                    "option 'data-ciphers' value '{normalized}' is not implemented: only the AEAD data ciphers are (the CBC data channel is not)"
+                )));
+            }
+            data_ciphers.push(normalized);
+        }
+    }
+    let data_cipher_fallback = entry
+        .string("data-ciphers-fallback")?
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            openvpn_cipher(&value).ok_or_else(|| {
+                entry.invalid(format!(
+                    "option 'data-ciphers-fallback' value '{value}' is not an OpenVPN cipher"
+                ))
+            })
+        })
+        .transpose()?;
+    if let Some(fallback) = &data_cipher_fallback {
+        if !openvpn_is_aead(fallback) {
+            return Err(entry.unsupported(format!(
+                "option 'data-ciphers-fallback' value '{fallback}' is not implemented: only AEAD data ciphers are"
+            )));
+        }
+    }
+    let auth = match entry.string("auth")? {
+        Some(value) => openvpn_auth(&value).ok_or_else(|| {
+            entry.invalid(format!("option 'auth' value '{value}' is not an OpenVPN auth digest"))
+        })?,
+        None => "SHA256".to_string(),
+    };
+    let comp_lzo = entry.string("comp-lzo")?.unwrap_or_default();
+    if matches!(comp_lzo.trim().to_ascii_lowercase().as_str(), "yes" | "adaptive") {
+        return Err(entry.unsupported(
+            "option 'comp-lzo' is not implemented: OpenVPN compression changes the data channel payload (LZO/LZ4 framing) and the pinned adapter only accepts the disabled form",
+        ));
+    }
+    let ca = Secret::new(entry.required_string("ca")?);
+    if !ca.expose().contains("BEGIN CERTIFICATE") {
+        return Err(entry.invalid(
+            "option 'ca' must be an inline PEM certificate (the pinned type has no file-path form)",
+        ));
+    }
+    let cert = entry.string("cert")?.filter(|value| !value.is_empty()).map(Secret::new);
+    let key = entry.string("key")?.filter(|value| !value.is_empty()).map(Secret::new);
+    if cert.is_some() != key.is_some() {
+        return Err(entry.invalid(
+            "options 'cert' and 'key' must be set together (the pinned TLS client needs both or neither)",
+        ));
+    }
+    if let Some(cert) = &cert {
+        if !cert.expose().contains("BEGIN CERTIFICATE") {
+            return Err(entry.invalid("option 'cert' must be an inline PEM certificate"));
+        }
+    }
+    if let Some(key) = &key {
+        if !key.expose().contains("PRIVATE KEY") {
+            return Err(entry.invalid("option 'key' must be an inline PEM private key"));
+        }
+    }
+    let tls_auth = entry.string("tls-auth")?.filter(|value| !value.is_empty()).map(Secret::new);
+    let tls_crypt = entry.string("tls-crypt")?.filter(|value| !value.is_empty()).map(Secret::new);
+    let tls_crypt_v2 = entry
+        .string("tls-crypt-v2")?
+        .filter(|value| !value.is_empty())
+        .map(Secret::new);
+    if let Some(value) = [&tls_auth, &tls_crypt, &tls_crypt_v2].into_iter().find(|value| value.is_some()) {
+        let name = if tls_auth.is_some() {
+            "tls-auth"
+        } else if tls_crypt.is_some() {
+            "tls-crypt"
+        } else {
+            "tls-crypt-v2"
+        };
+        let _ = value;
+        return Err(entry.unsupported(format!(
+            "option '{name}' is not implemented: protecting control packets needs the OpenVPN static-key codec (HMAC-SHA1/SHA256, AES-256-CTR and the tls-crypt-v2 wrapped key); the control channel itself is implemented and verified without it"
+        )));
+    }
+    let key_direction = entry.string("key-direction")?.filter(|value| !value.is_empty());
+    let username = entry.string("username")?.filter(|value| !value.is_empty()).map(Secret::new);
+    let password = entry.string("password")?.filter(|value| !value.is_empty()).map(Secret::new);
+    let peer_info = entry.string_map("peer-info")?;
+    let ping = wireguard_u16(entry, "ping", 0)?;
+    let ping_restart = wireguard_u16(entry, "ping-restart", 0)?;
+    let tran_window = match entry.int("tran-window")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'tran-window' must not be negative"))
+        }
+        Some(value) => value,
+        None => 0,
+    };
+    let handshake_timeout = wireguard_u16(entry, "handshake-timeout", 0)?;
+    let mtu = wireguard_u16(entry, "mtu", 0)?;
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    if let Some(block) = entry.block("ip-stack")? {
+        for (key, value) in block {
+            let key = key
+                .as_str()
+                .ok_or_else(|| entry.invalid("ip-stack keys must be strings"))?;
+            match key {
+                "mode" => {
+                    let mode = value.as_str().unwrap_or("").to_ascii_lowercase();
+                    if !mode.is_empty() && mode != "auto" {
+                        return Err(entry.unsupported(format!(
+                            "option 'ip-stack.mode' value '{mode}' is not implemented: the userspace IP stack and TUN device belong to the T6/T7 device layer; the OpenVPN control and data channels are implemented and exposed to that layer"
+                        )));
+                    }
+                }
+                "congestion-controller" => {
+                    if value.as_str().is_some_and(|value| !value.is_empty()) {
+                        return Err(entry.unsupported(
+                            "option 'ip-stack.congestion-controller' is not implemented: it configures the T6/T7 userspace IP stack",
+                        ));
+                    }
+                }
+                other => {
+                    return Err(entry.unsupported(format!(
+                        "option 'ip-stack.{other}' is not implemented"
+                    )))
+                }
+            }
+        }
+    }
+    let remote_dns_resolve = entry.bool("remote-dns-resolve")?.unwrap_or(false);
+    if remote_dns_resolve {
+        return Err(entry.unsupported(
+            "option 'remote-dns-resolve' is not implemented: it resolves through the pinned userspace IP stack's resolver (T6/T7 device layer)",
+        ));
+    }
+    let dns = entry.string_list("dns")?;
+    if !dns.is_empty() {
+        return Err(entry.unsupported(
+            "option 'dns' is not implemented: it configures the pinned userspace IP stack's resolver (T6/T7 device layer)",
+        ));
+    }
+    if entry
+        .string("dialer-proxy")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(
+            "option 'dialer-proxy' is not implemented for openvpn: the control channel is one UDP/TCP socket and cannot be reached through the supported socks5 TCP hop",
+        ));
+    }
+    let allowed = [
+        "name",
+        "type",
+        "server",
+        "port",
+        "proto",
+        "dev",
+        "cipher",
+        "data-ciphers",
+        "data-ciphers-fallback",
+        "auth",
+        "comp-lzo",
+        "ca",
+        "cert",
+        "key",
+        "tls-auth",
+        "key-direction",
+        "tls-crypt",
+        "tls-crypt-v2",
+        "username",
+        "password",
+        "peer-info",
+        "ping",
+        "ping-restart",
+        "tran-window",
+        "handshake-timeout",
+        "mtu",
+        "udp",
+        "ip-stack",
+        "remote-dns-resolve",
+        "dns",
+        "dialer-proxy",
+    ];
+    entry.reject_unknown(&allowed, false, None)?;
+    Ok(OpenVpnOutbound {
+        server,
+        port,
+        proto,
+        dev,
+        cipher,
+        data_ciphers,
+        data_cipher_fallback,
+        auth,
+        comp_lzo,
+        ca,
+        cert,
+        key,
+        tls_auth,
+        key_direction,
+        tls_crypt,
+        tls_crypt_v2,
+        username,
+        password,
+        peer_info,
+        ping,
+        ping_restart,
+        tran_window,
+        handshake_timeout,
+        mtu,
+        udp,
+        remote_dns_resolve,
+        dns,
+    })
+}
+
+fn wireguard_u16(entry: &mut Entry<'_>, key: &str, default: u16) -> Result<u16, ConfigError> {
+    match entry.int(key)? {
+        Some(value) if !(0..=65535).contains(&value) => {
+            Err(entry.invalid(format!("option '{key}' must be in 0..=65535")))
+        }
+        Some(value) => Ok(value as u16),
+        None => Ok(default),
+    }
+}
+
 fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;

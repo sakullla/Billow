@@ -23,11 +23,19 @@ the pinned Cloudflare WARP CONNECT-IP flow (`cf-connect-ip` + a userspace IP
 stack) is rejected by name. T15 added `shadowquic`: the JLS ClientHello /
 ServerHello random seal is an independent implementation of the locked
 `jls-tls` algorithm, injected into rustls's own ClientHello through a
-recorded-random replay, over the same `quinn` transport. The device families
-(`wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn`) are rejected by
-name, with device/TUN ownership assigned to T6/T7. The T10/T14/T15 families
-are partial: their gaps are named in [Not implemented](#not-implemented) and
-in `tool/kernel-compat/evidence/rust-mapping.json`.
+recorded-random replay, over the same `quinn` transport. T16 added the
+protocol halves of `wireguard` (Noise IK handshake, cookie reply, transport
+keys, replay window and keepalive, verified against the locked
+`metacubex/wireguard-go` device) and `openvpn` (UDP/TCP control channel,
+TLS 1.2/1.3 client authentication, key-method 2 and the AEAD data channel,
+verified against OpenVPN 2.7.9), plus the mesh families' configuration
+decisions: `tailscale`, `zerotier` and `easytier` are rejected by name because
+their control planes are not available offline. Device/TUN ownership and the
+userspace IP stack stay with T6/T7, so both implemented families load a valid
+configuration and refuse every `dial()` with that gap named. The T10/T14/T15/
+T16 families are partial: their gaps are named in
+[Not implemented](#not-implemented) and in
+`tool/kernel-compat/evidence/rust-mapping.json`.
 **Not implemented yet** (rejected with
 `[unsupported]`, never ignored): DNS and `hosts`, proxy groups and providers,
 the control API (`external-controller`, `proxy-providers`, rules beyond the
@@ -49,6 +57,8 @@ native-kernel/
     │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, sudoku/
     │   │                           # (codec, record, kip, table, go_rand), masque,
     │   │                           # shadowquic + jls (recorded-random TLS hook),
+    │   │                           # wireguard (Noise IK/transport) and openvpn
+    │   │                           # (control/TLS/key-method 2/AEAD data channel),
     │   │                           # quic, h3 + tls, ws, h2
     │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid,
     │   │                           # sudoku key-material canonicalisation
@@ -60,6 +70,7 @@ native-kernel/
     │   └── tests/                  # config, protocols (loopback peers + sudoku codec
     │                               # vectors), sessions, mihomo_peers (pinned Mihomo),
     │                               # shadowquic_stream (stream/control reopen),
+    │                               # wireguard_peer/openvpn_peer (controlled peers),
     │                               # data/shadowquic-jls.txt (locked JLS hello vectors),
     │                               # cli/family args, common/ helpers
     └── billow-kernel-cli/          # binary `billow-kernel`
@@ -212,17 +223,20 @@ the association ends with its control connection or after
 
 The pinned parser lists 28 outbound types. Thirteen are implemented
 (`ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`, `vmess`, `snell`,
-`trusttunnel`, `gost-relay`, `ssr`, `mieru`, `sudoku`) and three are partial
+`trusttunnel`, `gost-relay`, `ssr`, `mieru`, `sudoku`) and five are partial
 (`ssh`, which opens one client per dial and rejects private-key file paths;
 `masque`, which implements CONNECT-UDP but not the pinned CONNECT-IP/IP stack;
 `shadowquic`, which implements TCP/UDP and JLS but rejects `zero-rtt`, QUIC
-`v2` and the private Brutal congestion options).
-The remaining types are rejected by name at load time, so no configuration is
+`v2` and the private Brutal congestion options; `wireguard` and `openvpn`,
+whose protocol transports are implemented but whose TCP/UDP dial needs the
+T6/T7 userspace IP stack and TUN device).
+The remaining mesh types are rejected by name at load time, so no configuration is
 silently reduced:
 
 | families | why not here | task / decision |
 | --- | --- | --- |
-| `wireguard`, `tailscale`, `zerotier`, `easytier`, `openvpn` | full VPN protocols that terminate a tunnel and expose TCP/UDP through an IP stack (gVisor in the pinned build); device/TUN ownership is T6/T7, and no WireGuard/mesh/OpenVPN crate is in the offline cache | **T10 rejected by name**; device/TUN ownership is T6/T7, the transport would be a separate task |
+| `wireguard`, `openvpn` | the protocol halves are implemented (`src/outbound/wireguard.rs`, `src/outbound/openvpn.rs`) and verified against controlled peers, but turning their IP packets into TCP streams needs the userspace IP stack and TUN device owned by T6/T7 | **T16**: transport + configuration semantics; a `dial()` names the T6/T7 device gap. `outbound::wireguard::WireguardTunnel` and `outbound::openvpn::OpenVpnTunnel` are the interfaces for that layer |
+| `tailscale`, `zerotier`, `easytier` | control planes are external services and no Rust implementation is in the offline cargo cache: Tailscale's `controlplane.tailscale.com` Noise control + DERP relays, ZeroTier's identity/planet/VL1/VL2, EasyTier's host/discovery (the upstream project is Rust but no `easytier` crate is cached); all three also need the T6/T7 IP stack | **T16 rejected by name** with the missing dependency recorded; the Tailscale data path's WireGuard transport is already available |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
 
 T13's families are implemented in the single-session TCP slice: `mieru` is an
@@ -301,8 +315,8 @@ build, so it is not used. `russh` 0.56 declares MSRV 1.85 but its transitive
 (`uuid` 1.29.3 already declared 1.89 in the previous lock), so T11 raised the
 workspace `rust-version` to 1.89 instead of shipping an inconsistent MSRV.
 `03-execution-plan.md`
-defines T9/T11 (non-QUIC), T10 (QUIC and device families) and T5's integration
-of their output. The capability index
+defines T9/T11 (non-QUIC), T10 (QUIC), T16 (device-family protocol halves;
+device/TUN and the IP stack remain T6/T7) and T5's integration of their output. The capability index
 records the implemented families as `implemented`, the T11 ones as `partial`
 with the missing options, and the rest as `unimplemented`; none can be
 reported as compatible.
@@ -349,9 +363,19 @@ authenticated session ticket), `quic-versions: v2` (quinn 0.11 implements v1
 only), `congestion-controller`/`bbr-profile`/a non-default `cwnd`/`up`/`down`
 (the private Brutal controller is not in quinn) and `dialer-proxy`; its
 `skip-cert-verify`/`udp`/`tls` keys are not declared by the pinned type, so
-they load and are ignored exactly as Mihomo ignores them. The device families
-are rejected as whole types with the missing stack named (WireGuard
-Noise/IP stack, mesh control planes, OpenVPN), never loaded as if compatible.
+they load and are ignored exactly as Mihomo ignores them. `wireguard` rejects
+`amnezia-wg-option` (AmneziaWG's header obfuscation is a different device,
+implemented by the pinned `amneziawg-go`), an explicit `ip-stack` mode /
+congestion controller, `remote-dns-resolve`/`dns` (the stack resolver),
+`refresh-server-ip-interval` (the runtime endpoint loop) and `dialer-proxy`;
+its `mtu`/`workers`/`udp`/`persistent-keepalive` and both peer forms are
+accepted and used by the transport. `openvpn` rejects `tls-auth`/`tls-crypt`/
+`tls-crypt-v2` (the static-key control-packet codec), `comp-lzo: yes|adaptive`
+(compression), the CBC data ciphers and a non-`tun` `dev`; it implements the
+AEAD data ciphers, the `data-ciphers` negotiation, inline `ca`/`cert`/`key`,
+username/password, `peer-info`, UDP and TCP framing. The mesh families
+(`tailscale`, `zerotier`, `easytier`) are rejected as whole types with the
+missing control plane named, never loaded as if compatible.
 `udp: false` is accepted for a family that has no UDP association because it
 states the same thing this kernel does; `udp` is not a
 Mihomo HTTP option at all and is rejected there. Unsupported protocol types are
@@ -646,7 +670,8 @@ node --test tool/kernel-compat/runner.test.mjs
 # controlled peers for the families with no Mihomo listener (gost-relay, ssh,
 # ssr), the independent Go SSR peers (including the pinned-client cross-check),
 # the pinned SSR cipher vectors and the locked Sudoku codec vectors (the pinned
-# table/encoders plus the Rust-vs-Go differential test); needs `go`
+# table/encoders plus the Rust-vs-Go differential test); T16 adds the
+# wireguard-go device peer and the OpenVPN 2.7.9 binary peer; needs `go`
 tool/kernel-compat/family-peers.sh
 ```
 
@@ -665,7 +690,13 @@ tool/kernel-compat/family-peers.sh
   against the 40,000,000-byte budget. There is no JLS crate and no
   WireGuard/mesh/OpenVPN crate in the offline cargo cache; `shadowquic`
   implements the JLS seal in-tree and the locked Go package is a vector
-  generator only. `quinn-proto` and `typenum` are direct dependencies because
+  generator only. T16 implements the WireGuard Noise IK/transport in-tree with
+  the already-locked `blake2` 0.10.6 (new direct dependency), `x25519-dalek`,
+  `chacha20poly1305` and `rand`, and the OpenVPN control/data channel with
+  `rustls`+`ring`, `aes-gcm`, `chacha20poly1305`, `hmac`/`sha1` and the MD5
+  already in `keys.rs`. Their peer runs are macOS arm64 only (the OpenVPN
+  binary is the Homebrew 2.7.9 bottle; the WireGuard peer is built from the
+  cached MIT module). `quinn-proto` and `typenum` are direct dependencies because
   the JLS session wrapper needs `quinn_proto::crypto::Session` and the
   32-byte GCM nonce; both were already in the lockfile. The JLS ClientHello is
   produced by a recorded-random replay of rustls's own hello; if a future

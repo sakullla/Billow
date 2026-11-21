@@ -1,0 +1,35 @@
+# T16 mesh control-plane parity: the pinned Mihomo accepts these valid
+# configurations; the Rust kernel rejects each by name (no control plane).
+# Binary: tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 (v1.19.34)
+# Platform: macOS arm64, 2026-11-22
+#
+# tailscale
+#   mihomo -t -d <dir> -f tailscale.yaml
+#   -> configuration file .../tailscale.yaml test is successful
+#   Rust: [unsupported] proxies[0] (name=m, type=tailscale): ... Tailscale
+#         control plane ... no Rust crate in the offline cargo cache ... T6/T7
+#
+# zerotier
+#   config: {name: m, type: zerotier, network: 8056c2e21c000001}
+#   mihomo -t -d <dir> -f zerotier.yaml
+#   -> configuration file .../zerotier.yaml test is successful
+#   Rust: [unsupported] proxies[0] (name=m, type=zerotier): ... Zerotier Rust
+#         crate ... offline cargo cache ... T6/T7
+#
+# easytier
+#   config: {name: m, type: easytier, network-name: billow-test,
+#            network-secret: billow-secret, peers: ['udp://127.0.0.1:11010']}
+#   mihomo -t -d <dir> -f easytier.yaml
+#   -> configuration file .../easytier.yaml test is successful
+#   Rust: [unsupported] proxies[0] (name=m, type=easytier): ... easytier crate
+#         ... offline cargo cache ... T6/T7
+#
+# Invalid shapes (tailscale without server, zerotier without network,
+# easytier without a peer/listener) fail in both implementations, but the
+# pinned binary's validation is not reproduced: the Rust kernel rejects the
+# whole type first, which is the recorded decision.
+#
+# Reproduce the Rust side:
+#   cargo test --locked --test config mesh_control_planes_reject_configs_the_pinned_binary_accepts_by_name
+Rust test: tests/config.rs::mesh_control_planes_reject_configs_the_pinned_binary_accepts_by_name
+Status: pass

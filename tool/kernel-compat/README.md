@@ -22,7 +22,9 @@ node tool/kernel-compat/capability.mjs --cache tool/kernel-compat/.cache \
 # Rust kernel CLI (workspace member billow-kernel-cli, binary billow-kernel)
 cargo build --release --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel-cli
 
-# Controlled peers for families with no Mihomo listener (gost-relay, ssh, ssr),
+# Controlled peers for families with no Mihomo listener (gost-relay, ssh, ssr)
+# and the T16 device families (WireGuard via the locked wireguard-go device,
+# OpenVPN 2.7.9 via the Homebrew binary with --dev null),
 # the independent Go SSR server and the pinned SSR stream-cipher vectors;
 # needs `go`
 tool/kernel-compat/family-peers.sh

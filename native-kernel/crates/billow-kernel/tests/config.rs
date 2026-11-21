@@ -288,9 +288,9 @@ rules:
 
 #[test]
 fn unimplemented_protocol_and_option_name_the_field() {
-    let e = proxy_err("proxies:\n  - {name: s1, type: wireguard, server: x, port: 1}\nrules: ['MATCH,DIRECT']\n");
+    let e = proxy_err("proxies:\n  - {name: s1, type: tailscale, server: x, port: 1}\nrules: ['MATCH,DIRECT']\n");
     assert!(e.starts_with("unsupported"), "{e}");
-    assert!(e.contains("proxies[0] (name=s1, type=wireguard)"), "{e}");
+    assert!(e.contains("proxies[0] (name=s1, type=tailscale)"), "{e}");
     let e = proxy_err("proxies:\n  - {name: v, type: vless, server: x, port: 1, uuid: 9d0cb9d0964f4ef6897d6c6b3ccf9e68, tls: true, reality-opts: {public-key: k}}\nrules: ['MATCH,DIRECT']\n");
     assert!(
         e.contains("option 'reality-opts' is not implemented"),
@@ -1038,12 +1038,172 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
 
 #[test]
 fn deferred_families_name_their_decision() {
-    for (kind, needle) in [("wireguard", "WireGuard")] {
+    for (kind, needle) in [
+        ("tailscale", "Tailscale control plane"),
+        ("zerotier", "Zerotier Rust crate"),
+        ("easytier", "easytier crate"),
+    ] {
         let yaml = format!("proxies:\n  - {{name: p, type: {kind}, server: x, port: 1}}\nrules: ['MATCH,p']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("type={kind}")), "{kind}: {e}");
         assert!(e.contains("is not implemented"), "{kind}: {e}");
         assert!(e.contains(needle), "{kind}: {e}");
+    }
+}
+
+#[test]
+fn wireguard_accepts_the_pinned_shapes_and_names_its_gaps() {
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    // `peers:` form with the three reserved bytes and a pre-shared key.
+    assert_eq!(
+        proxy_err(&format!(
+            "proxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, ip: 10.13.13.2, ipv6: fd00::2, mtu: 1420, udp: true, persistent-keepalive: 25, peers: [{{server: 127.0.0.1, port: 51820, public-key: {KEY}, pre-shared-key: {KEY}, reserved: [1, 2, 3], allowed-ips: [0.0.0.0/0, '::/0']}}]}}\nrules: ['MATCH,wg']\n"
+        )),
+        "ok"
+    );
+    // The embedded single-peer form defaults its allowed IPs from ip/ipv6.
+    assert_eq!(
+        proxy_err(&format!(
+            "proxies:\n  - {{name: wg, type: wireguard, server: 127.0.0.1, port: 51820, private-key: {KEY}, ip: 10.13.13.2, public-key: {KEY}}}\nrules: ['MATCH,wg']\n"
+        )),
+        "ok"
+    );
+    // A bad key is a load failure that names the option, not a runtime one.
+    let e = proxy_err(
+        "proxies:\n  - {name: wg, type: wireguard, private-key: nope, peers: [{server: 127.0.0.1, port: 1, public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, allowed-ips: [0.0.0.0/0]}]}\nrules: ['MATCH,wg']\n",
+    );
+    assert!(e.contains("option 'private-key'"), "{e}");
+    // The pinned AmneziaWG extension is a different device implementation.
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 1, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}], amnezia-wg-option: {{jc: 4}}}}\nrules: ['MATCH,wg']\n"
+    ));
+    assert!(e.contains("amnezia-wg-option"), "{e}");
+    assert!(e.contains("amneziawg-go"), "{e}");
+    // The userspace IP stack belongs to the T6/T7 device layer.
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 1, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}], ip-stack: {{mode: gvisor}}}}\nrules: ['MATCH,wg']\n"
+    ));
+    assert!(e.contains("ip-stack.mode"), "{e}");
+    assert!(e.contains("T6/T7"), "{e}");
+    // A peer without allowed IPs is rejected by the pinned device too.
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 1, public-key: {KEY}}}]}}\nrules: ['MATCH,wg']\n"
+    ));
+    assert!(e.contains("allowed-ips"), "{e}");
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 1, public-key: {KEY}, reserved: [1, 2], allowed-ips: [0.0.0.0/0]}}]}}\nrules: ['MATCH,wg']\n"
+    ));
+    assert!(e.contains("reserved"), "{e}");
+}
+
+#[test]
+fn openvpn_accepts_the_pinned_shapes_and_names_its_gaps() {
+    let ca = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+    let cert = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+    let key = "-----BEGIN PRIVATE KEY-----\\nMIIB\\n-----END PRIVATE KEY-----";
+    assert_eq!(
+        proxy_err(&format!(
+            "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, proto: udp, cipher: AES-256-GCM, auth: SHA256, ca: \"{ca}\", cert: \"{cert}\", key: \"{key}\", username: u, password: p, data-ciphers: [AES-256-GCM, CHACHA20-POLY1305], ping: 10}}\nrules: ['MATCH,ov']\n"
+        )),
+        "ok"
+    );
+    // The transport accepts TCP framing too; the data channel is unchanged.
+    assert_eq!(
+        proxy_err(&format!(
+            "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, proto: tcp, ca: \"{ca}\"}}\nrules: ['MATCH,ov']\n"
+        )),
+        "ok"
+    );
+    // CBC data channels and the control-channel static keys are explicit gaps.
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, cipher: AES-256-CBC, ca: \"{ca}\"}}\nrules: ['MATCH,ov']\n"
+    ));
+    assert!(e.contains("AES-256-CBC"), "{e}");
+    assert!(e.contains("not implemented"), "{e}");
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\", tls-crypt: secret}}\nrules: ['MATCH,ov']\n"
+    ));
+    assert!(e.contains("tls-crypt"), "{e}");
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\", comp-lzo: yes}}\nrules: ['MATCH,ov']\n"
+    ));
+    assert!(e.contains("comp-lzo"), "{e}");
+    // The userspace IP stack belongs to the T6/T7 device layer.
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\", ip-stack: {{mode: gvisor}}}}\nrules: ['MATCH,ov']\n"
+    ));
+    assert!(e.contains("ip-stack.mode"), "{e}");
+    // A certificate without its key is not a usable TLS identity.
+    let e = proxy_err(&format!(
+        "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\", cert: \"{cert}\"}}\nrules: ['MATCH,ov']\n"
+    ));
+    assert!(e.contains("'cert' and 'key'"), "{e}");
+}
+
+#[test]
+fn mesh_control_planes_reject_configs_the_pinned_binary_accepts_by_name() {
+    // These exact shapes pass `mihomo -t` for v1.19.34 (see
+    // tool/kernel-compat/evidence/t16-mesh-parity.log); the kernel must not
+    // load them as if it had the control plane.
+    let cases = [
+        (
+            "tailscale",
+            "proxies:\n  - {name: m, type: tailscale, server: 127.0.0.1, port: 1}\nrules: ['MATCH,m']\n",
+            "Tailscale control plane",
+        ),
+        (
+            "zerotier",
+            "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001}\nrules: ['MATCH,m']\n",
+            "Zerotier Rust crate",
+        ),
+        (
+            "easytier",
+            "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['udp://127.0.0.1:11010']}\nrules: ['MATCH,m']\n",
+            "easytier crate",
+        ),
+    ];
+    for (kind, yaml, needle) in cases {
+        let error = proxy_err(yaml);
+        assert!(error.starts_with("unsupported:"), "{kind}: {error}");
+        assert!(error.contains(&format!("type={kind}")), "{kind}: {error}");
+        assert!(error.contains(needle), "{kind}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn implemented_device_families_load_and_dial_names_the_t6_t7_gap() {
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let ca = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+    let configs = [
+        format!(
+            "mixed-port: 1\nproxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 9, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}]}}\nrules: ['MATCH,wg']\n"
+        ),
+        format!(
+            "mixed-port: 1\nproxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 9, ca: \"{ca}\"}}\nrules: ['MATCH,ov']\n"
+        ),
+    ];
+    for yaml in configs {
+        let loaded = load_config(&yaml, "dial-gap.yaml").expect("configuration loads");
+        let proxy = &loaded.config.proxies[0];
+        let target = billow_kernel::outbound::Target {
+            host: "127.0.0.1".to_string(),
+            port: 80,
+        };
+        let tls = billow_kernel::outbound::tls::ClientTls::new(&[]);
+        let error = match billow_kernel::outbound::dial(
+            proxy,
+            &target,
+            std::time::Duration::from_millis(500),
+            &tls,
+        )
+        .await
+        {
+            Ok(_) => panic!("{} must not produce a stream without the T6/T7 stack", proxy.name),
+            Err(error) => error,
+        };
+        let text = error.to_string();
+        assert!(text.contains("T6/T7"), "{}: {text}", proxy.name);
+        assert!(text.contains("IP stack"), "{}: {text}", proxy.name);
     }
 }
 

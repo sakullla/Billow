@@ -136,3 +136,26 @@ else
             --test protocols -- --test-threads=1 "$filter"
     done
 fi
+
+echo "== controlled WireGuard peer (locked metacubex/wireguard-go device, fake TUN) =="
+wg_bin=$(mktemp "${TMPDIR:-/tmp}/billow-wireguard-peer.XXXXXX")
+(cd "$root/tool/kernel-compat/peers/wireguard-peer" && GOFLAGS=-mod=mod GOPROXY=off go build -o "$wg_bin" .)
+KC_WIREGUARD_PEER_BIN="$wg_bin" cargo test \
+    --manifest-path "$root/native-kernel/Cargo.toml" --locked \
+    --test wireguard_peer -- --ignored --test-threads=1
+
+echo "== OpenVPN 2.7.9 peer (--dev null, real TLS/key-method-2/data channel) =="
+openvpn_bin=${KC_OPENVPN_BIN:-}
+if [ -z "$openvpn_bin" ] && [ -x /opt/homebrew/opt/openvpn/sbin/openvpn ]; then
+    openvpn_bin=/opt/homebrew/opt/openvpn/sbin/openvpn
+fi
+if [ -z "$openvpn_bin" ] && command -v openvpn >/dev/null 2>&1; then
+    openvpn_bin=$(command -v openvpn)
+fi
+if [ -n "$openvpn_bin" ]; then
+    KC_OPENVPN_BIN="$openvpn_bin" cargo test \
+        --manifest-path "$root/native-kernel/Cargo.toml" --locked \
+        --test openvpn_peer -- --ignored --test-threads=1
+else
+    echo "SKIP openvpn_peer: no openvpn binary (set KC_OPENVPN_BIN)" >&2
+fi

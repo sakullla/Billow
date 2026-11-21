@@ -1,9 +1,9 @@
 # Third-party notices
 
 This file records the provenance and license of material used to implement and
-verify the ShadowQUIC (T15) outbound. The kernel itself is MIT; the notices
-below apply to the referenced upstream package and to the committed test
-vectors, not to the whole workspace.
+verify the ShadowQUIC (T15) and WireGuard/OpenVPN (T16) outbounds. The kernel
+itself is MIT; the notices below apply to the referenced upstream packages and
+test peers, not to the whole workspace.
 
 ## `github.com/metacubex/jls-tls`
 
@@ -49,6 +49,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 The vectors are test fixtures only. The Rust JLS implementation in
 `crates/billow-kernel/src/outbound/jls.rs` was written from the observed wire
 behaviour; it does not link or copy the Go package.
+
+## `github.com/metacubex/wireguard-go` (test peer only)
+
+`tool/kernel-compat/peers/wireguard-peer` builds the locked
+`github.com/metacubex/wireguard-go` device
+`v0.0.0-20250820062549-a6cecdd7f57f` (the device Mihomo v1.19.34 runs behind
+its `wireguard` outbound) with a fake TUN and uses it as the controlled peer
+for the Rust Noise IK/transport implementation. The upstream file headers say
+`SPDX-License-Identifier: MIT`; `golang.org/x/crypto` is BSD-3-Clause. The peer
+is a test program and is not linked into or shipped with the kernel. The Rust
+implementation in `crates/billow-kernel/src/outbound/wireguard.rs` is a new
+expression of the public WireGuard whitepaper protocol (Noise IK, BLAKE2s,
+ChaCha20-Poly1305, X25519); no Go source is copied or translated.
+
+## OpenVPN 2.7.9 (test peer only)
+
+`crates/billow-kernel/tests/openvpn_peer.rs` runs the OpenVPN 2.7.9 server
+binary (Homebrew arm64 bottle, GPL-2.0) with `--dev null` as a black-box peer.
+It is never linked or distributed with the kernel. The Rust control/data
+channel in `crates/billow-kernel/src/outbound/openvpn.rs` was written from the
+public OpenVPN wire protocol; no OpenVPN source is vendored or translated. The
+exact peer command, version and certification/authentication cases are in
+`tool/kernel-compat/evidence/t16-feasibility.json` and
+`tool/kernel-compat/evidence/protocol-peers.json#t16`.
 
 ## Mihomo `transport/shadowquic`
 

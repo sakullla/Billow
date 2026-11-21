@@ -1,0 +1,1079 @@
+//! WireGuard transport (Noise IK handshake + transport data messages).
+//!
+//! This module is the protocol half of the pinned `wireguard` outbound
+//! (`adapter/outbound/wireguard.go`): it terminates the WireGuard tunnel at
+//! the packet level and exposes encrypted IP packets. It deliberately does not
+//! implement an IP stack, a TUN device or the TCP/UDP socket layer inside the
+//! tunnel; the pinned adapter wires the WireGuard device to a userspace IP
+//! stack (mips by default, gVisor with `with_gvisor`) and that device/TUN
+//! ownership is the T6/T7 layer. Without it this module has no `dial()` that
+//! can return a TCP stream, so the outbound refuses every dial by name while
+//! the transport itself is usable through [`WireguardTunnel`].
+//!
+//! Wire format implemented here (WireGuard whitepaper, public protocol):
+//!
+//! * handshake initiation (`type 1`): ephemeral, encrypted static, encrypted
+//!   TAI64N timestamp, MAC1/MAC2;
+//! * handshake response (`type 2`): ephemeral, encrypted empty, MAC1/MAC2;
+//!   the initiator derives the transport keys, with the optional pre-shared
+//!   key mixed in at the responder's step;
+//! * cookie reply (`type 3`): XChaCha20-Poly1305 encrypted cookie, so a
+//!   rate-limited responder is not a permanent failure;
+//! * transport data (`type 4`): ChaCha20-Poly1305 with a 96-bit counter
+//!   nonce, zero padding to the 16-byte block, replay window and keepalive.
+//!
+//! Keys are the base64 form the pinned type reads (`private-key`,
+//! `public-key`, `pre-shared-key`); `reserved` occupies the three reserved
+//! header bytes as the pinned `ClientBind` does for WARP-style endpoints.
+
+use std::collections::VecDeque;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use blake2::digest::consts::U16;
+use blake2::digest::{Digest, FixedOutput};
+use blake2::{Blake2s256, Blake2sMac};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce};
+use rand::rngs::OsRng;
+use tokio::net::UdpSocket;
+use x25519_dalek::{PublicKey, StaticSecret};
+
+use crate::proxies::{WireguardOutbound, WireguardPeerOutbound};
+
+/// `CONSTRUCTION` from the WireGuard whitepaper.
+const CONSTRUCTION: &[u8] = b"Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
+/// `IDENTIFIER` from the WireGuard whitepaper.
+const IDENTIFIER: &[u8] = b"WireGuard v1 zx2c4 Jason@zx2c4.com";
+const LABEL_MAC1: &[u8] = b"mac1----";
+const LABEL_COOKIE: &[u8] = b"cookie--";
+
+const MESSAGE_HANDSHAKE_INITIATION: u8 = 1;
+const MESSAGE_HANDSHAKE_RESPONSE: u8 = 2;
+const MESSAGE_COOKIE_REPLY: u8 = 3;
+const MESSAGE_TRANSPORT_DATA: u8 = 4;
+
+const INITIATION_LEN: usize = 148;
+const RESPONSE_LEN: usize = 92;
+const COOKIE_REPLY_LEN: usize = 64;
+const TRANSPORT_HEADER_LEN: usize = 16;
+/// `REKEY_AFTER_TIME`: the initiator starts a new handshake after two
+/// minutes, before the responder's three-minute rejection window.
+const REKEY_AFTER: Duration = Duration::from_secs(120);
+/// `REJECT_AFTER_MESSAGES` is 2^60 for a transport key; a rekey happens far
+/// earlier, but the counter is still bounded here so a bug cannot wrap.
+const REJECT_AFTER_MESSAGES: u64 = 1 << 60;
+
+/// A WireGuard key as the pinned outbound reads it: base64 of 32 bytes.
+pub fn decode_key(value: &str) -> Result<[u8; 32], WireguardError> {
+    let bytes = decode_base64(value).ok_or(WireguardError::InvalidKey)?;
+    if bytes.len() != 32 {
+        return Err(WireguardError::InvalidKey);
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Ok(key)
+}
+
+/// Decode standard base64 with padding, as Go's `base64.StdEncoding` does.
+fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    fn sextet(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let trimmed = value.trim();
+    if trimmed.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(trimmed.len() / 4 * 3);
+    let mut chunks = trimmed.as_bytes().chunks_exact(4);
+    for chunk in &mut chunks {
+        let pad = chunk.iter().filter(|byte| **byte == b'=').count();
+        if pad > 2 {
+            return None;
+        }
+        let mut values = [0u8; 4];
+        for (i, byte) in chunk.iter().enumerate() {
+            values[i] = if *byte == b'=' {
+                0
+            } else {
+                sextet(*byte)?
+            };
+        }
+        let triple = ((values[0] as u32) << 18)
+            | ((values[1] as u32) << 12)
+            | ((values[2] as u32) << 6)
+            | values[3] as u32;
+        out.push((triple >> 16) as u8);
+        if pad < 2 {
+            out.push((triple >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(triple as u8);
+        }
+    }
+    Some(out)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WireguardError {
+    #[error("wireguard key is not base64 of 32 bytes")]
+    InvalidKey,
+    #[error("wireguard configuration has no peer to connect to")]
+    NoPeer,
+    #[error("wireguard endpoint {endpoint}: {source}")]
+    Connect {
+        endpoint: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("wireguard handshake timed out after {0:?}")]
+    Timeout(Duration),
+    #[error("wireguard handshake: {0}")]
+    Handshake(String),
+    #[error("wireguard transport: {0}")]
+    Transport(String),
+    #[error("wireguard packet of {len} bytes exceeds the MTU of {mtu}")]
+    PacketTooLarge { len: usize, mtu: usize },
+    #[error("wireguard receive buffer of {len} bytes is smaller than the packet ({packet})")]
+    BufferTooSmall { len: usize, packet: usize },
+    #[error("wireguard endpooint {0} resolved to no address")]
+    Resolve(String),
+}
+
+/// One peer the tunnel encrypts packets for. Keys are already decoded; the
+/// configuration parser keeps the base64 text so a load failure names the
+/// option instead of printing key material.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WireguardPeer {
+    pub endpoint: SocketAddr,
+    pub public_key: PublicKey,
+    pub preshared_key: Option<[u8; 32]>,
+    /// The three reserved header bytes (`reserved:`); every message sends
+    /// them, as the pinned `ClientBind` does (`b[1..4]`).
+    pub reserved: [u8; 3],
+}
+
+impl std::fmt::Debug for WireguardPeer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WireguardPeer")
+            .field("endpoint", &self.endpoint)
+            .field("public_key", &"<key>")
+            .field(
+                "preshared_key",
+                &self.preshared_key.map(|_| "<redacted>"),
+            )
+            .field("reserved", &self.reserved)
+            .finish()
+    }
+}
+
+/// Derive the Curve25519 public key of a WireGuard private key. Peer
+/// configurations and the T6/T7 device layer need this to register the local
+/// public key with the far side.
+pub fn derive_public_key(private: &[u8; 32]) -> [u8; 32] {
+    PublicKey::from(&StaticSecret::from(*private)).to_bytes()
+}
+
+/// Encode a key in the base64 form the pinned type expects.
+pub fn encode_key(key: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(key.len().div_ceil(3) * 4);
+    for chunk in key.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(triple >> 18) as usize & 63] as char);
+        out.push(TABLE[(triple >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(triple >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[triple as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+impl WireguardPeer {
+    /// Build a peer from the wire key text, for the transport API used by the
+    /// device layer and the controlled-peer tests.
+    pub fn from_base64(
+        endpoint: SocketAddr,
+        public_key: &str,
+        preshared_key: Option<&str>,
+        reserved: [u8; 3],
+    ) -> Result<Self, WireguardError> {
+        let public_key = PublicKey::from(decode_key(public_key)?);
+        let preshared_key = preshared_key.map(decode_key).transpose()?;
+        Ok(Self {
+            endpoint,
+            public_key,
+            preshared_key,
+            reserved,
+        })
+    }
+
+    /// Build one peer from the parsed configuration. `server` may be a name;
+    /// resolution happens in [`WireguardTunnel::connect`].
+    pub fn from_outbound(
+        peer: &WireguardPeerOutbound,
+    ) -> Result<(String, u16, [u8; 32], Option<[u8; 32]>, [u8; 3]), WireguardError> {
+        let public_key = decode_key(&peer.public_key)?;
+        let preshared_key = peer
+            .preshared_key
+            .as_ref()
+            .map(|key| decode_key(key.expose()))
+            .transpose()?;
+        let mut reserved = [0u8; 3];
+        if !peer.reserved.is_empty() {
+            for (slot, value) in reserved.iter_mut().zip(peer.reserved.iter()) {
+                *slot = *value;
+            }
+        }
+        Ok((
+            peer.server.clone(),
+            peer.port,
+            public_key,
+            preshared_key,
+            reserved,
+        ))
+    }
+}
+
+/// One established WireGuard session (one peer, one handshake).
+///
+/// The caller owns the IP packets: [`send_packet`](Self::send_packet) writes
+/// an IP datagram inside the tunnel and [`recv_packet`](Self::recv_packet)
+/// returns the decrypted IP datagram the peer sent. This is exactly the
+/// boundary the device/IP-stack layer (T6/T7) needs.
+pub struct WireguardTunnel {
+    socket: UdpSocket,
+    peer: WireguardPeer,
+    local_static: StaticSecret,
+    local_index: u32,
+    peer_index: u32,
+    send_key: [u8; 32],
+    recv_key: [u8; 32],
+    send_counter: u64,
+    replay: ReplayWindow,
+    handshake_at: Instant,
+    mtu: usize,
+    keepalive: u16,
+    last_sent: Instant,
+    handshake_timeout: Duration,
+}
+
+impl std::fmt::Debug for WireguardTunnel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WireguardTunnel")
+            .field("endpoint", &self.peer.endpoint)
+            .field("local_index", &self.local_index)
+            .field("peer_index", &self.peer_index)
+            .field("mtu", &self.mtu)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WireguardTunnel {
+    /// Resolve the endpoint (local DNS, as the pinned adapter resolves peer
+    /// endpoints before handing them to the device) and perform the Noise IK
+    /// handshake.
+    pub async fn connect(
+        outbound: &WireguardOutbound,
+        peer_index: usize,
+        timeout: Duration,
+    ) -> Result<Self, WireguardError> {
+        let private = decode_key(outbound.private_key.expose())?;
+        let peer = outbound
+            .peers
+            .get(peer_index)
+            .ok_or(WireguardError::NoPeer)?;
+        let (server, port, public_key, preshared_key, reserved) =
+            WireguardPeer::from_outbound(peer)?;
+        let endpoint = resolve(&server, port).await?;
+        Self::connect_endpoint(
+            private,
+            WireguardPeer {
+                endpoint,
+                public_key: PublicKey::from(public_key),
+                preshared_key,
+                reserved,
+            },
+            outbound.mtu as usize,
+            outbound.persistent_keepalive,
+            timeout,
+        )
+        .await
+    }
+
+    /// Perform the handshake against one already-resolved peer. Tests and
+    /// the future device layer use this entry point directly.
+    pub async fn connect_endpoint(
+        private_key: [u8; 32],
+        peer: WireguardPeer,
+        mtu: usize,
+        keepalive: u16,
+        timeout: Duration,
+    ) -> Result<Self, WireguardError> {
+        let bind: SocketAddr = if peer.endpoint.is_ipv4() {
+            SocketAddr::from(([0, 0, 0, 0], 0))
+        } else {
+            SocketAddr::from(([0u16; 8], 0))
+        };
+        let socket = UdpSocket::bind(bind)
+            .await
+            .map_err(|source| WireguardError::Connect {
+                endpoint: peer.endpoint.to_string(),
+                source,
+            })?;
+        socket
+            .connect(peer.endpoint)
+            .await
+            .map_err(|source| WireguardError::Connect {
+                endpoint: peer.endpoint.to_string(),
+                source,
+            })?;
+        let local_static = StaticSecret::from(private_key);
+        let mut tunnel = Self {
+            socket,
+            peer,
+            local_static,
+            local_index: 0,
+            peer_index: 0,
+            send_key: [0u8; 32],
+            recv_key: [0u8; 32],
+            send_counter: 0,
+            replay: ReplayWindow::default(),
+            handshake_at: Instant::now(),
+            mtu: if mtu == 0 { 1408 } else { mtu },
+            keepalive,
+            last_sent: Instant::now(),
+            handshake_timeout: timeout,
+        };
+        tunnel.handshake().await?;
+        Ok(tunnel)
+    }
+
+    /// The peer's transport index (the `receiver_index` of our data packets).
+    pub fn peer_index(&self) -> u32 {
+        self.peer_index
+    }
+
+    /// The MTU the caller should not exceed when building IP packets.
+    pub fn mtu(&self) -> usize {
+        self.mtu
+    }
+
+    /// UDP address the tunnel was connected to.
+    pub fn endpoint(&self) -> SocketAddr {
+        self.peer.endpoint
+    }
+
+    async fn handshake(&mut self) -> Result<(), WireguardError> {
+        let mut initiation =
+            InitiatorHandshake::new(&self.local_static, self.peer.public_key);
+        self.local_index = random_u32();
+        initiation.sender_index = self.local_index;
+        let (message, state) = initiation.into_message(self.peer.preshared_key);
+        self.last_sent = Instant::now();
+        self.send_message(&message).await?;
+
+        let deadline = Instant::now() + self.handshake_timeout;
+        let mut cookie: Option<[u8; 16]> = None;
+        let mut retry_at = Instant::now() + Duration::from_secs(1);
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(WireguardError::Timeout(self.handshake_timeout));
+            }
+            let wait = (deadline - now).min(retry_at.saturating_duration_since(now));
+            match tokio::time::timeout(wait, self.recv_datagram()).await {
+                Err(_) if Instant::now() >= retry_at => {
+                    // Retransmit the same initiation (WireGuard handshakes are
+                    // idempotent for the responder until it answers).
+                    if let Some(cookie) = cookie {
+                        let mut resent = message.clone();
+                        write_mac2(&mut resent, &cookie);
+                        self.send_message(&resent).await?;
+                    } else {
+                        self.send_message(&message).await?;
+                    }
+                    retry_at = Instant::now() + Duration::from_secs(1);
+                }
+                Err(_) => continue,
+                Ok(Err(error)) => return Err(error),
+                Ok(Ok(datagram)) => {
+                    if datagram.len() < 4 {
+                        continue;
+                    }
+                    match datagram[0] {
+                        MESSAGE_HANDSHAKE_RESPONSE => {
+                            if datagram.len() != RESPONSE_LEN {
+                                return Err(WireguardError::Handshake(format!(
+                                    "response has {} bytes, expected {RESPONSE_LEN}",
+                                    datagram.len()
+                                )));
+                            }
+                            let keys = state.consume_response(&datagram, self.local_index)?;
+                            self.peer_index = keys.peer_index;
+                            self.send_key = keys.send_key;
+                            self.recv_key = keys.recv_key;
+                            self.send_counter = 0;
+                            self.replay = ReplayWindow::default();
+                            self.handshake_at = Instant::now();
+                            return Ok(());
+                        }
+                        MESSAGE_COOKIE_REPLY => {
+                            if datagram.len() != COOKIE_REPLY_LEN {
+                                continue;
+                            }
+                            let Some(decoded) =
+                                decrypt_cookie(&datagram, self.peer.public_key, &message)
+                            else {
+                                continue;
+                            };
+                            cookie = Some(decoded);
+                            let mut resent = message.clone();
+                            write_mac2(&mut resent, &decoded);
+                            self.send_message(&resent).await?;
+                            retry_at = Instant::now() + Duration::from_secs(1);
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Encrypt and send one IP packet. An empty packet is the WireGuard
+    /// keepalive; callers should send at least a full IP header otherwise.
+    pub async fn send_packet(&mut self, packet: &[u8]) -> Result<(), WireguardError> {
+        if packet.len() > self.mtu {
+            return Err(WireguardError::PacketTooLarge {
+                len: packet.len(),
+                mtu: self.mtu,
+            });
+        }
+        if self.handshake_at.elapsed() >= REKEY_AFTER
+            || self.send_counter >= REJECT_AFTER_MESSAGES
+        {
+            // Initiator-side rekey: a fresh handshake replaces both transport
+            // keys before the responder's three-minute rejection window.
+            self.handshake().await?;
+        }
+        self.send_transport(packet).await
+    }
+
+    async fn send_transport(&mut self, packet: &[u8]) -> Result<(), WireguardError> {
+        if self.send_counter >= REJECT_AFTER_MESSAGES {
+            return Err(WireguardError::Transport(
+                "transport counter reached the rejection limit; reconnect".to_string(),
+            ));
+        }
+        let padded = pad_to_block(packet);
+        let cipher = ChaCha20Poly1305::new_from_slice(&self.send_key)
+            .map_err(|_| WireguardError::Transport("invalid send key".to_string()))?;
+        let nonce = counter_nonce(self.send_counter);
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &padded,
+                    aad: &[],
+                },
+            )
+            .map_err(|_| WireguardError::Transport("encrypt failed".to_string()))?;
+        let mut datagram = Vec::with_capacity(TRANSPORT_HEADER_LEN + ciphertext.len());
+        datagram.push(MESSAGE_TRANSPORT_DATA);
+        datagram.extend_from_slice(&self.peer.reserved);
+        datagram.extend_from_slice(&self.peer_index.to_le_bytes());
+        datagram.extend_from_slice(&self.send_counter.to_le_bytes());
+        datagram.extend_from_slice(&ciphertext);
+        self.send_message(&datagram).await?;
+        self.send_counter += 1;
+        self.last_sent = Instant::now();
+        Ok(())
+    }
+
+    /// Send a transport keepalive (an empty encrypted packet).
+    pub async fn send_keepalive(&mut self) -> Result<(), WireguardError> {
+        self.send_transport(&[]).await
+    }
+
+    /// Receive one decrypted IP packet. Keepalives are consumed here; the
+    /// call returns only a non-empty packet or an error.
+    pub async fn recv_packet(&mut self, buffer: &mut [u8]) -> Result<usize, WireguardError> {
+        loop {
+            if self.keepalive != 0
+                && !self.last_sent.elapsed().is_zero()
+                && self.last_sent.elapsed() >= Duration::from_secs(u64::from(self.keepalive))
+            {
+                self.send_keepalive().await?;
+            }
+            let datagram = self.recv_datagram().await?;
+            if datagram.len() < TRANSPORT_HEADER_LEN
+                || datagram[0] != MESSAGE_TRANSPORT_DATA
+            {
+                continue;
+            }
+            let receiver = u32::from_le_bytes(datagram[4..8].try_into().unwrap());
+            if receiver != self.local_index {
+                continue;
+            }
+            let counter = u64::from_le_bytes(datagram[8..16].try_into().unwrap());
+            if !self.replay.check(counter) {
+                continue;
+            }
+            let cipher = ChaCha20Poly1305::new_from_slice(&self.recv_key)
+                .map_err(|_| WireguardError::Transport("invalid receive key".to_string()))?;
+            let nonce = counter_nonce(counter);
+            let plaintext = cipher
+                .decrypt(
+                    Nonce::from_slice(&nonce),
+                    Payload {
+                        msg: &datagram[TRANSPORT_HEADER_LEN..],
+                        aad: &[],
+                    },
+                )
+                .map_err(|_| {
+                    WireguardError::Transport("authentication failed (wrong key or replay)"
+                        .to_string())
+                })?;
+            let length = ip_length(&plaintext, self.mtu);
+            if length == 0 {
+                // Keepalive: authenticated, no IP packet.
+                continue;
+            }
+            if buffer.len() < length {
+                return Err(WireguardError::BufferTooSmall {
+                    len: buffer.len(),
+                    packet: length,
+                });
+            }
+            buffer[..length].copy_from_slice(&plaintext[..length]);
+            return Ok(length);
+        }
+    }
+
+    async fn send_message(&mut self, message: &[u8]) -> Result<(), WireguardError> {
+        self.socket
+            .send(message)
+            .await
+            .map(|_| ())
+            .map_err(|source| WireguardError::Connect {
+                endpoint: self.peer.endpoint.to_string(),
+                source,
+            })
+    }
+
+    async fn recv_datagram(&mut self) -> Result<Vec<u8>, WireguardError> {
+        let mut buffer = vec![0u8; 65535];
+        let length = self
+            .socket
+            .recv(&mut buffer)
+            .await
+            .map_err(|source| WireguardError::Transport(source.to_string()))?;
+        buffer.truncate(length);
+        Ok(buffer)
+    }
+}
+
+async fn resolve(server: &str, port: u16) -> Result<SocketAddr, WireguardError> {
+    if let Ok(ip) = server.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    let mut addresses = tokio::net::lookup_host((server, port))
+        .await
+        .map_err(|source| WireguardError::Connect {
+            endpoint: format!("{server}:{port}"),
+            source,
+        })?
+        .collect::<Vec<_>>();
+    addresses.sort_by_key(|address| if address.is_ipv4() { 0 } else { 1 });
+    addresses
+        .into_iter()
+        .next()
+        .ok_or_else(|| WireguardError::Resolve(server.to_string()))
+}
+
+struct InitiatorHandshake {
+    chaining_key: [u8; 32],
+    hash: [u8; 32],
+    local_static: [u8; 32],
+    peer_static: PublicKey,
+    ephemeral: StaticSecret,
+    sender_index: u32,
+}
+
+impl InitiatorHandshake {
+    fn new(local_static: &StaticSecret, peer_static: PublicKey) -> Self {
+        let mut chaining_key = hash_parts(&[CONSTRUCTION]);
+        let mut hash = hash_parts(&[&chaining_key, IDENTIFIER]);
+        hash = hash_parts(&[&hash, peer_static.as_bytes()]);
+        let ephemeral = StaticSecret::random_from_rng(OsRng);
+        let ephemeral_public = PublicKey::from(&ephemeral);
+        chaining_key = kdf1(&chaining_key, ephemeral_public.as_bytes());
+        hash = hash_parts(&[&hash, ephemeral_public.as_bytes()]);
+        Self {
+            chaining_key,
+            hash,
+            local_static: local_static.to_bytes(),
+            peer_static: PublicKey::from(peer_static),
+            ephemeral,
+            sender_index: 0,
+        }
+    }
+
+    /// Build the initiation message and keep the Noise state needed for the
+    /// response.
+    fn into_message(self, preshared_key: Option<[u8; 32]>) -> (Vec<u8>, InitiatorState) {
+        let local_public = PublicKey::from(&StaticSecret::from(self.local_static));
+        let ephemeral_public = PublicKey::from(&self.ephemeral);
+        let mut chaining_key = self.chaining_key;
+        let mut hash = self.hash;
+
+        let shared = self.ephemeral.diffie_hellman(&self.peer_static);
+        let (next, key) = kdf2(&chaining_key, shared.as_bytes());
+        chaining_key = next;
+        let encrypted_static =
+            encrypt(&key, &self.hash, local_public.as_bytes()).expect("32-byte static");
+        hash = hash_parts(&[&hash, &encrypted_static]);
+
+        let local_static = StaticSecret::from(self.local_static);
+        let shared = local_static.diffie_hellman(&self.peer_static);
+        let (next, key) = kdf2(&chaining_key, shared.as_bytes());
+        chaining_key = next;
+        let timestamp = tai64n();
+        let encrypted_timestamp =
+            encrypt(&key, &hash, &timestamp).expect("12-byte timestamp");
+        hash = hash_parts(&[&hash, &encrypted_timestamp]);
+
+        let mut message = Vec::with_capacity(INITIATION_LEN);
+        message.push(MESSAGE_HANDSHAKE_INITIATION);
+        message.extend_from_slice(&[0, 0, 0]);
+        message.extend_from_slice(&self.sender_index.to_le_bytes());
+        message.extend_from_slice(ephemeral_public.as_bytes());
+        message.extend_from_slice(&encrypted_static);
+        message.extend_from_slice(&encrypted_timestamp);
+        write_macs(&mut message, self.peer_static.as_bytes());
+
+        (
+            message,
+            InitiatorState {
+                chaining_key,
+                hash,
+                ephemeral: self.ephemeral,
+                local_static: self.local_static,
+                local_public,
+                sender_index: self.sender_index,
+                preshared_key,
+            },
+        )
+    }
+}
+
+struct InitiatorState {
+    chaining_key: [u8; 32],
+    hash: [u8; 32],
+    ephemeral: StaticSecret,
+    local_static: [u8; 32],
+    local_public: PublicKey,
+    #[allow(dead_code)]
+    sender_index: u32,
+    preshared_key: Option<[u8; 32]>,
+}
+
+struct TransportKeys {
+    peer_index: u32,
+    send_key: [u8; 32],
+    recv_key: [u8; 32],
+}
+
+impl InitiatorState {
+    fn consume_response(
+        self,
+        message: &[u8],
+        local_index: u32,
+    ) -> Result<TransportKeys, WireguardError> {
+        let receiver_index = u32::from_le_bytes(message[8..12].try_into().unwrap());
+        if receiver_index != local_index {
+            return Err(WireguardError::Handshake(format!(
+                "response receiver index {receiver_index} does not match our {local_index}"
+            )));
+        }
+        let peer_index = u32::from_le_bytes(message[4..8].try_into().unwrap());
+        // The response is sent to us, so its MAC1 is keyed by our static key.
+        verify_macs(message, self.local_public.as_bytes())?;
+        let peer_ephemeral = PublicKey::from(
+            <[u8; 32]>::try_from(&message[12..44])
+                .map_err(|_| WireguardError::Handshake("bad ephemeral".to_string()))?,
+        );
+        let mut chaining_key = self.chaining_key;
+        let mut hash = self.hash;
+        chaining_key = kdf1(&chaining_key, peer_ephemeral.as_bytes());
+        hash = hash_parts(&[&hash, peer_ephemeral.as_bytes()]);
+        chaining_key = kdf1(
+            &chaining_key,
+            self.ephemeral.diffie_hellman(&peer_ephemeral).as_bytes(),
+        );
+        let local_static = StaticSecret::from(self.local_static);
+        chaining_key = kdf1(
+            &chaining_key,
+            local_static.diffie_hellman(&peer_ephemeral).as_bytes(),
+        );
+        // WireGuard always mixes a 32-byte pre-shared key; without one the
+        // value is 32 zero bytes, not an empty input.
+        let preshared = self.preshared_key.unwrap_or([0u8; 32]);
+        let (chaining_key, tau, key) = kdf3(&chaining_key, &preshared);
+        // The responder mixes tau into the transcript hash before it seals
+        // the empty payload; the initiator must do the same before opening it.
+        hash = hash_parts(&[&hash, &tau]);
+        let empty = decrypt(&key, &hash, &message[44..60])?;
+        if !empty.is_empty() {
+            return Err(WireguardError::Handshake(
+                "response carries a non-empty payload".to_string(),
+            ));
+        }
+        hash = hash_parts(&[&hash, &message[44..60]]);
+        let (send_key, recv_key) = kdf2(&chaining_key, &[]);
+        let _ = hash;
+        Ok(TransportKeys {
+            peer_index,
+            send_key,
+            recv_key,
+        })
+    }
+}
+
+fn write_macs(message: &mut Vec<u8>, peer_static: &[u8; 32]) {
+    let mac1_key = hash_parts(&[LABEL_MAC1, peer_static]);
+    let mac1 = keyed_hash16(&mac1_key, message);
+    message.extend_from_slice(&mac1);
+    message.extend_from_slice(&[0u8; 16]);
+}
+
+fn write_mac2(message: &mut [u8], cookie: &[u8; 16]) {
+    let mac2_at = message.len() - 16;
+    let mac2 = keyed_hash16(cookie, &message[..mac2_at]);
+    message[mac2_at..].copy_from_slice(&mac2);
+}
+
+fn verify_macs(message: &[u8], peer_static: &[u8; 32]) -> Result<(), WireguardError> {
+    if message.len() < 32 {
+        return Err(WireguardError::Handshake("short handshake".to_string()));
+    }
+    let mac1_at = message.len() - 32;
+    let mac1_key = hash_parts(&[LABEL_MAC1, peer_static]);
+    let expected = keyed_hash16(&mac1_key, &message[..mac1_at]);
+    if !constant_time_eq(&expected, &message[mac1_at..mac1_at + 16]) {
+        return Err(WireguardError::Handshake(
+            "MAC1 does not verify (wrong peer public key)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn decrypt_cookie(
+    message: &[u8],
+    peer_static: PublicKey,
+    initiation: &[u8],
+) -> Option<[u8; 16]> {
+    let receiver = u32::from_le_bytes(message[4..8].try_into().ok()?);
+    let _ = receiver;
+    let key = hash_parts(&[LABEL_COOKIE, peer_static.as_bytes()]);
+    let cipher = XChaCha20Poly1305::new_from_slice(&key).ok()?;
+    let nonce = XNonce::from_slice(&message[8..32]);
+    let mac1_at = initiation.len() - 32;
+    let plaintext = cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &message[32..],
+                aad: &initiation[mac1_at..mac1_at + 16],
+            },
+        )
+        .ok()?;
+    <[u8; 16]>::try_from(plaintext.as_slice()).ok()
+}
+
+fn tai64n() -> [u8; 12] {
+    const TAI64_UNIX_EPOCH: u64 = 0x4000_0000_0000_000a;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let mut out = [0u8; 12];
+    out[..8].copy_from_slice(&(TAI64_UNIX_EPOCH + now.as_secs()).to_be_bytes());
+    out[8..].copy_from_slice(&now.subsec_nanos().to_be_bytes());
+    out
+}
+
+fn random_u32() -> u32 {
+    use rand::RngCore;
+    OsRng.next_u32()
+}
+
+fn pad_to_block(packet: &[u8]) -> Vec<u8> {
+    let padding = (16 - packet.len() % 16) % 16;
+    let mut out = Vec::with_capacity(packet.len() + padding);
+    out.extend_from_slice(packet);
+    out.resize(packet.len() + padding, 0);
+    out
+}
+
+/// The plaintext of a transport message is padded with zeros; the IPv4/IPv6
+/// header carries the real length. A message with no IP header is a keepalive.
+fn ip_length(plaintext: &[u8], mtu: usize) -> usize {
+    let Some(first) = plaintext.first() else {
+        return 0;
+    };
+    let length = match first >> 4 {
+        4 => {
+            if plaintext.len() < 20 {
+                return 0;
+            }
+            u16::from_be_bytes([plaintext[2], plaintext[3]]) as usize
+        }
+        6 => {
+            if plaintext.len() < 40 {
+                return 0;
+            }
+            40 + u16::from_be_bytes([plaintext[4], plaintext[5]]) as usize
+        }
+        _ => return 0,
+    };
+    if length == 0 || length > plaintext.len() || length > mtu {
+        return 0;
+    }
+    length
+}
+
+fn counter_nonce(counter: u64) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[4..].copy_from_slice(&counter.to_le_bytes());
+    nonce
+}
+
+#[derive(Default)]
+struct ReplayWindow {
+    latest: u64,
+    seen: VecDeque<bool>,
+}
+
+impl ReplayWindow {
+    fn check(&mut self, counter: u64) -> bool
+    where
+        Self: Sized,
+    {
+        const WINDOW: usize = 2048;
+        if self.seen.is_empty() {
+            self.seen = std::iter::repeat(false).take(WINDOW).collect();
+        }
+        if counter > self.latest {
+            let advance = (counter - self.latest).min(WINDOW as u64) as usize;
+            for _ in 0..advance {
+                self.seen.push_back(false);
+                self.seen.pop_front();
+            }
+            self.latest = counter;
+            self.seen[WINDOW - 1] = true;
+            return true;
+        }
+        let behind = self.latest - counter;
+        if behind >= WINDOW as u64 {
+            return false;
+        }
+        let index = WINDOW - 1 - behind as usize;
+        if self.seen[index] {
+            return false;
+        }
+        self.seen[index] = true;
+        true
+    }
+}
+
+fn hash_parts(parts: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Blake2s256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+fn keyed_hash16(key: &[u8], data: &[u8]) -> [u8; 16] {
+    let mut mac = Blake2sMac::<U16>::new_with_salt_and_personal(key, &[], &[])
+        .expect("32-byte key fits the 64-byte BLAKE2s key block");
+    blake2::digest::Update::update(&mut mac, data);
+    let output = mac.finalize_fixed();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&output);
+    out
+}
+
+fn hmac_blake2s(key: &[u8], data: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut key_block = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        key_block[..32].copy_from_slice(&hash_parts(&[key]));
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_pad = [0x36u8; BLOCK];
+    let mut outer_pad = [0x5cu8; BLOCK];
+    for i in 0..BLOCK {
+        inner_pad[i] ^= key_block[i];
+        outer_pad[i] ^= key_block[i];
+    }
+    let inner = hash_parts(&[&inner_pad, data]);
+    hash_parts(&[&outer_pad, &inner])
+}
+
+fn kdf1(key: &[u8; 32], input: &[u8]) -> [u8; 32] {
+    // `KDF1` returns `t1`, not `t0`: t0 is the HMAC over `input` and t1 is
+    // the HMAC over t0 || 0x1 (whitepaper "KDF_n").
+    let t0 = hmac_blake2s(key, input);
+    hmac_blake2s(&t0, &[1])
+}
+
+fn kdf2(key: &[u8; 32], input: &[u8]) -> ([u8; 32], [u8; 32]) {
+    let t0 = hmac_blake2s(key, input);
+    let t1 = hmac_blake2s(&t0, &[1]);
+    (t1, hmac_blake2s(&t0, &[t1.as_slice(), &[2]].concat()))
+}
+
+fn kdf3(key: &[u8; 32], input: &[u8]) -> ([u8; 32], [u8; 32], [u8; 32]) {
+    let t0 = hmac_blake2s(key, input);
+    let t1 = hmac_blake2s(&t0, &[1]);
+    let t2 = hmac_blake2s(&t0, &[t1.as_slice(), &[2]].concat());
+    (
+        t1,
+        t2,
+        hmac_blake2s(&t0, &[t2.as_slice(), &[3]].concat()),
+    )
+}
+
+fn encrypt(key: &[u8; 32], aad: &[u8], plaintext: &[u8]) -> Option<Vec<u8>> {
+    let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
+    cipher
+        .encrypt(Nonce::from_slice(&[0u8; 12]), Payload { msg: plaintext, aad })
+        .ok()
+}
+
+fn decrypt(key: &[u8; 32], aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, WireguardError> {
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| WireguardError::Handshake("invalid handshake key".to_string()))?;
+    cipher
+        .decrypt(
+            Nonce::from_slice(&[0u8; 12]),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| WireguardError::Handshake("handshake authentication failed".to_string()))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.iter().zip(right) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_the_pinned_base64_key_form() {
+        // A syntactically valid 32-byte key (the value is not used as a key).
+        let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        assert_eq!(decode_key(key).unwrap(), [0u8; 32]);
+        assert!(matches!(decode_key("not base64"), Err(WireguardError::InvalidKey)));
+        assert!(matches!(
+            decode_key("AAAA"),
+            Err(WireguardError::InvalidKey)
+        ));
+    }
+
+    #[test]
+    fn kdf_matches_the_wireguard_test_vectors() {
+        // WireGuard whitepaper KDF: t0 = HMAC(key, input), t1 = HMAC(t0, 0x1),
+        // t2 = HMAC(t0, t1 || 0x2), t3 = HMAC(t0, t2 || 0x3).
+        let key = [7u8; 32];
+        let input = b"wireguard kdf input";
+        let t0 = hmac_blake2s(&key, input);
+        let (t1, t2) = kdf2(&key, input);
+        let (t1_again, t2_again, t3) = kdf3(&key, input);
+        assert_eq!(t1, t1_again);
+        assert_eq!(t2, t2_again);
+        assert_eq!(t1, hmac_blake2s(&t0, &[1]));
+        assert_eq!(t2, hmac_blake2s(&t0, &[t1.as_slice(), &[2]].concat()));
+        assert_eq!(t3, hmac_blake2s(&t0, &[t2.as_slice(), &[3]].concat()));
+        assert_ne!(t1, t2);
+        assert_ne!(t2, t3);
+    }
+
+    #[test]
+    fn replay_window_rejects_duplicates_and_old_counters() {
+        let mut window = ReplayWindow::default();
+        assert!(window.check(0));
+        assert!(!window.check(0));
+        assert!(window.check(1));
+        assert!(window.check(2));
+        assert!(window.check(100));
+        // Out-of-order packets inside the window are accepted once.
+        assert!(window.check(99));
+        assert!(!window.check(99));
+        assert!(window.check(98));
+        assert!(!window.check(98));
+        // A counter behind the window is dropped.
+        assert!(window.check(4096));
+        assert!(!window.check(1024));
+    }
+
+    #[test]
+    fn ip_length_ignores_keepalives_and_invalid_headers() {
+        let mut ipv4 = vec![0u8; 28];
+        ipv4[0] = 0x45;
+        ipv4[2..4].copy_from_slice(&28u16.to_be_bytes());
+        assert_eq!(ip_length(&ipv4, 1420), 28);
+        assert_eq!(ip_length(&[], 1420), 0);
+        assert_eq!(ip_length(&[0x45, 0, 0], 1420), 0);
+        let mut too_large = vec![0u8; 40];
+        too_large[0] = 0x45;
+        too_large[2..4].copy_from_slice(&100u16.to_be_bytes());
+        assert_eq!(ip_length(&too_large, 1420), 0);
+    }
+
+    #[test]
+    fn initiation_has_the_documented_shape() {
+        let local_static = StaticSecret::from([1u8; 32]);
+        let peer_static = PublicKey::from(&StaticSecret::from([2u8; 32]));
+        let handshake = InitiatorHandshake::new(&local_static, peer_static);
+        let (message, _state) = handshake.into_message(None);
+        assert_eq!(message.len(), INITIATION_LEN);
+        assert_eq!(message[0], MESSAGE_HANDSHAKE_INITIATION);
+        assert_eq!(&message[1..4], &[0, 0, 0]);
+        // MAC1 is keyed by the responder's static key and is not all zero.
+        assert_ne!(&message[116..132], &[0u8; 16]);
+        // MAC2 is zero until a cookie reply arrives.
+        assert_eq!(&message[132..148], &[0u8; 16]);
+    }
+}

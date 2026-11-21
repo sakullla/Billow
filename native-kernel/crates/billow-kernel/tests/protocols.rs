@@ -3177,8 +3177,11 @@ async fn shadowsocks_udp_chained_drops_a_reply_from_an_unresolved_address() {
 
 #[test]
 fn config_errors_tag_the_exact_proxy_field() {
-    let yaml = "mixed-port: 1\nproxies:\n  - {name: s1, type: wireguard, server: x, port: 1}\nrules: ['MATCH,DIRECT']\n";
-    let err = load_config(yaml, "t").unwrap_err();
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let yaml = format!(
+        "mixed-port: 1\nproxies:\n  - {{name: s1, type: wireguard, private-key: {KEY}, peers: [{{server: x, port: 1, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}], amnezia-wg-option: {{jc: 4}}}}\nrules: ['MATCH,DIRECT']\n"
+    );
+    let err = load_config(&yaml, "t").unwrap_err();
     assert_eq!(err.tag(), "unsupported");
     assert!(matches!(err, ConfigError::Unsupported(_)));
     assert!(

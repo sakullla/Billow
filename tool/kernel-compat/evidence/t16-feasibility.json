@@ -1,0 +1,159 @@
+{
+  "format": "kernel-t16-feasibility",
+  "version": 1,
+  "date": "2026-11-22",
+  "task": "T16",
+  "platform": {
+    "verified": [
+      "macos-aarch64"
+    ],
+    "compilesButNotRun": [
+      "linux-x86_64",
+      "linux-aarch64",
+      "android",
+      "ios-simulator",
+      "windows"
+    ],
+    "note": "Both controlled peers are loopback processes. macOS arm64 is the platform where the cases ran; the kernel code is platform-independent but no other platform peer run is recorded."
+  },
+  "families": {
+    "wireguard": {
+      "status": "implemented-transport",
+      "implemented": [
+        "Noise IK handshake: CONSTRUCTION/IDENTIFIER hash, ephemeral, encrypted static, encrypted TAI64N timestamp, MAC1/MAC2",
+        "cookie reply (type 3, XChaCha20-Poly1305) with MAC2 retransmission",
+        "handshake response key derivation including the 32-byte pre-shared key (zero key when unset)",
+        "transport data (type 4): ChaCha20-Poly1305, 96-bit counter nonce, 16-byte zero padding, replay window, initiator rekey after 120 s",
+        "P_DATA reserved bytes (`reserved: [a,b,c]`) and persistent keepalive",
+        "configuration: `private-key`, both peer forms (`peers:` and top-level server/port/public-key/pre-shared-key/reserved/allowed-ips), `ip`, `ipv6`, `mtu` (default 1408), `workers`, `udp`, `persistent-keepalive`"
+      ],
+      "rejected": [
+        "amnezia-wg-option (AmneziaWG v1.5/v2/v3 header obfuscation needs the pinned amneziawg-go device)",
+        "ip-stack.mode mips/gvisor and ip-stack.congestion-controller (T6/T7 userspace IP stack)",
+        "remote-dns-resolve / dns (T6/T7 stack resolver)",
+        "refresh-server-ip-interval (runtime endpoint loop)",
+        "dialer-proxy (one UDP socket, no socks5 hop)",
+        "BasicOption tfo/mptcp/interface-name/routing-mark/ip-version (no-op values still load as Mihomo ignores them)"
+      ],
+      "deviceLayer": "The transport exposes send_packet/recv_packet of IP datagrams; TCP/UDP sockets, the userspace IP stack and TUN ownership are T6/T7, so `dial()` returns an explicit handshake error naming that gap. The same split exists in the pinned adapter (wireguard-go device + mips/gVisor stack).",
+      "dependencyDecision": "No boringtun/wireguard crate is in the offline cargo cache. The protocol is implemented in-tree with crates already available offline: `blake2` 0.10.6 (new direct dependency, already in Cargo.lock), `x25519-dalek` 2.0, `chacha20poly1305` 0.10, `rand` 0.8. No GPL code is copied.",
+      "peer": {
+        "kind": "controlled userspace WireGuard device built from the locked metacubex/wireguard-go",
+        "module": "github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f",
+        "program": "tool/kernel-compat/peers/wireguard-peer",
+        "tun": "fake TUN that answers IPv4 ICMP echo requests to 10.13.13.1; no root, no TUN driver, no IP stack",
+        "build": "(cd tool/kernel-compat/peers/wireguard-peer && GOFLAGS=-mod=mod GOPROXY=off go build -o <bin> .)",
+        "run": "tool/kernel-compat/family-peers.sh wireguard_peer"
+      },
+      "cases": {
+        "positive": [
+          "handshake_and_icmp_round_trip_through_the_locked_peer",
+          "preshared_key_is_mixed_into_the_handshake"
+        ],
+        "negative": [
+          "wrong_peer_public_key_fails_the_handshake",
+          "an_unregistered_client_key_is_rejected",
+          "packets_over_the_mtu_and_short_buffers_are_named_errors"
+        ],
+        "result": "5 passed, 0 failed (KC_WIREGUARD_PEER_BIN=<bin> cargo test --locked --test wireguard_peer -- --ignored --test-threads=1)"
+      }
+    },
+    "openvpn": {
+      "status": "implemented-transport",
+      "implemented": [
+        "UDP and TCP (u16 length framing) transport",
+        "P_CONTROL_HARD_RESET_CLIENT_V2 / SERVER_V2, session id, P_CONTROL_V1, P_ACK_V1 reliable message ids, ACK arrays, retransmission",
+        "TLS 1.3/1.2 client over the control channel via rustls: inline CA chain verification (hostname intentionally not checked, as the pinned client), inline client cert/key authentication, username/password in key-method 2",
+        "key-method 2: client pre-master/random1/random2, server random1/random2, OpenVPN MD5+SHA1 PRF master secret and key expansion",
+        "PUSH_REQUEST/PUSH_REPLY parsing (`ifconfig`, `cipher`, `data-ciphers`, `peer-id`)",
+        "AEAD data channel: AES-128-GCM, AES-256-GCM, CHACHA20-POLY1305, P_DATA_V2 peer id, P_DATA_V1 fallback, implicit IV from the HMAC key, replay window, OpenVPN PING_STRING keepalive",
+        "configuration: proto/dev/cipher/data-ciphers/data-ciphers-fallback/auth/comp-lzo/ca/cert/key/username/password/peer-info/ping/ping-restart/tran-window/handshake-timeout/mtu/udp"
+      ],
+      "rejected": [
+        "tls-auth / tls-crypt / tls-crypt-v2 (static-key control-packet protection)",
+        "comp-lzo: yes|adaptive and compression framing",
+        "CBC data ciphers (AES-128/192/256-CBC + HMAC padding)",
+        "dev other than tun",
+        "ip-stack mode/congestion-controller, remote-dns-resolve/dns, dialer-proxy"
+      ],
+      "deviceLayer": "The data channel exposes decrypted IP payloads; TCP/UDP sockets and the TUN/IP stack are T6/T7, so `dial()` names that gap. `OpenVpnTunnel` is the interface for that layer.",
+      "dependencyDecision": "No OpenVPN crate is in the offline cargo cache. The protocol is implemented in-tree with existing dependencies (rustls 0.23 + ring, tokio/rustls-pemfile, aes-gcm, chacha20poly1305, hmac, sha1, plus the small MD5 in keys.rs). The real peer is the OpenVPN 2.7.9 Homebrew binary; it is a test-only external process and is never linked. No code is copied.",
+      "peer": {
+        "kind": "OpenVPN 2.7.9 server with --dev null (no TUN/root)",
+        "binary": "KC_OPENVPN_BIN or /opt/homebrew/opt/openvpn/sbin/openvpn or PATH",
+        "command": "openvpn --dev null --mode server --tls-server --ca ... --cert ... --key ... --dh none --proto udp4 --local 127.0.0.1 --port <free> --topology subnet --server 10.8.0.0 255.255.255.0 --data-ciphers AES-256-GCM --ping 1 --verb 3",
+        "certificates": "generated per run with the openssl CLI; one CA signs a serverAuth leaf and a clientAuth leaf",
+        "test": "tool/kernel-compat/family-peers.sh openvpn_peer"
+      },
+      "cases": {
+        "positive": [
+          "control_channel_pushes_and_the_data_keys_decrypt_a_keepalive"
+        ],
+        "negative": [
+          "an_untrusted_server_certificate_is_rejected",
+          "a_missing_client_certificate_fails_authentication",
+          "no_common_data_cipher_is_a_named_failure"
+        ],
+        "result": "4 passed, 0 failed (KC_OPENVPN_BIN=<bin> cargo test --locked --test openvpn_peer -- --ignored --test-threads=1)"
+      }
+    },
+    "tailscale": {
+      "status": "rejected",
+      "reason": "The pinned outbound (with_gvisor) embeds the Tailscale control plane (controlplane.tailscale.com Noise control protocol, node-key registration, DERP relays) plus a gVisor netstack. The data path is WireGuard, whose transport T16 implements, but peer discovery/authentication needs the control plane and no Tailscale Rust crate is in the offline cargo cache (only the Go tailscale.com module is cached). Device/TUN and the IP stack are T6/T7.",
+      "dependencyDecision": "No crate/build available offline: `tailscale`, `tailscale-rs`, `tailscale_wireguard` are absent from the cargo cache and Cargo.lock. Implementing the control protocol from scratch is out of scope for a verifiable subset; rejected by name with this reason. No Go code copied.",
+      "platform": "not applicable until the control plane exists"
+    },
+    "zerotier": {
+      "status": "rejected",
+      "reason": "The pinned outbound wraps zerotier-go: Curve25519 identity, planet/root servers, the VL1/VL2 transport and control protocol, Salsa20/Poly1305 crypto, and a gVisor netstack. No Zerotier Rust crate is in the offline cargo cache and no local planet/controller is available; device/TUN and the IP stack are T6/T7.",
+      "dependencyDecision": "No `zerotier`/`zerotier-sys`/`libzt` crate or library in the offline cache; rejected by name. Salsa20/poly1305 primitives alone are insufficient without the control protocol.",
+      "platform": "not applicable until the control protocol exists"
+    },
+    "easytier": {
+      "status": "rejected",
+      "reason": "The pinned outbound embeds the easytier-go host/instance: peer discovery, encryption, KCP/QUIC proxies and a netstack. Upstream EasyTier is written in Rust, but no `easytier` crate (or its workspace crates) is in the offline cargo cache, and device/TUN and the IP stack are T6/T7.",
+      "dependencyDecision": "The cached tree contains only the Go `easytier-go` module from the locked Mihomo build, not the Rust crate; a network fetch would be required. Rejected by name.",
+      "platform": "not applicable until the crate is available and pinned"
+    }
+  },
+  "commands": [
+    "cargo test --offline --locked --manifest-path native-kernel/Cargo.toml",
+    "tool/kernel-compat/family-peers.sh wireguard_peer",
+    "tool/kernel-compat/family-peers.sh openvpn_peer",
+    "node --test tool/kernel-compat/runner.test.mjs"
+  ],
+  "gaps": [
+    "T6/T7 must provide the userspace IP stack and TUN device that turns WireGuard/OpenVPN IP packets into TCP/UDP streams; until then both `dial()` paths refuse with that named gap.",
+    "WireGuard automatic rekey is initiator-only (the client rekeys before 120 s); responding to a server-initiated handshake is not implemented.",
+    "OpenVPN tls-auth/tls-crypt control protection, CBC data ciphers, compression and rekey/soft-reset handling are not implemented and are rejected or left to a later task.",
+    "Tailscale/ZeroTier/EasyTier control planes and their IP stacks are explicitly rejected; no compatible Rust dependency is available offline.",
+    "Platform peer runs: only macOS arm64; other platforms compile from the same code paths but were not run."
+  ],
+  "meshParity": {
+    "command": "tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 -t -d <dir> -f <family>.yaml",
+    "log": "tool/kernel-compat/evidence/t16-mesh-parity.log",
+    "result": "the pinned binary accepts one valid configuration per mesh family; the Rust kernel rejects each by name and records the missing control plane",
+    "rustTest": "tests/config.rs::mesh_control_planes_reject_configs_the_pinned_binary_accepts_by_name"
+  },
+  "results": {
+    "defaultSuite": {
+      "command": "cargo test --offline --locked --manifest-path native-kernel/Cargo.toml",
+      "result": "all green: 103 lib unit tests, 38 config, 48 protocols, 18 quic_peers, 11 sessions, 1 shadowquic_stream, 7 cli, 7 family_cli, 1 doc-test; 8 ignore-marked peer families",
+      "hermetic": "yes: the default suite starts no network peer; the ignored cases need KC_WIREGUARD_PEER_BIN/KC_OPENVPN_BIN"
+    },
+    "familyPeers": {
+      "command": "tool/kernel-compat/family-peers.sh",
+      "result": "exit 0; wireguard 5/5, openvpn 4/4, plus the pre-existing gost/ssh/ssr/Sudoku groups",
+      "log": "tool/kernel-compat/evidence/family-peers-run.log"
+    },
+    "mihomoPeers": {
+      "command": "tool/kernel-compat/peer-tests.sh",
+      "result": "61 passed, 0 failed",
+      "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
+    },
+    "runnerTest": {
+      "command": "node --test tool/kernel-compat/runner.test.mjs",
+      "result": "10 passed, 0 failed"
+    }
+  }
+}

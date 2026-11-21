@@ -19,6 +19,7 @@ pub mod hysteria2;
 pub mod jls;
 pub mod masque;
 pub mod mieru;
+pub mod openvpn;
 pub mod shadowsocks;
 pub mod shadowquic;
 pub mod snell;
@@ -35,6 +36,7 @@ pub mod tuic;
 pub mod udp;
 pub mod vless;
 pub mod vmess;
+pub mod wireguard;
 pub mod ws;
 
 use std::io;
@@ -397,6 +399,31 @@ async fn dial_inner(
         Protocol::ShadowQuic(p) => {
             refuse_chain(via, "shadowquic")?;
             shadowquic::dial(p, target, tls, timeout).await
+        }
+        Protocol::OpenVpn(_) => {
+            refuse_chain(via, "openvpn")?;
+            Err(handshake(
+                "openvpn",
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the control channel, TLS authentication and AEAD data channel are implemented, but IP packets through the tunnel need the userspace IP stack and TUN device owned by T6/T7 (use outbound::openvpn::OpenVpnTunnel for the data channel)",
+                ),
+            ))
+        }
+        Protocol::Wireguard(_) => {
+            refuse_chain(via, "wireguard")?;
+            // The packet transport is implemented in `wireguard.rs` and
+            // verified against a controlled locked-source peer, but turning an
+            // IP packet stream into the TCP stream this function returns needs
+            // the userspace IP stack and TUN device owned by the T6/T7 device
+            // layer. Refusing names that gap; it never pretends a dial worked.
+            Err(handshake(
+                "wireguard",
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the Noise IK handshake and transport are implemented, but TCP/UDP through the tunnel needs the userspace IP stack and TUN device owned by T6/T7 (use outbound::wireguard::WireguardTunnel for the packet transport)",
+                ),
+            ))
         }
     }
 }

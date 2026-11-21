@@ -163,6 +163,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "argon2",
+ "blake2",
  "bytes",
  "chacha20 0.9.1",
  "chacha20poly1305",

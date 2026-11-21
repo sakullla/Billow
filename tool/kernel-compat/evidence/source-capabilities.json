@@ -2218,8 +2218,52 @@
       "constructor": "outbound.NewWireGuard",
       "source": "adapter/parser.go:100",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "the pinned outbound terminates WireGuard (Noise IK, cookie, transport keys) and exposes TCP/UDP through a gVisor netstack; the Rust kernel has no WireGuard transport or IP stack (device/TUN ownership is T6/T7) and no boringtun/wireguard crate is in the offline cargo cache"
+        "status": "partial",
+        "reason": "The WireGuard transport (Noise IK, cookie reply, pre-shared key, transport keys, padding, replay window, initiator rekey, keepalive) is implemented in src/outbound/wireguard.rs and verified against the locked metacubex/wireguard-go device; TCP/UDP through the tunnel needs the userspace IP stack and TUN device owned by T6/T7, so dial() refuses with that gap named. AmneziaWG, an explicit ip-stack mode, the stack resolver and endpoint refresh are rejected by name.",
+        "options": [
+          "private-key",
+          "ip",
+          "ipv6",
+          "workers",
+          "mtu",
+          "udp",
+          "persistent-keepalive",
+          "peers",
+          "server",
+          "port",
+          "public-key",
+          "pre-shared-key",
+          "reserved",
+          "allowed-ips"
+        ],
+        "notImplemented": [
+          "amnezia-wg-option",
+          "ip-stack.mode: mips|gvisor",
+          "ip-stack.congestion-controller",
+          "remote-dns-resolve",
+          "dns",
+          "refresh-server-ip-interval",
+          "dialer-proxy",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "ip-version"
+        ],
+        "evidence": [
+          "src/outbound/wireguard.rs::tests::decodes_the_pinned_base64_key_form",
+          "src/outbound/wireguard.rs::tests::initiation_has_the_documented_shape",
+          "src/outbound/wireguard.rs::tests::replay_window_rejects_duplicates_and_old_counters",
+          "tests/config.rs::wireguard_accepts_the_pinned_shapes_and_names_its_gaps",
+          "tests/wireguard_peer.rs::handshake_and_icmp_round_trip_through_the_locked_peer",
+          "tests/wireguard_peer.rs::preshared_key_is_mixed_into_the_handshake",
+          "tests/wireguard_peer.rs::wrong_peer_public_key_fails_the_handshake",
+          "tests/wireguard_peer.rs::an_unregistered_client_key_is_rejected",
+          "tests/wireguard_peer.rs::packets_over_the_mtu_and_short_buffers_are_named_errors",
+          "tool/kernel-compat/evidence/t16-feasibility.json"
+        ],
+        "notes": "Both peer forms load: `peers:` and the embedded top-level server/port/public-key form. `allowed-ips` defaults to 0.0.0.0/0 and/or ::/0 from ip/ipv6 in the single-peer form; `mtu` defaults to 1408. The transport is initiator-only for rekeys (it rekeys before the responder's 120 s window); answering a server-initiated handshake is not implemented.",
+        "license": "No wireguard/boringtun crate and no GPL source copied; the locked MIT wireguard-go device is a test peer only. See tool/kernel-compat/evidence/t16-provenance.md."
       }
     },
     {
@@ -2742,8 +2786,57 @@
       "constructor": "outbound.NewOpenVPN",
       "source": "adapter/parser.go:198",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "the pinned outbound implements OpenVPN (TLS control channel, data ciphers, tls-auth/tls-crypt) and exposes TCP/UDP through a gVisor netstack; device/TUN ownership is T6/T7 and no Rust OpenVPN stack is available offline"
+        "status": "partial",
+        "reason": "The control channel (UDP/TCP framing, hard reset, reliable ACKs, TLS 1.2/1.3 client authentication, key-method 2) and the AEAD data channel are implemented in src/outbound/openvpn.rs and verified against OpenVPN 2.7.9; TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device, so dial() refuses with that gap named. tls-auth/tls-crypt, compression and CBC data ciphers are rejected by name.",
+        "options": [
+          "server",
+          "port",
+          "proto",
+          "dev",
+          "cipher",
+          "data-ciphers",
+          "data-ciphers-fallback",
+          "auth",
+          "comp-lzo",
+          "ca",
+          "cert",
+          "key",
+          "username",
+          "password",
+          "peer-info",
+          "ping",
+          "ping-restart",
+          "tran-window",
+          "handshake-timeout",
+          "mtu",
+          "udp"
+        ],
+        "notImplemented": [
+          "tls-auth",
+          "tls-crypt",
+          "tls-crypt-v2",
+          "comp-lzo: yes|adaptive",
+          "cipher/data-ciphers with CBC",
+          "dev other than tun",
+          "ip-stack.mode: mips|gvisor",
+          "ip-stack.congestion-controller",
+          "remote-dns-resolve",
+          "dns",
+          "dialer-proxy"
+        ],
+        "evidence": [
+          "src/outbound/openvpn.rs::tests::control_packets_round_trip",
+          "src/outbound/openvpn.rs::tests::push_reply_parses_cipher_peer_id_and_ifconfig",
+          "src/outbound/openvpn.rs::tests::prf_is_deterministic_and_sensitive_to_the_label",
+          "tests/config.rs::openvpn_accepts_the_pinned_shapes_and_names_its_gaps",
+          "tests/openvpn_peer.rs::control_channel_pushes_and_the_data_keys_decrypt_a_keepalive",
+          "tests/openvpn_peer.rs::an_untrusted_server_certificate_is_rejected",
+          "tests/openvpn_peer.rs::a_missing_client_certificate_fails_authentication",
+          "tests/openvpn_peer.rs::no_common_data_cipher_is_a_named_failure",
+          "tool/kernel-compat/evidence/t16-feasibility.json"
+        ],
+        "notes": "`ca` is an inline PEM and is required; the server chain is verified against it without a hostname check (matching the pinned client). `cert`/`key` are inline PEM and optional; without them the server may reject the TLS client (observed as a bounded handshake timeout). The data ciphers are AES-128-GCM, AES-256-GCM and CHACHA20-POLY1305; AES-192-GCM and CBC are not implemented.",
+        "license": "No OpenVPN crate and no OpenVPN/Mihomo source copied. The GPL-2.0 OpenVPN binary is a test peer only; provenance in tool/kernel-compat/evidence/t16-provenance.md."
       }
     },
     {
@@ -3947,8 +4040,8 @@
   },
   "coverage": {
     "mapped": 24,
-    "partial": 15,
-    "unimplemented": 116,
+    "partial": 17,
+    "unimplemented": 114,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }

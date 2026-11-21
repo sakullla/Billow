@@ -380,7 +380,8 @@
     "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
     "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
     "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
-    "families still unimplemented after T15 (the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case. shadowquic is partial: TCP/UDP and JLS are covered above; zero-rtt and the Brutal congestion options are rejected by name."
+    "families still unimplemented after T15 (the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case. shadowquic is partial: TCP/UDP and JLS are covered above; zero-rtt and the Brutal congestion options are rejected by name.",
+    "WireGuard/OpenVPN positive data-path cases stop at the IP packet (WireGuard ICMP echo through the locked device; OpenVPN AEAD keepalive decrypt): TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device."
   ],
   "t9": {
     "date": "2026-11-21",
@@ -413,7 +414,7 @@
       "passed": 14,
       "failed": 0
     },
-    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server; the Sudoku section builds the locked Go codec (`peers/sudoku-vectors`) and runs the Rust-vs-Go differential test. `result` counts the 14 test functions in family-peers.sh (gost 5, ssh 4, ssr Rust 3, ssr independent Go 2); the Sudoku differential is `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation`.",
+    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server; the Sudoku section builds the locked Go codec (peers/sudoku-vectors) and runs the Rust-vs-Go differential test. `result` counts the 14 test functions of that group (gost 5, ssh 4, ssr Rust 3 + independent Go 2); the Sudoku differential is tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation. T16's WireGuard/OpenVPN peers are recorded separately under `t16` and run by the same script.",
     "cli": "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs drives one success tunnel through the real CLI process for gost-relay, ssh and ssr."
   },
   "t11": {
@@ -545,6 +546,46 @@
         "shadowquic_wrong_password_never_reaches_the_sink",
         "shadowquic_transport_options_are_parsed_and_jls_gaps_named"
       ]
+    }
+  },
+  "t16": {
+    "date": "2026-11-22",
+    "implemented": [
+      "wireguard (transport)",
+      "openvpn (control + data channel)"
+    ],
+    "rejected": [
+      "tailscale",
+      "zerotier",
+      "easytier"
+    ],
+    "run": {
+      "command": "tool/kernel-compat/family-peers.sh",
+      "result": "wireguard_peer 5 passed, openvpn_peer 4 passed, 0 failed",
+      "log": "tool/kernel-compat/evidence/family-peers-run.log",
+      "note": "The default `cargo test --locked` suite is green and hermetic; the peer cases are #[ignore]d and only run through the script. The mesh families have no peer because their control planes are unavailable offline."
+    },
+    "dependencyDecision": "WireGuard: no wireguard/boringtun crate offline; implemented in-tree with blake2 0.10.6 (new direct dependency, already in Cargo.lock), x25519-dalek, chacha20poly1305 and rand. OpenVPN: no Rust crate offline; implemented in-tree with rustls/ring, aes-gcm, chacha20poly1305, hmac/sha1 and the small MD5 already in keys.rs. The peers are the locked MIT metacubex/wireguard-go device and the OpenVPN 2.7.9 Homebrew binary; neither is linked.",
+    "cases": {
+      "positive": [
+        "wireguard: handshake_and_icmp_round_trip_through_the_locked_peer",
+        "wireguard: preshared_key_is_mixed_into_the_handshake",
+        "openvpn: control_channel_pushes_and_the_data_keys_decrypt_a_keepalive"
+      ],
+      "negative": [
+        "wireguard: wrong_peer_public_key_fails_the_handshake",
+        "wireguard: an_unregistered_client_key_is_rejected",
+        "wireguard: packets_over_the_mtu_and_short_buffers_are_named_errors",
+        "openvpn: an_untrusted_server_certificate_is_rejected",
+        "openvpn: a_missing_client_certificate_fails_authentication",
+        "openvpn: no_common_data_cipher_is_a_named_failure"
+      ]
+    },
+    "deviceLayer": "Both transports expose IP packets; device/TUN and the userspace IP stack are T6/T7.",
+    "license": {
+      "wireguard_peer": "metacubex/wireguard-go MIT, golang.org/x/crypto BSD-3-Clause; test program only.",
+      "openvpn_peer": "OpenVPN 2.7.9 binary GPL-2.0; test process only, not linked.",
+      "kernel": "MIT; provenance and the no-copy audit are in tool/kernel-compat/evidence/t16-provenance.md."
     }
   }
 }
