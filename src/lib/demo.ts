@@ -129,6 +129,9 @@ const DEMO_DNS_ANSWERS: Record<string, { type: string; value: string; ttl: numbe
 }
 
 /** Real subscriptions pack region, line, rate and unlocks into one name. */
+/** Airport subscriptions smuggle quota lines in as fake nodes; the heavy demo carries a set (`?demo=big`). */
+export const DEMO_QUOTA_INFO = ['【KLM】Traffic Reset：12 Days Left', '【KLM】Expire Date：2027/05/04', '【KLM】16.47 GB | 500 GB']
+
 export const DEMO_LONG_NAMES = [
   '🇭🇰 香港 HKT 家宽 01 丨 0.8x 倍率 丨 解锁 Netflix / Disney+ / ChatGPT 丨 IPLC 专线',
   '🇺🇸 美国 洛杉矶 CN2 GIA 高速 02 [x1.5] Hysteria2 原生 IP 落地',
@@ -332,7 +335,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   const DIRECT_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
 
   const groupsDef = (): { name: string; type: string; proxies: string[] }[] => [
-    { name: '节点选择', type: 'select', proxies: ['自动选择', '故障转移', ...names, 'DIRECT'] },
+    { name: '节点选择', type: 'select', proxies: ['自动选择', '故障转移', ...(options.big ? DEMO_QUOTA_INFO : []), ...names, 'DIRECT'] },
     { name: '自动选择', type: 'url-test', proxies: names },
     { name: '故障转移', type: 'fallback', proxies: names.slice(0, 6) },
     { name: '流媒体', type: 'select', proxies: ['节点选择', ...names.filter((n) => !n.startsWith('德国'))] },

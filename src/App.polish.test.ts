@@ -222,10 +222,18 @@ describe('UI/UX polish', () => {
 
     const card = wrapper.find('[data-group-card="节点选择"]')
     const line = card.find('[data-testid="group-info"]')
+    // Quota reads as a usage bar with figures; reset and leftover become quiet chips (UI/UX R6).
+    const usage = line.find('[data-testid="group-quota-usage"]')
+    expect(usage.find('.group-quota-figure').text()).toBe('4.49 GB / 500 GB')
+    expect(usage.find('.group-quota-pct').text()).toBe('0.9%')
+    expect(usage.find('[role="progressbar"]').attributes('aria-valuenow')).toBe('1')
     expect(line.findAll('.group-info-item').map((item) => item.text())).toEqual([
-      'Traffic Reset：17 Days Left',
-      '4.49 GB | 500 GB',
+      '剩余 120 GB',
+      '17 天后重置',
+    ])
+    expect(line.findAll('.group-info-item').map((item) => item.attributes('title'))).toEqual([
       '剩余流量：120 GB',
+      'Traffic Reset：17 Days Left',
     ])
     for (const name of info) expect(card.find(`[data-node="${name}"]`).exists()).toBe(false)
 

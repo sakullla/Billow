@@ -6468,30 +6468,6 @@ button.nav-row:active {
   color: var(--text-3);
 }
 
-/* R11 Subscription quota/expiry pseudo-nodes collapse into one info line above the grid */
-.group-info {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 0;
-  color: var(--text-3);
-}
-.group-info .icon {
-  flex: none;
-}
-.group-info-item {
-  max-width: 100%;
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  background: var(--sunken);
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* R16 age private key field in the profile editor */
 .age-field-label {
   display: inline-flex;
@@ -7980,25 +7956,66 @@ details.cfg-section[open] .cfg-fold-icon {
   color: var(--text-3);
 }
 
-/* Subscription quota/expiry lines and strategy hints read as quiet captions. */
-.group-info {
-  gap: 0;
+/* Subscription quota: a usage bar with the figures, then expiry / reset / leftover lines as quiet chips (R6). */
+.group-quota {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
   color: var(--text-3);
   font-size: var(--text-sm);
 }
-.group-info .icon {
-  margin-right: 6px;
+/* Phones run the node rows edge to edge; the header slot keeps the same inset as the rows. */
+.compact .page.proxies .nodes:not(.dense) > .node-grid-header {
+  padding: 10px 12px 6px;
 }
-.group-info-item {
-  padding: 0;
-  background: transparent;
+.compact .group-quota {
+  padding: 10px 12px;
+}
+.group-quota-usage {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.group-quota-usage .usage-bar {
+  flex: 1 1 auto;
+  min-width: 48px;
+  height: 6px;
+}
+.group-quota-figure {
+  flex: none;
+  color: var(--text-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.group-quota-pct {
+  flex: none;
+  min-width: 3.2em;
+  text-align: right;
   color: var(--text-3);
-  border-radius: 0;
+  font-variant-numeric: tabular-nums;
 }
-.group-info-item:not(:last-child)::after {
-  content: '·';
-  margin: 0 8px;
-  color: var(--border-strong);
+.group-quota-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.group-quota .group-info-item {
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .group-strategy {
   color: var(--text-3);

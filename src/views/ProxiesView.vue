@@ -9,7 +9,7 @@ import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
 import type { MenuItem } from '../components/Menu.vue'
 import Segmented from '../components/Segmented.vue'
-import { autoTypeLabel, canPickNode, compareText, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, protocolLabel, resolveChain, splitNodePrefix } from '../lib/format'
+import { autoTypeLabel, canPickNode, compareText, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, parseSubscriptionInfo, protocolLabel, resolveChain, splitNodePrefix, type SubscriptionInfo } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
@@ -170,6 +170,29 @@ type ViewGroup = NodeGroup & { info?: NodeItem[]; hiddenFailedCount?: number }
 /** Info text without the provider's leading 【tag】 prefix. */
 function infoText(name: string): string {
   return name.replace(/^\s*[【\[][^】\]]*[】\]]\s*/, '').trim() || name
+}
+
+const quotaCache = new Map<string, SubscriptionInfo>()
+/** Subscription quota / expiry / reset parsed from a group's info nodes (R6); cached per text set. */
+function quotaOf(info: readonly NodeItem[]): SubscriptionInfo {
+  const texts = info.map((item) => infoText(item.name))
+  const key = texts.join('\n')
+  let parsed = quotaCache.get(key)
+  if (!parsed) {
+    parsed = parseSubscriptionInfo(texts)
+    if (quotaCache.size > 64) quotaCache.clear()
+    quotaCache.set(key, parsed)
+  }
+  return parsed
+}
+
+function quotaTagCount(info: SubscriptionInfo): number {
+  return Number(Boolean(info.remaining)) + Number(Boolean(info.expire)) + Number(Boolean(info.resetDays)) + info.others.length
+}
+
+function percentText(value: number): string {
+  if (value > 0 && value < 0.1) return '<0.1%'
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)}%`
 }
 
 function manifest(): NodeGroup[] {
@@ -1079,10 +1102,39 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             <Icon :name="groupStrategy(group.group_type)!.icon" :size="14" />
             <span>{{ groupStrategy(group.group_type)!.hint }}<template v-if="group.pinnable">{{ group.fixed ? tr('当前已固定为 {0}。', { 0: group.fixed }) : tr('点选节点可固定使用。') }}</template></span>
           </p>
-          <p v-if="group.info?.length" class="group-info small" data-testid="group-info">
-            <Icon name="info" :size="13" />
-            <span v-for="item in group.info" :key="item.name" class="group-info-item" :title="item.name">{{ infoText(item.name) }}</span>
-          </p>
+          <div v-if="group.info?.length" class="group-quota small" data-testid="group-info">
+            <div
+              v-if="quotaOf(group.info).usage"
+              class="group-quota-usage"
+              :title="quotaOf(group.info).usage!.source"
+              data-testid="group-quota-usage"
+            >
+              <div
+                class="usage-bar"
+                role="progressbar"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                :aria-valuenow="Math.round(quotaOf(group.info).usage!.percent)"
+                :aria-label="tr('订阅流量用量')"
+              >
+                <span
+                  :style="{ width: `${quotaOf(group.info).usage!.percent > 0 ? Math.max(quotaOf(group.info).usage!.percent, 1.5) : 0}%` }"
+                  :class="{
+                    danger: quotaOf(group.info).usage!.percent >= 98,
+                    warn: quotaOf(group.info).usage!.percent > 85 && quotaOf(group.info).usage!.percent < 98,
+                  }"
+                />
+              </div>
+              <span class="group-quota-figure mono">{{ quotaOf(group.info).usage!.used }} / {{ quotaOf(group.info).usage!.total }}</span>
+              <span class="group-quota-pct mono">{{ percentText(quotaOf(group.info).usage!.percent) }}</span>
+            </div>
+            <div v-if="quotaTagCount(quotaOf(group.info))" class="group-quota-tags">
+              <span v-if="quotaOf(group.info).remaining" class="group-info-item" :title="quotaOf(group.info).remaining!.source">{{ tr('剩余 {0}', { 0: quotaOf(group.info).remaining!.value }) }}</span>
+              <span v-if="quotaOf(group.info).expire" class="group-info-item" :title="quotaOf(group.info).expire!.source">{{ tr('到期 {0}', { 0: quotaOf(group.info).expire!.value }) }}</span>
+              <span v-if="quotaOf(group.info).resetDays" class="group-info-item" :title="quotaOf(group.info).resetDays!.source">{{ tr('{0} 天后重置', { 0: quotaOf(group.info).resetDays!.value }) }}</span>
+              <span v-for="text in quotaOf(group.info).others" :key="text" class="group-info-item" :title="text">{{ text }}</span>
+            </div>
+          </div>
         </template>
         <template #default="{ nodes: visibleNodes }">
           <div

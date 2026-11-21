@@ -17,6 +17,7 @@ import {
   hostOf,
   isInfoNode,
   listedGroups,
+  parseSubscriptionInfo,
   resolveChain,
   protocolLabel,
   splitNodePrefix,
@@ -169,5 +170,37 @@ describe('format', () => {
     expect(canPickNode({ kind: 'auto', pinnable: true })).toBe(true)
     expect(canPickNode({ kind: 'auto', pinnable: false })).toBe(false)
     expect(canPickNode({ kind: 'auto' })).toBe(false)
+  })
+})
+
+describe('parseSubscriptionInfo', () => {
+  it('reads an airport quota pair, expiry and reset countdown', () => {
+    const info = parseSubscriptionInfo(['Traffic Reset: 12 Days Left', 'Expire Date: 2027/05/04', '16.47 GB | 500 GB'])
+    expect(info.usage).toMatchObject({ used: '16.47 GB', total: '500 GB' })
+    expect(info.usage!.percent).toBeCloseTo(3.294, 2)
+    expect(info.expire).toMatchObject({ value: '2027/05/04', source: 'Expire Date: 2027/05/04' })
+    expect(info.resetDays).toMatchObject({ value: 12 })
+    expect(info.others).toEqual([])
+  })
+
+  it('converts mixed units and clamps the percentage', () => {
+    expect(parseSubscriptionInfo(['512 MB / 1 GB']).usage!.percent).toBeCloseTo(50, 5)
+    expect(parseSubscriptionInfo(['2 TB | 1 TB']).usage!.percent).toBe(100)
+    expect(parseSubscriptionInfo(['1 GiB / 4 GiB']).usage).toMatchObject({ used: '1 GiB', total: '4 GiB', percent: 25 })
+  })
+
+  it('reads Chinese labels and combines separate used / total lines', () => {
+    const info = parseSubscriptionInfo(['剩余流量：120 GB', '套餐到期：2026-12-31', '距离下次重置剩余：5 天', '已用流量：30 GB', '总流量：200 GB'])
+    expect(info.remaining).toMatchObject({ value: '120 GB' })
+    expect(info.expire).toMatchObject({ value: '2026-12-31' })
+    expect(info.resetDays).toMatchObject({ value: 5 })
+    expect(info.usage).toMatchObject({ used: '30 GB', total: '200 GB', percent: 15 })
+    expect(info.others).toEqual([])
+  })
+
+  it('keeps anything it cannot read verbatim', () => {
+    const info = parseSubscriptionInfo(['官网：example.com', '已用流量：30 GB', 'Days Left: 30'])
+    expect(info.usage).toBeNull()
+    expect(info.others).toEqual(['官网：example.com', 'Days Left: 30', '已用流量：30 GB'])
   })
 })

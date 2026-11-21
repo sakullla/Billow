@@ -415,6 +415,90 @@ export function isInfoNode(name: string): boolean {
   return INFO_NODE_PATTERNS.some((pattern) => pattern.test(name))
 }
 
+export interface SubscriptionInfo {
+  usage: { used: string; total: string; percent: number; source: string } | null
+  remaining: { value: string; source: string } | null
+  expire: { value: string; source: string } | null
+  resetDays: { value: number; source: string } | null
+  others: string[]
+}
+
+const SIZE = String.raw`(\d+(?:\.\d+)?)\s*([KMGTP]i?B|B)`
+const UNIT_POWER: Record<string, number> = { B: 0, K: 1, M: 2, G: 3, T: 4, P: 5 }
+
+function bytesOf(amount: string, unit: string): number {
+  return Number(amount) * 1024 ** (UNIT_POWER[unit[0]!.toUpperCase()] ?? 0)
+}
+
+function sizeText(amount: string, unit: string): string {
+  return `${amount} ${unit.toUpperCase().replace('IB', 'iB')}`
+}
+
+const USAGE_PAIR = new RegExp(`^${SIZE}\\s*[|/]\\s*${SIZE}$`, 'i')
+const LABELLED_SIZE = new RegExp(`${SIZE}`, 'i')
+
+/**
+ * Subscription "info nodes" (quota, expiry, reset countdown) parsed into the pieces the
+ * proxy page shows as a usage bar and small labels. Anything unrecognised stays verbatim.
+ */
+export function parseSubscriptionInfo(texts: readonly string[]): SubscriptionInfo {
+  const info: SubscriptionInfo = { usage: null, remaining: null, expire: null, resetDays: null, others: [] }
+  let used: { amount: string; unit: string; source: string } | null = null
+  let total: { amount: string; unit: string; source: string } | null = null
+  for (const raw of texts) {
+    const text = raw.trim()
+    const pair = USAGE_PAIR.exec(text)
+    if (pair && !info.usage) {
+      const [, ua, uu, ta, tu] = pair
+      const totalBytes = bytesOf(ta!, tu!)
+      info.usage = {
+        used: sizeText(ua!, uu!),
+        total: sizeText(ta!, tu!),
+        percent: totalBytes > 0 ? Math.min(100, Math.max(0, (bytesOf(ua!, uu!) / totalBytes) * 100)) : 0,
+        source: raw,
+      }
+      continue
+    }
+    const reset = /(?:reset|重置)/i.test(text) ? /(\d+)\s*(?:days?|天|日)/i.exec(text) : null
+    if (reset && !info.resetDays) {
+      info.resetDays = { value: Number(reset[1]), source: raw }
+      continue
+    }
+    const expire = /(?:expire\s*(?:date|time|at)?|套餐到期|到期时间|过期时间|到期)\s*[:：]?\s*(.+)$/i.exec(text)
+    if (expire && !info.expire && /\d/.test(expire[1]!)) {
+      info.expire = { value: expire[1]!.trim(), source: raw }
+      continue
+    }
+    const size = LABELLED_SIZE.exec(text)
+    if (size && /剩余流量|remaining\s*traffic/i.test(text) && !info.remaining) {
+      info.remaining = { value: sizeText(size[1]!, size[2]!), source: raw }
+      continue
+    }
+    if (size && /已用流量|used\s*traffic/i.test(text) && !used) {
+      used = { amount: size[1]!, unit: size[2]!, source: raw }
+      continue
+    }
+    if (size && /总流量|total\s*traffic/i.test(text) && !total) {
+      total = { amount: size[1]!, unit: size[2]!, source: raw }
+      continue
+    }
+    info.others.push(raw)
+  }
+  if (!info.usage && used && total) {
+    const totalBytes = bytesOf(total.amount, total.unit)
+    info.usage = {
+      used: sizeText(used.amount, used.unit),
+      total: sizeText(total.amount, total.unit),
+      percent: totalBytes > 0 ? Math.min(100, (bytesOf(used.amount, used.unit) / totalBytes) * 100) : 0,
+      source: `${used.source} · ${total.source}`,
+    }
+  } else {
+    if (used) info.others.push(used.source)
+    if (total) info.others.push(total.source)
+  }
+  return info
+}
+
 /** Group type label shared by the home cards and the proxy page (R1). */
 export function groupTypeLabel(group: { group_type: string; kind: string }): string {
   return protocolLabel(group.group_type) || (group.kind === 'manual' ? tr('手选') : tr('自动'))
