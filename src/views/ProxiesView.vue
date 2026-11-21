@@ -1035,7 +1035,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           @click="pickFastest(group)"
         >
           <Icon name="zap" :size="13" />
-          {{ compact ? tr('最快') : tr('选最快') }}
+          <span class="group-fastest-label">{{ compact ? tr('最快') : tr('选最快') }}</span>
         </button>
         <button
           v-if="group.fixed"
