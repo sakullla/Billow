@@ -124,6 +124,12 @@ pub async fn dial(
     )
     .await?;
 
+    // `request-timeout` bounds each TUIC request operation (the auth stream
+    // and the Connect stream). The pinned v5 client has no Connect response to
+    // read, so this is the closest observable use of the option; the value is
+    // milliseconds and defaults to 8000, as in `TuicOption`.
+    let request_timeout = Duration::from_millis(option.request_timeout.max(1));
+
     // Authentication: one unidirectional stream per connection.
     let mut token = [0u8; 32];
     quic::export_keying_material(
@@ -137,16 +143,16 @@ pub async fn dial(
     auth.push(COMMAND_AUTHENTICATE);
     auth.extend_from_slice(&option.uuid);
     auth.extend_from_slice(&token);
-    let mut auth_stream = tokio::time::timeout(timeout, connection.open_uni())
+    let mut auth_stream = tokio::time::timeout(request_timeout, connection.open_uni())
         .await
-        .map_err(|_| timeout_error(timeout))?
+        .map_err(|_| timeout_error(request_timeout))?
         .map_err(|e| DialError::Handshake {
             protocol: "tuic",
             source: io::Error::other(format!("open unidirectional stream: {e}")),
         })?;
-    auth_stream
-        .write_all(&auth)
+    tokio::time::timeout(request_timeout, auth_stream.write_all(&auth))
         .await
+        .map_err(|_| timeout_error(request_timeout))?
         .map_err(|e| DialError::Handshake {
             protocol: "tuic",
             source: io::Error::other(format!("authentication: {e}")),
@@ -157,9 +163,9 @@ pub async fn dial(
     })?;
 
     // One bidirectional stream per TCP session.
-    let (mut send, recv) = tokio::time::timeout(timeout, connection.open_bi())
+    let (mut send, recv) = tokio::time::timeout(request_timeout, connection.open_bi())
         .await
-        .map_err(|_| timeout_error(timeout))?
+        .map_err(|_| timeout_error(request_timeout))?
         .map_err(|e| DialError::Handshake {
             protocol: "tuic",
             source: io::Error::other(format!("open stream: {e}")),
@@ -173,8 +179,9 @@ pub async fn dial(
             source,
         })?,
     );
-    send.write_all(&header)
+    tokio::time::timeout(request_timeout, send.write_all(&header))
         .await
+        .map_err(|_| timeout_error(request_timeout))?
         .map_err(|e| DialError::Handshake {
             protocol: "tuic",
             source: io::Error::other(format!("connect request: {e}")),

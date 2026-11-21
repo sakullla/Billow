@@ -458,7 +458,7 @@ fn make_quic_cert(name: &str) -> QuicCert {
     QuicCert { der, key, dir }
 }
 
-fn quic_server_config(cert: &QuicCert) -> quinn::ServerConfig {
+fn quic_server_config(cert: &QuicCert, alpn: &[u8]) -> quinn::ServerConfig {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut config = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
@@ -473,7 +473,7 @@ fn quic_server_config(cert: &QuicCert) -> quinn::ServerConfig {
             .unwrap(),
         )
         .unwrap();
-    config.alpn_protocols = vec![b"h3".to_vec()];
+    config.alpn_protocols = vec![alpn.to_vec()];
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(config).unwrap();
     quinn::ServerConfig::with_crypto(Arc::new(crypto))
 }
@@ -488,7 +488,7 @@ fn spawn_tuic_cli_peer(password: &'static str) -> u16 {
         runtime.block_on(async move {
             let cert = make_quic_cert("tuic");
             let endpoint = quinn::Endpoint::server(
-                quic_server_config(&cert),
+                quic_server_config(&cert, b"h3"),
                 "127.0.0.1:0".parse().unwrap(),
             )
             .unwrap();
@@ -594,6 +594,260 @@ fn cli_process_tunnels_through_tuic() {
     assert_eq!(
         tunnel(port, echo_port, b"cli-tuic-marker"),
         b"cli-tuic-marker".to_vec()
+    );
+    stop_cli(child);
+}
+
+// ---------------------------------------------------------------------------
+// Hysteria v1 peer (QUIC, `transport/hysteria/core/protocol.go`).
+// ---------------------------------------------------------------------------
+
+fn spawn_hysteria_cli_peer(auth: &'static str) -> u16 {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let cert = make_quic_cert("hysteria");
+            let endpoint = quinn::Endpoint::server(
+                quic_server_config(&cert, b"hysteria"),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .unwrap();
+            tx.send(endpoint.local_addr().unwrap().port()).unwrap();
+            while let Some(incoming) = endpoint.accept().await {
+                tokio::spawn(async move {
+                    let Ok(connection) = incoming.await else {
+                        return;
+                    };
+                    let Ok((mut control_send, mut control_recv)) = connection.accept_bi().await
+                    else {
+                        return;
+                    };
+                    let mut head = [0u8; 19];
+                    if control_recv.read_exact(&mut head).await.is_err() {
+                        return;
+                    }
+                    let version = head[0];
+                    let send_bps = u64::from_be_bytes(head[1..9].try_into().unwrap());
+                    let recv_bps = u64::from_be_bytes(head[9..17].try_into().unwrap());
+                    let auth_len = u16::from_be_bytes([head[17], head[18]]) as usize;
+                    let mut client_auth = vec![0u8; auth_len];
+                    if control_recv.read_exact(&mut client_auth).await.is_err() {
+                        return;
+                    }
+                    let mut hello = Vec::new();
+                    let message: &[u8] = if version != 3 {
+                        b"unsupported client version"
+                    } else if client_auth != auth.as_bytes() {
+                        b"auth error"
+                    } else {
+                        b""
+                    };
+                    if !message.is_empty() {
+                        hello.push(0);
+                        hello.extend_from_slice(&send_bps.to_be_bytes());
+                        hello.extend_from_slice(&recv_bps.to_be_bytes());
+                        hello.extend_from_slice(&(message.len() as u16).to_be_bytes());
+                        hello.extend_from_slice(message);
+                        let _ = control_send.write_all(&hello).await;
+                        let _ = control_send.finish();
+                        return;
+                    }
+                    hello.push(1);
+                    hello.extend_from_slice(&send_bps.to_be_bytes());
+                    hello.extend_from_slice(&recv_bps.to_be_bytes());
+                    hello.extend_from_slice(&0u16.to_be_bytes());
+                    let _ = control_send.write_all(&hello).await;
+                    let _ = control_send.finish();
+
+                    let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                        return;
+                    };
+                    let mut udp = [0u8; 1];
+                    if recv.read_exact(&mut udp).await.is_err() {
+                        return;
+                    }
+                    let mut host_len = [0u8; 2];
+                    if recv.read_exact(&mut host_len).await.is_err() {
+                        return;
+                    }
+                    let mut host = vec![0u8; u16::from_be_bytes(host_len) as usize];
+                    if recv.read_exact(&mut host).await.is_err() {
+                        return;
+                    }
+                    let mut port = [0u8; 2];
+                    if recv.read_exact(&mut port).await.is_err() {
+                        return;
+                    }
+                    let host = String::from_utf8_lossy(&host).into_owned();
+                    let port = u16::from_be_bytes(port);
+                    let Ok(upstream) = tokio::net::TcpStream::connect((host.as_str(), port)).await
+                    else {
+                        let _ = send.write_all(&[0, 0, 0, 0, 0, 0, 0]).await;
+                        return;
+                    };
+                    let _ = send.write_all(&[1, 0, 0, 0, 0, 0, 0]).await;
+                    let (mut up_r, mut up_w) = upstream.into_split();
+                    let up = tokio::spawn(async move {
+                        let _ = tokio::io::copy(&mut recv, &mut up_w).await;
+                        let _ = up_w.shutdown().await;
+                    });
+                    let _ = tokio::io::copy(&mut up_r, &mut send).await;
+                    let _ = send.finish();
+                    let _ = up.await;
+                });
+            }
+        });
+    });
+    rx.recv().unwrap()
+}
+
+#[test]
+fn cli_process_tunnels_through_hysteria() {
+    let (echo_port, _seen) = spawn_echo();
+    let peer_port = spawn_hysteria_cli_peer("cli-hysteria-secret");
+    let port = free_port();
+    let child = start_cli(
+        &format!(
+            "proxies:\n  - {{name: p, type: hysteria, server: 127.0.0.1, port: {peer_port}, up: 50 Mbps, down: 50 Mbps, auth-str: cli-hysteria-secret, skip-cert-verify: true}}\nrules:\n  - 'MATCH,p'\n"
+        ),
+        port,
+    );
+    assert_eq!(
+        tunnel(port, echo_port, b"cli-hysteria-marker"),
+        b"cli-hysteria-marker".to_vec()
+    );
+    stop_cli(child);
+}
+
+// ---------------------------------------------------------------------------
+// Hysteria2 peer: the minimal HTTP/3 auth exchange followed by the 0x401 TCP
+// frame, using the library's h3 field-section codec (so the CLI test does not
+// need a second QPACK implementation).
+// ---------------------------------------------------------------------------
+
+fn spawn_hysteria2_cli_peer(password: &'static str) -> u16 {
+    use billow_kernel::outbound::h3;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let cert = make_quic_cert("hysteria2");
+            let endpoint = quinn::Endpoint::server(
+                quic_server_config(&cert, b"h3"),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .unwrap();
+            tx.send(endpoint.local_addr().unwrap().port()).unwrap();
+            while let Some(incoming) = endpoint.accept().await {
+                tokio::spawn(async move {
+                    let Ok(connection) = incoming.await else {
+                        return;
+                    };
+                    let Ok((mut auth_send, mut auth_recv)) = connection.accept_bi().await else {
+                        return;
+                    };
+                    let headers = loop {
+                        let Some(frame_type) = h3::read_varint_async(&mut auth_recv).await.ok().flatten() else {
+                            return;
+                        };
+                        let Some(length) = h3::read_varint_async(&mut auth_recv).await.ok().flatten() else {
+                            return;
+                        };
+                        let mut payload = vec![0u8; length as usize];
+                        if auth_recv.read_exact(&mut payload).await.is_err() {
+                            return;
+                        }
+                        if frame_type == 0x01 {
+                            break h3::decode_field_section(&payload).unwrap_or_default();
+                        }
+                    };
+                    let auth_ok = headers
+                        .iter()
+                        .any(|(name, value)| name == "hysteria-auth" && value == password);
+                    let status = if auth_ok { "233" } else { "401" };
+                    let block = h3::encode_field_section(&[
+                        (":status", status),
+                        ("hysteria-udp", "false"),
+                        ("hysteria-cc-rx", "0"),
+                    ]);
+                    let mut response = Vec::new();
+                    h3::encode_varint(0x01, &mut response);
+                    h3::encode_varint(block.len() as u64, &mut response);
+                    response.extend_from_slice(&block);
+                    let _ = auth_send.write_all(&response).await;
+                    let _ = auth_send.finish();
+                    if !auth_ok {
+                        return;
+                    }
+                    let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                        return;
+                    };
+                    let frame_type = h3::read_varint_async(&mut recv).await.ok().flatten();
+                    if frame_type != Some(0x401) {
+                        return;
+                    }
+                    let Some(addr_len) = h3::read_varint_async(&mut recv).await.ok().flatten() else {
+                        return;
+                    };
+                    let mut addr = vec![0u8; addr_len as usize];
+                    if recv.read_exact(&mut addr).await.is_err() {
+                        return;
+                    }
+                    let Some(padding_len) = h3::read_varint_async(&mut recv).await.ok().flatten() else {
+                        return;
+                    };
+                    let mut padding = vec![0u8; padding_len as usize];
+                    if recv.read_exact(&mut padding).await.is_err() {
+                        return;
+                    }
+                    let addr = String::from_utf8_lossy(&addr).into_owned();
+                    let Ok(upstream) = tokio::net::TcpStream::connect(addr.as_str()).await else {
+                        let mut error = vec![1u8];
+                        h3::encode_varint(14, &mut error);
+                        error.extend_from_slice(b"connect failed");
+                        h3::encode_varint(0, &mut error);
+                        let _ = send.write_all(&error).await;
+                        let _ = send.finish();
+                        return;
+                    };
+                    // status 0, message length 0, padding length 0
+                    let _ = send.write_all(&[0, 0, 0]).await;
+                    let (mut up_r, mut up_w) = upstream.into_split();
+                    let up = tokio::spawn(async move {
+                        let _ = tokio::io::copy(&mut recv, &mut up_w).await;
+                        let _ = up_w.shutdown().await;
+                    });
+                    let _ = tokio::io::copy(&mut up_r, &mut send).await;
+                    let _ = send.finish();
+                    let _ = up.await;
+                });
+            }
+        });
+    });
+    rx.recv().unwrap()
+}
+
+#[test]
+fn cli_process_tunnels_through_hysteria2() {
+    let (echo_port, _seen) = spawn_echo();
+    let peer_port = spawn_hysteria2_cli_peer("cli-hysteria2-secret");
+    let port = free_port();
+    let child = start_cli(
+        &format!(
+            "proxies:\n  - {{name: p, type: hysteria2, server: 127.0.0.1, port: {peer_port}, password: cli-hysteria2-secret, skip-cert-verify: true}}\nrules:\n  - 'MATCH,p'\n"
+        ),
+        port,
+    );
+    assert_eq!(
+        tunnel(port, echo_port, b"cli-hysteria2-marker"),
+        b"cli-hysteria2-marker".to_vec()
     );
     stop_cli(child);
 }

@@ -592,7 +592,7 @@
     },
     "tuic": {
       "status": "partial",
-      "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token) and one TCP stream per session; the legacy v4 token (BLAKE3 TKN) is rejected, the UDP relay modes are not wired into the engine, and one QUIC connection is created per dial instead of the pinned pool.",
+      "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token), one TCP stream per session, and `request-timeout` bounding the auth/Connect stream operations; the legacy v4 token (BLAKE3 TKN) is rejected, the UDP relay modes are not wired into the engine, and one QUIC connection is created per dial instead of the pinned pool.",
       "options": [
         "server",
         "port",
@@ -609,8 +609,8 @@
       ],
       "udp": "not implemented: the engine's UDP association has no TUIC datagram/uni-stream relay; UDP traffic routed to TUIC is dropped and logged",
       "notImplemented": [
-        "token (v4 / BLAKE3 TKN)",
-        "udp-relay-mode: quic",
+        "token",
+        "udp-relay-mode",
         "udp-over-stream",
         "reduce-rtt",
         "fast-open",
@@ -668,9 +668,8 @@
       "notImplemented": [
         "ports",
         "hop-interval",
-        "obfs (XPlus)",
-        "protocol: faketcp",
-        "protocol: wechat",
+        "obfs",
+        "protocol",
         "recv-window-conn",
         "recv-window",
         "disable-mtu-discovery",
@@ -699,12 +698,11 @@
     },
     "hysteria2": {
       "status": "partial",
-      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233) and one TCP stream per session with the 0x401 request frame; port hopping, Salamander/Gecko obfuscation, realm and UDP are rejected by name.",
+      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233) and one TCP stream per session with the 0x401 request frame; `down` is sent as Hysteria-CC-RX. Port hopping, Salamander/Gecko obfuscation, realm, UDP and `up` (the Brutal TX-rate cap) are rejected by name.",
       "options": [
         "server",
         "port",
         "password",
-        "up",
         "down",
         "sni",
         "skip-cert-verify",
@@ -714,9 +712,10 @@
       ],
       "udp": "not implemented: the engine has no Hysteria2 UDP session relay; `udp` traffic routed to Hysteria2 is dropped and logged",
       "notImplemented": [
+        "up",
         "ports",
         "hop-interval",
-        "obfs (Salamander/Gecko)",
+        "obfs",
         "realm-opts",
         "udp-mtu",
         "cwnd",
@@ -886,28 +885,28 @@
         "reason": "the pinned outbound wraps the external enfein/mieru v3.39.0 module (encrypted underlay, padding, handshake modes, multiplexing); no Rust port exists in this tree. Decision needed: vendor/port the module or keep it explicitly deferred."
       },
       "shadowquic": {
-        "owner": "T10",
-        "reason": "QUIC + JLS-TLS (custom TLS extension); rustls/quinn cannot express it, no JLS crate offline"
+        "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
+        "reason": "QUIC + JLS-TLS (custom TLS extension); rustls/quinn cannot express it, no JLS crate offline. T10 rejects it by name; a JLS/QUIC dependency decision is needed before implementation."
       },
       "wireguard": {
-        "owner": "T10",
-        "reason": "WireGuard Noise IK/transport plus an IP stack; device/TUN ownership is T6/T7, no wireguard crate offline"
+        "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
+        "reason": "WireGuard Noise IK/transport plus an IP stack; T6/T7 own device/TUN, no wireguard crate offline. T10 rejects it by name; protocol adaptation needs a new task or T9 follow-up."
       },
       "tailscale": {
-        "owner": "T10",
-        "reason": "tailscale.com control plane + gVisor netstack; device/TUN ownership is T6/T7, no Rust stack offline"
+        "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
+        "reason": "tailscale.com control plane + gVisor netstack; T6/T7 own device/TUN, no Rust stack offline. T10 rejects it by name; protocol adaptation needs a new task or T9 follow-up."
       },
       "zerotier": {
-        "owner": "T10",
-        "reason": "zerotier-go control/crypto + gVisor netstack; device/TUN ownership is T6/T7, no Rust stack offline"
+        "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
+        "reason": "zerotier-go control/crypto + gVisor netstack; T6/T7 own device/TUN, no Rust stack offline. T10 rejects it by name; protocol adaptation needs a new task or T9 follow-up."
       },
       "easytier": {
-        "owner": "T10",
-        "reason": "easytier-go host/instance + netstack; device/TUN ownership is T6/T7, no Rust stack offline"
+        "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
+        "reason": "easytier-go host/instance + netstack; T6/T7 own device/TUN, no Rust stack offline. T10 rejects it by name; protocol adaptation needs a new task or T9 follow-up."
       },
       "openvpn": {
-        "owner": "T10",
-        "reason": "OpenVPN control/data channels + gVisor netstack; device/TUN ownership is T6/T7, no Rust stack offline"
+        "owner": "T9 follow-up or a new task (T10 recommends; T6/T7 only own device/TUN)",
+        "reason": "OpenVPN control/data channels + gVisor netstack; T6/T7 own device/TUN, no Rust stack offline. T10 rejects it by name; protocol adaptation needs a new task or T9 follow-up."
       },
       "masque": {
         "owner": "T9",
@@ -932,7 +931,8 @@
       "rematch": {
         "owner": "T5",
         "reason": "rule-engine adapter"
-      }
+      },
+      "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC). T10 explicitly rejects shadowquic (JLS-TLS) and the device families wireguard/tailscale/zerotier/easytier/openvpn by name; T6/T7 only own device/TUN, so the protocol adaptation must be a new task or a T9 follow-up (T9 outcome 2 fails if these remain unsupported). T9 owns mieru/masque/sudoku; T5 owns the built-in direct/dns/reject/rematch adapters."
     }
   },
   "unmappedNotes": [

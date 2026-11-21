@@ -1,5 +1,5 @@
 peer: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
      Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-aad23d3d4a4e8ef4)
 
 running 41 tests
@@ -45,5 +45,5 @@ test vmess_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_wrong_uuid_never_reaches_the_sink ... ok
 
-test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.17s
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.78s
 

@@ -2119,9 +2119,8 @@
         "notImplemented": [
           "ports",
           "hop-interval",
-          "obfs (XPlus)",
-          "protocol: faketcp",
-          "protocol: wechat",
+          "obfs",
+          "protocol",
           "recv-window-conn",
           "recv-window",
           "disable-mtu-discovery",
@@ -2155,12 +2154,11 @@
       "source": "adapter/parser.go:93",
       "rustMapping": {
         "status": "partial",
-        "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233) and one TCP stream per session with the 0x401 request frame; port hopping, Salamander/Gecko obfuscation, realm and UDP are rejected by name.",
+        "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233) and one TCP stream per session with the 0x401 request frame; `down` is sent as Hysteria-CC-RX. Port hopping, Salamander/Gecko obfuscation, realm, UDP and `up` (the Brutal TX-rate cap) are rejected by name.",
         "options": [
           "server",
           "port",
           "password",
-          "up",
           "down",
           "sni",
           "skip-cert-verify",
@@ -2170,9 +2168,10 @@
         ],
         "udp": "not implemented: the engine has no Hysteria2 UDP session relay; `udp` traffic routed to Hysteria2 is dropped and logged",
         "notImplemented": [
+          "up",
           "ports",
           "hop-interval",
-          "obfs (Salamander/Gecko)",
+          "obfs",
           "realm-opts",
           "udp-mtu",
           "cwnd",
@@ -2219,7 +2218,7 @@
       "source": "adapter/parser.go:107",
       "rustMapping": {
         "status": "partial",
-        "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token) and one TCP stream per session; the legacy v4 token (BLAKE3 TKN) is rejected, the UDP relay modes are not wired into the engine, and one QUIC connection is created per dial instead of the pinned pool.",
+        "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token), one TCP stream per session, and `request-timeout` bounding the auth/Connect stream operations; the legacy v4 token (BLAKE3 TKN) is rejected, the UDP relay modes are not wired into the engine, and one QUIC connection is created per dial instead of the pinned pool.",
         "options": [
           "server",
           "port",
@@ -2236,8 +2235,8 @@
         ],
         "udp": "not implemented: the engine's UDP association has no TUIC datagram/uni-stream relay; UDP traffic routed to TUIC is dropped and logged",
         "notImplemented": [
-          "token (v4 / BLAKE3 TKN)",
-          "udp-relay-mode: quic",
+          "token",
+          "udp-relay-mode",
           "udp-over-stream",
           "reduce-rtt",
           "fast-open",

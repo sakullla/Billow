@@ -150,6 +150,20 @@ fn free_udp_port() -> u16 {
         .port()
 }
 
+fn server_config_with_stream_limits(
+    cert: &Cert,
+    alpn: &[u8],
+    uni: u32,
+    bidi: u32,
+) -> quinn::ServerConfig {
+    let mut config = server_config(cert, alpn);
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_uni_streams(uni.into());
+    transport.max_concurrent_bidi_streams(bidi.into());
+    config.transport_config(Arc::new(transport));
+    config
+}
+
 // ---------------------------------------------------------------------------
 // TUIC v5 peer.
 // ---------------------------------------------------------------------------
@@ -747,4 +761,64 @@ async fn hysteria_v1_requires_valid_rates() {
             "up={up:?} down={down:?}: {error}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// TUIC `request-timeout`: a peer that advertises no stream credit makes the
+// client's open_uni wait, so a small request-timeout is observable.
+// ---------------------------------------------------------------------------
+
+async fn spawn_tuic_blocked_peer(cert: Cert) -> u16 {
+    let port = free_udp_port();
+    let endpoint = quinn::Endpoint::server(
+        server_config_with_stream_limits(&cert, b"h3", 0, 0),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    )
+    .expect("QUIC server endpoint");
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            tokio::spawn(async move {
+                let _connection = incoming.await;
+                // Hold the connection without granting stream credit.
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn tuic_v5_request_timeout_bounds_stream_open() {
+    let cert = make_cert("tuic-timeout");
+    let peer_port = spawn_tuic_blocked_peer(cert).await;
+    let yaml = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, uuid: {UUID}, password: {PASSWORD}, request-timeout: 100, skip-cert-verify: true}}\nrules:\n  - MATCH,t1\n",
+        free_port()
+    );
+    let (mut kernel, warnings) =
+        Kernel::start_from_yaml(&yaml, None, limits()).expect("kernel starts");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let started = std::time::Instant::now();
+    let result = socks5_connect(kernel.listen_addr(), "example.com", 443).await;
+    let elapsed = started.elapsed();
+    assert!(
+        result.is_err(),
+        "a blocked TUIC stream open must fail, not hang: {result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "request-timeout was not applied (took {elapsed:?})"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test]
+async fn hysteria2_up_is_rejected_at_load() {
+    let yaml = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, up: 50 Mbps}\nrules:\n  - MATCH,h2\n";
+    let error = billow_kernel::load_config(yaml, "hysteria2-up.yaml").unwrap_err();
+    assert_eq!(error.tag(), "unsupported");
+    assert!(error.to_string().contains("'up'"), "{error}");
+    // An empty `up` asks for nothing and is accepted, like Mihomo's decoder.
+    let empty = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, up: ''}\nrules:\n  - MATCH,h2\n";
+    assert!(billow_kernel::load_config(empty, "hysteria2-up-empty.yaml").is_ok());
 }

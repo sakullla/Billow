@@ -400,7 +400,6 @@ pub struct Hysteria2Outbound {
     pub password: Secret,
     pub tls_settings: TlsSettings,
     pub alpn: Vec<String>,
-    pub send_bps: u64,
     pub receive_bps: u64,
     pub handshake_timeout: u64,
     pub dialer_proxy: Option<String>,
@@ -2216,22 +2215,17 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
     let password = Secret::new(entry.string("password")?.unwrap_or_default());
     let tls_settings = entry.tls_settings(true, true)?;
     let alpn = entry.string_list("alpn")?;
-    let up = entry.string("up")?.filter(|value| !value.is_empty());
+    let up = entry.string("up")?;
+    if up.as_deref().is_some_and(|value| !value.is_empty()) {
+        return Err(entry.unsupported(
+            "option 'up' is not implemented: the pinned client uses it to cap the Brutal sender's TX rate; quinn has no Brutal controller, so the value would be ignored",
+        ));
+    }
     let down = entry.string("down")?.filter(|value| !value.is_empty());
-    let send_bps = up
-        .as_deref()
-        .map(crate::outbound::hysteria::string_to_bps)
-        .unwrap_or(0);
     let receive_bps = down
         .as_deref()
         .map(crate::outbound::hysteria::string_to_bps)
         .unwrap_or(0);
-    if up.is_some() && send_bps == 0 {
-        return Err(entry.invalid(format!(
-            "option 'up' value '{}' is not a rate",
-            up.as_deref().unwrap_or_default()
-        )));
-    }
     if down.is_some() && receive_bps == 0 {
         return Err(entry.invalid(format!(
             "option 'down' value '{}' is not a rate",
@@ -2334,7 +2328,6 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
         password,
         tls_settings,
         alpn,
-        send_bps,
         receive_bps,
         handshake_timeout,
         dialer_proxy,
@@ -2510,7 +2503,7 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     if let Some(mode) = entry.string("udp-relay-mode")?.filter(|value| !value.is_empty()) {
         if mode == "quic" {
             return Err(entry.unsupported(
-                "option 'udp-relay-mode: quic' is not implemented (TUIC UDP datagram relay)",
+                "option 'udp-relay-mode' value 'quic' is not implemented (TUIC UDP datagram relay)",
             ));
         }
     }

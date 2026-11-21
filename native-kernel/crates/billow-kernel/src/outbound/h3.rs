@@ -238,7 +238,7 @@ pub fn encode_field_section(headers: &[(&str, &str)]) -> Vec<u8> {
     out
 }
 
-fn decode_field_section(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
+pub fn decode_field_section(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut pos = 0;
     let required = read_prefixed(bytes, &mut pos, 8, *bytes.first().ok_or("empty block")?)
         .ok_or("bad insert count")?;

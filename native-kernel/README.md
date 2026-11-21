@@ -137,9 +137,9 @@ identities of the servers are logged as the session exit.
 | `gost-relay` | relay v2 over TCP, `tls: true` (`sni`, `skip-cert-verify`), `username`/`password`, `forward` (no address feature) | no | controlled relay-v2 server (header vectors + auth/forward/TLS/status cases); no Mihomo listener exists |
 | `ssh` | password and inline-PEM public-key auth, `private-key-passphrase`, `host-key` pinning, `host-key-algorithms`, one `direct-tcpip` channel per dial | no | controlled `russh` server (password/key/host-key cases); no Mihomo listener exists |
 | `ssr` | stream ciphers (`rc4-md5`, `aes-128/192/256-cfb`, `aes-128/192/256-ctr`, `chacha20`, `chacha20-ietf`, `xchacha20`, `none`), `protocol: origin`, `obfs: plain` | no | pinned Go cipher vectors + controlled origin/plain server; no Mihomo listener exists |
-| `tuic` | QUIC (`quinn` 0.11, TLS 1.3, ALPN `h3`), v5 `uuid`/`password` authentication via the TLS exporter, one TCP stream per dial, `ip`/`sni`/`skip-cert-verify`/`disable-sni`/`heartbeat-interval`/`request-timeout` | no | `listeners: type: tuic` (users map), wrong password; controlled `quinn` peer for the default suite |
+| `tuic` | QUIC (`quinn` 0.11, TLS 1.3, ALPN `h3`), v5 `uuid`/`password` authentication via the TLS exporter, one TCP stream per dial, `ip`/`sni`/`skip-cert-verify`/`disable-sni`/`heartbeat-interval`/`request-timeout` (bounds the auth/Connect stream operations) | no | `listeners: type: tuic` (users map), wrong password; controlled `quinn` peer for the default suite |
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
-| `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `up`/`down`, `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password |
+| `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
 
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
@@ -243,6 +243,7 @@ quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, congestion/window tuning;
 `hysteria` `ports`/`hop-interval` (port hopping), `obfs` (XPlus),
 `protocol: faketcp|wechat`, `fast-open`, receive-window/MTU tuning;
 `hysteria2` `ports`/`hop-interval`, `obfs` (Salamander/Gecko), `realm-opts`,
+`up` (the pinned Brutal TX-rate cap; quinn has no Brutal controller),
 `udp-mtu`, congestion/window tuning. `shadowquic` and the device families are
 rejected as whole types with the missing stack named (JLS-TLS, WireGuard
 Noise/IP stack, mesh control planes, OpenVPN), never loaded as if compatible.
@@ -379,9 +380,10 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
 - `tests/config.rs` — parsing, strict option tables, error tags.
 - `tests/sessions.rs` — inbound sessions, half-close, stop/restart, limits.
 - `tests/quic_peers.rs` — T10 QUIC loopback peers: TUIC v5 (auth token, domain
-  and IP targets, wrong password, v4 token rejection, unimplemented options)
-  and Hysteria v1 (control hello, `auth-str` and base64 auth, wrong auth,
-  port-hopping/XPlus/faketcp rejection, rate validation). The peers are
+  and IP targets, wrong password, v4 token rejection, unimplemented options,
+  `request-timeout` bounding a blocked stream open) and Hysteria v1 (control
+  hello, `auth-str` and base64 auth, wrong auth, port-hopping/XPlus/faketcp
+  rejection, rate validation), plus the Hysteria2 `up` rejection. The peers are
   `quinn` servers written from the pinned Go framing; they need `openssl` for
   the loopback certificate.
 - `tests/protocols.rs` — loopback peers for socks5/http/ss/trojan/vless
@@ -433,7 +435,9 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   cases live in `tests/protocols.rs` and are recorded under
   `controlledPeers` in `tool/kernel-compat/evidence/protocol-peers.json`. The
   CLI crate also drives a real success tunnel through each of the three
-  (`crates/billow-kernel-cli/tests/family_cli.rs`), not only a config load.
+  (`crates/billow-kernel-cli/tests/family_cli.rs`), not only a config load; the
+  same file now drives TUIC, Hysteria v1 and Hysteria2 through the real
+  `billow-kernel` process as well.
 
   Observed host behaviour: starting the peer for many cases in one test process
   occasionally ends with a case where the kernel established the tunnel but the

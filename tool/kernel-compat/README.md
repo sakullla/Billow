@@ -113,7 +113,13 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   h3/qpack/JLS/WireGuard/mesh crates), the device/TUN ownership (T6/T7) and
   the memory note T7 uses for the 40 MB budget. The TUIC/Hysteria2 wrong
   password cases are in the same matrix; the `quic_peers` cases are part of the
-  default suite.
+  default suite. `crates/billow-kernel-cli/tests/family_cli.rs` drives a real
+  `billow-kernel` process tunnel through TUIC, Hysteria v1 and Hysteria2. The
+  option matrix now includes the three T10 families (184 no-op / 215 enabled,
+  problems 0), including the Hysteria2 `up` rejection and the TUIC
+  `request-timeout` use; `t10-feasibility.json` also records the Hysteria v1
+  peer gap (no pinned Mihomo listener) and the follow-up owners for
+  shadowquic/device families.
 
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo

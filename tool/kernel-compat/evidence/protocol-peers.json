@@ -1,7 +1,7 @@
 {
   "format": "kernel-protocol-peers",
   "version": 2,
-  "generatedAt": "2026-11-21T10:45:33Z",
+  "generatedAt": "2026-11-21T11:20:15Z",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -278,7 +278,7 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/quic_peers.rs",
       "peer": "controlled quinn server implementing transport/hysteria/core/protocol.go (control hello + per-session request/response)",
-      "notes": "Hysteria v1 has no Mihomo listener in the pinned tree, so the peer is an independent implementation of the pinned binary framing. TCP, auth-str and base64 auth are covered; port hopping/XPlus/faketcp/wechat/UDP are rejected by name."
+      "notes": "Hysteria v1 has no Mihomo listener in the pinned v1.19.34 tree (only hysteria2/tuic/shadowquic listeners), so the recipe's locked-Mihomo-peer requirement cannot be met for this family. The peer is a controlled quinn server written from the pinned transport/hysteria/core/protocol.go (ClientHello/ServerHello and per-session request/response); TCP, auth-str and base64 auth are covered, while port hopping/XPlus/faketcp/wechat/UDP are rejected by name. This is recorded as a T10 gap in t10-feasibility.json (hysteriaPeerGap), not a pass against Mihomo."
     }
   },
   "loopbackOnlyEvidence": {
@@ -382,6 +382,7 @@
       "WireGuard Noise IK/transport + IP stack: wireguard rejected; device/TUN ownership is T6/T7",
       "tailscale/zerotier/easytier/openvpn: control plane + netstack; device/TUN ownership is T6/T7"
     ],
-    "memory": "quinn 0.11.12; one endpoint/connection per dial. T7 must measure the iOS extension against 40,000,000 bytes."
+    "memory": "quinn 0.11.12; one endpoint/connection per dial. T7 must measure the iOS extension against 40,000,000 bytes.",
+    "cli": "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs drives one real process tunnel through tuic, hysteria and hysteria2."
   }
 }

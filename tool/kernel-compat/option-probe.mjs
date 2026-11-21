@@ -57,6 +57,18 @@ const bases = {
     off: 'server: 127.0.0.1, port: 1, cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain',
     on: null,
   },
+  tuic: {
+    off: 'server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p',
+    on: 'server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p',
+  },
+  hysteria: {
+    off: 'server: 127.0.0.1, port: 1, up: 50 Mbps, down: 50 Mbps',
+    on: 'server: 127.0.0.1, port: 1, up: 50 Mbps, down: 50 Mbps',
+  },
+  hysteria2: {
+    off: 'server: 127.0.0.1, port: 1, password: p',
+    on: 'server: 127.0.0.1, port: 1, password: p',
+  },
 }
 
 const tlsOnly = new Set([
@@ -72,7 +84,20 @@ const tlsOnly = new Set([
   'reality-opts',
 ])
 
-const booleans = new Set(['udp', 'tfo', 'mptcp', 'smux', 'packet-addr', 'xudp', 'disable-reuse', 'udp-over-tcp'])
+const booleans = new Set([
+  'udp',
+  'tfo',
+  'mptcp',
+  'smux',
+  'packet-addr',
+  'xudp',
+  'disable-reuse',
+  'udp-over-tcp',
+  'reduce-rtt',
+  'fast-open',
+  'udp-over-stream',
+  'disable-mtu-discovery',
+])
 
 const pin = 'a'.repeat(64)
 
@@ -117,6 +142,9 @@ const registered = (type, key) => (mapping.proxies[type]?.notImplemented ?? []).
 // Enabled forms: one per (family, key) from the mapping's `notImplemented`.
 const enabled = []
 for (const [type, entry] of Object.entries(mapping.proxies)) {
+  // T10's families are exercised explicitly below; the generic valueFor()
+  // shapes do not match their required fields (`protocol`, `ports`, ...).
+  if (['tuic', 'hysteria', 'hysteria2'].includes(type)) continue
   for (const option of entry.notImplemented ?? []) {
     const parsed = /^([a-z0-9.-]+)(?::\s*true)?$/.exec(option)
     if (!parsed) continue
@@ -140,6 +168,78 @@ for (const [type, entry] of Object.entries(mapping.proxies)) {
   }
 }
 const uniqueEnabled = [...new Map(enabled.map((entry) => [`${entry.type}/${entry.key}`, entry])).values()]
+
+// T10 QUIC families: explicit forms because their bases/values differ from the
+// generic shapes (`protocol` is a transport name, `ports` is a range, ...).
+const t10Enabled = [
+  ['tuic', 'token', 'token: legacy'],
+  ['tuic', 'udp-relay-mode', 'udp-relay-mode: quic'],
+  ['tuic', 'reduce-rtt', 'reduce-rtt: true'],
+  ['tuic', 'fast-open', 'fast-open: true'],
+  ['tuic', 'udp-over-stream', 'udp-over-stream: true'],
+  ['tuic', 'congestion-controller', 'congestion-controller: bbr'],
+  ['tuic', 'cwnd', 'cwnd: 32'],
+  ['tuic', 'bbr-profile', 'bbr-profile: standard'],
+  ['tuic', 'recv-window-conn', 'recv-window-conn: 1024'],
+  ['tuic', 'recv-window', 'recv-window: 1024'],
+  ['tuic', 'disable-mtu-discovery', 'disable-mtu-discovery: true'],
+  ['tuic', 'max-datagram-frame-size', 'max-datagram-frame-size: 1400'],
+  ['tuic', 'max-udp-relay-packet-size', 'max-udp-relay-packet-size: 1252'],
+  ['tuic', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
+  ['tuic', 'name-cert-verify', 'name-cert-verify: example.org'],
+  ['tuic', 'fingerprint', `fingerprint: ${pin}`],
+  ['tuic', 'certificate', 'certificate: cert.pem'],
+  ['tuic', 'private-key', 'private-key: key.pem'],
+  ['tuic', 'client-fingerprint', 'client-fingerprint: chrome'],
+  ['tuic', 'ip-version', 'ip-version: ipv4'],
+  ['tuic', 'tfo', 'tfo: true'],
+  ['tuic', 'mptcp', 'mptcp: true'],
+  ['tuic', 'interface-name', 'interface-name: eth0'],
+  ['tuic', 'routing-mark', 'routing-mark: 100'],
+  ['hysteria', 'ports', 'ports: 443,8443'],
+  ['hysteria', 'hop-interval', 'hop-interval: 10'],
+  ['hysteria', 'obfs', 'obfs: xplus'],
+  ['hysteria', 'protocol', 'protocol: faketcp'],
+  ['hysteria', 'recv-window-conn', 'recv-window-conn: 1024'],
+  ['hysteria', 'recv-window', 'recv-window: 1024'],
+  ['hysteria', 'disable-mtu-discovery', 'disable-mtu-discovery: true'],
+  ['hysteria', 'fast-open', 'fast-open: true'],
+  ['hysteria', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
+  ['hysteria', 'name-cert-verify', 'name-cert-verify: example.org'],
+  ['hysteria', 'fingerprint', `fingerprint: ${pin}`],
+  ['hysteria', 'certificate', 'certificate: cert.pem'],
+  ['hysteria', 'private-key', 'private-key: key.pem'],
+  ['hysteria', 'client-fingerprint', 'client-fingerprint: chrome'],
+  ['hysteria', 'ip-version', 'ip-version: ipv4'],
+  ['hysteria', 'tfo', 'tfo: true'],
+  ['hysteria', 'mptcp', 'mptcp: true'],
+  ['hysteria', 'interface-name', 'interface-name: eth0'],
+  ['hysteria', 'routing-mark', 'routing-mark: 100'],
+  ['hysteria2', 'up', 'up: 50 Mbps'],
+  ['hysteria2', 'ports', 'ports: 443,8443'],
+  ['hysteria2', 'hop-interval', 'hop-interval: 10'],
+  ['hysteria2', 'obfs', 'obfs: salamander'],
+  ['hysteria2', 'realm-opts', 'realm-opts: {enable: true, server-url: "https://realm.example"}'],
+  ['hysteria2', 'udp-mtu', 'udp-mtu: 1200'],
+  ['hysteria2', 'cwnd', 'cwnd: 32'],
+  ['hysteria2', 'bbr-profile', 'bbr-profile: standard'],
+  ['hysteria2', 'initial-stream-receive-window', 'initial-stream-receive-window: 1024'],
+  ['hysteria2', 'max-stream-receive-window', 'max-stream-receive-window: 1024'],
+  ['hysteria2', 'initial-connection-receive-window', 'initial-connection-receive-window: 1024'],
+  ['hysteria2', 'max-connection-receive-window', 'max-connection-receive-window: 1024'],
+  ['hysteria2', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
+  ['hysteria2', 'name-cert-verify', 'name-cert-verify: example.org'],
+  ['hysteria2', 'fingerprint', `fingerprint: ${pin}`],
+  ['hysteria2', 'certificate', 'certificate: cert.pem'],
+  ['hysteria2', 'private-key', 'private-key: key.pem'],
+  ['hysteria2', 'client-fingerprint', 'client-fingerprint: chrome'],
+  ['hysteria2', 'ip-version', 'ip-version: ipv4'],
+  ['hysteria2', 'tfo', 'tfo: true'],
+  ['hysteria2', 'mptcp', 'mptcp: true'],
+  ['hysteria2', 'interface-name', 'interface-name: eth0'],
+  ['hysteria2', 'routing-mark', 'routing-mark: 100'],
+].map(([type, key, option]) => ({ type, key, base: bases[type].on, option }))
+const allEnabled = [...uniqueEnabled, ...t10Enabled]
 
 // No-op forms Mihomo accepts (checked against the binary when provided).
 const noops = []
@@ -234,6 +334,34 @@ add('ssh', 'host-key-algorithms', '[]')
 add('ssr', 'protocol-param', "''")
 add('ssr', 'obfs-param', "''")
 
+// T10 families: no-op forms accepted by both engines.
+for (const type of ['tuic', 'hysteria', 'hysteria2']) {
+  add(type, 'tfo', 'false')
+  add(type, 'mptcp', 'false')
+  add(type, 'interface-name', "''")
+  add(type, 'routing-mark', '0')
+  add(type, 'ip-version', "''")
+}
+for (const key of ['reduce-rtt', 'fast-open', 'udp-over-stream', 'disable-mtu-discovery']) add('tuic', key, 'false')
+add('tuic', 'max-open-streams', '0')
+for (const key of ['fast-open', 'disable-mtu-discovery']) add('hysteria', key, 'false')
+add('hysteria', 'recv-window', '0')
+add('hysteria', 'recv-window-conn', '0')
+add('hysteria', 'hop-interval', '0')
+add('hysteria', 'ports', "''")
+add('hysteria', 'obfs', "''")
+add('hysteria', 'protocol', 'udp')
+add('hysteria2', 'up', "''")
+add('hysteria2', 'down', "''")
+add('hysteria2', 'ports', "''")
+add('hysteria2', 'hop-interval', "''")
+add('hysteria2', 'obfs', "''")
+add('hysteria2', 'obfs-password', "''")
+add('hysteria2', 'udp-mtu', '0')
+add('hysteria2', 'cwnd', '0')
+add('hysteria2', 'bbr-profile', "''")
+add('hysteria2', 'realm-opts', '{enable: false}')
+
 function parseArgs(argv) {
   const options = { rust: null, mihomo: null, out: null }
   for (let index = 0; index < argv.length; index += 1) {
@@ -286,13 +414,13 @@ function runCase({ type, key, base, option }, expectReject, group) {
 }
 
 for (const entry of noops) runCase(entry, false, 'noop')
-for (const entry of uniqueEnabled) runCase(entry, true, 'enabled')
+for (const entry of allEnabled) runCase(entry, true, 'enabled')
 
 const header = [
   '# Proxy option matrix: no-op forms must load, enabled forms must be rejected.',
   `# rust: ${binary}`,
   `# mihomo: ${mihomo ?? '(not provided: only the Rust verdict was checked)'}`,
-  `# no-op cases: ${noops.length}, enabled cases: ${uniqueEnabled.length}, problems: ${problems.length}`,
+  `# no-op cases: ${noops.length}, enabled cases: ${allEnabled.length}, problems: ${problems.length}`,
   '# command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>',
   '',
 ]
