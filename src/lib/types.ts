@@ -1,6 +1,8 @@
 export type Mode = 'rule' | 'global' | 'direct'
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type KernelChannel = 'stable' | 'preview'
+/** Which kernel carries traffic. Older installs have no stored value and use Mihomo. */
+export type KernelEngine = 'mihomo' | 'rust'
 export type LogLevel = 'debug' | 'info' | 'warning' | 'error'
 export type Platform = 'desktop' | 'android'
 
@@ -404,6 +406,14 @@ export interface Snapshot {
   nodes_notice: string | null
   nodes_error: string | null
   kernel_running: boolean
+  /** Engine selected for the next connection. */
+  engine: KernelEngine
+  /** Engine of the process actually running, or null when none runs. */
+  running_engine: KernelEngine | null
+  /** Version reported by the running engine, when it reports one. */
+  engine_version: string | null
+  /** Identity line of the running instance, for restart evidence. */
+  engine_identity: string | null
   /** Kernel memory in bytes; null when the kernel does not report it. */
   kernel_memory: number | null
   /** Seconds since the kernel process started; null while it is not running. */
@@ -428,6 +438,24 @@ export interface KernelStatus {
   failure: string | null
   ready: boolean
   version: string | null
+}
+
+/** One engine's packaged availability and running instance. */
+export interface EngineInfo {
+  id: KernelEngine
+  label: string
+  available: boolean
+  version: string | null
+  running: boolean
+  instance: string | null
+}
+
+export interface EnginesState {
+  selected: KernelEngine
+  running: KernelEngine | null
+  failure: string | null
+  mihomo: EngineInfo
+  rust: EngineInfo
 }
 
 export interface AppInfo {
@@ -684,6 +712,10 @@ export function emptySnapshot(): Snapshot {
     nodes_notice: null,
     nodes_error: null,
     kernel_running: false,
+    engine: 'mihomo',
+    running_engine: null,
+    engine_version: null,
+    engine_identity: null,
     kernel_memory: null,
     kernel_uptime_secs: null,
     connections: [],
@@ -974,6 +1006,10 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
     nodes_notice: optStr(source.nodes_notice),
     nodes_error: optStr(source.nodes_error),
     kernel_running: Boolean(source.kernel_running),
+    engine: normalizeEngine(source.engine) ?? 'mihomo',
+    running_engine: normalizeEngine(source.running_engine),
+    engine_version: optStr(source.engine_version),
+    engine_identity: optStr(source.engine_identity),
     kernel_memory: num(source.kernel_memory),
     kernel_uptime_secs: num(source.kernel_uptime_secs),
     connections: list(source.connections).map((item) => {
@@ -1043,6 +1079,32 @@ export function normalizeKernel(raw: unknown): KernelStatus {
     failure: optStr(value.failure),
     ready: Boolean(value.ready),
     version: optStr(value.version),
+  }
+}
+
+export function normalizeEngine(value: unknown): KernelEngine | null {
+  return value === 'rust' ? 'rust' : value === 'mihomo' ? 'mihomo' : null
+}
+
+export function normalizeEngines(raw: unknown): EnginesState {
+  const value = obj(raw)
+  const info = (item: unknown, id: KernelEngine, label: string): EngineInfo => {
+    const engine = obj(item)
+    return {
+      id,
+      label: str(engine.label, label),
+      available: Boolean(engine.available),
+      version: optStr(engine.version),
+      running: Boolean(engine.running),
+      instance: optStr(engine.instance),
+    }
+  }
+  return {
+    selected: normalizeEngine(value.selected) ?? 'mihomo',
+    running: normalizeEngine(value.running),
+    failure: optStr(value.failure),
+    mihomo: info(value.mihomo, 'mihomo', 'Mihomo'),
+    rust: info(value.rust, 'rust', 'Rust'),
   }
 }
 

@@ -13,6 +13,7 @@ import {
   type ConfigOverview,
   type ConnectionRow,
   type DnsQueryResult,
+  type EnginesState,
   type KernelStatus,
   type LogLine,
   type NodeGroup,
@@ -629,12 +630,16 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     state.kernel_running = true
     state.connected = true
     state.failure = null
+    state.running_engine = state.engine
+    state.engine_version = state.engine === 'rust' ? '0.1.0' : kernel.version
+    state.engine_identity = state.engine === 'rust' ? `instance=demo-rust pid=1 version=0.1.0 listen=127.0.0.1:${state.mixed_port ?? 7890}` : null
     startedAt = Date.now()
     autoNow.set('自动选择', names[1])
     autoNow.set('故障转移', names[0])
     if (options.loadBalance) autoNow.set('负载均衡', names[0])
     fixed.forEach((node, group) => autoNow.set(group, node))
-    log('info', `Mihomo ${kernel.version} started, mixed proxy listening at 127.0.0.1:${state.mixed_port ?? 7890}`)
+    const label = state.engine === 'rust' ? 'Rust' : `Mihomo ${kernel.version}`
+    log('info', `${label} started, mixed proxy listening at 127.0.0.1:${state.mixed_port ?? 7890}`)
     return true
   }
 
@@ -717,6 +722,45 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     async refreshKernel() {
       await wait(900)
       return kernel
+    },
+    async engines() {
+      const running = state.kernel_running ? state.running_engine : null
+      return {
+        selected: state.engine,
+        running,
+        failure: state.failure,
+        mihomo: {
+          id: 'mihomo',
+          label: 'Mihomo',
+          available: true,
+          version: kernel.version,
+          running: running === 'mihomo',
+          instance: running === 'mihomo' ? state.engine_identity : null,
+        },
+        rust: {
+          id: 'rust',
+          label: 'Rust',
+          available: true,
+          version: '0.1.0',
+          running: running === 'rust',
+          instance: running === 'rust' ? state.engine_identity : null,
+        },
+      } satisfies EnginesState
+    },
+    async setEngine(engine) {
+      await wait(400)
+      if (engine === state.engine) return snapshot()
+      const reconnect = state.kernel_running
+      if (reconnect) {
+        state.kernel_running = false
+        state.connected = false
+        state.running_engine = null
+      }
+      state.engine = engine
+      state.failure = null
+      if (reconnect) startKernel()
+      log('info', `已切换到 ${engine === 'rust' ? 'Rust' : 'Mihomo'} 内核`)
+      return done(0)
     },
 
     state: async () => snapshot(),
@@ -945,6 +989,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       state.system_proxy = false
       state.tun = false
       state.vpn = false
+      state.running_engine = null
+      state.engine_version = null
+      state.engine_identity = null
       startedAt = null
       autoNow.clear()
       log('info', '内核已停止')

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, stat, utimes } from 'node:fs/p
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
-import { desktopTarget, prepareDesktop } from '../../tool/prepare_desktop_runtime.mjs'
+import { desktopTarget, prepareDesktop, RUST_TARGETS } from '../../tool/prepare_desktop_runtime.mjs'
 import { downloadBytes } from '../../tool/build_download.mjs'
 import { zipSync } from 'fflate'
 import { brotliDecompressSync } from 'node:zlib'
@@ -29,6 +29,9 @@ test('native target selection does not silently use the build host architecture'
   assert.equal(desktopTarget('linux', 'aarch64'), 'linux-aarch64')
   assert.throws(() => desktopTarget('darwin', undefined), /Unsupported/)
   assert.throws(() => desktopTarget('android', 'aarch64'), /Unsupported/)
+  assert.equal(RUST_TARGETS['darwin-aarch64'], 'aarch64-apple-darwin')
+  assert.equal(RUST_TARGETS['windows-x86_64'], 'x86_64-pc-windows-msvc')
+  assert.equal(RUST_TARGETS['linux-x86_64'], 'x86_64-unknown-linux-gnu')
 })
 
 test('desktop bundle contains a verified kernel, GEO data and license; corrupt downloads fail the build', async () => {
@@ -56,6 +59,11 @@ test('desktop bundle contains a verified kernel, GEO data and license; corrupt d
         await mkdir(dir, { recursive: true })
         await writeFile(resolve(dir, 'GeoSite.dat'), 'geo fixture')
       },
+      prepareRustKernelImpl: async ({ bundle: dir, target: name }) => {
+        await mkdir(dir, { recursive: true })
+        await writeFile(resolve(dir, 'billow-kernel.exe'), 'native fixture')
+        await writeFile(resolve(dir, 'rust-kernel.json'), JSON.stringify({ version: '0.1.0', target: name }))
+      },
     }
     await prepareDesktop(options)
     const bundle = resolve(root, 'src-tauri/resources/runtime')
@@ -68,6 +76,8 @@ test('desktop bundle contains a verified kernel, GEO data and license; corrupt d
     await assert.rejects(readFile(resolve(bundle, 'kernel.gz')))
     assert.equal(await readFile(resolve(bundle, 'mihomo-LICENSE'), 'utf8'), 'license')
     assert.equal(await readFile(resolve(bundle, 'geo/GeoSite.dat'), 'utf8'), 'geo fixture')
+    assert.equal(await readFile(resolve(bundle, 'billow-kernel.exe'), 'utf8'), 'native fixture')
+    assert.equal(JSON.parse(await readFile(resolve(bundle, 'rust-kernel.json'))).version, '0.1.0')
     await writeFile(resolve(bundle, 'kernel.br'), 'damaged output')
     await writeFile(resolve(bundle, 'kernel.gz'), 'stale architecture')
     await prepareDesktop(options)

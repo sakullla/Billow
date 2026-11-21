@@ -1,5 +1,6 @@
-import { readFile, writeFile, mkdir, copyFile, rm } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, copyFile, rm, chmod } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import { prepareGeo } from './prepare_geo.mjs'
@@ -13,7 +14,72 @@ export function desktopTarget(platform, arch) {
   return `${os}-${cpu}`
 }
 
-export async function prepareDesktop({ platform, arch, root = fileURLToPath(new URL('../', import.meta.url)), fetchImpl = fetch, prepareGeoImpl = prepareGeo }) {
+/** Rust triples that match the packaged desktop targets. */
+export const RUST_TARGETS = {
+  'darwin-aarch64': 'aarch64-apple-darwin',
+  'darwin-x86_64': 'x86_64-apple-darwin',
+  'windows-aarch64': 'aarch64-pc-windows-msvc',
+  'windows-x86_64': 'x86_64-pc-windows-msvc',
+  'windows-i686': 'i686-pc-windows-msvc',
+  'linux-aarch64': 'aarch64-unknown-linux-gnu',
+  'linux-x86_64': 'x86_64-unknown-linux-gnu',
+  'linux-i686': 'i686-unknown-linux-gnu',
+  'linux-armv7': 'armv7-unknown-linux-gnueabihf',
+}
+
+async function rustWorkspaceVersion(root) {
+  const manifest = await readFile(resolve(root, 'native-kernel/Cargo.toml'), 'utf8')
+  const block = manifest.match(/\[workspace\.package\]([\s\S]*?)(?:\n\[|$)/)
+  const version = block?.[1].match(/version\s*=\s*"([^"]+)"/)?.[1]
+  if (!version) throw new Error('native-kernel workspace version is missing')
+  return version
+}
+
+/**
+ * Builds (or reuses) the native Rust kernel and copies it next to the bundled
+ * Mihomo, so every desktop installer ships both engines. `BILLOW_RUST_KERNEL_BIN`
+ * points at a prebuilt binary; `BILLOW_RUST_KERNEL_TARGET` overrides the triple.
+ */
+export async function prepareRustKernel({ root, target, bundle }) {
+  const triple = process.env.BILLOW_RUST_KERNEL_TARGET || RUST_TARGETS[target]
+  if (!triple) throw new Error(`No native Rust kernel target for ${target}`)
+  const executable = triple.includes('windows') ? 'billow-kernel.exe' : 'billow-kernel'
+  let source = process.env.BILLOW_RUST_KERNEL_BIN
+  const targetDir = process.env.CARGO_TARGET_DIR
+    ? resolve(process.env.CARGO_TARGET_DIR)
+    : resolve(root, 'native-kernel/target')
+  if (!source) {
+    execFileSync('cargo', [
+      'build', '--release', '--locked',
+      '--manifest-path', resolve(root, 'native-kernel/Cargo.toml'),
+      '-p', 'billow-kernel-cli', '--target', triple, '--target-dir', targetDir,
+    ], { cwd: root, stdio: 'inherit' })
+    source = resolve(targetDir, triple, 'release', executable)
+  }
+  const bytes = await readFile(source)
+  if (bytes.length === 0) throw new Error('Native Rust kernel is empty')
+  const destination = resolve(bundle, executable)
+  await copyFile(source, destination)
+  await chmod(destination, 0o755)
+  const version = await rustWorkspaceVersion(root)
+  await writeFile(resolve(bundle, 'rust-kernel.json'), JSON.stringify({
+    version,
+    target,
+    triple,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  }, null, 2))
+  console.log(`Bundled native Rust kernel ${version} for ${target}`)
+  return destination
+}
+
+export async function prepareDesktop({
+  platform,
+  arch,
+  root = fileURLToPath(new URL('../', import.meta.url)),
+  fetchImpl = fetch,
+  prepareGeoImpl = prepareGeo,
+  prepareRustKernelImpl = prepareRustKernel,
+}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'src-tauri/desktop-kernel.json'), 'utf8'))
   const target = desktopTarget(platform, arch)
   const entry = manifest.targets[target]
@@ -40,4 +106,5 @@ export async function prepareDesktop({ platform, arch, root = fileURLToPath(new 
   await prepareGeoImpl(resolve(bundle, 'geo'))
   await writeFile(resolve(bundle, 'kernel.json'), JSON.stringify({ version: manifest.version, ...entry, packed }, null, 2))
   console.log(`Bundled verified Mihomo ${manifest.version} for ${target}`)
+  await prepareRustKernelImpl({ root, target, bundle })
 }

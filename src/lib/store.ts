@@ -9,7 +9,9 @@ import {
   type ClosedConnectionRow,
   type ConnectionRow,
   type DnsQueryType,
+  type EnginesState,
   type KernelChannel,
+  type KernelEngine,
   type KernelSettings,
   type KernelStatus,
   type Mode,
@@ -127,6 +129,7 @@ export function createStore(backend: Backend) {
   // Backend snapshots are replaced as a whole; large lists need no deep proxies.
   const snapshot = shallowRef<Snapshot>(emptySnapshot())
   const kernel = ref<KernelStatus>({ channel: 'stable', failure: null, ready: false, version: null })
+  const engines = ref<EnginesState | null>(null)
   const app = ref<AppInfo | null>(null)
   const theme = ref<ThemePreference>('system')
   const page = ref<PageId>('home')
@@ -725,6 +728,9 @@ export function createStore(backend: Backend) {
     void backend.kernel().then((value) => {
       if (isCurrent(session)) kernel.value = value
     }).catch(console.error)
+    void backend.engines().then((value) => {
+      if (isCurrent(session)) engines.value = value
+    }).catch(console.error)
     void backend.appInfo().then((value) => {
       if (isCurrent(session)) app.value = value
     }).catch(console.error)
@@ -943,6 +949,7 @@ export function createStore(backend: Backend) {
     appUpdate,
     snapshot,
     kernel,
+    engines,
     app,
     theme,
     page,
@@ -1145,6 +1152,29 @@ export function createStore(backend: Backend) {
         toast(String(error), 'error')
       } finally {
         delete busy.kernel
+      }
+    },
+    /** Serialized engine switch; a rejected target keeps the live session. */
+    async setEngine(engine: KernelEngine) {
+      if (engine === snapshot.value.engine) return
+      busy.engine = true
+      try {
+        snapshot.value = await backend.setEngine(engine)
+        engines.value = await backend.engines()
+        toast(`已切换到 ${engine === 'rust' ? 'Rust' : 'Mihomo'} 内核`, 'success')
+      } catch (error) {
+        toast(String(error), 'error')
+        engines.value = await backend.engines().catch(() => engines.value)
+      } finally {
+        delete busy.engine
+      }
+    },
+    /** Re-reads both engines (availability, version, running identity). */
+    async refreshEngines() {
+      try {
+        engines.value = await backend.engines()
+      } catch (error) {
+        console.error(error)
       }
     },
     async setAutostart(enabled: boolean) {

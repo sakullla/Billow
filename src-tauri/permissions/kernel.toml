@@ -4,6 +4,16 @@ description = "Enables the kernel_state command without any pre-configured scope
 commands.allow = ["kernel_state"]
 
 [[permission]]
+identifier = "allow-kernel-engines"
+description = "Reports the selected, running and packaged kernel engines."
+commands.allow = ["kernel_engines"]
+
+[[permission]]
+identifier = "allow-set-kernel-engine"
+description = "Switches the engine that carries traffic (serialized with connect and restart)."
+commands.allow = ["set_kernel_engine"]
+
+[[permission]]
 identifier = "allow-set-kernel-channel"
 description = "Enables the set_kernel_channel command without any pre-configured scope."
 commands.allow = ["set_kernel_channel"]

@@ -1,6 +1,7 @@
 import {
   normalizeConfigOverview,
   normalizeDnsQueryResult,
+  normalizeEngines,
   normalizeKernel,
   normalizeRuleRow,
   normalizeSnapshot,
@@ -8,8 +9,10 @@ import {
   type ConfigOverview,
   type DnsQueryResult,
   type DnsQueryType,
+  type EnginesState,
   type OverridePreview,
   type KernelChannel,
+  type KernelEngine,
   type KernelSettings,
   type KernelStatus,
   type Mode,
@@ -52,6 +55,10 @@ export interface Backend {
   kernel(): Promise<KernelStatus>
   setChannel(channel: KernelChannel): Promise<KernelStatus>
   refreshKernel(): Promise<KernelStatus>
+  /** Selected/running engine plus each packaged binary's availability. */
+  engines(): Promise<EnginesState>
+  /** Serialized switch; rejects with the reason when the target is refused. */
+  setEngine(engine: KernelEngine): Promise<Snapshot>
 
   state(): Promise<Snapshot>
   addSubscription(url: string): Promise<Snapshot>
@@ -195,6 +202,8 @@ function createTauriBackend(): Backend {
     kernel: () => kern('kernel_state'),
     setChannel: (channel) => kern('set_kernel_channel', { channel }),
     refreshKernel: () => kern('refresh_kernel'),
+    engines: async () => normalizeEngines(await call<unknown>('kernel_engines')),
+    setEngine: (engine) => snap('set_kernel_engine', { engine }),
 
     state: () => snap('profile_state'),
     addSubscription: (url) => snap('add_subscription_profile', { url }),

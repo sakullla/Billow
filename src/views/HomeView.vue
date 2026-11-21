@@ -467,6 +467,9 @@ onBeforeUnmount(() => {
               <p v-else-if="!profile" class="hero-sub muted">选择一份配置后即可开启代理</p>
               <p v-else class="hero-sub muted">
                 <span>{{ activeMode ? `${activeMode.label}模式` : '就绪' }}</span>
+                <template v-if="snap.connected && snap.running_engine">
+                  <span>· {{ snap.running_engine === 'rust' ? 'Rust' : 'Mihomo' }} 内核</span>
+                </template>
                 <template v-if="store.isAndroid.value && snap.mixed_port">
                   <span>· 端口 {{ snap.mixed_port }}</span>
                 </template>

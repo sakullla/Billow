@@ -2,6 +2,7 @@ mod age_key;
 mod app_update;
 mod bundled_geo;
 mod diagnostics;
+mod engine;
 #[cfg(target_os = "windows")]
 mod elevation;
 mod kernel;
@@ -25,6 +26,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use kernel::{
     ConnectResult, GithubReleaseClient, KernelManager, KernelStatus, PlatformTarget, parse_channel,
 };
+use engine::Engine;
 use profile::{
     HttpSubscriptionClient, KernelLaunch, KernelSettings, ProcessRuntime, ProfileBook,
     ProfileSnapshot, ProvidersSnapshot, RuleToggle, RulesSnapshot,
@@ -216,6 +218,71 @@ fn profiles_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(directory)
 }
 
+/// Path of the packaged native Rust kernel, if this installation ships one.
+fn rust_kernel_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        return kernel::android_app_dir("nativeLibraryDir")
+            .map(|dir| dir.join("libbillow_kernel.so"))
+            .filter(|path| path.is_file());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let name = if cfg!(target_os = "windows") { "billow-kernel.exe" } else { "billow-kernel" };
+        let packaged = app.path().resource_dir().ok().map(|dir| dir.join("runtime").join(name));
+        if let Some(path) = packaged.filter(|path| path.is_file()) {
+            return Some(path);
+        }
+        // `tauri dev` may resolve resources differently; the prepared tree is authoritative.
+        #[cfg(debug_assertions)]
+        {
+            let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/runtime")
+                .join(name);
+            if dev.is_file() {
+                return Some(dev);
+            }
+        }
+        None
+    }
+}
+
+fn rust_kernel_version(app: &AppHandle) -> Option<String> {
+    let packaged = app.path().resource_dir().ok().map(|dir| dir.join("runtime/rust-kernel.json"));
+    if let Some(version) = packaged.as_deref().and_then(engine::rust_kernel_version) {
+        return Some(version);
+    }
+    #[cfg(all(debug_assertions, not(target_os = "android")))]
+    {
+        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime/rust-kernel.json");
+        return engine::rust_kernel_version(&dev);
+    }
+    #[cfg(any(not(debug_assertions), target_os = "android"))]
+    None
+}
+
+/// Binary paths are read before the profile lock so the two stores are never
+/// locked in opposite orders by concurrent commands.
+fn engine_paths(app: &AppHandle) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+    let mihomo = {
+        let store = app.state::<KernelStore>();
+        lock_kernel(&store.manager).installed_path()
+    };
+    (mihomo, rust_kernel_path(app))
+}
+
+fn prepare_runtime_paths(
+    session: &mut ProfileSession,
+    mihomo: Option<std::path::PathBuf>,
+    rust: Option<std::path::PathBuf>,
+) {
+    session.runtime.set_kernel_path(mihomo.clone());
+    session.runtime.set_rust_kernel_path(rust);
+    session.tun.set_kernel_path(mihomo);
+    session.runtime.set_engine(session.book.engine());
+}
+
 fn prepare_profiles(app: &tauri::App) {
     let directory = match profiles_dir(app.handle()) {
         Ok(directory) => directory,
@@ -230,6 +297,8 @@ fn prepare_profiles(app: &tauri::App) {
     if let Ok(resources) = app.path().resource_dir() {
         runtime.set_bundled_resources(resources.join("runtime"));
     }
+    runtime.set_rust_kernel_path(rust_kernel_path(app.handle()));
+    runtime.set_engine(book.engine());
     let mut proxy = takeover::host_proxy();
     book.release_lingering_proxy(&mut proxy);
     let mut installed = takeover::HostInstalledApps;
@@ -345,6 +414,85 @@ fn kernel_state(app: AppHandle) -> KernelStatus {
     lock_kernel(&store.manager).status()
 }
 
+/// Reports both engines: which is selected, which actually runs, and whether
+/// each packaged binary is available. Mihomo's release channel is not involved.
+#[tauri::command(async)]
+fn kernel_engines(app: AppHandle) -> engine::EnginesState {
+    let (mihomo_path, rust_path) = engine_paths(&app);
+    let mihomo = {
+        let store = app.state::<KernelStore>();
+        lock_kernel(&store.manager).status()
+    };
+    let snapshot = profile_snapshot(&app);
+    let running = snapshot.running_engine.clone();
+    let instance = |engine: &str| {
+        (running.as_deref() == Some(engine)).then(|| snapshot.engine_identity.clone()).flatten()
+    };
+    engine::EnginesState {
+        selected: snapshot.engine.clone(),
+        running: running.clone(),
+        failure: snapshot.failure.clone(),
+        mihomo: engine::EngineInfo {
+            id: Engine::Mihomo.as_str().to_string(),
+            label: Engine::Mihomo.label().to_string(),
+            available: mihomo.ready && mihomo_path.is_some(),
+            version: mihomo.version.clone(),
+            running: running.as_deref() == Some(Engine::Mihomo.as_str()),
+            instance: instance(Engine::Mihomo.as_str()),
+        },
+        rust: engine::EngineInfo {
+            id: Engine::Rust.as_str().to_string(),
+            label: Engine::Rust.label().to_string(),
+            available: rust_path.is_some(),
+            version: rust_kernel_version(&app),
+            running: running.as_deref() == Some(Engine::Rust.as_str()),
+            instance: instance(Engine::Rust.as_str()),
+        },
+    }
+}
+
+/// Serialized engine switch shared by settings and the tray. It runs under the
+/// profile-session lock, so connect/disconnect/restart/profile changes cannot
+/// interleave with it. A rejected target leaves the live session untouched.
+fn switch_engine_now(app: &AppHandle, target: Engine) -> Result<ProfileSnapshot, String> {
+    let (mihomo, rust) = engine_paths(app);
+    let store = app.state::<ProfileStore>();
+    let result = {
+        let mut session = lock_profiles(&store.session);
+        prepare_runtime_paths(&mut session, mihomo, rust);
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = &mut *session;
+        book.switch_engine(target, runtime, proxy, tun, vpn)
+    };
+    let snapshot = match result {
+        Ok(snapshot) => snapshot,
+        Err(message) => {
+            // The switch may have restored the previous session or dropped
+            // takeover; the UI still needs that final state, then the reason.
+            let snapshot = profile_snapshot(app);
+            refresh_tray(app, &snapshot);
+            let _ = app.emit("profile-changed", &snapshot);
+            return Err(message);
+        }
+    };
+    refresh_tray(app, &snapshot);
+    let _ = app.emit("profile-changed", &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn set_kernel_engine(app: AppHandle, engine: String) -> Result<ProfileSnapshot, String> {
+    let target = Engine::parse(&engine)?;
+    tauri::async_runtime::spawn_blocking(move || switch_engine_now(&app, target))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command(async)]
 fn set_kernel_channel(app: AppHandle, channel: String) -> KernelStatus {
     let running = with_profile(&app, |session| session.runtime.running_kernel_path());
@@ -386,14 +534,10 @@ fn connect_kernel(app: AppHandle) -> ConnectStatus {
 }
 
 fn profile_snapshot(app: &AppHandle) -> ProfileSnapshot {
-    let kernel_path = {
-        let store = app.state::<KernelStore>();
-        lock_kernel(&store.manager).installed_path()
-    };
+    let (mihomo, rust) = engine_paths(app);
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
-    session.runtime.set_kernel_path(kernel_path.clone());
-    session.tun.set_kernel_path(kernel_path);
+    prepare_runtime_paths(&mut session, mihomo, rust);
     let mut installed = takeover::HostInstalledApps;
     session.book.refresh_installed(&mut installed);
     let ProfileSession {
@@ -425,13 +569,11 @@ fn subscription_client(app: &AppHandle) -> HttpSubscriptionClient {
 }
 
 fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot {
-    let kernel_path = {
-        let store = app.state::<KernelStore>();
-        lock_kernel(&store.manager).installed_path()
-    };
+    let (mihomo, rust) = engine_paths(app);
     let client = subscription_client(&app);
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
+    prepare_runtime_paths(&mut session, mihomo, rust);
     let ProfileSession {
         book,
         runtime,
@@ -439,8 +581,6 @@ fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot 
         tun,
         vpn,
     } = &mut *session;
-    runtime.set_kernel_path(kernel_path.clone());
-    tun.set_kernel_path(kernel_path);
     if update {
         book.update(id, &client, runtime);
     } else {
@@ -455,14 +595,10 @@ fn with_session(
     app: &AppHandle,
     change: impl FnOnce(&mut ProfileSession) -> ProfileSnapshot,
 ) -> ProfileSnapshot {
-    let kernel_path = {
-        let store = app.state::<KernelStore>();
-        lock_kernel(&store.manager).installed_path()
-    };
+    let (mihomo, rust) = engine_paths(app);
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
-    session.runtime.set_kernel_path(kernel_path.clone());
-    session.tun.set_kernel_path(kernel_path);
+    prepare_runtime_paths(&mut session, mihomo, rust);
     change(&mut session)
 }
 
@@ -1172,14 +1308,10 @@ fn set_app_behavior(app: AppHandle, close_to_tray: bool, silent_start: bool) -> 
 }
 
 fn with_session_raw<T>(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> T) -> T {
-    let kernel_path = {
-        let store = app.state::<KernelStore>();
-        lock_kernel(&store.manager).installed_path()
-    };
+    let (mihomo, rust) = engine_paths(app);
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
-    session.runtime.set_kernel_path(kernel_path.clone());
-    session.tun.set_kernel_path(kernel_path);
+    prepare_runtime_paths(&mut session, mihomo, rust);
     change(&mut session)
 }
 
@@ -1319,6 +1451,21 @@ fn tray_action(app: &AppHandle, id: &str) {
                 set_tun_enabled(app.clone(), !on).unwrap_or_else(|message| with_profile(&app, |s| s.book.report_failure(message)))
             }
             TrayCommand::Mode(mode) => set_outbound_mode(app.clone(), mode),
+            TrayCommand::Engine(id) => {
+                let target = match Engine::parse(&id) {
+                    Ok(target) => target,
+                    Err(message) => {
+                        let snapshot = with_profile(&app, |session| session.book.report_failure(message));
+                        refresh_tray(&app, &snapshot);
+                        let _ = app.emit("profile-changed", snapshot);
+                        return;
+                    }
+                };
+                match switch_engine_now(&app, target) {
+                    Ok(snapshot) => snapshot,
+                    Err(message) => with_profile(&app, |session| session.book.report_failure(message)),
+                }
+            }
             TrayCommand::Profile(id) => enable_profile(app.clone(), id),
             TrayCommand::Node { group, node } => select_profile_node(app.clone(), group, node),
             TrayCommand::Show | TrayCommand::Navigate(_) | TrayCommand::Quit => return,
@@ -1507,6 +1654,8 @@ pub fn run() {
             set_theme,
             set_last_entry,
             kernel_state,
+            kernel_engines,
+            set_kernel_engine,
             set_kernel_channel,
             connect_kernel,
             profile_state,

@@ -43,5 +43,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: |
+            src-tauri -> target
+            native-kernel -> target
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked

@@ -8,6 +8,7 @@ import { resolve } from 'node:path'
 
 if (['android', 'androideabi'].includes(process.env.TAURI_ENV_PLATFORM) || process.argv.includes('--force')) {
   await import('./prepare_android_geo.mjs')
+  await import('./prepare_android_rust_kernel.mjs')
   const root = fileURLToPath(new URL('../', import.meta.url))
   const manifest = JSON.parse(await readFile(resolve(root, 'src-tauri/android-kernel.json'), 'utf8'))
   const arch = process.env.TAURI_ENV_ARCH

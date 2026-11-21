@@ -32,6 +32,8 @@ pub enum TrayCommand {
     ToggleConnection,
     SystemProxy,
     Tun,
+    /// Select the engine that carries traffic (`mihomo` / `rust`).
+    Engine(String),
     Mode(String),
     Profile(String),
     Node { group: String, node: String },
@@ -82,9 +84,47 @@ pub fn tooltip(snapshot: &ProfileSnapshot) -> String {
         if let Some(mode) = snapshot.mode.as_deref().and_then(mode_label) {
             parts.push(format!("{mode}模式"));
         }
+        // Which engine actually carries traffic, not just the selected one.
+        if let Some(engine) = snapshot.running_engine.as_deref().and_then(engine_label) {
+            parts.push(engine.to_string());
+        }
     }
     let text = parts.join(" · ");
     text.chars().take(120).collect()
+}
+
+fn engine_label(id: &str) -> Option<&'static str> {
+    match id {
+        "mihomo" => Some("Mihomo"),
+        "rust" => Some("Rust"),
+        _ => None,
+    }
+}
+
+fn engine_menu(snapshot: &ProfileSnapshot) -> TrayEntry {
+    let running = snapshot.running_engine.as_deref();
+    let text = match (engine_label(&snapshot.engine), running.and_then(engine_label)) {
+        (Some(selected), Some(actual)) if selected != actual => {
+            format!("内核引擎  ·  {selected}（运行中 {actual}）")
+        }
+        (Some(selected), _) => format!("内核引擎  ·  {selected}"),
+        _ => "内核引擎".to_string(),
+    };
+    TrayEntry::Submenu {
+        text,
+        enabled: true,
+        items: ["mihomo", "rust"]
+            .iter()
+            .map(|id| {
+                check(
+                    format!("engine{SEP}{id}"),
+                    engine_label(id).unwrap_or(id),
+                    snapshot.engine == *id,
+                    true,
+                )
+            })
+            .collect(),
+    }
 }
 
 fn delay_suffix(delay: Option<u64>, failed: bool) -> String {
@@ -188,6 +228,7 @@ pub fn model(snapshot: &ProfileSnapshot) -> Vec<TrayEntry> {
                 .map(|id| check(format!("mode{SEP}{id}"), mode_label(id).unwrap_or(id), mode == *id, true))
                 .collect(),
         });
+        entries.push(engine_menu(snapshot));
         if let Some(groups) = groups_menu(snapshot) {
             entries.push(groups);
         }
@@ -221,6 +262,7 @@ pub fn parse(id: &str) -> Option<TrayCommand> {
     let first = parts.next()?.to_string();
     match kind {
         "mode" if mode_label(&first).is_some() => Some(TrayCommand::Mode(first)),
+        "engine" if engine_label(&first).is_some() => Some(TrayCommand::Engine(first)),
         "profile" => Some(TrayCommand::Profile(first)),
         "nav" => Some(TrayCommand::Navigate(first)),
         "node" => Some(TrayCommand::Node { group: first, node: parts.next()?.to_string() }),
@@ -321,6 +363,24 @@ mod tests {
         let TrayEntry::Submenu { items: nodes, .. } = &groups[0] else { panic!("group") };
         assert_eq!(nodes.len(), MAX_NODES + 2);
         assert!(matches!(nodes.last(), Some(TrayEntry::Action { text, .. }) if text == "其余 5 个节点…"));
+    }
+
+    #[test]
+    fn tray_shows_and_selects_the_running_engine() {
+        let mut snapshot = connected();
+        snapshot.engine = "rust".to_string();
+        snapshot.running_engine = Some("mihomo".to_string());
+        let entries = model(&snapshot);
+        let Some(TrayEntry::Submenu { text, items, .. }) = find(&entries, "内核引擎") else { panic!("engine menu") };
+        assert_eq!(text, "内核引擎  ·  Rust（运行中 Mihomo）");
+        let TrayEntry::Check { id, checked, .. } = &items[0] else { panic!("mihomo entry") };
+        assert!(!checked);
+        assert_eq!(parse(id), Some(TrayCommand::Engine("mihomo".to_string())));
+        let TrayEntry::Check { id, checked, .. } = &items[1] else { panic!("rust entry") };
+        assert!(checked);
+        assert_eq!(parse(id), Some(TrayCommand::Engine("rust".to_string())));
+        assert!(tooltip(&snapshot).contains("Mihomo"));
+        assert_eq!(parse("engine\u{1f}bogus"), None);
     }
 
     #[test]

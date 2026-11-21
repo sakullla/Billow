@@ -8,12 +8,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
 use crate::age_key;
 use crate::diagnostics::{self, ConnectionView, LogView, TrafficTotals};
+use crate::engine::{Engine, EngineIdentity};
 use crate::nodes::{
     self, ControllerEndpoint, KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay,
     NodeGroupView, ParsedGroup, SELECT_FAILED,
@@ -818,6 +819,14 @@ pub struct ProfileSnapshot {
     pub nodes_error: Option<String>,
     pub nodes_profile_id: Option<String>,
     pub kernel_running: bool,
+    /// Engine selected for the next connection (`mihomo` / `rust`).
+    pub engine: String,
+    /// Engine of the process actually running, or `None` when none runs.
+    pub running_engine: Option<String>,
+    /// Version reported by the running engine, when it reports one.
+    pub engine_version: Option<String>,
+    /// Identity line of the running instance (native kernel), for restart evidence.
+    pub engine_identity: Option<String>,
     /// Kernel memory in bytes; `None` when the kernel does not report it.
     pub kernel_memory: Option<u64>,
     /// Seconds since the kernel process started; `None` while it is not running.
@@ -911,6 +920,30 @@ pub trait KernelLaunch {
     fn start_or_reload_with(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
         let _ = force;
         self.start_or_reload(config_yaml)
+    }
+
+    /// Which engine the next launch uses. Older fakes keep Mihomo semantics.
+    fn engine(&self) -> Engine {
+        Engine::Mihomo
+    }
+
+    /// Selects the engine for the next launch. The caller stops the previous
+    /// process first; the engine never changes underneath a running instance.
+    fn set_engine(&mut self, _engine: Engine) {}
+
+    /// Identity of the process actually started, or `None` while none runs.
+    fn identity(&self) -> Option<EngineIdentity> {
+        None
+    }
+
+    /// Stops the running process without touching OS takeover (the caller
+    /// releases that separately so the failure path stays ordered).
+    fn stop_kernel(&mut self) {}
+
+    /// Validates the YAML with the selected engine before any live session is
+    /// torn down. `Ok(())` means the target engine accepted it.
+    fn validate_config(&mut self, _config_yaml: &str) -> Result<(), String> {
+        Ok(())
     }
 
     /// Applies a filtered runtime config without restarting the process, so the
@@ -1261,7 +1294,12 @@ fn kernel_file_privileged(path: &std::path::Path) -> bool {
 
 /// Spawns the already installed kernel. Tests inject [`KernelLaunch`] instead.
 pub struct ProcessRuntime {
+    /// Engine the next launch uses; kept in sync with the profile book selection.
+    engine: Engine,
+    /// Mihomo binary installed by [`crate::kernel::KernelManager`].
     kernel_path: Option<PathBuf>,
+    /// Packaged native Rust kernel (`billow-kernel` / `libbillow_kernel.so`).
+    rust_path: Option<PathBuf>,
     work_dir: PathBuf,
     home_dir: PathBuf,
     bundled_resources: Option<PathBuf>,
@@ -1274,6 +1312,10 @@ pub struct ProcessRuntime {
     cached_catalog: nodes::RuntimeCatalog,
     provider_catalog: Option<(Instant, nodes::RuntimeCatalog)>,
     launched_kernel: Option<PathBuf>,
+    launched_engine: Option<Engine>,
+    /// Instance identity line reported by the native Rust kernel.
+    launched_identity: Option<String>,
+    launched_version: Option<String>,
     launched_privileged: bool,
     tun_active: bool,
     log_buffer: Option<CapturedLogs>,
@@ -1328,7 +1370,9 @@ impl ProcessRuntime {
         #[cfg(not(target_os = "android"))]
         let home_dir = crate::resources::kernel_home().unwrap_or_else(|| work_dir.clone());
         Self {
+            engine: Engine::Mihomo,
             kernel_path: None,
+            rust_path: None,
             work_dir,
             home_dir,
             bundled_resources: None,
@@ -1341,6 +1385,9 @@ impl ProcessRuntime {
             cached_catalog: nodes::RuntimeCatalog::default(),
             provider_catalog: None,
             launched_kernel: None,
+            launched_engine: None,
+            launched_identity: None,
+            launched_version: None,
             launched_privileged: false,
             tun_active: false,
             log_buffer: None,
@@ -1357,6 +1404,18 @@ impl ProcessRuntime {
 
     pub fn set_kernel_path(&mut self, path: Option<PathBuf>) {
         self.kernel_path = path;
+    }
+
+    pub fn set_rust_kernel_path(&mut self, path: Option<PathBuf>) {
+        self.rust_path = path;
+    }
+
+    /// The binary the selected engine launches.
+    fn engine_path(&self) -> Option<PathBuf> {
+        match self.engine {
+            Engine::Mihomo => self.kernel_path.clone(),
+            Engine::Rust => self.rust_path.clone(),
+        }
     }
 
     pub fn set_bundled_resources(&mut self, resources: PathBuf) {
@@ -1426,6 +1485,9 @@ impl ProcessRuntime {
         self.last_requested_yaml = None;
         self.controller = None;
         self.launched_kernel = None;
+        self.launched_engine = None;
+        self.launched_identity = None;
+        self.launched_version = None;
         self.launched_privileged = false;
         self.tun_active = false;
         self.cached_catalog = nodes::RuntimeCatalog::default();
@@ -1526,6 +1588,26 @@ fn spawn_log_buffer(streams: Vec<LogReader>) -> CapturedLogs {
     CapturedLogs { lines, finished, readers }
 }
 
+/// Parses the native kernel's identity line:
+/// `instance=<uuid> pid=<n> version=<v> listen=<addr> …`.
+fn parse_kernel_identity(message: &str) -> Option<(String, Option<String>, std::net::SocketAddr)> {
+    let field = |name: &str| {
+        let token = format!("{name}=");
+        message.split_whitespace().find_map(|item| item.strip_prefix(token.as_str()))
+    };
+    let instance = field("instance")?.to_string();
+    if instance.is_empty() || instance == "-" {
+        return None;
+    }
+    let version = field("version").filter(|value| !value.is_empty() && *value != "-").map(str::to_string);
+    let listen = field("listen")?.parse().ok()?;
+    Some((instance, version, listen))
+}
+
+fn listener_accepts(addr: std::net::SocketAddr) -> bool {
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
+}
+
 impl Drop for ProcessRuntime {
     fn drop(&mut self) {
         self.stop();
@@ -1534,7 +1616,7 @@ impl Drop for ProcessRuntime {
 
 impl ProcessRuntime {
     fn launch(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
-        let Some(path) = self.kernel_path.clone() else {
+        let Some(path) = self.engine_path() else {
             return Err(MISSING_KERNEL.to_string());
         };
         if !path.is_file() {
@@ -1545,7 +1627,8 @@ impl ProcessRuntime {
         }
         let priv_now = kernel_file_privileged(&path);
         #[cfg(target_os = "windows")]
-        let needs_elevation = serde_yaml::from_str::<Value>(config_yaml).ok()
+        let needs_elevation = self.engine == Engine::Mihomo
+            && serde_yaml::from_str::<Value>(config_yaml).ok()
             .and_then(|value| value.get("tun")?.get("enable")?.as_bool()) == Some(true)
             && !crate::elevation::is_admin();
         #[cfg(target_os = "windows")]
@@ -1555,6 +1638,7 @@ impl ProcessRuntime {
         // A forced restart skips both the no-op and the hot-reload path.
         if !force && can_reload && self.running()
             && self.launched_kernel.as_ref() == Some(&path)
+            && self.launched_engine == Some(self.engine)
             && self.launched_privileged == priv_now
         {
             if self.last_requested_yaml.as_deref() == Some(config_yaml) {
@@ -1567,7 +1651,9 @@ impl ProcessRuntime {
                 }
             }
             #[cfg(not(target_os = "android"))]
-            if let Some(endpoint) = self.controller.clone() {
+            if self.engine == Engine::Mihomo
+                && let Some(endpoint) = self.controller.clone()
+            {
                 let _ = fs::create_dir_all(&self.work_dir);
                 let effective_yaml = nodes::rewrite_controller_endpoint(config_yaml, &endpoint);
                 let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
@@ -1659,10 +1745,18 @@ impl ProcessRuntime {
             crate::bundled_geo::seed(&apk, &self.work_dir)?;
         }
         let mut command = Command::new(&path);
-        command.arg("-d").arg(&self.home_dir);
+        match self.engine {
+            Engine::Mihomo => {
+                command.arg("-d").arg(&self.home_dir);
+                command.arg("-f").arg(&config_path);
+            }
+            Engine::Rust => {
+                // The native kernel takes the YAML positionally; Mihomo's
+                // `-d`/`-f` flags and controller API do not apply to it.
+                command.arg(&config_path);
+            }
+        }
         command
-            .arg("-f")
-            .arg(&config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1737,6 +1831,9 @@ impl ProcessRuntime {
         self.started = Some(Instant::now());
         self.exit_detail = None;
         self.launched_kernel = Some(path);
+        self.launched_engine = Some(self.engine);
+        self.launched_identity = None;
+        self.launched_version = None;
         self.launched_privileged = priv_now;
         self.tun_active = tun;
         self.config_path = Some(config_path);
@@ -1751,9 +1848,45 @@ impl ProcessRuntime {
             }
             None => spawn_log_buffer(streams),
         });
-        let wait = if self.controller.is_some() { Duration::from_secs(25) } else { Duration::from_millis(300) };
+        let wait = if self.engine == Engine::Rust || self.controller.is_some() {
+            Duration::from_secs(25)
+        } else {
+            Duration::from_millis(300)
+        };
         let deadline = Instant::now() + wait;
         loop {
+            if self.engine == Engine::Rust {
+                let state = self.log_buffer.as_ref().map(|logs| {
+                    let lines = logs.lines.lock().unwrap_or_else(|p| p.into_inner());
+                    let identity = lines
+                        .iter()
+                        .find_map(|line| parse_kernel_identity(&line.message));
+                    let failure = identity.is_none().then(|| {
+                        lines.iter().find(|line| line.level == "error").map(|line| line.message.clone())
+                    }).flatten();
+                    (identity, failure)
+                });
+                if let Some((Some((instance, version, listen)), _)) = &state {
+                    self.launched_identity = Some(instance.clone());
+                    self.launched_version = version.clone();
+                    if listener_accepts(*listen) {
+                        break;
+                    }
+                }
+                if let Some((_, Some(message))) = state {
+                    return Err(self.fail_start(Some(friendly_listen_error(&message))));
+                }
+                if !self.running() {
+                    return Err(self.fail_start(None));
+                }
+                if Instant::now() >= deadline {
+                    let reason = self.log_buffer.as_ref().and_then(|logs| logs.lines.lock().ok()?.last().map(|line| line.message.clone()));
+                    let message = format!("内核初始化超时：{}", reason.as_deref().unwrap_or("请检查配置、端口占用和权限"));
+                    return Err(self.fail_start(Some(message)));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
             let failure = self.log_buffer.as_ref().and_then(|logs| {
                 let lines = logs.lines.lock().unwrap_or_else(|p| p.into_inner());
                 lines.iter().find(|line| line.level == "error" &&
@@ -1797,6 +1930,90 @@ impl KernelLaunch for ProcessRuntime {
         self.launch(config_yaml, force)
     }
 
+    fn engine(&self) -> Engine {
+        self.engine
+    }
+
+    fn set_engine(&mut self, engine: Engine) {
+        self.engine = engine;
+    }
+
+    fn identity(&self) -> Option<EngineIdentity> {
+        let engine = self.launched_engine?;
+        Some(EngineIdentity {
+            engine,
+            version: self.launched_version.clone(),
+            instance: self.launched_identity.clone(),
+        })
+    }
+
+    fn stop_kernel(&mut self) {
+        self.stop();
+    }
+
+    /// The native kernel has no hot reload: every config change restarts it.
+    fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
+        if self.engine == Engine::Rust {
+            return self.launch(config_yaml, true);
+        }
+        if !self.running() {
+            return Err(KERNEL_DOWN.to_string());
+        }
+        let Some(endpoint) = self.controller.clone() else {
+            return Err(KERNEL_DOWN.to_string());
+        };
+        let effective_yaml = nodes::rewrite_controller_endpoint(config_yaml, &endpoint);
+        nodes::put_config(&endpoint, &effective_yaml)
+    }
+
+    /// Runs the target binary in its own validation mode before the caller
+    /// releases a live session. Mihomo uses `-t`; the native kernel `--check`.
+    fn validate_config(&mut self, config_yaml: &str) -> Result<(), String> {
+        let Some(path) = self.engine_path() else {
+            return Err(MISSING_KERNEL.to_string());
+        };
+        if !path.is_file() {
+            return Err(MISSING_KERNEL.to_string());
+        }
+        fs::create_dir_all(&self.work_dir).map_err(|_| "配置没有写入".to_string())?;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let config_path = self.work_dir.join(format!("validate-{nanos}.yaml"));
+        fs::write(&config_path, config_yaml).map_err(|_| "配置没有写入".to_string())?;
+        let mut command = Command::new(&path);
+        match self.engine {
+            Engine::Mihomo => {
+                command.arg("-t").arg("-d").arg(&self.home_dir).arg("-f").arg(&config_path);
+            }
+            Engine::Rust => {
+                // `--check` binds its listener before exiting; port 0 keeps the
+                // validation off the live session's port.
+                command.arg(&config_path).arg("--check").arg("--port").arg("0");
+            }
+        }
+        let output = command.stdin(Stdio::null()).output();
+        let _ = fs::remove_file(&config_path);
+        let output = output.map_err(|error| format!("{KERNEL_ERROR}：{error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let mut text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if text.is_empty() {
+            text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        }
+        let detail = text
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("配置未通过内核校验")
+            .chars()
+            .take(400)
+            .collect::<String>();
+        Err(detail)
+    }
+
     fn running(&mut self) -> bool {
         let alive = match self.child.as_mut() {
             Some(child) => match child.try_wait() {
@@ -1820,6 +2037,10 @@ impl KernelLaunch for ProcessRuntime {
             { self.elevated = None; }
             self.child = None;
             self.controller = None;
+            self.launched_kernel = None;
+            self.launched_engine = None;
+            self.launched_identity = None;
+            self.launched_version = None;
             self.cached_catalog = nodes::RuntimeCatalog::default();
             self.halt_metrics();
         }
@@ -1874,17 +2095,6 @@ impl KernelLaunch for ProcessRuntime {
             return Err(KERNEL_DOWN.to_string());
         };
         nodes::fetch_provider_delays(&endpoint, names, &self.cached_catalog.providers, on_result)
-    }
-
-    fn reload_config(&mut self, config_yaml: &str) -> Result<(), String> {
-        if !self.running() {
-            return Err(KERNEL_DOWN.to_string());
-        }
-        let Some(endpoint) = self.controller.clone() else {
-            return Err(KERNEL_DOWN.to_string());
-        };
-        let effective_yaml = nodes::rewrite_controller_endpoint(config_yaml, &endpoint);
-        nodes::put_config(&endpoint, &effective_yaml)
     }
 
     fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
@@ -2023,6 +2233,9 @@ struct DiskState<'a> {
     chosen_mode: Option<String>,
     #[serde(default)]
     settings: KernelSettings,
+    /// Absent in older installations; those keep Mihomo.
+    #[serde(default)]
+    engine: Engine,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2077,6 +2290,10 @@ pub struct ProfileBook {
     mixed_port: Option<i64>,
     mode: Option<String>,
     platform: ClientPlatform,
+    /// User-selected engine; persisted and defaults to Mihomo for old installs.
+    engine: Engine,
+    /// Identity of the process actually running, refreshed from the runtime.
+    engine_runtime: Option<EngineIdentity>,
     tun_wanted: bool,
     excluded: Vec<String>,
     included: Vec<String>,
@@ -2148,6 +2365,8 @@ impl ProfileBook {
             mixed_port: None,
             mode: None,
             platform: ClientPlatform::current(),
+            engine: Engine::Mihomo,
+            engine_runtime: None,
             tun_wanted: false,
             excluded: Vec::new(),
             included: Vec::new(),
@@ -2244,6 +2463,19 @@ impl ProfileBook {
             nodes_error: self.nodes_error.clone(),
             nodes_profile_id,
             kernel_running: self.kernel_running,
+            engine: self.engine.as_str().to_string(),
+            running_engine: self
+                .engine_runtime
+                .as_ref()
+                .map(|identity| identity.engine.as_str().to_string()),
+            engine_version: self
+                .engine_runtime
+                .as_ref()
+                .and_then(|identity| identity.version.clone()),
+            engine_identity: self
+                .engine_runtime
+                .as_ref()
+                .and_then(|identity| identity.instance.clone()),
             kernel_memory: self.kernel_memory,
             kernel_uptime_secs: self.kernel_uptime_secs,
             connections: if self.connected {
@@ -2706,6 +2938,119 @@ impl ProfileBook {
         self.publish(kernel)
     }
 
+    /// Switches the engine that carries traffic.
+    ///
+    /// The whole operation runs under the caller's profile-session lock, so the
+    /// settings UI, tray, connect and restart can never start an engine at the
+    /// same time. Order: prepare and validate the target config, release the old
+    /// instance's exclusive takeover, start the target, then confirm by the
+    /// process identity/listener before committing the selection. A failed
+    /// target launch is cleaned up and the previous engine is restored; if that
+    /// restore also fails, takeover is released and the reason is surfaced.
+    pub fn switch_engine(
+        &mut self,
+        target: Engine,
+        kernel: &mut dyn KernelLaunch,
+        proxy: &mut dyn SystemProxy,
+        tun: &mut dyn TunGrant,
+        vpn: &mut dyn VpnGrant,
+    ) -> Result<ProfileSnapshot, String> {
+        let previous = self.engine;
+        if target == previous {
+            if kernel.engine() != target {
+                kernel.set_engine(target);
+            }
+            return Ok(self.publish(kernel));
+        }
+        let running = kernel.running();
+        if !self.connected || self.active_id.is_none() {
+            // Nothing to migrate: record the choice for the next connection.
+            if running {
+                kernel.stop_kernel();
+            }
+            self.engine = target;
+            kernel.set_engine(target);
+            self.home_failure = None;
+            self.persist();
+            return Ok(self.publish(kernel));
+        }
+        // 1. Prepare the target configuration and have the target binary accept
+        //    it before any live session is touched.
+        let android = self.platform == ClientPlatform::Android;
+        let tun_active = self.takeover.tun || self.takeover.vpn;
+        let (yaml, _port) = self
+            .kernel_yaml_for(target, tun_active, None)
+            .map_err(|error| match error {
+                StartError::Idle(message) | StartError::Failed(message) => message,
+            })?;
+        kernel.set_engine(target);
+        if let Err(message) = kernel.validate_config(&yaml) {
+            kernel.set_engine(previous);
+            return Err(format!(
+                "{}内核未接受当前配置，仍使用{}：{message}",
+                target.label(),
+                previous.label()
+            ));
+        }
+        // 2. Release the old instance's exclusive resources (system proxy, TUN,
+        //    VPN fd). A new instance must never inherit another's takeover.
+        let mut model = self.link_model();
+        takeover::disconnect(&mut model, proxy, tun, vpn);
+        self.apply_model(model);
+        // 3. Start the target.
+        self.engine = target;
+        self.home_failure = None;
+        self.crash_recoveries = 0;
+        if android {
+            self.connect_android(kernel, vpn);
+        } else {
+            self.connect_desktop(kernel, proxy, tun, vpn);
+        }
+        if self.connected {
+            self.persist();
+            return Ok(self.publish(kernel));
+        }
+        // 4. The target failed: stop it, restore the previous engine session.
+        let reason = self
+            .home_failure
+            .clone()
+            .unwrap_or_else(|| format!("{}内核没有建立连接", target.label()));
+        kernel.set_engine(previous);
+        self.engine = previous;
+        self.home_failure = None;
+        if android {
+            self.connect_android(kernel, vpn);
+        } else {
+            self.connect_desktop(kernel, proxy, tun, vpn);
+        }
+        let message = if self.connected {
+            format!(
+                "切换到{}内核失败（{reason}），已恢复{}内核连接",
+                target.label(),
+                previous.label()
+            )
+        } else {
+            format!(
+                "切换到{}内核失败（{reason}），且未能恢复{}内核连接，已断开系统接管",
+                target.label(),
+                previous.label()
+            )
+        };
+        if self.connected {
+            self.home_failure = Some(message.clone());
+        } else {
+            let mut model = self.link_model();
+            takeover::fail_kernel(&mut model, proxy, tun, vpn, message.clone());
+            self.apply_model(model);
+        }
+        self.remember_current_failure();
+        Err(message)
+    }
+
+    pub fn engine(&self) -> Engine {
+        self.engine
+    }
+
     pub fn set_system_proxy(
         &mut self,
         enabled: bool,
@@ -3072,11 +3417,15 @@ impl ProfileBook {
         };
         let selected = self.profiles[index].selected.clone();
         let desktop = self.platform == ClientPlatform::Desktop;
+        let user_had_tun = config_has_tun(&prepared.yaml);
         let (settled, settled_port) = match apply_settings(&prepared.yaml, &self.settings, desktop)
             .and_then(|(yaml, port)| {
                 // Subscription TUN settings must not replace the authorized session.
                 // In particular, an omitted enable flag disables Mihomo's TUN on reload.
-                if desktop {
+                // The native kernel has no TUN path, so its launcher-owned block goes.
+                if desktop && self.engine == Engine::Rust && !self.takeover.tun {
+                    strip_launcher_tun(&yaml, user_had_tun).map(|yaml| (yaml, port))
+                } else if desktop {
                     force_tun(&yaml, self.takeover.tun, None).map(|yaml| (yaml, port))
                 } else {
                     Ok((yaml, port))
@@ -3090,9 +3439,10 @@ impl ProfileBook {
                 return self.publish(kernel);
             }
         };
-        let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&settled, &selected));
+        let yaml = self.finish_yaml(&settled, &selected);
         self.runtime_catalog = nodes::RuntimeCatalog::default();
         self.auto_now.clear();
+        kernel.set_engine(self.engine);
         if let Err(message) = kernel.start_or_reload(&yaml) {
             let message = if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -3239,6 +3589,7 @@ impl ProfileBook {
         };
         self.runtime_catalog = nodes::RuntimeCatalog::default();
         self.auto_now.clear();
+        kernel.set_engine(self.engine);
         kernel.start_or_reload_with(yaml, force).map_err(|message| {
             StartError::Failed(if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -3300,6 +3651,12 @@ impl ProfileBook {
     }
 
     fn kernel_yaml(&self, tun_enable: bool, fd: Option<i32>) -> Result<(String, u16), StartError> {
+        self.kernel_yaml_for(self.engine, tun_enable, fd)
+    }
+
+    /// Same as [`Self::kernel_yaml`] but for a prospective engine, so a switch can
+    /// validate the target configuration before releasing the live session.
+    fn kernel_yaml_for(&self, engine: Engine, tun_enable: bool, fd: Option<i32>) -> Result<(String, u16), StartError> {
         let Some(active) = self.active_id.clone() else {
             return Err(StartError::Idle(takeover::NO_PROFILE.to_string()));
         };
@@ -3311,6 +3668,7 @@ impl ProfileBook {
             Err(PrepareError::Override(reason)) => return Err(StartError::Failed(format!("{OVERRIDE_ERROR}：{reason}"))),
             Err(PrepareError::Content) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
         };
+        let user_had_tun = config_has_tun(&prepared.yaml);
         let (settled, settled_port) =
             apply_settings(&prepared.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
                 .map_err(StartError::Failed)?;
@@ -3327,14 +3685,36 @@ impl ProfileBook {
             return Err(StartError::Failed("没有本地端口".to_string()));
         };
         let selected = profile.selected.clone();
-        let yaml = force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?;
+        // TUN is a Mihomo launch parameter here; the native kernel has no TUN
+        // path yet, so it must not receive an injected `tun: {enable: false}`.
+        let yaml = if engine == Engine::Rust && !tun_enable {
+            strip_launcher_tun(&prepared.yaml, user_had_tun).map_err(StartError::Failed)?
+        } else {
+            force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?
+        };
         let yaml = ensure_tun_dns(&yaml, &self.settings).map_err(StartError::Failed)?;
         let yaml = match self.mode.as_deref().and_then(normalize_outbound) {
             Some(mode) => force_mode(&yaml, mode).map_err(StartError::Failed)?,
             None => yaml,
         };
-        let yaml = nodes::ensure_controller(&nodes::prioritize_selections(&yaml, &selected));
+        let yaml = self.finish_yaml_for(engine, &yaml, &selected);
         Ok((yaml, port))
+    }
+
+    /// Adds only the launch-time keys the selected engine actually serves.
+    /// `external-controller` is Billow's own control adapter for Mihomo; the
+    /// native kernel has no controller yet and rejects unknown keys, so it must
+    /// receive the user's configuration unchanged (T5 owns its control layer).
+    fn finish_yaml(&self, yaml: &str, selected: &BTreeMap<String, String>) -> String {
+        self.finish_yaml_for(self.engine, yaml, selected)
+    }
+
+    fn finish_yaml_for(&self, engine: Engine, yaml: &str, selected: &BTreeMap<String, String>) -> String {
+        let prioritized = nodes::prioritize_selections(yaml, selected);
+        match engine {
+            Engine::Mihomo => nodes::ensure_controller(&prioritized),
+            Engine::Rust => prioritized,
+        }
     }
 
     fn link_model(&self) -> takeover::LinkModel {
@@ -3443,6 +3823,7 @@ impl ProfileBook {
             })
             .collect();
         self.settings = disk.settings;
+        self.engine = disk.engine;
         nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
         let known = self
             .profiles
@@ -3528,6 +3909,7 @@ impl ProfileBook {
             proxy_port: self.our_endpoint.as_ref().map(|endpoint| endpoint.port),
             chosen_mode: self.chosen_mode.clone(),
             settings: self.settings.clone(),
+            engine: self.engine,
             profiles: self
                 .profiles
                 .iter()
@@ -3570,6 +3952,7 @@ impl ProfileBook {
         let running = kernel.running();
         self.kernel_running = running;
         self.append_logs(kernel.pull_logs());
+        self.engine_runtime = if running { kernel.identity() } else { None };
         if running {
             self.runtime_catalog = kernel.node_catalog();
             self.auto_now = self.runtime_catalog.now.clone();
@@ -4707,6 +5090,27 @@ fn default_sniffer() -> Value {
 
 /// TUN hijacks DNS, so the kernel must answer it. Without a `dns` block that is enabled,
 /// a profile written for system-proxy use would leave every lookup unanswered under TUN.
+fn config_has_tun(yaml: &str) -> bool {
+    serde_yaml::from_str::<Value>(yaml)
+        .ok()
+        .and_then(|value| mapping_get(&value, "tun").cloned())
+        .is_some()
+}
+
+/// Desktop settings always materialize a `tun` block (without `enable`) for
+/// Mihomo. The native kernel has no TUN path, so that launcher-owned block is
+/// removed for it; a `tun` key the user actually wrote stays and is rejected.
+fn strip_launcher_tun(yaml: &str, user_had_tun: bool) -> Result<String, String> {
+    if user_had_tun {
+        return Ok(yaml.to_string());
+    }
+    let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
+    if let Some(map) = value.as_mapping_mut() {
+        map.remove(Value::String("tun".to_string()));
+    }
+    serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
+}
+
 fn ensure_tun_dns(yaml: &str, settings: &KernelSettings) -> Result<String, String> {
     let mut value: Value = serde_yaml::from_str(yaml).map_err(|_| CONTENT_ERROR.to_string())?;
     let Some(map) = value.as_mapping_mut() else {
@@ -5848,6 +6252,144 @@ mod tests {
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
         runtime.stop();
         assert!(!runtime.running());
+    }
+
+    /// Local TCP target that answers each marker line with `pong:<marker>`.
+    fn spawn_marker_target(expected: usize) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..expected {
+                let Ok((mut stream, _)) = listener.accept() else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut marker = String::new();
+                if reader.read_line(&mut marker).is_err() {
+                    break;
+                }
+                let marker = marker.trim().to_string();
+                let _ = write!(stream, "pong:{marker}\n");
+                let _ = stream.flush();
+                seen.push(marker);
+            }
+            seen
+        });
+        (port, handle)
+    }
+
+    /// Sends one HTTP CONNECT through the proxy and returns the target's reply.
+    fn marker_through_proxy(proxy_port: u16, target_port: u16, marker: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut stream = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", proxy_port)) {
+                Ok(stream) => break stream,
+                Err(error) if Instant::now() < deadline => {
+                    let _ = error;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("proxy listener never came up: {error}"),
+            }
+        };
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(
+            stream,
+            "CONNECT 127.0.0.1:{target_port} HTTP/1.1\r\nHost: 127.0.0.1:{target_port}\r\n\r\n"
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut status = String::new();
+        reader.read_line(&mut status).unwrap();
+        assert!(status.contains(" 200"), "CONNECT failed: {status}");
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            if header == "\r\n" || header.is_empty() {
+                break;
+            }
+        }
+        write!(stream, "{marker}\n").unwrap();
+        stream.flush().unwrap();
+        let mut reply = String::new();
+        reader.read_line(&mut reply).unwrap();
+        reply.trim().to_string()
+    }
+
+    /// Opt-in host proof: both packaged engines carry a marked request, and a
+    /// switch in each direction keeps the session usable. Never touches the OS
+    /// proxy or TUN; all listeners are loopback.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    #[ignore = "requires BILLOW_TEST_RESOURCES with packaged Mihomo and billow-kernel; loopback listeners only, no system proxy/TUN"]
+    fn packaged_engines_switch_both_ways_with_a_marked_request() {
+        let resources = PathBuf::from(std::env::var_os("BILLOW_TEST_RESOURCES").expect("BILLOW_TEST_RESOURCES"));
+        let rust = resources.join(if cfg!(target_os = "windows") { "billow-kernel.exe" } else { "billow-kernel" });
+        assert!(rust.is_file(), "run tool/prepare_desktop_runtime.mjs to package billow-kernel");
+        let dir = temp_dir("engine-package");
+        let home = dir.0.join("home");
+        let mut manager = crate::kernel::KernelManager::open(dir.0.join("kernels"), crate::kernel::PlatformTarget::current());
+        manager.seed_desktop(&resources).unwrap();
+        crate::bundled_geo::seed_directory(&resources.join("geo"), &home).unwrap();
+        let port_socket = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = port_socket.local_addr().unwrap().port();
+        drop(port_socket);
+        let yaml = format!("mixed-port: {port}\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut runtime = ProcessRuntime::new(dir.0.join("profiles"));
+        runtime.home_dir = home;
+        runtime.set_bundled_resources(resources.clone());
+        runtime.set_kernel_path(manager.installed_path());
+        runtime.set_rust_kernel_path(Some(rust));
+        let mut book = ProfileBook::open(dir.0.join("book"));
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("direct.yaml", &yaml);
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let (target, server) = spawn_marker_target(4);
+
+        book.enable("p1", &RejectSource, &mut runtime);
+        let connected = book.connect(&mut runtime, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.system_proxy, "mihomo session failed: {:?}", connected.failure);
+        assert_eq!(connected.running_engine.as_deref(), Some("mihomo"));
+        assert_eq!(marker_through_proxy(port, target, "mihomo-1"), "pong:mihomo-1");
+
+        let switched = book
+            .switch_engine(Engine::Rust, &mut runtime, &mut proxy, &mut tun, &mut vpn)
+            .unwrap_or_else(|error| panic!("mihomo -> rust failed: {error}"));
+        assert_eq!(switched.engine, "rust");
+        assert_eq!(switched.running_engine.as_deref(), Some("rust"));
+        assert!(switched.engine_identity.is_some(), "native instance identity is required");
+        assert!(switched.system_proxy);
+        assert_eq!(marker_through_proxy(port, target, "rust-1"), "pong:rust-1");
+
+        let back = book
+            .switch_engine(Engine::Mihomo, &mut runtime, &mut proxy, &mut tun, &mut vpn)
+            .unwrap_or_else(|error| panic!("rust -> mihomo failed: {error}"));
+        assert_eq!(back.engine, "mihomo");
+        assert_eq!(back.running_engine.as_deref(), Some("mihomo"));
+        assert!(back.system_proxy);
+        assert_eq!(marker_through_proxy(port, target, "mihomo-2"), "pong:mihomo-2");
+
+        // A configuration the native kernel cannot accept is refused before the
+        // live Mihomo session is released.
+        let grouped = format!(
+            "mixed-port: {port}\nmode: rule\nproxy-groups:\n  - {{name: G, type: select, proxies: [DIRECT]}}\nrules:\n  - MATCH,G\n"
+        );
+        book.save_profile_content("p1", &grouped, &mut runtime);
+        let refused = book
+            .switch_engine(Engine::Rust, &mut runtime, &mut proxy, &mut tun, &mut vpn)
+            .unwrap_err();
+        assert!(refused.contains("未接受当前配置"), "{refused}");
+        let snapshot = book.snapshot();
+        assert_eq!(snapshot.engine, "mihomo");
+        assert_eq!(snapshot.running_engine.as_deref(), Some("mihomo"));
+        assert!(snapshot.connected);
+        assert_eq!(marker_through_proxy(port, target, "mihomo-3"), "pong:mihomo-3");
+
+        book.disconnect(&mut runtime, &mut proxy, &mut tun, &mut vpn);
+        runtime.shutdown();
+        let markers = server.join().unwrap();
+        assert_eq!(markers, ["mihomo-1", "rust-1", "mihomo-2", "mihomo-3"]);
     }
 
     /// Use a private local fixture to compare the downloaded YAML with the exact
@@ -10189,5 +10731,257 @@ proxy-groups:
         for permission in ["allow-close-connections", "allow-dns-query"] {
             assert!(permissions.iter().any(|item| item.as_str() == Some(permission)), "{permission}");
         }
+    }
+
+    /// Test kernel that records the selected engine and can refuse a config.
+    struct EngineKernel {
+        engine: Engine,
+        alive: bool,
+        launched: Option<Engine>,
+        last: String,
+        starts: u32,
+        refuse: Option<String>,
+        fail_engine: Option<Engine>,
+    }
+
+    impl EngineKernel {
+        fn new() -> Self {
+            Self {
+                engine: Engine::Mihomo,
+                alive: false,
+                launched: None,
+                last: String::new(),
+                starts: 0,
+                refuse: None,
+                fail_engine: None,
+            }
+        }
+    }
+
+    impl KernelLaunch for EngineKernel {
+        fn start_or_reload(&mut self, config_yaml: &str) -> Result<(), String> {
+            self.starts += 1;
+            if self.fail_engine == Some(self.engine) {
+                self.alive = false;
+                return Err("目标内核启动失败".to_string());
+            }
+            self.last = config_yaml.to_string();
+            self.alive = true;
+            self.launched = Some(self.engine);
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.alive
+        }
+
+        fn engine(&self) -> Engine {
+            self.engine
+        }
+
+        fn set_engine(&mut self, engine: Engine) {
+            self.engine = engine;
+        }
+
+        fn identity(&self) -> Option<EngineIdentity> {
+            self.launched.map(|engine| EngineIdentity {
+                engine,
+                version: Some("test".to_string()),
+                instance: Some(format!("instance-{}", engine.as_str())),
+            })
+        }
+
+        fn stop_kernel(&mut self) {
+            self.alive = false;
+            self.launched = None;
+        }
+
+        fn validate_config(&mut self, _config_yaml: &str) -> Result<(), String> {
+            match &self.refuse {
+                Some(message) => Err(message.clone()),
+                None => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_profile_book_without_an_engine_stays_on_mihomo() {
+        let dir = temp_dir("engine-legacy");
+        fs::write(dir.0.join("profiles.json"), br#"{"next_id":1,"profiles":[]}"#).unwrap();
+        let book = ProfileBook::open(&dir.0);
+        assert_eq!(book.engine(), Engine::Mihomo);
+    }
+
+    #[test]
+    fn engine_selection_is_persisted_and_used_by_the_next_connection() {
+        let dir = temp_dir("engine-select");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("direct.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        let snapshot = book
+            .switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap();
+        assert_eq!(snapshot.engine, "rust");
+        assert_eq!(kernel.engine(), Engine::Rust);
+        // Nothing ran, so no connection was fabricated.
+        assert!(!snapshot.connected);
+        assert!(!kernel.alive);
+        assert_eq!(ProfileBook::open(&dir.0).engine(), Engine::Rust);
+
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(kernel.alive);
+        assert_eq!(book.snapshot().running_engine.as_deref(), Some("rust"));
+        assert!(!kernel.last.contains("external-controller"), "{}", kernel.last);
+    }
+
+    #[test]
+    fn a_target_that_rejects_the_config_leaves_the_live_session_untouched() {
+        let dir = temp_dir("engine-refuse");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("direct.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.system_proxy);
+        let starts = kernel.starts;
+
+        kernel.refuse = Some("[unsupported] proxy-groups".to_string());
+        let error = book
+            .switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap_err();
+        assert!(error.contains("未接受当前配置"), "{error}");
+        assert_eq!(kernel.starts, starts, "the running instance must not be restarted");
+        assert_eq!(book.engine(), Engine::Mihomo);
+        assert_eq!(kernel.engine(), Engine::Mihomo);
+        assert!(kernel.alive);
+        let snapshot = book.snapshot();
+        assert!(snapshot.connected);
+        assert_eq!(snapshot.running_engine.as_deref(), Some("mihomo"));
+        assert!(proxy.http.is_some(), "system proxy must still be ours");
+    }
+
+    #[test]
+    fn a_failed_target_launch_restores_the_previous_engine_session() {
+        let dir = temp_dir("engine-restore");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local("direct.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        kernel.fail_engine = Some(Engine::Rust);
+
+        let error = book
+            .switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap_err();
+        assert!(error.contains("已恢复Mihomo"), "{error}");
+        assert_eq!(book.engine(), Engine::Mihomo);
+        assert_eq!(kernel.engine(), Engine::Mihomo);
+        assert_eq!(kernel.launched, Some(Engine::Mihomo));
+        let snapshot = book.snapshot();
+        assert!(snapshot.connected);
+        assert_eq!(snapshot.running_engine.as_deref(), Some("mihomo"));
+        assert!(proxy.http.is_some());
+        assert!(snapshot.failure.as_deref().is_some_and(|message| message.contains("已恢复")));
+    }
+
+    #[test]
+    fn controller_injection_belongs_to_the_mihomo_engine_only() {
+        let dir = temp_dir("engine-yaml");
+        let book = ProfileBook::open(&dir.0);
+        let yaml = "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n";
+        let selected = BTreeMap::new();
+        let mihomo = book.finish_yaml_for(Engine::Mihomo, yaml, &selected);
+        let rust = book.finish_yaml_for(Engine::Rust, yaml, &selected);
+        assert!(mihomo.contains("external-controller"));
+        assert!(!rust.contains("external-controller"));
+        assert!(!rust.contains("secret:"));
+    }
+
+    #[test]
+    fn the_native_kernel_never_receives_the_launcher_tun_block() {
+        let yaml = "mixed-port: 7890\ntun:\n  auto-route: true\n  mtu: 1500\n";
+        let stripped = strip_launcher_tun(yaml, false).unwrap();
+        assert!(!stripped.contains("tun:"), "{stripped}");
+        assert!(stripped.contains("mixed-port"));
+        // A tun block the user wrote is kept so the native kernel can reject it
+        // instead of silently ignoring user configuration.
+        assert!(strip_launcher_tun(yaml, true).unwrap().contains("tun:"));
+        assert!(config_has_tun(yaml));
+        assert!(!config_has_tun("mixed-port: 7890\n"));
+    }
+
+    /// Records the order in which the Android VPN descriptor is released and re-acquired.
+    struct OrderVpn {
+        open: bool,
+        log: Vec<&'static str>,
+    }
+
+    impl VpnGrant for OrderVpn {
+        fn authorize(&mut self) -> Result<bool, String> {
+            self.log.push("authorize");
+            Ok(true)
+        }
+
+        fn establish(&mut self, _filter: &takeover::AppFilter) -> Result<i32, String> {
+            self.log.push("establish");
+            self.open = true;
+            Ok(7)
+        }
+
+        fn close(&mut self) -> Result<(), String> {
+            self.log.push("close");
+            self.open = false;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn android_engine_switch_releases_the_vpn_descriptor_before_starting_the_target() {
+        let dir = temp_dir("engine-android");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("direct.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = OrderVpn { open: false, log: Vec::new() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn, "{:?}", connected.failure);
+        assert_eq!(vpn.log, ["authorize", "establish"]);
+
+        let switched = book
+            .switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap();
+        assert_eq!(switched.engine, "rust");
+        assert_eq!(switched.running_engine.as_deref(), Some("rust"));
+        assert!(switched.vpn);
+        // Exactly one descriptor is live, and the old one was closed first.
+        assert_eq!(vpn.log, ["authorize", "establish", "close", "authorize", "establish"]);
+        assert!(vpn.open);
+    }
+
+    #[test]
+    fn native_kernel_identity_lines_are_parsed_for_readiness() {
+        let line = "instance=6f1c pid=42 version=0.1.0 listen=127.0.0.1:7890 overridden_port=- config=sha256:abc rules=3 geosite_dir=- state_dir=-";
+        let (instance, version, listen) = parse_kernel_identity(line).unwrap();
+        assert_eq!(instance, "6f1c");
+        assert_eq!(version.as_deref(), Some("0.1.0"));
+        assert_eq!(listen.port(), 7890);
+        assert!(parse_kernel_identity("features: mixed").is_none());
+        assert!(parse_kernel_identity("instance=- pid=1 listen=127.0.0.1:1").is_none());
     }
 }

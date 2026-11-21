@@ -239,6 +239,40 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="status"]').text()).toBe('未连接')
   })
 
+  it('T6: switches the engine from settings and reports the running engine', async () => {
+    const { wrapper, backend } = await mountApp()
+    const store = (wrapper.vm as unknown as { store: Store }).store
+    const setEngine = vi.spyOn(backend, 'setEngine')
+    store.openSettings('kernel')
+    await flushPromises()
+
+    const engineCard = () => wrapper.find('[data-testid="engine-card"]')
+    expect(engineCard().exists()).toBe(true)
+    expect(engineCard().text()).toContain('Mihomo')
+    // Disconnected: only the selection changes, nothing claims to run.
+    await engineCard().find('[data-value="rust"]').trigger('click')
+    await settle(600)
+    expect(setEngine).toHaveBeenCalledWith('rust')
+    expect(store.snapshot.value.engine).toBe('rust')
+    expect(store.snapshot.value.running_engine).toBeNull()
+
+    store.go('home')
+    await flushPromises()
+    void store.connect()
+    await settle(1600)
+    expect(wrapper.find('[data-testid="status"]').text()).toBe('已连接')
+    expect(store.snapshot.value.running_engine).toBe('rust')
+    expect(wrapper.text()).toContain('Rust 内核')
+
+    // Switching back is the same serialized path.
+    void store.setEngine('mihomo')
+    await settle(800)
+    expect(setEngine).toHaveBeenCalledWith('mihomo')
+    expect(store.snapshot.value.engine).toBe('mihomo')
+    expect(store.snapshot.value.running_engine).toBe('mihomo')
+    expect(wrapper.text()).toContain('Mihomo 内核')
+  })
+
   it('R35: restarts the kernel from settings and keeps TUN and the outbound mode', async () => {
     const { wrapper, backend } = await mountApp()
     const store = (wrapper.vm as unknown as { store: Store }).store

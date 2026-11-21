@@ -26,6 +26,7 @@ import {
   splitList,
   type DnsSettings,
   type KernelChannel,
+  type KernelEngine,
   type KernelSettings,
   type SystemProxyMode,
   type SystemProxySettings,
@@ -45,6 +46,13 @@ function openRepo() {
 const snap = computed(() => store.snapshot.value)
 const app = computed(() => store.app.value)
 const kernel = computed(() => store.kernel.value)
+const engines = computed(() => store.engines.value)
+const engineName = (id: string | null) => (id === 'rust' ? 'Rust' : id === 'mihomo' ? 'Mihomo' : '—')
+const runningEngineText = computed(() => {
+  if (!snap.value.kernel_running) return '未运行'
+  const name = engineName(snap.value.running_engine)
+  return snap.value.engine_version ? `${name} ${snap.value.engine_version}` : name
+})
 
 const kernelUpdateBusy = computed(() =>
   store.isAndroid.value ? store.appUpdate.busy.value : Boolean(store.busy.kernel),
@@ -87,6 +95,10 @@ const THEMES: { id: ThemePreference; label: string; icon: string }[] = [
 const CHANNELS: { id: KernelChannel; label: string }[] = [
   { id: 'stable', label: '稳定版' },
   { id: 'preview', label: '预览版' },
+]
+const ENGINES: { id: KernelEngine; label: string }[] = [
+  { id: 'mihomo', label: 'Mihomo' },
+  { id: 'rust', label: 'Rust' },
 ]
 const LOG_LEVELS = [
   { id: '', label: '跟随配置' },
@@ -616,8 +628,9 @@ function flushKernelInputs() {
 
 watch(
   () => store.settingsTab.value,
-  (_next, prev) => {
+  (next, prev) => {
     if (prev === 'kernel') flushKernelInputs()
+    if (next === 'kernel') void store.refreshEngines()
   },
 )
 
@@ -1702,6 +1715,51 @@ const TABS = computed(() => [
 
     <!-- ───────── 内核 ───────── -->
     <template v-else-if="store.settingsTab.value === 'kernel'">
+      <section class="card" data-testid="engine-card">
+        <header class="card-head">
+          <h2>内核引擎</h2>
+          <span class="tag" :class="snap.kernel_running ? 'ok' : 'warn'">{{ runningEngineText }}</span>
+        </header>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>实际转发内核</strong>
+            <p class="muted small">
+              两个内核随安装包分发，使用同一份配置。切换会串行停止当前引擎并启动目标；目标失败时恢复原引擎或断开接管。
+            </p>
+          </div>
+          <Segmented
+            :model-value="snap.engine"
+            :options="ENGINES"
+            size="sm"
+            label="内核引擎"
+            :disabled="Boolean(store.busy.engine)"
+            @update:model-value="store.setEngine"
+          />
+        </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>Mihomo</strong>
+            <p class="muted small">
+              {{ engines ? (engines.mihomo.available ? `已随包分发${engines.mihomo.version ? ' · ' + engines.mihomo.version : ''}` : '当前安装包未找到 Mihomo') : '正在读取…' }}
+              <template v-if="snap.running_engine === 'mihomo'"> · 正在承载流量</template>
+            </p>
+          </div>
+          <span class="tag" :class="snap.engine === 'mihomo' ? 'accent' : ''">{{ snap.engine === 'mihomo' ? '已选择' : '未选择' }}</span>
+        </div>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>Rust 内核</strong>
+            <p class="muted small">
+              {{ engines ? (engines.rust.available ? `已随包分发${engines.rust.version ? ' · ' + engines.rust.version : ''}` : '当前安装包未找到 Rust 内核') : '正在读取…' }}
+              <template v-if="snap.running_engine === 'rust'"> · 正在承载流量</template>
+            </p>
+          </div>
+          <span class="tag" :class="snap.engine === 'rust' ? 'accent' : ''">{{ snap.engine === 'rust' ? '已选择' : '未选择' }}</span>
+        </div>
+        <p v-if="snap.engine_identity" class="muted small card-note mono" data-testid="engine-identity">{{ snap.engine_identity }}</p>
+        <p v-else-if="snap.failure" class="muted small card-note">{{ snap.failure }}</p>
+      </section>
+
       <section class="card">
         <header class="card-head">
           <h2>Mihomo 内核</h2>

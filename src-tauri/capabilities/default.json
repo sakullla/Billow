@@ -11,6 +11,8 @@
     "allow-set-theme",
     "allow-set-last-entry",
     "allow-kernel-state",
+    "allow-kernel-engines",
+    "allow-set-kernel-engine",
     "allow-set-kernel-channel",
     "allow-connect-kernel",
     "allow-profile-state",

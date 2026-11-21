@@ -1199,12 +1199,42 @@ pub fn parse_log_line(line: &str) -> Option<LogView> {
     {
         return Some(view);
     }
+    if let Some(view) = parse_native_log_line(line) {
+        return Some(view);
+    }
     let level = field_value(line, "level")
         .as_deref()
         .and_then(normalize_level_token)
         .or_else(|| leading_level(line).and_then(normalize_level_token))?;
     let message = field_value(line, "msg").unwrap_or_else(|| line.to_string());
     let message = message.trim();
+    if message.is_empty() {
+        return None;
+    }
+    Some(LogView {
+        level: level.to_string(),
+        message: message.to_string(),
+        time_ms: now_ms(),
+    })
+}
+
+/// `[HH:MM:SS.mmm LEVEL target] message`, as printed by the native Rust kernel.
+fn parse_native_log_line(line: &str) -> Option<LogView> {
+    let rest = line.strip_prefix('[')?;
+    let end = rest.find(']')?;
+    let head = &rest[..end];
+    let mut parts = head.split_whitespace();
+    let stamp = parts.next()?;
+    let clock = stamp.split(':').collect::<Vec<_>>();
+    if clock.len() != 3
+        || !clock[0].chars().all(|ch| ch.is_ascii_digit())
+        || !clock[1].chars().all(|ch| ch.is_ascii_digit())
+        || !clock[2].chars().next().is_some_and(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    let level = normalize_level_token(parts.next()?)?;
+    let message = rest[end + 1..].trim();
     if message.is_empty() {
         return None;
     }
@@ -1477,6 +1507,19 @@ fn loopback(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_kernel_log_lines_keep_their_level() {
+        let line = "[12:00:00.123 INFO  billow_kernel::engine] listening instance=abc";
+        let view = parse_log_line(line).unwrap();
+        assert_eq!(view.level, "info");
+        assert_eq!(view.message, "listening instance=abc");
+        let error = parse_log_line("[12:00:01.000 ERROR billow_kernel::config] [unsupported] dns").unwrap();
+        assert_eq!(error.level, "error");
+        assert!(error.message.contains("[unsupported] dns"));
+        // A bracketed non-timestamp still falls back to the previous parser.
+        assert!(parse_log_line("[not a stamp] plain").is_none());
+    }
 
     #[test]
     fn switch_cleanup_filters_full_chains_without_the_display_row_limit() {

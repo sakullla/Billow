@@ -151,7 +151,9 @@ jobs:
       - uses: swatinem/rust-cache@v2
         if: ${{ !matrix.prebuiltMacos }}
         with:
-          workspaces: src-tauri -> target
+          workspaces: |
+            src-tauri -> target
+            native-kernel -> target
           key: release-${{ matrix.target }}
           cache-on-failure: true
       - run: npm ci
@@ -238,6 +240,11 @@ jobs:
         env:
           BILLOW_TEST_RESOURCES: ${{ github.workspace }}/src-tauri/resources/runtime
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked desktop_packaged_runtime_starts_offline -- --ignored --nocapture
+      - name: Verify both packaged engines switch with marked traffic
+        if: matrix.platform != 'android' && !matrix.prebuiltMacos
+        env:
+          BILLOW_TEST_RESOURCES: ${{ github.workspace }}/src-tauri/resources/runtime
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked packaged_engines_switch_both_ways_with_a_marked_request -- --ignored --nocapture
       - uses: actions/setup-go@v7
         if: matrix.platform == 'android'
         with:
