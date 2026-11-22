@@ -200,6 +200,14 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     expect(find('[data-testid="custom-profile-active-badge"]').textContent).toContain('当前正在使用纯自建节点')
     expect(document.body.textContent).not.toContain('还没有配置')
 
+    // Adding a second custom node in zero-subscription standalone mode defaults dialer to direct (not profile_group)
+    await click('[data-testid="open-custom-import"]')
+    expect(find('[data-testid="custom-import-dialer"]').textContent).toContain('直连')
+    await click('.modal-head .icon-btn')
+    await click('[data-testid="open-custom-add"]')
+    expect(find('[data-testid="custom-node-dialer"]').textContent).toContain('直连')
+    await click('.modal-head .icon-btn')
+
     // Switching from subscription mode to standalone mode via button works too
     cleanups.splice(0).forEach((stop) => stop())
     document.body.innerHTML = ''

@@ -114,7 +114,7 @@ watch(
     }
     if (!open) return
     submitError.value = null
-    dialerChoice.value = store.hasProfiles.value ? 'profile_group:' : 'direct'
+    dialerChoice.value = store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value ? 'profile_group:' : 'direct'
     raw.value = props.initialText?.trim() ?? ''
     if (raw.value) void runPreview(raw.value)
     else preview.value = { parsed: [], errors: [] }

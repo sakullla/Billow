@@ -198,7 +198,7 @@ watch(
       mode.value = 'simple'
       enabled.value = true
       note.value = ''
-      dialerChoice.value = store.hasProfiles.value ? 'profile_group:' : 'direct'
+      dialerChoice.value = store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value ? 'profile_group:' : 'direct'
       fixedProxyName.value = ''
       simple.value = {
         name: '',
