@@ -363,7 +363,8 @@ worst case is recorded in `tool/kernel-compat/evidence/t18-feasibility.json`
 The T14 bound is in `tool/kernel-compat/evidence/t14-feasibility.json`.
 
 T21 adds TCP to the CONNECT-IP path. `src/outbound/tcp.rs` is a minimal
-active-open client: SYN with an MSS option derived from `mtu`, SYN-ACK/ACK,
+active-open client: SYN with an MSS option of `mtu` minus the IP and TCP
+headers (40 bytes for IPv4, 60 for IPv6), SYN-ACK/ACK,
 data/ACK bounded by the peer's MSS and advertised window, FIN/RST and
 half-close, in-order delivery with a bounded out-of-order map, retransmission of
 the oldest unacked segment with an RFC 6298-style fixed 1 s initial RTO and
@@ -513,9 +514,11 @@ encrypted-HELLO options, rejects an explicit `ip-stack`,
 `remote-dns-resolve`/`dns`, remote trace and the TCP fallback transport
 (`force`/non-empty relay) with the T6/T7/T5 boundary. `easytier` accepts the
 cleartext and `secure-mode`/`enable-encryption` options (Noise XX + AES-GCM/
-ChaCha20) and rejects OSPF/route host identity, KCP/QUIC, exit-node/DNS and
-remaining data-plane options by name; its module is an LGPL-3.0-or-later
-derivative. Every loadable mesh `dial()` names the T6/T7
+ChaCha20); `enable-encryption: true` requires `secure-mode: true` (the source
+encrypts only through the secure session) — the pair loads, while encryption
+alone is rejected by name. It rejects OSPF/route host identity, KCP/QUIC,
+exit-node/DNS and remaining data-plane options by name; its module is an
+LGPL-3.0-or-later derivative. Every loadable mesh `dial()` names the T6/T7
 gap.
 `udp: false` is accepted for a family that has no UDP association because it
 states the same thing this kernel does; `udp` is not a

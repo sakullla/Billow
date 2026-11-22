@@ -1076,6 +1076,18 @@ type ReserveFuture = Pin<
 /// `poll_shutdown` half-closes the connection with a FIN. Dropping the stream
 /// closes the tunnel after the pending data has been acknowledged or the
 /// connection times out.
+/// Largest TCP payload that keeps `IP + TCP + MSS` within the tunnel `mtu`.
+/// TCP segments carry an IP and a TCP header (unlike the UDP datagrams, which
+/// use the 28/48-byte UDP overhead).
+fn tcp_mss(mtu: usize, ipv4: bool) -> u16 {
+    let overhead = if ipv4 {
+        ipstack::IPV4_TCP_OVERHEAD
+    } else {
+        ipstack::IPV6_TCP_OVERHEAD
+    };
+    mtu.saturating_sub(overhead).clamp(64, 65_495) as u16
+}
+
 pub struct MasqueTcpStream {
     to_network: mpsc::Sender<TcpCommand>,
     from_network: mpsc::Receiver<io::Result<Vec<u8>>>,
@@ -1112,12 +1124,7 @@ impl MasqueTcpStream {
                 ),
             )
         })?;
-        let overhead = if remote.is_ipv4() {
-            ipstack::IPV4_UDP_OVERHEAD
-        } else {
-            ipstack::IPV6_UDP_OVERHEAD
-        };
-        let mss = session.mtu().saturating_sub(overhead).clamp(64, 65_495) as u16;
+        let mss = tcp_mss(session.mtu(), remote.is_ipv4());
         let connect_deadline = Instant::now() + timeout;
         let config = TcpConfig {
             local,
@@ -1872,5 +1879,16 @@ mod tests {
                 .kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn tcp_mss_keeps_the_full_segment_within_the_mtu() {
+        // A TCP segment is IP + TCP + payload, not IP + UDP + payload.
+        assert_eq!(tcp_mss(1280, true), 1240);
+        assert_eq!(tcp_mss(1280, false), 1220);
+        assert_eq!(u32::from(tcp_mss(1280, true)) + 40, 1280);
+        assert_eq!(u32::from(tcp_mss(1280, false)) + 60, 1280);
+        // A pathologically small MTU still yields a usable positive MSS.
+        assert_eq!(tcp_mss(60, true), 64);
     }
 }

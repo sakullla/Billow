@@ -86,11 +86,22 @@ The cleartext test runs the pinned wasm core with `enable_encryption=false` and
 no secure mode, completes the handshake, sends Ping and receives Pong. The
 secure test runs `SecureMode()` + `Encryption(true)`, completes Noise XX, sends
 Ping/Pong, sends 12 AES-GCM encrypted data frames and asserts the peer log has
-no decrypt failure and the session survives. Wrong secret/foreign network must
-produce an error and no session; the assertion is intentionally tolerant of a
-core closing the connection (`Io`/`Timeout`) as well as a named mismatch. The
-peer log in the run records `handshake request`, `add tunnel as server done`
-and no `secure datagram decrypt failed`.
+no decrypt failure and the session survives. The peer log in the run records
+`handshake request`, `add tunnel as server done` and no `secure datagram
+decrypt failed`.
+
+The pinned core drops data frames at its route/TUN boundary, so its log cannot
+expose a decrypted payload. The client receive direction is therefore asserted
+directly by
+`src/outbound/easytier.rs::tests::secure_datagrams_decrypt_in_the_peer_direction`:
+two `SecureSession`s with mirrored peer-id ordering (same root key) exchange
+AES-GCM and ChaCha20 ciphertexts, each decrypts the other's payload with its
+receive-direction key, and a tampered tail fails authentication. Combined with
+the pinned run this covers both directions.
+
+Wrong secret/foreign network must produce an error and no session; the
+assertion is intentionally tolerant of a core closing the connection
+(`Io`/`Timeout`) as well as a named mismatch.
 
 ## Not translated / retained boundaries
 

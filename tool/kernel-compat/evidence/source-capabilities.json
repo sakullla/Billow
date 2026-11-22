@@ -2993,13 +2993,37 @@
           "src/outbound/easytier.rs::tests::digest_matches_the_locked_easytier_vectors",
           "src/outbound/easytier.rs::tests::frame_uses_little_endian_peer_ids_and_lengths",
           "src/outbound/easytier.rs::tests::handshake_roundtrips_and_ignores_unknown_fields",
+          "src/outbound/easytier.rs::tests::secure_datagrams_decrypt_in_the_peer_direction",
           "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
           "tests/mesh_peers.rs::easytier_pinned_core_cleartext_handshake",
           "tests/mesh_peers.rs::easytier_pinned_core_secure_datagram",
           "tool/kernel-compat/evidence/t20-easytier.md"
         ],
-        "notes": "Secure-datagram/Noise XX is now implemented and verified; OSPF/route host identity (hostname/ipv4/dhcp), KCP/QUIC, private-mode, exit-node/DNS, mapped-listeners and proxied networks are rejected by name. Device/TUN is T6/T7. Public translation revision 45a6b6f1769f95590a396f4962e58d654b6e0380; pinned wasm reports 5f1eaa7c9f9d3e89e9b75a6d87531a436fae40c4 (not public).",
-        "license": "LGPL-3.0-or-later translation of the locked EasyTier source; the workspace is distributed under GPL-3.0-only. See native-kernel/THIRD_PARTY_NOTICES.md and native-kernel/third_party/EasyTier-LGPL-3.0.txt."
+        "notes": "Secure-datagram/Noise XX is now implemented and verified; OSPF/route host identity (hostname/ipv4/dhcp), KCP/QUIC, private-mode, exit-node/DNS, mapped-listeners and proxied networks are rejected by name. `enable-encryption: true` is accepted only with `secure-mode: true` (the source encrypts only through the Noise/secure-datagram session); the pair is implemented, `enable-encryption` alone is rejected by name. Device/TUN is T6/T7. Public translation revision 45a6b6f1769f95590a396f4962e58d654b6e0380; pinned wasm reports 5f1eaa7c9f9d3e89e9b75a6d87531a436fae40c4 (not public).",
+        "license": "LGPL-3.0-or-later translation of the locked EasyTier source; the workspace is distributed under GPL-3.0-only. See native-kernel/THIRD_PARTY_NOTICES.md and native-kernel/third_party/EasyTier-LGPL-3.0.txt.",
+        "notImplemented": [
+          "hostname",
+          "ipv4",
+          "dhcp",
+          "mapped-listeners",
+          "exit-nodes",
+          "proxy-networks",
+          "accept-dns",
+          "enable-exit-node",
+          "private-mode",
+          "latency-first",
+          "enable-kcp-proxy",
+          "enable-quic-proxy",
+          "tld-dns-zone",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "ip-version",
+          "dialer-proxy",
+          "enable-encryption: true without secure-mode",
+          "local-private-key: without secure-mode"
+        ]
       }
     }
   ],

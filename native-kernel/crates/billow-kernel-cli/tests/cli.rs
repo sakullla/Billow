@@ -547,6 +547,32 @@ fn process_loads_t18_masque_connect_ip() {
     assert!(stdout.contains("mq=masque"), "{stdout}");
 }
 
+/// T16/T19/T20 mesh adapters in the shipped process: every control-plane
+/// adapter loads from the same configuration surface as the library and
+/// appears in the identity line. Their `dial()` needs the T6/T7 device layer,
+/// so no tunnel is started here; the protocol layers are exercised against
+/// pinned/controlled peers in `mesh_peers.rs`, `wireguard_peer.rs` and
+/// `openvpn_peer.rs`.
+#[test]
+fn process_loads_mesh_adapters() {
+    let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let ca = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+    let port = free_port();
+    let kernel = KernelProcess::start_body(
+        &format!(
+            "proxies:\n  - {{name: wg, type: wireguard, private-key: {key}, ip: 10.13.13.2, peers: [{{server: 127.0.0.1, port: 51820, public-key: {key}, allowed-ips: [0.0.0.0/0]}}]}}\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\"}}\n  - {{name: ts, type: tailscale, server: 127.0.0.1, port: 1}}\n  - {{name: zt, type: zerotier, network: 8056c2e21c000001}}\n  - {{name: et, type: easytier, network-name: billow-test, network-secret: s, peers: ['udp://127.0.0.1:11010']}}\nrules:\n  - 'MATCH,wg'\n"
+        ),
+        port,
+    );
+    let mut kernel = kernel;
+    let output = kernel.sigint();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for name in ["wg=wireguard", "ov=openvpn", "ts=tailscale", "zt=zerotier", "et=easytier"] {
+        assert!(stdout.contains(name), "{name}: {stdout}");
+    }
+}
+
 #[test]
 fn process_loads_t14_masque() {
     let masque_port = free_port();

@@ -140,7 +140,7 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   license for `jls-tls` is in `native-kernel/THIRD_PARTY_NOTICES.md`; the
   ShadowQUIC transport provenance, black-box observation matrix and no-copy
   audit (with its residual caveat) are in `evidence/t15-cleanroom.md`. The
-  option matrix has 261 no-op / 283 enabled cases with 0 problems, including
+  option matrix has 287 no-op / 304 enabled cases with 0 problems, including
   the shadowquic `zero-rtt`/`quic-versions: v2`/Brutal/BasicOption rejections
   and the T17 sudoku baseline/`multiplex`/`httpmask` rows.
   `t10-feasibility.json` records shadowquic as implemented by T15; the

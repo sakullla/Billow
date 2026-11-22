@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
+# rust: /tmp/billow-t17-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 261, enabled cases: 283, problems: 0
+# no-op cases: 287, enabled cases: 304, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
@@ -265,6 +265,32 @@ noop    openvpn tran-window                  rust=accept mihomo=accept
 noop    openvpn handshake-timeout            rust=accept mihomo=accept
 noop    openvpn mtu                          rust=accept mihomo=accept
 noop    openvpn key-direction                rust=accept mihomo=accept
+noop    easytier dhcp                         rust=accept mihomo=accept
+noop    easytier accept-dns                   rust=accept mihomo=accept
+noop    easytier enable-exit-node             rust=accept mihomo=accept
+noop    easytier private-mode                 rust=accept mihomo=accept
+noop    easytier latency-first                rust=accept mihomo=accept
+noop    easytier disable-p2p                  rust=accept mihomo=accept
+noop    easytier enable-kcp-proxy             rust=accept mihomo=accept
+noop    easytier disable-kcp-input            rust=accept mihomo=accept
+noop    easytier enable-quic-proxy            rust=accept mihomo=accept
+noop    easytier disable-quic-input           rust=accept mihomo=accept
+noop    easytier tfo                          rust=accept mihomo=accept
+noop    easytier mptcp                        rust=accept mihomo=accept
+noop    easytier udp                          rust=accept mihomo=accept
+noop    easytier no-listener                  rust=accept mihomo=accept
+noop    easytier interface-name               rust=accept mihomo=accept
+noop    easytier routing-mark                 rust=accept mihomo=accept
+noop    easytier ip-version                   rust=accept mihomo=accept
+noop    easytier secure-mode                  rust=accept mihomo=accept
+noop    easytier secure-mode                  rust=accept mihomo=accept
+noop    easytier enable-encryption            rust=accept mihomo=accept
+noop    easytier enable-encryption            rust=accept mihomo=accept
+noop    easytier encryption-algorithm         rust=accept mihomo=accept
+noop    easytier mtu                          rust=accept mihomo=accept
+noop    easytier mtu                          rust=accept mihomo=accept
+noop    easytier state-dir                    rust=accept mihomo=accept
+noop    easytier instance-name                rust=accept mihomo=accept
 enabled socks5  udp                          rust=reject mihomo=accept
 enabled socks5  fingerprint                  rust=reject mihomo=accept
 enabled socks5  certificate                  rust=reject mihomo=reject
@@ -548,3 +574,24 @@ enabled masque  cwnd                         rust=reject mihomo=accept
 enabled masque  bbr-profile                  rust=reject mihomo=accept
 enabled masque  ip-stack.mode                rust=reject mihomo=accept
 enabled masque  dialer-proxy                 rust=reject mihomo=reject
+enabled easytier hostname                     rust=reject mihomo=accept
+enabled easytier ipv4                         rust=reject mihomo=accept
+enabled easytier dhcp                         rust=reject mihomo=accept
+enabled easytier mapped-listeners             rust=reject mihomo=accept
+enabled easytier exit-nodes                   rust=reject mihomo=accept
+enabled easytier proxy-networks               rust=reject mihomo=accept
+enabled easytier accept-dns                   rust=reject mihomo=accept
+enabled easytier enable-exit-node             rust=reject mihomo=accept
+enabled easytier private-mode                 rust=reject mihomo=accept
+enabled easytier latency-first                rust=reject mihomo=accept
+enabled easytier enable-kcp-proxy             rust=reject mihomo=accept
+enabled easytier enable-quic-proxy            rust=reject mihomo=accept
+enabled easytier tld-dns-zone                 rust=reject mihomo=accept
+enabled easytier tfo                          rust=reject mihomo=accept
+enabled easytier mptcp                        rust=reject mihomo=accept
+enabled easytier interface-name               rust=reject mihomo=accept
+enabled easytier routing-mark                 rust=reject mihomo=accept
+enabled easytier ip-version                   rust=reject mihomo=accept
+enabled easytier dialer-proxy                 rust=reject mihomo=reject
+enabled easytier enable-encryption            rust=reject mihomo=accept
+enabled easytier local-private-key            rust=reject mihomo=accept

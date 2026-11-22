@@ -37,6 +37,12 @@ pub const IPV4_UDP_OVERHEAD: usize = 28;
 /// IPv6 + UDP overhead (40 + 8 bytes).
 pub const IPV6_UDP_OVERHEAD: usize = 48;
 
+/// IPv4 + TCP overhead (20 + 20 bytes).
+pub const IPV4_TCP_OVERHEAD: usize = 40;
+
+/// IPv6 + TCP overhead (40 + 20 bytes).
+pub const IPV6_TCP_OVERHEAD: usize = 60;
+
 /// IP protocol number of TCP (RFC 793).
 pub const IPPROTO_TCP: u8 = 6;
 /// IP protocol number of UDP.

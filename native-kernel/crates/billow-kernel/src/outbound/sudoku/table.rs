@@ -648,11 +648,14 @@ impl Encoder {
         }
     }
 
-    /// `writeSudokuPayload`: encode `plain` as one write, including the single
-    /// trailing padding slot the pinned encoder adds per write. Padding slots
-    /// follow `appendSudokuPayload`'s `padSlot`: one candidate before each of
-    /// the four hints and one after the last, each kept only when its draw
-    /// falls under the threshold.
+    /// `writeSudokuPayload`: encode `plain` as one write. The pinned
+    /// `appendSudokuPayload` draws a candidate padding slot before each hint
+    /// and keeps none after the last hint; this encoder also draws one after
+    /// every hint (including the last), so it can emit one trailing padding
+    /// slot the pinned encoder would not. Decoders skip padding bytes, so the
+    /// output stays interoperable; see `t17-translation.md` (byte-level
+    /// differences). A kept slot follows `padSlot`: only when its draw falls
+    /// under the threshold.
     pub fn encode(&mut self, plain: &[u8]) -> Vec<u8> {
         let expansion = if self.threshold == 0 {
             4

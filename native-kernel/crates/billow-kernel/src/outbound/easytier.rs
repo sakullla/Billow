@@ -1047,7 +1047,7 @@ struct SecureSession {
     send_epoch: u32,
     send_seq: u64,
     recv_epoch: u32,
-    recv_max_seq: u64,
+    recv_max_seq: Option<u64>,
     algorithm: String,
     send_dir: usize,
     recv_dir: usize,
@@ -1069,7 +1069,9 @@ impl SecureSession {
             send_epoch: initial_epoch,
             send_seq: 0,
             recv_epoch: initial_epoch,
-            recv_max_seq: 0,
+            // `None` means no datagram has been accepted in this epoch yet, so
+            // the first one (sequence 0) is not mistaken for a replay.
+            recv_max_seq: None,
             algorithm,
             send_dir,
             recv_dir: 1 - send_dir,
@@ -1123,8 +1125,15 @@ impl SecureSession {
         let tag: [u8; 16] = ciphertext[body_len..body_len + 16].try_into().unwrap();
         let epoch = u32::from_be_bytes(nonce[..4].try_into().unwrap());
         let seq = u64::from_be_bytes(nonce[4..].try_into().unwrap());
-        if epoch < self.recv_epoch || (epoch == self.recv_epoch && seq <= self.recv_max_seq) {
+        if epoch < self.recv_epoch {
             return Err(EasytierError::SecretDigest);
+        }
+        if epoch == self.recv_epoch {
+            if let Some(max_seq) = self.recv_max_seq {
+                if seq <= max_seq {
+                    return Err(EasytierError::SecretDigest);
+                }
+            }
         }
         let key = self.traffic_key(epoch, self.recv_dir);
         let mut payload = ciphertext[..body_len].to_vec();
@@ -1151,7 +1160,7 @@ impl SecureSession {
                 .map_err(|_| EasytierError::SecretDigest)?;
         }
         self.recv_epoch = epoch;
-        self.recv_max_seq = seq;
+        self.recv_max_seq = Some(seq);
         Ok(payload)
     }
 }
@@ -1205,5 +1214,39 @@ mod tests {
         let mut extended = encoded;
         extended.extend_from_slice(&[0x78, 0x01]); // field 15 varint 1
         assert_eq!(HandshakeRequest::decode(&extended).unwrap(), request);
+    }
+
+    #[test]
+    fn secure_datagrams_decrypt_in_the_peer_direction() {
+        for algorithm in ["aes-gcm", "chacha20"] {
+            let root = [7u8; 32];
+            // Opposite peer-id ordering gives the two sessions mirrored keys:
+            // what one encrypts with its send direction the other decrypts with
+            // its receive direction.
+            let mut client = SecureSession::new(root, 1, 0, algorithm.to_string(), 10, 20);
+            let mut server = SecureSession::new(root, 1, 0, algorithm.to_string(), 20, 10);
+            let sent = client.encrypt_payload(b"client-to-server").unwrap();
+            assert_eq!(
+                server.decrypt_payload(&sent).unwrap(),
+                b"client-to-server",
+                "{algorithm}: server receive direction"
+            );
+            assert!(
+                server.decrypt_payload(&sent).is_err(),
+                "{algorithm}: replaying the same datagram must be rejected"
+            );
+            let reply = server.encrypt_payload(b"server-to-client").unwrap();
+            assert_eq!(
+                client.decrypt_payload(&reply).unwrap(),
+                b"server-to-client",
+                "{algorithm}: client receive direction"
+            );
+            // A tampered payload must fail authentication, not decrypt
+            // silently (a fresh sequence number, so this is not the replay
+            // check).
+            let mut tampered = server.encrypt_payload(b"server-forged").unwrap();
+            tampered[0] ^= 0x01;
+            assert!(client.decrypt_payload(&tampered).is_err(), "{algorithm}");
+        }
     }
 }

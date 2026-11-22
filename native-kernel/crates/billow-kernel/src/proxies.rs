@@ -2194,7 +2194,7 @@ fn parse_easytier(entry: &mut Entry<'_>) -> Result<EasytierOutbound, ConfigError
     let secure_mode = entry.bool("secure-mode")?;
     if enable_encryption && secure_mode != Some(true) {
         return Err(entry.unsupported(
-            "option 'enable-encryption: true' requires 'secure-mode: true' (the source enables data encryption only through the Noise/secure-datagram session)",
+            "option 'enable-encryption' requires 'secure-mode: true' (the source enables data encryption only through the Noise/secure-datagram session)",
         ));
     }
     let private_mode = entry.bool("private-mode")?;

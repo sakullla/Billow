@@ -420,19 +420,22 @@
     "sudoku: the T17-A1 clean-room attempt stayed blocked (the keyed table, KIP handshake and record layers are not publicly specified; evidence/t17-cleanroom.md, evidence/t17-observe.log). T17-A2 translated the pinned GPL-3.0 module (see t17): TCP sessions with the legacy HTTP mask, pure/packed downlink, three record AEAD methods, the session mux and a `dialer-proxy` chain are covered by 14 pinned-peer cases; `udp: true` (UoT) and the HTTP tunnel modes are rejected at load and have no peer case."
   ],
   "t9": {
-    "date": "2026-11-21",
+    "date": "2026-11-22",
     "implementedAndVerified": [
       "vmess",
       "snell",
-      "trusttunnel"
+      "trusttunnel",
+      "sudoku (GPL-3.0 translation, T17)",
+      "mieru (clean-room TCP, T13)"
     ],
     "run": {
       "command": "tool/kernel-compat/peer-tests.sh",
-      "result": "31 passed, 0 failed, 0 ignored",
+      "result": "66 passed, 0 failed, 0 ignored",
       "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
     },
     "stillUnimplemented": [],
-    "statusAfterT16": "all families resolved: mieru (T13 clean-room), sudoku (T17 GPL-3.0 translation), masque (T14 CONNECT-UDP partial), shadowquic (T15 partial), wireguard/openvpn (T16 transport partial); mesh families rejected by name"
+    "statusAfterT21": "Every protocol family has an entry with its gaps named by rejection: mieru (T13 clean-room TCP), sudoku (T17 GPL-3.0 translation, mux + dialer-proxy), masque (T14 CONNECT-UDP; T21 TCP over CONNECT-IP; CONNECT-IP/TCP remains UDP-only), shadowquic (T15 partial), wireguard/openvpn (T16 transport, device T6/T7), tailscale/zerotier (T19 control planes, device T6/T7), easytier (T20 cleartext + secure datagram, device T6/T7). No family is claimed fully compatible while a valid configuration is rejected.",
+    "t9A10": "Integration re-ran the full candidate: default cargo test (306 passed, 0 failed, 91 ignored), peer-tests (66 passed), family-peers (exit 0), runner (10 passed) and option-probe (287 no-op / 304 enabled, 0 problems). Fixed the T21 CONNECT-IP TCP MSS overhead (IP+TCP 40/60 instead of UDP 28/48, with SYN MSS and full-segment assertions), restored the EasyTier option-matrix rows (base + 26 no-op / 21 enabled), fixed T17's peer classification and padding comment, and added an explicit EasyTier secure receive-direction decrypt + replay test (which exposed and fixed the first-datagram seq-0 replay rejection). CLI now loads the T16/T19/T20 mesh adapters in `process_loads_mesh_adapters`."
   },
   "controlledPeers": {
     "command": "tool/kernel-compat/family-peers.sh",

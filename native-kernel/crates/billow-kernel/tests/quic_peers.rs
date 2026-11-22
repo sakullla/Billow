@@ -1826,6 +1826,7 @@ struct WarpTcp<'a> {
     ack: u32,
     flags: u8,
     window: u16,
+    mss: Option<u16>,
     payload: &'a [u8],
 }
 
@@ -1872,6 +1873,30 @@ fn warp_parse_tcp(packet: &[u8]) -> Option<WarpTcp<'_>> {
     if header_len < 20 || header_len > payload.len() {
         return None;
     }
+    let mut mss = None;
+    let mut option = 20;
+    while option + 1 < header_len {
+        match payload[option] {
+            0 => break,
+            1 => {
+                option += 1;
+                continue;
+            }
+            kind => {
+                let length = usize::from(payload[option + 1]);
+                if length < 2 || option + length > header_len {
+                    break;
+                }
+                if kind == 2 && length == 4 {
+                    mss = Some(u16::from_be_bytes([
+                        payload[option + 2],
+                        payload[option + 3],
+                    ]));
+                }
+                option += length;
+            }
+        }
+    }
     Some(WarpTcp {
         src,
         dst,
@@ -1881,6 +1906,7 @@ fn warp_parse_tcp(packet: &[u8]) -> Option<WarpTcp<'_>> {
         ack: u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]),
         flags: payload[13],
         window: u16::from_be_bytes([payload[14], payload[15]]),
+        mss,
         payload: &payload[header_len..],
     })
 }
@@ -1969,6 +1995,9 @@ fn warp_tcp_respond(
     }
     if segment.flags & SYN != 0 {
         note(&log, "tcp syn");
+        if let Some(mss) = segment.mss {
+            note(&log, format!("tcp syn mss={mss}"));
+        }
         if mode == WarpTcpMode::Silent {
             return None;
         }
@@ -2768,6 +2797,16 @@ async fn masque_connect_ip_carries_a_tcp_stream() {
         .expect("the echo timed out")
         .unwrap();
     assert_eq!(&buffer[..read], b"tcp-over-connect-ip");
+    // A full-size write must be split at the advertised MSS so every segment's
+    // IP length stays within the tunnel MTU (1280 - IP(20) - TCP(20) = 1240).
+    let large = vec![b'A'; 5_000];
+    stream.write_all(&large).await.unwrap();
+    let mut echoed = vec![0u8; large.len()];
+    tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut echoed))
+        .await
+        .expect("the large echo timed out")
+        .unwrap();
+    assert_eq!(echoed, large);
     // Half-close: FIN travels through the tunnel and the peer answers.
     stream.shutdown().await.unwrap();
     let eof = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer))
@@ -2778,6 +2817,21 @@ async fn masque_connect_ip_carries_a_tcp_stream() {
 
     let lines = log.lock().unwrap().clone();
     assert!(lines.iter().any(|line| line == "tcp syn"), "{lines:?}");
+    assert!(
+        lines.iter().any(|line| line == "tcp syn mss=1240"),
+        "the SYN must advertise 1240 (1280 - IP/TCP headers): {lines:?}"
+    );
+    let largest = lines
+        .iter()
+        .filter_map(|line| line.strip_prefix("tcp data bytes="))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(|bytes| bytes.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        largest > 19 && largest <= 1240 && largest + 40 <= 1280,
+        "every segment must fit the tunnel MTU; largest payload {largest}: {lines:?}"
+    );
     assert!(
         lines
             .iter()

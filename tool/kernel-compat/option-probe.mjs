@@ -75,6 +75,11 @@ const bases = {
     on: null,
   },
   sudoku: { off: 'server: 127.0.0.1, port: 1, key: k', on: null },
+  // T20: the pinned type requires a peer when no listener is configured.
+  easytier: {
+    off: "network-name: n, network-secret: s, peers: ['tcp://127.0.0.1:2']",
+    on: null,
+  },
   shadowquic: {
     off: 'server: 127.0.0.1, port: 1, username: alice, password: p',
     on: null,
@@ -175,7 +180,7 @@ for (const [type, entry] of Object.entries(mapping.proxies)) {
   // shapes do not match their required fields (`protocol`, `ports`, ...).
   // shadowquic is explicit for the same reason: `quic-versions` is a list and
   // `up`/`down` are rate strings.
-  if (['tuic', 'hysteria', 'hysteria2', 'shadowquic', 'wireguard', 'openvpn', 'masque'].includes(type)) continue
+  if (['tuic', 'hysteria', 'hysteria2', 'shadowquic', 'wireguard', 'openvpn', 'masque', 'easytier'].includes(type)) continue
   for (const option of entry.notImplemented ?? []) {
     const parsed = /^([a-z0-9.-]+)(?::\s*true)?$/.exec(option)
     if (!parsed) continue
@@ -349,7 +354,32 @@ const t18Enabled = [
   ['masque', 'ip-stack.mode', 'ip-stack: {mode: gvisor}'],
   ['masque', 'dialer-proxy', 'dialer-proxy: hop'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
-const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled, ...t15Enabled, ...t16Enabled, ...t18Enabled]
+// T20 easytier: values are explicit because several are lists/strings/ints.
+const t20Enabled = [
+  ['easytier', 'hostname', 'hostname: node'],
+  ['easytier', 'ipv4', 'ipv4: 10.144.0.2/24'],
+  ['easytier', 'dhcp', 'dhcp: true'],
+  ['easytier', 'mapped-listeners', "mapped-listeners: ['tcp://127.0.0.1:3']"],
+  ['easytier', 'exit-nodes', "exit-nodes: ['10.144.0.9']"],
+  ['easytier', 'proxy-networks', "proxy-networks: ['10.0.0.0/24']"],
+  ['easytier', 'accept-dns', 'accept-dns: true'],
+  ['easytier', 'enable-exit-node', 'enable-exit-node: true'],
+  ['easytier', 'private-mode', 'private-mode: true'],
+  ['easytier', 'latency-first', 'latency-first: true'],
+  ['easytier', 'enable-kcp-proxy', 'enable-kcp-proxy: true'],
+  ['easytier', 'enable-quic-proxy', 'enable-quic-proxy: true'],
+  ['easytier', 'tld-dns-zone', 'tld-dns-zone: et.internal'],
+  ['easytier', 'tfo', 'tfo: true'],
+  ['easytier', 'mptcp', 'mptcp: true'],
+  ['easytier', 'interface-name', 'interface-name: eth0'],
+  ['easytier', 'routing-mark', 'routing-mark: 100'],
+  ['easytier', 'ip-version', 'ip-version: ipv4'],
+  ['easytier', 'dialer-proxy', 'dialer-proxy: hop'],
+  // The source only enables data encryption through the secure session.
+  ['easytier', 'enable-encryption', 'enable-encryption: true'],
+  ['easytier', 'local-private-key', 'local-private-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='],
+].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
+const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled, ...t15Enabled, ...t16Enabled, ...t18Enabled, ...t20Enabled]
 
 // No-op forms Mihomo accepts (checked against the binary when provided).
 const noops = []
@@ -555,6 +585,39 @@ add('openvpn', 'tran-window', '0')
 add('openvpn', 'handshake-timeout', '0')
 add('openvpn', 'mtu', '0')
 add('openvpn', 'key-direction', "''")
+
+// T20 easytier: disabled booleans and the secure-mode/encryption combinations
+// the source accepts (encryption is only meaningful together with secure mode).
+for (const key of [
+  'dhcp',
+  'accept-dns',
+  'enable-exit-node',
+  'private-mode',
+  'latency-first',
+  'disable-p2p',
+  'enable-kcp-proxy',
+  'disable-kcp-input',
+  'enable-quic-proxy',
+  'disable-quic-input',
+  'tfo',
+  'mptcp',
+]) {
+  add('easytier', key, 'false')
+}
+add('easytier', 'udp', 'false')
+add('easytier', 'no-listener', 'false')
+add('easytier', 'interface-name', "''")
+add('easytier', 'routing-mark', '0')
+add('easytier', 'ip-version', "''")
+add('easytier', 'secure-mode', 'true')
+add('easytier', 'secure-mode', 'false')
+add('easytier', 'enable-encryption', 'false')
+add('easytier', 'enable-encryption', 'true, secure-mode: true')
+add('easytier', 'encryption-algorithm', 'chacha20')
+add('easytier', 'mtu', '1280')
+add('easytier', 'mtu', '0')
+add('easytier', 'state-dir', 'easytier/probe')
+add('easytier', 'instance-name', 'probe')
 
 // Enabled forms: every one must be rejected by name.
 

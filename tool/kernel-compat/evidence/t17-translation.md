@@ -150,8 +150,8 @@ through `tool/kernel-compat/peers/sudoku-vectors`
 
 | check | command | result |
 | --- | --- | --- |
-| pinned peer, 14 positive cases | `tool/kernel-compat/peer-tests.sh` | default session, no HTTP mask, ascii + packed downlink, directional table, custom table, table rotation, aes-128-gcm, `none`, private/public key material, sequential mux, concurrent mux, and a `dialer-proxy` chain through a recording SOCKS5 hop |
-| pinned peer, 2 negative cases | same | a wrong key and a mismatched `table-type` fail the dial and never reach the sink |
+| pinned peer, 13 positive cases | `tool/kernel-compat/peer-tests.sh` | default session, no HTTP mask, ascii + packed downlink, directional table, custom table, table rotation, aes-128-gcm, `none`, private/public key material, sequential mux, concurrent mux, a `dialer-proxy` chain through a recording SOCKS5 hop, and `multiplex: on` over that chain |
+| pinned peer, 3 negative cases | same | a wrong key, a mismatched `table-type`, and a wrong key over the mux+chain path fail the dial and never reach the sink |
 | codec differential | `cargo test --test protocols -- --ignored sudoku_codec_matches_the_pinned_implementation` | pinned encode -> Rust decode and Rust encode -> pinned decode, pure and packed, padding 0-0 and 10-30, for entropy/ascii/directional/custom layouts |
 | default suite | `cargo test --manifest-path native-kernel/Cargo.toml --locked` | table/record/KIP/mux unit tests and `tests/config.rs::sudoku_options_are_strict` |
 | option matrix | `node tool/kernel-compat/option-probe.mjs ...` | `multiplex: on`, `httpmask`, `http-mask` and `enable-pure-downlink` load; `udp: true` and `http-mask-mode: stream` are rejected by name |
@@ -166,7 +166,7 @@ target lock):
 | `tool/kernel-compat/peer-tests.sh` | 66 passed, 0 failed (`evidence/protocol-peers-run.log`) |
 | `tool/kernel-compat/family-peers.sh` | exit 0; sudoku hint/padding vectors match and the codec differential passes (`evidence/family-peers-run.log`) |
 | `node --test tool/kernel-compat/runner.test.mjs` | 10 passed, 0 failed |
-| `node tool/kernel-compat/option-probe.mjs --rust <release> --mihomo <pinned>` | 261 no-op / 283 enabled / 0 problems (`evidence/option-matrix.txt`) |
+| `node tool/kernel-compat/option-probe.mjs --rust <release> --mihomo <pinned>` | 287 no-op / 304 enabled / 0 problems (`evidence/option-matrix.txt`) |
 
 One defect was found and fixed while verifying: the read paths registered a
 `Notify::notified()` future, polled it once and dropped it on `Pending`, which

@@ -1,5 +1,5 @@
 peer: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
      Running tests/mihomo_peers.rs (/tmp/billow-t17-target/debug/deps/mihomo_peers-3f30790d9476fc85)
 
 running 66 tests
@@ -70,6 +70,6 @@ test vmess_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_wrong_uuid_never_reaches_the_sink ... ok
 
-test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.69s
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 58.94s
 
 PEER_EXIT:0
