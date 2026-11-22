@@ -18,22 +18,32 @@ const emit = defineEmits<{
   saved: []
 }>()
 
+interface DomainRuleDraft {
+  id: string
+  enabled: boolean
+  pattern: string
+  target: string
+}
+
 const store = useStore()
 const rulesEnabled = ref(true)
 const presetDrafts = ref<Record<string, { id: string; enabled: boolean; target: string }>>({})
-const domainRules = ref<{ id: string; enabled: boolean; pattern: string; target: string }[]>([])
+const domainRules = ref<DomainRuleDraft[]>([])
 const newDomain = ref('')
 const newDomainTarget = ref('custom_group')
+const editingIndex = ref<number | null>(null)
+const editPattern = ref('')
+const editTarget = ref('custom_group')
 const error = ref<string | null>(null)
 
-const targetOptions = computed(() => {
+const baseTargetOptions = computed(() => {
   const options: { value: string; label: string }[] = [
     { value: 'custom_group', label: t('customNodes.rules.targetGroup') },
   ]
   for (const node of store.customNodes.value.nodes) {
     options.push({
       value: `custom_node:${node.id}`,
-      label: node.enabled ? node.name : `${node.name} (${tr('已停用')})`,
+      label: node.enabled ? node.name : `${node.name}（${tr('已停用')}）`,
     })
   }
   return options
@@ -50,8 +60,39 @@ function decodeTarget(value: string): LandingRuleTarget {
   return { kind: 'custom_group' }
 }
 
-function targetLabel(value: string): string {
-  return targetOptions.value.find((option) => option.value === value)?.label ?? t('customNodes.rules.targetGroup')
+function targetStatus(value: string): { label: string; issue: 'missing' | 'disabled' | null; notice: string | null } {
+  if (value === 'custom_group') {
+    return { label: t('customNodes.rules.targetGroup'), issue: null, notice: null }
+  }
+  if (value.startsWith('custom_node:')) {
+    const id = value.slice('custom_node:'.length)
+    const node = store.customNodes.value.nodes.find((item) => item.id === id)
+    if (!node) {
+      return {
+        label: tr('目标节点已删除（{0}）', { 0: id }),
+        issue: 'missing',
+        notice: tr('目标节点已删除，请重新选择落地目标'),
+      }
+    }
+    if (!node.enabled) {
+      return {
+        label: `${node.name}（${tr('已停用')}）`,
+        issue: 'disabled',
+        notice: tr('目标节点「{0}」已停用，此规则暂不生效', { 0: node.name }),
+      }
+    }
+    return { label: node.name, issue: null, notice: null }
+  }
+  return { label: t('customNodes.rules.targetGroup'), issue: null, notice: null }
+}
+
+function targetOptionsFor(currentValue: string) {
+  const options = [...baseTargetOptions.value]
+  if (currentValue && !options.some((item) => item.value === currentValue)) {
+    const status = targetStatus(currentValue)
+    options.push({ value: currentValue, label: status.label })
+  }
+  return options
 }
 
 watch(
@@ -61,6 +102,9 @@ watch(
     error.value = null
     newDomain.value = ''
     newDomainTarget.value = 'custom_group'
+    editingIndex.value = null
+    editPattern.value = ''
+    editTarget.value = 'custom_group'
     const state = store.customNodes.value
     rulesEnabled.value = state.rules_enabled
 
@@ -109,7 +153,47 @@ function addDomainRule() {
   newDomain.value = ''
 }
 
+function startEditDomainRule(index: number) {
+  const item = domainRules.value[index]
+  if (!item) return
+  error.value = null
+  editingIndex.value = index
+  editPattern.value = item.pattern
+  editTarget.value = item.target
+}
+
+function cancelEditDomainRule() {
+  editingIndex.value = null
+  editPattern.value = ''
+  editTarget.value = 'custom_group'
+  error.value = null
+}
+
+function saveEditDomainRule(index: number) {
+  const pattern = editPattern.value.trim()
+  if (!pattern) {
+    error.value = tr('请填写域名规则')
+    return
+  }
+  if (domainRules.value.some((item, i) => i !== index && item.pattern.toLowerCase() === pattern.toLowerCase())) {
+    error.value = tr('该域名规则已存在')
+    return
+  }
+  domainRules.value = domainRules.value.map((item, i) =>
+    i === index ? { ...item, pattern, target: editTarget.value } : item,
+  )
+  cancelEditDomainRule()
+}
+
+function toggleDomainRule(index: number, enabled: boolean) {
+  domainRules.value = domainRules.value.map((item, i) =>
+    i === index ? { ...item, enabled } : item,
+  )
+}
+
 function removeDomainRule(index: number) {
+  if (editingIndex.value === index) cancelEditDomainRule()
+  else if (editingIndex.value !== null && editingIndex.value > index) editingIndex.value -= 1
   domainRules.value = domainRules.value.filter((_, i) => i !== index)
   error.value = null
 }
@@ -117,6 +201,11 @@ function removeDomainRule(index: number) {
 async function submit() {
   if (store.busy['customNodes:rules']) return
   error.value = null
+
+  if (editingIndex.value !== null) {
+    saveEditDomainRule(editingIndex.value)
+    if (error.value) return
+  }
 
   if (newDomain.value.trim()) {
     addDomainRule()
@@ -180,23 +269,32 @@ async function submit() {
           v-for="preset in store.landingPresets.value"
           :key="preset.id"
           class="custom-preset-row"
+          :class="{ 'has-warning': Boolean(presetDrafts[preset.id]?.enabled && targetStatus(presetDrafts[preset.id]!.target).issue) }"
         >
           <div class="grow min0">
             <div class="custom-preset-head">
               <strong>{{ preset.label }}</strong>
               <span class="muted small">{{ tr('{0} 个域名', { 0: preset.domains.length }) }}</span>
             </div>
-            <div v-if="presetDrafts[preset.id]?.enabled" class="custom-preset-target">
+            <div v-if="presetDrafts[preset.id]?.enabled" class="custom-preset-target" :data-testid="`landing-preset-target-${preset.id}`">
               <SelectField
                 :model-value="presetDrafts[preset.id]!.target"
-                :options="targetOptions"
+                :options="targetOptionsFor(presetDrafts[preset.id]!.target)"
                 :sheet="compact"
                 :label="preset.label"
                 class="field-select"
-                :data-testid="`landing-preset-target-${preset.id}`"
                 @update:model-value="(value) => { presetDrafts[preset.id]!.target = String(value) }"
               />
             </div>
+            <p
+              v-if="presetDrafts[preset.id]?.enabled && targetStatus(presetDrafts[preset.id]!.target).notice"
+              class="field-error small custom-target-warning"
+              role="status"
+              :data-testid="`landing-preset-warning-${preset.id}`"
+            >
+              <Icon name="alert" :size="13" />
+              <span>{{ targetStatus(presetDrafts[preset.id]!.target).notice }}</span>
+            </p>
           </div>
           <Toggle
             :model-value="Boolean(presetDrafts[preset.id]?.enabled)"
@@ -219,15 +317,15 @@ async function submit() {
             data-testid="landing-domain-input"
             @input="error = null"
           />
-          <SelectField
-            :model-value="newDomainTarget"
-            :options="targetOptions"
-            :sheet="compact"
-            :label="t('customNodes.rules.targetGroup')"
-            class="custom-domain-target-select"
-            data-testid="landing-domain-target"
-            @update:model-value="(value) => { newDomainTarget = String(value) }"
-          />
+          <div class="custom-domain-target-select" data-testid="landing-domain-target">
+            <SelectField
+              :model-value="newDomainTarget"
+              :options="baseTargetOptions"
+              :sheet="compact"
+              :label="t('customNodes.rules.targetGroup')"
+              @update:model-value="(value) => { newDomainTarget = String(value) }"
+            />
+          </div>
           <button
             type="submit"
             class="btn ghost sm"
@@ -239,18 +337,107 @@ async function submit() {
         </form>
 
         <ul v-if="domainRules.length > 0" class="custom-domain-list" data-testid="landing-domain-list">
-          <li v-for="(item, index) in domainRules" :key="`${item.pattern}-${index}`" class="custom-domain-row">
-            <span class="mono grow min0 ellipsis">{{ item.pattern }}</span>
-            <span class="tag sm">{{ targetLabel(item.target) }}</span>
-            <button
-              type="button"
-              class="icon-btn sm"
-              :aria-label="tr('删除')"
-              :data-testid="`landing-rule-remove-${index}`"
-              @click="removeDomainRule(index)"
-            >
-              <Icon name="trash" :size="14" />
-            </button>
+          <li
+            v-for="(item, index) in domainRules"
+            :key="`${item.id || item.pattern}-${index}`"
+            class="custom-domain-row"
+            :class="{
+              disabled: !item.enabled,
+              'has-warning': Boolean(item.enabled && targetStatus(item.target).issue),
+            }"
+          >
+            <template v-if="editingIndex === index">
+              <div class="custom-domain-edit-row grow">
+                <input
+                  v-model="editPattern"
+                  type="text"
+                  class="grow mono"
+                  spellcheck="false"
+                  :placeholder="t('customNodes.rules.domainPlaceholder')"
+                  :data-testid="`landing-rule-edit-input-${index}`"
+                  @keydown.enter.prevent="saveEditDomainRule(index)"
+                />
+                <div class="custom-domain-target-select" :data-testid="`landing-rule-edit-target-${index}`">
+                  <SelectField
+                    :model-value="editTarget"
+                    :options="targetOptionsFor(editTarget)"
+                    :sheet="compact"
+                    :label="t('customNodes.rules.targetGroup')"
+                    @update:model-value="(value) => { editTarget = String(value) }"
+                  />
+                </div>
+                <button
+                  type="button"
+                  class="btn primary sm"
+                  :data-testid="`landing-rule-edit-save-${index}`"
+                  @click="saveEditDomainRule(index)"
+                >
+                  {{ tr('完成') }}
+                </button>
+                <button
+                  type="button"
+                  class="btn ghost sm"
+                  :data-testid="`landing-rule-edit-cancel-${index}`"
+                  @click="cancelEditDomainRule"
+                >
+                  {{ tr('取消') }}
+                </button>
+              </div>
+            </template>
+            <template v-else>
+              <div class="grow min0 stack-xs">
+                <div class="custom-domain-main">
+                  <span class="mono grow min0 ellipsis">{{ item.pattern }}</span>
+                  <span
+                    class="tag sm"
+                    :class="{
+                      danger: targetStatus(item.target).issue === 'missing',
+                      warn: targetStatus(item.target).issue === 'disabled',
+                    }"
+                    :data-testid="`landing-rule-target-tag-${index}`"
+                  >
+                    {{ targetStatus(item.target).label }}
+                  </span>
+                </div>
+                <p
+                  v-if="item.enabled && targetStatus(item.target).notice"
+                  class="field-error small custom-target-warning"
+                  role="status"
+                  :data-testid="`landing-rule-warning-${index}`"
+                >
+                  <Icon name="alert" :size="13" />
+                  <span>{{ targetStatus(item.target).notice }}</span>
+                </p>
+              </div>
+              <div class="custom-node-actions">
+                <Toggle
+                  :model-value="item.enabled"
+                  :label="item.pattern"
+                  :data-testid="`landing-rule-toggle-${index}`"
+                  @update:model-value="(value) => toggleDomainRule(index, value)"
+                />
+                <button
+                  type="button"
+                  class="icon-btn sm"
+                  :title="tr('编辑')"
+                  :aria-label="tr('编辑')"
+                  :data-testid="`landing-rule-edit-${index}`"
+                  @click="startEditDomainRule(index)"
+                >
+                  <Icon name="edit" :size="14" />
+                </button>
+                <button
+                  type="button"
+                  class="icon-btn sm"
+                  :title="tr('删除')"
+                  :aria-label="tr('删除')"
+                  :data-testid="`landing-rule-remove-${index}`"
+                  @click="removeDomainRule(index)"
+                >
+                  <Icon name="trash" :size="14" />
+                </button>
+              </div>
+            </template>
           </li>
         </ul>
       </section>

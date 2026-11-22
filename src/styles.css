@@ -9162,3 +9162,31 @@ details.cfg-section[open] .cfg-fold-icon {
   flex-direction: column;
   gap: 4px;
 }
+
+.custom-preset-row.has-warning,
+.custom-domain-row.has-warning {
+  border-color: color-mix(in srgb, var(--poor) 45%, var(--border));
+  background: color-mix(in srgb, var(--poor) 6%, var(--surface-2));
+}
+
+.custom-domain-row.disabled {
+  opacity: 0.62;
+}
+
+.custom-domain-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.custom-domain-edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.custom-target-warning {
+  margin-top: 4px;
+}

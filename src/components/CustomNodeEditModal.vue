@@ -77,11 +77,52 @@ const dialerOptions = computed(() => {
     if (candidate.id === selfId) continue
     options.push({
       value: `custom_node:${candidate.id}`,
-      label: t('customNodes.dialer.customNode', { name: candidate.name }),
+      label: candidate.enabled
+        ? t('customNodes.dialer.customNode', { name: candidate.name })
+        : `${t('customNodes.dialer.customNode', { name: candidate.name })}（${tr('已停用')}）`,
     })
+  }
+  const current = dialerChoice.value
+  if (current && current !== 'fixed_proxy' && !options.some((item) => item.value === current)) {
+    if (current.startsWith('custom_node:')) {
+      const missingId = current.slice('custom_node:'.length)
+      options.push({
+        value: current,
+        label: tr('经自建节点「{0}」中转（已删除）', { 0: missingId }),
+      })
+    } else if (current.startsWith('profile_group:')) {
+      const missingGroup = current.slice('profile_group:'.length).trim()
+      if (missingGroup) {
+        options.push({
+          value: current,
+          label: tr('通过订阅组「{0}」中转（当前订阅不存在）', { 0: missingGroup }),
+        })
+      }
+    }
   }
   options.push({ value: 'fixed_proxy', label: tr('指定订阅节点名…') })
   return options
+})
+
+const dialerWarning = computed(() => {
+  const current = dialerChoice.value
+  if (current.startsWith('custom_node:')) {
+    const id = current.slice('custom_node:'.length)
+    const node = store.customNodes.value.nodes.find((item) => item.id === id)
+    if (!node) return tr('当前前置自建节点已删除，请重新选择中转方式')
+    if (!node.enabled) return tr('当前前置自建节点「{0}」已停用，链路暂不可用', { 0: node.name })
+  } else if (current.startsWith('profile_group:')) {
+    const group = current.slice('profile_group:'.length).trim()
+    if (
+      group &&
+      !store.snapshot.value.node_catalog.some(
+        (item) => item.kind === 'manual' && !item.hidden && item.name === group,
+      )
+    ) {
+      return tr('当前订阅中未找到代理组「{0}」，请确认或重新选择', { 0: group })
+    }
+  }
+  return null
 })
 
 function unquoteYamlScalar(raw: string): string {
@@ -409,6 +450,10 @@ async function submit() {
           class="field-select"
           @update:model-value="(value) => { dialerChoice = String(value); error = null }"
         />
+        <p v-if="dialerWarning" class="field-error small custom-target-warning" role="status" data-testid="custom-node-dialer-warning">
+          <Icon name="alert" :size="13" />
+          <span>{{ dialerWarning }}</span>
+        </p>
       </div>
 
       <label v-if="dialerChoice === 'fixed_proxy'" class="field">

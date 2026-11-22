@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { t, tr } from '../lib/i18n'
 import { useStore } from '../lib/store'
-import type { CustomNode, DialerTarget } from '../lib/types'
+import type { CustomNode, DialerTarget, LandingRule } from '../lib/types'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import Toggle from './Toggle.vue'
@@ -26,6 +26,29 @@ const activeRuleCount = computed(() =>
 )
 
 const deleting = ref<CustomNode | null>(null)
+const disabling = ref<CustomNode | null>(null)
+
+function describeRule(rule: LandingRule): string {
+  if (rule.rule.kind === 'preset') {
+    const presetId = rule.rule.id
+    const preset = store.landingPresets.value.find((item) => item.id === presetId)
+    return preset?.label ?? presetId
+  }
+  return rule.rule.pattern
+}
+
+function affectedByNode(nodeId: string): { chainedNodes: CustomNode[]; landingRules: string[] } {
+  const chainedNodes = nodes.value.filter(
+    (item) => item.id !== nodeId && item.dialer.kind === 'custom_node' && item.dialer.id === nodeId,
+  )
+  const landingRules = customNodes.value.rules
+    .filter((rule) => rule.target.kind === 'custom_node' && rule.target.id === nodeId)
+    .map(describeRule)
+  return { chainedNodes, landingRules }
+}
+
+const deleteImpact = computed(() => (deleting.value ? affectedByNode(deleting.value.id) : { chainedNodes: [], landingRules: [] }))
+const disableImpact = computed(() => (disabling.value ? affectedByNode(disabling.value.id) : { chainedNodes: [], landingRules: [] }))
 
 function dialerLabel(dialer: DialerTarget): string {
   if (dialer.kind === 'direct') return t('customNodes.dialer.direct')
@@ -38,7 +61,10 @@ function dialerLabel(dialer: DialerTarget): string {
     return t('customNodes.dialer.fixedProxy', { name: dialer.name })
   }
   const target = nodes.value.find((item) => item.id === dialer.id)
-  return t('customNodes.dialer.customNode', { name: target?.name ?? dialer.id })
+  if (!target) {
+    return tr('经自建节点「{0}」中转（已删除）', { 0: dialer.id })
+  }
+  return t('customNodes.dialer.customNode', { name: target.name })
 }
 
 async function toggleOverlay(enabled: boolean) {
@@ -46,7 +72,21 @@ async function toggleOverlay(enabled: boolean) {
 }
 
 async function toggleNode(node: CustomNode, enabled: boolean) {
+  if (!enabled) {
+    const impact = affectedByNode(node.id)
+    if (impact.chainedNodes.length > 0 || impact.landingRules.length > 0) {
+      disabling.value = node
+      return
+    }
+  }
   await store.setCustomNodeEnabled(node.id, enabled)
+}
+
+async function confirmDisable() {
+  const target = disabling.value
+  if (!target) return
+  await store.setCustomNodeEnabled(target.id, false)
+  disabling.value = null
 }
 
 async function activateCustomProfile() {
@@ -204,7 +244,28 @@ async function confirmDelete() {
       :title="tr('删除自建节点')"
       @close="deleting = null"
     >
-      <p v-if="deleting">{{ t('customNodes.deleteConfirm', { name: deleting.name }) }}</p>
+      <div v-if="deleting" class="stack-sm">
+        <p>{{ t('customNodes.deleteConfirm', { name: deleting.name }) }}</p>
+        <div
+          v-if="deleteImpact.chainedNodes.length > 0 || deleteImpact.landingRules.length > 0"
+          class="banner warn small"
+          role="alert"
+          data-testid="delete-custom-node-impact"
+        >
+          <Icon name="alert" :size="15" />
+          <div class="grow stack-xs">
+            <strong>{{ tr('删除后以下引用将失效，需重新指定目标：') }}</strong>
+            <ul class="custom-error-list">
+              <li v-if="deleteImpact.chainedNodes.length > 0">
+                {{ tr('链式代理节点：') }}{{ deleteImpact.chainedNodes.map((n) => n.name).join('、') }}
+              </li>
+              <li v-if="deleteImpact.landingRules.length > 0">
+                {{ tr('指定流量走落地规则：') }}{{ deleteImpact.landingRules.join('、') }}
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
       <template #footer>
         <button type="button" class="btn ghost" @click="deleting = null">{{ tr('取消') }}</button>
         <button
@@ -215,6 +276,41 @@ async function confirmDelete() {
           @click="confirmDelete"
         >
           {{ tr('删除') }}
+        </button>
+      </template>
+    </Modal>
+
+    <Modal
+      :open="Boolean(disabling)"
+      :title="tr('停用自建节点')"
+      @close="disabling = null"
+    >
+      <div v-if="disabling" class="stack-sm">
+        <p>{{ tr('停用「{0}」会影响以下引用它的配置：', { 0: disabling.name }) }}</p>
+        <div class="banner warn small" role="alert" data-testid="disable-custom-node-impact">
+          <Icon name="alert" :size="15" />
+          <div class="grow stack-xs">
+            <ul class="custom-error-list">
+              <li v-if="disableImpact.chainedNodes.length > 0">
+                {{ tr('链式代理节点：') }}{{ disableImpact.chainedNodes.map((n) => n.name).join('、') }}
+              </li>
+              <li v-if="disableImpact.landingRules.length > 0">
+                {{ tr('指定流量走落地规则：') }}{{ disableImpact.landingRules.join('、') }}
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <button type="button" class="btn ghost" @click="disabling = null">{{ tr('取消') }}</button>
+        <button
+          type="button"
+          class="btn danger"
+          :disabled="disabling ? Boolean(store.busy[`customNodes:toggle:${disabling.id}`]) : false"
+          data-testid="confirm-disable-custom-node"
+          @click="confirmDisable"
+        >
+          {{ tr('仍要停用') }}
         </button>
       </template>
     </Modal>

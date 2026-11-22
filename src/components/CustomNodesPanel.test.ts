@@ -230,4 +230,108 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     expect(rules.some((r) => r.rule.kind === 'preset' && r.rule.id === 'ai')).toBe(true)
     expect(rules.some((r) => r.rule.kind === 'domain' && r.rule.pattern === 'api.custom-ai.example')).toBe(true)
   })
+
+  it('supports per-rule toggle/edit and highlights disabled or deleted landing targets (R6)', async () => {
+    const { store } = await setupProfiles()
+    await store.importCustomNodes('socks5://1.2.3.4:1080#Landing-US', { kind: 'direct' })
+    await waitDemo()
+    const node = store.customNodes.value.nodes[0]!
+
+    await store.saveLandingRules(true, [
+      { id: '', enabled: true, rule: { kind: 'preset', id: 'ai' }, target: { kind: 'custom_node', id: node.id } },
+      { id: '', enabled: true, rule: { kind: 'domain', pattern: 'old.example.com' }, target: { kind: 'custom_node', id: node.id } },
+    ])
+    await waitDemo()
+
+    // Edit domain pattern and toggle off single domain rule
+    await click('[data-testid="open-landing-rules"]')
+    await click('[data-testid="landing-rule-edit-0"]')
+    await setInput('[data-testid="landing-rule-edit-input-0"]', 'new.example.com')
+    await click('[data-testid="landing-rule-edit-save-0"]')
+    await click('[data-testid="landing-rule-toggle-0"]')
+    await click('[data-testid="landing-rules-save"]')
+    await waitDemo()
+
+    const savedDomain = store.customNodes.value.rules.find((r) => r.rule.kind === 'domain')
+    expect(savedDomain?.rule).toEqual({ kind: 'domain', pattern: 'new.example.com' })
+    expect(savedDomain?.enabled).toBe(false)
+
+    // Re-enable rule, then disable target node -> LandingRulesModal highlights disabled target on both preset and domain
+    await store.saveLandingRules(true, [
+      { id: '', enabled: true, rule: { kind: 'preset', id: 'ai' }, target: { kind: 'custom_node', id: node.id } },
+      { id: '', enabled: true, rule: { kind: 'domain', pattern: 'new.example.com' }, target: { kind: 'custom_node', id: node.id } },
+    ])
+    await waitDemo()
+    await store.setCustomNodeEnabled(node.id, false)
+    await waitDemo()
+
+    await click('[data-testid="open-landing-rules"]')
+    expect(find('[data-testid="landing-preset-warning-ai"]').textContent).toContain('已停用')
+    expect(find('[data-testid="landing-rule-warning-0"]').textContent).toContain('已停用')
+    expect(find('[data-testid="landing-rule-target-tag-0"]').textContent).toContain('已停用')
+
+    // Close, delete target node -> LandingRulesModal shows deleted target warning instead of fallback group
+    find('[aria-label="关闭"]').click()
+    await flushPromises()
+    await store.deleteCustomNode(node.id)
+    await waitDemo()
+    // Re-import a second node so CustomNodesPanel stays visible and we can reopen LandingRulesModal
+    await store.importCustomNodes('socks5://5.6.7.8:1080#Landing-JP', { kind: 'direct' })
+    await waitDemo()
+
+    await click('[data-testid="open-landing-rules"]')
+    expect(find('[data-testid="landing-preset-warning-ai"]').textContent).toContain('已删除')
+    expect(find('[data-testid="landing-rule-warning-0"]').textContent).toContain('已删除')
+    expect(find('[data-testid="landing-rule-target-tag-0"]').textContent).toContain('已删除')
+  })
+
+  it('warns about affected chained nodes and landing rules before disabling or deleting a referenced node, and preserves missing dialer in edit modal (R1, R3)', async () => {
+    const { store } = await setupProfiles()
+    await store.importCustomNodes(
+      [
+        'socks5://1.1.1.1:1080#Exit-A',
+        'socks5://2.2.2.2:1080#Relay-B',
+      ].join('\n'),
+      { kind: 'direct' },
+    )
+    await waitDemo()
+
+    const [exitA, relayB] = store.customNodes.value.nodes
+    // Exit-A chains through Relay-B, and a landing rule also targets Relay-B
+    await store.saveCustomNode({
+      id: exitA!.id,
+      name: exitA!.name,
+      enabled: true,
+      note: '',
+      dialer: { kind: 'custom_node', id: relayB!.id },
+      raw_yaml: exitA!.raw_yaml,
+    })
+    await store.saveLandingRules(true, [
+      { id: '', enabled: true, rule: { kind: 'domain', pattern: 'openai.com' }, target: { kind: 'custom_node', id: relayB!.id } },
+    ])
+    await waitDemo()
+
+    // Disabling Relay-B prompts with impacted chained node and landing rule
+    await click(`[data-testid="toggle-custom-node-${relayB!.id}"]`)
+    const disableImpact = find('[data-testid="disable-custom-node-impact"]')
+    expect(disableImpact.textContent).toContain('Exit-A')
+    expect(disableImpact.textContent).toContain('openai.com')
+    await click('[data-testid="confirm-disable-custom-node"]')
+    await waitDemo()
+    expect(store.customNodes.value.nodes.find((n) => n.id === relayB!.id)?.enabled).toBe(false)
+
+    // Deleting Relay-B prompts with impacted chained node and landing rule
+    await click(`[data-testid="delete-custom-node-${relayB!.id}"]`)
+    const deleteImpact = find('[data-testid="delete-custom-node-impact"]')
+    expect(deleteImpact.textContent).toContain('Exit-A')
+    expect(deleteImpact.textContent).toContain('openai.com')
+    await click('[data-testid="confirm-delete-custom-node"]')
+    await waitDemo()
+    expect(store.customNodes.value.nodes.some((n) => n.id === relayB!.id)).toBe(false)
+
+    // Editing Exit-A preserves the deleted dialer label instead of showing 未选择 and displays a warning
+    await click(`[data-testid="edit-custom-node-${exitA!.id}"]`)
+    expect(find('[data-testid="custom-node-dialer"] button').textContent).toContain('已删除')
+    expect(find('[data-testid="custom-node-dialer-warning"]').textContent).toContain('已删除')
+  })
 })
