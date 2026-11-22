@@ -338,9 +338,14 @@ async function trafficObservation(engine, item, root, context, echo) {
     ? ['-d', dir, '-f', join(dir, 'config.yaml')]
     : [join(dir, 'config.yaml'), '--port', String(context.mixedPort), '--cache-dir', dir]
   if (engine === 'rust' && item.select) args.push('--select', item.select)
+  // A final group snapshot from the same process: the Rust CLI waits and
+  // prints its GROUPS line itself; Mihomo is queried through its controller.
+  if (engine === 'rust' && item.observeGroupAtMs) {
+    args.push('--print-groups', '--wait-ms', String(item.observeGroupAtMs))
+  }
   // Both engines run against the same node pool; reset per-run HEAD counters so
   // a delay sequence starts at its first value for each engine.
-  for (const node of item.nodes) node.resetHeads?.()
+  for (const node of item.resetNodes ?? item.nodes) node.resetHeads?.()
   const handle = startProcess(engine === 'mihomo' ? context.mihomo : context.rust, args, dir)
   const ready = await waitPort(context.mixedPort)
   const result = { engine, ready, attempts: [] }
@@ -365,6 +370,27 @@ async function trafficObservation(engine, item, root, context, echo) {
       .filter((entry) => entry.delta > 0)
       .map((entry) => entry.name)
     result.attempts.push({ ...observation, served })
+  }
+  if (item.observeGroupAtMs) {
+    if (engine === 'mihomo') {
+      const remaining = item.observeGroupAtMs - (performance.now() - started)
+      if (remaining > 0) await sleep(remaining)
+      const snapshot = await queryMihomo(context.controllerPort, item.group)
+      result.group = snapshot.body
+        ? { type: normalizeType(snapshot.body.type), now: snapshot.body.now ?? null, all: snapshot.body.all ?? null }
+        : null
+    } else {
+      const exit = await Promise.race([
+        handle.exited,
+        sleep(30000).then(() => ({ timeout: true })),
+      ])
+      if (exit.timeout) await stopProcess(handle)
+      const groups = parseGroupsLine(handle.logs.stdout)
+      const status = groups?.groups.find((group) => group.name === item.group) ?? null
+      result.group = status
+        ? { type: status.type, now: status.now, all: status.all, members: status.members }
+        : null
+    }
   }
   await stopProcess(handle)
   result.stderr = handle.logs.stderr.slice(-1500)
@@ -395,8 +421,13 @@ async function main() {
     // First HEAD 200 ms, every later HEAD 90 ms: used to establish a previous
     // `fastNode` and then place a faster node inside/outside `tolerance`.
     const nodeChanging = await startNode({ headDelays: [200, 90], status: 204 })
+    // Nested-group touch case: a zero-delay leaf, and a member whose first two
+    // HEADs are 10 ms and every later one 500 ms.
+    const nodeLeaf = await startNode({ delayMs: 0, status: 204 })
+    const nodeN1 = await startNode({ headDelays: [10, 10, 500], status: 204 })
+    const nodeN2 = await startNode({ delayMs: 0, status: 204 })
     const deadPort = await reservePort()
-    const nodes = [nodeSlow, nodeFast, nodeHttpError, nodeMid, nodeChanging]
+    const nodes = [nodeSlow, nodeFast, nodeHttpError, nodeMid, nodeChanging, nodeLeaf, nodeN1, nodeN2]
     try {
       const base = { rust: args.rust, mihomo: args.mihomo }
       const cases = [
@@ -514,6 +545,24 @@ async function main() {
           nodeServers: [nodeFast],
         },
         {
+          id: 'nested-lazy-tick-runs-after-outer-touch',
+          reason: 'a probe of a nested group dials it (pinned Proxy.URLTest -> URLTest.DialContext -> GetProxies(true)), so the parent\'s probe touches the nested group and its lazy interval keeps probing; one dial through the parent at t≈1 s is enough for the nesting to re-rank the 500 ms member',
+          group: 'B',
+          proxies: [nodeLine('leaf', nodeLeaf.port), nodeLine('n1', nodeN1.port), nodeLine('n2', nodeN2.port)],
+          groups: [
+            `{name: A, type: url-test, proxies: [leaf, B], url: 'http://127.0.0.1:${echo.port}/generate_204', interval: 2}`,
+            `{name: B, type: url-test, proxies: [n1, n2], url: 'http://127.0.0.1:${echo.port}/generate_204', interval: 3}`,
+          ],
+          rules: ['MATCH,A'],
+          traffic: true,
+          attemptAtMs: [1000],
+          observeGroupAtMs: 11500,
+          expectNow: 'n2',
+          nodeNames: ['leaf'],
+          nodeServers: [nodeLeaf],
+          resetNodes: [nodeN1],
+        },
+        {
           id: 'tolerance-keeps-previous-fast',
           reason: 'the first resolution sets the 100 ms member; the other member then becomes 90 ms, inside tolerance 50, so the previous fastNode stays (two attempts: startup and after the pinned 10 s fastSingle cache)',
           group: 'AUTO',
@@ -522,6 +571,7 @@ async function main() {
           rules: ['MATCH,AUTO'],
           traffic: true,
           attemptAtMs: [300, 10500],
+          expectSequence: 'steady,steady',
           nodeNames: ['changing', 'steady'],
           nodeServers: [nodeChanging, nodeMid],
         },
@@ -534,6 +584,20 @@ async function main() {
           rules: ['MATCH,AUTO'],
           traffic: true,
           attemptAtMs: [300, 10500],
+          expectSequence: 'steady,changing',
+          nodeNames: ['changing', 'steady'],
+          nodeServers: [nodeChanging, nodeMid],
+        },
+        {
+          id: 'url-test-cache-window',
+          reason: 'pinned URLTest.fastSingle caches the first computation for 10 s: the 90 ms member appears during the second health round (t≈7 s), but the 9 s dial still serves the cached 100 ms choice; the 12.5 s dial, after the window and away from the next probe boundary, switches to it',
+          group: 'AUTO',
+          proxies: [nodeLine('changing', nodeChanging.port), nodeLine('steady', nodeMid.port)],
+          groups: [`{name: AUTO, type: url-test, proxies: [changing, steady], url: 'http://127.0.0.1:${echo.port}/generate_204', interval: 7, lazy: false, timeout: 1000}`],
+          rules: ['MATCH,AUTO'],
+          traffic: true,
+          attemptAtMs: [900, 9000, 12500],
+          expectSequence: 'steady,steady,changing',
           nodeNames: ['changing', 'steady'],
           nodeServers: [nodeChanging, nodeMid],
         },
@@ -693,7 +757,21 @@ async function main() {
           entry.engines = { mihomo, rust }
           const sequence = (observation) => observation.attempts?.map((attempt) => attempt.served.join('+') || attempt.category).join(',')
           entry.observed = { mihomo: sequence(mihomo), rust: sequence(rust) }
-          if (item.expectBlocked) {
+          if (item.observeGroupAtMs) {
+            // Same-process traffic + later group snapshot: compare both the
+            // served node and the final `now` of the observed group.
+            const now = (observation) => observation.group?.now ?? null
+            entry.observed = {
+              mihomo: `${sequence(mihomo)}|now=${now(mihomo)}`,
+              rust: `${sequence(rust)}|now=${now(rust)}`,
+            }
+            entry.status = sequence(mihomo) === sequence(rust)
+              && rust.attempts?.every((attempt) => attempt.category === 'echoed')
+              && now(mihomo) === now(rust)
+              && (!item.expectNow || now(mihomo) === item.expectNow)
+              ? 'pass'
+              : 'differ'
+          } else if (item.expectBlocked) {
             // A rejected CONNECT can surface as a 403 (`blocked`), a close
             // before the head (`closed`) or no answer at all (`timeout`); the
             // engines race differently, but no echo means the CONNECT was not
@@ -704,6 +782,7 @@ async function main() {
           } else if (item.id === 'load-balance-round-robin' || item.attemptAtMs) {
             entry.status = entry.observed.mihomo === entry.observed.rust
               && rust.attempts?.every((attempt) => attempt.category === 'echoed')
+              && (!item.expectSequence || entry.observed.mihomo === item.expectSequence)
               ? 'pass'
               : 'differ'
           } else {
@@ -840,6 +919,7 @@ async function main() {
           'Group `now` and `all` are compared; latency values are not compared byte-wise because scheduler ticks and probe ports differ. url-test/fallback liveness is asserted through the selected member and the observed echo.',
           'Default-lazy cases omit `lazy`/`interval` to exercise the pinned startup check (`go hc.check()` before the first tick); provider and nested-group cases use the same default configuration.',
           'The two tolerance cases serve traffic at 300 ms and 10.5 s: pinned `URLTest.fastSingle` caches the first computation for 10 s, so the second attempt is the first recomputation that can apply `tolerance`. Their served-node sequence is compared.',
+          'url-test-cache-window serves traffic at 0.9 s, 9 s and 12.5 s: the health data changes at the 7 s probe, so at 9 s both engines must still serve the cached member, and only the post-window 12.5 s attempt may switch (scheduled away from the 14 s probe boundary so a probe connection cannot pollute the served-node detection).',
           'The `empty-fallback: REJECT` traffic case compares the blocked outcome class: a rejected CONNECT surfaces as 403, a close before the head or a timeout depending on the race, and no echo is accepted.',
           'Pinned load-balance consistent-hashing uses a per-process random maphash seed, so only the round-robin strategy is compared as an ordered sequence; consistent-hashing/sticky-sessions are covered by unit semantics (stable pin per key, dead-member retry).',
           'The Rust selection cache is `<cache-dir>/cache.yaml` (the selected map); pinned stores the same map in bbolt `cache.db`. Only the persistence effect is compared.',

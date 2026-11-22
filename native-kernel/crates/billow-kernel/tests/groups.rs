@@ -28,16 +28,31 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// Start like the pinned engine, but with the url-test computation cache off by
+/// default: most tests poll `now` immediately after start, before the startup
+/// probes land, and the pinned 10 s `fastSingle` window would freeze that
+/// pre-probe choice. `start_with_fast_cache` keeps a real window.
 fn start(yaml: &str, base: &std::path::Path, cache: Option<PathBuf>) -> (Kernel, Vec<String>) {
+    start_with_fast_cache(yaml, base, cache, Duration::ZERO)
+}
+
+fn start_with_fast_cache(
+    yaml: &str,
+    base: &std::path::Path,
+    cache: Option<PathBuf>,
+    window: Duration,
+) -> (Kernel, Vec<String>) {
     let loaded = billow_kernel::load_config(yaml, "groups.yaml").expect("configuration loads");
-    Kernel::start_with_options(
+    let started = Kernel::start_with_options(
         &loaded,
         None,
         base.to_path_buf(),
         Limits::default(),
         &KernelOptions { cache_dir: cache },
     )
-    .expect("kernel starts")
+    .expect("kernel starts");
+    started.0.groups().set_fast_cache_window(window);
+    started
 }
 
 fn config_with(port: u16, proxies: &str, groups: &str, rules: &str) -> String {
@@ -619,8 +634,25 @@ async fn tolerance_keeps_or_switches_the_previous_fast_node() {
                 .unwrap_or(false)
         })
         .await, "the first resolution must pick the 100 ms member");
-        // The second health round changes the first member to 90 ms.
-        tokio::time::sleep(Duration::from_millis(3400)).await;
+        // The second health round changes the first member to 90 ms; wait for
+        // that record instead of racing a fixed sleep against the tick.
+        assert!(
+            wait_until(Duration::from_secs(6), || {
+                groups
+                    .group_status("AUTO")
+                    .map(|status| {
+                        status
+                            .members
+                            .iter()
+                            .find(|member| member.name == "changing")
+                            .and_then(|member| member.delay)
+                            .is_some_and(|delay| delay < 150)
+                    })
+                    .unwrap_or(false)
+            })
+            .await,
+            "the second health round must record 90 ms"
+        );
         let now = groups
             .group_status("AUTO")
             .map(|status| status.now)
@@ -631,6 +663,158 @@ async fn tolerance_keeps_or_switches_the_previous_fast_node() {
     }
     assert_eq!(observe(50).await, "steady", "tolerance 50 keeps the previous node");
     assert_eq!(observe(0).await, "changing", "tolerance 0 switches to the faster node");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn url_test_fast_cache_holds_the_computed_member_for_the_window() {
+    // Pinned `URLTest.fastSingle` (`singledo.NewSingle(10s)`): `now`/dial
+    // resolutions inside the window return the previous computation even after
+    // the health data changed. The clock is replaced so the test crosses the
+    // pinned 10 s window without sleeping.
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    // Fast for its first probe, then 400 ms: the second health round would
+    // recompute to the other member without the cache.
+    let changing = spawn_http_proxy_node(ProxyNodeMode::HealthSequence {
+        delays: vec![Duration::from_millis(5), Duration::from_millis(400)],
+        status: 204,
+    });
+    let steady = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(100),
+        status: 204,
+    });
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+    let yaml = config_with(
+        port,
+        &format!(
+            "{}{}",
+            http_proxy_line("changing", changing.port),
+            http_proxy_line("steady", steady.port)
+        ),
+        &format!(
+            "  - {{name: AUTO, type: url-test, proxies: [changing, steady], url: '{url}', interval: 600, lazy: false, timeout: 1000}}\n"
+        ),
+        "  - MATCH,AUTO\n",
+    );
+    let dir = temp_dir("fast-cache");
+    let (mut kernel, _) =
+        start_with_fast_cache(&yaml, &dir, None, billow_kernel::groups::FAST_CACHE_WINDOW);
+    let groups = kernel.groups().clone();
+    let shift = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let offset = shift.clone();
+    groups.set_clock(std::sync::Arc::new(move || {
+        std::time::Instant::now() + Duration::from_secs(offset.load(Ordering::Relaxed))
+    }));
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            groups
+                .group_status("AUTO")
+                .map(|status| {
+                    status.now == "changing"
+                        && status.members.iter().all(|member| member.delay.is_some())
+                })
+                .unwrap_or(false)
+        })
+        .await,
+        "the startup probe must rank the 5 ms member: {:?}",
+        groups.group_status("AUTO")
+    );
+    // A second health round makes `changing` 400 ms; the cache still serves
+    // the previous calculation.
+    let _ = groups.probe_group_named("AUTO").await;
+    let changed = groups.group_status("AUTO").expect("status");
+    assert!(
+        changed
+            .members
+            .iter()
+            .find(|member| member.name == "changing")
+            .and_then(|member| member.delay)
+            .is_some_and(|delay| delay > 300),
+        "the second probe must record 400 ms: {changed:?}"
+    );
+    assert_eq!(
+        changed.now, "changing",
+        "inside the fastSingle window the previous computation stays: {changed:?}"
+    );
+    // Past the pinned window the next resolution recomputes.
+    shift.store(11, Ordering::Relaxed);
+    assert_eq!(
+        groups.group_status("AUTO").expect("status").now,
+        "steady",
+        "after the window a resolution must use the 400 ms health data"
+    );
+    // And that recomputation is itself cached.
+    assert_eq!(groups.group_status("AUTO").expect("status").now, "steady");
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probing_a_nested_group_touches_it_so_its_lazy_tick_reprobes() {
+    // Pinned `Proxy.URLTest` on a nested member dials it, and the nested
+    // group's own `DialContext` calls `GetProxies(true)`; a probe therefore
+    // touches the nested group and its lazy interval keeps running.
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let leaf = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::ZERO,
+        status: 204,
+    });
+    // 5 ms for the first two HEADs, then 500 ms: only a later health round
+    // makes it slower than the 80 ms sibling.
+    let n1 = spawn_http_proxy_node(ProxyNodeMode::HealthSequence {
+        delays: vec![
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+            Duration::from_millis(500),
+        ],
+        status: 204,
+    });
+    let n2 = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(80),
+        status: 204,
+    });
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+    let yaml = config_with(
+        port,
+        &format!(
+            "{}{}{}",
+            http_proxy_line("leaf", leaf.port),
+            http_proxy_line("n1", n1.port),
+            http_proxy_line("n2", n2.port)
+        ),
+        &format!(
+            // B's interval is wide enough that the touch from A's 2 s probe is
+            // comfortably inside the lazy window at B's 5 s boundary.
+            "  - {{name: A, type: url-test, proxies: [leaf, B], url: '{url}', interval: 2, lazy: false}}\n  - {{name: B, type: url-test, proxies: [n1, n2], url: '{url}', interval: 5}}\n"
+        ),
+        "  - MATCH,A\n",
+    );
+    let dir = temp_dir("nested-touch");
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    let reprobed = wait_until(Duration::from_secs(10), || {
+        groups
+            .group_status("B")
+            .map(|status| {
+                status
+                    .members
+                    .iter()
+                    .find(|member| member.name == "n1")
+                    .and_then(|member| member.delay)
+                    .is_some_and(|delay| delay > 300)
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    let status = groups.group_status("B").expect("status");
+    assert!(
+        reprobed,
+        "the touched nested group's lazy tick must re-probe: {status:?}"
+    );
+    assert_eq!(status.now, "n2", "the 500 ms member loses to the 80 ms one");
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +932,99 @@ async fn provider_snapshot_update_triggers_a_health_check() {
     );
     kernel.stop().expect("stop");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_group_url_uses_the_provider_health_check_timeout() {
+    // Pinned `registerHealthCheckTask` stores the URL inside the provider's
+    // `HealthCheck`, so `HealthCheck.execute` applies the provider's
+    // `health-check.timeout`; the group's own `timeout` is irrelevant here.
+    let dir = temp_dir("group-url-provider-timeout");
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    // 150 ms HEAD: alive under the provider's 500 ms timeout, a timeout under
+    // the group's 40 ms one.
+    let node = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(150),
+        status: 204,
+    });
+    std::fs::write(
+        dir.join("nodes.yaml"),
+        format!(
+            "proxies:\n  - {{name: slow, type: http, server: 127.0.0.1, port: {}}}\n",
+            node.port
+        ),
+    )
+    .expect("provider file");
+    let port = free_port();
+    let provider_url = format!("http://127.0.0.1:{}/provider", echo.port);
+    let group_url = format!("http://127.0.0.1:{}/group", echo.port);
+    let yaml = format!(
+        "mixed-port: {port}\nlog-level: silent\nproxy-providers:\n  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: true\n      url: '{provider_url}'\n      timeout: 500\n      interval: 600\n      lazy: false\nproxy-groups:\n  - {{name: AUTO, type: url-test, use: [remote], url: '{group_url}', timeout: 40, interval: 600, lazy: false}}\nrules:\n  - MATCH,AUTO\n"
+    );
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    let alive = wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("AUTO")
+            .map(|status| {
+                status
+                    .members
+                    .iter()
+                    .find(|member| member.name == "slow")
+                    .is_some_and(|member| member.alive && member.delay.is_some())
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        alive,
+        "the extra group-URL probe must use the provider's 500 ms timeout: {:?}",
+        groups.group_status("AUTO")
+    );
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_group_url_equal_to_the_provider_url_registers_no_probe() {
+    // Pinned `registerHealthCheckTask` ignores a URL equal to `hc.url`. With
+    // `health-check.enable: false` the provider interval stays 0, so nothing
+    // probes at all; a duplicate registration would set the interval from the
+    // group and populate the delay.
+    let dir = temp_dir("group-url-dedupe");
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let node = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::ZERO,
+        status: 204,
+    });
+    std::fs::write(
+        dir.join("nodes.yaml"),
+        format!(
+            "proxies:\n  - {{name: only, type: http, server: 127.0.0.1, port: {}}}\n",
+            node.port
+        ),
+    )
+    .expect("provider file");
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+    let yaml = format!(
+        "mixed-port: {port}\nlog-level: silent\nproxy-providers:\n  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: false\n      url: '{url}'\nproxy-groups:\n  - {{name: AUTO, type: url-test, use: [remote], url: '{url}', interval: 1}}\nrules:\n  - MATCH,AUTO\n"
+    );
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let status = groups.group_status("AUTO").expect("status");
+    let probes = node.connections.load(Ordering::Relaxed);
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        status
+            .members
+            .iter()
+            .all(|member| member.delay.is_none()),
+        "the equal provider URL must not register a second probe: {status:?}"
+    );
+    assert_eq!(probes, 0, "pinned checks nothing here (got {probes} HEADs)");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -282,16 +282,18 @@ rebuilt when a provider generation changes.
 Types: `select` (first member, `default-selected`, or a fixed selection),
 `url-test` (the pinned `fast()` algorithm: lowest `LastDelayForTestUrl` among
 alive members, `tolerance` keeps the current node, a fixed selection wins while
-alive), `fallback` (first alive member; a fixed member that died is cleared and
-scanning continues) and `load-balance` (`consistent-hashing` default,
-`round-robin`, `sticky-sessions`, all using the pinned `jumpHash`; a dead
-bucket is retried up to five times and then the list is traversed). Pinned
-v1.19.34 removed `relay` ("please using dialer-proxy instead"), so the Rust
-kernel rejects that type with the same named reason instead of implementing a
-shape the pinned engine refuses. `hash-key: in-user` is rejected (the mixed
-inbound does not propagate the authenticated user to the outbound), and
-`routing-mark`/`interface-name`/`dialer-proxy` on a group are recorded as
-warnings exactly as pinned logs them.
+alive; a `now`/dial resolution reuses the previous computation for ten seconds,
+pinned `URLTest.fastSingle` — `select` and a dial-failure-triggered health
+check reset it, the periodic probe does not), `fallback` (first alive member; a
+fixed member that died is cleared and scanning continues) and `load-balance`
+(`consistent-hashing` default, `round-robin`, `sticky-sessions`, all using the
+pinned `jumpHash`; a dead bucket is retried up to five times and then the list
+is traversed). Pinned v1.19.34 removed `relay` ("please using dialer-proxy
+instead"), so the Rust kernel rejects that type with the same named reason
+instead of implementing a shape the pinned engine refuses. `hash-key: in-user`
+is rejected (the mixed inbound does not propagate the authenticated user to the
+outbound), and `routing-mark`/`interface-name`/`dialer-proxy` on a group are
+recorded as warnings exactly as pinned logs them.
 
 Health checks: `interval`, `timeout` (milliseconds, default 5000),
 `max-failed-times` (default 5), `lazy` (default true), `url` (default
@@ -308,16 +310,21 @@ probes on its own interval boundary, and `lazy` skips a boundary when that
 task was not touched since the previous one. A group task uses the group
 timestamp; a provider task uses the provider's own `lazy`/`lastTouch`. A real
 dial touches every group on the resolved path (outer and nested) and every
-`use` provider of those groups, while `now`/status reads and probes use the
-non-touching path. Probes dial through the member's full `dialer-proxy` chain
-(including nested groups) and issue `HEAD`, then record the per-URL alive flag
-and delay. The initial state matches pinned: a member with no probe record yet
+`use` provider of those groups. A probe touches every nested group it dials
+(pinned `Proxy.URLTest` runs the member's `DialContext`, and a group's
+`DialContext` calls `GetProxies(true)`), so a nested group's lazy interval
+keeps probing after the parent was probed or dialed; `now`/status reads never
+touch. Probes dial through the member's full `dialer-proxy` chain (including
+nested groups) and issue `HEAD`, then record the per-URL alive flag and delay.
+The initial state matches pinned: a member with no probe record yet
 is alive and its delay is `65535`. A failed dial triggers the pinned
 `onDialFailed` thresholds (a connection-refused error triggers immediately,
 otherwise `max-failed-times` within `timeout` trigger a health check; success
 resets the count). Provider `health-check` drives `use` provider members; an
 explicit group `url` additionally probes those members at the group URL with
-the group `filter`/`expected-status` under the provider's lazy/touch state.
+the group `filter`/`expected-status` under the provider's lazy/touch state and
+the provider's `health-check.timeout` (pinned `HealthCheck.execute`), while a
+URL equal to the provider's `health-check.url` registers nothing.
 UDP datagrams through a group with `disable-udp` are dropped and logged.
 
 Selection persistence: `profile.store-selected` (default true) writes fixed
@@ -345,11 +352,15 @@ public-suffix approximation for the hash key is the last two labels (no PSL
 table in the kernel), and `load-balance.Now()` is empty exactly as pinned.
 Evidence: `tests/groups.rs` (parsing, filters/include-all and the configured
 empty fallback, nesting, selection, startup probes under the default lazy
-config, provider snapshot re-checks, tolerance state changes, dialer-proxy
-probe chains, round-robin/consistent-hashing, provider `use`, persistence) and
-`tool/kernel-compat/evidence/t23-differential.json` (24 pinned-Mihomo cases +
+config, probing a nested group touching its lazy tick, the ten-second url-test
+computation cache, provider snapshot re-checks, extra group-URL probe
+timeout/dedupe, tolerance state changes, dialer-proxy probe chains,
+round-robin/consistent-hashing, provider `use`, persistence) and
+`tool/kernel-compat/evidence/t23-differential.json` (26 pinned-Mihomo cases +
 persistence, all matching; the tolerance cases sample twice because pinned
-caches `fastSingle` for 10 s).
+caches `fastSingle` for 10 s, `url-test-cache-window` samples at 0.9/9/12.5 s,
+and the nested-touch case dials once at 1 s and reads the nested group at
+11.5 s).
 
 ## Protocol outbounds
 
@@ -859,7 +870,7 @@ Mihomo binary and a loopback provider server:
 group differential runs the same pinned binary with loopback CONNECT nodes:
 `node tool/kernel-compat/t23-differential.mjs --mihomo <binary> --rust
 <billow-kernel> --out tool/kernel-compat/evidence/t23-differential.json`
-(24 cases plus persistence; see `evidence/t23-groups.md`).
+(26 cases plus persistence; see `evidence/t23-groups.md`).
 
 - `tests/config.rs` — parsing, strict option tables, error tags.
 - `tests/groups.rs` — T23: every group type/field, relay rejection, cycles,
@@ -1051,7 +1062,7 @@ node tool/kernel-compat/runner.mjs \
 # the harness's own acceptance command
 node --test tool/kernel-compat/runner.test.mjs
 
-# T23 group/selection/health differential (24 cases + persistence)
+# T23 group/selection/health differential (26 cases + persistence)
 node tool/kernel-compat/t23-differential.mjs \
   --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 \
   --rust native-kernel/target/release/billow-kernel \

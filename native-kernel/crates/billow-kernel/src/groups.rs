@@ -44,6 +44,17 @@ pub const DEFAULT_MAX_FAILED_TIMES: usize = 5;
 const PROBE_LIMIT: usize = 10;
 /// `LastDelayForTestUrl` before any successful probe.
 const UNKNOWN_DELAY: u16 = u16::MAX;
+/// Pinned `URLTest.fastSingle` (`singledo.NewSingle(time.Second * 10)`): a
+/// `now`/dial resolution within ten seconds of the last computation returns
+/// that cached member unchanged, even after the health data changed. A fixed
+/// selection or a dial-failure-triggered health check resets it; a periodic
+/// probe does not.
+pub const FAST_CACHE_WINDOW: Duration = Duration::from_secs(10);
+
+/// Monotonic time source of the url-test computation cache. Production uses
+/// [`Instant::now`]; tests move a shared offset to cross the pinned window
+/// without sleeping ten seconds.
+pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// An error while expanding or resolving a group.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -235,6 +246,8 @@ struct GroupState {
     selected: Option<String>,
     /// Cached url-test winner (`fastNode`).
     fast_node: Option<String>,
+    /// Pinned `fastSingle`: the last computed member and its computation time.
+    fast_cache: Option<(Member, Instant)>,
     /// Round-robin cursor and sticky-sessions cache for load-balance.
     round_robin: usize,
     sticky: BTreeMap<u64, (usize, Instant)>,
@@ -329,6 +342,10 @@ pub struct GroupRegistry {
     tasks: Vec<HealthTask>,
     cache: Option<SelectionCache>,
     dials: AtomicU64,
+    /// Time source of the url-test computation cache (see [`FAST_CACHE_WINDOW`]).
+    clock: RwLock<Clock>,
+    /// The window [`FAST_CACHE_WINDOW`] unless a test shortens it.
+    fast_cache_window: Mutex<Duration>,
 }
 
 impl std::fmt::Debug for GroupRegistry {
@@ -410,6 +427,8 @@ impl GroupRegistry {
             tasks: Vec::new(),
             cache,
             dials: AtomicU64::new(0),
+            clock: RwLock::new(Arc::new(Instant::now)),
+            fast_cache_window: Mutex::new(FAST_CACHE_WINDOW),
         };
 
         // A cached selection wins over `default-selected` (`ForceSet` in the
@@ -457,6 +476,43 @@ impl GroupRegistry {
 
     pub fn group(&self, name: &str) -> Option<&ProxyGroup> {
         self.index.get(name).map(|position| &self.groups[*position].def)
+    }
+
+    /// Replace the monotonic clock of the url-test computation cache.
+    /// Test/diagnostic hook: production keeps [`Instant::now`].
+    #[doc(hidden)]
+    pub fn set_clock(&self, clock: Clock) {
+        *self
+            .clock
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = clock;
+    }
+
+    /// Shorten (or disable with [`Duration::ZERO`]) the pinned 10 s url-test
+    /// computation cache. Test/diagnostic hook: production keeps
+    /// [`FAST_CACHE_WINDOW`].
+    #[doc(hidden)]
+    pub fn set_fast_cache_window(&self, window: Duration) {
+        *self
+            .fast_cache_window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = window;
+    }
+
+    fn clock_now(&self) -> Instant {
+        let clock = self
+            .clock
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        clock()
+    }
+
+    fn fast_cache_window(&self) -> Duration {
+        *self
+            .fast_cache_window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Member names in pinned `all` order.
@@ -757,6 +813,16 @@ impl GroupRegistry {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Pinned `URLTest.fastSingle` (`singledo.NewSingle(10s)`): a resolution
+        // inside the window returns the cached computation unchanged, even
+        // when the health data changed meanwhile. `select`/a triggered health
+        // check resets it; the periodic probe does not.
+        if let Some((cached, computed)) = state.fast_cache.clone() {
+            if self.clock_now().saturating_duration_since(computed) < self.fast_cache_window()
+            {
+                return Some(cached);
+            }
+        }
         // A fixed selection wins while it is alive.
         if let Some(selected) = state.selected.clone() {
             if let Some(member) = members
@@ -764,6 +830,7 @@ impl GroupRegistry {
                 .find(|member| member.name == selected && self.alive_for(member, &def.url))
             {
                 state.fast_node = Some(member.name.clone());
+                state.fast_cache = Some((member.clone(), self.clock_now()));
                 return Some(member.clone());
             }
         }
@@ -808,11 +875,15 @@ impl GroupRegistry {
             state.fast_node = Some(fast.name.clone());
         }
         let node = state.fast_node.clone().unwrap_or_else(|| fast.name.clone());
-        members
+        let chosen = members
             .iter()
             .find(|member| member.name == node)
             .cloned()
-            .or(Some(fast))
+            .or(Some(fast));
+        if let Some(member) = &chosen {
+            state.fast_cache = Some((member.clone(), self.clock_now()));
+        }
+        chosen
     }
 
     fn fallback_member(&self, runtime: &GroupRuntime, members: &[Member]) -> Option<Member> {
@@ -1138,7 +1209,9 @@ impl GroupRegistry {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.selected = Some(member.to_string());
+            // Pinned `URLTest.ForceSet` resets `fastNode` and `fastSingle`.
             state.fast_node = None;
+            state.fast_cache = None;
         }
         self.persist(group, Some(member));
         Ok(true)
@@ -1233,6 +1306,9 @@ impl GroupRegistry {
                 return;
             }
             state.testing = true;
+            // Pinned `URLTest.healthCheck` resets `fastSingle` before and after
+            // `GroupBase.healthCheck`; the periodic probe leaves it alone.
+            state.fast_cache = None;
         }
         let registry = self.clone();
         tokio::spawn(async move {
@@ -1243,6 +1319,7 @@ impl GroupRegistry {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.testing = false;
             state.failed_times = 0;
+            state.fast_cache = None;
         });
     }
 
@@ -1401,11 +1478,14 @@ impl GroupRegistry {
             let selected = match &member.reference {
                 MemberRef::Builtin(Builtin::Direct) => Selected::Direct,
                 MemberRef::Builtin(_) => return Err("reject member".to_string()),
-                // Pinned `URLTest`/`GroupBase.URLTest` walks nested members
-                // with `GetProxies(false)`: a probe must not refresh the lazy
-                // touch state of the nested group.
+                // Pinned `Proxy.URLTest` on a nested group goes through that
+                // group's own `DialContext` (`URLTest.DialContext` calls
+                // `fast(true)`, `Selector`/`Fallback` use their `true` path),
+                // so a probe touches every group it dials, exactly like a real
+                // dial; the touched nested group's lazy tick then runs on its
+                // own interval.
                 MemberRef::Group(position) => self
-                    .resolve_group(*position, &target, &mut Vec::new(), false)
+                    .resolve_group(*position, &target, &mut Vec::new(), true)
                     .map_err(|error| error.to_string())?,
                 MemberRef::Proxy(proxy) => Selected::Proxy {
                     proxy: proxy.clone(),
@@ -1531,13 +1611,28 @@ impl GroupRegistry {
                     if interval == 0 {
                         continue;
                     }
+                    // Pinned `registerHealthCheckTask` trims the URL and
+                    // ignores it when it equals the provider's own
+                    // `health-check.url`; that default URL is already probed by
+                    // the provider task below.
+                    let provider_url = provider_config
+                        .as_ref()
+                        .and_then(|config| config.url.clone())
+                        .unwrap_or_default();
+                    if def.url.trim().is_empty() || def.url.trim() == provider_url {
+                        continue;
+                    }
                     // The extra URL lives inside the provider's own
-                    // `HealthCheck`, so its `lazy` flag and `lastTouch` are the
-                    // provider's, never the group's.
+                    // `HealthCheck`, so its `lazy` flag, `lastTouch` and
+                    // `timeout` are the provider's, never the group's.
                     let lazy = provider_config
                         .as_ref()
                         .map(|config| config.lazy)
                         .unwrap_or(true);
+                    let timeout = provider_config
+                        .as_ref()
+                        .map(|config| config.timeout)
+                        .unwrap_or(0);
                     let generation = self
                         .providers
                         .proxy_provider(provider)
@@ -1547,10 +1642,13 @@ impl GroupRegistry {
                         label: format!("group:{}->provider:{provider}", def.name),
                         url: def.url.clone(),
                         expected: def.expected_status.clone(),
-                        timeout: Duration::from_millis(if def.timeout == 0 {
+                        // `HealthCheck.execute` reads `hc.timeout`, which is
+                        // the provider's `health-check.timeout` (5000 default),
+                        // not the group's `timeout`.
+                        timeout: Duration::from_millis(if timeout == 0 {
                             DEFAULT_TIMEOUT_MS
                         } else {
-                            def.timeout
+                            timeout
                         }),
                         interval: Duration::from_secs(interval),
                         lazy,
