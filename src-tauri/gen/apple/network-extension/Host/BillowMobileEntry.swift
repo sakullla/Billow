@@ -21,14 +21,18 @@ enum BillowMobileEntry {
         let version = activeVersion()
         var states: [EngineState] = []
         for engine in BillowVPNManager.Engine.allCases {
-            let status = try? await manager.status(of: engine)
+            // Packaging presence and runtime state are different facts: an
+            // extension that is installed but not started answers no status.
+            let installed = manager.isInstalled(engine)
+            let status = installed ? try? await manager.status(of: engine) : nil
+            let connected = installed ? await manager.isConnected(engine: engine) : false
             states.append(EngineState(
                 engine: engine.rawValue,
-                installed: status != nil,
-                connected: await manager.isConnected(engine: engine),
-                version: status?.version ?? version,
+                installed: installed,
+                connected: connected,
+                version: installed ? (status?.version ?? version) : nil,
                 engineVersion: status?.embeddedVersion,
-                lastError: status?.lastError ?? manager.describeLastError(engine: engine)
+                lastError: installed ? (status?.lastError ?? manager.describeLastError(engine: engine)) : nil
             ))
         }
         return states

@@ -1752,10 +1752,15 @@ const TABS = computed(() => [
           <div class="grow">
             <strong>{{ engineName(row.engine) }}</strong>
             <p class="muted small">
-              {{ row.installed
-                ? (row.engineVersion ?? row.version ?? '已安装')
-                : '当前安装包未找到该扩展' }}
-              <template v-if="row.connected"> · 正在承载流量</template>
+              <template v-if="row.installed">
+                <template v-if="row.connected">
+                  {{ row.engineVersion ?? row.version ?? '已启动' }} · 正在承载流量
+                </template>
+                <template v-else>
+                  已安装（未启动）<template v-if="row.version"> · 资源 {{ row.version }}</template>
+                </template>
+              </template>
+              <template v-else>当前安装包未找到该扩展</template>
               <template v-if="row.lastError"> · 最后错误：{{ row.lastError }}</template>
             </p>
           </div>

@@ -16,6 +16,8 @@ final class BillowVPNManager {
         case rust
 
         var bundleId: String { "\(Bundle.main.bundleIdentifier ?? "app.billow.client").\(rawValue)" }
+        /// Directory name under the host's PlugIns (xcodegen PRODUCT_NAME).
+        var bundleName: String { self == .mihomo ? "BillowMihomo" : "BillowRust" }
         var displayName: String { self == .mihomo ? "Mihomo" : "Rust" }
     }
 
@@ -31,6 +33,22 @@ final class BillowVPNManager {
     }
 
     var appGroupId: String { groupId }
+
+    // MARK: - Packaging
+
+    /// Whether the appex ships in this build. `manager.status(of:)` only proves
+    /// that an extension answered, so a not-yet-started or failing extension
+    /// must not be reported as missing.
+    func isInstalled(_ engine: Engine) -> Bool {
+        guard let plugins = Bundle.main.builtInPlugInsURL else { return false }
+        let url = plugins.appendingPathComponent("\(engine.bundleName).appex", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return false
+        }
+        return Bundle(url: url)?.bundleIdentifier == engine.bundleId
+    }
 
     // MARK: - Configuration management
 

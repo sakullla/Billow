@@ -1,0 +1,24 @@
+# T7-A3 host xcodebuild attempt (excerpt)
+# Full output was in /tmp and is not checked in; these are the exact lines that
+# matter (command, blocking error and build result).
+
+$ cd src-tauri/gen/apple
+$ xcodebuild -project billow.xcodeproj -scheme billow_iOS -configuration debug \
+    -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build
+
+npm notice run tauri ios xcode-script -v --platform iOS Simulator ...
+failed to read /Users/yanggeng/github/Billow/src-tauri/gen/apple/.tauri/cli-options-server.json; the `tauri ios dev` or `tauri ios build` command must be running while Xcode builds the app: No such file or directory (os error 2)
+       Error [tauri_cli_node] failed to read .../.tauri/cli-options-server.json ...
+Command PhaseScriptExecution failed with a nonzero exit code
+
+** BUILD FAILED **
+
+The following build commands failed:
+	PhaseScriptExecution Build\ Rust\ Code ... (in target 'billow_iOS' from project 'billow')
+	Building project billow with scheme billow_iOS and configuration debug
+(2 failures)
+
+# The failure is the Tauri pre-build phase, before any Swift file is compiled.
+# The full host Swift + ObjC source set type-checks; see
+# t7-ios-a3-host-typecheck.log and `npm run ios:verify-host`.

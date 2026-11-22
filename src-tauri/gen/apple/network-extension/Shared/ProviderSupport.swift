@@ -2,16 +2,22 @@ import Foundation
 import NetworkExtension
 
 /// Per-target identity. The Swift sources in network-extension/Shared are
-/// compiled into both extensions; each target defines exactly one of
-/// BILLOW_ENGINE_MIHOMO / BILLOW_ENGINE_RUST (see project.yml).
+/// compiled into both extensions and the host; each target defines exactly one
+/// of BILLOW_ENGINE_MIHOMO / BILLOW_ENGINE_RUST / BILLOW_ENGINE_HOST (see
+/// project.yml).
 enum BillowEngineIdentity {
     static var engine: String {
         #if BILLOW_ENGINE_MIHOMO
         return "mihomo"
         #elseif BILLOW_ENGINE_RUST
         return "rust"
+        #elseif BILLOW_ENGINE_HOST
+        // The host never writes a provider status file; it reads both engines
+        // by name through AppGroupStore/BillowVPNManager. A distinct value keeps
+        // an accidental write from overwriting either extension's status.
+        return "host"
         #else
-        #error("Define BILLOW_ENGINE_MIHOMO or BILLOW_ENGINE_RUST for this target")
+        #error("Define BILLOW_ENGINE_MIHOMO, BILLOW_ENGINE_RUST or BILLOW_ENGINE_HOST for this target")
         #endif
     }
 

@@ -87,4 +87,6 @@ xcrun xctrace record --device <UDID> --template 'VM Tracker' --attach BillowRust
 - R3：**未验证**（无真机数字）。
 - R4：**未验证**（无逐轮基线）。
 - 代码侧的输入已就绪：缓冲/队列上限见 `tool/kernel-compat/evidence/t7-ios-ffi.md` 的 Bounds 表；reload 会关闭全部流与关联并递增 `generation`；`stats` 暴露高水位与丢弃计数。
-- 宿主设置入口与资源准备已接通（T7-A2）：设置 → 内核 → iOS 扩展可读取两个扩展、选择、准备当前配置、连接/断开/重载并显示错误码；`ios_vpn_prepare_active` 负责 staging，`ResourcesInstaller` 对同一版本同时保留 mihomo/rust manifest。下一步只剩真机执行本表并附原始 trace/状态 JSON。
+- 宿主设置入口与资源准备已接通（T7-A2）：设置 → 内核 → iOS 扩展可读取两个扩展、选择、准备当前配置、连接/断开/重载并显示错误码；`ios_vpn_prepare_active` 负责 staging，`ResourcesInstaller` 对同一版本同时保留 mihomo/rust manifest。
+- T7-A3 修正：宿主 target 使用独立条件 `BILLOW_ENGINE_HOST`，`Shared/PacketPump.swift` 只在两个扩展 target 编译；`tool/ios/verify-host-sources.sh` 用真实源集同时 typecheck 宿主/两个扩展。准备后调用 `ios_vpn_prune`（保留新版本与运行中扩展报告的版本）避免 `versions/<hash>` 累积；扩展 `installed` 改为检查 Bundle/PlugIns 中的 `.appex`，未启动时设置页显示“已安装（未启动）”；staging 也会移除 `sniffer.enable: true`（本内核未实现嗅探，域名规则退化为目标 IP/DNS 结果）。
+- 下一步只剩真机执行本表并附原始 trace/状态 JSON。

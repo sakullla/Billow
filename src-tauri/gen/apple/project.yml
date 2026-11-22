@@ -95,11 +95,11 @@ targets:
       base:
         ARCHS: [arm64]
         VALID_ARCHS: arm64
-        # Shared/ProviderSupport.swift requires exactly one engine identity even
-        # in the host target; the host never starts either engine through this
-        # constant (BillowVPNManager chooses by bundle id), so either define is
-        # valid. Keep the host on the historical default.
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: BILLOW_ENGINE_MIHOMO
+        # Shared/ProviderSupport.swift requires exactly one identity per target.
+        # The host must not define an engine condition: PacketPump.swift would
+        # then compile the Mihomo ingest branch and reference
+        # GoMihomoReadPacket, which only BillowMihomo links/declares.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: BILLOW_ENGINE_HOST
         LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
         LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true

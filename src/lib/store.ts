@@ -1217,6 +1217,19 @@ export function createStore(backend: Backend) {
       try {
         const result = await backend.iosPrepareActive()
         await this.refreshIosVpn()
+        // Reclaim superseded versions/<hash> directories, but keep the version
+        // a connected extension still reports: AppGroupStore.prune() preserves
+        // current.json on its own, and an extension that is already running
+        // must not lose the files it validated.
+        const keeping = Array.from(new Set([
+          result.version,
+          ...this.iosEngines.value.map((row) => row.version).filter((value): value is string => Boolean(value)),
+        ]))
+        try {
+          await backend.iosPrune(keeping)
+        } catch (error) {
+          console.error(error)
+        }
         toast(`已准备资源 ${result.version}（${result.engines.join(' / ')}）`, 'success')
         return result
       } catch (error) {

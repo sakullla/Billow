@@ -130,6 +130,11 @@ struct Staged {
 ///   Tunnel itself is the device side and the device route belongs to
 ///   NetworkExtension; the shared file keeps the block for Mihomo, which uses
 ///   its launcher TUN;
+/// * a `sniffer` block with `enable: true` is removed as well. This kernel
+///   does not implement sniffing (`config.rs` rejects the enabled block by
+///   name), and the iOS Tunnel cannot accept a configuration it refuses. The
+///   difference is visible: domain rules after staging match on the
+///   destination IP/DNS result rather than a sniffed SNI/Host;
 /// * `rule-providers.*.path` / `proxy-providers.*.path` files referenced
 ///   outside the version directory are copied next to the config and the path
 ///   is rewritten to the basename (the extension cannot read the host sandbox);
@@ -144,6 +149,12 @@ fn stage_config(home: &Path, yaml: &str) -> Result<Staged, String> {
         mapping.remove(serde_yaml::Value::String("tun".into()));
         tracing::warn!(
             "tun.enable was removed for the Rust engine: the iOS Packet Tunnel owns the device route"
+        );
+    }
+    if block_enabled(mapping.get(serde_yaml::Value::String("sniffer".into()))) {
+        mapping.remove(serde_yaml::Value::String("sniffer".into()));
+        tracing::warn!(
+            "sniffer.enable was removed for the Rust engine: sniffing is not implemented, so domain rules use the destination IP/DNS result instead of a sniffed SNI/Host"
         );
     }
     for group in ["rule-providers", "proxy-providers"] {
@@ -744,6 +755,28 @@ mod tests {
         assert!(std::fs::read_to_string(&staged.path)
             .unwrap()
             .contains("mixed-port"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn staging_strips_enabled_sniffer_so_the_config_loader_accepts_it() {
+        use crate::config::load_config;
+
+        let home = stage_dir("sniffer");
+        let yaml = "mixed-port: 17893\n\
+                    sniffer:\n  enable: true\n  sniff:\n    HTTP:\n      ports: [80]\n\
+                    rules:\n  - MATCH,DIRECT\n";
+        // The shared file is rejected by name before staging.
+        let error = load_config(yaml, "config.yaml").unwrap_err().to_string();
+        assert!(error.contains("sniffer"), "{error}");
+        let staged = stage_config(&home, yaml).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&staged.yaml).unwrap();
+        assert_eq!(
+            value.get("mixed-port").and_then(serde_yaml::Value::as_u64),
+            Some(17_893)
+        );
+        assert!(value.get("sniffer").is_none(), "{}", staged.yaml);
+        load_config(&staged.yaml, "config.rust.yaml").expect("staged config must load");
         let _ = std::fs::remove_dir_all(&home);
     }
 

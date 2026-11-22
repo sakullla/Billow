@@ -1,6 +1,11 @@
 import Foundation
 import NetworkExtension
 
+// Extension-only file: the host target also compiles network-extension/Shared
+// (for AppGroupStore/ProviderSupport), but it neither reads packetFlow nor
+// links an engine, so compiling this file there would surface an undefined
+// engine symbol. Each extension target defines exactly one of the two guards.
+#if BILLOW_ENGINE_MIHOMO || BILLOW_ENGINE_RUST
 
 /// Reads IP packets from NEPacketTunnelFlow and hands each one to `ingest`.
 ///
@@ -82,4 +87,6 @@ func mihomoIngest(_ flow: NEPacketTunnelFlow, _ packets: [Data]) -> Int32 {
     return 0
 }
 
-#endif
+#endif // BILLOW_ENGINE_MIHOMO
+
+#endif // BILLOW_ENGINE_MIHOMO || BILLOW_ENGINE_RUST

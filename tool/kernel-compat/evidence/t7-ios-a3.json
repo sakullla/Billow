@@ -1,0 +1,67 @@
+{
+  "format": "kernel-t7-ios-a3",
+  "task": "T7",
+  "attempt": "T7-A3",
+  "workflow": "2026-11-20-native-rust-kernel",
+  "generatedAt": "2026-11-24T00:00:00Z",
+  "repairs": {
+    "P0HostTarget": {
+      "problem": "billow_iOS compiled Shared/PacketPump.swift with BILLOW_ENGINE_MIHOMO and therefore referenced GoMihomoReadPacket, which only BillowMihomo declares/links; A2's typecheck excluded PacketPump.swift and hid it.",
+      "fix": {
+        "condition": "BILLOW_ENGINE_HOST for billow_iOS in project.yml and project.pbxproj; ProviderSupport returns \"host\" for that target",
+        "packetPump": "Shared/PacketPump.swift is wrapped in #if BILLOW_ENGINE_MIHOMO || BILLOW_ENGINE_RUST (extension-only)",
+        "verifier": "tool/ios/verify-host-sources.sh + npm run ios:verify-host"
+      },
+      "hostSourceSet": [
+        "network-extension/Shared/AppGroupStore.swift",
+        "network-extension/Shared/BillowVPNError.swift",
+        "network-extension/Shared/Logger.swift",
+        "network-extension/Shared/PacketPump.swift",
+        "network-extension/Shared/ProviderSupport.swift",
+        "network-extension/Host/BillowMobileBridge.swift",
+        "network-extension/Host/BillowMobileEntry.swift",
+        "network-extension/Host/BillowVPNIntents.swift",
+        "network-extension/Host/BillowVPNManager.swift",
+        "network-extension/Host/ResourcesInstaller.swift"
+      ],
+      "typecheckResult": "pass: host (including Sources/billow/main.mm), BillowMihomo and BillowRust each with their own condition; no file excluded",
+      "xcodebuildResult": "blocked before Swift compilation: tauri ios xcode-script needs src-tauri/gen/apple/.tauri/cli-options-server.json (only a running tauri ios dev/build creates it)"
+    },
+    "P2Sniffer": {
+      "where": "native-kernel/crates/billow-kernel/src/ios_vpn.rs (stage_config)",
+      "behaviour": "sniffer.enable:true is removed with a warning before config.rs loads the staged file; domain rules use the destination IP/DNS result instead of a sniffed SNI/Host because this kernel has no sniffing implementation",
+      "test": "ios_vpn::tests::staging_strips_enabled_sniffer_so_the_config_loader_accepts_it"
+    },
+    "P3Prune": {
+      "where": "src/lib/store.ts (prepareIosResources)",
+      "behaviour": "after a successful prepare, ios_vpn_prune keeps the new version plus every version a current engine row reports (a connected extension keeps its validated files); the host prune also unions a running status/<engine>.json version; AppGroupStore.prune preserves current.json itself",
+      "test": "src/lib/store.test.ts::prunes superseded iOS versions but keeps the one a running extension reports"
+    },
+    "P3Installed": {
+      "where": ["Host/BillowVPNManager.swift", "Host/BillowMobileEntry.swift", "src/views/SettingsView.vue"],
+      "behaviour": "installed is true only when <Bundle>/PlugIns/<BillowMihomo|BillowRust>.appex exists and carries the expected bundle id; status != nil only means the extension answered. The settings row shows 已安装（未启动） for an installed but idle extension."
+    }
+  },
+  "verification": {
+    "hostTypecheck": "pass: tool/ios/verify-host-sources.sh (host + BillowMihomo + BillowRust + host main.mm)",
+    "xcodebuildHost": "blocked by Tauri pre-build (cli-options-server.json), not by Swift sources",
+    "xcodebuildExtensions": "BillowRust and BillowMihomo debug iPhoneSimulator unsigned builds both succeeded",
+    "cargoTestIosVpn": "pass: 192 lib (new staging sniffer test) + integration suites; 1 ignored",
+    "cargoTestDefault": "pass: all suites",
+    "cargoTestSrcTauri": "pass: 7 ios_vpn tests",
+    "appGroupManifestSmoke": "pass",
+    "simulatorSmoke": "PASS 20/20",
+    "frontend": "342 vitest tests pass; npm run build passes"
+  },
+  "notVerified": [
+    "Physical iPhone R3/R4: no device connected; no peak/termination numbers were produced.",
+    "A full plain xcodebuild billow_iOS run still stops in the Tauri pre-build phase (tauri ios xcode-script).",
+    "A signed npx tauri ios build with a Team."
+  ],
+  "evidenceRefs": [
+    "tool/kernel-compat/evidence/t7-ios-ffi.md",
+    "tool/kernel-compat/evidence/t7-ios-a3-host-typecheck.log",
+    "tool/kernel-compat/evidence/t7-ios-a3-xcodebuild.log",
+    "docs/testing/2026-11-23-ios-rust-extension-memory.md"
+  ]
+}

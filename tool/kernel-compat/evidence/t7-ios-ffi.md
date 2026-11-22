@@ -1,7 +1,7 @@
 # T7 iOS Rust tunnel: FFI, userspace IP stack and what was actually run
 
 Workflow: `2026-11-20-native-rust-kernel` / Task T7 (attempts T7-A1 + T7-A2
-repair). Date: 2026-11-23/24. Host: macOS (arm64), Xcode 27.2, iOS 27.2 SDK,
+repair + T7-A3 repair). Date: 2026-11-23/24. Host: macOS (arm64), Xcode 27.2, iOS 27.2 SDK,
 rustc 1.98.1.
 
 This note records the implementation and the verification that was executed.
@@ -120,7 +120,7 @@ Full log: [`t7-ios-build.log`](t7-ios-build.log),
 | `cargo test -p billow-kernel` (default features, no tunnel compiled) | all suites pass; desktop/Android builds unchanged |
 | `xcodegen generate` + `xcodebuild -scheme BillowRust -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO` | ok; archive linked with `-force_load`; `billow_ios_vpn_*` defined in `BillowRust.debug.dylib` (10 exported Rust symbols incl. `billow_rust_kernel_write`) |
 | `xcodebuild -scheme BillowRust -configuration release -sdk iphoneos CODE_SIGNING_ALLOWED=NO` | ok; device archive linked (appex 11 MB on disk, not a memory measurement) |
-| `xcrun swiftc -typecheck` of `network-extension/Shared` + `Host` (host target) | ok after fixing two pre-existing host defects that made the target uncompilable: `BillowVPNManager.swift` redeclared `AppGroupStore.readStatus(engine:)`, and `ResourcesInstaller.prepare` called `prepareVersion(engine:)` instead of `engines:options:`. `Shared/PacketPump.swift` still needs the Mihomo Go module header, so it is excluded from that typecheck |
+| `xcrun swiftc -typecheck` of `network-extension/Shared` + `Host` (host target) | A2: ok only after fixing two pre-existing host defects and **excluding** `Shared/PacketPump.swift`. T7-A3 found that this exclusion hid a real host build failure (the host compiled the Mihomo ingest branch); `BILLOW_ENGINE_HOST` now makes the full, unfiltered host source set pass — see the T7-A3 section below |
 | `tool/ios/verify-rust-kernel.sh` (arm64-apple-ios27.2-simulator binary spawned in the booted simulator) | 20/20 checks pass: version, stats sizing/JSON, `selected` before host state, missing-`config.yaml` error text, start with a real config, device UDP datagram -> DIRECT -> host echo server -> reply through `port->write`, stats while running, reload, stop, restart |
 
 ## Not verified (explicit gaps)
@@ -133,17 +133,20 @@ Full log: [`t7-ios-build.log`](t7-ios-build.log),
 2. **Host settings entry**: T7-A2 wired `BillowMobileBridge.swift`,
    `src-tauri/src/ios_vpn.rs`, `src/lib/backend.ts` and the settings kernel
    tab; the host target now checks with
-   `cargo check --target aarch64-apple-ios` and the Swift host/shared sources
-   typecheck. It is still not executed on a device (same physical-iPhone gap
-   as item 1), and plain `xcodebuild` still cannot run the Tauri pre-build
-   phase (`tauri ios xcode-script`).
+   `cargo check --target aarch64-apple-ios` and the full Swift host/shared
+   source set type-checks with `BILLOW_ENGINE_HOST` (T7-A3). It is still not
+   executed on a device (same physical-iPhone gap as item 1), and plain
+   `xcodebuild` still cannot run the Tauri pre-build phase
+   (`tauri ios xcode-script`).
 3. **Resource staging for the Rust engine**: the host stages the active
    profile and `stage_config` writes `config.rust.yaml` inside the version
    directory. It preserves `mixed-port`, copies referenced provider files and
-   geo assets into `home`, and removes `tun.enable: true` with a warning
-   because the iOS Packet Tunnel owns the device route. A configuration that
-   still needs a feature the engine rejects (for example `sniffer.enable:
-   true`) fails with the engine's named error instead of starting silently.
+   geo assets into `home`, removes `tun.enable: true` with a warning (the iOS
+   Packet Tunnel owns the device route), and since T7-A3 removes
+   `sniffer.enable: true` with a warning too (this kernel does not implement
+   sniffing; domain rules then see the destination IP/DNS result instead of a
+   sniffed SNI/Host). Other enabled blocks the engine rejects still fail with
+   the engine's named error instead of starting silently.
 4. **UDP over `gost-relay`, `sudoku`, `tuic`, `hysteria*`, `mieru`, `wireguard`,
    `openvpn`, `tailscale`, `zerotier`, `easytier`**: no UDP association is
    implemented for those families in this kernel; the tunnel drops such
@@ -192,3 +195,38 @@ Execution evidence for this attempt:
 
 Still not executed: physical-device R3/R4, `.github` iOS CI, and a real
 `npx tauri ios build` with a Team.
+
+## T7-A3 repair (2026-11-24)
+
+Review finding: the host target (`billow_iOS`) did not compile. A2 gave the
+host `SWIFT_ACTIVE_COMPILATION_CONDITIONS=BILLOW_ENGINE_MIHOMO`, while the
+host Sources also contain `Shared/PacketPump.swift`; its `#if
+BILLOW_ENGINE_MIHOMO` branch calls `GoMihomoReadPacket`, a symbol only the
+Mihomo extension declares (`@_silgen_name`) and links (`libmihomo_ios`). The
+A2 typecheck had excluded `PacketPump.swift`, which hid this.
+
+| Fix | Where |
+| --- | --- |
+| Distinct host condition `BILLOW_ENGINE_HOST` (host `ProviderSupport.engine == "host"`; the host never writes a provider status file) | `network-extension/Shared/ProviderSupport.swift`, `project.yml`, `billow.xcodeproj/project.pbxproj` |
+| `PacketPump.swift` is explicitly extension-only (`#if BILLOW_ENGINE_MIHOMO \|\| BILLOW_ENGINE_RUST`), so the host compiles neither ingest branch | `network-extension/Shared/PacketPump.swift` |
+| `sniffer.enable: true` is stripped like `tun.enable: true`, with a warning that sniffing is not implemented (instead of failing the start in `config.rs`) | `native-kernel/crates/billow-kernel/src/ios_vpn.rs` |
+| Superseded `versions/<hash>` directories are pruned after a prepare, keeping any version a connected extension reports; the host prune also unions a running `status/<engine>.json` version | `src/lib/store.ts`, `Host/ResourcesInstaller.swift` |
+| `installed` comes from the embedded `.appex` (`Bundle.main.builtInPlugInsURL`, bundle id check), not from `status != nil`; the settings row says "未启动" for an installed but idle extension | `Host/BillowVPNManager.swift`, `Host/BillowMobileEntry.swift`, `src/views/SettingsView.vue` |
+| Repeatable host/extension typecheck with the real source sets | `tool/ios/verify-host-sources.sh`, `npm run ios:verify-host` |
+
+Execution evidence for this attempt:
+
+| Command | Result |
+| --- | --- |
+| `tool/ios/verify-host-sources.sh` | **ok**: host (`BILLOW_ENGINE_HOST`: `Shared/*.swift` + `Host/*.swift` + `Sources/billow/main.mm`), `BillowMihomo` (`Shared` + `MihomoExtension`) and `BillowRust` (`Shared` + `RustExtension`, bridging header) all type-check against the iPhoneSimulator SDK. Nothing is excluded; `PacketPump.swift` is in the host command. Log: [`t7-ios-a3-host-typecheck.log`](t7-ios-a3-host-typecheck.log) |
+| `xcodebuild -project billow.xcodeproj -scheme billow_iOS -configuration debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO …` | **blocked before Swift compilation** by the pre-build phase: `tauri ios xcode-script` needs `src-tauri/gen/apple/.tauri/cli-options-server.json`, which only a running `tauri ios dev/build` creates. This is the same Tauri-pre-build gap reported by A2, not a host-source error. Excerpt: [`t7-ios-a3-xcodebuild.log`](t7-ios-a3-xcodebuild.log) |
+| `xcodebuild -scheme BillowRust` / `-scheme BillowMihomo` (debug, iPhoneSimulator, unsigned) | both **BUILD SUCCEEDED**; this compiles `PacketPump.swift` once with `BILLOW_ENGINE_RUST` and once with `BILLOW_ENGINE_MIHOMO` and links the extension, while the host condition excludes both branches |
+| `cargo test -p billow-kernel --features ios-vpn` | 192 lib + 43 resources + 15 + 19 + 32 + 6 + 50 + 32 + 15 + 11 + 1 + 1 tests pass, 1 ignored; includes the new `ios_vpn::tests::staging_strips_enabled_sniffer_so_the_config_loader_accepts_it` |
+| `cargo test -p billow-kernel` (default) | all suites pass (160 lib, no tunnel compiled) |
+| `cargo test --manifest-path src-tauri/Cargo.toml ios_vpn` | 7 passed |
+| `tool/ios/verify-app-group.sh` | ok (both engines in one version) |
+| `tool/ios/verify-rust-kernel.sh` | PASS (20 checks; UDP reply, reload, stop, restart) |
+| `npm test` / `npm run build` | 342 tests pass (new prune test); type-check + Vite build pass |
+
+Still not executed: physical-device R3/R4, a signed `tauri ios build`, and a
+plain `xcodebuild billow_iOS` that completes the Tauri pre-build phase.

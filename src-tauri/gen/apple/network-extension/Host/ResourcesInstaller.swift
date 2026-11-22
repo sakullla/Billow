@@ -54,8 +54,20 @@ final class ResourcesInstaller {
     }
 
     /// Removes versions other than the active one and those the caller still
-    /// needs (for example a running tunnel's version).
+    /// needs (for example a running tunnel's version). A connected extension
+    /// also reports its version in `status/<engine>.json`; keep it even if the
+    /// host's last status round-trip failed, so its validated files survive.
     func prune(keeping: [String]) {
-        store.prune(keeping: keeping)
+        var keep = keeping
+        for engine in BillowVPNManager.Engine.allCases {
+            guard let status = store.readStatus(engine: engine.rawValue),
+                  status.running,
+                  let version = status.version,
+                  !keep.contains(version) else {
+                continue
+            }
+            keep.append(version)
+        }
+        store.prune(keeping: keep)
     }
 }

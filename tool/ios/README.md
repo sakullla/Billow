@@ -199,13 +199,19 @@ BillowRustEngine.swift
    `peakRssBytes`) and `reload` re-reads `config.yaml` (see
    `docs/testing/2026-11-23-ios-rust-extension-memory.md` for the R3/R4
    sampling entry).
-6. `tool/ios/verify-rust-kernel.sh` compiles
+6. `tool/ios/verify-host-sources.sh` (`npm run ios:verify-host`) type-checks
+   every iOS Swift target with its real source set and condition: the host
+   (`BILLOW_ENGINE_HOST`, all `Shared` + `Host` files), `BillowMihomo` and
+   `BillowRust`. Do not exclude `Shared/PacketPump.swift` from the host check;
+   it is extension-only and the condition is what keeps the host free of
+   `GoMihomoReadPacket`.
+7. `tool/ios/verify-rust-kernel.sh` compiles
    `tool/ios/rust-kernel-smoke.c` against the simulator archive and runs it in
    the booted simulator: version, stats, the missing-config error, start with a
    real `config.yaml`, one UDP datagram through DIRECT to a host echo server
    and back through `port->write`, reload, stop and restart. It is a code/ABI
    smoke, not a device memory measurement.
-7. Configuration staging is implemented on both sides (T7-A2). The host
+8. Configuration staging is implemented on both sides (T7-A2). The host
    `ios_vpn_prepare_active` writes the active profile's effective YAML plus
    referenced rule sets and the four geo assets into a staging directory,
    rewriting paths to basenames, then `ios_vpn_prepare` copies it into
@@ -216,12 +222,20 @@ BillowRustEngine.swift
    - `tun.enable: true` is removed with a stable warning, because the iOS
      Packet Tunnel already owns the device route (Mihomo keeps the original
      block in `config.yaml`);
+   - `sniffer.enable: true` is removed with a warning: this kernel does not
+     implement sniffing, so domain rules use the destination IP/DNS result
+     instead of a sniffed SNI/Host (without removal `config.rs` would reject
+     the file by name and the extension would refuse to start);
    - `rule-providers.*.path` / `proxy-providers.*.path` files outside the
      version directory are copied next to the config and rewritten to their
      basenames.
    `reload` re-reads the shared `config.yaml`, restages `config.rust.yaml` and
    then reloads the engine. Extra `billow_rust_kernel_drain` derives its record
-   count from the caller's byte capacity.
+   count from the caller's byte capacity. After a successful prepare the
+   settings store calls `ios_vpn_prune` with the new version plus any version a
+   connected extension still reports, so superseded `versions/<hash>`
+   directories do not accumulate (a running extension keeps its validated
+   files).
 
 For the reverse path (Rust packets into mihomo for fair switching), the
 Mihomo archive exports `GoMihomoLoopbackStart("127.0.0.1:<port>", fraction)`:

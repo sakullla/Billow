@@ -221,6 +221,24 @@ describe('store lifecycle', () => {
     expect(vi.getTimerCount()).toBe(1)
   })
 
+  it('prunes superseded iOS versions but keeps the one a running extension reports', async () => {
+    const { backend, store } = setup()
+    store.app.value = {
+      version: '0.1.33', platform: 'ios', autostart: false,
+      close_to_tray: true, silent_start: false, data_dir: null,
+    }
+    vi.spyOn(backend, 'iosEngines').mockResolvedValue([
+      { engine: 'mihomo', installed: true, connected: true, version: 'v1', engineVersion: null, lastError: null },
+      { engine: 'rust', installed: true, connected: false, version: 'v2', engineVersion: null, lastError: null },
+    ])
+    vi.spyOn(backend, 'iosPrepareActive').mockResolvedValue({
+      version: 'v3', engines: ['mihomo', 'rust'], files: 3,
+    })
+    const prune = vi.spyOn(backend, 'iosPrune').mockResolvedValue(undefined)
+    await store.prepareIosResources()
+    expect(prune).toHaveBeenCalledWith(['v3', 'v1', 'v2'])
+  })
+
   it('bounds toast timers to visible messages and clears them on stop', () => {
     const { store } = setup()
     for (let i = 0; i < 100; i += 1) store.toast(`message ${i}`)
