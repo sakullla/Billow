@@ -9,13 +9,17 @@ import {
   type AppInfo,
   type ClosedConnectionRow,
   type ConnectionRow,
+  type CustomNodesImportResult,
+  type DialerTarget,
   type DnsQueryType,
   type ExitIpInfo,
   type KernelChannel,
   type KernelSettings,
   type KernelStatus,
+  type LandingRule,
   type Mode,
   type NodeGroup,
+  type SaveCustomNodeInput,
   type Snapshot,
   type ThemePreference,
   type LanguagePreference,
@@ -237,6 +241,12 @@ export function createStore(backend: Backend) {
 
   const current = computed(() => snapshot.value.profiles.find((item) => item.current) ?? null)
   const hasProfiles = computed(() => snapshot.value.profiles.length > 0)
+  const customNodes = computed(() => snapshot.value.custom_nodes)
+  const hasCustomNodes = computed(() => snapshot.value.custom_nodes.nodes.length > 0)
+  const enabledCustomNodes = computed(() => snapshot.value.custom_nodes.nodes.filter((item) => item.enabled))
+  const customNodesWarnings = computed(() => snapshot.value.custom_nodes_warnings)
+  const customProfileActive = computed(() => snapshot.value.custom_profile_active)
+  const landingPresets = computed(() => snapshot.value.landing_presets)
   const isAndroid = computed(() => snapshot.value.platform === 'android')
   /** Desktop OS from `AppInfo.platform` (Rust `std::env::consts::OS`); gates Linux / macOS-only options. */
   const isLinux = computed(() => !isAndroid.value && app.value?.platform === 'linux')
@@ -1275,6 +1285,12 @@ export function createStore(backend: Backend) {
     lastRunError,
     current,
     hasProfiles,
+    customNodes,
+    hasCustomNodes,
+    enabledCustomNodes,
+    customNodesWarnings,
+    customProfileActive,
+    landingPresets,
     isAndroid,
     isLinux,
     isMac,
@@ -1354,6 +1370,50 @@ export function createStore(backend: Backend) {
     saveOverride: (id: string, text: string) => act('override', () => backend.saveOverride(id, text)),
     /** Re-apply the active profile so a saved 覆写 takes effect without a manual re-enable. */
     applyOverride: (id: string) => act('override', () => backend.enable(id)),
+
+    /** Preview custom-node input outside the action queue so typing never blocks mutations. */
+    previewCustomNodesImport: (raw: string) => backend.previewCustomNodesImport(raw),
+    async importCustomNodes(
+      raw: string,
+      dialer?: DialerTarget | null,
+    ): Promise<CustomNodesImportResult | undefined> {
+      lastRunError.value = null
+      const result = await run('customNodes:import', async () => {
+        const res = await backend.importCustomNodes(raw, dialer)
+        apply(res.snapshot)
+        return res
+      })
+      if (!result) return undefined
+      if (result.errors.length > 0) {
+        toast(
+          tr('已导入 {0} 个自建节点，{1} 条未识别', {
+            0: result.imported.length,
+            1: result.errors.length,
+          }),
+          'info',
+        )
+      } else {
+        toast(tr('已导入 {0} 个自建节点', { 0: result.imported.length }), 'success')
+      }
+      if (backend.live) void backend.syncTray()
+      return result
+    },
+    saveCustomNode: (input: SaveCustomNodeInput) =>
+      act('customNodes:save', () => backend.saveCustomNode(input), tr('已保存自建节点')),
+    deleteCustomNode: (id: string) =>
+      act(`customNodes:delete:${id}`, () => backend.deleteCustomNode(id), tr('已删除自建节点')),
+    setCustomNodeEnabled: (id: string, enabled: boolean) =>
+      act(`customNodes:toggle:${id}`, () => backend.setCustomNodeEnabled(id, enabled)),
+    setCustomNodesOverlay: (enabled: boolean) =>
+      act(
+        'customNodes:overlay',
+        () => backend.setCustomNodesOverlay(enabled),
+        enabled ? tr('已开启叠加到当前订阅') : tr('已关闭叠加到当前订阅'),
+      ),
+    saveLandingRules: (rulesEnabled: boolean, rules: LandingRule[]) =>
+      act('customNodes:rules', () => backend.saveLandingRules(rulesEnabled, rules), tr('已保存落地分流规则')),
+    useCustomProfile: () =>
+      act('customNodes:useProfile', () => backend.useCustomProfile(), tr('已切换到纯自建节点')),
 
     selectNode: (group: string, node: string) => act(`select:${group}`, () => backend.selectNode(group, node)),
     /** 恢复自动: a fixed url-test / fallback group picks by its own strategy again (R28). */

@@ -2,16 +2,25 @@ import type { Backend, NodeTestEvent } from './backend'
 import { locale, resolveLanguage, translate } from './i18n'
 import { ruleKeys } from './rule-keys'
 import {
+  CUSTOM_PROFILE_ID,
+  DEFAULT_LANDING_PRESETS,
   DNS_QUERY_TYPES,
+  LANDING_GROUP_NAME,
+  defaultLandingPresets,
   emptyConfigValues,
+  emptyCustomNodesState,
   emptyKernelSettings,
   isCidrEntry,
   isPortEntry,
   isValidDnsName,
   emptySnapshot,
   localDateKey,
+  normalizeCustomNodesState,
   shiftDateKey,
   type AppInfo,
+  type CustomNode,
+  type CustomNodeWarning,
+  type DialerTarget,
   type KernelSettings,
   type ConfigOverview,
   type ConnectionRow,
@@ -20,13 +29,19 @@ import {
   type HotkeyAction,
   type HotkeySettings,
   type KernelStatus,
+  type LandingRule,
   type LanguagePreference,
   type Locale,
   type LogLine,
   type NodeGroup,
+  type ParseItemError,
+  type ParseNodesResult,
+  type ParsedCustomNode,
   type ProviderRow,
   type ProfileItem,
   type RuleRow,
+  type SaveCustomNodeInput,
+  type SimpleProxyForm,
   type Snapshot,
   type ThemePreference,
   type TrafficHistoryEntry,
@@ -162,6 +177,8 @@ const LATIN_EXACT: Record<string, string> = {
   本地配置: 'Local Profile',
   远程配置: 'Remote Profile',
   自建节点: 'Self-hosted',
+  纯自建节点: 'Custom Nodes Only',
+  自建落地: 'Custom Landing',
   测试订阅: 'Test Subscription',
 }
 const LATIN_PARTS: Record<string, string> = {
@@ -602,12 +619,139 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     if (state.logs.length > 1000) state.logs.splice(0, state.logs.length - 1000)
   }
 
+  function enabledCustomNodes(): CustomNode[] {
+    return state.custom_nodes.nodes.filter((item) => item.enabled)
+  }
+
+  function maybeAutoActivateCustomProfile() {
+    if (state.profiles.length === 0 && !state.active_id && enabledCustomNodes().length > 0) {
+      state.active_id = CUSTOM_PROFILE_ID
+    }
+  }
+
+  function resolveCustomDialer(node: CustomNode, primaryGroup: string | null): string | null {
+    const dialer = node.dialer
+    if (dialer.kind === 'direct') return null
+    if (dialer.kind === 'profile_group') return dialer.group || primaryGroup || null
+    if (dialer.kind === 'fixed_proxy') return dialer.name || null
+    if (dialer.kind === 'custom_node') {
+      return state.custom_nodes.nodes.find((item) => item.id === dialer.id && item.enabled)?.name ?? null
+    }
+    return null
+  }
+
+  function computeCustomNodeWarnings(): CustomNodeWarning[] {
+    const warnings: CustomNodeWarning[] = []
+    const enabled = enabledCustomNodes()
+    const standalone = state.active_id === CUSTOM_PROFILE_ID
+    if (standalone) {
+      if (state.custom_nodes.nodes.length > 0 && enabled.length === 0) {
+        warnings.push({
+          code: 'empty_custom_profile',
+          node_id: null,
+          rule_id: null,
+          message: '当前处于纯自建模式，但没有启用的自建节点',
+        })
+      }
+    } else if (!state.custom_nodes.overlay_enabled || enabled.length === 0) {
+      return warnings
+    }
+
+    const baseDefs = standalone ? [] : groupsDef()
+    const availableTargets = new Set<string>([
+      ...baseDefs.map((group) => group.name),
+      ...(standalone ? [] : names),
+    ])
+    for (const node of enabled) {
+      const dialer = node.dialer
+      if (dialer.kind === 'custom_node') {
+        const target = state.custom_nodes.nodes.find((item) => item.id === dialer.id)
+        if (!target || !target.enabled) {
+          warnings.push({
+            code: 'missing_dialer',
+            node_id: node.id,
+            rule_id: null,
+            message: `节点「${node.name}」指向的前置自建节点不可用`,
+          })
+        }
+      } else if (dialer.kind === 'fixed_proxy') {
+        if (standalone || !availableTargets.has(dialer.name)) {
+          warnings.push({
+            code: 'missing_dialer',
+            node_id: node.id,
+            rule_id: null,
+            message: `节点「${node.name}」指定的前置代理「${dialer.name}」不存在`,
+          })
+        }
+      } else if (dialer.kind === 'profile_group') {
+        if (standalone) {
+          warnings.push({
+            code: 'missing_dialer',
+            node_id: node.id,
+            rule_id: null,
+            message: `节点「${node.name}」设置了通过订阅代理组中转，但当前为纯自建模式`,
+          })
+        } else if (dialer.group && !availableTargets.has(dialer.group)) {
+          warnings.push({
+            code: 'missing_dialer',
+            node_id: node.id,
+            rule_id: null,
+            message: `节点「${node.name}」指定的订阅代理组「${dialer.group}」不存在`,
+          })
+        }
+      }
+    }
+    if (state.custom_nodes.rules_enabled) {
+      for (const rule of state.custom_nodes.rules) {
+        if (!rule.enabled) continue
+        if (rule.target.kind === 'custom_node') {
+          const targetId = rule.target.id
+          const target = state.custom_nodes.nodes.find((item) => item.id === targetId)
+          if (!target || !target.enabled) {
+            warnings.push({
+              code: 'missing_rule_target',
+              node_id: targetId,
+              rule_id: rule.id,
+              message: '部分落地分流规则指向的自建节点已停用或删除',
+            })
+          }
+        }
+      }
+    }
+    return warnings
+  }
+
   function catalogGroupsDef(): { name: string; type: string; proxies: string[] }[] {
-    const base = groupsDef()
+    if (state.active_id === CUSTOM_PROFILE_ID) {
+      const enabled = enabledCustomNodes()
+      const customNames = enabled.map((item) => item.name)
+      const standaloneBase = [
+        { name: '节点选择', type: 'select', proxies: ['自动选择', ...customNames, 'DIRECT'] },
+        { name: '自动选择', type: 'url-test', proxies: [...customNames] },
+      ]
+      if (state.mode !== 'global') return standaloneBase
+      return [
+        { name: 'GLOBAL', type: 'select', proxies: ['节点选择', '自动选择', ...customNames, 'DIRECT', 'REJECT'] },
+        ...standaloneBase,
+      ]
+    }
+    const base = groupsDef().map((group) => ({ ...group, proxies: [...group.proxies] }))
+    const enabled = state.custom_nodes.overlay_enabled ? enabledCustomNodes() : []
+    if (enabled.length > 0) {
+      const customNames = enabled.map((item) => item.name)
+      const primary = base.find((group) => group.type === 'select')
+      if (primary && !primary.proxies.includes(LANDING_GROUP_NAME)) {
+        primary.proxies.unshift(LANDING_GROUP_NAME)
+      }
+      if (!base.some((group) => group.name === LANDING_GROUP_NAME)) {
+        base.push({ name: LANDING_GROUP_NAME, type: 'select', proxies: customNames })
+      }
+    }
     if (state.mode !== 'global' || base.some((group) => group.name === 'GLOBAL')) return base
     const proxies = [
       ...base.map((group) => group.name),
       ...names.filter((name) => !base.some((group) => group.name === name)),
+      ...enabled.map((item) => item.name),
       'DIRECT',
       'REJECT',
     ]
@@ -617,13 +761,19 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   function catalog(): NodeGroup[] {
     if (!state.active_id) return []
     const defs = catalogGroupsDef()
+    const customByName = new Map(enabledCustomNodes().map((item) => [item.name, item]))
+    const primaryGroup =
+      state.active_id === CUSTOM_PROFILE_ID
+        ? null
+        : defs.find((group) => group.type === 'select' && group.name !== LANDING_GROUP_NAME && group.name !== 'GLOBAL')
+            ?.name ?? null
     return defs.map((group) => {
       const manual = group.type === 'select'
       const canPin = pinnable(group.type)
       const pinned = canPin ? fixed.get(group.name) ?? null : null
       const now = manual
-        ? selections.get(group.name) ?? group.proxies[0]
-        : autoNow.get(group.name) ?? pinned ?? (state.kernel_running ? group.proxies[0] : '')
+        ? selections.get(group.name) ?? group.proxies[0] ?? ''
+        : autoNow.get(group.name) ?? pinned ?? (state.kernel_running ? group.proxies[0] ?? '' : '')
       return {
         name: group.name,
         kind: manual ? 'manual' : 'auto',
@@ -636,6 +786,20 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         hidden: hiddenGroups.has(group.name),
         nodes: group.proxies.map((name) => {
           const delay = delays.get(name)
+          const custom = customByName.get(name)
+          if (custom) {
+            const dialerProxy = resolveCustomDialer(custom, primaryGroup)
+            const baseTags = DEMO_TAGS[custom.protocol] ?? []
+            return {
+              name,
+              delay_ms: delay ?? null,
+              failed: delay === null,
+              selected: name === now,
+              node_type: custom.protocol,
+              tags: dialerProxy ? [...baseTags, '链式'] : baseTags,
+              ...(dialerProxy ? { dialer_proxy: dialerProxy } : {}),
+            }
+          }
           const baseTags = DEMO_TAGS[types.get(name) ?? ''] ?? []
           const isChained = name === DEMO_LONG_NAMES[2]
           return {
@@ -757,6 +921,9 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       sniff_quic_ports: ['443'],
     }
     state.mixed_port = state.settings.mixed_port ?? (state.active_id ? 7890 : null)
+    state.custom_profile_active = state.active_id === CUSTOM_PROFILE_ID
+    state.custom_nodes_warnings = computeCustomNodeWarnings()
+    state.landing_presets = defaultLandingPresets()
     const result = structuredClone(state)
     return options.latin ? latinize(result) : result
   }
@@ -908,6 +1075,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
           included_packages: state.included,
           app_mode: state.app_mode,
           chosen_mode: state.mode,
+          custom_nodes: state.custom_nodes,
         },
         shell: {
           theme,
@@ -984,7 +1152,15 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     })
     const active = typeof profiles.active_id === 'string' ? profiles.active_id : null
     state.profiles = list
-    state.active_id = list.some((item) => item.id === active) ? active : null
+    state.custom_nodes = profiles.custom_nodes
+      ? normalizeCustomNodesState(profiles.custom_nodes)
+      : emptyCustomNodesState()
+    state.active_id =
+      active === CUSTOM_PROFILE_ID && state.custom_nodes.nodes.some((node) => node.enabled)
+        ? CUSTOM_PROFILE_ID
+        : list.some((item) => item.id === active)
+          ? active
+          : null
     state.settings = { ...emptyKernelSettings(), ...(profiles.settings as KernelSettings) }
     state.tun_wanted = Boolean(profiles.tun_wanted)
     state.excluded = Array.isArray(profiles.excluded_packages)
@@ -1019,13 +1195,23 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       log('error', state.failure)
       return false
     }
+    if (state.active_id === CUSTOM_PROFILE_ID && enabledCustomNodes().length === 0) {
+      state.failure = '还没有启用的自建节点，请先导入或启用至少一个节点'
+      log('error', state.failure)
+      return false
+    }
     state.kernel_running = true
     state.connected = true
     state.failure = null
     startedAt = Date.now()
-    autoNow.set('自动选择', names[1])
-    autoNow.set('故障转移', names[0])
-    if (options.loadBalance) autoNow.set('负载均衡', names[0])
+    if (state.active_id === CUSTOM_PROFILE_ID) {
+      const firstCustom = enabledCustomNodes()[0]?.name ?? ''
+      autoNow.set('自动选择', firstCustom)
+    } else {
+      autoNow.set('自动选择', names[1])
+      autoNow.set('故障转移', names[0])
+      if (options.loadBalance) autoNow.set('负载均衡', names[0])
+    }
     fixed.forEach((node, group) => autoNow.set(group, node))
     log('info', `Mihomo ${kernel.version} started, mixed proxy listening at 127.0.0.1:${state.mixed_port ?? 7890}`)
     return true
@@ -1335,12 +1521,36 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done()
     },
     async effectiveConfig() {
+      if (state.active_id === CUSTOM_PROFILE_ID) {
+        const enabled = enabledCustomNodes()
+        if (enabled.length === 0) throw new Error('还没有启用的自建节点，请先导入或启用至少一个节点')
+        const head = `mixed-port: ${state.mixed_port ?? 7890}\nmode: ${state.mode ?? 'rule'}\nexternal-controller: 127.0.0.1:9090\n`
+        const proxies = enabled
+          .map((node) => {
+            const dialer = resolveCustomDialer(node, null)
+            const body = node.raw_yaml
+              .trim()
+              .split('\n')
+              .map((line, idx) => (idx === 0 ? `  - ${line.replace(/^\s*-\s*/, '')}` : `    ${line.trim()}`))
+              .join('\n')
+            return dialer ? `${body}\n    dialer-proxy: ${dialer}` : body
+          })
+          .join('\n')
+        const namesList = enabled.map((node) => `      - ${node.name}`).join('\n')
+        const landingLines = buildDemoLandingRulesYaml(state.custom_nodes)
+        const text = `${head}proxies:\n${proxies}\nproxy-groups:\n  - name: 节点选择\n    type: select\n    proxies:\n      - 自动选择\n${namesList}\n      - DIRECT\n  - name: 自动选择\n    type: url-test\n    proxies:\n${namesList}\nrules:\n  - GEOIP,private,DIRECT,no-resolve\n${landingLines}  - GEOSITE,cn,DIRECT\n  - GEOIP,cn,DIRECT,no-resolve\n  - MATCH,节点选择\n`
+        return options.latin ? latinText(text) : text
+      }
       const active = state.active_id ? profile(state.active_id) : null
       if (!active) throw new Error('还没有启用配置')
       const override = active.override_text.trim()
       const base = contents.get(active.id) ?? ''
       const head = `mixed-port: ${state.mixed_port ?? 7890}\nmode: ${state.mode ?? 'rule'}\nexternal-controller: 127.0.0.1:9090\n`
-      const text = `${head}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
+      const overlayNote =
+        state.custom_nodes.overlay_enabled && enabledCustomNodes().length > 0
+          ? `# ── 自建节点叠加 (${enabledCustomNodes().length}) ──\n`
+          : ''
+      const text = `${head}${overlayNote}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
       return options.latin ? latinText(text) : text
     },
     async configOverview(): Promise<ConfigOverview> {
@@ -1385,6 +1595,163 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         item.override_error = /^\s*-/.test(text) ? '覆写无法应用' : null
       }
       return done()
+    },
+
+    async previewCustomNodesImport(raw) {
+      const existing = state.custom_nodes.nodes.map((node) => node.name)
+      return parseCustomNodesInput(raw, existing)
+    },
+    async importCustomNodes(raw, dialer) {
+      const existing = state.custom_nodes.nodes.map((node) => node.name)
+      const preview = parseCustomNodesInput(raw, existing)
+      if (preview.parsed.length === 0) {
+        throw new Error(preview.errors[0]?.reason ?? '没有识别到可导入的节点')
+      }
+      const targetDialer: DialerTarget = dialer ?? { kind: 'direct' }
+      const imported: CustomNode[] = []
+      const nextNodes = [...state.custom_nodes.nodes]
+      let nextId = state.custom_nodes.next_node_id
+      for (const item of preview.parsed) {
+        const node: CustomNode = {
+          id: `cn${nextId}`,
+          name: item.name,
+          enabled: true,
+          note: item.note,
+          protocol: item.protocol,
+          raw_yaml: item.raw_yaml,
+          dialer: structuredClone(targetDialer),
+        }
+        nextId += 1
+        imported.push(node)
+        nextNodes.push(node)
+      }
+      validateCustomDialerCycles(nextNodes)
+      state.custom_nodes.next_node_id = nextId
+      state.custom_nodes.nodes = nextNodes
+      maybeAutoActivateCustomProfile()
+      const snap = await done(60)
+      return {
+        snapshot: snap,
+        imported: structuredClone(imported),
+        errors: preview.errors,
+      }
+    },
+    async saveCustomNode(input: SaveCustomNodeInput) {
+      const editingId = input.id?.trim() || null
+      const nameOverride = input.name?.trim() || null
+      let parsed: ParsedCustomNode
+      if (input.simple) {
+        const form: SimpleProxyForm = {
+          ...input.simple,
+          name: input.simple.name.trim() || nameOverride || '',
+        }
+        parsed = buildSimpleProxyYaml(form)
+      } else if (typeof input.raw_yaml === 'string') {
+        parsed = validateRawNodeYaml(input.raw_yaml, nameOverride ?? undefined)
+      } else if (editingId) {
+        const existing = state.custom_nodes.nodes.find((node) => node.id === editingId)
+        if (!existing) throw new Error('找不到对应的自建节点')
+        parsed = validateRawNodeYaml(existing.raw_yaml, nameOverride ?? undefined)
+      } else {
+        throw new Error('请提供节点配置或表单信息')
+      }
+      const duplicate = state.custom_nodes.nodes.some(
+        (node) => node.name === parsed.name && node.id !== editingId,
+      )
+      if (duplicate) throw new Error(`已存在同名自建节点：${parsed.name}`)
+
+      const nextNodes = structuredClone(state.custom_nodes.nodes)
+      let nextId = state.custom_nodes.next_node_id
+      const enabled = input.enabled !== false
+      const note = (input.note ?? '').trim()
+      const dialer: DialerTarget = input.dialer ? structuredClone(input.dialer) : { kind: 'direct' }
+
+      if (editingId) {
+        const target = nextNodes.find((node) => node.id === editingId)
+        if (!target) throw new Error('找不到对应的自建节点')
+        target.name = parsed.name
+        target.enabled = enabled
+        target.note = note
+        target.protocol = parsed.protocol
+        target.raw_yaml = parsed.raw_yaml
+        target.dialer = dialer
+      } else {
+        nextNodes.push({
+          id: `cn${nextId}`,
+          name: parsed.name,
+          enabled,
+          note,
+          protocol: parsed.protocol,
+          raw_yaml: parsed.raw_yaml,
+          dialer,
+        })
+        nextId += 1
+      }
+      validateCustomDialerCycles(nextNodes)
+      state.custom_nodes.next_node_id = nextId
+      state.custom_nodes.nodes = nextNodes
+      maybeAutoActivateCustomProfile()
+      return done(60)
+    },
+    async deleteCustomNode(id) {
+      const cleanId = id.trim()
+      const idx = state.custom_nodes.nodes.findIndex((node) => node.id === cleanId)
+      if (idx < 0) throw new Error('找不到对应的自建节点')
+      state.custom_nodes.nodes.splice(idx, 1)
+      if (state.active_id === CUSTOM_PROFILE_ID && state.custom_nodes.nodes.length === 0) {
+        state.active_id = null
+      }
+      return done(60)
+    },
+    async setCustomNodeEnabled(id, enabled) {
+      const cleanId = id.trim()
+      const node = state.custom_nodes.nodes.find((item) => item.id === cleanId)
+      if (!node) throw new Error('找不到对应的自建节点')
+      node.enabled = enabled
+      if (enabled) maybeAutoActivateCustomProfile()
+      return done(60)
+    },
+    async setCustomNodesOverlay(enabled) {
+      state.custom_nodes.overlay_enabled = enabled
+      return done(60)
+    },
+    async saveLandingRules(rulesEnabled, rulesInput) {
+      const normalized: LandingRule[] = []
+      let nextRuleId = state.custom_nodes.next_rule_id
+      for (const item of rulesInput) {
+        if (item.rule.kind === 'preset') {
+          const presetId = item.rule.id
+          if (!DEFAULT_LANDING_PRESETS.some((preset) => preset.id === presetId)) {
+            throw new Error(`不支持的预设规则：${presetId}`)
+          }
+          normalized.push({
+            id: item.id?.trim() || `lr${nextRuleId++}`,
+            enabled: item.enabled !== false,
+            rule: { kind: 'preset', id: presetId },
+            target: structuredClone(item.target),
+          })
+        } else {
+          const cleanPattern = validateLandingDomain(item.rule.pattern)
+          normalized.push({
+            id: item.id?.trim() || `lr${nextRuleId++}`,
+            enabled: item.enabled !== false,
+            rule: { kind: 'domain', pattern: cleanPattern },
+            target: structuredClone(item.target),
+          })
+        }
+      }
+      state.custom_nodes.next_rule_id = nextRuleId
+      state.custom_nodes.rules_enabled = rulesEnabled
+      state.custom_nodes.rules = normalized
+      return done(60)
+    },
+    async useCustomProfile() {
+      if (enabledCustomNodes().length === 0) {
+        throw new Error('还没有启用的自建节点，请先导入或启用至少一个节点')
+      }
+      if (state.active_id !== CUSTOM_PROFILE_ID) disabledRules.clear()
+      state.active_id = CUSTOM_PROFILE_ID
+      return done(60)
     },
 
     async connect() {
@@ -1811,4 +2178,438 @@ function demoSettingsError(s: KernelSettings, mixed: number): string | null {
     taken.push([label, port])
   }
   return null
+}
+
+function yamlScalar(value: string): string {
+  if (/^[A-Za-z0-9._-]+$/.test(value)) return value
+  return JSON.stringify(value)
+}
+
+function decodeBase64Utf8(raw: string): string | null {
+  const compact = raw.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/')
+  if (!compact || compact.length % 4 === 1) return null
+  const padded = compact + '='.repeat((4 - (compact.length % 4)) % 4)
+  if (!/^[A-Za-z0-9+/=]+$/.test(padded)) return null
+  try {
+    const binary = atob(padded)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  } catch {
+    return null
+  }
+}
+
+function dedupeCustomName(baseName: string, used: Set<string>): string {
+  const clean = baseName.trim() || '未命名节点'
+  if (!used.has(clean)) {
+    used.add(clean)
+    return clean
+  }
+  let suffix = 2
+  while (used.has(`${clean} (${suffix})`)) suffix += 1
+  const next = `${clean} (${suffix})`
+  used.add(next)
+  return next
+}
+
+function parseSimpleYamlMap(raw: string): Record<string, string> | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const out: Record<string, string> = {}
+  const lines = trimmed.split(/\r?\n/)
+  let matched = 0
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const cleaned = line.replace(/^-\s+/, '')
+    const colon = cleaned.indexOf(':')
+    if (colon <= 0) continue
+    const key = cleaned.slice(0, colon).trim()
+    let val = cleaned.slice(colon + 1).trim()
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1)
+    }
+    if (key) {
+      out[key] = val
+      matched += 1
+    }
+  }
+  return matched > 0 ? out : null
+}
+
+function stripDialerFromYaml(raw: string, nameOverride?: string): string {
+  const lines = raw
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*-\s+/, '').trim())
+    .filter((line) => line && !/^dialer-proxy\s*:/i.test(line))
+  if (nameOverride) {
+    let replaced = false
+    for (let i = 0; i < lines.length; i += 1) {
+      if (/^name\s*:/i.test(lines[i]!)) {
+        lines[i] = `name: ${yamlScalar(nameOverride)}`
+        replaced = true
+        break
+      }
+    }
+    if (!replaced) lines.unshift(`name: ${yamlScalar(nameOverride)}`)
+  }
+  return lines.join('\n')
+}
+
+function validateRawNodeYaml(rawYaml: string, nameOverride?: string): ParsedCustomNode {
+  const fields = parseSimpleYamlMap(rawYaml)
+  if (!fields) throw new Error('YAML 节点格式不正确，需要包含 name、type、server、port')
+  const name = (nameOverride ?? fields.name ?? '').trim()
+  const protocol = (fields.type ?? '').trim().toLowerCase()
+  const server = (fields.server ?? '').trim()
+  const port = Number.parseInt(fields.port ?? '', 10)
+  if (!name) throw new Error('节点名称不能为空')
+  if (!protocol) throw new Error('节点缺少 type 协议字段')
+  if (!server) throw new Error('节点缺少 server 服务器地址')
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('节点端口无效，请填写 1–65535 之间的数字')
+  }
+  return {
+    name,
+    protocol,
+    server,
+    port,
+    raw_yaml: stripDialerFromYaml(rawYaml, name),
+    note: '',
+  }
+}
+
+function buildSimpleProxyYaml(form: SimpleProxyForm): ParsedCustomNode {
+  const protocol = form.protocol.trim().toLowerCase()
+  if (protocol !== 'socks5' && protocol !== 'http') {
+    throw new Error('快速表单仅支持 SOCKS5 和 HTTP 协议')
+  }
+  const server = form.server.trim()
+  if (!server) throw new Error('服务器地址不能为空')
+  const port = Number(form.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('端口无效，请填写 1–65535 之间的数字')
+  }
+  const name = form.name.trim() || `${protocol}-${server}:${port}`
+  const lines = [
+    `name: ${yamlScalar(name)}`,
+    `type: ${protocol}`,
+    `server: ${yamlScalar(server)}`,
+    `port: ${port}`,
+  ]
+  if (form.username.trim()) lines.push(`username: ${yamlScalar(form.username.trim())}`)
+  if (form.password) lines.push(`password: ${yamlScalar(form.password)}`)
+  if (form.tls) lines.push('tls: true')
+  if (form.skip_cert_verify) lines.push('skip-cert-verify: true')
+  if (protocol === 'socks5' && form.udp) lines.push('udp: true')
+  return {
+    name,
+    protocol,
+    server,
+    port,
+    raw_yaml: lines.join('\n'),
+    note: '',
+  }
+}
+
+function parseSingleUri(rawLine: string): ParsedCustomNode {
+  const line = rawLine.trim()
+  const schemeMatch = line.match(/^([a-zA-Z0-9+.-]+):\/\//)
+  if (!schemeMatch) throw new Error('不是有效的节点链接')
+  const scheme = schemeMatch[1]!.toLowerCase()
+
+  if (scheme === 'vmess') {
+    const payload = decodeBase64Utf8(line.slice('vmess://'.length))
+    if (!payload) throw new Error('VMess 链接 Base64 解码失败')
+    let obj: Record<string, unknown>
+    try {
+      obj = JSON.parse(payload) as Record<string, unknown>
+    } catch {
+      throw new Error('VMess 链接 JSON 格式不正确')
+    }
+    const server = String(obj.add ?? '').trim()
+    const port = Number.parseInt(String(obj.port ?? ''), 10)
+    const uuid = String(obj.id ?? '').trim()
+    if (!server || !Number.isInteger(port) || port < 1 || port > 65535 || !uuid) {
+      throw new Error('VMess 链接缺少服务器、端口或 UUID')
+    }
+    const name = String(obj.ps ?? '').trim() || `vmess-${server}:${port}`
+    const lines = [
+      `name: ${yamlScalar(name)}`,
+      'type: vmess',
+      `server: ${yamlScalar(server)}`,
+      `port: ${port}`,
+      `uuid: ${yamlScalar(uuid)}`,
+      `alterId: ${Number.parseInt(String(obj.aid ?? '0'), 10) || 0}`,
+      'cipher: auto',
+    ]
+    if (String(obj.tls ?? '').toLowerCase() === 'tls') lines.push('tls: true')
+    if (obj.sni) lines.push(`servername: ${yamlScalar(String(obj.sni))}`)
+    return { name, protocol: 'vmess', server, port, raw_yaml: lines.join('\n'), note: '' }
+  }
+
+  if (scheme === 'ss') {
+    const hashIdx = line.indexOf('#')
+    const fragment = hashIdx >= 0 ? decodeURIComponent(line.slice(hashIdx + 1)) : ''
+    let body = (hashIdx >= 0 ? line.slice(5, hashIdx) : line.slice(5)).split('?')[0] ?? ''
+    let method = ''
+    let password = ''
+    let hostPort = ''
+    if (body.includes('@')) {
+      const atIdx = body.lastIndexOf('@')
+      const userInfo = body.slice(0, atIdx)
+      hostPort = body.slice(atIdx + 1)
+      const decoded = userInfo.includes(':') ? userInfo : (decodeBase64Utf8(userInfo) ?? userInfo)
+      const sep = decoded.indexOf(':')
+      if (sep <= 0) throw new Error('Shadowsocks 链接缺少加密方式或密码')
+      method = decoded.slice(0, sep)
+      password = decoded.slice(sep + 1)
+    } else {
+      const decoded = decodeBase64Utf8(body)
+      if (!decoded || !decoded.includes('@')) throw new Error('Shadowsocks 链接解码失败')
+      const atIdx = decoded.lastIndexOf('@')
+      const creds = decoded.slice(0, atIdx)
+      hostPort = decoded.slice(atIdx + 1)
+      const sep = creds.indexOf(':')
+      if (sep <= 0) throw new Error('Shadowsocks 链接缺少加密方式或密码')
+      method = creds.slice(0, sep)
+      password = creds.slice(sep + 1)
+    }
+    const parsedHost = new URL(`http://${hostPort}`)
+    const server = parsedHost.hostname.replace(/^\[|\]$/g, '')
+    const port = Number.parseInt(parsedHost.port, 10)
+    if (!server || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Shadowsocks 链接缺少有效的服务器或端口')
+    }
+    const name = fragment.trim() || `ss-${server}:${port}`
+    const lines = [
+      `name: ${yamlScalar(name)}`,
+      'type: ss',
+      `server: ${yamlScalar(server)}`,
+      `port: ${port}`,
+      `cipher: ${yamlScalar(method)}`,
+      `password: ${yamlScalar(password)}`,
+    ]
+    return { name, protocol: 'ss', server, port, raw_yaml: lines.join('\n'), note: '' }
+  }
+
+  const supported: Record<string, string> = {
+    vless: 'vless',
+    trojan: 'trojan',
+    hysteria2: 'hysteria2',
+    hy2: 'hysteria2',
+    tuic: 'tuic',
+    anytls: 'anytls',
+    socks5: 'socks5',
+    socks: 'socks5',
+    http: 'http',
+    https: 'http',
+  }
+  const protocol = supported[scheme]
+  if (!protocol) throw new Error(`暂不支持 ${scheme}:// 协议`)
+
+  let url: URL
+  try {
+    url = new URL(line.replace(/^[a-zA-Z0-9+.-]+:\/\//, 'http://'))
+  } catch {
+    throw new Error(`${scheme}:// 链接格式不正确`)
+  }
+  const server = url.hostname.replace(/^\[|\]$/g, '')
+  const defaultPort = scheme === 'http' ? 80 : scheme === 'https' ? 443 : 0
+  const port = url.port ? Number.parseInt(url.port, 10) : defaultPort
+  if (!server) throw new Error('链接缺少服务器地址')
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('链接缺少有效端口')
+  }
+  const fragment = url.hash ? decodeURIComponent(url.hash.slice(1)).trim() : ''
+  const name = fragment || `${protocol}-${server}:${port}`
+  const user = decodeURIComponent(url.username || '')
+  const pass = decodeURIComponent(url.password || '')
+  const params = url.searchParams
+
+  const lines = [
+    `name: ${yamlScalar(name)}`,
+    `type: ${protocol}`,
+    `server: ${yamlScalar(server)}`,
+    `port: ${port}`,
+  ]
+  if (protocol === 'vless') {
+    if (!user) throw new Error('VLESS 链接缺少 UUID')
+    lines.push(`uuid: ${yamlScalar(user)}`)
+    const sni = params.get('sni')
+    if (sni) lines.push(`servername: ${yamlScalar(sni)}`)
+    if (params.get('security') === 'tls' || params.get('security') === 'reality') lines.push('tls: true')
+  } else if (protocol === 'trojan' || protocol === 'hysteria2' || protocol === 'anytls') {
+    const secret = user || pass
+    if (!secret) throw new Error(`${protocol} 链接缺少密码`)
+    lines.push(`password: ${yamlScalar(secret)}`)
+    const sni = params.get('sni')
+    if (sni) lines.push(`sni: ${yamlScalar(sni)}`)
+    if (params.get('insecure') === '1' || params.get('allowInsecure') === '1') {
+      lines.push('skip-cert-verify: true')
+    }
+  } else if (protocol === 'tuic') {
+    if (!user || !pass) throw new Error('TUIC 链接缺少 UUID 或密码')
+    lines.push(`uuid: ${yamlScalar(user)}`)
+    lines.push(`password: ${yamlScalar(pass)}`)
+    const sni = params.get('sni')
+    if (sni) lines.push(`sni: ${yamlScalar(sni)}`)
+  } else if (protocol === 'socks5' || protocol === 'http') {
+    if (user) lines.push(`username: ${yamlScalar(user)}`)
+    if (pass) lines.push(`password: ${yamlScalar(pass)}`)
+    if (scheme === 'https' || params.get('tls') === '1') lines.push('tls: true')
+  }
+
+  return {
+    name,
+    protocol,
+    server,
+    port,
+    raw_yaml: lines.join('\n'),
+    note: '',
+  }
+}
+
+function parseCustomNodesInput(raw: string, existingNames: string[]): ParseNodesResult {
+  const trimmed = raw.trim()
+  if (!trimmed) return { parsed: [], errors: [] }
+  const used = new Set(existingNames)
+  const parsed: ParsedCustomNode[] = []
+  const errors: ParseItemError[] = []
+
+  // Detect YAML snippet (either `proxies:` list or a single YAML mapping)
+  const looksYaml =
+    /(^|\n)\s*proxies\s*:/i.test(trimmed) ||
+    (/(^|\n)\s*-?\s*type\s*:/i.test(trimmed) && /(^|\n)\s*server\s*:/i.test(trimmed))
+  if (looksYaml) {
+    const body = trimmed.replace(/^proxies\s*:\s*\r?\n/i, '')
+    const blocks = body
+      .split(/\r?\n(?=\s*-\s+\w+\s*:)/)
+      .map((block) => block.trim())
+      .filter(Boolean)
+    blocks.forEach((block, index) => {
+      try {
+        const item = validateRawNodeYaml(block)
+        const name = dedupeCustomName(item.name, used)
+        parsed.push({
+          ...item,
+          name,
+          raw_yaml: stripDialerFromYaml(item.raw_yaml, name),
+        })
+      } catch (err) {
+        errors.push({
+          index,
+          source: block.split('\n')[0] ?? block,
+          reason: err instanceof Error ? err.message : String(err),
+        })
+      }
+    })
+    return { parsed, errors }
+  }
+
+  // Detect Base64-encoded node list
+  let textToParse = trimmed
+  if (!trimmed.includes('://')) {
+    const decoded = decodeBase64Utf8(trimmed)
+    if (decoded && decoded.includes('://')) textToParse = decoded
+  }
+
+  const lines = textToParse
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+
+  lines.forEach((line, index) => {
+    try {
+      const item = parseSingleUri(line)
+      const name = dedupeCustomName(item.name, used)
+      parsed.push({
+        ...item,
+        name,
+        raw_yaml: stripDialerFromYaml(item.raw_yaml, name),
+      })
+    } catch (err) {
+      errors.push({
+        index,
+        source: line.slice(0, 80),
+        reason: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+  return { parsed, errors }
+}
+
+function validateCustomDialerCycles(nodes: CustomNode[]): void {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const stack: string[] = []
+
+  const dfs = (id: string) => {
+    if (visited.has(id)) return
+    const node = byId.get(id)
+    if (!node) return
+    if (visiting.has(id)) {
+      const start = stack.indexOf(id)
+      const cycleIds = [...stack.slice(start), id]
+      const cycleNames = cycleIds.map((cid) => byId.get(cid)?.name ?? cid).join(' → ')
+      throw new Error(`检测到链式代理循环引用：${cycleNames}`)
+    }
+    visiting.add(id)
+    stack.push(id)
+    if (node.dialer.kind === 'custom_node') {
+      if (node.dialer.id === node.id) {
+        throw new Error(`节点「${node.name}」不能将自己设为前置代理`)
+      }
+      if (byId.has(node.dialer.id)) dfs(node.dialer.id)
+    }
+    stack.pop()
+    visiting.delete(id)
+    visited.add(id)
+  }
+
+  for (const node of nodes) dfs(node.id)
+}
+
+function validateLandingDomain(pattern: string): string {
+  let clean = pattern.trim()
+  if (!clean) throw new Error('域名不能为空')
+  const exact = clean.startsWith('=')
+  if (exact) clean = clean.slice(1).trim()
+  clean = clean.replace(/^https?:\/\//i, '').split('/')[0]?.trim() ?? ''
+  if (clean.startsWith('.')) clean = clean.slice(1)
+  if (!clean || /\s/.test(clean) || !isValidDnsName(clean)) {
+    throw new Error(`域名格式不正确：${pattern.trim()}`)
+  }
+  return exact ? `=${clean.toLowerCase()}` : clean.toLowerCase()
+}
+
+function buildDemoLandingRulesYaml(customState: Snapshot['custom_nodes']): string {
+  if (!customState.rules_enabled) return ''
+  const lines: string[] = []
+  for (const item of customState.rules) {
+    if (!item.enabled) continue
+    let target: string | null = LANDING_GROUP_NAME
+    if (item.target.kind === 'custom_node') {
+      const targetId = item.target.id
+      target = customState.nodes.find((n) => n.id === targetId && n.enabled)?.name ?? null
+    }
+    if (!target) continue
+    if (item.rule.kind === 'preset') {
+      const presetId = item.rule.id
+      const preset = DEFAULT_LANDING_PRESETS.find((p) => p.id === presetId)
+      if (!preset) continue
+      for (const domain of preset.domains) lines.push(`  - DOMAIN-SUFFIX,${domain},${target}\n`)
+    } else {
+      const pattern = item.rule.pattern
+      if (pattern.startsWith('=')) {
+        lines.push(`  - DOMAIN,${pattern.slice(1)},${target}\n`)
+      } else {
+        lines.push(`  - DOMAIN-SUFFIX,${pattern},${target}\n`)
+      }
+    }
+  }
+  return lines.join('')
 }

@@ -420,6 +420,175 @@ export function normalizeExitIp(raw: unknown): ExitIpInfo | null {
 
 export type FailureHint = 'port' | 'tun'
 
+export const CUSTOM_PROFILE_ID = '__custom__'
+export const CUSTOM_PROFILE_NAME = '纯自建节点'
+export const LANDING_GROUP_NAME = '自建落地'
+
+export type DialerTarget =
+  | { kind: 'direct' }
+  | { kind: 'profile_group'; group: string | null }
+  | { kind: 'fixed_proxy'; name: string }
+  | { kind: 'custom_node'; id: string }
+
+export interface CustomNode {
+  id: string
+  name: string
+  enabled: boolean
+  note: string
+  protocol: string
+  raw_yaml: string
+  dialer: DialerTarget
+}
+
+export type LandingRuleKind =
+  | { kind: 'preset'; id: string }
+  | { kind: 'domain'; pattern: string }
+
+export type LandingRuleTarget =
+  | { kind: 'custom_group' }
+  | { kind: 'custom_node'; id: string }
+
+export interface LandingRule {
+  id: string
+  enabled: boolean
+  rule: LandingRuleKind
+  target: LandingRuleTarget
+}
+
+export interface CustomNodesState {
+  overlay_enabled: boolean
+  rules_enabled: boolean
+  next_node_id: number
+  next_rule_id: number
+  nodes: CustomNode[]
+  rules: LandingRule[]
+}
+
+export interface CustomNodeWarning {
+  code: string
+  node_id: string | null
+  rule_id: string | null
+  message: string
+}
+
+export interface LandingPresetInfo {
+  id: string
+  label: string
+  domains: string[]
+}
+
+export interface ParsedCustomNode {
+  name: string
+  protocol: string
+  server: string
+  port: number
+  raw_yaml: string
+  note: string
+}
+
+export interface ParseItemError {
+  index: number
+  source: string
+  reason: string
+}
+
+export interface ParseNodesResult {
+  parsed: ParsedCustomNode[]
+  errors: ParseItemError[]
+}
+
+export interface SimpleProxyForm {
+  name: string
+  protocol: 'socks5' | 'http' | string
+  server: string
+  port: number
+  username: string
+  password: string
+  tls: boolean
+  skip_cert_verify: boolean
+  udp: boolean
+}
+
+export interface SaveCustomNodeInput {
+  id?: string | null
+  name?: string | null
+  enabled?: boolean
+  note?: string
+  dialer?: DialerTarget
+  simple?: SimpleProxyForm | null
+  raw_yaml?: string | null
+}
+
+export interface CustomNodesImportResult {
+  snapshot: Snapshot
+  imported: CustomNode[]
+  errors: ParseItemError[]
+}
+
+export const DEFAULT_LANDING_PRESETS: readonly LandingPresetInfo[] = [
+  {
+    id: 'ai',
+    label: 'AI 服务（ChatGPT / Claude / Gemini）',
+    domains: [
+      'openai.com',
+      'chatgpt.com',
+      'oaistatic.com',
+      'oaiusercontent.com',
+      'anthropic.com',
+      'claude.ai',
+      'claude.com',
+      'gemini.google.com',
+      'generativelanguage.googleapis.com',
+      'aistudio.google.com',
+      'deepmind.com',
+      'perplexity.ai',
+      'x.ai',
+      'grok.com',
+      'copilot.microsoft.com',
+      'githubcopilot.com',
+      'poe.com',
+      'cursor.sh',
+      'cursor.com',
+      'mistral.ai',
+      'cohere.com',
+    ],
+  },
+  {
+    id: 'streaming',
+    label: '流媒体（Netflix / Disney+ / Spotify）',
+    domains: [
+      'netflix.com',
+      'nflxvideo.net',
+      'nflximg.net',
+      'disneyplus.com',
+      'disney-plus.net',
+      'hulu.com',
+      'spotify.com',
+      'tiktok.com',
+      'tiktokv.com',
+    ],
+  },
+]
+
+export function defaultLandingPresets(): LandingPresetInfo[] {
+  return DEFAULT_LANDING_PRESETS.map((preset) => ({
+    id: preset.id,
+    label: preset.label,
+    domains: [...preset.domains],
+  }))
+}
+
+export function emptyCustomNodesState(): CustomNodesState {
+  return {
+    overlay_enabled: true,
+    rules_enabled: true,
+    next_node_id: 1,
+    next_rule_id: 1,
+    nodes: [],
+    rules: [],
+  }
+}
+
 export interface Snapshot {
   profiles: ProfileItem[]
   active_id: string | null
@@ -462,6 +631,10 @@ export interface Snapshot {
   settings: KernelSettings
   config_values: ConfigValues
   notice: string | null
+  custom_nodes: CustomNodesState
+  custom_nodes_warnings: CustomNodeWarning[]
+  custom_profile_active: boolean
+  landing_presets: LandingPresetInfo[]
 }
 
 export interface KernelStatus {
@@ -882,6 +1055,10 @@ export function emptySnapshot(): Snapshot {
     settings: emptyKernelSettings(),
     config_values: emptyConfigValues(),
     notice: null,
+    custom_nodes: emptyCustomNodesState(),
+    custom_nodes_warnings: [],
+    custom_profile_active: false,
+    landing_presets: defaultLandingPresets(),
   }
 }
 
@@ -1108,6 +1285,155 @@ function normalizeSettings(raw: unknown): KernelSettings {
   }
 }
 
+export function normalizeDialerTarget(raw: unknown): DialerTarget {
+  const value = obj(raw)
+  const kind = str(value.kind)
+  if (kind === 'profile_group') {
+    return { kind: 'profile_group', group: optStr(value.group) }
+  }
+  if (kind === 'fixed_proxy') {
+    const name = str(value.name).trim()
+    return name ? { kind: 'fixed_proxy', name } : { kind: 'direct' }
+  }
+  if (kind === 'custom_node') {
+    const id = str(value.id).trim()
+    return id ? { kind: 'custom_node', id } : { kind: 'direct' }
+  }
+  return { kind: 'direct' }
+}
+
+export function normalizeCustomNode(raw: unknown): CustomNode | null {
+  const value = obj(raw)
+  const id = str(value.id).trim()
+  const name = str(value.name).trim()
+  if (!id || !name) return null
+  return {
+    id,
+    name,
+    enabled: value.enabled !== false,
+    note: str(value.note),
+    protocol: str(value.protocol),
+    raw_yaml: str(value.raw_yaml),
+    dialer: normalizeDialerTarget(value.dialer),
+  }
+}
+
+export function normalizeLandingRule(raw: unknown): LandingRule | null {
+  const value = obj(raw)
+  const id = str(value.id).trim()
+  const ruleObj = obj(value.rule)
+  const ruleKind = str(ruleObj.kind)
+  let rule: LandingRuleKind | null = null
+  if (ruleKind === 'preset') {
+    const presetId = str(ruleObj.id).trim()
+    if (presetId) rule = { kind: 'preset', id: presetId }
+  } else if (ruleKind === 'domain') {
+    const pattern = str(ruleObj.pattern).trim()
+    if (pattern) rule = { kind: 'domain', pattern }
+  }
+  if (!rule) return null
+  const targetObj = obj(value.target)
+  const target: LandingRuleTarget =
+    str(targetObj.kind) === 'custom_node' && str(targetObj.id).trim()
+      ? { kind: 'custom_node', id: str(targetObj.id).trim() }
+      : { kind: 'custom_group' }
+  return {
+    id,
+    enabled: value.enabled !== false,
+    rule,
+    target,
+  }
+}
+
+export function normalizeCustomNodesState(raw: unknown): CustomNodesState {
+  if (!raw || typeof raw !== 'object') return emptyCustomNodesState()
+  const value = obj(raw)
+  return {
+    overlay_enabled: value.overlay_enabled !== false,
+    rules_enabled: value.rules_enabled !== false,
+    next_node_id: Math.max(1, num(value.next_node_id) ?? 1),
+    next_rule_id: Math.max(1, num(value.next_rule_id) ?? 1),
+    nodes: list(value.nodes)
+      .map(normalizeCustomNode)
+      .filter((item): item is CustomNode => item !== null),
+    rules: list(value.rules)
+      .map(normalizeLandingRule)
+      .filter((item): item is LandingRule => item !== null),
+  }
+}
+
+export function normalizeCustomNodeWarning(raw: unknown): CustomNodeWarning | null {
+  const value = obj(raw)
+  const message = str(value.message).trim()
+  if (!message) return null
+  return {
+    code: str(value.code, 'warning'),
+    node_id: optStr(value.node_id),
+    rule_id: optStr(value.rule_id),
+    message,
+  }
+}
+
+export function normalizeLandingPresetInfo(raw: unknown): LandingPresetInfo | null {
+  const value = obj(raw)
+  const id = str(value.id).trim()
+  const label = str(value.label).trim()
+  if (!id || !label) return null
+  return {
+    id,
+    label,
+    domains: strings(value.domains)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  }
+}
+
+export function normalizeParseNodesResult(raw: unknown): ParseNodesResult {
+  const value = obj(raw)
+  const parsed: ParsedCustomNode[] = list(value.parsed)
+    .map((item) => {
+      const entry = obj(item)
+      const name = str(entry.name).trim()
+      const protocol = str(entry.protocol).trim()
+      const server = str(entry.server).trim()
+      const port = optPort(entry.port)
+      if (!name || !protocol || !server || port === null) return null
+      return {
+        name,
+        protocol,
+        server,
+        port,
+        raw_yaml: str(entry.raw_yaml),
+        note: str(entry.note),
+      }
+    })
+    .filter((item): item is ParsedCustomNode => item !== null)
+  const errors: ParseItemError[] = list(value.errors)
+    .map((item) => {
+      const entry = obj(item)
+      const reason = str(entry.reason).trim()
+      if (!reason) return null
+      return {
+        index: num(entry.index) ?? 0,
+        source: str(entry.source),
+        reason,
+      }
+    })
+    .filter((item): item is ParseItemError => item !== null)
+  return { parsed, errors }
+}
+
+export function normalizeCustomNodesImportResult(raw: unknown): CustomNodesImportResult {
+  const value = obj(raw)
+  return {
+    snapshot: normalizeSnapshot(value.snapshot),
+    imported: list(value.imported)
+      .map(normalizeCustomNode)
+      .filter((item): item is CustomNode => item !== null),
+    errors: normalizeParseNodesResult({ errors: value.errors }).errors,
+  }
+}
+
 /** Accepts whatever the backend sends and fills every field the UI reads. */
 export function normalizeSnapshot(raw: unknown): Snapshot {
   const source = obj(raw)
@@ -1227,6 +1553,19 @@ export function normalizeSnapshot(raw: unknown): Snapshot {
       tun_route_exclude_address: optStrings(config.tun_route_exclude_address),
     },
     notice: optStr(source.notice),
+    custom_nodes: normalizeCustomNodesState(source.custom_nodes),
+    custom_nodes_warnings: list(source.custom_nodes_warnings)
+      .map(normalizeCustomNodeWarning)
+      .filter((item): item is CustomNodeWarning => item !== null),
+    custom_profile_active:
+      typeof source.custom_profile_active === 'boolean'
+        ? source.custom_profile_active
+        : optStr(source.active_id) === CUSTOM_PROFILE_ID,
+    landing_presets: Array.isArray(source.landing_presets)
+      ? source.landing_presets
+          .map(normalizeLandingPresetInfo)
+          .filter((item): item is LandingPresetInfo => item !== null)
+      : defaultLandingPresets(),
   }
 }
 

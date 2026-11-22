@@ -1,21 +1,27 @@
 import {
   normalizeConfigOverview,
+  normalizeCustomNodesImportResult,
   normalizeDnsQueryResult,
   normalizeExitIp,
   normalizeKernel,
+  normalizeParseNodesResult,
   normalizeRuleRow,
   normalizeSnapshot,
   normalizeTrafficHistory,
   HOTKEY_ACTIONS,
   type AppInfo,
   type ConfigOverview,
+  type CustomNodesImportResult,
+  type DialerTarget,
   type DnsQueryResult,
   type DnsQueryType,
   type ExitIpInfo,
   type HotkeyAction,
   type HotkeyBinding,
   type HotkeySettings,
+  type LandingRule,
   type OverridePreview,
+  type ParseNodesResult,
   type KernelChannel,
   type KernelSettings,
   type KernelStatus,
@@ -27,6 +33,7 @@ import {
   type GeoFile,
   type RemoteBackup,
   type RulesResult,
+  type SaveCustomNodeInput,
   type ShellState,
   type Snapshot,
   type ThemePreference,
@@ -100,6 +107,23 @@ export interface Backend {
   saveOverride(id: string, text: string): Promise<Snapshot>
   /** Apply an unsaved 覆写 to the profile: merged YAML plus script `console` output. Rejects with the reason. */
   previewOverride(id: string, text: string): Promise<OverridePreview>
+
+  /** Preview URI/Base64/YAML custom-node input without persisting. */
+  previewCustomNodesImport(raw: string): Promise<ParseNodesResult>
+  /** Import one or more custom nodes with an optional default dialer target. */
+  importCustomNodes(raw: string, dialer?: DialerTarget | null): Promise<CustomNodesImportResult>
+  /** Create or update one custom node (simple SOCKS5/HTTP form or raw YAML snippet). */
+  saveCustomNode(input: SaveCustomNodeInput): Promise<Snapshot>
+  /** Remove a custom node by id. */
+  deleteCustomNode(id: string): Promise<Snapshot>
+  /** Enable or disable a custom node without removing it. */
+  setCustomNodeEnabled(id: string, enabled: boolean): Promise<Snapshot>
+  /** Toggle subscription overlay injection on or off (R4). */
+  setCustomNodesOverlay(enabled: boolean): Promise<Snapshot>
+  /** Replace landing routing rules and master rule toggle (R6). */
+  saveLandingRules(rulesEnabled: boolean, rules: LandingRule[]): Promise<Snapshot>
+  /** Activate managed zero-YAML pure custom-node profile (R5). */
+  useCustomProfile(): Promise<Snapshot>
 
   connect(): Promise<Snapshot>
   disconnect(): Promise<Snapshot>
@@ -322,6 +346,19 @@ function createTauriBackend(): Backend {
     lanAddress: async () => (await call<string | null>('lan_address')) ?? null,
     saveOverride: (id, text) => snap('save_profile_override', { id, text }),
     previewOverride: (id, text) => call<OverridePreview>('preview_profile_override', { id, text }),
+
+    previewCustomNodesImport: async (raw) =>
+      normalizeParseNodesResult(await call<unknown>('preview_custom_nodes_import', { raw })),
+    importCustomNodes: async (raw, dialer) =>
+      normalizeCustomNodesImportResult(
+        await call<unknown>('import_custom_nodes', { raw, dialer: dialer ?? null }),
+      ),
+    saveCustomNode: (input) => snap('save_custom_node', { input }),
+    deleteCustomNode: (id) => snap('delete_custom_node', { id }),
+    setCustomNodeEnabled: (id, enabled) => snap('set_custom_node_enabled', { id, enabled }),
+    setCustomNodesOverlay: (enabled) => snap('set_custom_nodes_overlay', { enabled }),
+    saveLandingRules: (rulesEnabled, rules) => snap('save_landing_rules', { rulesEnabled, rules }),
+    useCustomProfile: () => snap('use_custom_profile'),
 
     connect: () => snap('connect_session'),
     disconnect: () => snap('disconnect_session'),

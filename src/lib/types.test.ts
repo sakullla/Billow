@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { isCidrEntry, isPortEntry, isValidDnsName, normalizeDnsQueryResult, normalizeIcon, normalizeKernel, normalizeRuleRow, normalizeSnapshot } from './types'
+import {
+  CUSTOM_PROFILE_ID,
+  isCidrEntry,
+  isPortEntry,
+  isValidDnsName,
+  normalizeCustomNodesImportResult,
+  normalizeDnsQueryResult,
+  normalizeIcon,
+  normalizeKernel,
+  normalizeParseNodesResult,
+  normalizeRuleRow,
+  normalizeSnapshot,
+} from './types'
 import { resolvePage } from './store'
 
 describe('normalizeSnapshot', () => {
@@ -319,5 +331,58 @@ describe('settings for TUN routes, sniffing and extra listeners (R32–R34)', ()
   it('accepts a port or a start-end range within 1–65535', () => {
     for (const ok of ['443', '8000-9000', '1', '65535', ' 80 ']) expect(isPortEntry(ok), ok).toBe(true)
     for (const bad of ['70000', '0', '9000-8000', 'abc', '1-', '-5']) expect(isPortEntry(bad), bad).toBe(false)
+  })
+
+  it('normalizes custom_nodes, warnings, custom_profile_active, and parse results', () => {
+    const snap = normalizeSnapshot({
+      active_id: CUSTOM_PROFILE_ID,
+      custom_nodes: {
+        overlay_enabled: false,
+        rules_enabled: true,
+        next_node_id: 3,
+        next_rule_id: 2,
+        nodes: [
+          {
+            id: 'cn1',
+            name: 'AnyTLS 落地',
+            enabled: true,
+            protocol: 'anytls',
+            raw_yaml: 'name: AnyTLS 落地\ntype: anytls\nserver: 1.2.3.4\nport: 443',
+            dialer: { kind: 'profile_group', group: '节点选择' },
+          },
+          { id: '', name: 'dropped' },
+        ],
+        rules: [
+          { id: 'lr1', enabled: true, rule: { kind: 'preset', id: 'ai' }, target: { kind: 'custom_group' } },
+          { id: 'lr2', enabled: true, rule: { kind: 'invalid' } },
+        ],
+      },
+      custom_nodes_warnings: [{ code: 'missing_dialer', node_id: 'cn1', rule_id: null, message: '前置不可用' }],
+    })
+    expect(snap.custom_profile_active).toBe(true)
+    expect(snap.custom_nodes.overlay_enabled).toBe(false)
+    expect(snap.custom_nodes.nodes).toHaveLength(1)
+    expect(snap.custom_nodes.nodes[0]?.dialer).toEqual({ kind: 'profile_group', group: '节点选择' })
+    expect(snap.custom_nodes.rules).toHaveLength(1)
+    expect(snap.custom_nodes_warnings).toHaveLength(1)
+    expect(snap.landing_presets.some((p) => p.id === 'ai')).toBe(true)
+
+    const preview = normalizeParseNodesResult({
+      parsed: [
+        { name: 'Node A', protocol: 'anytls', server: 'a.example.com', port: 443, raw_yaml: 'name: Node A', note: '' },
+        { name: 'Bad Port', protocol: 'socks5', server: 'b.example.com', port: 70000 },
+      ],
+      errors: [{ index: 1, source: 'bad://x', reason: '不支持' }],
+    })
+    expect(preview.parsed).toHaveLength(1)
+    expect(preview.errors).toHaveLength(1)
+
+    const imported = normalizeCustomNodesImportResult({
+      snapshot: { active_id: CUSTOM_PROFILE_ID },
+      imported: [{ id: 'cn1', name: 'Node A', protocol: 'anytls' }],
+      errors: [],
+    })
+    expect(imported.snapshot.custom_profile_active).toBe(true)
+    expect(imported.imported[0]?.name).toBe('Node A')
   })
 })

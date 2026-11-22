@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectScope } from 'vue'
 import { createDemoBackend } from './demo'
 import { createStore } from './store'
-import { emptySnapshot, type Snapshot, type TrafficHistoryView } from './types'
+import { CUSTOM_PROFILE_ID, LANDING_GROUP_NAME, emptySnapshot, type Snapshot, type TrafficHistoryView } from './types'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -334,5 +334,108 @@ describe('traffic history reads', () => {
     expect(await inFlight).toBeUndefined()
     expect(store.trafficStats.value).toBeNull()
     expect(store.trafficStatsRange.value.range).toBe('7d')
+  })
+})
+
+describe('custom nodes & chain proxy store + demo parity', () => {
+  function setupLiveDemo(profiles = true) {
+    const backend = createDemoBackend({ profiles })
+    const scope = effectScope()
+    const store = scope.run(() => createStore(backend))!
+    cleanup.push(() => { store.stop(); scope.stop() })
+    return { backend, store }
+  }
+
+  it('previews and imports multi-protocol links (including anytls://) with partial error isolation and deduplication', async () => {
+    const { store } = setupLiveDemo(true)
+    const startP = store.start()
+    await vi.advanceTimersByTimeAsync(200)
+    await startP
+
+    const raw = [
+      'anytls://secret@anytls.example.com:443?sni=anytls.example.com#US-AnyTLS',
+      'anytls://secret@anytls.example.com:443#US-AnyTLS',
+      'socks5://user:pass@1.2.3.4:1080#Resi-Socks',
+      'ftp://unsupported.example.com:21#Bad',
+    ].join('\n')
+
+    const preview = await store.previewCustomNodesImport(raw)
+    expect(preview.parsed.map((item) => item.name)).toEqual(['US-AnyTLS', 'US-AnyTLS (2)', 'Resi-Socks'])
+    expect(preview.parsed[0]?.protocol).toBe('anytls')
+    expect(preview.errors).toHaveLength(1)
+
+    const importP = store.importCustomNodes(raw, { kind: 'profile_group', group: null })
+    await vi.advanceTimersByTimeAsync(200)
+    const result = await importP
+    expect(result?.imported).toHaveLength(3)
+    expect(result?.errors).toHaveLength(1)
+    expect(store.hasCustomNodes.value).toBe(true)
+    expect(store.snapshot.value.node_catalog.some((g) => g.name === LANDING_GROUP_NAME)).toBe(true)
+
+    // Toggling overlay off must remove the injected landing group cleanly
+    const overlayOffP = store.setCustomNodesOverlay(false)
+    await vi.advanceTimersByTimeAsync(200)
+    await overlayOffP
+    expect(store.customNodes.value.overlay_enabled).toBe(false)
+    expect(store.snapshot.value.node_catalog.some((g) => g.name === LANDING_GROUP_NAME)).toBe(false)
+  })
+
+  it('supports SOCKS5 form save, rejects dialer cycles, auto-activates pure custom mode, and saves landing rules', async () => {
+    const { store } = setupLiveDemo(false)
+    const startP = store.start()
+    await vi.advanceTimersByTimeAsync(200)
+    await startP
+    expect(store.hasProfiles.value).toBe(false)
+    expect(store.customProfileActive.value).toBe(false)
+
+    // Save node A via SOCKS5 quick form -> auto-activates pure custom mode
+    const saveA = store.saveCustomNode({
+      simple: {
+        name: 'Home-Socks',
+        protocol: 'socks5',
+        server: '198.51.100.10',
+        port: 1080,
+        username: 'u',
+        password: 'p',
+        tls: false,
+        skip_cert_verify: false,
+        udp: true,
+      },
+      dialer: { kind: 'direct' },
+    })
+    await vi.advanceTimersByTimeAsync(200)
+    await saveA
+    expect(store.customProfileActive.value).toBe(true)
+    expect(store.snapshot.value.active_id).toBe(CUSTOM_PROFILE_ID)
+    const nodeA = store.customNodes.value.nodes[0]!
+
+    // Save node B chained via node A
+    const saveB = store.saveCustomNode({
+      raw_yaml: 'name: Exit-AnyTLS\ntype: anytls\nserver: 203.0.113.5\nport: 443\npassword: pwd',
+      dialer: { kind: 'custom_node', id: nodeA.id },
+    })
+    await vi.advanceTimersByTimeAsync(200)
+    await saveB
+    const nodeB = store.customNodes.value.nodes[1]!
+
+    // Attempting to chain node A back through node B must be rejected
+    const cycleP = store.saveCustomNode({
+      id: nodeA.id,
+      dialer: { kind: 'custom_node', id: nodeB.id },
+    })
+    await vi.advanceTimersByTimeAsync(200)
+    const cycleRes = await cycleP
+    expect(cycleRes).toBeUndefined()
+    expect(store.lastRunError.value).toContain('循环引用')
+
+    // Save AI preset + custom domain landing rules
+    const rulesP = store.saveLandingRules(true, [
+      { id: '', enabled: true, rule: { kind: 'preset', id: 'ai' }, target: { kind: 'custom_group' } },
+      { id: '', enabled: true, rule: { kind: 'domain', pattern: 'claude.ai' }, target: { kind: 'custom_node', id: nodeB.id } },
+    ])
+    await vi.advanceTimersByTimeAsync(200)
+    await rulesP
+    expect(store.customNodes.value.rules).toHaveLength(2)
+    expect(store.customNodes.value.rules[0]?.id).toBeTruthy()
   })
 })
