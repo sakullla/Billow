@@ -41,10 +41,15 @@ greeting/client-info/ping/packet frames) and `zerotier` (identity proof of work,
 planet/moon parsing, VL1 armor and HELLO/OK/WHOIS/ECHO, VL2 frame payload).
 Device/TUN ownership and the userspace IP stack stay with T6/T7, so both
 families load a valid configuration and refuse every `dial()` with that gap
-named. EasyTier is rejected as a whole type: the pinned core derives
-`network_secret_digest` inside its wasm artifact and that derivation is not
-reproducible offline, so neither the cleartext host/discovery path nor
-`enable-encryption: true` is loaded as compatible. The T10/T14/T15/T16/T19
+named. T20 translates EasyTier's locked LGPL-3.0-or-later source for the
+cleartext host/discovery path: the real `DefaultHasher`-based
+`network_secret_digest`, peer-manager frame, `HandshakeRequest`,
+`PeerManagerHeader` and PingPong are implemented and verified against the
+pinned wasm core. The secure-datagram/Noise path is not translated and
+`enable-encryption: true` is rejected by name. `outbound/easytier.rs` is an
+LGPL derivative; the workspace is distributed under GPL-3.0-only. See
+`THIRD_PARTY_NOTICES.md` and
+`third_party/EasyTier-LGPL-3.0.txt`. The T10/T14/T15/T16/T19/T20
 families are partial: their gaps are named in
 [Not implemented](#not-implemented) and in
 `tool/kernel-compat/evidence/rust-mapping.json`.
@@ -91,7 +96,8 @@ native-kernel/
     │   │                           # wireguard (Noise IK/transport), openvpn
     │   │                           # (control/TLS/key-method 2/AEAD data channel),
     │   │                           # tailscale (control Noise/HTTP2 + DERP),
-    │   │                           # zerotier (identity/planet/VL1/VL2),
+    │   │                           # zerotier (identity/planet/VL1/VL2) and
+    │   │                           # easytier (LGPL cleartext host/discovery),
     │   │                           # quic, h3 + tls, ws, h2
     │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid
     │   ├── src/rules.rs            # rule set evaluation
@@ -285,9 +291,9 @@ The pinned parser lists 28 outbound types, matching the status recorded in
   still needs T6/T7 and registration-only options are rejected) and `zerotier`
   (identity/planet/VL1/VL2 protocol halves; the controller membership exchange
   is T5, the TCP fallback transport is rejected and the tunnel needs T6/T7);
-- **unimplemented (1)**: `easytier` (the pinned core's
-  `network_secret_digest` is not reproducible offline; both cleartext and
-  encrypted forms are rejected);
+- **partial (1 more)**: `easytier` (the cleartext host/discovery path is
+  translated from the locked LGPL source and verified against the pinned core;
+  the secure-datagram/Noise layer is rejected and the tunnel needs T6/T7);
 - **built-ins (4)**: `direct`, `dns`, `reject` and `rematch` as `proxies`
   entries (T5).
 
@@ -298,7 +304,7 @@ is silently reduced:
 | --- | --- | --- |
 | `wireguard`, `openvpn` | the protocol halves are implemented (`src/outbound/wireguard.rs`, `src/outbound/openvpn.rs`) and verified against controlled peers, but turning their IP packets into TCP streams needs the userspace IP stack and TUN device owned by T6/T7 | **T16**: transport + configuration semantics; a `dial()` names the T6/T7 device gap. `outbound::wireguard::WireguardTunnel` and `outbound::openvpn::OpenVpnTunnel` are the interfaces for that layer |
 | `tailscale`, `zerotier` | the protocol/configuration adapters are implemented in `src/outbound/{tailscale,zerotier}.rs` and verified against controlled peers built from the locked Go modules; the tunnel's TCP/UDP socket layer needs the T6/T7 userspace IP stack and TUN device | **T19 partial**: control/DERP and identity/planet/VL1/VL2 are available to T6/T7/T5; `dial()` names the device gap; registration-only Tailscale prefs and ZeroTier TCP fallback are rejected by name |
-| `easytier` | the pinned core's cleartext `network_secret_digest` is derived inside the wasm artifact and no source/crate is in the offline cache; a placeholder digest is rejected by the real core | **T19 rejected by name**; no cleartext or encrypted compatibility is claimed; device/TUN remains T6/T7 |
+| `easytier` | `src/outbound/easytier.rs` is an LGPL-3.0-or-later translation of the locked EasyTier source for the cleartext host/discovery path; the secure-datagram/Noise layer is not translated and the userspace IP stack/TUN belongs to T6/T7 | **T20 partial**: cleartext handshake verified against the pinned core; `enable-encryption: true`/secure mode rejected by name; distribution must honor LGPL |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
 
 T13 delivered `mieru` in the single-session TCP slice: an independent
@@ -477,9 +483,11 @@ because node registration/control-plane prefs are not implemented; `zerotier`
 accepts the identity, planet, MTU, port, orbit, low-bandwidth and
 encrypted-HELLO options, rejects an explicit `ip-stack`,
 `remote-dns-resolve`/`dns`, remote trace and the TCP fallback transport
-(`force`/non-empty relay) with the T6/T7/T5 boundary. `easytier` is rejected as
-a whole type with the pinned core digest gap named. Every loadable mesh
-`dial()` names the T6/T7 gap.
+(`force`/non-empty relay) with the T6/T7/T5 boundary. `easytier` accepts the
+cleartext host/discovery options and rejects `enable-encryption: true`, secure
+mode, KCP/QUIC, exit-node/DNS and key-material options by name; its module is
+an LGPL-3.0-or-later derivative. Every loadable mesh `dial()` names the T6/T7
+gap.
 `udp: false` is accepted for a family that has no UDP association because it
 states the same thing this kernel does; `udp` is not a
 Mihomo HTTP option at all and is rejected there. Unsupported protocol types are

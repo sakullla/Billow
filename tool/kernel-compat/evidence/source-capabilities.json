@@ -2649,11 +2649,11 @@
           "tests/mihomo_peers.rs (13 sudoku cases: entropy/ascii/directional/custom/rotation tables, packed downlink, three AEAD methods, with/without the HTTP mask, private/public key material, a dialer-proxy chain through a recording SOCKS5 hop, and multiplex: on over that chain; wrong key and mismatched table type)",
           "tests/mihomo_peers.rs::sudoku_multiplex_carries_two_streams_over_one_session",
           "tests/mihomo_peers.rs::sudoku_multiplex_handles_concurrent_streams",
-        "tests/mihomo_peers.rs::sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop",
-        "tests/mihomo_peers.rs::sudoku_multiplex_over_a_dialer_proxy_reaches_the_receiving_side",
-        "tests/mihomo_peers.rs::sudoku_multiplex_over_a_dialer_proxy_wrong_key_never_reaches_the_sink",
-        "tests/protocols.rs::tcp_dialer_proxy_reaches_the_exit_through_the_hop",
-        "tests/protocols.rs::tcp_dialer_proxy_never_bypasses_an_unsupported_exit",
+          "tests/mihomo_peers.rs::sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop",
+          "tests/mihomo_peers.rs::sudoku_multiplex_over_a_dialer_proxy_reaches_the_receiving_side",
+          "tests/mihomo_peers.rs::sudoku_multiplex_over_a_dialer_proxy_wrong_key_never_reaches_the_sink",
+          "tests/protocols.rs::tcp_dialer_proxy_reaches_the_exit_through_the_hop",
+          "tests/protocols.rs::tcp_dialer_proxy_never_bypasses_an_unsupported_exit",
           "tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation",
           "src/outbound/sudoku/table.rs::pinned_vectors::the_pinned_encoder_output_decodes_with_our_table",
           "src/outbound/sudoku/mux.rs::tests::frames_are_demultiplexed_and_half_closed",
@@ -2957,12 +2957,33 @@
       "constructor": "outbound.NewEasyTier",
       "source": "adapter/parser.go:219",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "T19 rejected the whole type: the pinned core derives `network_secret_digest` inside its wasm artifact and that derivation is not reproducible from the offline source/crate cache. A placeholder digest is reset by the real core, so neither the cleartext host/discovery path nor `enable-encryption: true` is loaded as compatible. Device/TUN remains T6/T7.",
-        "evidence": [
-          "tests/config.rs::mesh_control_planes_load_the_pinned_shapes"
+        "status": "partial",
+        "reason": "T20 translated the locked EasyTier LGPL-3.0-or-later source for the cleartext host/discovery path: the real DefaultHasher-based network_secret_digest, the 16-byte little-endian PeerManagerHeader/TCP frame, HandshakeRequest and PingPong are implemented in src/outbound/easytier.rs and verified against the pinned wasm core with enable_encryption=false. The secure-datagram/Noise XX layer is not translated and enable-encryption:true/secure-mode are rejected at load; TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device.",
+        "options": [
+          "network-name",
+          "network-secret",
+          "hostname",
+          "ipv4",
+          "dhcp",
+          "peers",
+          "listeners",
+          "no-listener",
+          "instance-name",
+          "state-dir",
+          "udp",
+          "encryption-algorithm",
+          "disable-p2p"
         ],
-        "notes": "Rejected at configuration load with the digest gap named; no protocol object or peer is exposed as compatible."
+        "evidence": [
+          "src/outbound/easytier.rs::tests::digest_matches_the_locked_easytier_vectors",
+          "src/outbound/easytier.rs::tests::frame_uses_little_endian_peer_ids_and_lengths",
+          "src/outbound/easytier.rs::tests::handshake_roundtrips_and_ignores_unknown_fields",
+          "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
+          "tests/mesh_peers.rs::easytier_pinned_core_cleartext_handshake",
+          "tool/kernel-compat/evidence/t20-easytier.md"
+        ],
+        "notes": "The secure-datagram/Noise XX, KCP/QUIC, private-mode, exit-node/DNS, mapped-listeners and local key material are rejected by name. The source is LGPL-3.0-or-later; the workspace is distributed under GPL-3.0-only and the module's LGPL obligations remain. Device/TUN is T6/T7.",
+        "license": "LGPL-3.0-or-later translation of the locked EasyTier source; the workspace is distributed under GPL-3.0-only. See native-kernel/THIRD_PARTY_NOTICES.md and native-kernel/third_party/EasyTier-LGPL-3.0.txt."
       }
     }
   ],

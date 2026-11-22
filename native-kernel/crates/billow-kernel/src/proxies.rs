@@ -549,6 +549,47 @@ pub struct ZerotierOutbound {
     pub orbit: Vec<ZerotierOrbit>,
 }
 
+/// EasyTier (`adapter/outbound/easytier.go` + the pinned `easytier-go`).
+///
+/// `outbound/easytier.rs` is an LGPL-3.0-or-later derivative of the locked
+/// EasyTier source for the cleartext host/discovery path: network secret
+/// digest, peer-manager frame, `HandshakeRequest`, `PeerManagerHeader` and
+/// PingPong. The secure-datagram/Noise path and the userspace IP stack/TUN
+/// are not implemented here and are rejected/owned by T6/T7.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EasytierOutbound {
+    pub network_name: String,
+    pub network_secret: Secret,
+    pub hostname: Option<String>,
+    pub ipv4: Option<String>,
+    pub dhcp: bool,
+    pub peers: Vec<String>,
+    pub listeners: Vec<String>,
+    pub no_listener: Option<bool>,
+    pub mapped_listeners: Vec<String>,
+    pub exit_nodes: Vec<String>,
+    pub proxy_networks: Vec<String>,
+    pub instance_name: String,
+    pub state_dir: String,
+    pub udp: bool,
+    pub accept_dns: Option<bool>,
+    pub enable_exit_node: Option<bool>,
+    pub enable_encryption: bool,
+    pub encryption_algorithm: String,
+    pub private_mode: Option<bool>,
+    pub latency_first: Option<bool>,
+    pub disable_p2p: Option<bool>,
+    pub enable_kcp_proxy: Option<bool>,
+    pub disable_kcp_input: Option<bool>,
+    pub enable_quic_proxy: Option<bool>,
+    pub disable_quic_input: Option<bool>,
+    pub mtu: u16,
+    pub tld_dns_zone: Option<String>,
+    pub secure_mode: Option<bool>,
+    pub local_private_key: Option<Secret>,
+    pub local_public_key: Option<Secret>,
+}
+
 /// MASQUE over HTTP/3, in the two shapes the pinned adapter serves:
 ///
 /// * the RFC 9298 CONNECT-UDP subset (T14): a server with `udp: true`, one
@@ -903,6 +944,7 @@ pub enum Protocol {
     OpenVpn(OpenVpnOutbound),
     Tailscale(TailscaleOutbound),
     Zerotier(ZerotierOutbound),
+    Easytier(EasytierOutbound),
 }
 
 impl Protocol {
@@ -931,6 +973,7 @@ impl Protocol {
             Protocol::OpenVpn(_) => None,
             Protocol::Tailscale(_) => None,
             Protocol::Zerotier(_) => None,
+            Protocol::Easytier(_) => None,
         }
     }
 }
@@ -961,6 +1004,7 @@ impl Proxy {
             Protocol::OpenVpn(_) => "openvpn",
             Protocol::Tailscale(_) => "tailscale",
             Protocol::Zerotier(_) => "zerotier",
+            Protocol::Easytier(_) => "easytier",
         }
     }
 
@@ -998,6 +1042,7 @@ impl Proxy {
             Protocol::OpenVpn(p) => (&p.server, p.port),
             Protocol::Tailscale(p) => (&p.state_dir, 0),
             Protocol::Zerotier(p) => (&p.state_dir, 0),
+            Protocol::Easytier(p) => (&p.state_dir, 0),
         }
     }
 
@@ -1013,6 +1058,7 @@ impl Proxy {
             Protocol::ShadowQuic(_) => true,
             Protocol::Tailscale(p) => p.udp,
             Protocol::Zerotier(p) => p.udp,
+            Protocol::Easytier(p) => p.udp,
             _ => false,
         }
     }
@@ -1755,11 +1801,7 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
         "wireguard" => Protocol::Wireguard(parse_wireguard(&mut entry)?),
         "tailscale" => Protocol::Tailscale(parse_tailscale(&mut entry)?),
         "zerotier" => Protocol::Zerotier(parse_zerotier(&mut entry)?),
-        "easytier" => {
-            return Err(entry.unsupported(
-                "protocol type 'easytier' is not implemented: the pinned core derives `network_secret_digest` inside its wasm artifact and that derivation is not reproducible from the offline source/crate cache; both the cleartext host/discovery path and `enable-encryption: true` are rejected rather than loaded as compatible; device/TUN ownership remains T6/T7",
-            ))
-        }
+        "easytier" => Protocol::Easytier(parse_easytier(&mut entry)?),
         "openvpn" => Protocol::OpenVpn(parse_openvpn(&mut entry)?),
 
         other => {
@@ -2065,6 +2107,203 @@ fn parse_zerotier(entry: &mut Entry<'_>) -> Result<ZerotierOutbound, ConfigError
         tcp_fallback_mode,
         tcp_fallback_relay,
         orbit,
+    })
+}
+
+fn parse_easytier(entry: &mut Entry<'_>) -> Result<EasytierOutbound, ConfigError> {
+    reject_device_basic(entry)?;
+    let network_name = entry.string("network-name")?.unwrap_or_default();
+    let network_secret = entry.string("network-secret")?.unwrap_or_default();
+    let hostname = entry.string("hostname")?.filter(|v| !v.is_empty());
+    if hostname.is_some() {
+        return Err(entry.unsupported(
+            "option 'hostname' requires the EasyTier OSPF/route host-identity exchange, which is not implemented in the cleartext host/discovery translation",
+        ));
+    }
+    let ipv4 = entry.string("ipv4")?.filter(|v| !v.is_empty());
+    if let Some(ipv4) = &ipv4 {
+        let (address, prefix) = ipv4
+            .split_once('/')
+            .ok_or_else(|| entry.invalid("option 'ipv4' must be an IPv4 prefix such as 10.144.0.10/24"))?;
+        if address.parse::<std::net::Ipv4Addr>().is_err()
+            || prefix.parse::<u8>().map_or(true, |bits| bits > 32)
+        {
+            return Err(entry.invalid("option 'ipv4' must be an IPv4 prefix such as 10.144.0.10/24"));
+        }
+    }
+    let dhcp = entry.bool("dhcp")?.unwrap_or(false);
+    if dhcp || ipv4.is_some() {
+        return Err(entry.unsupported(
+            "options 'ipv4'/'dhcp' require the EasyTier OSPF/route address assignment, which is not implemented in the cleartext host/discovery translation",
+        ));
+    }
+    let peers = entry.string_list("peers")?;
+    let listeners = entry.string_list("listeners")?;
+    let no_listener = entry.bool("no-listener")?;
+    let mapped_listeners = entry.string_list("mapped-listeners")?;
+    if !mapped_listeners.is_empty() {
+        return Err(entry.unsupported("option 'mapped-listeners' is not implemented"));
+    }
+    for (option, endpoints) in [("peers", &peers), ("listeners", &listeners)] {
+        if endpoints
+            .iter()
+            .any(|value| !(value.starts_with("udp://") || value.starts_with("tcp://") || value.starts_with("wg://") || value.starts_with("quic://")))
+        {
+            return Err(entry.invalid(format!(
+                "each '{option}' entry must be a udp://, tcp://, wg:// or quic:// URL"
+            )));
+        }
+    }
+    if peers.is_empty() && listeners.is_empty() && no_listener != Some(true) {
+        return Err(entry.invalid("EasyTier requires at least one peer or listener (or 'no-listener: true')"));
+    }
+    let exit_nodes = entry.string_list("exit-nodes")?;
+    if !exit_nodes.is_empty() {
+        return Err(entry.unsupported("option 'exit-nodes' is not implemented"));
+    }
+    let proxy_networks = entry.string_list("proxy-networks")?;
+    if !proxy_networks.is_empty() {
+        return Err(entry.unsupported("option 'proxy-networks' is not implemented"));
+    }
+    let instance_name = entry
+        .string("instance-name")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| entry.name.clone());
+    let state_dir = entry
+        .string("state-dir")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| format!("easytier/{instance_name}"));
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let accept_dns = entry.bool("accept-dns")?;
+    if accept_dns == Some(true) {
+        return Err(entry.unsupported("option 'accept-dns' requires the EasyTier DNS integration (T5)"));
+    }
+    let enable_exit_node = entry.bool("enable-exit-node")?;
+    if enable_exit_node == Some(true) {
+        return Err(entry.unsupported("option 'enable-exit-node' is not implemented"));
+    }
+    let enable_encryption = entry.bool("enable-encryption")?.unwrap_or(false);
+    let encryption_algorithm = entry
+        .string("encryption-algorithm")?
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "aes-gcm".to_string())
+        .to_ascii_lowercase();
+    if !matches!(encryption_algorithm.as_str(), "aes-gcm" | "chacha20") {
+        return Err(entry.invalid("option 'encryption-algorithm' must be aes-gcm or chacha20"));
+    }
+    if enable_encryption {
+        return Err(entry.unsupported(
+            "option 'enable-encryption: true' is not implemented: the cleartext host/discovery translation is available, but the secure-datagram/Noise XX layer is not translated yet (outbound/easytier.rs names the gap)",
+        ));
+    }
+    let private_mode = entry.bool("private-mode")?;
+    if private_mode == Some(true) {
+        return Err(entry.unsupported("option 'private-mode' is not implemented"));
+    }
+    let latency_first = entry.bool("latency-first")?;
+    if latency_first == Some(true) {
+        return Err(entry.unsupported("option 'latency-first' is not implemented"));
+    }
+    let disable_p2p = entry.bool("disable-p2p")?;
+    let enable_kcp_proxy = entry.bool("enable-kcp-proxy")?;
+    if enable_kcp_proxy == Some(true) {
+        return Err(entry.unsupported("option 'enable-kcp-proxy' is not implemented"));
+    }
+    let disable_kcp_input = entry.bool("disable-kcp-input")?;
+    let enable_quic_proxy = entry.bool("enable-quic-proxy")?;
+    if enable_quic_proxy == Some(true) {
+        return Err(entry.unsupported("option 'enable-quic-proxy' is not implemented"));
+    }
+    let disable_quic_input = entry.bool("disable-quic-input")?;
+    let mtu = match entry.int("mtu")? {
+        Some(value) if value != 0 && !(576..=65535).contains(&value) => {
+            return Err(entry.invalid("option 'mtu' must be between 576 and 65535"))
+        }
+        Some(value) => value as u16,
+        None => 0,
+    };
+    let tld_dns_zone = entry.string("tld-dns-zone")?.filter(|v| !v.is_empty());
+    if tld_dns_zone.is_some() {
+        return Err(entry.unsupported("option 'tld-dns-zone' is not implemented (T5 DNS)"));
+    }
+    let secure_mode = entry.bool("secure-mode")?;
+    if secure_mode == Some(true) {
+        return Err(entry.unsupported("option 'secure-mode' is not implemented"));
+    }
+    let local_private_key = entry.string("local-private-key")?.filter(|v| !v.is_empty()).map(Secret::new);
+    let local_public_key = entry.string("local-public-key")?.filter(|v| !v.is_empty()).map(Secret::new);
+    if local_private_key.is_some() || local_public_key.is_some() {
+        return Err(entry.unsupported(
+            "options 'local-private-key'/'local-public-key' are the Noise static keys of the unimplemented secure path",
+        ));
+    }
+    entry.reject_unknown(
+        &[
+            "network-name",
+            "network-secret",
+            "hostname",
+            "ipv4",
+            "dhcp",
+            "peers",
+            "listeners",
+            "no-listener",
+            "mapped-listeners",
+            "exit-nodes",
+            "proxy-networks",
+            "instance-name",
+            "state-dir",
+            "udp",
+            "accept-dns",
+            "enable-exit-node",
+            "enable-encryption",
+            "encryption-algorithm",
+            "private-mode",
+            "latency-first",
+            "disable-p2p",
+            "enable-kcp-proxy",
+            "disable-kcp-input",
+            "enable-quic-proxy",
+            "disable-quic-input",
+            "mtu",
+            "tld-dns-zone",
+            "secure-mode",
+            "local-private-key",
+            "local-public-key",
+        ],
+        false,
+        None,
+    )?;
+    Ok(EasytierOutbound {
+        network_name,
+        network_secret: Secret::new(network_secret),
+        hostname,
+        ipv4,
+        dhcp,
+        peers,
+        listeners,
+        no_listener,
+        mapped_listeners,
+        exit_nodes,
+        proxy_networks,
+        instance_name,
+        state_dir,
+        udp,
+        accept_dns,
+        enable_exit_node,
+        enable_encryption,
+        encryption_algorithm,
+        private_mode,
+        latency_first,
+        disable_p2p,
+        enable_kcp_proxy,
+        disable_kcp_input,
+        enable_quic_proxy,
+        disable_quic_input,
+        mtu,
+        tld_dns_zone,
+        secure_mode,
+        local_private_key,
+        local_public_key,
     })
 }
 

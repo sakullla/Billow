@@ -25,7 +25,7 @@ cargo build --release --manifest-path native-kernel/Cargo.toml --locked -p billo
 # Controlled peers for families with no Mihomo listener (gost-relay, ssh, ssr)
 # and the T16/T19 device/mesh families (WireGuard via the locked wireguard-go
 # device, OpenVPN 2.7.9 via the Homebrew binary with --dev null, and the
-# tailscale/zerotier peers built from the locked Go modules),
+# tailscale/zerotier/EasyTier peers built from the locked Go modules),
 # the independent Go SSR server and the pinned SSR stream-cipher vectors;
 # needs `go`
 tool/kernel-compat/family-peers.sh
@@ -161,10 +161,12 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   `peers/zerotier-peer` uses the locked MPL-2.0 `zerotier-go` packet/identity
   code to parse the Rust HELLO and build OK. `native-kernel/tests/mesh_peers.rs`
   covers success, authentication failure and a boundary for those two families.
-  EasyTier is rejected as a whole type because the pinned core's cleartext
-  `network_secret_digest` is not reproducible offline; there is no EasyTier
-  peer or compatibility test. The offline dependency/licence/decision record
-  is `evidence/t19-mesh.md`.
+  T20 translated the locked LGPL-3.0-or-later EasyTier source for the
+  cleartext host/discovery path (`DefaultHasher` digest, 16-byte little-endian
+  frame, HandshakeRequest/PingPong); `peers/easytier-peer` runs the pinned wasm
+  core as a test fixture. The secure-datagram/Noise path remains rejected. The
+  dependency/licence/decision records are `evidence/t19-mesh.md` and
+  `evidence/t20-easytier.md`.
 
   T17-A1 tried a clean-room `sudoku` client and produced none: the protocol is
   not specified at byte level anywhere public and the pinned listener rejects a

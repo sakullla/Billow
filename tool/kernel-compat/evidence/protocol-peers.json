@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 63,
-    "passed": 63,
+    "cases": 66,
+    "passed": 66,
     "failed": 0
   },
   "families": {
@@ -378,6 +378,21 @@
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: sudoku with the default (entropy table, pure downlink, legacy HTTP mask) and the configured variants (prefer_ascii, up_ascii_down_entropy, custom-table(s), enable-pure-downlink: false, disable-http-mask, aead-method)",
       "notes": "GPL-3.0-derived translation of the pinned `transport/sudoku` (T17; see t17 below). Table construction uses Go's math/rand shuffle, so the 288-grid order matches; both pure and packed downlink codecs, the record layer (chacha20poly1305/aes-128-gcm/none), the KIP X25519/HKDF handshake, the session mux (two streams, sequential and concurrent) and a `dialer-proxy` chain (a recording SOCKS5 hop carries the exit's server connection; T17-A3) are covered. `tool/kernel-compat/peers/sudoku-vectors` is the locked Go codec used by `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` (pinned encode -> Rust decode, Rust encode -> pinned decode, with and without padding) for entropy/ascii/directional/custom tables. HTTP tunnel modes and UoT are rejected at load with the reason recorded."
+    },
+    "easytier": {
+      "status": "pass",
+      "command": "KC_EASYTIER_PEER_BIN=... cargo test --manifest-path native-kernel/Cargo.toml --locked --test mesh_peers easytier_pinned_core_cleartext -- --ignored --test-threads=1",
+      "peer": "tool/kernel-compat/peers/easytier-peer (locked easytier-go wasm core, enable_encryption=false, no secure mode)",
+      "cases": {
+        "positive": [
+          "easytier_pinned_core_cleartext_handshake"
+        ],
+        "negative": [
+          "wrong network secret is rejected",
+          "foreign network name is rejected"
+        ]
+      },
+      "notes": "T20 LGPL-3.0-or-later translation of the cleartext host/discovery path; secure-datagram/Noise rejected. See evidence/t20-easytier.md."
     }
   },
   "loopbackOnlyEvidence": {
@@ -421,11 +436,12 @@
       "gost-relay",
       "ssh",
       "ssr",
-      "sudoku"
+      "sudoku",
+      "easytier"
     ],
     "result": {
-      "cases": 15,
-      "passed": 15,
+      "cases": 16,
+      "passed": 16,
       "failed": 0
     },
     "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server; the Sudoku section builds the locked Go codec (`peers/sudoku-vectors`, GPL-3.0 test-only) and runs the Rust-vs-Go differential. `result` counts the 15 test functions of that group (gost 5, ssh 4, ssr Rust 3 + independent Go 2, sudoku codec 1); T16's WireGuard/OpenVPN peers are recorded under `t16` and run by the same script.",

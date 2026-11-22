@@ -13,6 +13,7 @@ use std::time::Duration;
 use billow_kernel::outbound::tailscale::{
     derp, DerpClient, TailscaleControl, TailscaleError,
 };
+use billow_kernel::outbound::easytier::{EasytierError, EasytierSession};
 use billow_kernel::outbound::tls::ClientTls;
 use billow_kernel::outbound::zerotier::{self, Identity, ZerotierError};
 use tokio::net::{TcpStream, UdpSocket};
@@ -123,6 +124,78 @@ async fn zerotier_hello_success_and_failure() {
     .await
     .expect_err("truncated reply must fail");
     assert!(matches!(error, ZerotierError::Timeout), "{error}");
+}
+
+#[tokio::test]
+#[ignore]
+async fn easytier_pinned_core_cleartext_handshake() {
+    let Some(bin) = env_bin("KC_EASYTIER_PEER_BIN") else {
+        return skip("easytier-core", "KC_EASYTIER_PEER_BIN");
+    };
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let listen = format!("127.0.0.1:{port}");
+    let peer = start(
+        &bin,
+        &[
+            "-mode",
+            "core",
+            "-listen",
+            &listen,
+            "-network",
+            "billow",
+            "-secret",
+            "s3cret",
+        ],
+    );
+    assert_eq!(peer.port, port);
+    let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let mut session = None;
+    for _ in 0..40 {
+        match EasytierSession::connect(address, "billow", "s3cret", Duration::from_secs(2)).await {
+            Ok(value) => {
+                session = Some(value);
+                break;
+            }
+            Err(error) => {
+                if !matches!(error, EasytierError::Io(_) | EasytierError::Timeout) {
+                    panic!("cleartext handshake failed: {error}");
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+    let mut session = session.expect("pinned core did not accept the cleartext handshake");
+    session
+        .ping(11, Duration::from_secs(3))
+        .await
+        .expect("pong");
+
+    // Wrong secret and wrong network are named authentication failures.
+    let wrong_secret = EasytierSession::connect(
+        address,
+        "billow",
+        "wrong",
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        matches!(wrong_secret, Err(EasytierError::SecretDigest) | Err(EasytierError::NetworkName)),
+        "{wrong_secret:?}"
+    );
+    let wrong_network = EasytierSession::connect(
+        address,
+        "other",
+        "s3cret",
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        matches!(wrong_network, Err(EasytierError::SecretDigest) | Err(EasytierError::NetworkName)),
+        "{wrong_network:?}"
+    );
 }
 
 #[tokio::test]

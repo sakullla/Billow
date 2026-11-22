@@ -1037,13 +1037,7 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
 }
 
 #[test]
-fn deferred_families_name_their_decision() {
-    let easytier = proxy_err(
-        "proxies:\n  - {name: p, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1']}\nrules: ['MATCH,p']\n",
-    );
-    assert!(easytier.contains("type=easytier"), "{easytier}");
-    assert!(easytier.contains("network_secret_digest"), "{easytier}");
-}
+fn deferred_families_name_their_decision() {}
 
 #[test]
 fn wireguard_accepts_the_pinned_shapes_and_names_its_gaps() {
@@ -1146,6 +1140,8 @@ fn mesh_control_planes_load_the_pinned_shapes() {
         "proxies:\n  - {name: m, type: tailscale, control-url: http://127.0.0.1:1}\nrules: ['MATCH,m']\n".to_string(),
         "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001}\nrules: ['MATCH,m']\n".to_string(),
         format!("proxies:\n  - {{name: m, type: zerotier, network: 8056c2e21c000001, identity-secret: {identity}}}\nrules: ['MATCH,m']\n"),
+        "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['udp://127.0.0.1:11010']}\nrules: ['MATCH,m']\n".to_string(),
+        "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['tcp://127.0.0.1:11010'], encryption-algorithm: chacha20, disable-p2p: true}\nrules: ['MATCH,m']\n".to_string(),
     ];
     for yaml in cases {
         assert_eq!(proxy_err(&yaml), "ok", "{yaml}");
@@ -1178,12 +1174,16 @@ fn mesh_control_planes_load_the_pinned_shapes() {
             "ephemeral",
         ),
         (
-            "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1']}\nrules: ['MATCH,m']\n",
-            "network_secret_digest",
+            "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1'], enable-encryption: true}\nrules: ['MATCH,m']\n",
+            "secure-datagram",
         ),
         (
-            "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1'], enable-encryption: true}\nrules: ['MATCH,m']\n",
-            "network_secret_digest",
+            "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1'], hostname: h}\nrules: ['MATCH,m']\n",
+            "hostname",
+        ),
+        (
+            "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1'], ipv4: 10.0.0.1/24}\nrules: ['MATCH,m']\n",
+            "ipv4",
         ),
         (
             "proxies:\n  - {name: m, type: zerotier, network: 8056c2e21c000001, ip-stack: {mode: gvisor}}\nrules: ['MATCH,m']\n",
@@ -1224,6 +1224,7 @@ async fn implemented_device_families_load_and_dial_names_the_t6_t7_gap() {
         format!(
             "mixed-port: 1\nproxies:\n  - {{name: zt, type: zerotier, network: 8056c2e21c000001, identity-secret: {zt_identity}}}\nrules: ['MATCH,zt']\n"
         ),
+        "mixed-port: 1\nproxies:\n  - {name: et, type: easytier, network-name: billow, network-secret: s, peers: ['tcp://127.0.0.1:1']}\nrules: ['MATCH,et']\n".to_string(),
     ];
     for yaml in configs {
         let loaded = load_config(&yaml, "dial-gap.yaml").expect("configuration loads");

@@ -181,7 +181,7 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   for (const [type, entry] of Object.entries(peers.families)) {
     assert.equal(entry.status === 'pass', true, `${type} has a real-peer result`)
     assert.ok(entry.cases.positive.length > 0 && entry.cases.negative.length > 0, `${type} covers success and failure`)
-    assert.match(entry.command, /mihomo_peers|protocols\.rs|quic_peers/)
+    assert.match(entry.command, /mihomo_peers|protocols\.rs|quic_peers|mesh_peers/)
   }
   // UDP must be real-peer verified for the families that claim it, and the
   // command must work from the crate directory (an absolute binary path).

@@ -11,6 +11,7 @@
 //!   session; the client sees the inbound failure reply.
 
 pub mod anytls;
+pub mod easytier;
 pub mod gost_relay;
 pub mod h3;
 pub mod http;
@@ -468,6 +469,16 @@ async fn dial_inner(
                 io::Error::new(
                     io::ErrorKind::Unsupported,
                     "the control-plane Noise transport, HTTP/2 control request and DERP frame codec are implemented in outbound/tailscale.rs, but TCP/UDP through the tunnel needs the userspace IP stack and TUN device owned by T6/T7",
+                ),
+            ))
+        }
+        Protocol::Easytier(_) => {
+            refuse_chain(via, "easytier")?;
+            Err(handshake(
+                "easytier",
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the LGPL-3.0-derived cleartext host/discovery frame, HandshakeRequest, PeerManagerHeader and PingPong are implemented in outbound/easytier.rs, but TCP/UDP through the network needs the userspace IP stack and TUN device owned by T6/T7; the secure-datagram path is rejected at load",
                 ),
             ))
         }

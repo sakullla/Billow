@@ -160,11 +160,13 @@ else
     echo "SKIP openvpn_peer: no openvpn binary (set KC_OPENVPN_BIN)" >&2
 fi
 
-echo "== T19 mesh peers (locked zerotier-go and tailscale; EasyTier rejected) =="
+echo "== T19/T20 mesh peers (locked zerotier-go, tailscale and EasyTier cleartext) =="
 zt_bin=$(mktemp "${TMPDIR:-/tmp}/billow-zerotier-peer.XXXXXX")
 (cd "$root/tool/kernel-compat/peers/zerotier-peer" && GOFLAGS=-mod=mod GOPROXY=off go build -o "$zt_bin" .)
 ts_bin=$(mktemp "${TMPDIR:-/tmp}/billow-tailscale-peer.XXXXXX")
 (cd "$root/tool/kernel-compat/peers/tailscale-peer" && GOFLAGS=-mod=mod GOPROXY=off go build -o "$ts_bin" .)
-KC_ZEROTIER_PEER_BIN="$zt_bin" KC_TAILSCALE_PEER_BIN="$ts_bin" cargo test \
+et_bin=$(mktemp "${TMPDIR:-/tmp}/billow-easytier-peer.XXXXXX")
+(cd "$root/tool/kernel-compat/peers/easytier-peer" && GOFLAGS=-mod=mod GOPROXY=off go build -o "$et_bin" .)
+KC_ZEROTIER_PEER_BIN="$zt_bin" KC_TAILSCALE_PEER_BIN="$ts_bin" KC_EASYTIER_PEER_BIN="$et_bin" cargo test \
     --manifest-path "$root/native-kernel/Cargo.toml" --locked \
     --test mesh_peers -- --ignored --test-threads=1 --nocapture
