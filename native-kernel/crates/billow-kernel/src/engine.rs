@@ -18,7 +18,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use crate::config::{Action, Config, ConfigError, GeoSiteDatabase, LoadedConfig};
+use crate::config::{Action, Config, ConfigError, InType, LoadedConfig, NetworkKind};
 use crate::identity::Identity;
 use crate::inbound::{self, HandshakeError, InboundAuth};
 use crate::outbound::tls::ClientTls;
@@ -119,6 +119,8 @@ struct SessionContext {
     tls: Arc<ClientTls>,
     /// `authentication` users for the mixed inbound (SOCKS5 RFC 1929 / HTTP 407).
     auth: InboundAuth,
+    /// Actual bound mixed-listener port (`IN-PORT` rules).
+    listen_port: u16,
     limits: Limits,
     counters: Arc<Counters>,
 }
@@ -128,6 +130,7 @@ pub struct Kernel {
     identity: Identity,
     config: Arc<Config>,
     rules: Arc<RuleSet>,
+    providers: Arc<crate::provider::RuleProviders>,
     limits: Limits,
     counters: Arc<Counters>,
     stop_tx: watch::Sender<bool>,
@@ -135,55 +138,98 @@ pub struct Kernel {
 }
 
 impl Kernel {
-    /// Load `path`, compile rules (geosite databases from `geosite_dir`) and bind the listener.
+    /// Load `path`, compile rules (geodata from `geodata_dir`) and bind the listener.
     pub fn start(
         path: &std::path::Path,
-        geosite_dir: Option<PathBuf>,
+        geodata_dir: Option<PathBuf>,
         limits: Limits,
     ) -> Result<(Kernel, Vec<String>), StartError> {
         let yaml = std::fs::read_to_string(path).map_err(|e| {
             StartError::Config(ConfigError::Invalid(format!("{}: {e}", path.display())))
         })?;
         let loaded = crate::config::load_config(&yaml, &path.display().to_string())?;
-        Kernel::start_with_yaml(&loaded, geosite_dir, limits)
+        let base_dir = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        Kernel::start_with_dir(&loaded, geodata_dir, base_dir, limits)
     }
 
     /// Start from YAML text (embedding hosts such as the iOS extension use this entry).
     pub fn start_from_yaml(
         yaml: &str,
-        geosite_dir: Option<PathBuf>,
+        geodata_dir: Option<PathBuf>,
         limits: Limits,
     ) -> Result<(Kernel, Vec<String>), StartError> {
         let loaded = crate::config::load_config(yaml, "<inline>")?;
-        Kernel::start_with_yaml(&loaded, geosite_dir, limits)
+        let base_dir = geodata_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+        Kernel::start_with_dir(&loaded, geodata_dir, base_dir, limits)
     }
 
     /// Start from a [`LoadedConfig`]; returns warnings so hosts can surface them.
     pub fn start_with_yaml(
         loaded: &LoadedConfig,
-        geosite_dir: Option<PathBuf>,
+        geodata_dir: Option<PathBuf>,
+        limits: Limits,
+    ) -> Result<(Kernel, Vec<String>), StartError> {
+        let base_dir = geodata_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+        Kernel::start_with_dir(loaded, geodata_dir, base_dir, limits)
+    }
+
+    /// Start from a [`LoadedConfig`] with an explicit directory for relative
+    /// provider paths (the CLI passes the configuration file's directory).
+    pub fn start_with_dir(
+        loaded: &LoadedConfig,
+        geodata_dir: Option<PathBuf>,
+        base_dir: PathBuf,
         limits: Limits,
     ) -> Result<(Kernel, Vec<String>), StartError> {
         validate_limits(&limits)?;
-        let keys = loaded.config.geosite_databases();
-        let geosite = if keys.is_empty() {
-            GeoSiteDatabase::default()
-        } else {
-            let key = keys.iter().next().cloned().unwrap_or_default();
-            let dir = geosite_dir.as_ref().ok_or_else(|| {
-                StartError::Config(ConfigError::Unsupported(format!(
-                    "GEOSITE,{key} requires --geosite-dir"
-                )))
-            })?;
-            GeoSiteDatabase::load_from_dir(dir, &keys)?
-        };
         let config = Arc::new(loaded.config.clone());
-        let rules = RuleSet::from_config(&config, geosite);
+        let mut warnings = loaded.warnings.clone();
         // The configuration's own anchors are part of the kernel instance:
         // they are installed before the listener exists, so no dial can run
         // without them, and a second kernel in this process cannot inherit
         // the first one's private authorities.
         let tls = Arc::new(ClientTls::new(&config.tls_roots));
+
+        // 1. Read every provider vehicle. The payloads decide which geodata
+        //    files are needed (a classical provider may use GEOSITE/GEOIP).
+        let prepared = crate::provider::prepare(&config, &base_dir, &tls)?;
+        warnings.extend(prepared.warnings.iter().cloned());
+        let requirements = prepared.requirements.clone();
+        // 2. Load only the referenced geodata. A missing file is a named error.
+        let geodata = if requirements.geosite_keys.is_empty()
+            && !requirements.geoip
+            && !requirements.asn
+        {
+            Arc::new(crate::geodata::Geodata::default())
+        } else {
+            let dir = geodata_dir.as_ref().ok_or_else(|| {
+                StartError::Config(ConfigError::Unsupported(
+                    "GEOSITE/GEOIP/IP-ASN rules require --geosite-dir (the directory with GeoSite.dat, GeoIP.dat/Country.mmdb and ASN.mmdb)"
+                        .to_string(),
+                ))
+            })?;
+            Arc::new(crate::geodata::Geodata::load(
+                dir,
+                crate::provider::geodata_source(&config),
+                !requirements.geosite_keys.is_empty(),
+                requirements.geoip,
+                requirements.asn,
+                &requirements.geosite_keys,
+            )?)
+        };
+        // 3. Compile provider snapshots, then the rule list that references them.
+        let providers = crate::provider::finish(
+            &config,
+            prepared,
+            geodata,
+            &base_dir,
+            tls.clone(),
+        )?;
+        let rules = RuleSet::compile(&config, providers.clone())?;
 
         // Bind with a short-lived current-thread runtime on this thread; the
         // caller may itself be inside a tokio runtime (tests, hosts), so the
@@ -213,6 +259,7 @@ impl Kernel {
             auth: InboundAuth {
                 users: loaded.config.inbound_users.clone(),
             },
+            listen_port: local.port(),
             limits,
             counters: counters.clone(),
         });
@@ -231,7 +278,7 @@ impl Kernel {
             )));
         }
 
-        let identity = Identity::new(VERSION, local, &config, &geosite_dir, rules.rule_count());
+        let identity = Identity::new(VERSION, local, &config, &geodata_dir, rules.rule_count());
         info!(
             instance = %identity.uuid, pid = identity.pid, version = VERSION, listen = %local,
             "billow-kernel started; {}", config.feature_summary()
@@ -241,12 +288,13 @@ impl Kernel {
                 identity,
                 config,
                 rules,
+                providers,
                 limits,
                 counters,
                 stop_tx,
                 supervisor: Mutex::new(Some(supervisor)),
             },
-            loaded.warnings.clone(),
+            warnings,
         ))
     }
 
@@ -273,6 +321,32 @@ impl Kernel {
         self.limits
     }
 
+    /// Provider registry (rule + proxy snapshots) for hosts and the T25 API.
+    pub fn providers(&self) -> &Arc<crate::provider::RuleProviders> {
+        &self.providers
+    }
+
+    /// Re-read one rule provider. On failure the old snapshot stays in use.
+    pub fn update_rule_provider(
+        &self,
+        name: &str,
+    ) -> Result<crate::provider::ProviderUpdate, ConfigError> {
+        self.providers.update_rule_provider(name)
+    }
+
+    pub fn update_all_rule_providers(
+        &self,
+    ) -> (Vec<crate::provider::ProviderUpdate>, Vec<ConfigError>) {
+        self.providers.update_all_rule_providers()
+    }
+
+    pub fn update_proxy_provider(
+        &self,
+        name: &str,
+    ) -> Result<crate::provider::ProviderUpdate, ConfigError> {
+        self.providers.update_proxy_provider(name)
+    }
+
     pub fn stats(&self) -> Stats {
         self.counters.snapshot()
     }
@@ -281,7 +355,14 @@ impl Kernel {
     /// Returns the action and a human-readable `rule -> ACTION` label.
     pub fn evaluate(&self, host: &str, ip: Option<IpAddr>) -> (Action, String) {
         let m = self.rules.evaluate(&Target::new(host, ip));
-        (m.rule.action, m.label(&self.config))
+        (m.action, m.label(&self.config))
+    }
+
+    /// Evaluate a full [`Target`] (port, network, source address, listener type,
+    /// process metadata). Used by diagnostics and provider/rule tests.
+    pub fn evaluate_target(&self, target: &Target) -> (Action, String) {
+        let m = self.rules.evaluate(target);
+        (m.action, m.label(&self.config))
     }
 
     /// Stop accepting, wait for every session task and the listener to exit.
@@ -531,16 +612,34 @@ async fn serve_request(
         return serve_udp_associate(client, peer, id, context, config).await;
     }
     let ip: Option<IpAddr> = request.host.parse().ok();
-    let decision = context.rules.evaluate(&Target::new(&request.host, ip));
+    let target = Target::new(&request.host, ip)
+        .with_port(request.port)
+        .with_network(NetworkKind::Tcp)
+        .with_source(peer.ip(), peer.port())
+        .with_inbound(
+            context.listen_port,
+            match protocol {
+                inbound::Protocol::Socks5 => InType::Socks5,
+                inbound::Protocol::HttpConnect => InType::Https,
+            },
+        );
+    let decision = context.rules.evaluate(&target);
     debug!(
         session = id, peer = %peer, protocol = protocol.as_str(), target = %request.authority(),
         rule = %decision, config = %config.digest, "request matched"
     );
 
-    if decision.rule.action == Action::Reject {
-        info!(session = id, target = %request.authority(), protocol = protocol.as_str(), rule = %decision, "REJECT");
-        inbound::reply_failure(&mut client, protocol, 0x07).await;
-        return Err(SessionOutcome::Rejected);
+    match decision.action {
+        Action::Reject => {
+            info!(session = id, target = %request.authority(), protocol = protocol.as_str(), rule = %decision, "REJECT");
+            inbound::reply_failure(&mut client, protocol, 0x07).await;
+            return Err(SessionOutcome::Rejected);
+        }
+        Action::RejectDrop => {
+            info!(session = id, target = %request.authority(), protocol = protocol.as_str(), rule = %decision, "REJECT-DROP");
+            return Err(SessionOutcome::Rejected);
+        }
+        _ => {}
     }
 
     let authority = request.authority();
@@ -809,9 +908,15 @@ async fn serve_udp_associate(
                 };
                 let payload = &client_buf[datagram.offset..read];
                 let ip: Option<IpAddr> = datagram.target.host.parse().ok();
-                let decision = context.rules.evaluate(&Target::new(&datagram.target.host, ip));
-                let action = decision.rule.action;
-                if action == Action::Reject {
+                let decision = context.rules.evaluate(
+                    &Target::new(&datagram.target.host, ip)
+                        .with_port(datagram.target.port)
+                        .with_network(NetworkKind::Udp)
+                        .with_source(peer.ip(), peer.port())
+                        .with_inbound(context.listen_port, InType::Socks5),
+                );
+                let action = decision.action;
+                if matches!(action, Action::Reject | Action::RejectDrop) {
                     debug!(session = id, target = %datagram.target.host, rule = %decision, "UDP REJECT");
                     continue;
                 }

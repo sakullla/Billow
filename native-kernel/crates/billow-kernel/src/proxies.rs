@@ -948,6 +948,37 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    /// Override the `dialer-proxy` chain target (proxy providers).
+    fn set_dialer_proxy(&mut self, value: Option<String>) -> bool {
+        match self {
+            Protocol::Socks5(p) => p.dialer_proxy = value,
+            Protocol::Http(p) => p.dialer_proxy = value,
+            Protocol::Shadowsocks(p) => p.dialer_proxy = value,
+            Protocol::Trojan(p) => p.dialer_proxy = value,
+            Protocol::Vless(p) => p.dialer_proxy = value,
+            Protocol::Anytls(p) => p.dialer_proxy = value,
+            Protocol::Vmess(p) => p.dialer_proxy = value,
+            Protocol::Snell(p) => p.dialer_proxy = value,
+            Protocol::TrustTunnel(p) => p.dialer_proxy = value,
+            Protocol::GostRelay(p) => p.dialer_proxy = value,
+            Protocol::Ssh(p) => p.dialer_proxy = value,
+            Protocol::Ssr(p) => p.dialer_proxy = value,
+            Protocol::Tuic(p) => p.dialer_proxy = value,
+            Protocol::Hysteria(p) => p.dialer_proxy = value,
+            Protocol::Hysteria2(p) => p.dialer_proxy = value,
+            Protocol::Mieru(p) => p.dialer_proxy = value,
+            Protocol::Sudoku(p) => p.dialer_proxy = value,
+            Protocol::Masque(_)
+            | Protocol::ShadowQuic(_)
+            | Protocol::Wireguard(_)
+            | Protocol::OpenVpn(_)
+            | Protocol::Tailscale(_)
+            | Protocol::Zerotier(_)
+            | Protocol::Easytier(_) => return false,
+        }
+        true
+    }
+
     fn dialer_proxy(&self) -> Option<&str> {
         match self {
             Protocol::Socks5(p) => p.dialer_proxy.as_deref(),
@@ -1292,6 +1323,12 @@ impl Proxy {
     /// `dialer-proxy` target name of this proxy.
     pub fn dialer_proxy(&self) -> Option<&str> {
         self.protocol.dialer_proxy()
+    }
+
+    /// Apply a proxy-provider `dialer-proxy` override; `false` when the
+    /// protocol has no dialer-proxy concept (the caller reports it by name).
+    pub fn set_dialer_proxy(&mut self, value: Option<String>) -> bool {
+        self.protocol.set_dialer_proxy(value)
     }
 }
 

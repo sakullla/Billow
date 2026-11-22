@@ -396,14 +396,14 @@ fn process_rejects_unimplemented_config_and_exits_non_zero() {
     assert!(stderr.contains("[unsupported]"), "{stderr}");
     assert!(stderr.contains("'dns'"), "{stderr}");
 
-    std::fs::write(&config, "mixed-port: 1\nrules:\n  - 'GEOIP,CN,DIRECT'\n").unwrap();
+    std::fs::write(&config, "mixed-port: 1\nrules:\n  - 'DSCP,4,DIRECT'\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
         .arg(&config)
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("rule type 'GEOIP'"), "{stderr}");
+    assert!(stderr.contains("rule type 'DSCP'"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

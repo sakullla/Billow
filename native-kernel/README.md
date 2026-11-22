@@ -56,12 +56,14 @@ families are partial: their gaps are named in
 [Not implemented](#not-implemented) and in
 `tool/kernel-compat/evidence/rust-mapping.json`.
 **Not implemented yet** (rejected with
-`[unsupported]`, never ignored): DNS and `hosts`, proxy groups and providers,
-the control API (`external-controller`, `proxy-providers`, rules beyond the
-listed types), `tun`/`redir`/`tproxy`, the families listed under
+`[unsupported]`, never ignored): DNS and `hosts` (T22), proxy groups and
+selection/latency (T23), the control API (T25), `tun`/`redir`/`tproxy`, the
+families listed under
 [Protocol families outside this slice](#protocol-families-outside-this-slice),
-and the protocol options listed in [Not implemented](#not-implemented). T5 owns
-DNS, groups, providers, rules and the control interface.
+and the protocol options listed in [Not implemented](#not-implemented). T24
+implements the rule types, rule/proxy providers, GEO/MRS reads and Billow's
+effective override configuration; the remaining configuration-plane ownership
+is split across T22/T23/T25 and is named at each boundary.
 
 ## License
 
@@ -87,7 +89,9 @@ native-kernel/
 ├── Cargo.toml, Cargo.lock          # workspace (resolver 2), lockfile committed
 └── crates/
     ├── billow-kernel/              # library (rlib + staticlib)
-    │   ├── src/config.rs           # strict YAML/geosite parsing
+    │   ├── src/config.rs           # strict YAML/rule/provider parsing
+    │   ├── src/geodata.rs          # MRS, GeoSite.dat/GeoIP.dat protobuf, MaxMind DB
+    │   ├── src/provider.rs         # file/http/inline providers, filters, generation swaps
     │   ├── src/proxies.rs          # strict `proxies:` option tables
     │   ├── src/outbound/           # socks5, http, ss, trojan, vless, anytls, vmess, snell,
     │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, sudoku,
@@ -103,12 +107,13 @@ native-kernel/
     │   │                           # easytier (LGPL cleartext host/discovery),
     │   │                           # quic, h3 + tls, ws, h2
     │   ├── src/keys.rs             # EVP_BytesToKey, HKDF-SHA1, trojan key, uuid
-    │   ├── src/rules.rs            # rule set evaluation
+    │   ├── src/rules.rs            # compiled rule set, logic, SUB-RULE, RULE-SET
     │   ├── src/inbound.rs          # SOCKS5 + HTTP CONNECT handshake, authentication
     │   ├── src/engine.rs           # listener, sessions, bounded relay, lifecycle
     │   ├── src/identity.rs         # uuid / pid / version / listener / config digest
     │   ├── examples/embed.rs       # embedding example
-    │   └── tests/                  # config, protocols (loopback peers), sessions,
+    │   └── tests/                  # config, resources (rules/providers/GEO/updates),
+    │                               # protocols (loopback peers), sessions,
     │                               # mihomo_peers (pinned Mihomo),
     │                               # shadowquic_stream (stream/control reopen),
     │                               # wireguard_peer/openvpn_peer (controlled peers),
@@ -123,19 +128,62 @@ native-kernel/
 Top-level keys: `mixed-port`, `port` (recorded, does not bind a separate
 listener), `socks-port` (legacy alias for `mixed-port`), `allow-lan`,
 `bind-address`, `mode: rule`, `log-level`, `authentication`, `tls` (extra
-roots only), `proxies`, `rules`.
+roots only), `proxies`, `rules`, `sub-rules`, `rule-providers`,
+`proxy-providers`, `geodata-mode`, `geodata-loader`, `geosite-matcher`,
+`geo-auto-update` (`false` only) and `geo-update-interval` (parsed). Billow's
+override engine writes the same effective YAML (provider declarations with the
+profile's rules plus the override's prepended/appended rules), so the merged
+file loads directly.
 
-Rules: `DOMAIN`, `DOMAIN-SUFFIX`, `GEOSITE`, `IP-CIDR`, `IP-CIDR6`, `MATCH`,
-with the outbounds `DIRECT`, `REJECT` or the name of a configured proxy, and
-the optional `no-resolve` suffix on IP rules. The first matching rule wins;
-without a `MATCH` rule the built-in fallback is `DIRECT`, as in Mihomo. The
-listener binds `127.0.0.1` unless `allow-lan: true` is set.
+Rules (T24): `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`,
+`DOMAIN-WILDCARD`, `GEOSITE`, `GEOIP`, `SRC-GEOIP`, `IP-ASN`, `SRC-IP-ASN`,
+`IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `IP-SUFFIX`, `SRC-IP-SUFFIX`,
+`SRC-PORT`, `DST-PORT`, `IN-PORT`, `PROCESS-NAME`, `PROCESS-PATH`,
+`PROCESS-NAME-REGEX`, `PROCESS-PATH-REGEX`, `NETWORK`, `IN-TYPE`, `SUB-RULE`,
+`AND`, `OR`, `NOT`, `RULE-SET` and `MATCH`. Outbounds are `DIRECT`, `REJECT`,
+`REJECT-DROP` (close without an inbound reply) or the name of a configured
+proxy. The optional `no-resolve`/`src` parameters are accepted on IP/GEOIP/
+IP-ASN/RULE-SET rules and recorded; this kernel never resolves a name while
+matching (DNS is T22), so an IP/GEOIP rule matches only a destination that is
+already an IP. The first matching rule wins; without a `MATCH` rule the
+built-in fallback is `DIRECT`, as in Mihomo. `SUB-RULE` uses the same
+outermost-group syntax as the pinned parser (`SUB-RULE,(NETWORK,TCP),branch`)
+and the named list selects the outbound; circular references are rejected.
+The listener binds `127.0.0.1` unless `allow-lan: true` is set.
 
-`GEOSITE,<key>` / `GEOSITE,<key>/<tag>` read a text database from
-`--geosite-dir` (`<key>`, `<key>.yaml`, `<key>.dat` or `<key>.json` in YAML
-form) with `domain`, `sub_domain` (literal or a single leading `*.`) and
-`domain_keyword` entries. Compiled MRS/protobuf geosite files and other geosite
-rule kinds are rejected until T5.
+`GEOSITE,<key>`, `GEOSITE,<key>/<tag>`, `GEOSITE,<key>@attr` and
+`GEOSITE,!<key>` read `GeoSite.dat` (protobuf, `@attr` filters attribute keys)
+or the text `domain`/`sub_domain`/`domain_keyword` form from `--geosite-dir`.
+`GEOIP,<country>` reads `GeoIP.dat` when `geodata-mode: true` (the default is
+`false`, which reads `Country.mmdb`); `GEOIP,lan` is built in.
+`geodata-loader` accepts `standard`/`memconservative`/`memc` (the read-only
+decoders have identical match semantics) and `geosite-matcher` accepts
+`succinct`/`mph`/`hybrid`. `IP-ASN,<number>` reads `ASN.mmdb`. The `.mmdb`
+reader is a minimal MaxMind DB v2 implementation (Country/ASN shapes,
+`Meta-geoip0` and `sing-geoip` country shapes); malformed files are reported,
+never treated as empty data.
+
+Rule providers: `type: file|http|inline`, `behavior:
+domain|ipcidr|classical`, `format: yaml|text|mrs` (default yaml), `payload`
+fallback, `path`, `url`, `header`, `size-limit` and `interval` (recorded).
+A domain provider accepts the `x`, `+.x`, `.x` and `*.x` patterns; an IP
+provider accepts CIDR prefixes; a classical provider parses target-less rules
+and skips malformed entries with a warning, like Mihomo. `http` providers use a
+bounded HTTP/1.1 GET over the platform trust store (redirects, chunked bodies
+and `path` caching); a response through a configured `proxy` is rejected by
+name. `Kernel::update_rule_provider`/`update_all_rule_providers` fetch again
+and swap the snapshot atomically: a failed update returns its reason and keeps
+the previous generation, which is released when the last session that used it
+finishes. Inline provider updates are a timestamp-only no-op, as in Mihomo.
+
+Proxy providers: `type: file|http|inline`, `url`/`path`, `header`,
+`filter`/`exclude-filter` (Rust regex; look-around/backreferences are rejected),
+`exclude-type`, `dialer-proxy`, `size-limit`, `interval`, and the
+`health-check` fields (`enable`, `url`, `interval`, `timeout`, `lazy`,
+`expected-status`). The proxies and filters are loaded and exposed; group
+`use`/`providers` references and latency probing belong to T23, so a
+`proxy-groups` key is still rejected by name. `Kernel::update_proxy_provider`
+applies the same success-replaces/failure-keeps-old rule.
 
 `authentication: ["user:pass", ...]` guards the mixed inbound (SOCKS5 RFC 1929
 and HTTP `Proxy-Authorization: Basic`). `tls: {custom-cert: [...], certificate:
@@ -146,6 +194,9 @@ anchors). `skip-cert-verify: true` accepts any certificate instead (only
 `true`; `fingerprint`/`certificate`/`private-key`/`name-cert-verify` are
 rejected). The private-CA case is covered by
 `tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls`.
+Process rules match metadata supplied by the embedding host
+(`Target::with_process`); the mixed inbound has no process lookup, and
+`find-process-mode` remains T6/T22 scope.
 
 Example:
 
@@ -261,7 +312,7 @@ is evaluated by the same rule set as TCP before it is forwarded. Per family:
 outbound would need its own UDP relay: all three are explicit gaps recorded in
 `tool/kernel-compat/evidence/rust-mapping.json`, not silent successes.
 Fragmented datagrams (`FRAG != 0`) are dropped. Destination names are resolved
-with the system resolver because there is no in-kernel DNS before T5 (a
+with the system resolver because there is no in-kernel DNS before T22 (a
 datagram to a name therefore leaves with the resolved address, as Mihomo's
 system resolver does). For a chained association the *server* name is resolved
 once and the whole address set is kept: a multi-A record (or a server answering
@@ -294,12 +345,12 @@ The pinned parser lists 28 outbound types, matching the status recorded in
 - **partial (2 more)**: `tailscale` (control/DERP protocol halves; the tunnel
   still needs T6/T7 and registration-only options are rejected) and `zerotier`
   (identity/planet/VL1/VL2 protocol halves; the controller membership exchange
-  is T5, the TCP fallback transport is rejected and the tunnel needs T6/T7);
+  is T22/T23, the TCP fallback transport is rejected and the tunnel needs T6/T7);
 - **partial (1 more)**: `easytier` (cleartext host/discovery plus Noise
   XX/secure-datagram AES-GCM/ChaCha20, translated from the locked LGPL source
   and verified against the pinned core; the tunnel needs T6/T7);
 - **built-ins (4)**: `direct`, `dns`, `reject` and `rematch` as `proxies`
-  entries (T5).
+  entries (T22 DNS, T23 groups/rematch).
 
 Every unimplemented type is rejected by name at load time, so no configuration
 is silently reduced:
@@ -307,9 +358,9 @@ is silently reduced:
 | families | why not here | task / decision |
 | --- | --- | --- |
 | `wireguard`, `openvpn` | the protocol halves are implemented (`src/outbound/wireguard.rs`, `src/outbound/openvpn.rs`) and verified against controlled peers, but turning their IP packets into TCP streams needs the userspace IP stack and TUN device owned by T6/T7 | **T16**: transport + configuration semantics; a `dial()` names the T6/T7 device gap. `outbound::wireguard::WireguardTunnel` and `outbound::openvpn::OpenVpnTunnel` are the interfaces for that layer |
-| `tailscale`, `zerotier` | the protocol/configuration adapters are implemented in `src/outbound/{tailscale,zerotier}.rs` and verified against controlled peers built from the locked Go modules; the tunnel's TCP/UDP socket layer needs the T6/T7 userspace IP stack and TUN device | **T19 partial**: control/DERP and identity/planet/VL1/VL2 are available to T6/T7/T5; `dial()` names the device gap; registration-only Tailscale prefs and ZeroTier TCP fallback are rejected by name |
+| `tailscale`, `zerotier` | the protocol/configuration adapters are implemented in `src/outbound/{tailscale,zerotier}.rs` and verified against controlled peers built from the locked Go modules; the tunnel's TCP/UDP socket layer needs the T6/T7 userspace IP stack and TUN device | **T19 partial**: control/DERP and identity/planet/VL1/VL2 are available to T6/T7/T22/T23; `dial()` names the device gap; registration-only Tailscale prefs and ZeroTier TCP fallback are rejected by name |
 | `easytier` | `src/outbound/easytier.rs` is an LGPL-3.0-or-later translation of the locked EasyTier source: cleartext host/discovery, Noise XX and secure-datagram AES-GCM/ChaCha20; the userspace IP stack/TUN and OSPF/route identity belong to T6/T7 | **T20 partial**: cleartext and secure handshakes/encrypted data verified against the pinned core; distribution must honor LGPL |
-| `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T5** (rules/rematch integration) |
+| `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T22/T23** (DNS and group/rematch integration) |
 
 T13 delivered `mieru` in the single-session TCP slice: an independent
 implementation of the published protocol (the module is GPL-3.0, so no mieru
@@ -439,12 +490,25 @@ build, so it is not used. `russh` 0.56 declares MSRV 1.85 but its transitive
 workspace `rust-version` to 1.89 instead of shipping an inconsistent MSRV.
 `03-execution-plan.md`
 defines T9/T11 (non-QUIC), T10 (QUIC), T16 (device-family protocol halves;
-device/TUN and the IP stack remain T6/T7) and T5's integration of their output. The capability index
+device/TUN and the IP stack remain T6/T7) and the configuration-plane tasks
+T22 (DNS/hosts), T23 (groups/selection), T24 (rules/providers/GEO) and T25
+(control interface). The capability index
 records each family at the status the kernel actually reaches: `implemented`,
 `partial` (with the missing options named) or `unimplemented`; none can be
 reported as compatible.
 
 ### Not implemented
+
+Configuration-plane gaps not claimed by T24 (each is rejected with the key or
+value named): proxy groups and `use`/`providers` references (T23), DNS/`hosts`
+and `find-process-mode` (T22), the control API (T25), `geo-auto-update: true`,
+an HTTP provider fetched through a configured `proxy`, compressed provider
+responses, geosite/process regex look-around or backreferences that Rust
+`regex` cannot express, and unknown MaxMind DB data types (the reader covers
+the Country/ASN shapes above). Provider `health-check` fields are parsed and
+exposed, but probing/selection belongs to T23. Rule names `UID`, `DSCP`,
+`IN-USER`, `IN-NAME`, `REMATCH-NAME`, `PROCESS-*-WILDCARD` and
+`PASS`/`PASS-RULE` are rejected by name.
 
 Every option a proxy entry contains must be one this kernel honours: the
 loader reads only implemented keys and rejects the rest with the key named.
@@ -512,7 +576,7 @@ because node registration/control-plane prefs are not implemented; `zerotier`
 accepts the identity, planet, MTU, port, orbit, low-bandwidth and
 encrypted-HELLO options, rejects an explicit `ip-stack`,
 `remote-dns-resolve`/`dns`, remote trace and the TCP fallback transport
-(`force`/non-empty relay) with the T6/T7/T5 boundary. `easytier` accepts the
+(`force`/non-empty relay) with the T6/T7/T22/T23 boundary. `easytier` accepts the
 cleartext and `secure-mode`/`enable-encryption` options (Noise XX + AES-GCM/
 ChaCha20); `enable-encryption: true` requires `secure-mode: true` (the source
 encrypts only through the secure session) — the pair loads, while encryption
@@ -579,14 +643,15 @@ cargo run -p billow-kernel-cli -- <config.yaml> [--port N] [--geosite-dir DIR] \
     [--buffer-bytes N] [--max-sessions N] [--check]
 ```
 
-`--check` validates the configuration and rule set, starts the listener to prove
+`--geosite-dir` (alias `--geodata-dir`) is the geodata directory and the base
+for relative provider paths. `--check` validates the configuration and rule set, starts the listener to prove
 the bind, prints the identity and exits. A normal run prints one identity line,
 serves until SIGINT/SIGTERM (on Windows the host drives the library API; T6),
 then prints a session summary:
 
 ```
 instance=<uuid> pid=<pid> version=0.1.0 listen=127.0.0.1:17890 overridden_port=- config=sha256:<digest> rules=3 geosite_dir=- state_dir=-
-features: mixed-inbound(tcp,http-connect,socks5); rules=inline(3 entries); outbounds=DIRECT,REJECT; protocols=ss1=ss,tj1=trojan,jump=socks5,vl1=vless; dns=none
+features: mixed-inbound(tcp,http-connect,socks5); rules=inline(3 entries); rule-providers=0; proxy-providers=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss1=ss,tj1=trojan,jump=socks5,vl1=vless; dns=none
 stopped instance=<uuid> accepted=4 active=0 completed=2 rejected=2 failed=0 bytes_up=40 bytes_down=40
 ```
 
@@ -652,7 +717,19 @@ Default suite (no external binaries; real loopback listeners):
 cargo test --manifest-path native-kernel/Cargo.toml --locked
 ```
 
+T24's rules/providers/GEO differential is separate because it needs the pinned
+Mihomo binary and a loopback provider server:
+`node tool/kernel-compat/t24-differential.mjs --mihomo <binary> --rust
+<billow-kernel> --out tool/kernel-compat/evidence/t24-differential.json`
+(see `evidence/t24-geodata-rules.md`, including the `--mmdb-dir` cases).
+
 - `tests/config.rs` — parsing, strict option tables, error tags.
+- `tests/resources.rs` — T24: every implemented rule type against the
+  connection metadata, `SUB-RULE` action selection, all rule-provider
+  vehicles/formats (including MRS), proxy-provider filters, generated
+  `GeoSite.dat`/`GeoIP.dat`, HTTP provider update success/failure with the old
+  generation kept, the bundled `Country.mmdb`/`ASN.mmdb` (ignored unless
+  `BILLOW_MMDB_DIR` is set), and Billow's override-merged effective config.
 - `tests/sessions.rs` — inbound sessions, half-close, stop/restart, limits.
 - `tests/quic_peers.rs` — T10/T14 QUIC loopback peers: TUIC v5 (auth token,
   domain and IP targets, wrong password, v4 token rejection, unimplemented

@@ -49,6 +49,13 @@ hkdf = "0.12"
 http = "1"
 hmac = "0.12"
 rand = "0.8"
+# MRS rule-set decoding: zstd frames (same decoder the Tauri resource
+# preview uses, `src-tauri/src/mrs.rs`), shared by rule-providers and geodata.
+ruzstd = { version = "0.8", default-features = false, features = ["std"] }
+# Proxy-provider `filter`, DOMAIN-REGEX and PROCESS-*-REGEX. Rust's `regex`
+# covers the pinned engine's common patterns; look-around/backreference
+# constructs are rejected at load time instead of silently never matching.
+regex = "1"
 # QUIC transport for the hysteria/tuic/shadowquic families (T10). Default
 # features are off: `platform-verifier` would add a second root-store backend
 # while the kernel already builds its rustls config from the platform store and

@@ -32,16 +32,20 @@
 
 pub mod config;
 pub mod engine;
+pub mod geodata;
 pub mod identity;
 pub mod inbound;
+pub mod provider;
 pub mod rules;
 
 pub use config::{
     load_config, Action, Config, ConfigError, GeoSiteDatabase, LoadedConfig, Matcher,
+    NetworkKind, InType,
 };
 pub use engine::{Kernel, Limits, StartError, Stats, VERSION};
 pub use identity::Identity;
-pub use rules::RuleSet;
+pub use provider::{ProviderUpdate, RuleProviders};
+pub use rules::{RuleSet, Target};
 
 /// Re-exported so hosts can format a start failure without naming `anyhow`.
 impl StartError {

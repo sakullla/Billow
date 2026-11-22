@@ -29,7 +29,7 @@ fn provider() -> Arc<CryptoProvider> {
 /// Trust anchors for one kernel: the platform store plus the configuration's
 /// `tls.custom-cert`/`tls.certificate` entries. Built once at start so the
 /// platform store is not re-read on every dial.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ClientTls {
     roots: Arc<RootCertStore>,
     extra: usize,

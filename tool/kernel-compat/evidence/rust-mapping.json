@@ -104,6 +104,67 @@
         "tests/config.rs::tls_roots_are_loaded_and_unknown_tls_keys_fail",
         "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls"
       ]
+    },
+    "rule-providers": {
+      "status": "partial",
+      "reason": "file/http/inline vehicles; yaml/text/mrs; domain/ipcidr/classical; explicit update swaps snapshots and keeps the old generation on failure. The declared interval is parsed but not scheduled; hosts/T25 call the update API.",
+      "evidence": [
+        "tests/resources.rs",
+        "evidence/t24-differential.json"
+      ]
+    },
+    "proxy-providers": {
+      "status": "partial",
+      "reason": "file/http/inline vehicles, filter/exclude-filter/exclude-type/dialer-proxy and health-check fields are loaded; latency probing and group use/providers are T23",
+      "evidence": [
+        "tests/config.rs",
+        "tests/resources.rs"
+      ]
+    },
+    "sub-rules": {
+      "status": "implemented",
+      "reason": "used by SUB-RULE; circular references rejected at load",
+      "evidence": [
+        "tests/config.rs",
+        "tests/resources.rs"
+      ]
+    },
+    "geodata-mode": {
+      "status": "implemented",
+      "reason": "true reads GeoIP.dat, false reads Country.mmdb; GeoSite.dat is read in both modes",
+      "evidence": [
+        "tests/resources.rs",
+        "evidence/t24-differential.json"
+      ]
+    },
+    "geodata-loader": {
+      "status": "implemented",
+      "reason": "standard/memconservative/memc accepted; both use the same read-only decoders and matching semantics",
+      "evidence": [
+        "tests/config.rs"
+      ]
+    },
+    "geosite-matcher": {
+      "status": "implemented",
+      "reason": "succinct/mph/hybrid accepted; matching semantics are shared",
+      "evidence": [
+        "tests/config.rs",
+        "tests/resources.rs"
+      ]
+    },
+    "geo-auto-update": {
+      "status": "partial",
+      "reason": "false accepted; true is rejected by name because no geodata download scheduler is implemented (provider updates are available through the API)",
+      "evidence": [
+        "tests/config.rs"
+      ]
+    },
+    "geo-update-interval": {
+      "status": "partial",
+      "reason": "parsed; only has an effect with geo-auto-update, which is rejected when true",
+      "evidence": [
+        "tests/config.rs"
+      ]
     }
   },
   "proxies": {
@@ -1285,56 +1346,59 @@
   "groups": {
     "select": {
       "status": "unimplemented",
-      "reason": "proxy groups are T5"
+      "reason": "proxy groups/selection are T23"
     },
     "url-test": {
       "status": "unimplemented",
-      "reason": "proxy groups are T5"
+      "reason": "proxy groups/selection are T23"
     },
     "fallback": {
       "status": "unimplemented",
-      "reason": "proxy groups are T5"
+      "reason": "proxy groups/selection are T23"
     },
     "load-balance": {
       "status": "unimplemented",
-      "reason": "proxy groups are T5"
+      "reason": "proxy groups/selection are T23"
     },
     "relay": {
       "status": "unimplemented",
-      "reason": "proxy groups are T5"
+      "reason": "proxy groups/selection are T23"
     }
   },
   "rules": {
     "DOMAIN": {
       "status": "implemented",
       "evidence": [
-        "tests/config.rs"
+        "tests/config.rs",
+        "tests/resources.rs"
       ]
     },
     "DOMAIN-SUFFIX": {
       "status": "implemented",
       "evidence": [
-        "tests/config.rs"
+        "tests/config.rs",
+        "tests/resources.rs"
       ]
     },
     "GEOSITE": {
-      "status": "partial",
-      "reason": "text database only; compiled MRS/protobuf is T5",
+      "status": "implemented",
       "evidence": [
-        "tests/config.rs"
+        "tests/resources.rs::geosite_and_geoip_dat_rules_match_the_pinned_forms",
+        "tests/sessions.rs"
       ]
     },
     "IP-CIDR": {
       "status": "implemented",
       "evidence": [
         "tests/config.rs",
-        "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject"
+        "tests/resources.rs"
       ]
     },
     "IP-CIDR6": {
       "status": "implemented",
       "evidence": [
-        "tests/config.rs"
+        "tests/config.rs",
+        "tests/resources.rs"
       ]
     },
     "MATCH": {
@@ -1343,6 +1407,189 @@
         "tests/config.rs",
         "tests/sessions.rs"
       ]
+    },
+    "DOMAIN-KEYWORD": {
+      "status": "implemented",
+      "evidence": [
+        "tests/config.rs",
+        "tests/resources.rs"
+      ]
+    },
+    "DOMAIN-REGEX": {
+      "status": "implemented",
+      "evidence": [
+        "tests/config.rs",
+        "tests/resources.rs"
+      ]
+    },
+    "DOMAIN-WILDCARD": {
+      "status": "implemented",
+      "evidence": [
+        "tests/config.rs",
+        "tests/resources.rs"
+      ]
+    },
+    "GEOIP": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs::geosite_and_geoip_dat_rules_match_the_pinned_forms",
+        "tests/resources.rs::real_mmdb_reads_the_bundled_geodata"
+      ]
+    },
+    "SRC-GEOIP": {
+      "status": "implemented",
+      "evidence": [
+        "tests/config.rs"
+      ]
+    },
+    "IP-ASN": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs::real_mmdb_reads_the_bundled_geodata"
+      ]
+    },
+    "SRC-IP-ASN": {
+      "status": "implemented",
+      "evidence": [
+        "tests/config.rs"
+      ]
+    },
+    "SRC-IP-CIDR": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "IP-SUFFIX": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "SRC-IP-SUFFIX": {
+      "status": "implemented",
+      "evidence": [
+        "tests/config.rs"
+      ]
+    },
+    "SRC-PORT": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "DST-PORT": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "IN-PORT": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "PROCESS-NAME": {
+      "status": "partial",
+      "reason": "process metadata is matched when the host supplies it; the mixed inbound has no process lookup (find-process-mode is T6/T22 scope)",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "PROCESS-PATH": {
+      "status": "partial",
+      "reason": "process metadata is matched when the host supplies it; the mixed inbound has no process lookup",
+      "evidence": [
+        "tests/config.rs",
+        "tests/resources.rs"
+      ]
+    },
+    "PROCESS-NAME-REGEX": {
+      "status": "partial",
+      "reason": "regex form implemented with the Rust regex crate (look-around/backreferences rejected at load); process lookup is host-supplied",
+      "evidence": [
+        "tests/config.rs",
+        "tests/resources.rs"
+      ]
+    },
+    "PROCESS-PATH-REGEX": {
+      "status": "partial",
+      "reason": "regex form implemented with the Rust regex crate (look-around/backreferences rejected at load); process lookup is host-supplied",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "NETWORK": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "IN-TYPE": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "SUB-RULE": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs::sub_rule_lists_choose_the_outbound"
+      ]
+    },
+    "AND": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "OR": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "NOT": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs"
+      ]
+    },
+    "RULE-SET": {
+      "status": "implemented",
+      "evidence": [
+        "tests/resources.rs::rule_providers_cover_every_vehicle_and_format",
+        "tests/resources.rs::http_provider_update_replaces_and_failure_keeps_the_old_generation"
+      ]
+    },
+    "UID": {
+      "status": "unimplemented",
+      "reason": "UID needs a platform process/uid lookup; rejected by name"
+    },
+    "DSCP": {
+      "status": "unimplemented",
+      "reason": "DSCP metadata is not set by the mixed inbound; rejected by name"
+    },
+    "IN-USER": {
+      "status": "unimplemented",
+      "reason": "per-user inbound metadata is not exposed; rejected by name"
+    },
+    "IN-NAME": {
+      "status": "unimplemented",
+      "reason": "named listeners are T6/T25; rejected by name"
+    },
+    "REMATCH-NAME": {
+      "status": "unimplemented",
+      "reason": "rematch rules are not implemented; rejected by name"
+    },
+    "PROCESS-NAME-WILDCARD": {
+      "status": "unimplemented",
+      "reason": "wildcard process matching is rejected by name"
+    },
+    "PROCESS-PATH-WILDCARD": {
+      "status": "unimplemented",
+      "reason": "wildcard process matching is rejected by name"
     }
   },
   "familiesNotImplemented": {
@@ -1367,10 +1614,11 @@
     }
   },
   "unmappedNotes": [
-    "Every proxy type outside the implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it (T9 non-QUIC, T10 QUIC/device, T5 built-ins).",
-    "Every other listener type (tun, redir, tproxy, mixed with TLS, ...) is rejected through the top-level keys that would enable it.",
-    "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it.",
-    "T12 closed the SSR plugin layers (every pinned protocol/obfs plus the UDP association) and the gost-relay UDP association and smux session; the remaining SSR/gost-relay options are the transport knobs Mihomo accepts and ignores (ip-version/tfo/mptcp/interface-name/routing-mark) and gost-relay's certificate pinning knobs."
+    "Every proxy type outside the implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it.",
+    "Rule types UID/DSCP/IN-USER/IN-NAME/REMATCH-NAME/PROCESS-*-WILDCARD are rejected by name. PASS/PASS-RULE markers and proxy-group targets are T23.",
+    "GEOIP/IP-ASN/IP-CIDR rules match a destination only when it is already an IP; DNS/hosts (T22) provide name resolution. A warning records this at load.",
+    "geodata-mode false uses Country.mmdb; geodata-mode true uses GeoIP.dat; GEOSITE always uses GeoSite.dat. MRS rule-provider decoding shares the Tauri mrs.rs algorithm (ported, not shared code).",
+    "Proxy-provider health-check fields are parsed and exposed but latency probing is T23; provider updates are exposed through Kernel::update_*_provider for T25."
   ],
   "ignoredByPinnedVersion": {
     "note": "Keys the pinned type does not declare (or declares only as a no-op in the given configuration) are accepted and ignored, exactly as Mihomo ignores them. They are not compatibility gaps.",

@@ -48,6 +48,17 @@ node tool/kernel-compat/runner.mjs \
   --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
   --cache tool/kernel-compat/.cache --report-dir tool/kernel-compat/evidence \
   --fixture tool/kernel-compat/fixtures/direct-ip.yaml
+
+# T24 rules/providers/GEO differential: the same rule and provider files are
+# served from a loopback HTTP server and read from temp directories, then each
+# CONNECT is sent to the pinned Mihomo and the Rust kernel. GeoSite.dat/
+# GeoIP.dat are generated from the pinned protobuf shapes; MRS is the checked-in
+# Tauri fixture. Pass --mmdb-dir with decompressed Country.mmdb/ASN.mmdb to add
+# the MaxMind and IP-ASN cases (brotli -dk src-tauri/resources/runtime/geo/*.mmdb.br).
+node tool/kernel-compat/t24-differential.mjs \
+  --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
+  --out tool/kernel-compat/evidence/t24-differential.json \
+  [--mmdb-dir <dir-with-Country.mmdb-and-ASN.mmdb>]
 ```
 
 The Rust binary's path follows the cargo target directory: `native-kernel/target/release/billow-kernel`

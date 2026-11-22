@@ -198,6 +198,24 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+## T24 rules/providers/geodata (Rust dependencies)
+
+T24 adds two direct Rust dependencies and their transitive crates. They are
+linked under their upstream licenses; no source was copied or translated.
+
+| crate | version | license |
+| --- | --- | --- |
+| `regex` | 1.13.2 | MIT OR Apache-2.0 |
+| `regex-automata` | 0.4.19 | MIT OR Apache-2.0 |
+| `regex-syntax` | 0.8.12 | MIT OR Apache-2.0 |
+| `aho-corasick` | 1.1.5 | MIT OR Unlicense |
+| `ruzstd` | 0.8.3 | MIT |
+
+The MRS and geodata readers are original code (`src/geodata.rs`); the MRS
+algorithm follows the in-repository `src-tauri/src/mrs.rs` preview decoder, and
+the `.dat`/`.mmdb` layouts are the public formats documented by the pinned
+Mihomo source and MaxMind DB v2, not copied source.
+
 ## T19 mesh adapters (Rust dependencies)
 
 The T19 Tailscale/ZeroTier protocol code adds these direct dependencies. They

@@ -128,7 +128,7 @@ async fn socks5_relays_and_ip_cidr_and_geosite_rules_apply() {
     );
     assert_eq!(
         kernel.evaluate("x", Some("127.0.0.1".parse().unwrap())).1,
-        "CIDR,127.0.0.0/8 -> DIRECT"
+        "IP-CIDR,127.0.0.0/8 -> DIRECT"
     );
 
     let mut kernel = kernel;

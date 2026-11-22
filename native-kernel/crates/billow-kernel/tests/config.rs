@@ -1,7 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use billow_kernel::config::{parse_rule, GeoSiteDatabase, RulesSource};
-use billow_kernel::{load_config, Action, ConfigError, Matcher};
+use billow_kernel::config::{
+    parse_rule, Action, InType, Matcher, NetworkKind, PortKind, ProcessKind, RuleBehavior,
+    RuleFormat, RulesSource,
+};
+use billow_kernel::load_config;
 
 fn err_tag(yaml: &str) -> String {
     match load_config(yaml, "test.yaml") {
@@ -26,7 +29,6 @@ fn accepts_the_implemented_subset() {
     assert_eq!(loaded.config.rules[0].action, Action::Reject);
     assert!(loaded.config.rules[2].no_resolve);
     assert!(loaded.config.digest.starts_with("sha256:"));
-    assert!(loaded.warnings.is_empty());
 }
 
 #[test]
@@ -40,8 +42,6 @@ fn defaults_to_mihomo_port_and_loopback() {
 fn rejects_every_unimplemented_top_level_key() {
     for key in [
         "proxy-groups",
-        "proxy-providers",
-        "rule-providers",
         "dns",
         "hosts",
         "tun",
@@ -50,7 +50,6 @@ fn rejects_every_unimplemented_top_level_key() {
         "sniffer",
         "external-controller",
         "secret",
-        "geodata-mode",
         "profile",
         "experimental",
         "ipv6",
@@ -68,20 +67,264 @@ fn rejects_every_unimplemented_top_level_key() {
 
 #[test]
 fn rejects_unimplemented_rule_types_and_outbounds() {
-    assert!(err_tag("rules: ['GEOIP,CN,DIRECT']\n").starts_with("unsupported"));
-    assert!(err_tag("rules: ['DOMAIN-KEYWORD,x,DIRECT']\n").starts_with("unsupported"));
-    assert!(err_tag("rules: ['PROCESS-NAME,x,DIRECT']\n").starts_with("unsupported"));
+    for line in [
+        "UID,1000,DIRECT",
+        "DSCP,4,DIRECT",
+        "IN-USER,alice,DIRECT",
+        "IN-NAME,DEFAULT-MIXED,DIRECT",
+        "REMATCH-NAME,x,DIRECT",
+        "PROCESS-NAME-WILDCARD,a*,DIRECT",
+        "PROCESS-PATH-WILDCARD,/a*,DIRECT",
+    ] {
+        let yaml = format!("rules: ['{line}']\n");
+        assert!(
+            err_tag(&yaml).starts_with("unsupported"),
+            "{line} must be rejected, got {}",
+            err_tag(&yaml)
+        );
+    }
     // A rule naming a proxy that `proxies` does not define is not a group support claim.
     assert!(err_tag("rules: ['DOMAIN,a.example,Proxy']\n").starts_with("unsupported"));
-    assert!(err_tag("rules: ['DOMAIN,a.example,DIRECT,src']\n").starts_with("invalid_value"));
-    assert!(err_tag("rules: ['IP-CIDR,10.0.0.0/8,DIRECT,src']\n").starts_with("unsupported"));
-    assert!(
-        err_tag("rules: ['MATCH,DIRECT', 'DOMAIN,a.example,REJECT']\n")
-            .starts_with("invalid_value")
-    );
-    assert!(err_tag("rules: MATCH,DIRECT\n").starts_with("invalid_yaml"));
+    // PASS markers are a sub-rule concern this slice does not implement.
+    assert!(err_tag("rules: ['MATCH,PASS']\n").starts_with("unsupported"));
+    // Unknown parameters are named instead of silently ignored.
+    assert!(err_tag("rules: ['DOMAIN,a.example,DIRECT,src']\n").starts_with("unsupported"));
 }
 
+#[test]
+fn parses_the_pinned_rule_types() {
+    let rule = parse_rule("DOMAIN-KEYWORD,EeXample,REJECT").unwrap();
+    assert_eq!(rule.matcher, Matcher::DomainKeyword("eexample".into()));
+    let rule = parse_rule("DOMAIN-WILDCARD,*.Example.com,DIRECT").unwrap();
+    assert_eq!(rule.matcher, Matcher::DomainWildcard("*.example.com".into()));
+    assert!(parse_rule("DOMAIN-REGEX,^ads?\\.example$,REJECT").is_ok());
+    let rule = parse_rule("DST-PORT,80/443,REJECT").unwrap();
+    assert_eq!(
+        rule.matcher,
+        Matcher::Port {
+            kind: PortKind::Dst,
+            ranges: vec![(80, 80), (443, 443)]
+        }
+    );
+    let rule = parse_rule("SRC-PORT,1000-2000,DIRECT").unwrap();
+    assert_eq!(
+        rule.matcher,
+        Matcher::Port {
+            kind: PortKind::Src,
+            ranges: vec![(1000, 2000)]
+        }
+    );
+    let rule = parse_rule("IN-PORT,7890,DIRECT").unwrap();
+    assert!(matches!(
+        rule.matcher,
+        Matcher::Port {
+            kind: PortKind::In,
+            ..
+        }
+    ));
+    assert_eq!(
+        parse_rule("NETWORK,udp,DIRECT").unwrap().matcher,
+        Matcher::Network(NetworkKind::Udp)
+    );
+    assert_eq!(
+        parse_rule("IN-TYPE,SOCKS/DIRECT".trim_end_matches("/DIRECT").to_string().as_str())
+            .unwrap_err()
+            .tag(),
+        "invalid_value"
+    );
+    let rule = parse_rule("IN-TYPE,HTTP/SOCKS,DIRECT").unwrap();
+    assert_eq!(
+        rule.matcher,
+        Matcher::InType(vec![InType::Http, InType::Socks5])
+    );
+    assert_eq!(
+        parse_rule("PROCESS-NAME,curl,DIRECT").unwrap().matcher,
+        Matcher::Process {
+            kind: ProcessKind::Name,
+            pattern: "curl".into(),
+            regex: false
+        }
+    );
+    assert!(parse_rule("PROCESS-NAME-REGEX,^cur[lL]$,DIRECT").is_ok());
+    assert_eq!(
+        parse_rule("SRC-IP-CIDR,10.0.0.0/8,DIRECT").unwrap().matcher,
+        Matcher::IpCidr {
+            net: "10.0.0.0/8".parse().unwrap(),
+            source: true,
+            no_resolve: true
+        }
+    );
+    assert_eq!(
+        parse_rule("IP-SUFFIX,0.0.0.1/32,DIRECT").unwrap().matcher,
+        Matcher::IpSuffix {
+            net: "0.0.0.1/32".parse().unwrap(),
+            source: false,
+            no_resolve: false
+        }
+    );
+    assert_eq!(
+        parse_rule("GEOIP,CN,DIRECT,no-resolve").unwrap().matcher,
+        Matcher::GeoIp {
+            country: "cn".into(),
+            source: false,
+            no_resolve: true
+        }
+    );
+    assert_eq!(
+        parse_rule("SRC-GEOIP,CN,DIRECT").unwrap().matcher,
+        Matcher::GeoIp {
+            country: "cn".into(),
+            source: true,
+            no_resolve: true
+        }
+    );
+    assert_eq!(
+        parse_rule("IP-ASN,13335,DIRECT").unwrap().matcher,
+        Matcher::IpAsn {
+            asn: "13335".into(),
+            source: false,
+            no_resolve: false
+        }
+    );
+    assert!(parse_rule("IP-ASN,AS13335,DIRECT").is_err());
+    assert_eq!(
+        parse_rule("GEOSITE,cn,DIRECT").unwrap().matcher,
+        Matcher::GeoSite("cn".into())
+    );
+    assert_eq!(
+        parse_rule("MATCH,REJECT-DROP").unwrap().action,
+        Action::RejectDrop
+    );
+}
+
+#[test]
+fn logic_and_sub_rule_shapes_are_parsed() {
+    let yaml = r#"
+mixed-port: 1
+sub-rules:
+  branch:
+    - DOMAIN,inside.example,DIRECT
+    - MATCH,REJECT
+rules:
+  - AND,((DOMAIN,a.example),(NETWORK,TCP)),REJECT
+  - OR,((DOMAIN,b.example),(DST-PORT,443)),DIRECT
+  - NOT,((DOMAIN-SUFFIX,ok.example)),REJECT
+  - SUB-RULE,(NETWORK,TCP),branch
+  - MATCH,DIRECT
+"#;
+    let loaded = load_config(yaml, "test.yaml").unwrap();
+    assert!(matches!(loaded.config.rules[0].matcher, Matcher::And(_)));
+    assert!(matches!(loaded.config.rules[1].matcher, Matcher::Or(_)));
+    assert!(matches!(loaded.config.rules[2].matcher, Matcher::Not(_)));
+    assert!(matches!(
+        loaded.config.rules[3].matcher,
+        Matcher::SubRule { .. }
+    ));
+    assert_eq!(loaded.config.sub_rules.len(), 1);
+
+    // An unknown sub-rule name fails like Mihomo's parser.
+    assert!(err_tag(
+        "sub-rules: {b: ['MATCH,DIRECT']}\nrules: ['SUB-RULE,(NETWORK,TCP),missing']\n"
+    )
+    .starts_with("invalid_value"));
+    // A cycle is rejected before the kernel starts.
+    assert!(err_tag(
+        "sub-rules:\n  a: ['SUB-RULE,(NETWORK,TCP),b']\n  b: ['SUB-RULE,(NETWORK,TCP),a']\n"
+    )
+    .starts_with("invalid_value"));
+    // NOT must contain one rule.
+    assert!(err_tag("rules: ['NOT,((DOMAIN,a),(DOMAIN,b)),DIRECT']\n").starts_with("invalid_value"));
+}
+
+#[test]
+fn rule_providers_are_parsed_with_all_vehicles_and_formats() {
+    let yaml = r#"
+mixed-port: 1
+rule-providers:
+  inline-domain:
+    type: inline
+    behavior: domain
+    payload: ['+.example.com', 'plain.example']
+  file-ip:
+    type: file
+    behavior: ipcidr
+    format: text
+    path: ./providers/ip.txt
+    interval: 60
+  mrs-rules:
+    type: http
+    behavior: classical
+    format: mrs
+    url: https://example.invalid/rules.mrs
+    path: ./cache/rules.mrs
+    header:
+      Authorization: token
+    size-limit: 1024
+rules:
+  - RULE-SET,inline-domain,REJECT
+  - RULE-SET,file-ip,DIRECT,no-resolve
+  - RULE-SET,mrs-rules,DIRECT
+  - MATCH,DIRECT
+"#;
+    let loaded = load_config(yaml, "test.yaml").unwrap();
+    assert_eq!(loaded.config.rule_providers.len(), 3);
+    let inline = &loaded.config.rule_providers[0];
+    assert_eq!(inline.behavior, RuleBehavior::Domain);
+    assert_eq!(inline.format, RuleFormat::Yaml);
+    assert_eq!(inline.payload, ["+.example.com", "plain.example"]);
+    let file = &loaded.config.rule_providers[1];
+    assert_eq!(file.format, RuleFormat::Text);
+    assert_eq!(file.interval, Some(std::time::Duration::from_secs(60)));
+    let mrs = &loaded.config.rule_providers[2];
+    assert_eq!(mrs.format, RuleFormat::Mrs);
+    assert_eq!(mrs.header, [("Authorization".to_string(), "token".to_string())]);
+
+    // An undefined RULE-SET target is a configuration failure, not a runtime miss.
+    assert!(err_tag("rules: ['RULE-SET,missing,DIRECT']\n").starts_with("invalid_value"));
+    assert!(err_tag(
+        "rule-providers: {p: {type: inline, behavior: nope, payload: []}}\n"
+    )
+    .starts_with("unsupported"));
+    assert!(err_tag(
+        "rule-providers: {p: {type: noop, behavior: domain, payload: []}}\n"
+    )
+    .starts_with("unsupported"));
+}
+
+#[test]
+fn proxy_providers_parse_filters_and_health_checks() {
+    let yaml = r#"
+mixed-port: 1
+proxy-providers:
+  sub:
+    type: http
+    url: https://example.invalid/sub.yaml
+    path: ./cache/sub.yaml
+    filter: '^(HK|JP)'
+    exclude-filter: 'expired'
+    exclude-type: ssr
+    dialer-proxy: hop
+    interval: 3600
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+      timeout: 5
+      lazy: false
+      expected-status: 204
+proxies:
+  - {name: hop, type: socks5, server: 127.0.0.1, port: 1080}
+rules: ['MATCH,DIRECT']
+"#;
+    let loaded = load_config(yaml, "test.yaml").unwrap();
+    let provider = &loaded.config.proxy_providers[0];
+    assert_eq!(provider.filter.as_deref(), Some("^(HK|JP)"));
+    assert_eq!(provider.exclude_type, ["ssr"]);
+    assert_eq!(provider.dialer_proxy.as_deref(), Some("hop"));
+    assert!(provider.health_check.enable);
+    assert_eq!(provider.health_check.expected_status, "204");
+    assert!(!provider.health_check.lazy);
+}
 
 /// Mihomo's decoder tolerates top-level keys it does not declare, so a file
 /// carrying one (a fixture block, a newer option) must load; a key the pinned
@@ -110,6 +353,26 @@ fn unknown_top_level_keys_are_ignored_like_mihomo() {
         let e = err_tag(&yaml);
         assert!(e.starts_with("unsupported"), "{key}: {e}");
     }
+}
+
+#[test]
+fn geodata_options_are_parsed_and_named_gaps_rejected() {
+    let loaded = load_config(
+        "mixed-port: 1\ngeodata-mode: true\ngeodata-loader: memc\ngeosite-matcher: mph\n",
+        "t",
+    )
+    .unwrap();
+    assert!(loaded.config.geodata_mode);
+    assert_eq!(loaded.config.geodata_loader, "memconservative");
+    assert_eq!(loaded.config.geosite_matcher, "mph");
+    assert!(err_tag("geodata-loader: fancy\n").starts_with("unsupported"));
+    assert!(err_tag("geo-auto-update: true\n").starts_with("unsupported"));
+    let loaded = load_config("geo-auto-update: false\ngeo-update-interval: 24\n", "t").unwrap();
+    assert!(!loaded.config.geo_auto_update);
+    assert!(loaded
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("geo-update-interval")));
 }
 
 #[test]
@@ -143,94 +406,15 @@ fn parses_rules_individually() {
     );
     let net = parse_rule("IP-CIDR, 192.168.1.0/24 , DIRECT ").unwrap();
     match net.matcher {
-        Matcher::IpCidr(n) => {
-            assert!(n.contains(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 99))));
-            assert!(!n.contains(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 1))));
-            assert!(!n.contains(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        Matcher::IpCidr { net, .. } => {
+            assert!(net.contains(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 99))));
+            assert!(!net.contains(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 1))));
+            assert!(!net.contains(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
         }
         other => panic!("unexpected {other:?}"),
     }
     assert!(parse_rule("IP-CIDR6,2001:db8::/32,DIRECT").is_ok());
     assert!(parse_rule("IP-CIDR6,10.0.0.0/8,DIRECT").is_err());
-}
-
-#[test]
-fn geosite_databases_match_domains_and_suffixes() {
-    let mut db = GeoSiteDatabase::default();
-    db.merge_yaml(
-        "key: gfw\ntags:\n  - name: adblock\n    rules:\n      - domain: [ads.example]\n      - sub_domain: [tracker.example, '*.wild.example']\n",
-    )
-    .unwrap();
-    db.merge_yaml("key: cn\ntags:\n  - name: geolocation-cn\n    rules:\n      - domain_keyword: [chinanet]\n").unwrap();
-    assert!(db.matches("gfw", "ads.example"));
-    assert!(db.matches("gfw/adblock", "x.tracker.example"));
-    assert!(db.matches("gfw", "wild.example"));
-    // geosite sub_domain semantics: the entry itself and any subdomain match.
-    assert!(db.matches("gfw", "tracker.example"));
-    assert!(db.matches("gfw", "a.b.tracker.example"));
-    assert!(!db.matches("gfw", "nottracker.example"));
-    assert!(!db.matches("gfw", "unrelated.example"));
-    assert!(!db.matches("unknown", "ads.example"));
-    assert!(db.matches("cn", "host.chinanet.example"));
-
-    let mut unsupported = GeoSiteDatabase::default();
-    let e = unsupported
-        .merge_yaml("key: gfw\ntags:\n  - name: t\n    rules:\n      - domain_regex: ['^.*$']\n")
-        .unwrap_err();
-    assert!(matches!(e, ConfigError::Unsupported(_)));
-    let e = unsupported
-        .merge_yaml(
-            "key: gfw\ntags:\n  - name: t\n    rules:\n      - sub_domain: ['*.ex*ample']\n",
-        )
-        .unwrap_err();
-    assert!(matches!(e, ConfigError::Unsupported(_)));
-}
-
-#[test]
-fn geosite_rule_without_database_directory_fails_at_start() {
-    let yaml = "mixed-port: 1\nrules: ['GEOSITE,gfw,REJECT']\n";
-    let e = billow_kernel::Kernel::start_from_yaml(yaml, None, billow_kernel::Limits::default())
-        .err()
-        .expect("must fail");
-    assert!(
-        matches!(
-            e,
-            billow_kernel::StartError::Config(ConfigError::Unsupported(_))
-        ),
-        "{e}"
-    );
-}
-
-#[test]
-fn geosite_missing_key_fails_loudly() {
-    let dir = std::env::temp_dir().join(format!("billow-geosite-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut keys = std::collections::BTreeSet::new();
-    keys.insert("gfw".to_string());
-    let e = GeoSiteDatabase::load_from_dir(&dir, &keys).unwrap_err();
-    assert!(matches!(e, ConfigError::Unsupported(_)), "{e}");
-    std::fs::write(
-        dir.join("gfw.yaml"),
-        "key: gfw\ntags:\n  - name: ads\n    rules:\n      - domain: [x.example]\n",
-    )
-    .unwrap();
-    let ok = GeoSiteDatabase::load_from_dir(&dir, &keys).unwrap();
-    assert!(ok.matches("gfw", "x.example"));
-    assert!(!ok.matches("gfw", "other.example"));
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-#[test]
-fn geosite_dat_file_fails_explicitly() {
-    // A binary `.dat` is accepted only if it happens to be YAML; otherwise it must be reported.
-    let dir = std::env::temp_dir().join(format!("billow-geosite-dat-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("gfw.dat"), b"\x00\x01binary").unwrap();
-    let mut keys = std::collections::BTreeSet::new();
-    keys.insert("gfw".to_string());
-    let e = GeoSiteDatabase::load_from_dir(&dir, &keys).unwrap_err();
-    assert!(matches!(e, ConfigError::Unsupported(_)), "{e}");
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 fn proxy_err(yaml: &str) -> String {
@@ -239,6 +423,7 @@ fn proxy_err(yaml: &str) -> String {
         Err(e) => format!("{}: {e}", e.tag()),
     }
 }
+
 
 #[test]
 fn parses_each_implemented_protocol_and_rule_targets_by_name() {

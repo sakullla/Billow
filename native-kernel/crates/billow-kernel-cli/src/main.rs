@@ -22,8 +22,9 @@ struct Args {
     /// Override the mixed listener port (diagnostic; recorded in the identity).
     #[arg(long)]
     port: Option<u16>,
-    /// Directory with geosite databases (needed only by GEOSITE rules).
-    #[arg(long)]
+    /// Directory with geodata (GeoSite.dat, GeoIP.dat or Country.mmdb, ASN.mmdb)
+    /// and the base for relative provider paths.
+    #[arg(long, alias = "geodata-dir")]
     geosite_dir: Option<PathBuf>,
     /// Per-direction copy buffer in bytes.
     #[arg(long, default_value_t = 16 * 1024)]

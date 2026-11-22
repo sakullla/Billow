@@ -12,7 +12,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::time::Duration;
 
-use serde::Deserialize;
 
 use sha2::{Digest, Sha256};
 
@@ -26,6 +25,14 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "mode",
     "log-level",
     "rules",
+    "rule-providers",
+    "proxy-providers",
+    "sub-rules",
+    "geodata-mode",
+    "geodata-loader",
+    "geosite-matcher",
+    "geo-auto-update",
+    "geo-update-interval",
 ];
 /// Top-level keys the pinned `RawConfig` declares but this kernel does not
 /// implement. They fail with `[unsupported]`; a key outside both lists is not a
@@ -37,21 +44,45 @@ pub const KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "external-controller", "external-controller-routing-mark", "external-controller-pipe",
     "external-controller-unix", "external-controller-tls", "external-controller-cors",
     "external-ui", "external-ui-url", "external-ui-name", "external-doh-server", "secret",
-    "interface-name", "routing-mark", "tunnels", "geo-auto-update", "geo-update-interval",
-    "geodata-mode", "geodata-loader", "geosite-matcher", "tcp-concurrent", "find-process-mode",
+    "interface-name", "routing-mark", "tunnels", "tcp-concurrent", "find-process-mode",
     "global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
-    "keep-alive-interval", "disable-keep-alive", "proxy-providers", "rule-providers",
-    "proxy-groups", "sub-rules", "listeners", "hosts", "dns", "ntp", "tun", "tuic-server",
+    "keep-alive-interval", "disable-keep-alive",
+    "proxy-groups", "listeners", "hosts", "dns", "ntp", "tun", "tuic-server",
     "iptables", "experimental", "profile", "geox-url", "sniffer", "clash-for-android"
 ];
 
-/// Rule types understood by the first slice.
+/// Rule types understood by the kernel. `IP-ASN` needs `ASN.mmdb`; the other
+/// types only need the destination metadata the inbound already knows.
 pub const SUPPORTED_RULE_TYPES: &[&str] = &[
     "DOMAIN",
     "DOMAIN-SUFFIX",
+    "DOMAIN-KEYWORD",
+    "DOMAIN-REGEX",
+    "DOMAIN-WILDCARD",
     "GEOSITE",
+    "GEOIP",
+    "SRC-GEOIP",
+    "IP-ASN",
+    "SRC-IP-ASN",
     "IP-CIDR",
     "IP-CIDR6",
+    "SRC-IP-CIDR",
+    "IP-SUFFIX",
+    "SRC-IP-SUFFIX",
+    "SRC-PORT",
+    "DST-PORT",
+    "IN-PORT",
+    "PROCESS-NAME",
+    "PROCESS-PATH",
+    "PROCESS-NAME-REGEX",
+    "PROCESS-PATH-REGEX",
+    "NETWORK",
+    "IN-TYPE",
+    "SUB-RULE",
+    "AND",
+    "OR",
+    "NOT",
+    "RULE-SET",
     "MATCH",
 ];
 /// Outbound names understood by the first slice.
@@ -94,17 +125,119 @@ impl ConfigError {
 pub struct Rule {
     pub matcher: Matcher,
     pub action: Action,
-    /// `no-resolve` was accepted on IP rules: the destination IP is unknown
-    /// before connecting, which is exactly what the rule already sees here.
+    /// Kept for callers that inspect `no-resolve`; the boolean is also part of
+    /// the IP/GEOIP/IP-ASN/RULE-SET matcher.
     pub no_resolve: bool,
+}
+
+/// Connection network as reported by the inbound (`NETWORK` rules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkKind {
+    Tcp,
+    Udp,
+}
+
+impl NetworkKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NetworkKind::Tcp => "tcp",
+            NetworkKind::Udp => "udp",
+        }
+    }
+}
+
+/// Inbound listener type used by `IN-TYPE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InType {
+    /// Plain HTTP proxy requests; the pinned mixed listener reports CONNECT as
+    /// `HTTPS`, so this variant only matches a non-CONNECT request.
+    Http,
+    /// HTTP CONNECT (`listener/http` reports `C.HTTPS` for it).
+    Https,
+    Socks5,
+}
+
+impl InType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InType::Http => "HTTP",
+            InType::Https => "HTTPS",
+            InType::Socks5 => "SOCKS5",
+        }
+    }
+}
+
+/// Which port a port rule inspects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortKind {
+    Dst,
+    Src,
+    In,
+}
+
+/// One inclusive range of a port rule payload (`200`, `200-400`, `200/302`).
+pub type PortRange = (u16, u16);
+
+/// Process metadata matched by PROCESS-NAME/PROCESS-PATH and their regex forms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessKind {
+    Name,
+    Path,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Matcher {
     Domain(String),
     DomainSuffix(String),
-    Geosite(String),
-    IpCidr(ipnet_like::IpNet),
+    DomainKeyword(String),
+    DomainRegex(String),
+    DomainWildcard(String),
+    GeoSite(String),
+    GeoIp {
+        country: String,
+        source: bool,
+        no_resolve: bool,
+    },
+    IpAsn {
+        asn: String,
+        source: bool,
+        no_resolve: bool,
+    },
+    IpCidr {
+        net: ipnet_like::IpNet,
+        source: bool,
+        no_resolve: bool,
+    },
+    IpSuffix {
+        net: ipnet_like::IpNet,
+        source: bool,
+        no_resolve: bool,
+    },
+    Port {
+        kind: PortKind,
+        ranges: Vec<PortRange>,
+    },
+    Network(NetworkKind),
+    InType(Vec<InType>),
+    Process {
+        kind: ProcessKind,
+        pattern: String,
+        regex: bool,
+    },
+    RuleSet {
+        name: String,
+        source: bool,
+        no_resolve: bool,
+    },
+    /// `SUB-RULE,(<gate>),<name>`: the gate decides whether the named sub-rule
+    /// list is consulted, and that list selects the outbound.
+    SubRule {
+        gate: Box<Rule>,
+        name: String,
+    },
+    And(Vec<Rule>),
+    Or(Vec<Rule>),
+    Not(Box<Rule>),
     /// Unconditional final rule (`MATCH`).
     Match,
 }
@@ -114,8 +247,123 @@ impl fmt::Display for Matcher {
         match self {
             Matcher::Domain(v) => write!(f, "DOMAIN,{v}"),
             Matcher::DomainSuffix(v) => write!(f, "DOMAIN-SUFFIX,{v}"),
-            Matcher::Geosite(v) => write!(f, "GEOSITE,{v}"),
-            Matcher::IpCidr(v) => write!(f, "CIDR,{v}"),
+            Matcher::DomainKeyword(v) => write!(f, "DOMAIN-KEYWORD,{v}"),
+            Matcher::DomainRegex(v) => write!(f, "DOMAIN-REGEX,{v}"),
+            Matcher::DomainWildcard(v) => write!(f, "DOMAIN-WILDCARD,{v}"),
+            Matcher::GeoSite(v) => write!(f, "GEOSITE,{v}"),
+            Matcher::GeoIp {
+                country,
+                source,
+                no_resolve,
+            } => write!(
+                f,
+                "{}{country}{}",
+                if *source { "SRC-GEOIP," } else { "GEOIP," },
+                if *no_resolve { ",no-resolve" } else { "" }
+            ),
+            Matcher::IpAsn {
+                asn,
+                source,
+                no_resolve,
+            } => write!(
+                f,
+                "{}{asn}{}",
+                if *source { "SRC-IP-ASN," } else { "IP-ASN," },
+                if *no_resolve { ",no-resolve" } else { "" }
+            ),
+            Matcher::IpCidr {
+                net,
+                source,
+                no_resolve,
+            } => write!(
+                f,
+                "{}{net}{}",
+                if *source { "SRC-IP-CIDR," } else { "IP-CIDR," },
+                if *no_resolve { ",no-resolve" } else { "" }
+            ),
+            Matcher::IpSuffix {
+                net,
+                source,
+                no_resolve,
+            } => write!(
+                f,
+                "{}{net}{}",
+                if *source { "SRC-IP-SUFFIX," } else { "IP-SUFFIX," },
+                if *no_resolve { ",no-resolve" } else { "" }
+            ),
+            Matcher::Port { kind, ranges } => {
+                let list = ranges
+                    .iter()
+                    .map(|(start, end)| {
+                        if start == end {
+                            start.to_string()
+                        } else {
+                            format!("{start}-{end}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let name = match kind {
+                    PortKind::Dst => "DST-PORT",
+                    PortKind::Src => "SRC-PORT",
+                    PortKind::In => "IN-PORT",
+                };
+                write!(f, "{name},{list}")
+            }
+            Matcher::Network(kind) => write!(f, "NETWORK,{}", kind.as_str().to_ascii_uppercase()),
+            Matcher::InType(types) => write!(
+                f,
+                "IN-TYPE,{}",
+                types
+                    .iter()
+                    .map(|kind| kind.as_str())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            ),
+            Matcher::Process {
+                kind,
+                pattern,
+                regex,
+            } => write!(
+                f,
+                "{}{pattern}",
+                match (kind, regex) {
+                    (ProcessKind::Name, false) => "PROCESS-NAME,",
+                    (ProcessKind::Path, false) => "PROCESS-PATH,",
+                    (ProcessKind::Name, true) => "PROCESS-NAME-REGEX,",
+                    (ProcessKind::Path, true) => "PROCESS-PATH-REGEX,",
+                }
+            ),
+            Matcher::RuleSet {
+                name,
+                source,
+                no_resolve,
+            } => write!(
+                f,
+                "RULE-SET,{name}{}{}",
+                if *source { ",src" } else { "" },
+                if *no_resolve { ",no-resolve" } else { "" }
+            ),
+            Matcher::SubRule { gate, name } => write!(f, "SUB-RULE,({}),{name}", gate.matcher),
+            Matcher::And(rules) => write!(
+                f,
+                "AND,({})",
+                rules
+                    .iter()
+                    .map(|rule| rule.matcher.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Matcher::Or(rules) => write!(
+                f,
+                "OR,({})",
+                rules
+                    .iter()
+                    .map(|rule| rule.matcher.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Matcher::Not(rule) => write!(f, "NOT,({})", rule.matcher),
             Matcher::Match => write!(f, "MATCH"),
         }
     }
@@ -125,6 +373,8 @@ impl fmt::Display for Matcher {
 pub enum Action {
     Direct,
     Reject,
+    /// `REJECT-DROP`: close without sending an inbound failure reply.
+    RejectDrop,
     /// Index into [`Config::proxies`].
     Proxy(usize),
 }
@@ -134,14 +384,174 @@ impl Action {
         match self {
             Action::Direct => "DIRECT",
             Action::Reject => "REJECT",
+            Action::RejectDrop => "REJECT-DROP",
             // The name is not known here; callers with a Config use `Proxy::name`.
             Action::Proxy(_) => "PROXY",
         }
     }
 }
 
-/// Parsed, validated configuration for the first slice.
+/// Behaviour of a rule provider, as `rule-providers.<name>.behavior`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleBehavior {
+    Domain,
+    IpCidr,
+    Classical,
+}
+
+impl RuleBehavior {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleBehavior::Domain => "domain",
+            RuleBehavior::IpCidr => "ipcidr",
+            RuleBehavior::Classical => "classical",
+        }
+    }
+}
+
+/// Encoding of a rule provider payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleFormat {
+    Yaml,
+    Text,
+    Mrs,
+}
+
+impl RuleFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleFormat::Yaml => "yaml",
+            RuleFormat::Text => "text",
+            RuleFormat::Mrs => "mrs",
+        }
+    }
+}
+
+/// Where a provider's bytes come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderVehicle {
+    File { path: std::path::PathBuf },
+    Http {
+        url: String,
+        path: Option<std::path::PathBuf>,
+    },
+    Inline,
+}
+
+impl ProviderVehicle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProviderVehicle::File { .. } => "file",
+            ProviderVehicle::Http { .. } => "http",
+            ProviderVehicle::Inline => "inline",
+        }
+    }
+}
+
+/// `health-check` of a proxy provider. Parsed and exposed; scheduling the
+/// probes is part of T23 (group selection/latency), which owns the health data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthCheckConfig {
+    pub enable: bool,
+    pub url: Option<String>,
+    pub interval: u64,
+    pub timeout: u64,
+    pub lazy: bool,
+    pub expected_status: String,
+}
+
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        HealthCheckConfig {
+            enable: false,
+            url: None,
+            interval: 300,
+            timeout: 0,
+            lazy: true,
+            expected_status: String::new(),
+        }
+    }
+}
+
+/// One `rule-providers` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleProviderConfig {
+    pub name: String,
+    pub behavior: RuleBehavior,
+    pub format: RuleFormat,
+    pub vehicle: ProviderVehicle,
+    pub interval: Option<Duration>,
+    pub payload: Vec<String>,
+    pub header: Vec<(String, String)>,
+    pub proxy: Option<String>,
+    pub size_limit: Option<u64>,
+}
+
+/// One `proxy-providers` entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProxyProviderConfig {
+    pub name: String,
+    pub vehicle: ProviderVehicle,
+    pub interval: Option<Duration>,
+    pub filter: Option<String>,
+    pub exclude_filter: Option<String>,
+    pub exclude_type: Vec<String>,
+    pub proxy: Option<String>,
+    pub dialer_proxy: Option<String>,
+    pub size_limit: Option<u64>,
+    pub header: Vec<(String, String)>,
+    pub health_check: HealthCheckConfig,
+    pub payload: Vec<serde_yaml::Value>,
+}
+
+/// Geodata files that the configured rules need. Computed from inline rules,
+/// sub-rules and inline rule-provider payloads; file/http provider entries add
+/// their own references before the geodata directory is read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GeodataRequirements {
+    pub geosite_keys: BTreeSet<String>,
+    pub geoip: bool,
+    pub asn: bool,
+}
+
+impl GeodataRequirements {
+    fn visit_matcher(&mut self, matcher: &Matcher) {
+        match matcher {
+            Matcher::GeoSite(value) => {
+                self.geosite_keys.insert(value.clone());
+            }
+            Matcher::GeoIp { country, .. } => {
+                if country.trim_start_matches('!').to_ascii_lowercase() != "lan" {
+                    self.geoip = true;
+                }
+            }
+            Matcher::IpAsn { .. } => self.asn = true,
+            Matcher::And(rules) | Matcher::Or(rules) => {
+                for rule in rules {
+                    self.visit_matcher(&rule.matcher);
+                }
+            }
+            Matcher::Not(rule) | Matcher::SubRule { gate: rule, .. } => {
+                self.visit_matcher(&rule.matcher);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn merge(&mut self, other: GeodataRequirements) {
+        self.geosite_keys.extend(other.geosite_keys);
+        self.geoip |= other.geoip;
+        self.asn |= other.asn;
+    }
+
+    /// Visit one rule, used by provider payloads after they are read.
+    pub fn collect_rule(&mut self, rule: &Rule) {
+        self.visit_matcher(&rule.matcher);
+    }
+}
+
+/// Parsed, validated configuration.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub listen: SocketAddr,
     /// First port that asked to be rebound on a clash-style port key, if any.
@@ -154,6 +564,17 @@ pub struct Config {
     pub rules_source: RulesSource,
     /// Protocol outbounds usable as a rule target (DIRECT/REJECT stay built in).
     pub proxies: Vec<crate::proxies::Proxy>,
+    /// `rule-providers` entries in declaration order.
+    pub rule_providers: Vec<RuleProviderConfig>,
+    /// `proxy-providers` entries in declaration order.
+    pub proxy_providers: Vec<ProxyProviderConfig>,
+    /// `sub-rules` used by `SUB-RULE`.
+    pub sub_rules: BTreeMap<String, Vec<Rule>>,
+    /// `geodata-mode: true` reads GeoIP.dat; false reads Country.mmdb.
+    pub geodata_mode: bool,
+    pub geodata_loader: String,
+    pub geosite_matcher: String,
+    pub geo_auto_update: bool,
     /// Global `authentication: ["user:pass", ...]` accepted by the inbound.
     pub inbound_users: Vec<(String, String)>,
     /// Extra root certificates (`tls.custom-cert` or the `custom-cert` directory
@@ -172,15 +593,30 @@ pub enum RulesSource {
 }
 
 impl Config {
-    /// Target keywords (lowercased) referenced by GEOSITE rules.
-    pub fn geosite_databases(&self) -> BTreeSet<String> {
-        let mut out = BTreeSet::new();
+    /// Geodata files referenced by the inline rule list and sub-rules. Rule
+    /// provider payloads add their own references when the providers are read.
+    pub fn geodata_requirements(&self) -> GeodataRequirements {
+        let mut requirements = GeodataRequirements::default();
         for rule in &self.rules {
-            if let Matcher::Geosite(db) = &rule.matcher {
-                out.insert(db.clone());
+            requirements.visit_matcher(&rule.matcher);
+        }
+        for rules in self.sub_rules.values() {
+            for rule in rules {
+                requirements.visit_matcher(&rule.matcher);
             }
         }
-        out
+        for provider in &self.rule_providers {
+            if provider.behavior == RuleBehavior::Classical {
+                for line in &provider.payload {
+                    // Invalid fallback entries are reported by the provider
+                    // loader; collect only the references they mention.
+                    if let Ok(rule) = parse_rule(line) {
+                        requirements.visit_matcher(&rule.matcher);
+                    }
+                }
+            }
+        }
+        requirements
     }
 
     /// Honest label of what this configuration enables; used by identity output.
@@ -195,15 +631,18 @@ impl Config {
                 .join(",")
         };
         format!(
-            "mixed-inbound(tcp,http-connect,socks5); rules=inline({} entries); outbounds=DIRECT,REJECT; protocols={protocols}; dns=none",
-            self.rules.len()
+            "mixed-inbound(tcp,http-connect,socks5); rules=inline({} entries); rule-providers={}; proxy-providers={}; sub-rules={}; outbounds=DIRECT,REJECT; protocols={protocols}; dns=none",
+            self.rules.len(),
+            self.rule_providers.len(),
+            self.proxy_providers.len(),
+            self.sub_rules.len()
         )
     }
 
     /// Display name of a rule action (proxy names come from the list).
     pub fn action_name(&self, action: Action) -> String {
         match action {
-            Action::Direct | Action::Reject => action.as_str().to_string(),
+            Action::Direct | Action::Reject | Action::RejectDrop => action.as_str().to_string(),
             Action::Proxy(index) => self
                 .proxies
                 .get(index)
@@ -239,6 +678,9 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
 
     let mut rules_value = None;
     let mut proxies_value = None;
+    let mut rule_providers_value = None;
+    let mut proxy_providers_value = None;
+    let mut sub_rules_value = None;
     let mut authentication = Vec::new();
     let mut tls_roots: Vec<rustls_pki_types::CertificateDer<'static>> = Vec::new();
     let mut listen_port: Option<u16> = None;
@@ -247,6 +689,10 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     let mut bind: Option<String> = None;
     let mut mode = None;
     let mut log_level = None;
+    let mut geodata_mode = false;
+    let mut geodata_loader = "memconservative".to_string();
+    let mut geosite_matcher = "succinct".to_string();
+    let mut geo_auto_update = false;
 
     for (key, value) in mapping.iter() {
         let key = key.as_str().ok_or_else(|| {
@@ -304,12 +750,73 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             }
             "rules" => rules_value = Some(value),
             "proxies" => proxies_value = Some(value),
+            "rule-providers" => rule_providers_value = Some(value),
+            "proxy-providers" => proxy_providers_value = Some(value),
+            "sub-rules" => sub_rules_value = Some(value),
+            "geodata-mode" => geodata_mode = parse_bool(value, path, key)?,
+            "geodata-loader" => {
+                let loader = parse_string(value, path, key)?.to_ascii_lowercase();
+                match loader.as_str() {
+                    "standard" | "memconservative" => geodata_loader = loader,
+                    "memc" => geodata_loader = "memconservative".to_string(),
+                    other => {
+                        return Err(ConfigError::Unsupported(format!(
+                            "geodata-loader '{other}' (standard and memconservative are implemented)"
+                        )))
+                    }
+                }
+            }
+            "geosite-matcher" => {
+                let matcher = parse_string(value, path, key)?.to_ascii_lowercase();
+                match matcher.as_str() {
+                    "succinct" | "mph" | "hybrid" => geosite_matcher = matcher,
+                    // The pinned engine silently falls back to succinct for an
+                    // unknown name; keep that behaviour but say so.
+                    other => warnings.push(format!(
+                        "geosite-matcher '{other}' is not a pinned value; using succinct"
+                    )),
+                }
+            }
+            "geo-auto-update" => {
+                geo_auto_update = parse_bool(value, path, key)?;
+                if geo_auto_update {
+                    return Err(ConfigError::Unsupported(
+                        "geo-auto-update: true (automatic geodata download is not implemented; update providers through the kernel API and restart with the new files)"
+                            .to_string(),
+                    ));
+                }
+            }
+            "geo-update-interval" => {
+                let interval = value
+                    .as_u64()
+                    .ok_or_else(|| {
+                        ConfigError::InvalidValue(format!(
+                            "{path}: geo-update-interval must be a non-negative integer"
+                        ))
+                    })?;
+                if interval > 0 && !geo_auto_update {
+                    warnings.push(
+                        "geo-update-interval has no effect while geo-auto-update is false"
+                            .to_string(),
+                    );
+                }
+            }
             "authentication" => authentication = parse_authentication(value, path)?,
             "tls" => tls_roots = parse_tls(value, path)?,
             _ => {
                 if KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS.contains(&key) {
+                    let boundary = match key {
+                        "proxy-groups" => " (proxy groups and selection are T23)",
+                        "dns" | "hosts" => " (DNS/hosts are T22)",
+                        "external-controller" | "external-controller-unix"
+                        | "external-controller-tls" | "external-controller-pipe" => {
+                            " (the control API is T25)"
+                        }
+                        "find-process-mode" => " (process lookup is T22/T6)",
+                        _ => "",
+                    };
                     return Err(ConfigError::Unsupported(format!(
-                        "top-level key '{key}' is not implemented by the Rust kernel slice"
+                        "top-level key '{key}' is not implemented by the Rust kernel slice{boundary}"
                     )));
                 }
                 // Not a Mihomo top-level key: Mihomo's decoder tolerates extra
@@ -347,11 +854,64 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         None => Vec::new(),
         Some(value) => crate::proxies::parse_proxies(value)?,
     };
+    let proxy_providers = match proxy_providers_value {
+        None => Vec::new(),
+        Some(value) => parse_proxy_providers(value, path)?,
+    };
+    let rule_providers = match rule_providers_value {
+        None => Vec::new(),
+        Some(value) => parse_rule_providers(value, path)?,
+    };
+    let provider_names = rule_providers
+        .iter()
+        .map(|provider| provider.name.clone())
+        .collect::<BTreeSet<_>>();
+
+    let sub_rule_names = match sub_rules_value {
+        None => BTreeSet::new(),
+        Some(value) => {
+            let mapping = value.as_mapping().ok_or_else(|| {
+                ConfigError::InvalidValue(format!("{path}: sub-rules must be a mapping"))
+            })?;
+            let mut names = BTreeSet::new();
+            for key in mapping.keys() {
+                let name = key.as_str().ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("{path}: sub-rules keys must be strings"))
+                })?;
+                if name.is_empty() {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "{path}: sub-rules name must not be empty"
+                    )));
+                }
+                names.insert(name.to_string());
+            }
+            names
+        }
+    };
+
+    let context = RuleContext {
+        proxies: &proxies,
+        providers: &provider_names,
+        sub_rules: &sub_rule_names,
+    };
+    let sub_rules = match sub_rules_value {
+        None => BTreeMap::new(),
+        Some(value) => parse_sub_rules(value, path, &context)?,
+    };
+    verify_sub_rule_cycles(&sub_rules)?;
 
     let (rules, rules_source) = match rules_value {
         None => (Vec::new(), RulesSource::None),
-        Some(value) => (parse_rules(value, path, &proxies)?, RulesSource::Inline),
+        Some(value) => (parse_rules(value, path, &context, "rules")?, RulesSource::Inline),
     };
+
+    // A warning, not a rejection: the pinned engine resolves names for these
+    // rules, while this kernel only sees the request metadata (DNS is T22).
+    if rules.iter().any(rule_needs_resolution) || sub_rules.values().flatten().any(rule_needs_resolution) {
+        warnings.push(
+            "GEOIP/IP-ASN/IP-CIDR rules match the destination only when it is already an IP; name resolution is T22 (DNS/hosts)".to_string(),
+        );
+    }
 
     let config = Config {
         listen: SocketAddr::new(host, port),
@@ -362,6 +922,13 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         rules,
         rules_source,
         proxies,
+        rule_providers,
+        proxy_providers,
+        sub_rules,
+        geodata_mode,
+        geodata_loader,
+        geosite_matcher,
+        geo_auto_update,
         inbound_users: authentication,
         tls_roots,
         digest,
@@ -369,40 +936,72 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     Ok(LoadedConfig { config, warnings })
 }
 
+fn rule_needs_resolution(rule: &Rule) -> bool {
+    match &rule.matcher {
+        Matcher::GeoIp {
+            country, no_resolve, ..
+        } => {
+            country.trim_start_matches('!').to_ascii_lowercase() != "lan" && !no_resolve
+        }
+        Matcher::IpAsn { no_resolve, .. } => !no_resolve,
+        Matcher::IpCidr { no_resolve, .. } => !no_resolve,
+        Matcher::IpSuffix { no_resolve, .. } => !no_resolve,
+        Matcher::RuleSet { no_resolve, .. } => !no_resolve,
+        Matcher::And(rules) | Matcher::Or(rules) => rules.iter().any(rule_needs_resolution),
+        Matcher::Not(rule) | Matcher::SubRule { gate: rule, .. } => rule_needs_resolution(rule),
+        _ => false,
+    }
+}
+
+/// Names visible to a rule line while it is parsed.
+struct RuleContext<'a> {
+    proxies: &'a [crate::proxies::Proxy],
+    providers: &'a BTreeSet<String>,
+    sub_rules: &'a BTreeSet<String>,
+}
+
+impl RuleContext<'_> {
+    fn empty() -> RuleContext<'static> {
+        static EMPTY: std::sync::OnceLock<(BTreeSet<String>, BTreeSet<String>)> =
+            std::sync::OnceLock::new();
+        let (providers, sub_rules) = EMPTY.get_or_init(|| (BTreeSet::new(), BTreeSet::new()));
+        RuleContext {
+            proxies: &[],
+            providers,
+            sub_rules,
+        }
+    }
+}
+
 fn parse_rules(
     value: &serde_yaml::Value,
     path: &str,
-    proxies: &[crate::proxies::Proxy],
+    context: &RuleContext<'_>,
+    label: &str,
 ) -> Result<Vec<Rule>, ConfigError> {
     let seq = value
         .as_sequence()
-        .ok_or_else(|| ConfigError::Invalid(format!("{path}: rules must be a list")))?;
+        .ok_or_else(|| ConfigError::Invalid(format!("{path}: {label} must be a list")))?;
     let mut rules = Vec::with_capacity(seq.len());
     for (index, item) in seq.iter().enumerate() {
         let line = item.as_str().ok_or_else(|| {
             ConfigError::Invalid(format!(
-                "{path}: rules[{index}] must be a string, found {}",
+                "{path}: {label}[{index}] must be a string, found {}",
                 kind_of(item)
             ))
         })?;
-        rules.push(parse_rule_with_proxies(line, proxies).map_err(|e| {
-            let prefix = format!("rules[{index}] ('{line}')");
-            match e {
-                ConfigError::Unsupported(m) => ConfigError::Unsupported(format!("{prefix}: {m}")),
-                ConfigError::InvalidValue(m) => ConfigError::InvalidValue(format!("{prefix}: {m}")),
-                ConfigError::Invalid(m) => ConfigError::Invalid(format!("{path}: {prefix}: {m}")),
-                ConfigError::ConfigFailed(m) => ConfigError::ConfigFailed(format!("{prefix}: {m}")),
-            }
+        rules.push(parse_rule_line(line, true, context).map_err(|e| {
+            let prefix = format!("{label}[{index}] ('{line}')");
+            config_error_with_prefix(e, &prefix)
         })?);
     }
-    if rules.iter().any(|r| r.matcher == Matcher::Match) {
-        let match_index = rules
-            .iter()
-            .position(|r| r.matcher == Matcher::Match)
-            .expect("checked above");
+    if let Some(match_index) = rules
+        .iter()
+        .position(|rule| rule.matcher == Matcher::Match)
+    {
         if match_index != rules.len() - 1 {
             return Err(ConfigError::InvalidValue(format!(
-                "MATCH must be the last rule (found at rules[{match_index}] of {})",
+                "{path}: MATCH must be the last rule (found at {label}[{match_index}] of {})",
                 rules.len()
             )));
         }
@@ -410,10 +1009,95 @@ fn parse_rules(
     Ok(rules)
 }
 
+fn parse_sub_rules(
+    value: &serde_yaml::Value,
+    path: &str,
+    context: &RuleContext<'_>,
+) -> Result<BTreeMap<String, Vec<Rule>>, ConfigError> {
+    let mapping = value
+        .as_mapping()
+        .ok_or_else(|| ConfigError::InvalidValue(format!("{path}: sub-rules must be a mapping")))?;
+    let mut out = BTreeMap::new();
+    for (key, rules) in mapping {
+        let name = key.as_str().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{path}: sub-rules keys must be strings"))
+        })?;
+        out.insert(
+            name.to_string(),
+            parse_rules(rules, path, context, &format!("sub-rules[{name}]"))?,
+        );
+    }
+    Ok(out)
+}
+
+fn verify_sub_rule_cycles(sub_rules: &BTreeMap<String, Vec<Rule>>) -> Result<(), ConfigError> {
+    fn visit(
+        name: &str,
+        sub_rules: &BTreeMap<String, Vec<Rule>>,
+        stack: &mut Vec<String>,
+    ) -> Result<(), ConfigError> {
+        if stack.iter().any(|entry| entry == name) {
+            return Err(ConfigError::InvalidValue(format!(
+                "sub-rules contain a circular reference: {} -> {name}",
+                stack.join(" -> ")
+            )));
+        }
+        stack.push(name.to_string());
+        if let Some(rules) = sub_rules.get(name) {
+            for rule in rules {
+                visit_matcher_rules(&rule.matcher, &mut |matcher| match matcher {
+                    Matcher::SubRule { name, .. } => visit(name, sub_rules, stack),
+                    _ => Ok(()),
+                })?;
+            }
+        }
+        stack.pop();
+        Ok(())
+    }
+    for name in sub_rules.keys() {
+        visit(name, sub_rules, &mut Vec::new())?;
+    }
+    Ok(())
+}
+
+fn visit_matcher_rules(
+    matcher: &Matcher,
+    visit: &mut dyn FnMut(&Matcher) -> Result<(), ConfigError>,
+) -> Result<(), ConfigError> {
+    visit(matcher)?;
+    match matcher {
+        Matcher::And(rules) | Matcher::Or(rules) => {
+            for rule in rules {
+                visit_matcher_rules(&rule.matcher, visit)?;
+            }
+        }
+        Matcher::Not(rule) | Matcher::SubRule { gate: rule, .. } => {
+            visit_matcher_rules(&rule.matcher, visit)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn config_error_with_prefix(error: ConfigError, prefix: &str) -> ConfigError {
+    match error {
+        ConfigError::Unsupported(message) => {
+            ConfigError::Unsupported(format!("{prefix}: {message}"))
+        }
+        ConfigError::InvalidValue(message) => {
+            ConfigError::InvalidValue(format!("{prefix}: {message}"))
+        }
+        ConfigError::Invalid(message) => ConfigError::Invalid(format!("{prefix}: {message}")),
+        ConfigError::ConfigFailed(message) => {
+            ConfigError::ConfigFailed(format!("{prefix}: {message}"))
+        }
+    }
+}
+
 /// Parse one clash rule line such as `DOMAIN-SUFFIX,example.com,REJECT` or
 /// `IP-CIDR,10.0.0.0/8,DIRECT,no-resolve`.
 pub fn parse_rule(line: &str) -> Result<Rule, ConfigError> {
-    parse_rule_with_proxies(line, &[])
+    parse_rule_line(line, true, &RuleContext::empty())
 }
 
 /// Like [`parse_rule`] but resolves a rule outbound against the configured proxy names.
@@ -421,108 +1105,839 @@ pub fn parse_rule_with_proxies(
     line: &str,
     proxies: &[crate::proxies::Proxy],
 ) -> Result<Rule, ConfigError> {
-    // Fields may be quoted (`'REJECT'`); split before unquoting and trim each field.
-    let mut parts: Vec<String> = line
-        .split(',')
-        .map(|p| p.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
-        .collect();
-    let rule_type = parts.first().cloned().unwrap_or_default();
+    let context = RuleContext {
+        proxies,
+        ..RuleContext::empty()
+    };
+    parse_rule_line(line, true, &context)
+}
+
+/// Parse a provider entry (no target field). `PROCESS-*-REGEX`, `DOMAIN-REGEX`
+/// and the logic types keep commas in their payload.
+/// Provider entries may themselves reference another provider with RULE-SET;
+/// pass the registry names so those entries are not skipped as malformed.
+pub(crate) fn parse_rule_without_target_in(
+    line: &str,
+    providers: &BTreeSet<String>,
+) -> Result<Rule, ConfigError> {
+    let context = RuleContext {
+        providers,
+        ..RuleContext::empty()
+    };
+    parse_rule_line(line, false, &context)
+}
+
+fn split_rule_fields(line: &str) -> Vec<String> {
+    line.split(',')
+        .map(|field| {
+            field
+                .trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_string()
+        })
+        .collect()
+}
+
+fn parse_rule_line(
+    line: &str,
+    need_target: bool,
+    context: &RuleContext<'_>,
+) -> Result<Rule, ConfigError> {
+    let parts = split_rule_fields(line);
+    let rule_type = parts
+        .first()
+        .map(|part| part.to_ascii_uppercase())
+        .unwrap_or_default();
     if !SUPPORTED_RULE_TYPES.contains(&rule_type.as_str()) {
-        return Err(ConfigError::Unsupported(format!("rule type '{rule_type}'")));
-    }
-    let no_resolve = parts.last().is_some_and(|p| p == "no-resolve");
-    if no_resolve {
-        parts.pop();
-    }
-    if parts
-        .iter()
-        .any(|p| p.is_empty() || p.chars().any(char::is_whitespace))
-    {
-        return Err(ConfigError::InvalidValue(format!(
-            "empty or whitespace field in rule '{line}'"
+        return Err(ConfigError::Unsupported(format!(
+            "rule type '{rule_type}'"
         )));
     }
-    if no_resolve && !matches!(rule_type.as_str(), "IP-CIDR" | "IP-CIDR6") {
-        return Err(ConfigError::InvalidValue(
-            "no-resolve is only valid on IP-CIDR rules".to_string(),
-        ));
-    }
-    match rule_type.as_str() {
-        "MATCH" => {
-            if parts.len() != 2 {
+    let len = parts.len();
+    let comma_payload = matches!(
+        rule_type.as_str(),
+        "AND"
+            | "OR"
+            | "NOT"
+            | "SUB-RULE"
+            | "DOMAIN-REGEX"
+            | "PROCESS-NAME-REGEX"
+            | "PROCESS-PATH-REGEX"
+    );
+    let (payload, target, params): (String, Option<&str>, &[String]) =
+        if rule_type == "MATCH" {
+            if len != 2 {
                 return Err(ConfigError::InvalidValue(format!(
                     "MATCH takes <action>, got '{line}'"
                 )));
             }
-            Ok(Rule {
-                matcher: Matcher::Match,
-                action: parse_action_with(&parts[1], proxies)?,
-                no_resolve,
-            })
-        }
-        "DOMAIN" | "DOMAIN-SUFFIX" | "GEOSITE" => {
-            if parts.len() != 3 {
+            (String::new(), need_target.then_some(parts[1].as_str()), &[])
+        } else if comma_payload {
+            if len < 2 {
                 return Err(ConfigError::InvalidValue(format!(
-                    "{rule_type} takes <value>,<action>, got '{line}'"
+                    "{rule_type} takes <payload>{}, got '{line}'",
+                    if need_target { ",<action>" } else { "" }
                 )));
             }
-            let value = parts[1].to_ascii_lowercase();
-            let matcher = match rule_type.as_str() {
+            if need_target {
+                (
+                    parts[1..len - 1].join(","),
+                    Some(parts[len - 1].as_str()),
+                    &[],
+                )
+            } else {
+                (parts[1..].join(","), None, &[])
+            }
+        } else {
+            if len < 2 || (need_target && len < 3) {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{rule_type} takes <value>{}, got '{line}'",
+                    if need_target { ",<action>" } else { "" }
+                )));
+            }
+            let payload = parts[1].clone();
+            if need_target {
+                (
+                    payload,
+                    Some(parts[2].as_str()),
+                    if len > 3 { &parts[3..] } else { &[] },
+                )
+            } else {
+                (payload, None, if len > 2 { &parts[2..] } else { &[] })
+            }
+        };
+
+    let action_params = match rule_type.as_str() {
+        "GEOIP" | "IP-ASN" | "IP-CIDR" | "IP-CIDR6" | "IP-SUFFIX" | "RULE-SET" => true,
+        _ => false,
+    };
+    let (is_src, no_resolve) = parse_rule_params(&rule_type, params, action_params)?;
+    let action = match target {
+        None => Action::Direct,
+        // SUB-RULE's target is the sub-rule list name; the list selects the
+        // outbound, so the outer action field is unused.
+        Some(_) if rule_type == "SUB-RULE" => Action::Direct,
+        Some(target) => parse_action_with(target, context.proxies)?,
+    };
+
+    let matcher = match rule_type.as_str() {
+        "MATCH" => Matcher::Match,
+        "DOMAIN" | "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "DOMAIN-WILDCARD" => {
+            if payload.is_empty() {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{rule_type} needs a non-empty domain"
+                )));
+            }
+            let value = payload.to_ascii_lowercase();
+            match rule_type.as_str() {
                 "DOMAIN" => Matcher::Domain(value),
                 "DOMAIN-SUFFIX" => Matcher::DomainSuffix(value),
-                _ => Matcher::Geosite(value),
-            };
-            Ok(Rule {
-                matcher,
-                action: parse_action_with(&parts[2], proxies)?,
-                no_resolve,
-            })
+                "DOMAIN-KEYWORD" => Matcher::DomainKeyword(value),
+                _ => Matcher::DomainWildcard(value),
+            }
         }
-        "IP-CIDR" | "IP-CIDR6" => {
-            if parts.len() != 3 {
-                return Err(ConfigError::Unsupported(format!(
-                    "{rule_type} form '{line}' (only <cidr>,<action>[,no-resolve] is implemented)"
-                )));
+        "DOMAIN-REGEX" => {
+            validate_regex(&payload)?;
+            Matcher::DomainRegex(payload)
+        }
+        "GEOSITE" => {
+            if payload.is_empty() {
+                return Err(ConfigError::InvalidValue(
+                    "GEOSITE needs a list name".to_string(),
+                ));
             }
-            let network = ipnet_like::IpNet::from_str(&parts[1]).map_err(|e| {
-                ConfigError::InvalidValue(format!("{rule_type} '{}': {e}", parts[1]))
-            })?;
-            if rule_type == "IP-CIDR6" && network.is_v4() {
+            Matcher::GeoSite(payload)
+        }
+        "GEOIP" | "SRC-GEOIP" => {
+            if payload.is_empty() {
+                return Err(ConfigError::InvalidValue(
+                    "GEOIP needs a country code".to_string(),
+                ));
+            }
+            Matcher::GeoIp {
+                country: payload.to_ascii_lowercase(),
+                source: rule_type == "SRC-GEOIP" || is_src,
+                no_resolve: no_resolve || rule_type == "SRC-GEOIP",
+            }
+        }
+        "IP-ASN" | "SRC-IP-ASN" => {
+            if !payload.chars().all(|c| c.is_ascii_digit()) || payload.is_empty() {
                 return Err(ConfigError::InvalidValue(format!(
-                    "IP-CIDR6 '{}' must be an IPv6 CIDR",
-                    parts[1]
+                    "{rule_type} needs a numeric ASN, got '{payload}'"
                 )));
             }
-            Ok(Rule {
-                matcher: Matcher::IpCidr(network),
-                action: parse_action_with(&parts[2], proxies)?,
+            Matcher::IpAsn {
+                asn: payload,
+                source: rule_type == "SRC-IP-ASN" || is_src,
+                no_resolve: no_resolve || rule_type == "SRC-IP-ASN",
+            }
+        }
+        "IP-CIDR" | "IP-CIDR6" | "SRC-IP-CIDR" => {
+            let net = ipnet_like::IpNet::from_str(&payload).map_err(|e| {
+                ConfigError::InvalidValue(format!("{rule_type} '{payload}': {e}"))
+            })?;
+            if rule_type == "IP-CIDR6" && net.is_v4() {
+                return Err(ConfigError::InvalidValue(format!(
+                    "IP-CIDR6 '{payload}' must be an IPv6 CIDR"
+                )));
+            }
+            Matcher::IpCidr {
+                net,
+                source: rule_type == "SRC-IP-CIDR" || is_src,
+                no_resolve: no_resolve || rule_type == "SRC-IP-CIDR",
+            }
+        }
+        "IP-SUFFIX" | "SRC-IP-SUFFIX" => {
+            let net = ipnet_like::IpNet::from_str(&payload).map_err(|e| {
+                ConfigError::InvalidValue(format!("{rule_type} '{payload}': {e}"))
+            })?;
+            Matcher::IpSuffix {
+                net,
+                source: rule_type == "SRC-IP-SUFFIX" || is_src,
+                no_resolve: no_resolve || rule_type == "SRC-IP-SUFFIX",
+            }
+        }
+        "SRC-PORT" | "DST-PORT" | "IN-PORT" => {
+            let kind = match rule_type.as_str() {
+                "SRC-PORT" => PortKind::Src,
+                "DST-PORT" => PortKind::Dst,
+                _ => PortKind::In,
+            };
+            Matcher::Port {
+                kind,
+                ranges: parse_port_ranges(&payload)?,
+            }
+        }
+        "NETWORK" => {
+            let network = match payload.to_ascii_uppercase().as_str() {
+                "TCP" => NetworkKind::Tcp,
+                "UDP" => NetworkKind::Udp,
+                other => {
+                    return Err(ConfigError::Unsupported(format!(
+                        "NETWORK '{other}' (only TCP and UDP are implemented)"
+                    )))
+                }
+            };
+            Matcher::Network(network)
+        }
+        "IN-TYPE" => Matcher::InType(parse_in_types(&payload)?),
+        "PROCESS-NAME" | "PROCESS-PATH" => Matcher::Process {
+            kind: if rule_type == "PROCESS-NAME" {
+                ProcessKind::Name
+            } else {
+                ProcessKind::Path
+            },
+            pattern: payload,
+            regex: false,
+        },
+        "PROCESS-NAME-REGEX" | "PROCESS-PATH-REGEX" => {
+            validate_regex(&payload)?;
+            Matcher::Process {
+                kind: if rule_type == "PROCESS-NAME-REGEX" {
+                    ProcessKind::Name
+                } else {
+                    ProcessKind::Path
+                },
+                pattern: payload,
+                regex: true,
+            }
+        }
+        "RULE-SET" => {
+            if !context.providers.contains(&payload) {
+                return Err(ConfigError::ConfigFailed(format!(
+                    "RULE-SET references undefined rule-provider '{payload}'"
+                )));
+            }
+            Matcher::RuleSet {
+                name: payload,
+                source: is_src,
                 no_resolve,
-            })
+            }
+        }
+        "SUB-RULE" => {
+            let name = target.ok_or_else(|| {
+                ConfigError::InvalidValue("SUB-RULE needs a target action".to_string())
+            })?;
+            if !context.sub_rules.contains(name) {
+                return Err(ConfigError::ConfigFailed(format!(
+                    "SUB-RULE references undefined sub-rule '{name}'"
+                )));
+            }
+            let gate_source = payload
+                .strip_prefix('(')
+                .and_then(|rest| rest.strip_suffix(')'))
+                .unwrap_or(payload.as_str());
+            let gate = parse_rule_line(gate_source, false, context)?;
+            if matches!(gate.matcher, Matcher::Match | Matcher::SubRule { .. }) {
+                return Err(ConfigError::Unsupported(
+                    "SUB-RULE gate must be a non-MATCH, non-SUB-RULE rule".to_string(),
+                ));
+            }
+            Matcher::SubRule {
+                gate: Box::new(gate),
+                name: name.to_string(),
+            }
+        }
+        "AND" | "OR" | "NOT" => {
+            let groups = parse_logic_groups(&payload)?;
+            let mut rules = Vec::with_capacity(groups.len());
+            for group in &groups {
+                let inner = parse_rule_line(group, false, context)?;
+                if matches!(inner.matcher, Matcher::Match | Matcher::SubRule { .. }) {
+                    return Err(ConfigError::Unsupported(format!(
+                        "{rule_type} cannot contain MATCH or SUB-RULE"
+                    )));
+                }
+                rules.push(inner);
+            }
+            match rule_type.as_str() {
+                "NOT" => {
+                    if rules.len() != 1 {
+                        return Err(ConfigError::InvalidValue(format!(
+                            "NOT must contain exactly one rule, got {}",
+                            rules.len()
+                        )));
+                    }
+                    Matcher::Not(Box::new(rules.remove(0)))
+                }
+                "AND" => Matcher::And(rules),
+                _ => Matcher::Or(rules),
+            }
         }
         _ => unreachable!("rule type checked above"),
+    };
+
+    Ok(Rule {
+        matcher,
+        action,
+        no_resolve,
+    })
+}
+
+fn parse_rule_params(
+    rule_type: &str,
+    params: &[String],
+    action_params: bool,
+) -> Result<(bool, bool), ConfigError> {
+    let mut is_src = false;
+    let mut no_resolve = false;
+    let mut names = Vec::new();
+    for param in params {
+        match param.as_str() {
+            "" => {}
+            "src" if action_params => is_src = true,
+            "no-resolve" if action_params => no_resolve = true,
+            other => names.push(other.to_string()),
+        }
     }
+    if !names.is_empty() {
+        return Err(ConfigError::Unsupported(format!(
+            "rule parameter(s) {} on {rule_type}",
+            names.join(", ")
+        )));
+    }
+    if is_src {
+        no_resolve = true;
+    }
+    Ok((is_src, no_resolve))
+}
+
+fn validate_regex(pattern: &str) -> Result<(), ConfigError> {
+    regex::RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        // The pinned engine's regexp2 supports look-around; Rust's regex does
+        // not. Reject those constructs with the pattern named rather than load
+        // a rule that can never match.
+        .build()
+        .map(|_| ())
+        .map_err(|e| {
+            ConfigError::Unsupported(format!("rule regex {pattern:?} is not supported: {e}"))
+        })
+}
+
+/// Port payloads accept `200`, `200-400`, `200/302`, comma lists and `*`.
+fn parse_port_ranges(payload: &str) -> Result<Vec<PortRange>, ConfigError> {
+    let text = payload.trim();
+    if text.is_empty() {
+        return Err(ConfigError::InvalidValue(
+            "port rule needs a port or range".to_string(),
+        ));
+    }
+    if text == "*" {
+        return Ok(Vec::new());
+    }
+    let normalized = text.replace(',', "/");
+    let mut ranges = Vec::new();
+    for part in normalized.split('/') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (start, end) = match part.split_once('-') {
+            Some((start, end)) => (
+                parse_port_number(start)?,
+                parse_port_number(end)?,
+            ),
+            None => {
+                let value = parse_port_number(part)?;
+                (value, value)
+            }
+        };
+        if start > end {
+            return Err(ConfigError::InvalidValue(format!(
+                "port range '{part}' starts after it ends"
+            )));
+        }
+        ranges.push((start, end));
+    }
+    if ranges.is_empty() {
+        return Err(ConfigError::InvalidValue(format!(
+            "port rule '{payload}' has no range"
+        )));
+    }
+    if ranges.len() > 28 {
+        return Err(ConfigError::InvalidValue(
+            "port rule has more than 28 ranges".to_string(),
+        ));
+    }
+    Ok(ranges)
+}
+
+fn parse_port_number(text: &str) -> Result<u16, ConfigError> {
+    text.trim().parse::<u16>().map_err(|_| {
+        ConfigError::InvalidValue(format!("port '{text}' is not an integer 0..=65535"))
+    })
+}
+
+fn parse_in_types(payload: &str) -> Result<Vec<InType>, ConfigError> {
+    let mut types = Vec::new();
+    for part in payload.split('/') {
+        let name = part.trim().to_ascii_uppercase();
+        match name.as_str() {
+            "HTTP" => types.push(InType::Http),
+            "HTTPS" => types.push(InType::Https),
+            "SOCKS5" => types.push(InType::Socks5),
+            "SOCKS" => {
+                types.push(InType::Socks5);
+            }
+            other => {
+                return Err(ConfigError::Unsupported(format!(
+                    "IN-TYPE '{other}' (this kernel serves HTTP CONNECT and SOCKS5 on the mixed listener; TUN/redir/tproxy and other listeners are T6/T25)"
+                )))
+            }
+        }
+    }
+    if types.is_empty() {
+        return Err(ConfigError::InvalidValue(
+            "IN-TYPE needs at least one listener type".to_string(),
+        ));
+    }
+    Ok(types)
+}
+
+/// Split `((DOMAIN,a.com),(DOMAIN,b.com))` into its top-level parenthesized
+/// groups, rejecting unbalanced input.
+fn parse_logic_groups(payload: &str) -> Result<Vec<String>, ConfigError> {
+    let payload = payload.trim();
+    if !payload.starts_with('(') || !payload.ends_with(')') {
+        return Err(ConfigError::InvalidValue(format!(
+            "logic rule payload must be parenthesized: '{payload}'"
+        )));
+    }
+    let mut groups = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in payload.char_indices() {
+        match ch {
+            '(' => {
+                depth += 1;
+                if depth == 2 {
+                    start = index + 1;
+                }
+            }
+            ')' => {
+                depth = depth.checked_sub(1).ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("logic rule '{payload}' has an extra ')'"))
+                })?;
+                if depth == 1 {
+                    groups.push(payload[start..index].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(ConfigError::InvalidValue(format!(
+            "logic rule '{payload}' is missing ')'"
+        )));
+    }
+    if groups.is_empty() {
+        return Err(ConfigError::InvalidValue(format!(
+            "logic rule '{payload}' contains no sub-rule"
+        )));
+    }
+    Ok(groups)
 }
 
 fn parse_action_with(raw: &str, proxies: &[crate::proxies::Proxy]) -> Result<Action, ConfigError> {
     match raw {
         "DIRECT" => Ok(Action::Direct),
         "REJECT" => Ok(Action::Reject),
+        // Mihomo closes a REJECT-DROP connection without an inbound failure
+        // reply; the engine maps this variant accordingly.
+        "REJECT-DROP" => Ok(Action::RejectDrop),
         "" => Err(ConfigError::InvalidValue(
             "missing outbound in rule".to_string(),
         )),
+        "PASS" | "PASS-RULE" => Err(ConfigError::Unsupported(format!(
+            "outbound '{raw}' (PASS markers are not implemented)"
+        ))),
         other => match proxies.iter().position(|p| p.name == other) {
             Some(index) => Ok(Action::Proxy(index)),
             // A named outbound that is not a configured proxy (groups, providers,
-            // REJECT-DROP, built-ins of other tasks) is outside this task's scope.
+            // built-ins of other tasks) is outside this task's scope.
             None => Err(ConfigError::Unsupported(format!(
-                "outbound '{other}' is not a configured proxy and proxy groups are not implemented (DIRECT and REJECT are built in)"
+                "outbound '{other}' is not a configured proxy (proxy groups are T23; DIRECT, REJECT, REJECT-DROP and inline proxies are available)"
             ))),
         },
     }
 }
 
-/// `tls: {custom-cert: [pem...]}` or `tls: {certificate: <dir>}`: extra root
-/// certificates for outbound TLS. Other `RawTLS` fields are not implemented.
+fn parse_rule_providers(
+    value: &serde_yaml::Value,
+    path: &str,
+) -> Result<Vec<RuleProviderConfig>, ConfigError> {
+    let mapping = value.as_mapping().ok_or_else(|| {
+        ConfigError::InvalidValue(format!("{path}: rule-providers must be a mapping"))
+    })?;
+    let mut providers = Vec::with_capacity(mapping.len());
+    for (key, entry) in mapping {
+        let name = key.as_str().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{path}: rule-providers keys must be strings"))
+        })?;
+        if name.is_empty() {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: rule-providers name must not be empty"
+            )));
+        }
+        let location = format!("{path}: rule-providers.{name}");
+        let fields = entry.as_mapping().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{location} must be a mapping"))
+        })?;
+        let behavior = match optional_string(fields, "behavior")?.as_deref() {
+            Some("domain") => RuleBehavior::Domain,
+            Some("ipcidr") => RuleBehavior::IpCidr,
+            Some("classical") => RuleBehavior::Classical,
+            Some(other) => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: behavior '{other}' (domain, ipcidr and classical are implemented)"
+                )))
+            }
+            None => {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{location}: behavior is required"
+                )))
+            }
+        };
+        let format = match optional_string(fields, "format")?.as_deref() {
+            None | Some("") | Some("yaml") => RuleFormat::Yaml,
+            Some("text") => RuleFormat::Text,
+            Some("mrs") => RuleFormat::Mrs,
+            Some(other) => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: format '{other}' (yaml, text and mrs are implemented)"
+                )))
+            }
+        };
+        let vehicle = parse_provider_vehicle(fields, &location)?;
+        let interval = optional_seconds(fields, "interval")?;
+        let payload = optional_string_list(fields, "payload")?;
+        let header = parse_provider_header(fields, &location)?;
+        let proxy = optional_string(fields, "proxy")?;
+        let size_limit = optional_positive_int(fields, "size-limit")?;
+        providers.push(RuleProviderConfig {
+            name: name.to_string(),
+            behavior,
+            format,
+            vehicle,
+            interval,
+            payload,
+            header,
+            proxy,
+            size_limit,
+        });
+    }
+    Ok(providers)
+}
+
+fn parse_proxy_providers(
+    value: &serde_yaml::Value,
+    path: &str,
+) -> Result<Vec<ProxyProviderConfig>, ConfigError> {
+    let mapping = value.as_mapping().ok_or_else(|| {
+        ConfigError::InvalidValue(format!("{path}: proxy-providers must be a mapping"))
+    })?;
+    let mut providers = Vec::with_capacity(mapping.len());
+    for (key, entry) in mapping {
+        let name = key.as_str().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{path}: proxy-providers keys must be strings"))
+        })?;
+        if name.is_empty() {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: proxy-providers name must not be empty"
+            )));
+        }
+        let location = format!("{path}: proxy-providers.{name}");
+        let fields = entry.as_mapping().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{location} must be a mapping"))
+        })?;
+        let vehicle = parse_provider_vehicle(fields, &location)?;
+        let interval = optional_seconds(fields, "interval")?;
+        let filter = optional_string(fields, "filter")?;
+        if let Some(pattern) = &filter {
+            validate_regex(pattern).map_err(|e| config_error_with_prefix(e, &location))?;
+        }
+        let exclude_filter = optional_string(fields, "exclude-filter")?;
+        if let Some(pattern) = &exclude_filter {
+            validate_regex(pattern).map_err(|e| config_error_with_prefix(e, &location))?;
+        }
+        let exclude_type = optional_string(fields, "exclude-type")?
+            .map(|types| {
+                types
+                    .split(',')
+                    .map(|value| value.trim().to_ascii_lowercase())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let health_check = parse_health_check(fields, &location)?;
+        let payload = match optional_value(fields, "payload")? {
+            None => Vec::new(),
+            Some(value) => value
+                .as_sequence()
+                .ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("{location}: payload must be a list"))
+                })?
+                .clone(),
+        };
+        providers.push(ProxyProviderConfig {
+            name: name.to_string(),
+            vehicle,
+            interval,
+            filter,
+            exclude_filter,
+            exclude_type,
+            proxy: optional_string(fields, "proxy")?,
+            dialer_proxy: optional_string(fields, "dialer-proxy")?,
+            size_limit: optional_positive_int(fields, "size-limit")?,
+            header: parse_provider_header(fields, &location)?,
+            health_check,
+            payload,
+        });
+    }
+    Ok(providers)
+}
+
+fn parse_health_check(
+    fields: &serde_yaml::Mapping,
+    location: &str,
+) -> Result<HealthCheckConfig, ConfigError> {
+    let mut config = HealthCheckConfig::default();
+    let Some(value) = optional_value(fields, "health-check")? else {
+        return Ok(config);
+    };
+    let mapping = value.as_mapping().ok_or_else(|| {
+        ConfigError::InvalidValue(format!("{location}: health-check must be a mapping"))
+    })?;
+    config.enable = optional_bool(mapping, "enable")?.unwrap_or(false);
+    config.url = optional_string(mapping, "url")?;
+    config.interval = optional_seconds(mapping, "interval")?
+        .map(|duration| duration.as_secs())
+        .unwrap_or(300);
+    config.timeout = optional_seconds(mapping, "timeout")?
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    config.lazy = optional_bool(mapping, "lazy")?.unwrap_or(true);
+    config.expected_status = match optional_value(mapping, "expected-status")? {
+        None | Some(serde_yaml::Value::Null) => String::new(),
+        Some(serde_yaml::Value::String(value)) => value.clone(),
+        // The pinned schema is a string but the decoder is weakly typed;
+        // `expected-status: 204` is the common spelling.
+        Some(serde_yaml::Value::Number(value)) => value.to_string(),
+        Some(other) => {
+            return Err(ConfigError::InvalidValue(format!(
+                "{location}: expected-status must be a string or number, found {}",
+                kind_of(other)
+            )))
+        }
+    };
+    if config.enable && config.url.as_deref().unwrap_or("").is_empty() {
+        return Err(ConfigError::InvalidValue(format!(
+            "{location}: health-check.enable needs a url"
+        )));
+    }
+    // Validate the expected-status syntax even though T23 owns probing, so a
+    // typo fails here instead of being discovered by a later task.
+    if !config.expected_status.trim().is_empty() {
+        parse_port_ranges(&config.expected_status)
+            .map_err(|e| config_error_with_prefix(e, location))?;
+    }
+    Ok(config)
+}
+
+fn parse_provider_vehicle(
+    fields: &serde_yaml::Mapping,
+    location: &str,
+) -> Result<ProviderVehicle, ConfigError> {
+    let kind = optional_string(fields, "type")?.unwrap_or_default();
+    match kind.as_str() {
+        "file" => {
+            let path = optional_string(fields, "path")?.ok_or_else(|| {
+                ConfigError::InvalidValue(format!("{location}: file provider needs a path"))
+            })?;
+            if path.is_empty() {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{location}: file provider path must not be empty"
+                )));
+            }
+            Ok(ProviderVehicle::File {
+                path: std::path::PathBuf::from(path),
+            })
+        }
+        "http" => {
+            let url = optional_string(fields, "url")?.ok_or_else(|| {
+                ConfigError::InvalidValue(format!("{location}: http provider needs a url"))
+            })?;
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{location}: provider url '{url}' must be http(s)"
+                )));
+            }
+            let path = optional_string(fields, "path")?.map(std::path::PathBuf::from);
+            Ok(ProviderVehicle::Http { url, path })
+        }
+        "inline" => Ok(ProviderVehicle::Inline),
+        other => Err(ConfigError::Unsupported(format!(
+            "{location}: provider type '{other}' (file, http and inline are implemented)"
+        ))),
+    }
+}
+
+fn parse_provider_header(
+    fields: &serde_yaml::Mapping,
+    location: &str,
+) -> Result<Vec<(String, String)>, ConfigError> {
+    let Some(value) = optional_value(fields, "header")? else {
+        return Ok(Vec::new());
+    };
+    let mapping = value
+        .as_mapping()
+        .ok_or_else(|| ConfigError::InvalidValue(format!("{location}: header must be a mapping")))?;
+    let mut header = Vec::new();
+    for (name, value) in mapping {
+        let name = name.as_str().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{location}: header names must be strings"))
+        })?;
+        let values: Vec<String> = match value {
+            serde_yaml::Value::String(value) => vec![value.clone()],
+            serde_yaml::Value::Sequence(items) => items
+                .iter()
+                .map(|item| {
+                    item.as_str().map(str::to_string).ok_or_else(|| {
+                        ConfigError::InvalidValue(format!(
+                            "{location}: header '{name}' values must be strings"
+                        ))
+                    })
+                })
+                .collect::<Result<_, _>>()?,
+            _ => {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{location}: header '{name}' must be a string or a list of strings"
+                )))
+            }
+        };
+        for value in values {
+            header.push((name.to_string(), value));
+        }
+    }
+    Ok(header)
+}
+
+fn optional_value<'a>(
+    fields: &'a serde_yaml::Mapping,
+    key: &str,
+) -> Result<Option<&'a serde_yaml::Value>, ConfigError> {
+    Ok(fields.get(&serde_yaml::Value::String(key.to_string())))
+}
+
+fn optional_string(fields: &serde_yaml::Mapping, key: &str) -> Result<Option<String>, ConfigError> {
+    match optional_value(fields, key)? {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(serde_yaml::Value::String(value)) => Ok(Some(value.clone())),
+        Some(other) => Err(ConfigError::InvalidValue(format!(
+            "'{key}' must be a string, found {}",
+            kind_of(other)
+        ))),
+    }
+}
+
+fn optional_bool(fields: &serde_yaml::Mapping, key: &str) -> Result<Option<bool>, ConfigError> {
+    match optional_value(fields, key)? {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(serde_yaml::Value::Bool(value)) => Ok(Some(*value)),
+        Some(other) => Err(ConfigError::InvalidValue(format!(
+            "'{key}' must be a boolean, found {}",
+            kind_of(other)
+        ))),
+    }
+}
+
+fn optional_positive_int(
+    fields: &serde_yaml::Mapping,
+    key: &str,
+) -> Result<Option<u64>, ConfigError> {
+    match optional_value(fields, key)? {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(value) => {
+            let parsed = value.as_u64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| text.trim().parse::<u64>().ok())
+            });
+            parsed.map(Some).ok_or_else(|| {
+                ConfigError::InvalidValue(format!("'{key}' must be a non-negative integer"))
+            })
+        }
+    }
+}
+
+fn optional_seconds(
+    fields: &serde_yaml::Mapping,
+    key: &str,
+) -> Result<Option<Duration>, ConfigError> {
+    optional_positive_int(fields, key).map(|value| value.map(Duration::from_secs))
+}
+
+fn optional_string_list(
+    fields: &serde_yaml::Mapping,
+    key: &str,
+) -> Result<Vec<String>, ConfigError> {
+    match optional_value(fields, key)? {
+        None | Some(serde_yaml::Value::Null) => Ok(Vec::new()),
+        Some(serde_yaml::Value::Sequence(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str().map(str::to_string).ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("'{key}' entries must be strings"))
+                })
+            })
+            .collect(),
+        Some(other) => Err(ConfigError::InvalidValue(format!(
+            "'{key}' must be a list, found {}",
+            kind_of(other)
+        ))),
+    }
+}
 fn parse_tls(
     value: &serde_yaml::Value,
     path: &str,
@@ -702,8 +2117,26 @@ pub mod ipnet_like {
     }
 
     impl IpNet {
+        pub fn new(addr: IpAddr, prefix: u8) -> Result<Self, String> {
+            let max = if addr.is_ipv4() { 32 } else { 128 };
+            if prefix > max {
+                return Err(format!("prefix {prefix} exceeds {max}"));
+            }
+            Ok(IpNet { addr, prefix })
+        }
+
         pub fn is_v4(&self) -> bool {
             self.addr.is_ipv4()
+        }
+
+        /// Bit length of the network part (0..=32/128).
+        pub fn prefix(&self) -> u8 {
+            self.prefix
+        }
+
+        /// Address with all host bits cleared, as stored in the file.
+        pub fn network(&self) -> IpAddr {
+            self.addr
         }
 
         pub fn contains(&self, ip: IpAddr) -> bool {
@@ -761,207 +2194,9 @@ pub mod ipnet_like {
     }
 }
 
-/// Subset of Mihomo's geosite database understood by the slice:
-/// `{"key": name, "tags": [{"name": tag, "rules": [{"domain": ..., "sub_domain": ..., "domain_keyword": ...}]}]}`.
-#[derive(Debug, Clone, Default)]
-pub struct GeoSiteDatabase {
-    entries: BTreeMap<(String, String), GeoSiteEntry>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct GeoSiteEntry {
-    domains: Vec<String>,
-    suffixes: Vec<String>,
-    keywords: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct RawGeoSite {
-    key: String,
-    tags: Vec<RawGeoSiteTag>,
-}
-
-#[derive(Deserialize)]
-struct RawGeoSiteTag {
-    name: String,
-    #[serde(default)]
-    rules: Vec<RawGeoSiteRule>,
-}
-
-#[derive(Deserialize)]
-struct RawGeoSiteRule {
-    #[serde(default)]
-    domain: Vec<String>,
-    #[serde(default)]
-    sub_domain: Vec<String>,
-    #[serde(default)]
-    domain_keyword: Vec<String>,
-    /// Any other geosite rule kind (regex, domain_keyword variants, ...) is rejected.
-    #[serde(flatten)]
-    unknown: BTreeMap<String, serde_yaml::Value>,
-}
-
-impl GeoSiteDatabase {
-    /// Load `<key>`, `<key>.yaml`, `<key>.dat` or `<key>.json` from `dir` for each requested key.
-    /// `.dat`/`.json` need the JSON text form; compiled MRS/protobuf databases are rejected (T5).
-    /// A requested database that cannot be found fails loudly.
-    pub fn load_from_dir(
-        dir: &std::path::Path,
-        keys: &BTreeSet<String>,
-    ) -> Result<Self, ConfigError> {
-        let mut db = GeoSiteDatabase::default();
-        for key in keys {
-            let mut candidates = vec![
-                dir.join(key),
-                dir.join(format!("{key}.yaml")),
-                dir.join(format!("{key}.dat")),
-            ];
-            let json_candidate = dir.join(format!("{key}.json"));
-            candidates.push(json_candidate);
-            let path = candidates.iter().find(|p| p.is_file()).ok_or_else(|| {
-                ConfigError::Unsupported(format!("GEOSITE database '{key}' not found in {} (looked for {key}, {key}.yaml, {key}.dat, {key}.json)", dir.display()))
-            })?;
-            let text = std::fs::read_to_string(path).map_err(|e| {
-                ConfigError::Unsupported(format!(
-                    "cannot read geosite database {}: {e}",
-                    path.display()
-                ))
-            })?;
-            db.merge_yaml(&text)?;
-            if !db.entries.keys().any(|(k, _)| k == key) {
-                return Err(ConfigError::Unsupported(format!(
-                    "geosite database {} does not contain key '{key}'",
-                    path.display()
-                )));
-            }
-        }
-        Ok(db)
-    }
-
-    /// Merge a geosite YAML document. Incompatible geosite entries fail loudly.
-    pub fn merge_yaml(&mut self, yaml: &str) -> Result<(), ConfigError> {
-        // Mihomo's geosite text form holds several YAML documents; also accept one list or one mapping.
-        let documents = serde_yaml::Deserializer::from_str(yaml)
-            .map(serde_yaml::Value::deserialize)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                ConfigError::Unsupported(format!(
-                    "geosite database not readable by this slice: {e}"
-                ))
-            })?;
-        let mut raw = Vec::new();
-        for document in documents {
-            match document {
-                serde_yaml::Value::Sequence(items) => {
-                    for item in items {
-                        raw.push(serde_yaml::from_value::<RawGeoSite>(item).map_err(|e| {
-                            ConfigError::Unsupported(format!(
-                                "geosite database not readable by this slice: {e}"
-                            ))
-                        })?);
-                    }
-                }
-                serde_yaml::Value::Null => {}
-                other => {
-                    let site: RawGeoSite = serde_yaml::from_value(other).map_err(|e| {
-                        ConfigError::Unsupported(format!(
-                            "geosite database not readable by this slice: {e}"
-                        ))
-                    })?;
-                    if site.key.is_empty()
-                        || site
-                            .key
-                            .chars()
-                            .any(|c| c.is_whitespace() || c == '/' || c == '.' || c == ',')
-                    {
-                        return Err(ConfigError::Unsupported(format!("geosite key '{}' (only plain names selectable by GEOSITE,<key> are implemented)", site.key)));
-                    }
-                    raw.push(site)
-                }
-            }
-        }
-        for site in raw {
-            for tag in site.tags {
-                let value = self
-                    .entries
-                    .entry((site.key.clone(), tag.name.clone()))
-                    .or_default();
-                for rule in tag.rules {
-                    let unknown = rule.unknown;
-                    if !unknown.is_empty() {
-                        return Err(ConfigError::Unsupported(format!("geosite {}/{} rule fields {unknown:?} (only domain, sub_domain and domain_keyword are implemented)", site.key, tag.name)));
-                    }
-                    if rule.domain.is_empty()
-                        && rule.sub_domain.is_empty()
-                        && rule.domain_keyword.is_empty()
-                    {
-                        return Err(ConfigError::Unsupported(format!(
-                            "geosite {}/{} uses a regex/other rule type",
-                            site.key, tag.name
-                        )));
-                    }
-                    if let Some(bad) = rule.sub_domain.iter().find(|s| {
-                        s.matches('*').count() > 1
-                            || (s.contains('*') && !s.starts_with("*."))
-                            || (s.starts_with("*.") && s[2..].contains('*'))
-                    }) {
-                        return Err(ConfigError::Unsupported(format!("geosite {}/{} sub_domain pattern '{bad}' (only literal and a single leading '*.' wildcard are implemented)", site.key, tag.name)));
-                    }
-                    value
-                        .domains
-                        .extend(rule.domain.into_iter().map(|d| d.to_ascii_lowercase()));
-                    value.suffixes.extend(
-                        rule.sub_domain
-                            .into_iter()
-                            .map(|d| d.trim_start_matches("*.").to_ascii_lowercase()),
-                    );
-                    value.keywords.extend(
-                        rule.domain_keyword
-                            .into_iter()
-                            .map(|d| d.to_ascii_lowercase()),
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// `GEOSITE,<key>` matches when the destination matches any tag of `key`.
-    pub fn matches_key(&self, key: &str, host: &str) -> bool {
-        self.entries
-            .iter()
-            .filter(|((k, _), _)| k == key)
-            .any(|(_, entry)| entry.matches(host))
-    }
-
-    /// `GEOSITE,<key>/<tag>` first, then all tags of `<key>`; `false` when unknown.
-    pub fn matches(&self, value: &str, host: &str) -> bool {
-        match value.split_once('/') {
-            Some((key, tag)) => self.matches_tag(key, tag, host) || self.matches_key(key, host),
-            None => self.matches_key(value, host),
-        }
-    }
-
-    /// Exact `GEOSITE,<key>/<tag>` lookup, as Mihomo resolves it first.
-    pub fn matches_tag(&self, key: &str, tag: &str, host: &str) -> bool {
-        self.entries
-            .get(&(key.to_string(), tag.to_string()))
-            .is_some_and(|e| e.matches(host))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
-impl GeoSiteEntry {
-    fn matches(&self, host: &str) -> bool {
-        self.domains.iter().any(|d| d == host)
-            // geosite `sub_domain` entries match any subdomain: equality is a match too.
-            || self.suffixes.iter().any(|s| *s == "*" || host.ends_with(&format!(".{s}")) || host == s.trim_start_matches("*."))
-            || self.keywords.iter().any(|k| host.contains(k))
-    }
-}
+/// The geosite database now lives in [`crate::geodata`]; the re-export keeps
+/// existing hosts and tests that import it from `config`.
+pub use crate::geodata::GeoSiteDatabase;
 
 /// Duration helper kept here so tests share one place with defaults.
 pub fn default_handshake_timeout() -> Duration {

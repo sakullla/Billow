@@ -433,8 +433,11 @@
       "source": "config/config.go:438",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "false accepted; true is rejected by name because no geodata download scheduler is implemented (provider updates are available through the API)",
+        "evidence": [
+          "tests/config.rs"
+        ]
       }
     },
     {
@@ -444,8 +447,11 @@
       "source": "config/config.go:439",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "parsed; only has an effect with geo-auto-update, which is rejected when true",
+        "evidence": [
+          "tests/config.rs"
+        ]
       }
     },
     {
@@ -455,8 +461,12 @@
       "source": "config/config.go:440",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "reason": "true reads GeoIP.dat, false reads Country.mmdb; GeoSite.dat is read in both modes",
+        "evidence": [
+          "tests/resources.rs",
+          "evidence/t24-differential.json"
+        ]
       }
     },
     {
@@ -466,8 +476,11 @@
       "source": "config/config.go:441",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "reason": "standard/memconservative/memc accepted; both use the same read-only decoders and matching semantics",
+        "evidence": [
+          "tests/config.rs"
+        ]
       }
     },
     {
@@ -477,8 +490,12 @@
       "source": "config/config.go:442",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "reason": "succinct/mph/hybrid accepted; matching semantics are shared",
+        "evidence": [
+          "tests/config.rs",
+          "tests/resources.rs"
+        ]
       }
     },
     {
@@ -576,8 +593,12 @@
       "source": "config/config.go:452",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "file/http/inline vehicles, filter/exclude-filter/exclude-type/dialer-proxy and health-check fields are loaded; latency probing and group use/providers are T23",
+        "evidence": [
+          "tests/config.rs",
+          "tests/resources.rs"
+        ]
       }
     },
     {
@@ -587,8 +608,12 @@
       "source": "config/config.go:453",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "file/http/inline vehicles; yaml/text/mrs; domain/ipcidr/classical; explicit update swaps snapshots and keeps the old generation on failure. The declared interval is parsed but not scheduled; hosts/T25 call the update API.",
+        "evidence": [
+          "tests/resources.rs",
+          "evidence/t24-differential.json"
+        ]
       }
     },
     {
@@ -639,8 +664,12 @@
       "source": "config/config.go:457",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "reason": "used by SUB-RULE; circular references rejected at load",
+        "evidence": [
+          "tests/config.rs",
+          "tests/resources.rs"
+        ]
       }
     },
     {
@@ -2989,18 +3018,6 @@
           "local-public-key",
           "disable-p2p"
         ],
-        "evidence": [
-          "src/outbound/easytier.rs::tests::digest_matches_the_locked_easytier_vectors",
-          "src/outbound/easytier.rs::tests::frame_uses_little_endian_peer_ids_and_lengths",
-          "src/outbound/easytier.rs::tests::handshake_roundtrips_and_ignores_unknown_fields",
-          "src/outbound/easytier.rs::tests::secure_datagrams_decrypt_in_the_peer_direction",
-          "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
-          "tests/mesh_peers.rs::easytier_pinned_core_cleartext_handshake",
-          "tests/mesh_peers.rs::easytier_pinned_core_secure_datagram",
-          "tool/kernel-compat/evidence/t20-easytier.md"
-        ],
-        "notes": "Secure-datagram/Noise XX is now implemented and verified; OSPF/route host identity (hostname/ipv4/dhcp), KCP/QUIC, private-mode, exit-node/DNS, mapped-listeners and proxied networks are rejected by name. `enable-encryption: true` is accepted only with `secure-mode: true` (the source encrypts only through the Noise/secure-datagram session); the pair is implemented, `enable-encryption` alone is rejected by name. Device/TUN is T6/T7. Public translation revision 45a6b6f1769f95590a396f4962e58d654b6e0380; pinned wasm reports 5f1eaa7c9f9d3e89e9b75a6d87531a436fae40c4 (not public).",
-        "license": "LGPL-3.0-or-later translation of the locked EasyTier source; the workspace is distributed under GPL-3.0-only. See native-kernel/THIRD_PARTY_NOTICES.md and native-kernel/third_party/EasyTier-LGPL-3.0.txt.",
         "notImplemented": [
           "hostname",
           "ipv4",
@@ -3023,7 +3040,19 @@
           "dialer-proxy",
           "enable-encryption: true without secure-mode",
           "local-private-key: without secure-mode"
-        ]
+        ],
+        "evidence": [
+          "src/outbound/easytier.rs::tests::digest_matches_the_locked_easytier_vectors",
+          "src/outbound/easytier.rs::tests::frame_uses_little_endian_peer_ids_and_lengths",
+          "src/outbound/easytier.rs::tests::handshake_roundtrips_and_ignores_unknown_fields",
+          "src/outbound/easytier.rs::tests::secure_datagrams_decrypt_in_the_peer_direction",
+          "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
+          "tests/mesh_peers.rs::easytier_pinned_core_cleartext_handshake",
+          "tests/mesh_peers.rs::easytier_pinned_core_secure_datagram",
+          "tool/kernel-compat/evidence/t20-easytier.md"
+        ],
+        "notes": "Secure-datagram/Noise XX is now implemented and verified; OSPF/route host identity (hostname/ipv4/dhcp), KCP/QUIC, private-mode, exit-node/DNS, mapped-listeners and proxied networks are rejected by name. `enable-encryption: true` is accepted only with `secure-mode: true` (the source encrypts only through the Noise/secure-datagram session); the pair is implemented, `enable-encryption` alone is rejected by name. Device/TUN is T6/T7. Public translation revision 45a6b6f1769f95590a396f4962e58d654b6e0380; pinned wasm reports 5f1eaa7c9f9d3e89e9b75a6d87531a436fae40c4 (not public).",
+        "license": "LGPL-3.0-or-later translation of the locked EasyTier source; the workspace is distributed under GPL-3.0-only. See native-kernel/THIRD_PARTY_NOTICES.md and native-kernel/third_party/EasyTier-LGPL-3.0.txt."
       }
     }
   ],
@@ -3245,7 +3274,7 @@
       "source": "adapter/outboundgroup/parser.go:188",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "proxy groups are T5"
+        "reason": "proxy groups/selection are T23"
       }
     },
     {
@@ -3254,7 +3283,7 @@
       "source": "adapter/outboundgroup/parser.go:195",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "proxy groups are T5"
+        "reason": "proxy groups/selection are T23"
       }
     },
     {
@@ -3263,7 +3292,7 @@
       "source": "adapter/outboundgroup/parser.go:202",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "proxy groups are T5"
+        "reason": "proxy groups/selection are T23"
       }
     },
     {
@@ -3272,7 +3301,7 @@
       "source": "adapter/outboundgroup/parser.go:209",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "proxy groups are T5"
+        "reason": "proxy groups/selection are T23"
       }
     },
     {
@@ -3281,7 +3310,7 @@
       "source": "adapter/outboundgroup/parser.go:216",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "proxy groups are T5"
+        "reason": "proxy groups/selection are T23"
       }
     }
   ],
@@ -3292,7 +3321,8 @@
       "rustMapping": {
         "status": "implemented",
         "evidence": [
-          "tests/config.rs"
+          "tests/config.rs",
+          "tests/resources.rs"
         ]
       }
     },
@@ -3302,7 +3332,8 @@
       "rustMapping": {
         "status": "implemented",
         "evidence": [
-          "tests/config.rs"
+          "tests/config.rs",
+          "tests/resources.rs"
         ]
       }
     },
@@ -3310,34 +3341,43 @@
       "type": "DOMAIN-KEYWORD",
       "source": "rules/parser.go:22",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs",
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "DOMAIN-REGEX",
       "source": "rules/parser.go:24",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs",
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "DOMAIN-WILDCARD",
       "source": "rules/parser.go:26",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs",
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "GEOSITE",
       "source": "rules/parser.go:28",
       "rustMapping": {
-        "status": "partial",
-        "reason": "text database only; compiled MRS/protobuf is T5",
+        "status": "implemented",
         "evidence": [
-          "tests/config.rs"
+          "tests/resources.rs::geosite_and_geoip_dat_rules_match_the_pinned_forms",
+          "tests/sessions.rs"
         ]
       }
     },
@@ -3345,32 +3385,41 @@
       "type": "GEOIP",
       "source": "rules/parser.go:30",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs::geosite_and_geoip_dat_rules_match_the_pinned_forms",
+          "tests/resources.rs::real_mmdb_reads_the_bundled_geodata"
+        ]
       }
     },
     {
       "type": "SRC-GEOIP",
       "source": "rules/parser.go:33",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs"
+        ]
       }
     },
     {
       "type": "IP-ASN",
       "source": "rules/parser.go:35",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs::real_mmdb_reads_the_bundled_geodata"
+        ]
       }
     },
     {
       "type": "SRC-IP-ASN",
       "source": "rules/parser.go:38",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs"
+        ]
       }
     },
     {
@@ -3380,7 +3429,7 @@
         "status": "implemented",
         "evidence": [
           "tests/config.rs",
-          "tests/protocols.rs::socks5_udp_associate_forwards_datagrams_and_honours_reject"
+          "tests/resources.rs"
         ]
       }
     },
@@ -3390,7 +3439,8 @@
       "rustMapping": {
         "status": "implemented",
         "evidence": [
-          "tests/config.rs"
+          "tests/config.rs",
+          "tests/resources.rs"
         ]
       }
     },
@@ -3398,48 +3448,60 @@
       "type": "SRC-IP-CIDR",
       "source": "rules/parser.go:43",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "IP-SUFFIX",
       "source": "rules/parser.go:45",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "SRC-IP-SUFFIX",
       "source": "rules/parser.go:48",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/config.rs"
+        ]
       }
     },
     {
       "type": "SRC-PORT",
       "source": "rules/parser.go:50",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "DST-PORT",
       "source": "rules/parser.go:52",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "IN-PORT",
       "source": "rules/parser.go:54",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
@@ -3447,39 +3509,53 @@
       "source": "rules/parser.go:56",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "DSCP metadata is not set by the mixed inbound; rejected by name"
       }
     },
     {
       "type": "PROCESS-NAME",
       "source": "rules/parser.go:58",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "process metadata is matched when the host supplies it; the mixed inbound has no process lookup (find-process-mode is T6/T22 scope)",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "PROCESS-PATH",
       "source": "rules/parser.go:60",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "process metadata is matched when the host supplies it; the mixed inbound has no process lookup",
+        "evidence": [
+          "tests/config.rs",
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "PROCESS-NAME-REGEX",
       "source": "rules/parser.go:62",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "regex form implemented with the Rust regex crate (look-around/backreferences rejected at load); process lookup is host-supplied",
+        "evidence": [
+          "tests/config.rs",
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "PROCESS-PATH-REGEX",
       "source": "rules/parser.go:64",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "regex form implemented with the Rust regex crate (look-around/backreferences rejected at load); process lookup is host-supplied",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
@@ -3487,7 +3563,7 @@
       "source": "rules/parser.go:66",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "wildcard process matching is rejected by name"
       }
     },
     {
@@ -3495,15 +3571,17 @@
       "source": "rules/parser.go:68",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "wildcard process matching is rejected by name"
       }
     },
     {
       "type": "NETWORK",
       "source": "rules/parser.go:70",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
@@ -3511,15 +3589,17 @@
       "source": "rules/parser.go:72",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "UID needs a platform process/uid lookup; rejected by name"
       }
     },
     {
       "type": "IN-TYPE",
       "source": "rules/parser.go:74",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
@@ -3527,7 +3607,7 @@
       "source": "rules/parser.go:76",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "per-user inbound metadata is not exposed; rejected by name"
       }
     },
     {
@@ -3535,7 +3615,7 @@
       "source": "rules/parser.go:78",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "named listeners are T6/T25; rejected by name"
       }
     },
     {
@@ -3543,47 +3623,58 @@
       "source": "rules/parser.go:80",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "rematch rules are not implemented; rejected by name"
       }
     },
     {
       "type": "SUB-RULE",
       "source": "rules/parser.go:82",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs::sub_rule_lists_choose_the_outbound"
+        ]
       }
     },
     {
       "type": "AND",
       "source": "rules/parser.go:84",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "OR",
       "source": "rules/parser.go:86",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "NOT",
       "source": "rules/parser.go:88",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs"
+        ]
       }
     },
     {
       "type": "RULE-SET",
       "source": "rules/parser.go:90",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "evidence": [
+          "tests/resources.rs::rule_providers_cover_every_vehicle_and_format",
+          "tests/resources.rs::http_provider_update_replaces_and_failure_keeps_the_old_generation"
+        ]
       }
     },
     {
@@ -4160,22 +4251,27 @@
     {
       "kind": "rust-scope",
       "name": "*",
-      "reason": "Every proxy type outside the implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it (T9 non-QUIC, T10 QUIC/device, T5 built-ins)."
+      "reason": "Every proxy type outside the implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it."
     },
     {
       "kind": "rust-scope",
       "name": "*",
-      "reason": "Every other listener type (tun, redir, tproxy, mixed with TLS, ...) is rejected through the top-level keys that would enable it."
+      "reason": "Rule types UID/DSCP/IN-USER/IN-NAME/REMATCH-NAME/PROCESS-*-WILDCARD are rejected by name. PASS/PASS-RULE markers and proxy-group targets are T23."
     },
     {
       "kind": "rust-scope",
       "name": "*",
-      "reason": "Every other rule type is rejected with the rule text; the capability index keeps the full upstream list so T5 can record it."
+      "reason": "GEOIP/IP-ASN/IP-CIDR rules match a destination only when it is already an IP; DNS/hosts (T22) provide name resolution. A warning records this at load."
     },
     {
       "kind": "rust-scope",
       "name": "*",
-      "reason": "T12 closed the SSR plugin layers (every pinned protocol/obfs plus the UDP association) and the gost-relay UDP association and smux session; the remaining SSR/gost-relay options are the transport knobs Mihomo accepts and ignores (ip-version/tfo/mptcp/interface-name/routing-mark) and gost-relay's certificate pinning knobs."
+      "reason": "geodata-mode false uses Country.mmdb; geodata-mode true uses GeoIP.dat; GEOSITE always uses GeoSite.dat. MRS rule-provider decoding shares the Tauri mrs.rs algorithm (ported, not shared code)."
+    },
+    {
+      "kind": "rust-scope",
+      "name": "*",
+      "reason": "Proxy-provider health-check fields are parsed and exposed but latency probing is T23; provider updates are exposed through Kernel::update_*_provider for T25."
     }
   ],
   "rust": {
@@ -4199,9 +4295,9 @@
     "note": "rustMapping on each entry comes from that file; partial entries name the options they reject, unimplemented entries are rejected at load time and are never compatible."
   },
   "coverage": {
-    "mapped": 24,
-    "partial": 20,
-    "unimplemented": 111,
+    "mapped": 49,
+    "partial": 27,
+    "unimplemented": 79,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }
