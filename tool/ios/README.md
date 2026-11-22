@@ -9,7 +9,7 @@ in `project.yml`.
 | --- | --- | --- | --- |
 | `billow_iOS` | app | `app.billow.client` | Tauri `Sources/`, `network-extension/Host`, `network-extension/Shared` |
 | `BillowMihomo` | packet-tunnel extension | `app.billow.client.mihomo` | `network-extension/Shared`, `network-extension/MihomoExtension`, `libmihomo_ios.a` |
-| `BillowRust` | packet-tunnel extension (Rust kernel via libapp.a, T7 completes the kernel) | `app.billow.client.rust` | `network-extension/Shared`, `network-extension/RustExtension` |
+| `BillowRust` | packet-tunnel extension (Rust kernel via libapp.a, T7) | `app.billow.client.rust` | `network-extension/Shared`, `network-extension/RustExtension` + `Externals/arm64/<platform>/rust/libapp.a` |
 
 Both extensions are embedded and signed with the host and carry
 `com.apple.developer.networking.networkextension = packet-tunnel-provider`
@@ -21,10 +21,21 @@ extension links `libapp.a` or runs Tauri's "Build Rust Code" script.
 ```sh
 node tool/ios/build-mihomo-ios.mjs --platform device      # libmihomo_ios.a (Externals/, git-ignored)
 node tool/ios/build-mihomo-ios.mjs --platform simulator
+node tool/ios/build-rust-kernel.mjs --platform device     # libapp.a = billow-kernel --features ios-vpn (offline)
+node tool/ios/build-rust-kernel.mjs --platform simulator
 tool/ios/build.sh --platform device                 # archives + xcodegen + both extensions (CODE_SIGNING_ALLOWED=NO)
 tool/ios/build.sh --platform simulator
-tool/ios/verify-mihomo-archive.sh simulator        # link + run a probe against the archive
+tool/ios/verify-mihomo-archive.sh simulator        # link + run a probe against the Mihomo archive
+tool/ios/verify-rust-kernel.sh                     # link + run the Rust kernel smoke in the booted simulator
+npm run ios:rust-kernel && npm run ios:verify-rust # the same two steps via package.json
 ```
+
+`tool/ios/build-rust-kernel.mjs` builds the `billow-kernel` staticlib with
+`--features ios-vpn`, copies it to
+`src-tauri/gen/apple/Externals/arm64/<platform>/rust/libapp.a` and fails if
+the archive does not export `billow_ios_vpn_start/_drain`. It uses the
+workspace `Cargo.lock` (no downloads) and asks `cargo metadata` for the target
+directory, so a shared `CARGO_TARGET_DIR` works.
 
 `tool/ios/build-mihomo-ios.mjs` verifies the pinned tarball
 (`tool/ios/mihomo-ios.json`: MetaCubeX/mihomo v1.19.34,
@@ -130,26 +141,51 @@ BillowRustEngine.swift
    extension builds and starts, then fails with code 4 and writes that status
    to the App Group (`status/rust.json`), so the host engine selector can show
    and test both engines.
-2. The kernel must implement the C ABI in
+2. The kernel implements the C ABI in
    `network-extension/RustExtension/include/billow_ios_vpn.h`
-   (mirror of `src-tauri/src/ios_vpn.rs`):
+   (`native-kernel/crates/billow-kernel/src/ios_vpn.rs`, `--features ios-vpn`):
    `billow_ios_vpn_start(port, ctx, home, &err)`,
    `billow_ios_vpn_drain(packets, maxCount, &count)`,
    `billow_ios_vpn_write(packet, length)`, `billow_ios_vpn_stop()`,
    `billow_ios_vpn_version(buf, size)`, `billow_ios_vpn_selected()`,
-   `billow_ios_vpn_free_error(err)`.
+   `billow_ios_vpn_set_home(home)`, `billow_ios_vpn_reload(&err)`,
+   `billow_ios_vpn_stats(buf, size)`, `billow_ios_vpn_free_error(err)`.
    `billow_ios_vpn_selected()` returns 1 when the app state selects the Rust
    kernel, 0 for Mihomo and -1 before any state exists (BillowRust reports
-   code 10 `hostNotReady` then).
+   code 10 `hostNotReady` then). The state is the App Group file
+   `<AppGroup>/engine.json` (`{"selected":"rust"}`), written by
+   `BillowVPNManager.setSelected`; `billow_ios_vpn_set_home` records the
+   directory because `selected` has no path argument.
 3. `home` is `<AppGroup>/versions/<active>/` with the validated `config.yaml`
    and assets; Rust parses it there and keeps all state under that directory.
-4. Egress: the main route drains Rust output with `drain` (one record =
-   `[4-byte big-endian length][IP packet]`); the kernel wakeup route may call
-   the extension's write callback passed in `port->write` instead.
-5. Error/status parity: Rust must soft-link the extension's Swift glue so both
-   engines report `BillowVPNError.domain` codes and the same status JSON keys
-   listed in `Shared/BillowVPNError.swift` (T7 owns that binding; until then a
-   Rust start failure is reported as code 2 with the Rust message).
+4. Data path: `packetFlow.readPackets` -> `BillowRustEngine.rustIngest` ->
+   `billow_rust_kernel_write` (the documented `billow_ios_vpn_write`, one
+   record = `[4-byte big-endian length][IP packet]`). Egress goes through the
+   `port->write` callback into `packetFlow.writePackets`; `drain` exists for
+   polling hosts and tests (its buffer must hold `maxCount * (4 + 65535)`).
+   Inside `libapp.a` the userspace IP stack terminates the device's TCP
+   (`tunnel/tcp_server.rs`) and UDP (`tunnel/udp.rs`), routes every flow
+   through the engine (rules, groups, `dialer-proxy`, DIRECT, DNS `:53`
+   hijack) and emits reply packets. IPv4 fragments, IPv6 extension headers,
+   ICMP and unhandled protocols are refused and counted by name.
+5. Error/status parity: a Rust start failure is mapped by
+   `BillowRustEngine` to `BillowVPNError.domain` code 2 with the Rust message
+   (code 4 unlinked, code 10 `hostNotReady`); the status reply now also carries
+   a `stats` object (`billow_ios_vpn_stats`: counters, high-water marks,
+   `peakRssBytes`) and `reload` re-reads `config.yaml` (see
+   `docs/testing/2026-11-23-ios-rust-extension-memory.md` for the R3/R4
+   sampling entry).
+6. `tool/ios/verify-rust-kernel.sh` compiles
+   `tool/ios/rust-kernel-smoke.c` against the simulator archive and runs it in
+   the booted simulator: version, stats, the missing-config error, start with a
+   real `config.yaml`, one UDP datagram through DIRECT to a host echo server
+   and back through `port->write`, reload, stop and restart. It is a code/ABI
+   smoke, not a device memory measurement.
+7. Not wired yet: the host-side Tauri commands (`ios_vpn_prepare/select/
+   connect/...`) and the resource staging for `home/config.yaml`. The staged
+   configuration must keep a listener (`mixed-port`/`port`/`socks-port`)
+   because the engine binds its mixed listener, and geo assets must sit next to
+   `config.yaml` (the tunnel passes `home` as the geodata directory).
 
 For the reverse path (Rust packets into mihomo for fair switching), the
 Mihomo archive exports `GoMihomoLoopbackStart("127.0.0.1:<port>", fraction)`:

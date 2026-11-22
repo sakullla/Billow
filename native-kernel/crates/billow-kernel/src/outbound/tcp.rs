@@ -146,7 +146,7 @@ pub fn parse_segment(packet: &[u8]) -> Result<TcpSegment<'_>, String> {
 
 /// Build one TCP segment (without the IP header) and fill its checksum.
 #[allow(clippy::too_many_arguments)]
-fn build_segment(
+pub(crate) fn build_segment(
     src: IpAddr,
     dst: IpAddr,
     src_port: u16,

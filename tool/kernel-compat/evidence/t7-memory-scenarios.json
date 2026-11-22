@@ -1,0 +1,114 @@
+{
+  "format": "kernel-t7-memory-scenarios",
+  "task": "T7",
+  "attempt": "T7-A1",
+  "workflow": "2026-11-20-native-rust-kernel",
+  "generatedAt": "2026-11-23T05:22:00Z",
+  "status": "entry-only-not-measured",
+  "statement": "Physical iPhone not connected (xcrun devicectl reported it unavailable). No peak, termination or reclaim number exists. The scenario table and sampling interface below are the executable entry; docs/testing/2026-11-23-ios-rust-extension-memory.md is the human-readable procedure.",
+  "requirements": {
+    "R3": "peak of the whole VPN system extension on a physical iPhone must stay within 40000000 bytes (decimal) in every scenario (startup/config, locked idle, concurrent forwarding, rule-set update, network switch/reconnect), recorded per scenario",
+    "R4": "after warm-up, repeated connect/close, rule-set reloads and offline/reconnect rounds return to an equivalent idle state; invalid objects must not accumulate and the idle baseline must not climb"
+  },
+  "sampling": {
+    "authoritative": {
+      "metric": "physical footprint of the BillowRust process (what memory-pressure termination uses)",
+      "command": "xcrun xctrace record --device <UDID> --template 'VM Tracker' --attach BillowRust --time-limit <N>s --output t7-<scenario>.trace",
+      "read": "Instruments VM Tracker / Debug Navigator Memory gauge"
+    },
+    "structured": {
+      "metric": "billow_ios_vpn_stats JSON (also in the extension status reply under `stats`)",
+      "fields": [
+        "peakRssBytes (getrusage RUSAGE_SELF ru_maxrss, bytes on Darwin)",
+        "tcpFlows",
+        "tcpFlowHigh",
+        "udpFlows",
+        "udpFlowHigh",
+        "queuedPackets",
+        "queueHigh",
+        "droppedInbound",
+        "droppedEgress",
+        "dnsQueries",
+        "dnsFailures",
+        "generation",
+        "reloads"
+      ],
+      "use": "per-round idle comparison, proof that closed flows/queues return to zero, correlation with the configuration generation"
+    },
+    "terminationCheck": [
+      "xcrun devicectl device info processes --device <UDID> | grep -i billowrust",
+      "log collect --device <UDID> --last 30m --output t7-jetsam.logarchive",
+      "log show t7-jetsam.logarchive --predicate 'eventMessage CONTAINS[c] \"jetsam\" AND eventMessage CONTAINS[c] \"BillowRust\"' --last 30m"
+    ]
+  },
+  "identityToRecord": [
+    "iPhone model and iOS version",
+    "app build and manifest version + sha256 (versions/<v>/manifest.json)",
+    "BillowRust PID",
+    "billow_ios_vpn_version (billow-rust 0.1.0)",
+    "config generation (stats.generation) and reload count",
+    "scenario start/stop timestamps"
+  ],
+  "scenarios": [
+    {
+      "id": "startup",
+      "load": "real user configuration: rules, proxy-groups, rule-providers, dns",
+      "sampling": "every 100 ms until startTunnel completion and once at completion",
+      "r3": "peak <= 40000000",
+      "r4": null
+    },
+    {
+      "id": "locked-idle",
+      "load": "connected, no traffic, 10 minutes, device locked",
+      "sampling": "minute 1 / 5 / 10",
+      "r3": "peak <= 40000000",
+      "r4": "idle value stable"
+    },
+    {
+      "id": "concurrent-forwarding",
+      "load": "8 TCP (HTTPS up/down) + 20 UDP destinations incl. DNS, >= 60 s",
+      "sampling": "every 5 s",
+      "r3": "peak <= 40000000",
+      "r4": "after close tcpFlows == 0 and queuedPackets == 0"
+    },
+    {
+      "id": "rule-set-update",
+      "load": "reload the same config.yaml 20 times (incl. rule-provider update)",
+      "sampling": "before/after each reload",
+      "r3": "every transient peak <= 40000000",
+      "r4": "generation increments, idle does not climb, no stale generation objects"
+    },
+    {
+      "id": "network-switch",
+      "load": "Wi-Fi <-> cellular, 5 switches each way",
+      "sampling": "within 10 s after each switch",
+      "r3": "peak <= 40000000",
+      "r4": "flows/queues back to zero after reconnect"
+    },
+    {
+      "id": "r4-rounds",
+      "load": "connect/close x50, reload x20, offline/reconnect x10, each round returning to idle",
+      "sampling": "end of each round",
+      "r3": "every round peak <= 40000000",
+      "r4": "last-round idle within measurement noise of the first; connection list and queues empty"
+    }
+  ],
+  "codeInputs": {
+    "bounds": "tool/kernel-compat/evidence/t7-ios-ffi.md#bounds-r3r4-inputs",
+    "reload": "billow_ios_vpn_reload closes every flow/association, clears the egress queue and increments generation",
+    "statsSymbol": "billow_ios_vpn_stats",
+    "extensionStatus": "ProviderMessageKey.stats in the handleAppMessage status reply"
+  },
+  "prerequisites": [
+    "Apple Developer Team with the Network Extension capability and App Group group.app.billow.client for app.billow.client, app.billow.client.mihomo and app.billow.client.rust",
+    "registered iPhone UDID",
+    "controlled TCP/UDP echo endpoint and DNS resolver to prove forwarding continues",
+    "host wiring (ios_vpn_* commands + settings entry + resource staging) so both extensions start from the app; not delivered in T7-A1"
+  ],
+  "evidenceRefs": [
+    "docs/testing/2026-11-23-ios-rust-extension-memory.md",
+    "tool/kernel-compat/evidence/t7-ios-ffi.md",
+    "tool/kernel-compat/evidence/t7-ios-ffi.json",
+    "tool/kernel-compat/evidence/t7-ios-simulator-smoke.log"
+  ]
+}

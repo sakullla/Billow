@@ -415,6 +415,14 @@ fn internet_checksum(bytes: &[u8]) -> u16 {
     !checksum_fold(checksum_accumulate(&[bytes]))
 }
 
+/// Plain RFC 1071 checksum over `bytes` (no pseudo-header).
+///
+/// ICMPv4 uses this form; TCP, UDP and ICMPv6 checksums are computed with
+/// [`transport_checksum`], which adds the IPv4/IPv6 pseudo-header.
+pub fn checksum16(bytes: &[u8]) -> u16 {
+    internet_checksum(bytes)
+}
+
 /// UDP checksum over the IPv4/IPv6 pseudo-header. `udp` carries its checksum
 /// field (zero while computing). A result of zero is sent as `0xffff` for
 /// IPv6, where a zero checksum means "none".

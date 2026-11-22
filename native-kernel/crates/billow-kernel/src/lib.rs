@@ -76,3 +76,12 @@ impl StartError {
 pub mod keys;
 pub mod outbound;
 pub mod proxies;
+
+/// iOS Packet Tunnel data plane and its C ABI (`include/billow_ios_vpn.h`).
+/// Compiled only with `--features ios-vpn`; desktop and Android builds are
+/// unaffected, and the userspace IP stack is shared so a desktop TUN (T6) can
+/// reuse it.
+#[cfg(feature = "ios-vpn")]
+pub mod ios_vpn;
+#[cfg(feature = "ios-vpn")]
+pub mod tunnel;

@@ -129,6 +129,20 @@ final class BillowVPNManager {
 
     func setSelected(_ engine: Engine) {
         UserDefaults(suiteName: groupId)?.set(engine.rawValue, forKey: SelectedEngineKey.appGroup)
+        // The Rust extension reads the selection from the App Group file system
+        // (it has no UserDefaults bridge into libapp.a):
+        // <AppGroup>/engine.json = {"selected": "rust" | "mihomo"}.
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: groupId
+        ) else { return }
+        let url = container.appendingPathComponent("engine.json")
+        let body: [String: Any] = [
+            "selected": engine.rawValue,
+            "updatedAt": ISO8601DateFormatter().string(from: Date()),
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: body) {
+            try? data.write(to: url, options: .atomic)
+        }
     }
 
     func selected() -> Engine {
@@ -161,13 +175,5 @@ extension ProviderSupport {
     }
 }
 
-extension AppGroupStore {
-    /// Reads status/<engine>.json written by that extension at start/stop.
-    func readStatus(engine: String) -> ProviderStatus? {
-        let url = rootURL.appendingPathComponent("status/\(engine).json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(ProviderStatus.self, from: data)
-    }
-}
+// Status reading lives on AppGroupStore (Shared/AppGroupStore.swift); the host
+// compiles the same file, so it must not be redeclared here.

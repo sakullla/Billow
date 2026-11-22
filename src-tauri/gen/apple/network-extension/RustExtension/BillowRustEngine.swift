@@ -76,6 +76,9 @@ final class BillowRustEngine {
             throw BillowVPNError.make(.engineNotAvailable,
                                       "libapp.a not linked into BillowRust (run tool/ios/build.sh)")
         }
+        // The selected-engine state lives in the App Group (engine.json); the
+        // C ABI has no path argument, so it is recorded here first.
+        dir.path.withCString { billow_rust_kernel_set_home($0) }
         // 1 = the app state selects the Rust kernel; the host only starts this
         // extension when it is selected, so 0 is allowed too (the extension is
         // still startable and reportable). -1 means the app never wrote its
@@ -126,6 +129,38 @@ final class BillowRustEngine {
     /// Called once with the first unrecoverable error.
     var failedHandler: ((NSError) -> Void)?
 
+    /// Reloads `<App Group>/versions/<active>/config.yaml` in place. A rejected
+    /// reload keeps the running generation (thrown as engineStartFailed with
+    /// the Rust message).
+    func reload() throws {
+        guard Self.kernelLinked else {
+            throw BillowVPNError.make(.engineNotAvailable, "libapp.a not linked into BillowRust")
+        }
+        var error: UnsafeMutablePointer<CChar>?
+        let rc = billow_rust_kernel_reload(&error)
+        guard rc == 0 else {
+            let text = error.map { String(cString: $0) } ?? "billow_ios_vpn_reload failed (\(rc))"
+            if let error {
+                free(error)
+            }
+            throw BillowVPNError.make(.engineStartFailed, text)
+        }
+        log.info("rust engine configuration reloaded")
+    }
+
+    /// JSON counters + peak RSS of this process (empty when the kernel is not
+    /// linked), published in the status reply and the App Group status file so
+    /// R3/R4 can sample a running extension without Instruments.
+    static func statsJSON() -> String? {
+        guard kernelLinked else { return nil }
+        var size = billow_rust_kernel_stats(nil, 0)
+        guard size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: Int(size) + 1)
+        size = billow_rust_kernel_stats(&buffer, Int32(buffer.count))
+        guard size > 0 else { return nil }
+        return String(cString: buffer)
+    }
+
     func shutdown() {
         stateLock.lock()
         stopping = true
@@ -167,12 +202,12 @@ let rustKernelWrite: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawP
 }
 
 /// Packet pump ingest: packs [length][packet] records and replays them into
-/// the Rust tunnel one at a time through billow_ios_vpn_drain.
+/// the Rust tunnel one at a time through billow_ios_vpn_write (the documented
+/// input path; drain is the polling output path).
 func rustIngest(_ flow: NEPacketTunnelFlow, _ packets: [Data]) -> Int32 {
     guard let engine = BillowRustTunnelProvider.current else { return 0 }
     let capacity = 4 + ProviderSupport.mtu
     var record = [UInt8](repeating: 0, count: capacity)
-    var produced: UInt32 = 0
     for packet in packets {
         let n = min(packet.count, capacity - 4)
         guard n >= 20 else { continue }
@@ -185,11 +220,11 @@ func rustIngest(_ flow: NEPacketTunnelFlow, _ packets: [Data]) -> Int32 {
             return record.withUnsafeMutableBufferPointer { buffer in
                 guard let dst = buffer.baseAddress else { return 0 }
                 (dst + 4).update(from: src.assumingMemoryBound(to: UInt8.self), count: n)
-                return billow_rust_kernel_drain(dst, UInt32(n + 4), &produced)
+                return billow_rust_kernel_write(dst, UInt32(n + 4))
             }
         }
         if result < 0 {
-            engine.recordFailure(BillowVPNError.make(.engineStopped, "billow_ios_vpn_drain returned \(result)"))
+            engine.recordFailure(BillowVPNError.make(.engineStopped, "billow_ios_vpn_write returned \(result)"))
             return result
         }
     }

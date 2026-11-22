@@ -165,6 +165,9 @@ pub enum InType {
     /// HTTP CONNECT (`listener/http` reports `C.HTTPS` for it).
     Https,
     Socks5,
+    /// A device TUN / Packet Tunnel (the pinned `C.TUN`, matched by the
+    /// `feature = "ios-vpn"` iOS tunnel; desktop TUN is T6).
+    Tun,
 }
 
 impl InType {
@@ -173,6 +176,7 @@ impl InType {
             InType::Http => "HTTP",
             InType::Https => "HTTPS",
             InType::Socks5 => "SOCKS5",
+            InType::Tun => "TUN",
         }
     }
 }
@@ -2079,9 +2083,10 @@ fn parse_in_types(payload: &str) -> Result<Vec<InType>, ConfigError> {
             "SOCKS" => {
                 types.push(InType::Socks5);
             }
+            "TUN" => types.push(InType::Tun),
             other => {
                 return Err(ConfigError::Unsupported(format!(
-                    "IN-TYPE '{other}' (this kernel serves HTTP CONNECT and SOCKS5 on the mixed listener; TUN/redir/tproxy and other listeners are T6/T25)"
+                    "IN-TYPE '{other}' (this kernel serves HTTP CONNECT and SOCKS5 on the mixed listener and TUN for the iOS packet tunnel; redir/tproxy and other listeners are T6/T25)"
                 )))
             }
         }

@@ -146,7 +146,7 @@ pub(crate) struct OpenConnection {
     pub start: std::time::SystemTime,
     pub upload: Arc<AtomicU64>,
     pub download: Arc<AtomicU64>,
-    close: Arc<tokio::sync::Notify>,
+    pub(crate) close: Arc<tokio::sync::Notify>,
 }
 
 impl OpenConnection {
@@ -259,15 +259,19 @@ impl RuntimeSnapshot {
 }
 
 /// Per-generation runtime plus the kernel-wide counters/limits.
-struct SessionContext {
-    runtime: Arc<RuntimeSnapshot>,
-    limits: Limits,
-    counters: Arc<Counters>,
-    connections: Arc<ConnectionRegistry>,
+///
+/// Shared with the listener-less data planes (`tunnel`, feature `ios-vpn`), so
+/// a packet path evaluates rules, groups and DNS against exactly the same
+/// generation an accepted session would.
+pub(crate) struct SessionContext {
+    pub(crate) runtime: Arc<RuntimeSnapshot>,
+    pub(crate) limits: Limits,
+    pub(crate) counters: Arc<Counters>,
+    pub(crate) connections: Arc<ConnectionRegistry>,
 }
 
 impl SessionContext {
-    fn listen_port(&self) -> u16 {
+    pub(crate) fn listen_port(&self) -> u16 {
         self.runtime.listen_port()
     }
 }
@@ -592,6 +596,20 @@ impl Kernel {
             "billow-kernel started; {}", config.feature_summary()
         );
         Ok((kernel, warnings))
+    }
+
+    /// A session context for a data plane that owns no listener (the iOS
+    /// tunnel behind `feature = "ios-vpn"` and, later, a desktop TUN). The
+    /// snapshot is the current generation, so a reload affects the next flow
+    /// and an in-flight flow keeps the generation it started with.
+    #[cfg(feature = "ios-vpn")]
+    pub(crate) fn packet_session(&self) -> Arc<SessionContext> {
+        Arc::new(SessionContext {
+            runtime: self.control.runtime.snapshot(),
+            limits: self.control.limits,
+            counters: self.control.counters.clone(),
+            connections: self.control.connections.clone(),
+        })
     }
 
     /// Correlatable instance identity (uuid, pid, version, listener, config digest).
@@ -1165,7 +1183,7 @@ impl DnsRoute for EngineRoute {
 
 /// Pinned `preHandleMetadata`: hosts domain mapping, redir-host/fake-ip
 /// reconstruction. Without a DNS runtime only the hosts mapping applies.
-async fn pre_handle_destination(
+pub(crate) async fn pre_handle_destination(
     context: &SessionContext,
     host: &str,
     ip: Option<IpAddr>,
@@ -1223,7 +1241,7 @@ async fn resolve_for_rules(context: &SessionContext, host: &str) -> Option<IpAdd
 /// First-match evaluation with lazy IP resolution (`no-resolve` is honoured
 /// by [`RuleSet::evaluate_step`]). `target.ip` is updated when a resolution
 /// happens so group resolution sees the same address.
-async fn rule_decision(context: &SessionContext, target: &mut Target) -> RuleMatch {
+pub(crate) async fn rule_decision(context: &SessionContext, target: &mut Target) -> RuleMatch {
     // Pinned `resolveMetadata` applies a hosts entry to `DstIP` before the
     // first rule runs, independently of `no-resolve`.
     if target.ip.is_none() && !target.host.is_empty() {
@@ -1251,7 +1269,7 @@ async fn rule_decision(context: &SessionContext, target: &mut Target) -> RuleMat
 
 /// DIRECT TCP dial: the pinned `Direct` adapter resolves a domain through
 /// `DirectHostResolver` (configured DNS when on, the OS resolver otherwise).
-async fn direct_stream(
+pub(crate) async fn direct_stream(
     context: &SessionContext,
     host: &str,
     ip: Option<IpAddr>,
@@ -1294,7 +1312,7 @@ async fn direct_stream(
 }
 
 /// DIRECT UDP destination (pinned `Direct.ResolveUDP`).
-async fn direct_udp_destination(
+pub(crate) async fn direct_udp_destination(
     context: &SessionContext,
     host: &str,
     ip: Option<IpAddr>,

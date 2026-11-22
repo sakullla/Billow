@@ -76,6 +76,7 @@
 		325BD6D802130C9117B205AC /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		32A842F98ADDC8438D86F7AC /* bundled_geo.rs */ = {isa = PBXFileReference; path = bundled_geo.rs; sourceTree = "<group>"; };
 		34761D8E456387892CFF139B /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		38923F9A4D4F483E3BF727E1 /* engine.rs */ = {isa = PBXFileReference; path = engine.rs; sourceTree = "<group>"; };
 		417BBE9F22947E6DAC93B7D4 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		432D444C8B6443F9FAC23D33 /* elevation.rs */ = {isa = PBXFileReference; path = elevation.rs; sourceTree = "<group>"; };
 		4824EF26364F70FAB695957E /* ProviderSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderSupport.swift; sourceTree = "<group>"; };
@@ -325,6 +326,7 @@
 				32A842F98ADDC8438D86F7AC /* bundled_geo.rs */,
 				313734F72B3755379DF7086F /* diagnostics.rs */,
 				432D444C8B6443F9FAC23D33 /* elevation.rs */,
+				38923F9A4D4F483E3BF727E1 /* engine.rs */,
 				5A0EDCE5ED9110183781C7F0 /* kernel.rs */,
 				F6D5653DA66F6412EA7E9D2A /* lib.rs */,
 				CEF5DBB11E87ACB269A2F7D6 /* main.rs */,

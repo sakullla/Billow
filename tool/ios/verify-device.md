@@ -1,4 +1,4 @@
-# Device verification entry (T3) — NOT EXECUTED
+# Device verification entry (T3 / T7) — NOT EXECUTED
 
 T3 ran on macOS 27.2 / Xcode 27.2 / Go 1.26.2 with no Apple signing identity
 assigned to a Team, no provisioned device and no controlled remote endpoint.
@@ -55,3 +55,43 @@ Record device, iOS version, app build, each status JSON and server captures
 in the T3/T7 evidence notes. Exit criteria for T3 here: one start/stop cycle
 with a Mihomo status showing the pinned version and one controlled TCP and
 UDP exchange observed at the endpoint.
+
+## T7 — Rust extension
+
+Build the kernel archive before the host build and keep the extension linked
+(`resolve-mihomo.sh` prints `BillowRust: linking Rust kernel <path>`):
+
+```sh
+node tool/ios/build-rust-kernel.mjs --platform device
+(cd src-tauri/gen/apple && SRCROOT="$PWD" SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
+  sh network-extension/RustExtension/resolve-mihomo.sh)
+```
+
+Simulator smoke (no signing): `tool/ios/verify-rust-kernel.sh` — version,
+stats, missing-config error, start with a real `config.yaml`, one UDP datagram
+through DIRECT to a host echo server and back through `port->write`, reload,
+stop/restart. It proves the ABI and the data path on the simulator only.
+
+Device checks that still need the iPhone:
+
+1. `ios_vpn_status("rust")` reports `extensionId == app.billow.client.rust`,
+   the embedded `billow-rust 0.1.0`, and `stats.peakRssBytes` once running.
+2. Start the Rust extension from the app's real settings screen with the same
+   configuration version the Mihomo extension uses (`status/<engine>.json`
+   both present, exactly one start completion).
+3. Traffic both ways: a controlled TCP HTTP request and a UDP DNS query from
+   another app; confirm the payloads at the endpoint and in
+   `status/rust.json`/`stats` (`tcpOpened`, `udpReplies`, `dnsQueries`).
+4. `reload` from the host (`ProviderCommand.reload`) returns ok and `stats`
+   shows `generation` +1, `tcpFlows == 0`.
+5. Memory and reclaim: follow
+   `docs/testing/2026-11-23-ios-rust-extension-memory.md` (R3 ≤ 40,000,000
+   bytes `phys_footprint` per scenario, R4 repeatable idle baseline). Attach
+   `xctrace --template 'VM Tracker' --attach BillowRust`; record device model,
+   iOS version, app build, PID and the stats JSON for every scenario.
+6. Failure paths: missing `config.yaml` → code 2 with the path; unlinked
+   archive → code 4; no `engine.json` → code 10.
+
+No device was connected during T7-A1, so none of the device items above have
+results; the simulator smoke and the host tests are recorded in
+`tool/kernel-compat/evidence/t7-ios-ffi.md`.

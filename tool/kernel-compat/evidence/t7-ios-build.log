@@ -1,0 +1,57 @@
+# T7 iOS Rust kernel: build and verification log (2026-11-22T21:23:09Z)
+# host: Darwin arm64; rustc 1.98.1 (48a229cea 2026-09-01); Xcode 27.2 Build version 27B52 
+
+$ cargo build --manifest-path native-kernel/Cargo.toml -p billow-kernel --features ios-vpn --target aarch64-apple-ios --release
+    Finished `release` profile [optimized] target(s) in 0.09s
+
+$ cargo build --manifest-path native-kernel/Cargo.toml -p billow-kernel --features ios-vpn --target aarch64-apple-ios-sim --release
+    Finished `release` profile [optimized] target(s) in 0.08s
+
+$ node tool/ios/build-rust-kernel.mjs --platform all   # copy + symbol check
+rust kernel: /Users/yanggeng/github/Billow/src-tauri/gen/apple/Externals/arm64/device/rust/libapp.a (88.5 MiB, aarch64-apple-ios, release)
+rust kernel: /Users/yanggeng/github/Billow/src-tauri/gen/apple/Externals/arm64/simulator/rust/libapp.a (88.4 MiB, aarch64-apple-ios-sim, release)
+
+$ cargo test --manifest-path native-kernel/Cargo.toml -p billow-kernel --features ios-vpn --lib
+test result: ok. 187 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.94s
+
+$ cargo test --manifest-path native-kernel/Cargo.toml -p billow-kernel --features ios-vpn --test ios_tunnel
+running 5 tests
+test udp_datagrams_cross_the_tunnel_in_both_directions ... ok
+test tcp_stream_crosses_the_tunnel_in_both_directions ... ok
+test a_rejected_rule_closes_the_flow_with_reset ... ok
+test dns_queries_are_answered_from_the_configured_resolver ... ok
+test reload_closes_flows_and_keeps_forwarding ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+
+$ cargo test --manifest-path native-kernel/Cargo.toml -p billow-kernel   # default features: tunnel not compiled
+test result: ok. 160 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.75s
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.41s
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.64s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.04s
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.33s
+test result: ok. 0 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 66 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 50 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.88s
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+test result: ok. 15 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.53s
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+== xcodebuild (simulator debug + device release, Thinning=none, CODE_SIGNING_ALLOWED=NO)
+Both invocations print 'BillowRust: linking Rust kernel .../libapp.a' and end with ** BUILD SUCCEEDED **.
+BillowRust.debug.dylib (simulator) defines 10 billow_ios_vpn_* symbols plus the C shim billow_rust_kernel_write;
+release-iphoneos BillowRust.appex is 11 MB on disk (app size, not a memory measurement).
+
+== host Swift typecheck (Shared + Host, -D BILLOW_ENGINE_MIHOMO): no errors
+Two pre-existing host defects were fixed to reach that state:
+  Host/BillowVPNManager.swift redeclared AppGroupStore.readStatus(engine:)
+  Host/ResourcesInstaller.swift called prepareVersion(engine:) instead of engines:options:
+
+Note: the checked-in build/rust-kernel/linked.xcconfig is the unlinked seed; the 'Resolve Rust kernel'
+phase rewrites it during a build, which is why tool/ios/build.sh runs resolve-mihomo.sh before xcodebuild.

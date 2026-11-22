@@ -25,6 +25,7 @@ int32_t billow_rust_kernel_version(char *buf, int size) {
     }
     return 0;
 }
+void billow_rust_kernel_set_home(const char *home) { (void)home; }
 int32_t billow_rust_kernel_start(void *ctx, char *home, billow_rust_write_fn write, char **error) {
     (void)ctx; (void)home; (void)write;
     if (error != NULL) {
@@ -37,12 +38,32 @@ int32_t billow_rust_kernel_start(void *ctx, char *home, billow_rust_write_fn wri
     }
     return -2;
 }
+int32_t billow_rust_kernel_write(void *packet, uint32_t length) {
+    (void)packet; (void)length;
+    return -1;
+}
 int32_t billow_rust_kernel_drain(void *packet, uint32_t length, uint32_t *produced) {
     (void)packet; (void)length;
     if (produced != NULL) {
         *produced = 0;
     }
     return -1;
+}
+int32_t billow_rust_kernel_reload(char **error) {
+    if (error != NULL) {
+        *error = malloc(64);
+        if (*error != NULL) {
+            int n = snprintf(*error, 64, "libapp.a is not linked into BillowRust");
+            (void)n;
+        }
+    }
+    return -2;
+}
+int32_t billow_rust_kernel_stats(char *buf, int size) {
+    if (buf != NULL && size > 0) {
+        buf[0] = 0;
+    }
+    return 0;
 }
 void billow_rust_kernel_stop(void) {}
 
@@ -57,6 +78,8 @@ int32_t billow_rust_kernel_version(char *buf, int size) {
     return billow_ios_vpn_version(buf, size);
 }
 
+void billow_rust_kernel_set_home(const char *home) { billow_ios_vpn_set_home(home); }
+
 int32_t billow_rust_kernel_start(void *ctx, char *home, billow_rust_write_fn write, char **error) {
     rust_tunnel_port_t port;
     port.start = 0;
@@ -65,9 +88,17 @@ int32_t billow_rust_kernel_start(void *ctx, char *home, billow_rust_write_fn wri
     return billow_ios_vpn_start(&port, ctx, home, error);
 }
 
+int32_t billow_rust_kernel_write(void *packet, uint32_t length) {
+    return billow_ios_vpn_write(packet, length);
+}
+
 int32_t billow_rust_kernel_drain(void *packet, uint32_t length, uint32_t *produced) {
     return billow_ios_vpn_drain((uint8_t *)packet, 1, produced);
 }
+
+int32_t billow_rust_kernel_reload(char **error) { return billow_ios_vpn_reload(error); }
+
+int32_t billow_rust_kernel_stats(char *buf, int size) { return billow_ios_vpn_stats(buf, size); }
 
 void billow_rust_kernel_stop(void) { billow_ios_vpn_stop(); }
 

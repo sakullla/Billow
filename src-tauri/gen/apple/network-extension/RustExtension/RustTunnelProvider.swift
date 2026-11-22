@@ -112,7 +112,26 @@ final class RustTunnelProvider: NEPacketTunnelProvider {
                 ]
                 body[ProviderMessageKey.error] = status?.lastError ?? NSNull()
                 body[ProviderMessageKey.errorCode] = status?.errorCode ?? NSNull()
+                if let stats = BillowRustEngine.statsJSON(),
+                   let data = stats.data(using: .utf8),
+                   let object = try? JSONSerialization.jsonObject(with: data) {
+                    // Counters + peak RSS of this extension process (R3/R4).
+                    body[ProviderMessageKey.stats] = object
+                }
                 completionHandler?(try? JSONSerialization.data(withJSONObject: body))
+            case .reload:
+                guard let engine = self.engine else {
+                    completionHandler?(self.reply(error: BillowVPNError.make(.engineStopped,
+                                                                             "no running engine")))
+                    return
+                }
+                do {
+                    try engine.reload()
+                    self.publishStatus(running: true)
+                    completionHandler?(self.reply(error: nil))
+                } catch let error as NSError {
+                    completionHandler?(self.reply(error: error))
+                }
             default:
                 completionHandler?(self.reply(error: BillowVPNError.make(.unsupportedCommand,
                                                                          "\(command.rawValue) is applied by the host or libapp.a")))

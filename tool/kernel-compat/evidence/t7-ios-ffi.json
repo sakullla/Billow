@@ -1,0 +1,190 @@
+{
+  "format": "kernel-t7-ios-ffi",
+  "task": "T7",
+  "attempt": "T7-A1",
+  "workflow": "2026-11-20-native-rust-kernel",
+  "generatedAt": "2026-11-23T05:12:00Z",
+  "host": {
+    "os": "macos-arm64",
+    "xcode": "27.2",
+    "iosSdk": "27.2",
+    "rustc": "1.98.1",
+    "note": "Every result below was run on this host or in the booted iOS simulator. A physical iPhone was not connected (devicectl reported it unavailable), so no device memory or termination evidence exists."
+  },
+  "abi": {
+    "header": "src-tauri/gen/apple/network-extension/RustExtension/include/billow_ios_vpn.h",
+    "implementation": "native-kernel/crates/billow-kernel/src/ios_vpn.rs",
+    "feature": "ios-vpn (off by default; desktop and Android builds do not compile or export it)",
+    "symbols": [
+      "billow_ios_vpn_start",
+      "billow_ios_vpn_drain",
+      "billow_ios_vpn_write",
+      "billow_ios_vpn_stop",
+      "billow_ios_vpn_version",
+      "billow_ios_vpn_selected",
+      "billow_ios_vpn_set_home",
+      "billow_ios_vpn_reload",
+      "billow_ios_vpn_stats",
+      "billow_ios_vpn_free_error"
+    ],
+    "errorOwnership": "malloc'd string, freed with billow_ios_vpn_free_error (free)",
+    "drainFormat": "[4-byte big-endian length][IP packet] records; buffer must hold max_count * (4 + 65535) bytes",
+    "writeInput": "drain record or a bare IP packet (an IP version nibble 4/6 is never treated as a length prefix)",
+    "selected": {
+      "1": "engine.json in the App Group selects rust",
+      "0": "engine.json selects mihomo",
+      "-1": "no engine.json (host never wrote its state); BillowRust reports code 10 hostNotReady"
+    },
+    "statsJsonKeys": [
+      "running",
+      "version",
+      "generation",
+      "reloads",
+      "peakRssBytes",
+      "inPackets",
+      "inBytes",
+      "outPackets",
+      "outBytes",
+      "tcpOpened",
+      "tcpClosed",
+      "tcpRejected",
+      "tcpFlows",
+      "tcpFlowHigh",
+      "udpDatagrams",
+      "udpReplies",
+      "udpFlows",
+      "udpFlowHigh",
+      "dnsQueries",
+      "dnsFailures",
+      "invalidPackets",
+      "fragments",
+      "unsupportedProtocols",
+      "icmpDropped",
+      "droppedInbound",
+      "droppedEgress",
+      "queueHigh",
+      "queuedPackets"
+    ]
+  },
+  "dataPlane": {
+    "files": [
+      "native-kernel/crates/billow-kernel/src/tunnel/mod.rs",
+      "native-kernel/crates/billow-kernel/src/tunnel/tcp_server.rs",
+      "native-kernel/crates/billow-kernel/src/tunnel/udp.rs",
+      "native-kernel/crates/billow-kernel/src/tunnel/route.rs",
+      "native-kernel/crates/billow-kernel/src/tunnel/tests.rs",
+      "native-kernel/crates/billow-kernel/tests/ios_tunnel.rs"
+    ],
+    "sharedIpcodec": "outbound/ipstack (IPv4/IPv6 + UDP, also used by MASQUE CONNECT-IP; reusable by a desktop TUN in T6)",
+    "tcp": "passive-open server endpoint (SYN-ACK with tunnel MSS, third ACK, data/ACK, half-close, RST); out-of-order data re-ACKed at RCV.NXT instead of buffered",
+    "udp": "engine outbound UDP associations: DIRECT, ss, trojan, ssr, masque, shadowquic; other families refused by name and counted",
+    "routing": "preHandleMetadata (hosts/fake-ip) -> rule -> proxy group -> DIRECT or dial_chain (dialer-proxy, proxy-server DNS); mirrors engine::serve_request/serve_udp_associate",
+    "inTypes": "InType::Tun added; IN-TYPE,TUN loads and matches, connection registry kind 'Tun'",
+    "dns": "UDP and TCP :53 hijack answered by the generation's DnsService::answer_query",
+    "rejections": "IPv4 fragments and IPv6 extension headers refused by name; ICMP counted and dropped; unknown IPv4 protocol -> ICMP protocol unreachable; stray TCP -> RST; REJECT rule -> RST",
+    "reload": "Kernel::reload; on success every TCP flow, UDP association, DIRECT socket and queued packet is released and generation increments; a rejected reload keeps the running generation"
+  },
+  "bounds": {
+    "maxTcpFlows": 128,
+    "maxUdpFlows": 256,
+    "inboundQueuePerTcpFlow": 32,
+    "udpDatagramQueue": 256,
+    "egressQueue": 128,
+    "udpAssociations": 8,
+    "tcpSendBufferBytes": 65536,
+    "tcpReceiveBufferBytes": 65536,
+    "relayBufferBytes": 16384,
+    "dnsConcurrency": 32,
+    "udpIdleSeconds": 60,
+    "tcpIdleSeconds": 300
+  },
+  "executed": {
+    "builds": [
+      {
+        "command": "cargo build --manifest-path native-kernel/Cargo.toml -p billow-kernel --features ios-vpn --target aarch64-apple-ios --release",
+        "result": "ok"
+      },
+      {
+        "command": "cargo build --manifest-path native-kernel/Cargo.toml -p billow-kernel --features ios-vpn --target aarch64-apple-ios-sim --release",
+        "result": "ok"
+      },
+      {
+        "command": "cargo build --manifest-path native-kernel/Cargo.toml -p billow-kernel --release",
+        "result": "ok (default features: tunnel not compiled)"
+      }
+    ],
+    "tests": [
+      {
+        "command": "cargo test -p billow-kernel --features ios-vpn --lib",
+        "result": "187 passed, 1 ignored (20 of them tunnel unit tests)"
+      },
+      {
+        "command": "cargo test -p billow-kernel --features ios-vpn --test ios_tunnel",
+        "result": "5 passed",
+        "cases": [
+          "tcp_stream_crosses_the_tunnel_in_both_directions",
+          "udp_datagrams_cross_the_tunnel_in_both_directions",
+          "dns_queries_are_answered_from_the_configured_resolver",
+          "a_rejected_rule_closes_the_flow_with_reset",
+          "reload_closes_flows_and_keeps_forwarding"
+        ]
+      },
+      {
+        "command": "cargo test -p billow-kernel (default features)",
+        "result": "every existing suite passes unchanged"
+      }
+    ],
+    "extension": [
+      {
+        "command": "xcodegen generate && xcodebuild -scheme BillowRust -configuration debug -sdk iphonesimulator ARCHS=arm64 CODE_SIGNING_ALLOWED=NO",
+        "result": "ok",
+        "detail": "resolve-mihomo.sh linked Externals/arm64/simulator/rust/libapp.a with -force_load; 10 billow_ios_vpn_* symbols are defined in BillowRust.debug.dylib"
+      },
+      {
+        "command": "xcodebuild -scheme BillowRust -configuration release -sdk iphoneos ARCHS=arm64 CODE_SIGNING_ALLOWED=NO",
+        "result": "ok",
+        "detail": "device archive linked; BillowRust.appex 11 MB on disk (size, not a memory measurement)"
+      }
+    ],
+    "hostSwiftTypecheck": {
+      "command": "xcrun -sdk iphonesimulator swiftc -typecheck -target arm64-apple-ios27.2-simulator -D BILLOW_ENGINE_MIHOMO network-extension/Shared/{AppGroupStore,BillowVPNError,Logger,ProviderSupport}.swift network-extension/Host/*.swift",
+      "result": "ok (no errors)",
+      "preExistingDefectsFixed": [
+        "Host/BillowVPNManager.swift redeclared AppGroupStore.readStatus(engine:)",
+        "Host/ResourcesInstaller.swift called prepareVersion(engine:) instead of engines:options:"
+      ],
+      "excluded": "Shared/PacketPump.swift needs the Mihomo Go module header (libmihomo_ios), so it is not part of the host typecheck"
+    },
+    "simulatorSmoke": {
+      "command": "tool/ios/verify-rust-kernel.sh",
+      "runtime": "arm64-apple-ios27.2-simulator binary spawned with simctl into the booted iPhone 18 Pro (iOS 27.0)",
+      "result": "PASS (20/20 checks)",
+      "covered": [
+        "version reported (link gate)",
+        "stats two-call sizing and JSON with peakRssBytes",
+        "selected -1 before the host writes engine.json",
+        "start without config.yaml fails with the path in the malloc'd message",
+        "start with a real configuration (mixed-port + MATCH,DIRECT)",
+        "device UDP datagram -> DIRECT -> host echo server -> reply through port->write with the echoed payload and device port",
+        "stats while running (inPackets 1, outPackets 1, udpReplies 1, udpFlows 1)",
+        "reload of the same configuration",
+        "stop then drain returns -1, restart succeeds"
+      ],
+      "log": "tool/kernel-compat/evidence/t7-ios-simulator-smoke.log"
+    }
+  },
+  "notVerified": [
+    "Physical iPhone: no device connected; R3 peak (<= 40000000 bytes) and R4 reclaim have no measurements, only the sampling interface and scenario table in docs/testing/2026-11-23-ios-rust-extension-memory.md.",
+    "Host settings entry: BillowVPNManager/ResourcesInstaller exist and setSelected writes <AppGroup>/engine.json, but no Tauri ios_vpn_* command or TS entry calls them yet, so both extensions cannot be started from the app UI in this attempt.",
+    "Resource staging for the Rust engine: home/config.yaml must exist and must enable a listener (mixed-port/port/socks-port); the engine rejects a configuration without one. Geo assets must be staged next to config.yaml.",
+    "UDP for gost-relay, sudoku, tuic, hysteria*, mieru, wireguard, openvpn, tailscale, zerotier, easytier is not implemented in this kernel; the tunnel drops and counts those datagrams by name.",
+    "BillowMihomo extension build and the loopback (Rust -> mihomo) route were not part of this attempt.",
+    "The simulator smoke process peak RSS (~25-28 MB) is the smoke binary, not the extension; it is not R3 evidence."
+  ],
+  "evidenceRefs": [
+    "tool/kernel-compat/evidence/t7-ios-ffi.md",
+    "tool/kernel-compat/evidence/t7-ios-build.log",
+    "tool/kernel-compat/evidence/t7-ios-simulator-smoke.log",
+    "docs/testing/2026-11-23-ios-rust-extension-memory.md"
+  ]
+}

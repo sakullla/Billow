@@ -81,6 +81,9 @@ enum ProviderMessageKey {
     static let engineId = "engineId"
     static let message = "message"
     static let domain = "domain"
+    /// JSON counters + peak RSS (`billow_ios_vpn_stats`); present on the Rust
+    /// engine only.
+    static let stats = "stats"
 }
 
 /// What `status` answers; also stored at "status/<extensionId>.json" inside

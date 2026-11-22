@@ -9,6 +9,9 @@
 # Steps
 #   1. node tool/ios/build-mihomo-ios.mjs --platform device|simulator
 #        pinned MetaCubeX/mihomo v1.19.34 c-archive + Swift module header
+#      node tool/ios/build-rust-kernel.mjs --platform device|simulator
+#        billow-kernel staticlib with --features ios-vpn (libapp.a; offline,
+#        Cargo.lock is the source of truth) and a symbol check
 #   2. (cd src-tauri/gen/apple && xcodegen generate)
 #        project.yml is the only source of truth for billow.xcodeproj
 #   3. xcodebuild build -sdk iphoneos|iphonesimulator CODE_SIGNING_ALLOWED=NO
@@ -49,6 +52,10 @@ fi
 
 for platform in "${platforms[@]}"; do
   node tool/ios/build-mihomo-ios.mjs --platform "$platform"
+  # libapp.a = billow-kernel staticlib with the ios-vpn data plane; it lands in
+  # Externals/arm64/<platform>/rust/libapp.a, where the BillowRust "Resolve
+  # Rust kernel" phase looks for it.
+  node tool/ios/build-rust-kernel.mjs --platform "$platform"
 done
 
 # xcodegen rejects a missing Externals source directory; the Rust build script

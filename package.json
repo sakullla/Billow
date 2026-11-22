@@ -15,7 +15,9 @@
     "build:windows": "tauri build --target x86_64-pc-windows-msvc",
     "build:linux": "tauri build --target x86_64-unknown-linux-gnu",
     "build:android": "tauri android build",
-    "icons": "tauri icon assets/icon-manifest.json && python tool/sync_icons.py"
+    "icons": "tauri icon assets/icon-manifest.json && python tool/sync_icons.py",
+    "ios:rust-kernel": "node tool/ios/build-rust-kernel.mjs --platform all",
+    "ios:verify-rust": "tool/ios/verify-rust-kernel.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",

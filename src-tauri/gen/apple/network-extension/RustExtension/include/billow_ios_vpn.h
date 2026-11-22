@@ -41,9 +41,11 @@ int32_t billow_ios_vpn_start(rust_tunnel_port_t *port, void *ctx, char *home, ch
 
 // Copies up to max_count IP packets into packets as
 // [4-byte big-endian length][IP packet] records and returns 0 with
-// *packet_count; -1 when no tunnel runs, -2 when packetFlow reported nil.
-// `packets` must stay writable and untouched until the call returns; the
-// callee neither keeps the pointer nor any pointer into it.
+// *packet_count; -1 when no tunnel runs, -2 on a null argument.
+// `packets` must be writable for max_count * (4 + 65535) bytes and untouched
+// until the call returns; the callee neither keeps the pointer nor any
+// pointer into it. The main route does not use this: libapp.a calls
+// port->write for every egress packet instead.
 int32_t billow_ios_vpn_drain(uint8_t *packets, uint32_t max_count, uint32_t *packet_count);
 
 // Replays one record (as produced by drain) into the kernel input. `packet`
@@ -64,7 +66,26 @@ int32_t billow_ios_vpn_version(char *buf, int32_t size);
 // hostNotReady, code 10).
 int32_t billow_ios_vpn_selected(void);
 
-// Releases an error string returned by billow_ios_vpn_start.
+// Releases an error string returned by billow_ios_vpn_start/_reload.
 void billow_ios_vpn_free_error(char *error);
+
+// Records the App Group version directory (<AppGroup>/versions/<version>/)
+// before billow_ios_vpn_selected runs, because `selected` has no path
+// argument. The extension calls it with the same `home` it later passes to
+// billow_ios_vpn_start.
+void billow_ios_vpn_set_home(const char *home);
+
+// Reloads <home>/config.yaml. 0 on success; a rejected reload keeps the
+// running generation and sets a malloc'd *error (billow_ios_vpn_free_error).
+// An accepted reload closes every flow and association so the previous
+// generation's rules and provider data are released (R4).
+int32_t billow_ios_vpn_reload(char **error);
+
+// Writes one JSON object with the tunnel counters and this process's peak
+// RSS (ru_maxrss, bytes) and returns its length. With a buffer that is too
+// small it returns the required length (including the NUL) and writes
+// nothing. The extension publishes it in the status reply so R3/R4 record a
+// real per-process sample.
+int32_t billow_ios_vpn_stats(char *buf, int32_t size);
 
 #endif

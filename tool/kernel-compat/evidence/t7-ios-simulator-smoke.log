@@ -1,0 +1,34 @@
+# T7 iOS simulator smoke (2026-11-22T21:23:00Z)
+# booted: iPhone 18 Pro (001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01) (Booted) 
+# binary: arm64-apple-ios27.2-simulator linked against Externals/arm64/simulator/rust/libapp.a
+== clang rust-kernel-smoke (arm64-apple-ios27.2-simulator)
+== simctl spawn booted rust-kernel-smoke (UDP echo :55493 on the host)
+ok version is reported
+version: billow-rust 0.1.0
+ok stats reports the required size
+ok stats is a JSON object with peakRssBytes
+stats(before start): {"running":false,"version":"billow-rust 0.1.0","peakRssBytes":25362432}
+ok selected is -1 before the host writes engine.json
+ok drain rejects a null count
+ok write rejects an empty packet
+ok start fails without config.yaml
+start error: billow_ios_vpn_start: read /tmp/billow-smoke-missing/config.yaml: No such file or directory (os error 2)
+ok the error names config.yaml
+ok temp directory
+ok config.yaml written
+ok start with a real configuration
+ok device packet accepted
+ok the UDP reply came back through port->write
+ok the reply carries the echoed payload
+ok the reply is addressed to the device port
+stats(running): {"running":true,"version":"billow-rust 0.1.0","generation":0,"reloads":0,"peakRssBytes":28311552,"inPackets":1,"inBytes":41,"outPackets":1,"outBytes":41,"tcpOpened":0,"tcpClosed":0,"tcpRejected":0,"tcpFlows":0,"tcpFlowHigh":0,"udpDatagrams":1,"udpReplies":1,"udpFlows":1,"udpFlowHigh":1,"dnsQueries":0,"dnsFailures":0,"invalidPackets":0,"fragments":0,"unsupportedProtocols":0,"icmpDropped":0,"droppedInbound":0,"droppedEgress":0,"queueHigh":0,"queuedPackets":0}
+ok stats reports a running tunnel
+ok stats carries the packet counters
+ok reload succeeds
+ok drain returns -1 after stop
+ok restart after stop
+PASS
+const socket = require("node:dgram").createSocket("udp4");
+socket.on("message", (message, remote) => socket.send(message, remote.port, remote.address));
+socket.bind(0, "127.0.0.1", () => console.log(socket.address().port));
+' > "$port_file"

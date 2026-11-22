@@ -28,9 +28,13 @@ final class ResourcesInstaller {
     @discardableResult
     func prepare(version: String, engine: BillowVPNManager.Engine, stagedDir: URL,
                  appVersion: String? = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) throws -> SharedManifest {
+        // One manifest names the engines it serves; the host prepares the
+        // version for the engine it was asked about (a later prepare for the
+        // other engine rewrites the manifest with both).
         let manifest = try store.prepareVersion(version: version,
                                                 stagedDir: stagedDir,
-                                                engine: engine.rawValue,
+                                                engines: [engine.rawValue],
+                                                options: nil,
                                                 appVersion: appVersion)
         log.info("prepared \(engine.rawValue) resources \(version) (\(manifest.files.count) files)")
         return manifest

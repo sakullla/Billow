@@ -76,6 +76,23 @@ provider `use`, filters, latency probes and a selection cache), and T25 exposes
 the control API. The remaining configuration-plane ownership is split across
 T22/T25 and is named at each boundary.
 
+T7 added the iOS Packet Tunnel data plane behind `--features ios-vpn` (off by
+default, so desktop and Android builds are unchanged): `src/ios_vpn.rs` is the
+`billow_ios_vpn_*` C ABI of
+`src-tauri/gen/apple/network-extension/RustExtension/include/billow_ios_vpn.h`,
+and `src/tunnel/` is the userspace IP stack. It terminates the device's TCP
+(passive open in `tunnel/tcp_server.rs`) and UDP (the same outbound
+associations the mixed listener uses) in userspace, routes every flow through
+the engine (rules, proxy groups, `dialer-proxy`, DIRECT, `:53` DNS hijack
+through the configured resolver), and shares `outbound/ipstack` with MASQUE so
+a desktop TUN (T6) can reuse the same codec. `IN-TYPE,TUN` now loads and
+matches. Bounds (flows, queues, associations, buffers) and the
+`billow_ios_vpn_stats` high-water counters are recorded in
+`tool/kernel-compat/evidence/t7-ios-ffi.md`; the device memory/reclaim entry
+(R3/R4) is `docs/testing/2026-11-23-ios-rust-extension-memory.md`. Everything
+was verified on macOS and in the iOS simulator; no physical device was
+available, so the extension's device peak and termination evidence are pending.
+
 ## License
 
 The kernel workspace is **GPL-3.0-only**. The `sudoku` outbound is a
@@ -123,6 +140,11 @@ native-kernel/
     │   ├── src/rules.rs            # compiled rule set, logic, SUB-RULE, RULE-SET
     │   ├── src/inbound.rs          # SOCKS5 + HTTP CONNECT handshake, authentication
     │   ├── src/engine.rs           # listener, sessions, bounded relay, lifecycle
+    │   ├── src/ios_vpn.rs          # billow_ios_vpn_* C ABI (feature `ios-vpn`)
+    │   ├── src/tunnel/             # userspace IPv4/IPv6 data plane for the iOS Packet
+    │   │                           # Tunnel: passive TCP (tcp_server.rs), UDP
+    │   │                           # associations (udp.rs), rule/group/outbound
+    │   │                           # routing (route.rs)
     │   ├── src/identity.rs         # uuid / pid / version / listener / config digest
     │   ├── examples/embed.rs       # embedding example
     │   └── tests/                  # config, resources (rules/providers/GEO/updates),
