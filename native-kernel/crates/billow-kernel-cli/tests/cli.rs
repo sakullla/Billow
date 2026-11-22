@@ -516,10 +516,10 @@ fn process_loads_t15_shadowquic() {
     assert!(stdout.contains("sq=shadowquic"), "{stdout}");
 }
 
-/// T18: the pinned Cloudflare WARP CONNECT-IP shape loads in the shipped
-/// process (keys, local addresses, URI, MTU, resolver options), a TCP tunnel
-/// routed to it is refused by name (there is no TCP stack), and the process
-/// stays up. The UDP-over-IP path is exercised against a CONNECT-IP peer in
+/// T18/T21: the pinned Cloudflare WARP CONNECT-IP shape loads in the shipped
+/// process (keys, local addresses, URI, MTU, resolver options); a TCP tunnel
+/// with no reachable CONNECT-IP endpoint fails as a 502 and the process stays
+/// up. The UDP and TCP data paths are exercised against CONNECT-IP peers in
 /// `tests/family_cli.rs` and `tests/quic_peers.rs`.
 #[test]
 fn process_loads_t18_masque_connect_ip() {

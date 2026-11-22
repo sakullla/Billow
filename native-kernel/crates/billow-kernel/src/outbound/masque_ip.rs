@@ -46,19 +46,24 @@
 //! `tool/kernel-compat/evidence/t18-feasibility.json`.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use quinn::SendStream;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 use tracing::debug;
 
 use super::h3::{self, Session};
 use super::ipstack::{self, IpPrefix};
 use super::quic::{self, QuicOptions};
+use super::tcp::{TcpConfig, TcpConnection};
 use super::tls::ClientTls;
 use super::warp;
 use super::{DialError, Target};
@@ -321,13 +326,16 @@ struct Flow {
     last_used: Instant,
 }
 
-/// A live RFC 9484 CONNECT-IP association serving the SOCKS5 UDP relay.
-pub struct MasqueIp {
+/// One CONNECT-IP tunnel: the QUIC/HTTP3 session, its request stream, the
+/// local addresses and the inbound IP-packet queue. Both data paths (UDP for
+/// the SOCKS5 relay, TCP for a `dial`) share it, so the handshake, the
+/// capsules and the datagram framing exist once.
+pub struct ConnectIpSession {
     session: Session,
     /// Quarter stream ID of the request stream (RFC 9297 §2.1).
     quarter_stream_id: u64,
     /// The request stream's send half; kept open for the association's
-    /// lifetime (closing it ends the tunnel) and used for control capsules.
+    /// lifetime (closing it ends the tunnel).
     send: SendStream,
     /// Local addresses from `ip`/`ipv6`; the first of the matching family is
     /// the source address of a built packet.
@@ -338,22 +346,15 @@ pub struct MasqueIp {
     /// Routes the peer advertised as reachable.
     routes: Arc<Mutex<Vec<IpRoute>>>,
     timeout: Duration,
-    flows: HashMap<Target, Flow>,
-    by_port: HashMap<u16, (Target, IpAddr, IpAddr)>,
-    next_port: u16,
     inbound: mpsc::Receiver<InboundItem>,
-    pending: VecDeque<(Target, Vec<u8>)>,
-    /// Name servers of `remote-dns-resolve`; `None` resolves locally.
-    dns: Option<Vec<SocketAddr>>,
 }
 
-impl MasqueIp {
+impl ConnectIpSession {
     /// Open the QUIC connection, the HTTP/3 session and the CONNECT-IP request.
-    pub async fn connect(
+    pub async fn open(
         option: &MasqueOutbound,
-        _tls: &ClientTls,
         timeout: Duration,
-    ) -> Result<MasqueIp, DialError> {
+    ) -> Result<ConnectIpSession, DialError> {
         let Some(warp) = &option.connect_ip else {
             return Err(handshake(
                 io::ErrorKind::InvalidInput,
@@ -630,26 +631,16 @@ impl MasqueIp {
             }
         });
 
-        let dns = if warp.remote_dns_resolve && !warp.dns.is_empty() {
-            Some(warp.dns.clone())
-        } else {
-            None
-        };
-        Ok(MasqueIp {
+        Ok(ConnectIpSession {
             session,
             quarter_stream_id,
-            send: send,
+            send,
             local: warp.local.clone(),
             mtu: usize::from(warp.mtu),
             assigned,
             routes: routes_seen,
             timeout,
-            flows: HashMap::new(),
-            by_port: HashMap::new(),
-            next_port: FIRST_LOCAL_PORT,
             inbound,
-            pending: VecDeque::new(),
-            dns,
         })
     }
 
@@ -675,6 +666,120 @@ impl MasqueIp {
         &self.local
     }
 
+    /// The configured `mtu`, the bound for one built packet.
+    pub fn mtu(&self) -> usize {
+        self.mtu
+    }
+
+    /// The handshake/dial timeout the association was opened with.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Source address for a packet to `destination` (the first configured
+    /// prefix of the same family), or `None` when that family is not
+    /// configured.
+    pub fn local_address(&self, destination: IpAddr) -> Option<IpAddr> {
+        self.local
+            .iter()
+            .find(|prefix| prefix.addr.is_ipv4() == destination.is_ipv4())
+            .map(|prefix| prefix.addr)
+    }
+
+    /// Send one IP packet as an HTTP Datagram (quarter stream ID, context 0).
+    pub fn send_packet(&self, packet: &[u8]) -> io::Result<()> {
+        let mut datagram = Vec::with_capacity(packet.len() + 12);
+        h3::encode_varint(self.quarter_stream_id, &mut datagram);
+        h3::encode_varint(0, &mut datagram);
+        datagram.extend_from_slice(packet);
+        self.session
+            .connection()
+            .send_datagram(Bytes::from(datagram))
+            .map_err(|error| match error {
+                quinn::SendDatagramError::TooLarge => io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "masque CONNECT-IP: an IP packet of {} bytes exceeds the QUIC datagram limit of this connection (path MTU minus overhead); lower 'mtu'",
+                        packet.len()
+                    ),
+                ),
+                other => io::Error::other(format!("masque CONNECT-IP datagram: {other}")),
+            })
+    }
+
+    /// Next inbound IP packet (a QUIC datagram frame or a DATAGRAM capsule).
+    pub async fn recv_packet(&mut self) -> io::Result<Vec<u8>> {
+        match self.inbound.recv().await {
+            Some(Ok(packet)) => Ok(packet),
+            Some(Err(error)) => Err(io::Error::other(error)),
+            None => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "masque CONNECT-IP association closed",
+            )),
+        }
+    }
+}
+
+impl Drop for ConnectIpSession {
+    fn drop(&mut self) {
+        // Closing the connection ends both reader tasks (their channel sends
+        // fail and they return) instead of leaving them until the peer's idle
+        // timeout.
+        let _ = self.send.finish();
+        self.session
+            .close(0, "masque CONNECT-IP association closed");
+    }
+}
+
+/// The UDP association of a CONNECT-IP tunnel (SOCKS5 UDP relay).
+pub struct MasqueIp {
+    session: ConnectIpSession,
+    flows: HashMap<Target, Flow>,
+    by_port: HashMap<u16, (Target, IpAddr, IpAddr)>,
+    next_port: u16,
+    pending: VecDeque<(Target, Vec<u8>)>,
+    /// Name servers of `remote-dns-resolve`; `None` resolves locally.
+    dns: Option<Vec<SocketAddr>>,
+}
+
+impl MasqueIp {
+    /// Open the tunnel for the SOCKS5 UDP association.
+    pub async fn connect(
+        option: &MasqueOutbound,
+        _tls: &ClientTls,
+        timeout: Duration,
+    ) -> Result<MasqueIp, DialError> {
+        let session = ConnectIpSession::open(option, timeout).await?;
+        let dns = match &option.connect_ip {
+            Some(warp) if warp.remote_dns_resolve && !warp.dns.is_empty() => Some(warp.dns.clone()),
+            _ => None,
+        };
+        Ok(MasqueIp {
+            session,
+            flows: HashMap::new(),
+            by_port: HashMap::new(),
+            next_port: FIRST_LOCAL_PORT,
+            pending: VecDeque::new(),
+            dns,
+        })
+    }
+
+    /// Prefixes the peer assigned; empty until an `ADDRESS_ASSIGN` capsule
+    /// arrives.
+    pub fn assigned_prefixes(&self) -> Vec<IpPrefix> {
+        self.session.assigned_prefixes()
+    }
+
+    /// Routes the peer advertised as reachable.
+    pub fn advertised_routes(&self) -> Vec<IpRoute> {
+        self.session.advertised_routes()
+    }
+
+    /// The local addresses the configured `ip`/`ipv6` values select.
+    pub fn local_prefixes(&self) -> &[IpPrefix] {
+        self.session.local_prefixes()
+    }
+
     /// Send one UDP payload to `target` through the tunnel, opening a flow
     /// (a local source port) when this destination has none yet.
     pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
@@ -693,18 +798,19 @@ impl MasqueIp {
         } else {
             ipstack::IPV6_UDP_OVERHEAD
         };
-        if payload.len() > self.mtu.saturating_sub(family_overhead) {
+        let mtu = self.session.mtu;
+        if payload.len() > mtu.saturating_sub(family_overhead) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
                     "masque CONNECT-IP datagram is {} bytes; the configured mtu {} allows at most {} payload bytes",
                     payload.len(),
-                    self.mtu,
-                    self.mtu.saturating_sub(family_overhead)
+                    mtu,
+                    mtu.saturating_sub(family_overhead)
                 ),
             ));
         }
-        let local = self.local_address(destination).ok_or_else(|| {
+        let local = self.session.local_address(destination).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
@@ -721,23 +827,7 @@ impl MasqueIp {
         let packet =
             ipstack::build_udp_packet(local, destination, port, target.port, payload, HOP_LIMIT)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-        let mut datagram = Vec::with_capacity(packet.len() + 12);
-        h3::encode_varint(self.quarter_stream_id, &mut datagram);
-        h3::encode_varint(0, &mut datagram);
-        datagram.extend_from_slice(&packet);
-        self.session
-            .connection()
-            .send_datagram(Bytes::from(datagram))
-            .map_err(|error| match error {
-                quinn::SendDatagramError::TooLarge => io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "masque CONNECT-IP: an IP packet of {} bytes exceeds the QUIC datagram limit of this connection (path MTU minus overhead); lower 'mtu'",
-                        packet.len()
-                    ),
-                ),
-                other => io::Error::other(format!("masque CONNECT-IP datagram: {other}")),
-            })
+        self.session.send_packet(&packet)
     }
 
     /// Receive one UDP payload; returns the destination it belongs to.
@@ -756,17 +846,17 @@ impl MasqueIp {
         }
     }
 
-    /// Next inbound UDP datagram (from the pending queue or the readers).
+    /// Next inbound UDP datagram (from the pending queue or the tunnel).
     async fn next_udp(&mut self, deadline: Option<Instant>) -> io::Result<(Target, Vec<u8>)> {
         loop {
             if let Some((target, payload)) = self.pending.pop_front() {
                 return Ok((target, payload));
             }
-            let item = match deadline {
+            let received = match deadline {
                 Some(deadline) => {
                     let deadline = tokio::time::Instant::from_std(deadline);
-                    match tokio::time::timeout_at(deadline, self.inbound.recv()).await {
-                        Ok(item) => item,
+                    match tokio::time::timeout_at(deadline, self.session.recv_packet()).await {
+                        Ok(result) => result,
                         Err(_) => {
                             return Err(io::Error::new(
                                 io::ErrorKind::TimedOut,
@@ -775,18 +865,9 @@ impl MasqueIp {
                         }
                     }
                 }
-                None => self.inbound.recv().await,
+                None => self.session.recv_packet().await,
             };
-            let packet = match item {
-                Some(Ok(packet)) => packet,
-                Some(Err(error)) => return Err(io::Error::other(error)),
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "masque CONNECT-IP association closed",
-                    ))
-                }
-            };
+            let packet = received?;
             let parsed = match ipstack::parse_ip_packet(&packet) {
                 Ok(parsed) => parsed,
                 Err(error) => {
@@ -819,13 +900,6 @@ impl MasqueIp {
             let (target, payload) = (target.clone(), udp.payload.to_vec());
             return Ok((target, payload));
         }
-    }
-
-    fn local_address(&self, destination: IpAddr) -> Option<IpAddr> {
-        self.local
-            .iter()
-            .find(|prefix| prefix.addr.is_ipv4() == destination.is_ipv4())
-            .map(|prefix| prefix.addr)
     }
 
     /// The local port of the flow to `target`, reusing the existing flow or
@@ -909,7 +983,7 @@ impl MasqueIp {
                     Ok(answers) => {
                         if let Some(ip) = answers
                             .into_iter()
-                            .find(|ip| self.local_address(*ip).is_some())
+                            .find(|ip| self.session.local_address(*ip).is_some())
                         {
                             return Ok(ip);
                         }
@@ -943,7 +1017,7 @@ impl MasqueIp {
             port: server.port(),
         };
         self.send_ip(&dns_target, server.ip(), &query).await?;
-        let deadline = Instant::now() + DNS_TIMEOUT.min(self.timeout);
+        let deadline = Instant::now() + DNS_TIMEOUT.min(self.session.timeout());
         loop {
             let (target, payload) = match self.next_udp(Some(deadline)).await {
                 Ok(pair) => pair,
@@ -958,7 +1032,7 @@ impl MasqueIp {
             if target != dns_target {
                 // Only a payload that could still fit the tunnel MTU is worth
                 // holding; a larger one could never be delivered anyway.
-                if self.pending.len() < MAX_PENDING_DATAGRAMS && payload.len() <= self.mtu {
+                if self.pending.len() < MAX_PENDING_DATAGRAMS && payload.len() <= self.session.mtu {
                     self.pending.push_back((target, payload));
                 } else {
                     debug!("masque CONNECT-IP pending datagram dropped while resolving DNS");
@@ -968,21 +1042,472 @@ impl MasqueIp {
             return dns_answers(id, host, qtype, &payload);
         }
     }
+}
 
-    /// Close the request stream and the QUIC connection.
-    fn shutdown(&mut self) {
-        let _ = self.send.finish();
-        self.session
-            .close(0, "masque CONNECT-IP association closed");
+// ---------------------------------------------------------------------------
+// TCP over CONNECT-IP (T21).
+//
+// CONNECT-IP carries IP packets, so a TCP target is served by the in-tree
+// minimal client in `outbound::tcp`: one tunnel and one TCP connection per
+// `dial` (no pooling, like the other QUIC families). The two halves meet in an
+// actor that owns the tunnel and the state machine: application bytes arrive
+// on a channel, inbound IP packets on the other, and every timer/transmission
+// decision belongs to the state machine.
+// ---------------------------------------------------------------------------
+
+/// Application commands for one tunnel TCP connection.
+enum TcpCommand {
+    Data(Vec<u8>),
+    Shutdown,
+}
+
+type ReserveFuture = Pin<
+    Box<
+        dyn Future<Output = Result<mpsc::OwnedPermit<TcpCommand>, mpsc::error::SendError<()>>>
+            + Send
+            + 'static,
+    >,
+>;
+
+/// An established TCP stream over a CONNECT-IP tunnel.
+///
+/// Reads yield the peer's bytes in order and end (EOF) when the peer's FIN
+/// arrives; writes are queued and bounded by the TCP send buffer (64 KiB), and
+/// `poll_shutdown` half-closes the connection with a FIN. Dropping the stream
+/// closes the tunnel after the pending data has been acknowledged or the
+/// connection times out.
+pub struct MasqueTcpStream {
+    to_network: mpsc::Sender<TcpCommand>,
+    from_network: mpsc::Receiver<io::Result<Vec<u8>>>,
+    read_buffer: Vec<u8>,
+    read_offset: usize,
+    write_reserve: Option<ReserveFuture>,
+    shutdown_reserve: Option<ReserveFuture>,
+    shutdown_sent: bool,
+    eof: bool,
+}
+
+impl MasqueTcpStream {
+    /// Open a tunnel and an active TCP connection to `target`.
+    pub async fn connect(
+        option: &MasqueOutbound,
+        target: &Target,
+        _tls: &ClientTls,
+        timeout: Duration,
+    ) -> Result<MasqueTcpStream, DialError> {
+        let warp = option.connect_ip.as_ref().ok_or_else(|| {
+            handshake(
+                io::ErrorKind::Unsupported,
+                "TCP over masque needs the CONNECT-IP (WARP) shape: the RFC 9298 CONNECT-UDP subset carries UDP only",
+            )
+        })?;
+        let mut session = ConnectIpSession::open(option, timeout).await?;
+        let remote = resolve_tcp(&mut session, warp, target, timeout).await?;
+        let local = session.local_address(remote).ok_or_else(|| {
+            handshake(
+                io::ErrorKind::NotFound,
+                format!(
+                    "masque CONNECT-IP has no local {} address for TCP: set the 'ip'/'ipv6' option",
+                    if remote.is_ipv4() { "IPv4" } else { "IPv6" }
+                ),
+            )
+        })?;
+        let overhead = if remote.is_ipv4() {
+            ipstack::IPV4_UDP_OVERHEAD
+        } else {
+            ipstack::IPV6_UDP_OVERHEAD
+        };
+        let mss = session.mtu().saturating_sub(overhead).clamp(64, 65_495) as u16;
+        let connect_deadline = Instant::now() + timeout;
+        let config = TcpConfig {
+            local,
+            remote,
+            local_port: random_local_port(),
+            remote_port: target.port,
+            mss,
+            initial_seq: rand::random::<u32>(),
+            connect_deadline,
+            hop_limit: HOP_LIMIT,
+        };
+        let mut connection = TcpConnection::new(config, Instant::now());
+        // Drive the handshake inline so a refusal or a timeout is a dial
+        // failure (the caller answers 502), not a stream that fails later.
+        loop {
+            loop {
+                let Some(packet) = connection.poll_transmit(Instant::now()) else {
+                    break;
+                };
+                if packet.is_empty() {
+                    continue;
+                }
+                session
+                    .send_packet(&packet)
+                    .map_err(|source| DialError::Handshake {
+                        protocol: "masque tcp",
+                        source,
+                    })?;
+            }
+            if connection.established() {
+                break;
+            }
+            if let Some(error) = connection.failure() {
+                return Err(DialError::Handshake {
+                    protocol: "masque tcp",
+                    source: io::Error::new(error.kind(), error.to_string()),
+                });
+            }
+            let now = Instant::now();
+            if now >= connect_deadline {
+                return Err(DialError::Timeout(timeout));
+            }
+            let timer = connection.next_timer();
+            let sleep = async {
+                match timer {
+                    Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                _ = sleep => connection.on_timer(Instant::now()),
+                packet = session.recv_packet() => match packet {
+                    Ok(packet) => connection.on_packet(&packet, Instant::now()),
+                    Err(source) => return Err(DialError::Handshake { protocol: "masque tcp", source }),
+                },
+            }
+        }
+        let (to_network, commands) = mpsc::channel(4);
+        let (out, from_network) = mpsc::channel(4);
+        tokio::spawn(run_tcp(session, connection, commands, out));
+        Ok(MasqueTcpStream {
+            to_network,
+            from_network,
+            read_buffer: Vec::new(),
+            read_offset: 0,
+            write_reserve: None,
+            shutdown_reserve: None,
+            shutdown_sent: false,
+            eof: false,
+        })
     }
 }
 
-impl Drop for MasqueIp {
-    fn drop(&mut self) {
-        // Closing the connection ends both reader tasks (their channel sends
-        // fail and they return) instead of leaving them until the peer's idle
-        // timeout.
-        self.shutdown();
+impl AsyncRead for MasqueTcpStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        loop {
+            if this.read_offset < this.read_buffer.len() {
+                let available = &this.read_buffer[this.read_offset..];
+                let count = available.len().min(buf.remaining());
+                buf.put_slice(&available[..count]);
+                this.read_offset += count;
+                if this.read_offset == this.read_buffer.len() {
+                    this.read_buffer.clear();
+                    this.read_offset = 0;
+                }
+                return Poll::Ready(Ok(()));
+            }
+            if this.eof {
+                return Poll::Ready(Ok(()));
+            }
+            match this.from_network.poll_recv(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(Ok(data))) => {
+                    this.read_buffer = data;
+                    this.read_offset = 0;
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    this.eof = true;
+                    return Poll::Ready(Err(error));
+                }
+                Poll::Ready(None) => {
+                    this.eof = true;
+                    return Poll::Ready(Ok(()));
+                }
+            }
+        }
+    }
+}
+
+impl AsyncWrite for MasqueTcpStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        if this.shutdown_sent {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "masque TCP stream was shut down",
+            )));
+        }
+        // Bound one accepted write: the channel and the state machine's
+        // buffers then stay inside the recorded per-connection memory.
+        let take = buf.len().min(MAX_TCP_WRITE_CHUNK);
+        let buf = &buf[..take];
+        loop {
+            if this.write_reserve.is_none() {
+                this.write_reserve = Some(Box::pin(this.to_network.clone().reserve_owned()));
+            }
+            let future = this.write_reserve.as_mut().expect("set above");
+            match future.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(permit)) => {
+                    this.write_reserve = None;
+                    permit.send(TcpCommand::Data(buf.to_vec()));
+                    return Poll::Ready(Ok(take));
+                }
+                Poll::Ready(Err(_)) => {
+                    this.write_reserve = None;
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "masque TCP connection is closed",
+                    )));
+                }
+            }
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // Every accepted write is already queued in order; the TCP actor
+        // sends it as the window allows.
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if this.shutdown_sent {
+            return Poll::Ready(Ok(()));
+        }
+        if this.shutdown_reserve.is_none() {
+            this.shutdown_reserve = Some(Box::pin(this.to_network.clone().reserve_owned()));
+        }
+        let future = this.shutdown_reserve.as_mut().expect("set above");
+        match future.as_mut().poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(permit)) => {
+                this.shutdown_reserve = None;
+                this.shutdown_sent = true;
+                permit.send(TcpCommand::Shutdown);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(_)) => {
+                this.shutdown_reserve = None;
+                this.shutdown_sent = true;
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+}
+
+/// Drive one TCP connection over its tunnel until both directions end.
+async fn run_tcp(
+    mut session: ConnectIpSession,
+    mut connection: TcpConnection,
+    mut commands: mpsc::Receiver<TcpCommand>,
+    out: mpsc::Sender<io::Result<Vec<u8>>>,
+) {
+    let mut out = Some(out);
+    let mut deferred: Option<Vec<u8>> = None;
+    loop {
+        // Transmissions (data, ACKs, retransmissions, FIN).
+        loop {
+            let Some(packet) = connection.poll_transmit(Instant::now()) else {
+                break;
+            };
+            if packet.is_empty() {
+                continue;
+            }
+            if let Err(error) = session.send_packet(&packet) {
+                if let Some(out) = out.as_ref() {
+                    let _ = out.send(Err(error)).await;
+                }
+                return;
+            }
+        }
+        // In-order payload for the application.
+        if let Some(out) = out.as_ref() {
+            while let Some(data) = connection.take_received() {
+                if out.send(Ok(data)).await.is_err() {
+                    return;
+                }
+            }
+        } else {
+            let _ = connection.take_received();
+        }
+        if let Some(error) = connection.failure() {
+            if let Some(out) = out.as_ref() {
+                let _ = out
+                    .send(Err(io::Error::new(error.kind(), error.to_string())))
+                    .await;
+            }
+            return;
+        }
+        // The peer's FIN ends the inbound direction: deliver the buffered data
+        // (above) and then close the reader while writes may continue.
+        if connection.peer_closed() && connection.received_empty() {
+            out = None;
+        }
+        if connection.finished() {
+            return;
+        }
+        if let Some(data) = deferred.take() {
+            let accepted = connection.enqueue(&data);
+            if accepted < data.len() {
+                deferred = Some(data[accepted..].to_vec());
+            }
+        }
+        let timer = connection.next_timer();
+        let can_read = deferred.is_none() && connection.can_accept();
+        let sleep = async {
+            match timer {
+                Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = sleep => connection.on_timer(Instant::now()),
+            command = commands.recv(), if can_read => {
+                match command {
+                Some(TcpCommand::Data(data)) => {
+                    let accepted = connection.enqueue(&data);
+                    if accepted < data.len() {
+                        deferred = Some(data[accepted..].to_vec());
+                    }
+                }
+                Some(TcpCommand::Shutdown) | None => connection.shutdown(),
+                }
+            },
+            packet = session.recv_packet() => match packet {
+                Ok(packet) => connection.on_packet(&packet, Instant::now()),
+                Err(error) => {
+                    // The tunnel ended before both directions closed: report
+                    // it to the reader instead of a clean EOF.
+                    if let Some(out) = out.as_ref() {
+                        let _ = out.send(Err(error)).await;
+                    }
+                    return;
+                }
+            },
+        }
+    }
+}
+
+/// A local port for one tunnel TCP connection. The tunnel is dedicated, so
+/// collisions only matter against the peer's notion of the same connection.
+fn random_local_port() -> u16 {
+    let span = u16::MAX - FIRST_LOCAL_PORT;
+    FIRST_LOCAL_PORT + (rand::random::<u16>() % span.max(1))
+}
+
+/// Resolve a TCP target: a literal is used as is, `remote-dns-resolve` asks
+/// the configured name servers through the tunnel, otherwise the host resolves
+/// locally (the pinned adapter's default resolver).
+async fn resolve_tcp(
+    session: &mut ConnectIpSession,
+    warp: &crate::proxies::MasqueConnectIp,
+    target: &Target,
+    timeout: Duration,
+) -> Result<IpAddr, DialError> {
+    if let Ok(ip) = target.host.parse::<IpAddr>() {
+        return Ok(ip);
+    }
+    if warp.remote_dns_resolve && !warp.dns.is_empty() {
+        let deadline = Instant::now() + timeout;
+        let mut last_error = None;
+        for server in &warp.dns {
+            for qtype in [1u16, 28u16] {
+                match dns_over_tunnel(session, *server, &target.host, qtype, deadline).await {
+                    Ok(answers) => {
+                        if let Some(ip) = answers
+                            .into_iter()
+                            .find(|ip| session.local_address(*ip).is_some())
+                        {
+                            return Ok(ip);
+                        }
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+        }
+        return Err(DialError::Resolve {
+            host: target.host.clone(),
+            source: last_error.unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "masque CONNECT-IP DNS returned no address",
+                )
+            }),
+        });
+    }
+    let address = super::resolve(&target.host, target.port).await?;
+    Ok(address.ip())
+}
+
+/// One DNS query carried as a UDP packet through the tunnel.
+async fn dns_over_tunnel(
+    session: &mut ConnectIpSession,
+    server: SocketAddr,
+    host: &str,
+    qtype: u16,
+    deadline: Instant,
+) -> io::Result<Vec<IpAddr>> {
+    let local = session.local_address(server.ip()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no local {} address for the tunnel DNS server {server}",
+                if server.is_ipv4() { "IPv4" } else { "IPv6" }
+            ),
+        )
+    })?;
+    let port = random_local_port();
+    let id = rand::random::<u16>();
+    let query = dns_query(id, host, qtype)?;
+    let packet =
+        ipstack::build_udp_packet(local, server.ip(), port, server.port(), &query, HOP_LIMIT)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    session.send_packet(&packet)?;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("masque CONNECT-IP DNS query to {server} timed out"),
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let received = tokio::time::timeout(remaining, session.recv_packet()).await;
+        let packet = match received {
+            Ok(Ok(packet)) => packet,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("masque CONNECT-IP DNS query to {server} timed out"),
+                ))
+            }
+        };
+        let parsed = match ipstack::parse_ip_packet(&packet) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        let udp = match ipstack::parse_udp(&parsed) {
+            Ok(udp) => udp,
+            Err(_) => continue,
+        };
+        if udp.src != server.ip() || udp.src_port != server.port() || udp.dst_port != port {
+            continue;
+        }
+        return dns_answers(id, host, qtype, udp.payload);
     }
 }
 
@@ -996,6 +1521,12 @@ pub const DEFAULT_WARP_URI: &str = "https://cloudflareaccess.com";
 /// starts at 49152; using 40000–59999 keeps clear of the kernel's inbound
 /// listeners and of the harness ports (24000–31999) the tests use.
 const FIRST_LOCAL_PORT: u16 = 40_000;
+
+/// One accepted application write. The engine's relay buffers 32 KiB per
+/// direction; clamping here keeps one command bounded even for a caller that
+/// writes a much larger slice (the write returns a short count, which is a
+/// normal `AsyncWrite` outcome).
+const MAX_TCP_WRITE_CHUNK: usize = 32 * 1024;
 
 /// One `DATAGRAM` capsule body (RFC 9297 §2.2): Context ID then payload. The
 /// capsule form carries no quarter stream ID (the stream identifies it).

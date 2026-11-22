@@ -1626,6 +1626,18 @@ async fn masque_reclaims_peer_closed_flows_for_new_destinations() {
 const WARP_TEST_KEY: &str = "MHcCAQEEIDKh56LbUI7PTfKO5ojiPkNrK2H8jcLrmfdlhv3TsqRzoAoGCCqGSM49AwEHoUQDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+enum WarpTcpMode {
+    /// Echo every data segment; answer SYN with SYN-ACK.
+    Echo,
+    /// Answer SYN with RST (connection refused).
+    Refuse,
+    /// Ignore SYN (the dial times out).
+    Silent,
+    /// Echo the data and close the server side with FIN in the same segment.
+    FinAfterEcho,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum WarpMode {
     Accept,
     /// No `SETTINGS_H3_DATAGRAM` (0x33) and no draft-00 (0x276).
@@ -1774,6 +1786,289 @@ fn warp_pseudo_sum(src: std::net::IpAddr, dst: std::net::IpAddr, udp: &[u8], wit
         bytes.extend_from_slice(udp);
     }
     warp_sum(&bytes)
+}
+
+/// Transport checksum over the IPv4/IPv6 pseudo-header for `protocol`
+/// (independent of the kernel's implementation).
+fn warp_transport_sum(
+    src: std::net::IpAddr,
+    dst: std::net::IpAddr,
+    protocol: u8,
+    segment: &[u8],
+) -> u16 {
+    let mut bytes = Vec::new();
+    match (src, dst) {
+        (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => {
+            bytes.extend_from_slice(&src.octets());
+            bytes.extend_from_slice(&dst.octets());
+            bytes.extend_from_slice(&[0, protocol]);
+            bytes.extend_from_slice(&(segment.len() as u16).to_be_bytes());
+        }
+        (std::net::IpAddr::V6(src), std::net::IpAddr::V6(dst)) => {
+            bytes.extend_from_slice(&src.octets());
+            bytes.extend_from_slice(&dst.octets());
+            bytes.extend_from_slice(&(segment.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(&[0, 0, 0, protocol]);
+        }
+        _ => return 0xffff,
+    }
+    bytes.extend_from_slice(segment);
+    warp_sum(&bytes)
+}
+
+#[allow(dead_code)]
+struct WarpTcp<'a> {
+    src: std::net::IpAddr,
+    dst: std::net::IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    window: u16,
+    payload: &'a [u8],
+}
+
+fn warp_parse_tcp(packet: &[u8]) -> Option<WarpTcp<'_>> {
+    let (src, dst, payload) = match packet.first()? >> 4 {
+        4 => {
+            if packet.len() < 40 || packet[9] != 6 {
+                return None;
+            }
+            let header = usize::from(packet[0] & 0x0f) * 4;
+            let total = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
+            if header < 20 || total < header + 20 || total > packet.len() {
+                return None;
+            }
+            if warp_sum(&packet[..header]) != 0xffff {
+                return None;
+            }
+            (
+                std::net::IpAddr::from(<[u8; 4]>::try_from(&packet[12..16]).ok()?),
+                std::net::IpAddr::from(<[u8; 4]>::try_from(&packet[16..20]).ok()?),
+                &packet[header..total],
+            )
+        }
+        6 => {
+            if packet.len() < 60 || packet[6] != 6 {
+                return None;
+            }
+            let length = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
+            if packet.len() < 40 + length || length < 20 {
+                return None;
+            }
+            (
+                std::net::IpAddr::from(<[u8; 16]>::try_from(&packet[8..24]).ok()?),
+                std::net::IpAddr::from(<[u8; 16]>::try_from(&packet[24..40]).ok()?),
+                &packet[40..40 + length],
+            )
+        }
+        _ => return None,
+    };
+    if warp_transport_sum(src, dst, 6, payload) != 0xffff {
+        return None;
+    }
+    let header_len = usize::from(payload[12] >> 4) * 4;
+    if header_len < 20 || header_len > payload.len() {
+        return None;
+    }
+    Some(WarpTcp {
+        src,
+        dst,
+        src_port: u16::from_be_bytes([payload[0], payload[1]]),
+        dst_port: u16::from_be_bytes([payload[2], payload[3]]),
+        seq: u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]),
+        ack: u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]),
+        flags: payload[13],
+        window: u16::from_be_bytes([payload[14], payload[15]]),
+        payload: &payload[header_len..],
+    })
+}
+
+fn warp_build_tcp(
+    src: std::net::IpAddr,
+    dst: std::net::IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    mss: Option<u16>,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut segment = Vec::new();
+    segment.extend_from_slice(&src_port.to_be_bytes());
+    segment.extend_from_slice(&dst_port.to_be_bytes());
+    segment.extend_from_slice(&seq.to_be_bytes());
+    segment.extend_from_slice(&ack.to_be_bytes());
+    let options_len = if mss.is_some() { 4 } else { 0 };
+    segment.push((((20 + options_len) / 4) as u8) << 4);
+    segment.push(flags);
+    segment.extend_from_slice(&65535u16.to_be_bytes());
+    segment.extend_from_slice(&[0, 0, 0, 0]); // checksum + urgent
+    if let Some(mss) = mss {
+        segment.extend_from_slice(&[2, 4, (mss >> 8) as u8, mss as u8]);
+    }
+    segment.extend_from_slice(payload);
+    let checksum = !warp_transport_sum(src, dst, 6, &segment);
+    segment[16..18].copy_from_slice(&checksum.to_be_bytes());
+    match (src, dst) {
+        (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => {
+            let mut packet = vec![0x45, 0];
+            packet.extend_from_slice(&((20 + segment.len()) as u16).to_be_bytes());
+            packet.extend_from_slice(&[0, 0, 0x40, 0, 64, 6, 0, 0]);
+            packet.extend_from_slice(&src.octets());
+            packet.extend_from_slice(&dst.octets());
+            let checksum = !warp_sum(&packet);
+            packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+            packet.extend_from_slice(&segment);
+            packet
+        }
+        (std::net::IpAddr::V6(src), std::net::IpAddr::V6(dst)) => {
+            let mut packet = vec![0x60, 0, 0, 0];
+            packet.extend_from_slice(&(segment.len() as u16).to_be_bytes());
+            packet.extend_from_slice(&[6, 64]);
+            packet.extend_from_slice(&src.octets());
+            packet.extend_from_slice(&dst.octets());
+            packet.extend_from_slice(&segment);
+            packet
+        }
+        _ => Vec::new(),
+    }
+}
+
+struct WarpTcpState {
+    server_seq: u32,
+    rcv_nxt: u32,
+    fin_sent: bool,
+}
+
+fn warp_tcp_respond(
+    state: &mut Option<WarpTcpState>,
+    packet: &[u8],
+    mode: WarpTcpMode,
+    log: &PeerLog,
+) -> Option<Vec<u8>> {
+    let segment = warp_parse_tcp(packet)?;
+    note(
+        log,
+        format!(
+            "tcp seg flags={:#04x} seq={} ack={} len={}",
+            segment.flags,
+            segment.seq,
+            segment.ack,
+            segment.payload.len()
+        ),
+    );
+    const SYN: u8 = 0x02;
+    const FIN: u8 = 0x01;
+    const RST: u8 = 0x04;
+    const ACK: u8 = 0x10;
+    if segment.flags & RST != 0 {
+        return None;
+    }
+    if segment.flags & SYN != 0 {
+        note(&log, "tcp syn");
+        if mode == WarpTcpMode::Silent {
+            return None;
+        }
+        if mode == WarpTcpMode::Refuse {
+            note(&log, "tcp rst");
+            return Some(warp_build_tcp(
+                segment.dst,
+                segment.src,
+                segment.dst_port,
+                segment.src_port,
+                0,
+                segment.seq.wrapping_add(1),
+                RST | ACK,
+                None,
+                &[],
+            ));
+        }
+        *state = Some(WarpTcpState {
+            // The SYN occupies one sequence number, so data starts at 0x5001.
+            server_seq: 0x5001,
+            rcv_nxt: segment.seq.wrapping_add(1),
+            fin_sent: false,
+        });
+        return Some(warp_build_tcp(
+            segment.dst,
+            segment.src,
+            segment.dst_port,
+            segment.src_port,
+            0x5000,
+            segment.seq.wrapping_add(1),
+            SYN | ACK,
+            Some(1460),
+            &[],
+        ));
+    }
+    let Some(state) = state.as_mut() else {
+        return None;
+    };
+    if segment.flags & FIN != 0 {
+        state.rcv_nxt = state
+            .rcv_nxt
+            .wrapping_add(segment.payload.len() as u32)
+            .wrapping_add(1);
+        note(&log, "tcp fin");
+        let flags = if state.fin_sent { ACK } else { ACK | FIN };
+        state.fin_sent = true;
+        return Some(warp_build_tcp(
+            segment.dst,
+            segment.src,
+            segment.dst_port,
+            segment.src_port,
+            state.server_seq,
+            state.rcv_nxt,
+            flags,
+            None,
+            &[],
+        ));
+    }
+    if segment.payload.is_empty() {
+        return None;
+    }
+    state.rcv_nxt = state
+        .rcv_nxt
+        .wrapping_add(segment.payload.len() as u32);
+    note(
+        &log,
+        format!("tcp data bytes={} payload={}", segment.payload.len(), String::from_utf8_lossy(segment.payload)),
+    );
+    let flags = if mode == WarpTcpMode::FinAfterEcho && !state.fin_sent {
+        ACK | FIN
+    } else {
+        ACK
+    };
+    if flags & FIN != 0 {
+        state.fin_sent = true;
+    }
+    let reply = warp_build_tcp(
+        segment.dst,
+        segment.src,
+        segment.dst_port,
+        segment.src_port,
+        state.server_seq,
+        state.rcv_nxt,
+        flags,
+        None,
+        segment.payload,
+    );
+    state.server_seq = state.server_seq.wrapping_add(segment.payload.len() as u32);
+    if flags & FIN != 0 {
+        state.server_seq = state.server_seq.wrapping_add(1);
+    }
+    Some(reply)
+}
+
+fn warp_ip_protocol(packet: &[u8]) -> Option<u8> {
+    match packet.first()? >> 4 {
+        4 => Some(*packet.get(9)?),
+        6 => Some(*packet.get(6)?),
+        _ => None,
+    }
 }
 
 struct WarpUdp<'a> {
@@ -1952,6 +2247,7 @@ fn dns_name_of(query: &[u8]) -> String {
 async fn handle_warp_connection(
     connection: quinn::Connection,
     mode: WarpMode,
+    tcp_mode: WarpTcpMode,
     log: PeerLog,
 ) -> io::Result<()> {
     let mut control = connection.open_uni().await?;
@@ -2054,9 +2350,11 @@ async fn handle_warp_connection(
             }
         }
     });
-    // Datagram echo loop.
+    // Datagram echo loop: UDP packets are echoed, TCP segments drive the
+    // server side of one connection.
+    let mut tcp_state = None;
     loop {
-        let datagram = match connection.read_datagram().await {
+        let mut datagram = match connection.read_datagram().await {
             Ok(datagram) => datagram,
             Err(_) => return Ok(()),
         };
@@ -2068,28 +2366,45 @@ async fn handle_warp_connection(
             note(&log, format!("datagram-quarter={stream}"));
             continue;
         }
-        let Some(context) = take_varint(&datagram, &mut pos) else {
+        let Some(context) = take_varint(&mut datagram, &mut pos) else {
             continue;
         };
         if context != 0 {
             continue;
         }
-        match warp_answer(&datagram[pos..], &log) {
-            Some(reply) => {
-                let mut datagram = Vec::new();
-                put_varint(quarter, &mut datagram);
-                put_varint(0, &mut datagram);
-                datagram.extend_from_slice(&reply);
-                if connection.send_datagram(datagram.into()).is_err() {
-                    return Ok(());
+        let packet = &datagram[pos..];
+        let reply = if warp_ip_protocol(packet) == Some(6) {
+            warp_tcp_respond(&mut tcp_state, packet, tcp_mode, &log)
+        } else {
+            match warp_answer(packet, &log) {
+                Some(reply) => Some(reply),
+                None => {
+                    note(&log, "unparseable-ip-packet");
+                    None
                 }
             }
-            None => note(&log, "unparseable-ip-packet"),
+        };
+        if let Some(reply) = reply {
+            let mut datagram = Vec::new();
+            put_varint(quarter, &mut datagram);
+            put_varint(0, &mut datagram);
+            datagram.extend_from_slice(&reply);
+            if connection.send_datagram(datagram.into()).is_err() {
+                return Ok(());
+            }
         }
     }
 }
 
 async fn spawn_warp_peer(mode: WarpMode, cert: Cert) -> (u16, PeerLog) {
+    spawn_warp_peer_with(mode, WarpTcpMode::Echo, cert).await
+}
+
+async fn spawn_warp_peer_with(
+    mode: WarpMode,
+    tcp_mode: WarpTcpMode,
+    cert: Cert,
+) -> (u16, PeerLog) {
     let port = free_udp_port();
     let log: PeerLog = Arc::new(Mutex::new(Vec::new()));
     let config = warp_server_config(&cert, &log);
@@ -2107,7 +2422,7 @@ async fn spawn_warp_peer(mode: WarpMode, cert: Cert) -> (u16, PeerLog) {
                         return;
                     }
                 };
-                let _ = handle_warp_connection(connection, mode, log).await;
+                let _ = handle_warp_connection(connection, mode, tcp_mode, log).await;
             });
         }
     });
@@ -2417,17 +2732,166 @@ async fn masque_connect_ip_records_the_assignment_and_bounds_the_mtu() {
         .expect("a datagram at the MTU limit is sent");
 }
 
+fn start_warp_kernel_with_limits(
+    peer_port: u16,
+    endpoint_key: &str,
+    extra: &str,
+    limits: Limits,
+) -> Kernel {
+    let yaml = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2{extra}}}\nrules:\n  - MATCH,mq\n",
+        free_port()
+    );
+    let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits)
+        .unwrap_or_else(|e| panic!("kernel rejected the CONNECT-IP config: {e}\n{yaml}"));
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    kernel
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn masque_connect_ip_tcp_dial_is_refused_by_name() {
-    // No peer is needed: the TCP path is refused before any connection.
+async fn masque_connect_ip_carries_a_tcp_stream() {
     let cert = make_warp_cert("warp-tcp");
     let endpoint_key = warp_endpoint_public_key(&cert);
-    let port = free_udp_port();
-    let mut kernel = start_warp_kernel(port, &endpoint_key, "");
-    let (tunnel, status) = common::http_connect(kernel.listen_addr(), "127.0.0.1:9")
+    let (peer_port, log) = spawn_warp_peer(WarpMode::Accept, cert).await;
+    let mut kernel = start_warp_kernel(peer_port, &endpoint_key, "");
+    let mut stream = tokio::time::timeout(
+        Duration::from_secs(10),
+        common::socks5_connect(kernel.listen_addr(), "198.51.100.7", 80),
+    )
+    .await
+    .expect("SOCKS5 connect timed out")
+    .expect("the TCP tunnel must be established");
+    stream.write_all(b"tcp-over-connect-ip").await.unwrap();
+    let mut buffer = [0u8; 64];
+    let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer))
         .await
+        .expect("the echo timed out")
         .unwrap();
-    drop(tunnel);
-    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    assert_eq!(&buffer[..read], b"tcp-over-connect-ip");
+    // Half-close: FIN travels through the tunnel and the peer answers.
+    stream.shutdown().await.unwrap();
+    let eof = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer))
+        .await
+        .expect("the close timed out")
+        .unwrap();
+    assert_eq!(eof, 0, "the peer's FIN must end the stream");
+
+    let lines = log.lock().unwrap().clone();
+    assert!(lines.iter().any(|line| line == "tcp syn"), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "tcp data bytes=19 payload=tcp-over-connect-ip"),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|line| line == "tcp fin"), "{lines:?}");
+    assert!(lines.iter().any(|line| line == "method=CONNECT"), "{lines:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_tcp_refusal_is_a_502() {
+    let cert = make_warp_cert("warp-tcp-rst");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, log) = spawn_warp_peer_with(WarpMode::Accept, WarpTcpMode::Refuse, cert).await;
+    let mut kernel = start_warp_kernel(peer_port, &endpoint_key, "");
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        common::socks5_connect(kernel.listen_addr(), "198.51.100.7", 80),
+    )
+    .await
+    .expect("SOCKS5 connect timed out")
+    .expect_err("a RST must refuse the tunnel");
+    assert!(error.to_string().contains("socks reply code"), "{error}");
+    assert!(wait_for_peer_log(&log, "tcp rst").await, "{log:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_tcp_timeout_is_reported() {
+    let cert = make_warp_cert("warp-tcp-silent");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, log) = spawn_warp_peer_with(WarpMode::Accept, WarpTcpMode::Silent, cert).await;
+    let mut fast = limits();
+    fast.dial_timeout = Duration::from_secs(2);
+    let mut kernel = start_warp_kernel_with_limits(peer_port, &endpoint_key, "", fast);
+    let started = std::time::Instant::now();
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        common::socks5_connect(kernel.listen_addr(), "198.51.100.7", 80),
+    )
+    .await
+    .expect("SOCKS5 connect hung")
+    .expect_err("an unanswered SYN must fail");
+    assert!(error.to_string().contains("socks reply code"), "{error}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(1500),
+        "the dial must wait for its timeout: {:?}",
+        started.elapsed()
+    );
+    assert!(wait_for_peer_log(&log, "tcp syn").await, "{log:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_tcp_rejects_a_wrong_endpoint_pin() {
+    let cert = make_warp_cert("warp-tcp-pin");
+    let wrong = billow_kernel::outbound::warp::base64_encode(
+        &billow_kernel::outbound::warp::parse_private_key(WARP_TEST_KEY)
+            .unwrap()
+            .spki,
+    );
+    let (peer_port, log) = spawn_warp_peer(WarpMode::Accept, cert).await;
+    let mut kernel = start_warp_kernel(peer_port, &wrong, "");
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        common::socks5_connect(kernel.listen_addr(), "198.51.100.7", 80),
+    )
+    .await
+    .expect("SOCKS5 connect timed out")
+    .expect_err("a wrong endpoint pin must refuse the TCP dial");
+    assert!(error.to_string().contains("socks reply code"), "{error}");
+    // The TLS handshake reaches the peer but the certificate is refused by
+    // the client's pin check, so no TCP SYN is sent.
+    assert!(!peer_log_has(&log, "tcp syn"), "{log:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_tcp_half_close_delivers_eof() {
+    let cert = make_warp_cert("warp-tcp-fin");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, log) =
+        spawn_warp_peer_with(WarpMode::Accept, WarpTcpMode::FinAfterEcho, cert).await;
+    let mut kernel = start_warp_kernel(peer_port, &endpoint_key, "");
+    let mut stream = tokio::time::timeout(
+        Duration::from_secs(10),
+        common::socks5_connect(kernel.listen_addr(), "198.51.100.7", 80),
+    )
+    .await
+    .expect("SOCKS5 connect timed out")
+    .expect("the TCP tunnel must be established");
+    stream.write_all(b"half-close").await.unwrap();
+    let mut buffer = [0u8; 64];
+    let mut received = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let read = tokio::time::timeout_at(deadline, stream.read(&mut buffer[received..]))
+            .await
+            .expect("the echo/FIN timed out")
+            .unwrap();
+        if read == 0 {
+            break;
+        }
+        received += read;
+    }
+    assert_eq!(&buffer[..received], b"half-close");
+    // The peer closed its direction; ours stays open until the app half-closes.
+    assert!(
+        !peer_log_has(&log, "tcp fin"),
+        "the client has not half-closed yet: {log:?}"
+    );
+    stream.shutdown().await.unwrap();
+    assert!(wait_for_peer_log(&log, "tcp fin").await, "{log:?}");
     kernel.stop().unwrap();
 }

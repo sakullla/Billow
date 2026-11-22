@@ -25,6 +25,7 @@ pub mod mieru;
 pub mod openvpn;
 pub mod shadowsocks;
 pub mod tailscale;
+pub mod tcp;
 pub mod zerotier;
 pub mod shadowquic;
 pub mod snell;

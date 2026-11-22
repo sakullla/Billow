@@ -37,8 +37,10 @@ pub const IPV4_UDP_OVERHEAD: usize = 28;
 /// IPv6 + UDP overhead (40 + 8 bytes).
 pub const IPV6_UDP_OVERHEAD: usize = 48;
 
-const IPPROTO_TCP: u8 = 6;
-const IPPROTO_UDP: u8 = 17;
+/// IP protocol number of TCP (RFC 793).
+pub const IPPROTO_TCP: u8 = 6;
+/// IP protocol number of UDP.
+pub const IPPROTO_UDP: u8 = 17;
 
 /// One local address of the tunnel, in the shape of the `ip`/`ipv6` options
 /// (an address without a prefix length is a host prefix, as in the pinned
@@ -220,12 +222,12 @@ fn parse_ipv6(bytes: &[u8]) -> Result<IpPacket<'_>, IpError> {
         )));
     }
     let next_header = bytes[6];
-    if next_header != IPPROTO_UDP && next_header != 58 {
-        // 58 == ICMPv6 is reported as unsupported rather than walked; every
-        // other value (extension headers, TCP, ESP) is unsupported too, but
-        // the message names what was seen.
+    if next_header != IPPROTO_UDP && next_header != IPPROTO_TCP && next_header != 58 {
+        // 58 == ICMPv6 is kept so the caller can report it; every other value
+        // (extension headers, ESP) is unsupported, but the message names what
+        // was seen instead of guessing.
         return Err(IpError::Unsupported(format!(
-            "IPv6 next header {next_header} (only UDP and ICMPv6 are recognised, extension headers are not walked)"
+            "IPv6 next header {next_header} (only UDP, TCP and ICMPv6 are recognised, extension headers are not walked)"
         )));
     }
     let mut src = [0u8; 16];
@@ -295,10 +297,70 @@ pub fn parse_udp<'a>(packet: &'a IpPacket<'a>) -> Result<UdpDatagram<'a>, IpErro
     })
 }
 
-/// Build one IPv4 or IPv6 packet carrying one UDP datagram. The source and
-/// destination must be the same family; `hop_limit` is the IPv4 TTL / IPv6
-/// Hop Limit (the tunnel sets a fixed value, nothing decrements it here
-/// because the packet is not routed).
+/// Build one IPv4 or IPv6 packet. The source and destination must be the same
+/// family; `hop_limit` is the IPv4 TTL / IPv6 Hop Limit (the tunnel sets a
+/// fixed value, nothing decrements it here because the packet is not routed).
+/// The transport header (UDP/TCP) is `payload` and its checksum must already be
+/// filled in: [`transport_checksum`] computes it over the pseudo-header.
+pub fn build_packet(
+    src: IpAddr,
+    dst: IpAddr,
+    protocol: u8,
+    payload: &[u8],
+    hop_limit: u8,
+) -> Result<Vec<u8>, IpError> {
+    match (src, dst) {
+        (IpAddr::V4(src), IpAddr::V4(dst)) => {
+            let total = 20 + payload.len();
+            if total > usize::from(u16::MAX) {
+                return Err(IpError::Malformed(format!(
+                    "{} bytes exceeds the IPv4 maximum of {}",
+                    payload.len(),
+                    usize::from(u16::MAX) - 20
+                )));
+            }
+            let mut packet = Vec::with_capacity(total);
+            packet.push(0x45);
+            packet.push(0);
+            packet.extend_from_slice(&(total as u16).to_be_bytes());
+            packet.extend_from_slice(&[0, 0]); // identification
+            packet.extend_from_slice(&[0x40, 0x00]); // DF, no fragment
+            packet.push(hop_limit);
+            packet.push(protocol);
+            packet.extend_from_slice(&[0, 0]); // checksum placeholder
+            packet.extend_from_slice(&src.octets());
+            packet.extend_from_slice(&dst.octets());
+            let header_checksum = internet_checksum(&packet[..20]);
+            packet[10..12].copy_from_slice(&header_checksum.to_be_bytes());
+            packet.extend_from_slice(payload);
+            Ok(packet)
+        }
+        (IpAddr::V6(src), IpAddr::V6(dst)) => {
+            if payload.len() > usize::from(u16::MAX) {
+                return Err(IpError::Malformed(format!(
+                    "{} bytes exceeds the IPv6 payload maximum of {}",
+                    payload.len(),
+                    usize::from(u16::MAX)
+                )));
+            }
+            let mut packet = Vec::with_capacity(40 + payload.len());
+            packet.push(0x60);
+            packet.extend_from_slice(&[0, 0, 0]); // traffic class / flow label
+            packet.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            packet.push(protocol);
+            packet.push(hop_limit);
+            packet.extend_from_slice(&src.octets());
+            packet.extend_from_slice(&dst.octets());
+            packet.extend_from_slice(payload);
+            Ok(packet)
+        }
+        _ => Err(IpError::Malformed(
+            "source and destination are different address families".to_string(),
+        )),
+    }
+}
+
+/// Build one IPv4 or IPv6 packet carrying one UDP datagram.
 pub fn build_udp_packet(
     src: IpAddr,
     dst: IpAddr,
@@ -307,74 +369,15 @@ pub fn build_udp_packet(
     payload: &[u8],
     hop_limit: u8,
 ) -> Result<Vec<u8>, IpError> {
-    match (src, dst) {
-        (IpAddr::V4(src), IpAddr::V4(dst)) => {
-            let total = IPV4_UDP_OVERHEAD + payload.len();
-            if total > usize::from(u16::MAX) {
-                return Err(IpError::Malformed(format!(
-                    "{} bytes exceeds the IPv4 maximum of {}",
-                    payload.len(),
-                    usize::from(u16::MAX) - IPV4_UDP_OVERHEAD
-                )));
-            }
-            let mut udp = Vec::with_capacity(8 + payload.len());
-            udp.extend_from_slice(&src_port.to_be_bytes());
-            udp.extend_from_slice(&dst_port.to_be_bytes());
-            udp.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
-            udp.extend_from_slice(&[0, 0]);
-            udp.extend_from_slice(payload);
-            let checksum = udp_checksum(IpAddr::V4(src), IpAddr::V4(dst), &udp);
-            udp[6..8].copy_from_slice(&checksum.to_be_bytes());
-
-            let mut packet = Vec::with_capacity(total);
-            packet.push(0x45);
-            packet.push(0);
-            packet.extend_from_slice(&(total as u16).to_be_bytes());
-            packet.extend_from_slice(&[0, 0]); // identification
-            packet.extend_from_slice(&[0x40, 0x00]); // DF, no fragment
-            packet.push(hop_limit);
-            packet.push(IPPROTO_UDP);
-            packet.extend_from_slice(&[0, 0]); // checksum placeholder
-            packet.extend_from_slice(&src.octets());
-            packet.extend_from_slice(&dst.octets());
-            let header_checksum = internet_checksum(&packet[..20]);
-            packet[10..12].copy_from_slice(&header_checksum.to_be_bytes());
-            packet.extend_from_slice(&udp);
-            Ok(packet)
-        }
-        (IpAddr::V6(src), IpAddr::V6(dst)) => {
-            let payload_len = 8 + payload.len();
-            if payload_len > usize::from(u16::MAX) {
-                return Err(IpError::Malformed(format!(
-                    "{} bytes exceeds the IPv6 payload maximum of {}",
-                    payload.len(),
-                    usize::from(u16::MAX) - 8
-                )));
-            }
-            let mut udp = Vec::with_capacity(payload_len);
-            udp.extend_from_slice(&src_port.to_be_bytes());
-            udp.extend_from_slice(&dst_port.to_be_bytes());
-            udp.extend_from_slice(&(payload_len as u16).to_be_bytes());
-            udp.extend_from_slice(&[0, 0]);
-            udp.extend_from_slice(payload);
-            let checksum = udp_checksum(IpAddr::V6(src), IpAddr::V6(dst), &udp);
-            udp[6..8].copy_from_slice(&checksum.to_be_bytes());
-
-            let mut packet = Vec::with_capacity(40 + payload_len);
-            packet.push(0x60);
-            packet.extend_from_slice(&[0, 0, 0]); // traffic class / flow label
-            packet.extend_from_slice(&(payload_len as u16).to_be_bytes());
-            packet.push(IPPROTO_UDP);
-            packet.push(hop_limit);
-            packet.extend_from_slice(&src.octets());
-            packet.extend_from_slice(&dst.octets());
-            packet.extend_from_slice(&udp);
-            Ok(packet)
-        }
-        _ => Err(IpError::Malformed(
-            "source and destination are different address families".to_string(),
-        )),
-    }
+    let mut udp = Vec::with_capacity(8 + payload.len());
+    udp.extend_from_slice(&src_port.to_be_bytes());
+    udp.extend_from_slice(&dst_port.to_be_bytes());
+    udp.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+    udp.extend_from_slice(&[0, 0]);
+    udp.extend_from_slice(payload);
+    let checksum = transport_checksum(src, dst, IPPROTO_UDP, &udp);
+    udp[6..8].copy_from_slice(&checksum.to_be_bytes());
+    build_packet(src, dst, IPPROTO_UDP, &udp, hop_limit)
 }
 
 /// The RFC 1071 one's-complement sum used by both checksums.
@@ -409,8 +412,12 @@ fn internet_checksum(bytes: &[u8]) -> u16 {
 /// UDP checksum over the IPv4/IPv6 pseudo-header. `udp` carries its checksum
 /// field (zero while computing). A result of zero is sent as `0xffff` for
 /// IPv6, where a zero checksum means "none".
-fn udp_checksum(src: IpAddr, dst: IpAddr, udp: &[u8]) -> u16 {
-    let sum = udp_checksum_sum(src, dst, udp);
+/// The pseudo-header checksum of one transport segment (UDP or TCP). The
+/// segment must carry a zero checksum field while computing; a result of zero
+/// is returned as `0xffff` for IPv6, where a zero TCP/UDP checksum means
+/// "none".
+pub fn transport_checksum(src: IpAddr, dst: IpAddr, protocol: u8, segment: &[u8]) -> u16 {
+    let sum = transport_checksum_sum(src, dst, protocol, segment);
     let checksum = !checksum_fold(sum);
     if checksum == 0 && src.is_ipv6() {
         0xffff
@@ -419,25 +426,36 @@ fn udp_checksum(src: IpAddr, dst: IpAddr, udp: &[u8]) -> u16 {
     }
 }
 
-fn udp_checksum_valid(src: IpAddr, dst: IpAddr, udp: &[u8]) -> bool {
-    checksum_fold(udp_checksum_sum(src, dst, udp)) == 0xffff
+/// Whether the checksum field of `segment` is correct (the folded sum of the
+/// pseudo-header and the segment, checksum field included, is `0xffff`).
+pub fn transport_checksum_valid(
+    src: IpAddr,
+    dst: IpAddr,
+    protocol: u8,
+    segment: &[u8],
+) -> bool {
+    checksum_fold(transport_checksum_sum(src, dst, protocol, segment)) == 0xffff
 }
 
-fn udp_checksum_sum(src: IpAddr, dst: IpAddr, udp: &[u8]) -> u32 {
+fn udp_checksum_valid(src: IpAddr, dst: IpAddr, udp: &[u8]) -> bool {
+    transport_checksum_valid(src, dst, IPPROTO_UDP, udp)
+}
+
+fn transport_checksum_sum(src: IpAddr, dst: IpAddr, protocol: u8, segment: &[u8]) -> u32 {
     match (src, dst) {
         (IpAddr::V4(src), IpAddr::V4(dst)) => checksum_accumulate(&[
             &src.octets(),
             &dst.octets(),
-            &[0, IPPROTO_UDP],
-            &(udp.len() as u16).to_be_bytes(),
-            udp,
+            &[0, protocol],
+            &(segment.len() as u16).to_be_bytes(),
+            segment,
         ]),
         (IpAddr::V6(src), IpAddr::V6(dst)) => checksum_accumulate(&[
             &src.octets(),
             &dst.octets(),
-            &(udp.len() as u32).to_be_bytes(),
-            &[0, 0, 0, IPPROTO_UDP],
-            udp,
+            &(segment.len() as u32).to_be_bytes(),
+            &[0, 0, 0, protocol],
+            segment,
         ]),
         _ => 0,
     }

@@ -638,7 +638,7 @@
     },
     "masque": {
       "status": "partial",
-      "reason": "T18 implements both shapes the pinned adapter serves. (1) RFC 9484 CONNECT-IP over HTTP/3 for the Cloudflare WARP configuration: the base64 SEC1 P-256 client key generates the pinned adapter's self-signed client certificate, `public-key` (a DER SubjectPublicKeyInfo) pins the endpoint certificate, and the request is `:method CONNECT`, `:protocol cf-connect-ip`, `:scheme https`, `:authority`/`:path` from `uri` (default https://cloudflareaccess.com) with `capsule-protocol: ?1`. The client advertises ROUTE_ADVERTISEMENT (0.0.0.0-255.255.255.255 and ::-all-ones, protocol 0, as the pinned adapter does), reads ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT, and carries whole IPv4/IPv6 packets as HTTP Datagrams (QUIC DATAGRAM frames with quarter stream ID + Context ID 0; inbound DATAGRAM capsules are accepted too). `ip`/`ipv6` are the tunnel's local addresses, `mtu` bounds one packet, `ip-stack.mode auto|mips` selects the stack (the in-tree UDP-only one; gVisor is the pinned build-tagged dependency and is rejected), and `remote-dns-resolve`+`dns` send A/AAAA queries through the tunnel. The kernel's minimal IP stack (src/outbound/ipstack.rs) terminates UDP only: a TCP dial is refused by name because serving TCP needs a TCP state machine (the pinned adapter uses mipstack/gVisor). (2) The RFC 9298 CONNECT-UDP subset from T14 still serves a plain server with `udp: true`. One QUIC connection per UDP association (no pooling), QUIC datagrams rather than capsule-carried datagrams for sending, no server push/WebTransport/0-RTT; `network: h2|h3-l4proxy`, the QUIC congestion-controller options and `dialer-proxy` are named.",
+      "reason": "T18 implements both shapes the pinned adapter serves; T21 adds TCP termination for CONNECT-IP. (1) RFC 9484 CONNECT-IP over HTTP/3 for the Cloudflare WARP configuration: the base64 SEC1 P-256 client key generates the pinned adapter's self-signed client certificate, `public-key` (a DER SubjectPublicKeyInfo) pins the endpoint certificate, and the request is `:method CONNECT`, `:protocol cf-connect-ip`, `:scheme https`, `:authority`/`:path` from `uri` (default https://cloudflareaccess.com) with `capsule-protocol: ?1`. ROUTE_ADVERTISEMENT is sent and ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT are read; whole IPv4/IPv6 packets travel as HTTP Datagrams. UDP is served by the in-tree UDP codec and TCP by the in-tree minimal TCP client (`outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS and peer-window limits, retransmission with RFC 6298-style backoff, fast retransmit, in-order delivery with bounded reordering, half-close); one tunnel and one TCP connection per `dial`. the `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` options keep their T18 semantics. (2) The RFC 9298 CONNECT-UDP subset from T14 still serves a plain server with `udp: true`; it carries UDP only (RFC 9298 has no TCP path), so a TCP dial through that shape is refused by name. `network: h2|h3-l4proxy`, the QUIC congestion-controller options, `dialer-proxy`, gVisor and passive/simultaneous-open TCP are named.",
       "options": [
         "server",
         "port",
@@ -670,10 +670,12 @@
         "uri: template variable"
       ],
       "notImplemented": [
-        "TCP over masque (CONNECT-IP carries IP packets; serving TCP needs a TCP state machine the kernel does not have)",
+        "TCP over CONNECT-UDP (RFC 9298 carries UDP only; TCP needs the CONNECT-IP/WARP shape)",
+        "passive TCP (the kernel only initiates), simultaneous open, TCP urgent data",
+        "window scaling (RFC 7323), SACK and timestamps are not negotiated",
+        "network",
         "HTTP/2 CONNECT-IP (`network: h2`)",
         "h3-l4proxy (`network: h3-l4proxy`)",
-        "network",
         "ip-stack.mode: gvisor (the pinned build-tagged gVisor dependency)",
         "congestion-controller",
         "cwnd",
@@ -683,24 +685,21 @@
         "URI templates / IP flow forwarding (RFC 9484 §8.2)",
         "ADDRESS_REQUEST from the peer (no address-assignment policy)",
         "IPv6 extension headers and IPv4 fragments (reported and dropped, not reassembled)",
-        "ICMP error generation (a datagram too large for the QUIC datagram limit is an error, not a synthesised ICMP)",
+        "ICMP error generation",
         "server push",
         "WebTransport",
         "0-RTT",
         "connection pooling",
-        "DATA frames larger than 2 KiB on the CONNECT-IP request stream are refused (local bound)",
-        "more than 32 concurrent destinations/flows per association (local bound)"
+        "DATA frames larger than 2 KiB, capsules larger than 1536 bytes and more than 32 UDP flows per association (local bounds)",
+        "TCP retransmission is go-back-N on the oldest unacked segment with a fixed 1 s initial RTO (no RTT estimation), a 64 KiB send/receive buffer and no persist timer on a zero window"
       ],
       "notes": [
-        "the client is written from RFC 9484, 9298, 9297, 9220 and 9114 plus the pinned adapter's recorded configuration shape; no pinned Go code (metacubex/connect-ip-go, mipstack, gVisor, quic-go, metacubex/http) is vendored, linked or copied. DER/base64/calendar helpers in src/outbound/warp.rs and the IP/UDP codec in src/outbound/ipstack.rs are original code; the signature comes from `ring`, already the TLS provider",
-        "the controlled CONNECT-IP peer in tests/quic_peers.rs is an independent quinn HTTP/3 server with its own IP/UDP codec; it requires the WARP client certificate (recording the SubjectPublicKeyInfo), advertises extended CONNECT plus SETTINGS_H3_DATAGRAM 0x33 and draft-00 0x276, sends ADDRESS_ASSIGN and echoes tunnelled packets; a second peer mode omits datagram settings and a third sends ADDRESS_REQUEST",
+        "the client is written from RFC 9484, 9298, 9297, 9220, 9114 and 793/1122/6298 plus the pinned adapter's recorded configuration shape; no pinned Go code (metacubex/connect-ip-go, mipstack, gVisor, quic-go, metacubex/http) is vendored, linked or copied. DER/base64/calendar helpers, the IP/UDP codec and the TCP state machine are original code; the ECDSA signature comes from `ring`, already the TLS provider",
+        "the controlled CONNECT-IP peer in tests/quic_peers.rs is an independent quinn HTTP/3 server with its own IPv4/IPv6 TCP and UDP codecs; it requires the WARP client certificate, advertises 0x08/0x33/0x276, answers `cf-connect-ip`, assigns addresses and echoes tunnelled TCP (SYN-ACK, data, FIN) and UDP",
         "no pinned-binary masque interop is claimed: the pinned adapter has no listener and a WARP registration endpoint is not reachable offline",
-        "T7 memory: the CONNECT-IP association uses the T10 quinn profile (stream receive window 512 KiB, connection receive 2 MiB, send 2 MiB) plus 64 KiB datagram receive/send buffers, one request stream with a 2 KiB DATA-frame and 4 KiB capsule bound, 4 queued inbound packets, 32 flows and at most 8 held datagrams during a DNS lookup; the per-association worst case (~5.3 MB decimal) is in t18-feasibility.json and T7 must cap concurrent associations",
+        "T7 memory: a UDP association is ~5.14 MB decimal and a TCP dial (one tunnel + one connection) ~5.2 MB decimal analytic worst case, both dominated by T10's 4.7 MB of QUIC windows; see t18-feasibility.json and t21-feasibility.json. The engine opens one tunnel per UDP ASSOCIATE and one per TCP dial, so T7 must cap concurrent masque sessions",
         "`name-cert-verify` is a pinned placeholder that verifies nothing, so it is accepted as a no-op; `skip-cert-verify` drops the endpoint-key pin exactly like the pinned option",
-        "IPv4 options, IPv4 fragments, IPv6 extension headers, TCP and ICMP are refused/dropped with a log line; nothing is silently forwarded",
-        "`ip-stack.congestion-controller` values (cubic/reno/bbr/bbr3) are validated and accepted as a no-op: they select the TCP congestion controller of the userspace stack, and TCP is not terminated (the same gap as TCP over masque)",
-        "the shipped CLI process is covered: cli.rs::process_loads_t18_masque_connect_ip (WARP shape loads, TCP refused, process stays up) and family_cli.rs::cli_process_tunnels_udp_through_masque_connect_ip (SOCKS5 UDP ASSOCIATE through a CONNECT-IP peer)",
-        "the client does not send ADDRESS_REQUEST (the pinned adapter uses the configured ip/ipv6 prefixes and the server's ADDRESS_ASSIGN); a peer ADDRESS_REQUEST fails the association by name"
+        "the shipped CLI process is covered: cli.rs::process_loads_t18_masque_connect_ip, family_cli.rs::cli_process_tunnels_udp_through_masque_connect_ip and family_cli.rs::cli_process_tunnels_tcp_through_masque_connect_ip"
       ],
       "evidence": [
         "src/outbound/ipstack.rs::tests::prefix_parsing_matches_the_pinned_defaults",
@@ -744,7 +743,22 @@
         "crates/billow-kernel-cli/tests/cli.rs::process_loads_t18_masque_connect_ip",
         "crates/billow-kernel-cli/tests/cli.rs::process_loads_t14_masque",
         "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_udp_through_masque_connect_ip",
-        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_udp_through_masque"
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_udp_through_masque",
+        "src/outbound/tcp.rs::tests::segment_codec_round_trips_and_validates_the_checksum",
+        "src/outbound/tcp.rs::tests::handshake_and_bidirectional_data",
+        "src/outbound/tcp.rs::tests::data_is_clamped_by_the_peer_mss_and_window",
+        "src/outbound/tcp.rs::tests::a_lost_segment_is_retransmitted_with_backoff",
+        "src/outbound/tcp.rs::tests::a_reset_fails_the_connection",
+        "src/outbound/tcp.rs::tests::half_close_and_fin_acknowledgement",
+        "src/outbound/tcp.rs::tests::out_of_order_data_is_reordered_before_delivery",
+        "src/outbound/tcp.rs::tests::retransmitted_old_data_is_acknowledged_again",
+        "src/outbound/tcp.rs::tests::a_syn_without_an_answer_times_out",
+        "tests/quic_peers.rs::masque_connect_ip_carries_a_tcp_stream",
+        "tests/quic_peers.rs::masque_connect_ip_tcp_refusal_is_a_502",
+        "tests/quic_peers.rs::masque_connect_ip_tcp_timeout_is_reported",
+        "tests/quic_peers.rs::masque_connect_ip_tcp_half_close_delivers_eof",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_tcp_through_masque_connect_ip",
+        "tests/quic_peers.rs::masque_connect_ip_tcp_rejects_a_wrong_endpoint_pin"
       ]
     },
     "sudoku": {

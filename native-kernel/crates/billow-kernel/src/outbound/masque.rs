@@ -415,21 +415,29 @@ impl Drop for MasqueUdp {
     }
 }
 
-/// TCP through masque: CONNECT-UDP cannot carry it, and CONNECT-IP carries
-/// whole IP packets that this kernel terminates for UDP only (no TCP state
-/// machine), so the dial fails with the reason instead of bypassing the proxy.
+/// TCP through masque. The pinned WARP shape carries whole IP packets, so the
+/// kernel terminates TCP with its own minimal state machine
+/// ([`super::tcp`]) and returns the resulting stream. The RFC 9298 CONNECT-UDP
+/// subset carries UDP only by definition, so a TCP dial through it is refused
+/// by name (never silently downgraded to DIRECT).
 pub async fn dial(
     option: &MasqueOutbound,
-    _target: &Target,
-    _tls: &ClientTls,
-    _timeout: Duration,
+    target: &Target,
+    tls: &ClientTls,
+    timeout: Duration,
 ) -> Result<Dialed, DialError> {
-    let reason = if option.connect_ip.is_some() {
-        "TCP over masque is not implemented: the CONNECT-IP (RFC 9484) tunnel carries IP packets and serving TCP needs a TCP state machine (the pinned adapter uses mipstack/gVisor); this kernel terminates UDP over the tunnel only"
-    } else {
-        "TCP over masque is not implemented: the RFC 9298 CONNECT-UDP subset carries UDP only, and the pinned CONNECT-IP shape needs 'private-key'/'public-key' plus 'ip'/'ipv6' and a TCP stack this kernel does not have"
-    };
-    Err(handshake(io::ErrorKind::Unsupported, reason))
+    if option.connect_ip.is_none() {
+        return Err(handshake(
+            io::ErrorKind::Unsupported,
+            "TCP over masque needs the CONNECT-IP (WARP) shape: the RFC 9298 CONNECT-UDP subset carries UDP only, so configure 'private-key'/'public-key' and 'ip'/'ipv6'",
+        ));
+    }
+    let stream = super::masque_ip::MasqueTcpStream::connect(option, target, tls, timeout).await?;
+    let server = super::resolve(&option.server, option.port).await?;
+    Ok(Dialed {
+        stream: Box::new(stream),
+        server,
+    })
 }
 
 /// The UDP association of a `masque` outbound: RFC 9298 CONNECT-UDP for a
@@ -459,7 +467,9 @@ impl MasqueUdpAssociation {
 
     pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
         match self {
-            MasqueUdpAssociation::ConnectUdp(association) => association.send(target, payload).await,
+            MasqueUdpAssociation::ConnectUdp(association) => {
+                association.send(target, payload).await
+            }
             MasqueUdpAssociation::ConnectIp(association) => association.send(target, payload).await,
         }
     }

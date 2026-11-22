@@ -2,7 +2,7 @@
   "format": "kernel-t18-feasibility",
   "task": "T18",
   "workflow": "2026-11-20-native-rust-kernel",
-  "generatedAt": "2026-11-22T08:25:00Z",
+  "generatedAt": "2026-11-22T10:10:00Z",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -59,7 +59,8 @@
       "sending: one QUIC DATAGRAM frame per packet with quarter stream ID + context ID 0 + packet; receiving: the same frames, plus DATAGRAM capsules (0x00) on the request stream; datagrams for another quarter stream or context are ignored",
       "UDP flows: one local source port per destination (40000-65535), at most 32 per association, least-recently-used eviction; a reply is delivered only when its destination address/port and source address match the flow",
       "remote-dns-resolve + dns: an A then AAAA UDP query to each configured name server through the tunnel, with a bounded pending queue for other datagrams received during the lookup; without it, the host resolves locally before the packet is built",
-      "the client does not send ADDRESS_REQUEST: the pinned adapter relies on the configured ip/ipv6 prefixes and the server's ADDRESS_ASSIGN (WARP assigns the addresses itself); an address request from the peer is refused"
+      "the client does not send ADDRESS_REQUEST: the pinned adapter relies on the configured ip/ipv6 prefixes and the server's ADDRESS_ASSIGN (WARP assigns the addresses itself); an address request from the peer is refused",
+      "T21 extends the same tunnel with a minimal TCP client (outbound/tcp.rs) for `dial`; the UDP flow table and the datagram framing are unchanged"
     ],
     "acceptedOptions": [
       "server",
@@ -93,10 +94,9 @@
       "non-P-256 private or endpoint keys"
     ],
     "rejectedAtDial": [
-      "TCP over masque: CONNECT-IP carries IP packets and serving TCP needs a TCP state machine (mipstack/gVisor in the pinned adapter); the dial fails with that reason (inbound 502) and never falls back to DIRECT"
+      "TCP over the RFC 9298 CONNECT-UDP subset: RFC 9298 carries UDP only, so a TCP dial configured with that shape is refused by name (the CONNECT-IP/WARP shape gained TCP termination in T21)"
     ],
     "notImplemented": [
-      "TCP over the tunnel",
       "HTTP/2 CONNECT-IP and h3-l4proxy",
       "ip-stack.mode: gvisor",
       "ICMP: incoming ICMP is reported/dropped, no ICMP error is synthesised for a datagram that does not fit the QUIC datagram limit",
@@ -105,7 +105,8 @@
       "DNS over TCP/DoT/DoH name servers and DNS name servers named by hostname",
       "capsule-carried datagrams for sending (the pinned adapter sends QUIC datagram frames)",
       "DATA frames larger than 2 KiB, capsules larger than 1536 bytes and more than 32 flows per association (local bounds)",
-      "server push, WebTransport, 0-RTT, connection pooling"
+      "server push, WebTransport, 0-RTT, connection pooling",
+      "TCP over CONNECT-IP was added by T21 (outbound/tcp.rs); this file records the UDP/IP data path it builds on"
     ]
   },
   "minimalIpStack": {
@@ -195,7 +196,7 @@
     }
   },
   "decisionsForT9": [
-    "masque is still partial: the WARP CONNECT-IP shape now loads and serves UDP, but TCP over the tunnel is refused by name and the h2/h3-l4proxy modes remain rejected. Do not count masque as fully compatible until a TCP stack (or the T6/T7 device layer) terminates the tunnel's TCP.",
+    "masque is still partial after T18 and T21: the WARP shape serves UDP and TCP over CONNECT-IP, but `network: h2`, `network: h3-l4proxy`, ip-stack.mode gvisor and the QUIC congestion knobs stay rejected, passive/simultaneous-open TCP and window scaling/SACK/timestamps are not implemented, and the pinned binary's exact TCP stack (mipstack/gVisor) is not reproduced. Do not count masque as fully compatible.",
     "CONNECT-IP reuses the T14 HTTP/3 client; the new SETTINGS value 0x276 is parsed in the same place, so a future HTTP/3 feature does not need a second client.",
     "A WARP registration is not required for the configuration to load: the key pair and endpoint pin are parsed and used, and the certificate is generated locally. Only an actual WARP endpoint is missing offline, which is why the peer is controlled."
   ],

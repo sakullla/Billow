@@ -1283,6 +1283,91 @@ fn spawn_masque_cli_peer() -> u16 {
 /// The IP codec is the kernel's `outbound::ipstack`; the HTTP/3 and datagram
 /// framing is written here, and `tests/quic_peers.rs` covers the same path
 /// with an independent IP codec and a mandatory client certificate.
+/// Server side of one TCP connection inside the CONNECT-IP tunnel: answer SYN
+/// with SYN-ACK, echo data, and close with FIN after the client's FIN. The TCP
+/// header is written out here so the peer does not share the client's codec.
+struct CliTcpState {
+    server_seq: u32,
+    rcv_nxt: u32,
+}
+
+fn cli_tcp_echo(state: &mut Option<CliTcpState>, packet: &[u8]) -> Option<Vec<u8>> {
+    use billow_kernel::outbound::ipstack;
+
+    let parsed = ipstack::parse_ip_packet(packet).ok()?;
+    if parsed.protocol != ipstack::IPPROTO_TCP {
+        return None;
+    }
+    let bytes = parsed.payload;
+    if bytes.len() < 20 || !ipstack::transport_checksum_valid(
+        parsed.src,
+        parsed.dst,
+        ipstack::IPPROTO_TCP,
+        bytes,
+    ) {
+        return None;
+    }
+    let header_len = usize::from(bytes[12] >> 4) * 4;
+    let src_port = u16::from_be_bytes([bytes[0], bytes[1]]);
+    let dst_port = u16::from_be_bytes([bytes[2], bytes[3]]);
+    let seq = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let flags = bytes[13];
+    let payload = bytes.get(header_len..).unwrap_or_default();
+    const SYN: u8 = 0x02;
+    const FIN: u8 = 0x01;
+    const ACK: u8 = 0x10;
+
+    let (reply_flags, reply_ack, reply_payload): (u8, u32, &[u8]) = if flags & SYN != 0 {
+        *state = Some(CliTcpState {
+            server_seq: 0x2001,
+            rcv_nxt: seq.wrapping_add(1),
+        });
+        (SYN | ACK, seq.wrapping_add(1), &[])
+    } else {
+        let state = state.as_mut()?;
+        if flags & FIN != 0 {
+            state.rcv_nxt = state.rcv_nxt.wrapping_add(payload.len() as u32).wrapping_add(1);
+            let ack = state.rcv_nxt;
+            *state = CliTcpState {
+                server_seq: state.server_seq.wrapping_add(payload.len() as u32).wrapping_add(1),
+                rcv_nxt: ack,
+            };
+            (ACK | FIN, ack, &[])
+        } else if payload.is_empty() {
+            return None;
+        } else {
+            state.rcv_nxt = state.rcv_nxt.wrapping_add(payload.len() as u32);
+            (ACK, state.rcv_nxt, payload)
+        }
+    };
+    let server_seq = state.as_ref().map(|state| state.server_seq).unwrap_or(0x2001);
+    let mut segment = Vec::new();
+    segment.extend_from_slice(&dst_port.to_be_bytes());
+    segment.extend_from_slice(&src_port.to_be_bytes());
+    segment.extend_from_slice(&server_seq.to_be_bytes());
+    segment.extend_from_slice(&reply_ack.to_be_bytes());
+    segment.push(5 << 4);
+    segment.push(reply_flags);
+    segment.extend_from_slice(&65535u16.to_be_bytes());
+    segment.extend_from_slice(&[0, 0, 0, 0]);
+    segment.extend_from_slice(reply_payload);
+    let checksum = ipstack::transport_checksum(
+        parsed.dst,
+        parsed.src,
+        ipstack::IPPROTO_TCP,
+        &segment,
+    );
+    segment[16..18].copy_from_slice(&checksum.to_be_bytes());
+    if reply_flags & (SYN | FIN) != 0 {
+        if let Some(state) = state.as_mut() {
+            state.server_seq = state.server_seq.wrapping_add(reply_payload.len() as u32 + 1);
+        }
+    } else if let Some(state) = state.as_mut() {
+        state.server_seq = state.server_seq.wrapping_add(reply_payload.len() as u32);
+    }
+    ipstack::build_packet(parsed.dst, parsed.src, ipstack::IPPROTO_TCP, &segment, 64).ok()
+}
+
 fn spawn_masque_connect_ip_cli_peer() -> (u16, String) {
     use billow_kernel::outbound::h3;
     use billow_kernel::outbound::ipstack;
@@ -1395,6 +1480,7 @@ fn spawn_masque_connect_ip_cli_peer() -> (u16, String) {
                     // Drain the request stream (the client's route advertisement)
                     // and echo tunnelled packets.
                     let mut capsule_buf = Vec::new();
+                    let mut tcp_state: Option<CliTcpState> = None;
                     loop {
                         tokio::select! {
                             frame = h3::read_frame(&mut recv) => {
@@ -1420,20 +1506,31 @@ fn spawn_masque_connect_ip_cli_peer() -> (u16, String) {
                                 if context != 0 {
                                     continue;
                                 }
-                                let Ok(packet) = ipstack::parse_ip_packet(&datagram[pos..]) else {
-                                    continue;
+                                let protocol = match datagram[pos] >> 4 {
+                                    4 => *datagram.get(pos + 9).unwrap_or(&0),
+                                    6 => *datagram.get(pos + 6).unwrap_or(&0),
+                                    _ => continue,
                                 };
-                                let Ok(udp) = ipstack::parse_udp(&packet) else {
-                                    continue;
+                                let reply = if protocol == ipstack::IPPROTO_TCP {
+                                    cli_tcp_echo(&mut tcp_state, &datagram[pos..])
+                                } else {
+                                    let Ok(packet) = ipstack::parse_ip_packet(&datagram[pos..]) else {
+                                        continue;
+                                    };
+                                    let Ok(udp) = ipstack::parse_udp(&packet) else {
+                                        continue;
+                                    };
+                                    ipstack::build_udp_packet(
+                                        udp.dst,
+                                        udp.src,
+                                        udp.dst_port,
+                                        udp.src_port,
+                                        udp.payload,
+                                        64,
+                                    )
+                                    .ok()
                                 };
-                                let Ok(reply) = ipstack::build_udp_packet(
-                                    udp.dst,
-                                    udp.src,
-                                    udp.dst_port,
-                                    udp.src_port,
-                                    udp.payload,
-                                    64,
-                                ) else {
+                                let Some(reply) = reply else {
                                     continue;
                                 };
                                 let mut out = Vec::new();
@@ -1540,6 +1637,33 @@ fn cli_process_tunnels_udp_through_masque() {
 
 /// Throwaway P-256 SEC1 private key (base64) for the CONNECT-IP CLI case.
 const WARP_CLI_KEY: &str = "MHcCAQEEIDKh56LbUI7PTfKO5ojiPkNrK2H8jcLrmfdlhv3TsqRzoAoGCCqGSM49AwEHoUQDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==";
+
+/// T21: a TCP target through the shipped process. The WARP shape carries IP
+/// packets, the kernel's minimal TCP client terminates them, and the CONNECT-IP
+/// peer echoes the payload back.
+#[test]
+fn cli_process_tunnels_tcp_through_masque_connect_ip() {
+    let (peer_port, endpoint_key) = spawn_masque_connect_ip_cli_peer();
+    let port = free_port();
+    let child = start_cli(
+        &format!(
+            "proxies:\n  - {{name: p, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_CLI_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2}}\nrules:\n  - 'MATCH,p'\n"
+        ),
+        port,
+    );
+    let proxy: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let (mut tunnel, status) = http_connect(proxy, "198.51.100.7:80").expect("CONNECT request");
+    assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    tunnel.write_all(b"cli-tcp-connect-ip").unwrap();
+    tunnel
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut buffer = [0u8; 64];
+    let read = tunnel.read(&mut buffer).expect("the TCP echo");
+    assert_eq!(&buffer[..read], b"cli-tcp-connect-ip");
+    let _ = tunnel.shutdown(std::net::Shutdown::Write);
+    stop_cli(child);
+}
 
 /// T18's CONNECT-IP path in the shipped process: a WARP-shaped configuration
 /// (keys, local addresses, pinned endpoint key) loads, and a SOCKS5 UDP

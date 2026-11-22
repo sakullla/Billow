@@ -1,0 +1,101 @@
+{
+  "format": "kernel-t21-feasibility",
+  "task": "T21",
+  "workflow": "2026-11-20-native-rust-kernel",
+  "generatedAt": "2026-11-22T10:10:00Z",
+  "platform": {
+    "verified": [
+      "macos-aarch64"
+    ],
+    "compilesButNotRun": [
+      "linux-x86_64",
+      "linux-aarch64",
+      "android",
+      "ios-simulator"
+    ],
+    "windows": "compiles; the Windows session path is T6 and no Windows QUIC/TCP run has been recorded",
+    "note": "The CONNECT-IP peer is a loopback HTTP/3 server on macOS arm64. Nothing is claimed for a platform that was not run."
+  },
+  "scope": {
+    "goal": "Serve TCP targets over masque CONNECT-IP by terminating TCP in userspace, keeping the T18 UDP/IP path and the RFC 9298 CONNECT-UDP subset working.",
+    "files": [
+      "native-kernel/crates/billow-kernel/src/outbound/tcp.rs (new: TCP segment codec and active-open state machine)",
+      "native-kernel/crates/billow-kernel/src/outbound/ipstack.rs (build_packet/transport_checksum shared with TCP; IPv6 TCP accepted)",
+      "native-kernel/crates/billow-kernel/src/outbound/masque_ip.rs (ConnectIpSession shared by UDP and TCP; MasqueTcpStream + actor + tunnel DNS for TCP)",
+      "native-kernel/crates/billow-kernel/src/outbound/masque.rs (dial returns a TCP stream for the WARP shape; CONNECT-UDP TCP refusal)",
+      "native-kernel/crates/billow-kernel/tests/quic_peers.rs (independent TCP server inside the CONNECT-IP peer; success/failure/half-close cases)",
+      "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs (TCP tunnel through the shipped process)",
+      "native-kernel/crates/billow-kernel-cli/tests/cli.rs (WARP shape loads; unreachable TCP tunnel is a 502)"
+    ],
+    "approach": "in-tree minimal TCP client (not the T6/T7 device stack, which is not available in this workspace): the choice keeps the kernel dependency-free and lets the iOS extension link it. The pinned adapter's mipstack/gVisor is the reference for behaviour, not code."
+  },
+  "wireBehaviour": {
+    "handshake": "active open only: SYN (MSS option = tunnel MTU - 40/60 bytes, clamped to 64..65495), SYN-ACK verification (ACK flag, ack == ISS + 1, MSS clamp), final ACK; a SYN-ACK for another sequence number or a RST fails the dial",
+    "data": "one segment per transmission, bounded by peer MSS and the peer's advertised window; cumulative ACKs, PSH on data, delayed ACKs are not used (every in-order segment is acknowledged immediately)",
+    "receive": "in-order delivery to the application; out-of-order segments (bounded to 32 segments / 64 KiB) are held and delivered when the gap fills; old retransmitted bytes are acknowledged again and not re-delivered; the advertised window is 65535 minus buffered bytes",
+    "retransmission": "RFC 6298-style fixed 1 s initial RTO with exponential backoff to 8 s, at most 8 retries, go-back-N on the oldest unacked segment, fast retransmit after three duplicate ACKs; a zero window waits for the peer's update (no persist timer; the dial/relay timeout bounds it)",
+    "close": "app half-close sends FIN after queued data; the peer's FIN ends the read side (EOF to the application) while writes may continue; both directions closed -> Closed; RST fails the stream with ConnectionReset; a final ACK for the peer's FIN is still sent after the state machine closes",
+    "mtu": "the configured `mtu` (pinned default 1280) bounds the MSS and every built packet; a packet larger than the QUIC datagram limit is a named TooLarge error",
+    "targets": "one tunnel and one TCP connection per `dial` (no pooling, like the other QUIC families); the target is a literal, resolved locally or, with `remote-dns-resolve`, by an A/AAAA query sent as a UDP packet through the tunnel",
+    "coexistence": "CONNECT-UDP (RFC 9298) carries UDP only, so a TCP dial through it is refused by name; CONNECT-IP UDP (T18) is unchanged and still passes its 8 cases"
+  },
+  "limits": [
+    "send buffer 64 KiB (queued + unacked payload); one accepted application write is clamped to 32 KiB",
+    "receive buffer 64 KiB in-order + out-of-order; 32 out-of-order segments at most",
+    "no window scaling (RFC 7323), SACK or timestamps; no urgent data; no passive open or simultaneous open",
+    "one connection per tunnel; a second concurrent TCP target on the same `masque` outbound opens a second tunnel",
+    "RTO is fixed at 1 s initially (no RTT estimation) and retransmission is go-back-N, so a lossy path is slower than the pinned stack",
+    "a peer that advertises a zero window is waited on until the dial/relay timeout (no persist probe)",
+    "one tunnel and one TCP connection per `dial` (no pooling): a WARP configuration with many TCP targets opens many QUIC/HTTP3 associations, which T7 must cap"
+  ],
+  "memory": {
+    "budget": "T7 verifies 40,000,000 bytes (decimal) for the whole iOS VPN extension (R3)",
+    "perTcpDialBytes": 5236736,
+    "components": [
+      "QUIC connection (T10 windows): stream receive 512 KiB + connection receive 2 MiB + send 2 MiB = 4,718,592 B",
+      "QUIC datagram receive 64 KiB + send 64 KiB = 131,072 B",
+      "HTTP/3 request stream buffers (2 KiB frame + 3 KiB capsules) and control streams: ~10 KB",
+      "TCP send buffer + retained unacked payload: up to 128 KiB",
+      "TCP receive buffer (in-order + out-of-order): up to 64 KiB",
+      "command/read channels: 4 x 32 KiB writes + read chunks <= MSS: up to ~140 KiB",
+      "one deferred write slice: <= 32 KiB"
+    ],
+    "note": "~5.24 MB decimal per concurrent TCP dial, dominated by T10's QUIC windows (as with the ~5.14 MB UDP association). The engine opens one tunnel per TCP dial and one per SOCKS5 UDP ASSOCIATE, so T7 must cap concurrent masque sessions (or lower Limits.max_sessions); dropping the stream closes the tunnel after the pending FIN/ACK or the relay's half-close timeout.",
+    "notMeasured": "analytic bounds only: no device RSS was taken on an iPhone"
+  },
+  "verification": {
+    "unit": "cargo test --manifest-path native-kernel/Cargo.toml --locked --lib outbound::tcp -> 9 passed (segment codec and checksums v4/v6, handshake + bidirectional data, MSS/window clamping, lost-segment retransmission with backoff and retry exhaustion, RST, half-close with final ACK, out-of-order reordering, duplicate old data, SYN timeout)",
+    "peerSuite": "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers masque -> 20 passed (12 CONNECT-IP incl. 5 TCP, 8 CONNECT-UDP)",
+    "tcpCases": [
+      "masque_connect_ip_carries_a_tcp_stream (SYN-ACK, 19-byte echo, FIN both ways through the shipped library engine and SOCKS5 inbound; the peer logs the segments)",
+      "masque_connect_ip_tcp_rejects_a_wrong_endpoint_pin (the endpoint pin fails before any TCP segment; the SOCKS5 reply is a failure)",
+      "masque_connect_ip_tcp_refusal_is_a_502 (RST to SYN -> SOCKS5 failure reply, no stream)",
+      "masque_connect_ip_tcp_timeout_is_reported (silent peer -> dial timeout -> failure reply; asserted to wait for the timeout)",
+      "masque_connect_ip_tcp_half_close_delivers_eof (peer FIN ends the read side; the app can still half-close, then the peer sees the FIN)"
+    ],
+    "cli": "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_tcp_through_masque_connect_ip -> HTTP CONNECT through the real process, echo over the tunnel; cli.rs::process_loads_t18_masque_connect_ip loads the WARP shape and reports 502 for an unreachable tunnel",
+    "config": "tests/config.rs masque cases -> 3 passed (the WARP shape and the CONNECT-UDP subset unchanged; no new options)",
+    "regression": "cargo test --manifest-path native-kernel/Cargo.toml --locked -> 303 passed, 90 ignored (external peers/pinned binary), 0 failed; tool/kernel-compat/peer-tests.sh -> 66 passed (pinned Mihomo); tool/kernel-compat/family-peers.sh -> exit 0, 10 green cargo runs (SSR vectors/plugins, gost, ssh, sudoku, wireguard-go, OpenVPN 2.7.9, zerotier/tailscale/EasyTier); node tool/kernel-compat/runner.test.mjs -> 10 pass, 0 fail",
+    "optionMatrix": "node tool/kernel-compat/option-probe.mjs --rust <release> --mihomo <pinned> -> 261 no-op / 283 enabled, 0 problems; masque keeps its 13 no-op rows (sni, skip-cert-verify, name-cert-verify, handshake-timeout, mtu, uri, ipv6, three ip-stack forms, remote-dns-resolve, dns, network:'') and 7 enabled rows (h2, h3-l4proxy, congestion-controller, cwnd, bbr-profile, ip-stack.mode gvisor, dialer-proxy). T21 adds no option.",
+    "harness": "Default-suite cases are self-contained (loopback quinn peers); the pinned and Go-peer scripts were run for the shared files (ipstack.rs, masque*.rs, engine relay). One earlier full-suite run before the final edit was green; the final source was rerun (303 passed)."
+  },
+  "notImplemented": [
+    "TCP through the RFC 9298 CONNECT-UDP subset (the protocol carries UDP only)",
+    "passive open, simultaneous open, TCP urgent data",
+    "window scaling, SACK, timestamps",
+    "RTT-estimated RTO, congestion control (a fixed window/backoff scheme is used), persist timer on a zero window",
+    "TCP over IPv4 options / IPv6 extension headers (packets carrying them are dropped, like UDP)",
+    "ICMP error reporting for TCP packets that do not fit the QUIC datagram limit (a named error instead)"
+  ],
+  "decisionsForT9": [
+    "masque's TCP path is now real for the WARP CONNECT-IP shape (T21); a CONNECT-UDP-only configuration still refuses TCP by name. masque stays partial because h2/h3-l4proxy, gVisor and the pinned TCP stack behaviour (window scaling, SACK, congestion control) are not reproduced.",
+    "A TCP target needs the WARP shape (`private-key`, `public-key`, `ip`/`ipv6`); a plain server + `udp: true` is UDP-only, so a mixed rule set must configure the WARP shape for TCP."
+  ],
+  "decisionsForT7": [
+    "Cap concurrent masque TCP dials: each is a whole CONNECT-IP tunnel (~5.24 MB decimal analytic worst case) and one TCP connection; the extension budget is 40,000,000 bytes.",
+    "The TCP stream closes its tunnel when dropped (pending FIN/ACK or the relay's half-close timeout), so aborted sessions do not outlive the relay. No pool and no background keepalive beyond the QUIC keep-alive.",
+    "No new dependency or C library was added; the iOS extension links the same ring/rustls/quinn set.",
+    "One TCP dial = one CONNECT-IP association: the analytic worst case (~5.24 MB decimal) is charged per concurrent TCP target, not shared with the UDP association."
+  ],
+  "license": "No GPL-3.0 source is vendored, linked, copied or translated. The TCP state machine is written from RFC 793/1122/6298 and the pinned adapter's observed configuration shape; no mipstack/gVisor/connect-ip-go code was read into this implementation. No third-party material was added in T21."
+}

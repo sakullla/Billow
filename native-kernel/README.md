@@ -25,9 +25,10 @@ rejected by name), so the kernel workspace is now GPL-3.0-only (see
 `quinn` profile for the UDP association. T18 added the pinned Cloudflare WARP
 shape: RFC 9484 CONNECT-IP with the key-derived client certificate, endpoint-key
 pinning, `ADDRESS_ASSIGN`/`ROUTE_ADVERTISEMENT` capsules, IPv4/IPv6 packets in
-HTTP Datagrams, a minimal in-tree IPv4/IPv6/UDP stack and tunnel DNS. TCP over
-the tunnel and the `h2`/`h3-l4proxy` modes stay rejected by name (serving TCP
-needs a TCP state machine). T15 added `shadowquic`: the JLS ClientHello /
+HTTP Datagrams, a minimal in-tree IPv4/IPv6/UDP stack and tunnel DNS. T21 added
+TCP over CONNECT-IP with an in-tree minimal TCP client (active open, data/ACK,
+retransmission, half-close); the RFC 9298 CONNECT-UDP subset still carries UDP
+only, and the `h2`/`h3-l4proxy` modes stay rejected by name. T15 added `shadowquic`: the JLS ClientHello /
 ServerHello random seal is an independent implementation of the locked
 `jls-tls` algorithm, injected into rustls's own ClientHello through a
 recorded-random replay, over the same `quinn` transport. T16 added the
@@ -92,7 +93,8 @@ native-kernel/
     │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, sudoku,
     │   │                           # masque
     │   │                           # (CONNECT-UDP; CONNECT-IP in masque_ip with
-    │   │                           # ipstack and the WARP key/certificate in warp),
+    │   │                           # ipstack, the WARP key/certificate in warp
+    │   │                           # and the TCP client in tcp),
     │   │                           # shadowquic + jls (recorded-random TLS hook),
     │   │                           # wireguard (Noise IK/transport), openvpn
     │   │                           # (control/TLS/key-method 2/AEAD data channel),
@@ -208,7 +210,7 @@ identities of the servers are logged as the session exit.
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
 | `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
 | `sudoku` | table-driven obfuscation: key-derived 4x4 Sudoku table, KIP X25519 + HKDF handshake, record layer (chacha20-poly1305 / aes-128-gcm / none with epoch keys and sequence validation), legacy HTTP mask, pure and packed downlink, `table-type` (entropy/ascii/directional), `custom-table(s)` rotation, `padding-min/max`, `path-root`, `multiplex: on` session mux, `dialer-proxy` through a SOCKS5 hop (**GPL-3.0-derived translation**) | no: `udp: true` (UoT) rejected at load | `listeners: type: sudoku` (default, no mask, ascii + packed downlink, directional, custom table, table rotation, aes-128-gcm, none, private/public key material, two-stream and concurrent session mux, a `dialer-proxy` chain through a recording SOCKS5 hop, `multiplex: on` over that chain, wrong key, mismatched table type); pinned Go codec differential in `tool/kernel-compat/peers/sudoku-vectors` |
-| `masque` | two shapes over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): (1) RFC 9484 CONNECT-IP for the pinned Cloudflare WARP configuration — base64 SEC1 P-256 client key → the pinned adapter's self-signed client certificate, `public-key` (DER SPKI) pinning the endpoint, `:protocol cf-connect-ip`, `uri` (default `https://cloudflareaccess.com`), `capsule-protocol: ?1`, a `ROUTE_ADVERTISEMENT` for every IPv4/IPv6 destination, `ADDRESS_ASSIGN`/`ROUTE_ADVERTISEMENT` parsing, whole IP packets in HTTP Datagrams (quarter stream ID + context ID 0), a minimal IPv4/IPv6/UDP stack with header/UDP checksums and a per-destination UDP flow table (32 flows, LRU eviction), `mtu` (default 1280), `ip-stack` mode selection and tunnel DNS (`remote-dns-resolve`/`dns`); (2) the RFC 9298 CONNECT-UDP subset (`:protocol connect-udp`, one request stream per destination, `DATAGRAM` capsules) | `udp: true` for both shapes (UDP only; a TCP dial is refused by name) | controlled HTTP/3 peers in `tests/quic_peers.rs` (CONNECT-IP: request shape, client certificate and SPKI, endpoint pin, route advertisement, ADDRESS_ASSIGN, IPv4/IPv6 UDP echo with an independent IP codec, tunnel DNS, missing datagram settings, ADDRESS_REQUEST, 403, TCP refusal; CONNECT-UDP: request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate, peer-FIN reopen, 32 closed flows then a new destination) plus the shipped CLI's SOCKS5 UDP ASSOCIATE in `family_cli.rs`; no Mihomo listener exists and a WARP registration endpoint is not reachable offline |
+| `masque` | two shapes over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): (1) RFC 9484 CONNECT-IP for the pinned Cloudflare WARP configuration — base64 SEC1 P-256 client key → the pinned adapter's self-signed client certificate, `public-key` (DER SPKI) pinning the endpoint, `:protocol cf-connect-ip`, `uri` (default `https://cloudflareaccess.com`), `capsule-protocol: ?1`, a `ROUTE_ADVERTISEMENT` for every IPv4/IPv6 destination, `ADDRESS_ASSIGN`/`ROUTE_ADVERTISEMENT` parsing, whole IP packets in HTTP Datagrams (quarter stream ID + context ID 0), a minimal IPv4/IPv6/UDP stack with header/UDP checksums and a per-destination UDP flow table (32 flows, LRU eviction), `mtu` (default 1280), `ip-stack` mode selection, tunnel DNS (`remote-dns-resolve`/`dns`) and TCP termination with the in-tree minimal client (`src/outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS/window limits, RTO backoff and fast retransmit, reordering, half-close; one tunnel and one connection per `dial`); (2) the RFC 9298 CONNECT-UDP subset (`:protocol connect-udp`, one request stream per destination, `DATAGRAM` capsules, UDP only by protocol) | `udp: true` for both shapes; TCP needs the WARP CONNECT-IP shape (CONNECT-UDP cannot carry TCP) | controlled HTTP/3 peers in `tests/quic_peers.rs` (CONNECT-IP: request shape, client certificate and SPKI, endpoint pin, route advertisement, ADDRESS_ASSIGN, IPv4/IPv6 UDP echo with an independent IP codec, tunnel DNS, missing datagram settings, ADDRESS_REQUEST, 403, TCP echo/refusal/timeout/half-close with an independent TCP codec; CONNECT-UDP: request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate, peer-FIN reopen, 32 closed flows then a new destination) plus the shipped CLI's SOCKS5 UDP ASSOCIATE and HTTP CONNECT (TCP) tunnels in `family_cli.rs`; no Mihomo listener exists and a WARP registration endpoint is not reachable offline |
 
 The mieru module the pinned outbound wraps is GPL-3.0: this repository contains
 no mieru source, links no mieru code and derives nothing from its
@@ -281,8 +283,9 @@ The pinned parser lists 28 outbound types, matching the status recorded in
 - **partial (10)**: `ssh` (one client per dial, no private-key file paths),
   `mieru` (TCP slice), `sudoku` (TCP, legacy HTTP mask, pure/packed downlink and
   the session mux; the HTTP tunnel modes and UoT are rejected, and the module
-  is a GPL-3.0-derived translation) and `masque` (CONNECT-UDP and CONNECT-IP
-  for UDP; no TCP over the tunnel),
+  is a GPL-3.0-derived translation) and `masque` (CONNECT-UDP for UDP;
+  CONNECT-IP for UDP and TCP with a minimal in-tree TCP client; `h2`,
+  `h3-l4proxy`, gVisor and the pinned TCP-stack behaviour are not reproduced),
   `tuic`, `hysteria` and
   `hysteria2` (their T10 gaps), `shadowquic` (TCP/UDP and JLS, but `zero-rtt`,
   QUIC `v2` and the private Brutal congestion options are rejected), and
@@ -358,6 +361,28 @@ packets, 32 flows and at most eight held datagrams during a DNS lookup; the
 worst case is recorded in `tool/kernel-compat/evidence/t18-feasibility.json`
 (about 5.2 MB decimal per association) and T7 must cap concurrent associations.
 The T14 bound is in `tool/kernel-compat/evidence/t14-feasibility.json`.
+
+T21 adds TCP to the CONNECT-IP path. `src/outbound/tcp.rs` is a minimal
+active-open client: SYN with an MSS option derived from `mtu`, SYN-ACK/ACK,
+data/ACK bounded by the peer's MSS and advertised window, FIN/RST and
+half-close, in-order delivery with a bounded out-of-order map, retransmission of
+the oldest unacked segment with an RFC 6298-style fixed 1 s initial RTO and
+exponential backoff (8 retries), fast retransmit after three duplicate ACKs and
+immediate ACKs. It does not negotiate window scaling, SACK or timestamps, has no
+RTT estimation, congestion control or zero-window persist timer, and only opens
+connections (no passive or simultaneous open); those limits are named in
+[Not implemented](#not-implemented) and `evidence/t21-feasibility.json`. Each
+`dial` opens its own tunnel and one TCP connection (no pooling): the actor in
+`masque_ip.rs` shares the CONNECT-IP handshake, capsules and datagram framing
+with the UDP path, feeds inbound IP packets to the state machine, and turns the
+application's writes into packets. A target host is resolved like the UDP path
+(literal, local resolver, or an A/AAAA query through the tunnel with
+`remote-dns-resolve`). The RFC 9298 CONNECT-UDP subset cannot carry TCP at all
+(RFC 9298 is UDP-only), so a TCP dial through that shape is refused by name and
+the WARP shape is required. Memory: a TCP dial is one tunnel (~5.14 MB of
+analytic bounds, dominated by the QUIC windows) plus the TCP buffers (64 KiB
+send, 64 KiB receive, bounded channels), recorded for T7 as ~5.24 MB decimal per
+concurrent dial in `tool/kernel-compat/evidence/t21-feasibility.json`.
 
 T15's `shadowquic` is an independent implementation of the JLS random seal,
 written from the locked `jls-tls` behaviour and observed on the wire. JLS is not
@@ -455,13 +480,15 @@ quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, congestion/window tuning;
 packed downlink, table rotation and `multiplex: on` are implemented, and the
 module is a GPL-3.0-derived translation (`evidence/t17-translation.md`).
 `masque` rejects
-TCP over the tunnel (CONNECT-IP carries IP packets and serving TCP needs a TCP
-state machine the kernel does not have), both non-HTTP/3 networks (`h2`,
-`h3-l4proxy`), `ip-stack.mode: gvisor` (the pinned build-tagged dependency),
-`ip-stack.congestion-controller` beyond validation (TCP-stack only), the QUIC
-congestion knobs and `dialer-proxy` (a QUIC endpoint is dialled locally), DNS
-name servers that are not `udp://` IP literals, and URI templates (IP flow
-forwarding); its `udp: false` form loads and refuses every dial. `shadowquic` rejects `zero-rtt` (JLS 0-RTT needs the pinned
+TCP through the RFC 9298 CONNECT-UDP subset (the protocol carries UDP only; TCP
+needs the WARP CONNECT-IP shape, whose TCP client is in `src/outbound/tcp.rs`
+and does not negotiate window scaling/SACK/timestamps, passive open or urgent
+data), both non-HTTP/3 networks (`h2`, `h3-l4proxy`), `ip-stack.mode: gvisor`
+(the pinned build-tagged dependency), `ip-stack.congestion-controller` beyond
+validation (TCP-stack only), the QUIC congestion knobs and `dialer-proxy` (a
+QUIC endpoint is dialled locally), DNS name servers that are not `udp://` IP
+literals, and URI templates (IP flow forwarding); its `udp: false` form loads
+and refuses UDP dials while TCP still uses the tunnel. `shadowquic` rejects `zero-rtt` (JLS 0-RTT needs the pinned
 authenticated session ticket), `quic-versions: v2` (quinn 0.11 implements v1
 only), `congestion-controller`/`bbr-profile`/a non-default `cwnd`/`up`/`down`
 (the private Brutal controller is not in quinn) and `dialer-proxy`; its
@@ -735,13 +762,13 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   live ids. `tool/kernel-compat/peer-tests.sh` runs 66 cases in total (the T17 sudoku
   additions included). `masque` has
   no Mihomo listener (the pinned adapter is a Cloudflare WARP client) and no
-  reachable WARP endpoint offline, so its fifteen default-suite cases run against
+  reachable WARP endpoint offline, so its nineteen default-suite cases run against
   two controlled HTTP/3 peers in `tests/quic_peers.rs` (RFC 9298 CONNECT-UDP and
   RFC 9484 CONNECT-IP, the latter requiring the client certificate and echoing
-  IP/UDP packets) and are recorded under `families.masque` in
-  `protocol-peers.json`; the dependency/memory boundary is in
-  `evidence/t14-feasibility.json` (CONNECT-UDP) and
-  `evidence/t18-feasibility.json` (CONNECT-IP). mieru has
+  IP/UDP packets and terminating TCP with its own codec) and are recorded under
+  `families.masque` in `protocol-peers.json`; the dependency/memory boundary is
+  in `evidence/t14-feasibility.json` (CONNECT-UDP), `evidence/t18-feasibility.json`
+  (CONNECT-IP UDP/WARP) and `evidence/t21-feasibility.json` (TCP). mieru has
   no Go vector tool because the module is GPL-3.0: the client is written from
   `docs/protocol.md` and is only verified against the pinned server, with the
   locally computed PBKDF2/time-salt vectors in `src/outbound/mieru.rs`.
@@ -767,7 +794,8 @@ The immutable coordination inputs are in `docs/coordination/`: `t11-handoff.md`
 `t13-handoff.md` (mieru), `t17-handoff.md` (the sudoku family; it authorises
 the source translation and records the GPL-3.0 obligations),
 `t14-handoff.md` (CONNECT-UDP) and
-`t18-handoff.md` (CONNECT-IP, IP stack and WARP shape). They are
+`t18-handoff.md` (CONNECT-IP, IP stack and WARP shape) and `t21-handoff.md`
+(masque TCP termination). They are
 Owner material and are not modified by the kernel tasks. The concrete blockers
 and next steps for the families still deferred by T10 are in
 `tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers mieru,
@@ -775,8 +803,9 @@ T17's translation authorization is recorded in the T17 handoff, the T17 recipe
 (`02-technical-solution.md`) and `evidence/t17-translation.md`; T14's and
 T18's cover
 `masque` (the CONNECT-UDP subset in `evidence/t14-feasibility.json` and the
-CONNECT-IP/WARP UDP path with its TCP/`h2`/`h3-l4proxy` gaps in
-`evidence/t18-feasibility.json`), and T15's covers
+CONNECT-IP/WARP UDP path with its `h2`/`h3-l4proxy` gaps in
+`evidence/t18-feasibility.json`); T21's covers TCP termination and its named
+limits in `evidence/t21-feasibility.json`, and T15's covers
 `shadowquic` (the JLS subset and its named rejections). With T15 the T9 list
 has an entry for every family, though `masque` and `shadowquic` remain partial;
 neither is claimed as compatible.
