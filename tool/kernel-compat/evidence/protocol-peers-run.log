@@ -1,8 +1,8 @@
 peer: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.67s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
      Running tests/mihomo_peers.rs (/tmp/billow-t17-target/debug/deps/mihomo_peers-3f30790d9476fc85)
 
-running 64 tests
+running 66 tests
 test anytls_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ok
 test chained_ss_udp_rejected_by_the_hop_never_reaches_the_echo ... ok
@@ -41,6 +41,8 @@ test sudoku_directional_table_reaches_the_receiving_side ... ok
 test sudoku_mismatched_table_type_never_reaches_the_sink ... ok
 test sudoku_multiplex_carries_two_streams_over_one_session ... ok
 test sudoku_multiplex_handles_concurrent_streams ... ok
+test sudoku_multiplex_over_a_dialer_proxy_reaches_the_receiving_side ... ok
+test sudoku_multiplex_over_a_dialer_proxy_wrong_key_never_reaches_the_sink ... ok
 test sudoku_private_key_material_matches_the_public_key_peer ... ok
 test sudoku_rotating_custom_tables_reach_the_receiving_side ... ok
 test sudoku_tcp_session_reaches_the_receiving_side_through_mihomo ... ok
@@ -68,6 +70,6 @@ test vmess_outbound_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_over_websocket_reaches_the_receiving_side_through_mihomo ... ok
 test vmess_wrong_uuid_never_reaches_the_sink ... ok
 
-test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.71s
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.69s
 
 PEER_EXIT:0

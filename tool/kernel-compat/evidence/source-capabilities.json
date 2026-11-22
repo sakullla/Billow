@@ -2640,15 +2640,18 @@
         "notes": [
           "the module files carry `SPDX-License-Identifier: GPL-3.0-only` and the upstream version/commit; `src/keys.rs` (`sudoku_seed`) and `src/proxies.rs` (`SudokuOutbound`, `parse_sudoku`) are mixed files with the same header on the derived item and the scope stated in their module docs; distribution must follow GPL-3.0 (native-kernel/COPYING.GPL-3.0)",
           "multiplex is the translated client side of `transport/sudoku/multiplex/session.go` (frames open/data/close/reset/ping/pong, one shared session per configuration, recreated after failure); frames are queued whole so streams do not interleave",
+          "`dialer-proxy`: the exit's server connection is tunnelled through the socks5 hop chain and the sudoku handshake runs over it; the exit is never dropped. Only socks5 and sudoku exits can run over a hop; other exits fail at dial time with a named chain error. The mux cache key includes the hop chain and is cleared when the engine stops; with `multiplex: on` a new session performs the KIP `StartMux` handshake over the hop tunnel and a cache hit reuses the session without opening a hop connection (T17-A4)",
           "the HTTP tunnel modes are a mihomo extension (`transport/sudoku/obfs/httpmask/tunnel_*`, ~1.8k lines) and stay rejected by name; the legacy header mask is implemented",
           "tables are built once per configuration (288-grid shuffle, 1820 puzzle candidates per byte) and cached in-process",
           "`multiplex: auto` behaves like `off`: the pinned mode only reuses an HTTP tunnel connection, and the HTTP tunnel layer is rejected"
         ],
         "evidence": [
-          "tests/mihomo_peers.rs (12 sudoku cases: entropy/ascii/directional/custom/rotation tables, packed downlink, three AEAD methods, with/without the HTTP mask, private/public key material, a dialer-proxy chain through a recording SOCKS5 hop, wrong key, mismatched table type)",
+          "tests/mihomo_peers.rs (13 sudoku cases: entropy/ascii/directional/custom/rotation tables, packed downlink, three AEAD methods, with/without the HTTP mask, private/public key material, a dialer-proxy chain through a recording SOCKS5 hop, and multiplex: on over that chain; wrong key and mismatched table type)",
           "tests/mihomo_peers.rs::sudoku_multiplex_carries_two_streams_over_one_session",
           "tests/mihomo_peers.rs::sudoku_multiplex_handles_concurrent_streams",
         "tests/mihomo_peers.rs::sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop",
+        "tests/mihomo_peers.rs::sudoku_multiplex_over_a_dialer_proxy_reaches_the_receiving_side",
+        "tests/mihomo_peers.rs::sudoku_multiplex_over_a_dialer_proxy_wrong_key_never_reaches_the_sink",
         "tests/protocols.rs::tcp_dialer_proxy_reaches_the_exit_through_the_hop",
         "tests/protocols.rs::tcp_dialer_proxy_never_bypasses_an_unsupported_exit",
           "tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation",

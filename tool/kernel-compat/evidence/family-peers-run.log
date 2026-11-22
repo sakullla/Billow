@@ -17,7 +17,7 @@ chain_b sizes=[105 116 299 426 982 1219] sizes2=[45 76 85 85 136 275 482 558 818
 -- pinned client packages against the plugin peer (every protocol x obfs) --
 pinned client accepted 36 protocol/obfs combinations
 == Rust client against the same Go peer (matrix, auth failure, large payloads, UDP) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.65s
      Running tests/independent_peers.rs (/tmp/billow-t17-target/debug/deps/independent_peers-2f77cf8e4ab92872)
 
 running 7 tests
@@ -34,38 +34,38 @@ ok
 test ssr_udp_reaches_the_echo_for_every_protocol ... ok
 test ssr_udp_wrong_password_never_reaches_the_echo ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.45s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.76s
 
 == CLI process: SSR plugin tunnel ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
      Running tests/family_cli.rs (/tmp/billow-t17-target/debug/deps/family_cli-2d9e77d670f17409)
 
 running 1 test
 test cli_process_tunnels_through_an_ssr_plugin ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.57s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 1.68s
 
 == pinned gost relay dialer against the controlled peer ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.71s
      Running tests/protocols.rs (/tmp/billow-t17-target/debug/deps/protocols-ed23f9f1630dc9d4)
 
 running 1 test
 test gost_relay_pinned_dialer_accepts_the_controlled_peer ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.50s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.88s
 
 == pinned Sudoku table/codec vectors (Go, locked transport/sudoku, GPL-3.0 test peer) ==
 pinned Sudoku table hint and padding pool match
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.86s
      Running tests/protocols.rs (/tmp/billow-t17-target/debug/deps/protocols-ed23f9f1630dc9d4)
 
 running 1 test
 test sudoku_codec_matches_the_pinned_implementation ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 2.12s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 7.95s
 
 == controlled Rust peers (gost-relay incl. udp/mux, ssh, ssr origin/plain) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
      Running tests/protocols.rs (/tmp/billow-t17-target/debug/deps/protocols-ed23f9f1630dc9d4)
 
 running 10 tests
@@ -80,9 +80,9 @@ test gost_relay_pinned_dialer_accepts_the_controlled_peer ... ignored, needs the
 test gost_relay_udp_relays_datagrams_to_the_bound_target ... ok
 test gost_relay_udp_without_the_option_is_refused_by_the_server ... ok
 
-test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 42 filtered out; finished in 1.88s
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 42 filtered out; finished in 2.64s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
      Running tests/protocols.rs (/tmp/billow-t17-target/debug/deps/protocols-ed23f9f1630dc9d4)
 
 running 4 tests
@@ -91,9 +91,9 @@ test ssh_outbound_pinned_host_key_must_match_the_server ... ok
 test ssh_outbound_public_key_auth_relays_direct_tcpip ... ok
 test ssh_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.71s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.66s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
      Running tests/protocols.rs (/tmp/billow-t17-target/debug/deps/protocols-ed23f9f1630dc9d4)
 
 running 3 tests
@@ -101,10 +101,10 @@ test ssr_outbound_origin_plain_relays_with_aes_256_cfb ... ok
 test ssr_outbound_rc4_md5_and_dummy_ciphers_relay ... ok
 test ssr_outbound_wrong_password_never_reaches_the_target ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 2.97s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 2.92s
 
 == controlled WireGuard peer (locked metacubex/wireguard-go device, fake TUN) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
      Running tests/wireguard_peer.rs (/tmp/billow-t17-target/debug/deps/wireguard_peer-b1bfa99ccca2e47c)
 
 running 5 tests
@@ -114,10 +114,10 @@ test packets_over_the_mtu_and_short_buffers_are_named_errors ... ok
 test preshared_key_is_mixed_into_the_handshake ... ok
 test wrong_peer_public_key_fails_the_handshake ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.92s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.07s
 
 == OpenVPN 2.7.9 peer (--dev null, real TLS/key-method-2/data channel) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
      Running tests/openvpn_peer.rs (/tmp/billow-t17-target/debug/deps/openvpn_peer-de4ddd0500c1e87a)
 
 running 4 tests
@@ -126,10 +126,10 @@ test an_untrusted_server_certificate_is_rejected ... ok
 test control_channel_pushes_and_the_data_keys_decrypt_a_keepalive ... ok
 test no_common_data_cipher_is_a_named_failure ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.27s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.76s
 
 == T19 mesh peers (locked zerotier-go and tailscale; EasyTier rejected) ==
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
      Running tests/mesh_peers.rs (/tmp/billow-t17-target/debug/deps/mesh_peers-35061eb7e0d26a37)
 
 running 3 tests
@@ -139,6 +139,6 @@ ok
 test tailscale_derp_greeting_and_ping ... ok
 test zerotier_hello_success_and_failure ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.84s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.17s
 
 FAMILY_EXIT:0

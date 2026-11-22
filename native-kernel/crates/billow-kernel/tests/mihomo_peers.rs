@@ -2618,6 +2618,71 @@ fn sudoku_multiplex_carries_two_streams_over_one_session() {
 
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
+fn sudoku_multiplex_over_a_dialer_proxy_reaches_the_receiving_side() {
+    // Regression for T17-A4: `multiplex: on` + `dialer-proxy` used to hand the
+    // raw hop stream to the mux client without the KIP `StartMux` handshake
+    // (pinned listener answered INVALID_SUDOKU_MAP_MISS). Three sequential
+    // tunnels must all succeed over one cached session, so the hop sees exactly
+    // one CONNECT, addressed to the sudoku server.
+    let port = free_port();
+    let listeners = sudoku_listener(port, "");
+    with_peer("sudoku-mux-chain", &listeners, |sink, _mihomo, _| {
+        let hop = Socks5Hop::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", multiplex: on, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {}}}\n",
+            hop.port
+        ));
+        for marker in [
+            "marker-sudoku-mux-chain-one",
+            "marker-sudoku-mux-chain-two",
+            "marker-sudoku-mux-chain-three",
+        ] {
+            let status = connect_while(
+                running.proxy,
+                &format!("127.0.0.1:{}", sink.port),
+                marker.as_bytes(),
+                || expect_marker("sudoku-mux-chain", sink, marker),
+            );
+            assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        }
+        let targets = hop.targets();
+        assert_eq!(
+            targets,
+            vec![format!("127.0.0.1:{port}")],
+            "one mux session must open one hop connection, addressed to the exit server"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_multiplex_over_a_dialer_proxy_wrong_key_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, "");
+    with_peer("sudoku-mux-chain-wrong-key", &listeners, |sink, _mihomo, _| {
+        let hop = Socks5Hop::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"wrong-chain-key\", multiplex: on, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {}}}\n",
+            hop.port
+        ));
+        let status = connect_status_with_deadline(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            Duration::from_secs(15),
+        );
+        assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+        expect_not_reached("sudoku-mux-chain-wrong-key", sink);
+        let targets = hop.targets();
+        assert_eq!(
+            targets,
+            vec![format!("127.0.0.1:{port}")],
+            "the hop must carry the connection to the sudoku server"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
 fn sudoku_multiplex_handles_concurrent_streams() {
     let port = free_port();
     let listeners = sudoku_listener(port, "");

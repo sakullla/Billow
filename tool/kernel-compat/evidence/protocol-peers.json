@@ -366,11 +366,13 @@
           "sudoku_private_key_material_matches_the_public_key_peer",
           "sudoku_multiplex_carries_two_streams_over_one_session",
           "sudoku_multiplex_handles_concurrent_streams",
-          "sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop"
+          "sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop",
+          "sudoku_multiplex_over_a_dialer_proxy_reaches_the_receiving_side"
         ],
         "negative": [
           "sudoku_wrong_key_never_reaches_the_sink",
-          "sudoku_mismatched_table_type_never_reaches_the_sink"
+          "sudoku_mismatched_table_type_never_reaches_the_sink",
+          "sudoku_multiplex_over_a_dialer_proxy_wrong_key_never_reaches_the_sink"
         ]
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
@@ -509,7 +511,7 @@
       "scope": "TCP sessions; legacy HTTP/1.1 header mask; pure and packed downlink; entropy/ascii/directional/custom tables with rotation and table hints; record layer chacha20-poly1305/aes-128-gcm/none with epoch-derived keys, sequence checks and replay rejection; KIP X25519+HKDF handshake with timestamp/user-hash/nonce/table hint and rekey; session mux (multiplex: on) with open/data/close/reset/ping/pong frames; `dialer-proxy` through a socks5 hop chain (the exit's server connection is tunnelled, never bypassed; T17-A3)"
     },
     "verification": {
-      "peerCases": "14 cases under families.sudoku in this file (12 positive, 2 negative), run through tool/kernel-compat/peer-tests.sh",
+      "peerCases": "16 cases under families.sudoku in this file (13 positive, 3 negative), run through tool/kernel-compat/peer-tests.sh",
       "codecDifferential": "tool/kernel-compat/peers/sudoku-vectors (locked Go codec, GPL-3.0 test-only) against tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation: pinned encode -> Rust decode and Rust encode -> pinned decode, pure and packed, with and without padding, for the entropy/ascii/directional/custom layouts",
       "defaultSuite": "cargo test --manifest-path native-kernel/Cargo.toml --locked runs the sudoku table/record/kip/mux unit tests and tests/config.rs::sudoku_options_are_strict"
     },

@@ -200,7 +200,7 @@ identities of the servers are logged as the session exit.
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
 | `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
-| `sudoku` | table-driven obfuscation: key-derived 4x4 Sudoku table, KIP X25519 + HKDF handshake, record layer (chacha20-poly1305 / aes-128-gcm / none with epoch keys and sequence validation), legacy HTTP mask, pure and packed downlink, `table-type` (entropy/ascii/directional), `custom-table(s)` rotation, `padding-min/max`, `path-root`, `multiplex: on` session mux, `dialer-proxy` through a SOCKS5 hop (**GPL-3.0-derived translation**) | no: `udp: true` (UoT) rejected at load | `listeners: type: sudoku` (default, no mask, ascii + packed downlink, directional, custom table, table rotation, aes-128-gcm, none, private/public key material, two-stream and concurrent session mux, a `dialer-proxy` chain through a recording SOCKS5 hop, wrong key, mismatched table type); pinned Go codec differential in `tool/kernel-compat/peers/sudoku-vectors` |
+| `sudoku` | table-driven obfuscation: key-derived 4x4 Sudoku table, KIP X25519 + HKDF handshake, record layer (chacha20-poly1305 / aes-128-gcm / none with epoch keys and sequence validation), legacy HTTP mask, pure and packed downlink, `table-type` (entropy/ascii/directional), `custom-table(s)` rotation, `padding-min/max`, `path-root`, `multiplex: on` session mux, `dialer-proxy` through a SOCKS5 hop (**GPL-3.0-derived translation**) | no: `udp: true` (UoT) rejected at load | `listeners: type: sudoku` (default, no mask, ascii + packed downlink, directional, custom table, table rotation, aes-128-gcm, none, private/public key material, two-stream and concurrent session mux, a `dialer-proxy` chain through a recording SOCKS5 hop, `multiplex: on` over that chain, wrong key, mismatched table type); pinned Go codec differential in `tool/kernel-compat/peers/sudoku-vectors` |
 | `masque` | two shapes over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): (1) RFC 9484 CONNECT-IP for the pinned Cloudflare WARP configuration — base64 SEC1 P-256 client key → the pinned adapter's self-signed client certificate, `public-key` (DER SPKI) pinning the endpoint, `:protocol cf-connect-ip`, `uri` (default `https://cloudflareaccess.com`), `capsule-protocol: ?1`, a `ROUTE_ADVERTISEMENT` for every IPv4/IPv6 destination, `ADDRESS_ASSIGN`/`ROUTE_ADVERTISEMENT` parsing, whole IP packets in HTTP Datagrams (quarter stream ID + context ID 0), a minimal IPv4/IPv6/UDP stack with header/UDP checksums and a per-destination UDP flow table (32 flows, LRU eviction), `mtu` (default 1280), `ip-stack` mode selection and tunnel DNS (`remote-dns-resolve`/`dns`); (2) the RFC 9298 CONNECT-UDP subset (`:protocol connect-udp`, one request stream per destination, `DATAGRAM` capsules) | `udp: true` for both shapes (UDP only; a TCP dial is refused by name) | controlled HTTP/3 peers in `tests/quic_peers.rs` (CONNECT-IP: request shape, client certificate and SPKI, endpoint pin, route advertisement, ADDRESS_ASSIGN, IPv4/IPv6 UDP echo with an independent IP codec, tunnel DNS, missing datagram settings, ADDRESS_REQUEST, 403, TCP refusal; CONNECT-UDP: request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate, peer-FIN reopen, 32 closed flows then a new destination) plus the shipped CLI's SOCKS5 UDP ASSOCIATE in `family_cli.rs`; no Mihomo listener exists and a WARP registration endpoint is not reachable offline |
 
 The mieru module the pinned outbound wraps is GPL-3.0: this repository contains
@@ -225,7 +225,10 @@ crate. The translation and its verification are in
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
 is rejected at load time or at dial time with a `[unsupported]`/chain error,
-never silently bypassed. UDP follows the same rule: a `udp: true` proxy with a
+never silently bypassed. The exit itself must also be `socks5` or `sudoku`
+(the exits whose handshake can run over a stream a hop produced); any other
+exit is refused at dial time with a named chain error and is never replaced by
+a hop. UDP follows the same rule: a `udp: true` proxy with a
 `dialer-proxy` must name exactly one SOCKS5 hop, whose UDP relay carries the
 datagrams (TCP and UDP then take the same path, matching Mihomo's
 `proxydialer.ListenPacket`). Anything else - a hop without a UDP association,
@@ -694,18 +697,20 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
 
   T13 added 5 mieru cases against `listeners: type: mieru`: the TCP session,
   `port-range`, an idle session across the five-second heartbeat, a wrong
-  password and a closed peer port. T17 added 14 sudoku cases against
+  password and a closed peer port. T17 added 16 sudoku cases against
   `listeners: type: sudoku`: the default session, no HTTP mask, ascii + packed
   downlink, directional tables, a custom table, table rotation, aes-128-gcm,
   `none`, private/public key material, two sequential and two concurrent
   session-mux streams, a `dialer-proxy` chain through a recording SOCKS5 hop,
+  `multiplex: on` over the same chain (three sequential tunnels over one
+  session, plus a wrong-key failure),
   a wrong key and a mismatched table type (the last two must never reach the
   sink). The locked Go codec
   (`tool/kernel-compat/peers/sudoku-vectors`, GPL-3.0, test-only) is run by
   `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` in both
   directions (pinned encode -> Rust decode, Rust encode -> pinned decode,
   pure and packed, with and without padding) for the entropy, ascii,
-  directional and custom table layouts. `peer-tests.sh` runs 64 cases in total.
+  directional and custom table layouts. `peer-tests.sh` runs 66 cases in total.
   T15 added 4 shadowquic cases: TCP, UDP over QUIC datagrams, UDP over
   `udp-over-stream`, and a wrong-password case that is forwarded to the
   camouflage upstream and never reaches the sink. The JLS seal is also
@@ -717,7 +722,7 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   `tests/shadowquic_stream.rs` is a default-suite controlled quinn peer that
   stops a client uni stream and closes the control send half; it proves the
   client reopens the uni stream and rebuilds the control association with the
-  live ids. `tool/kernel-compat/peer-tests.sh` runs 64 cases in total (the T17 sudoku
+  live ids. `tool/kernel-compat/peer-tests.sh` runs 66 cases in total (the T17 sudoku
   additions included). `masque` has
   no Mihomo listener (the pinned adapter is a Cloudflare WARP client) and no
   reachable WARP endpoint offline, so its fifteen default-suite cases run against

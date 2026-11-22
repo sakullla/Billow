@@ -702,21 +702,29 @@ pub async fn dial(option: &SudokuOutbound, target: &Target) -> Result<Dialed, Di
     Ok(Dialed { stream, server })
 }
 
-/// A chained dial: `stream` is already connected to the Sudoku server through
-/// the `dialer-proxy` hops. The mux cache key includes the hop chain so a
-/// session opened through one hop is never reused for another.
-pub async fn dial_over(
+/// A chained dial: the exit's server connection is tunnelled through `hops`.
+/// With `multiplex: on` a live cached session is reused before any hop
+/// connection is opened; a new session performs the KIP `StartMux` handshake
+/// over the hop tunnel before the mux client is created.
+pub async fn dial_chained(
     option: &SudokuOutbound,
-    stream: BoxStream,
-    server: std::net::SocketAddr,
     target: &Target,
     hops: &[&crate::proxies::Proxy],
+    server: std::net::SocketAddr,
+    timeout: std::time::Duration,
+    tls: &super::tls::ClientTls,
 ) -> Result<Dialed, DialError> {
     if option.multiplex == SudokuMultiplex::On {
         let key = mux_cache_key(option) + &chain_suffix(hops);
-        let (stream, server) = mux::dial_over(option, target, &key, stream, server).await?;
+        let (stream, server) =
+            mux::dial_chained(option, target, &key, hops, server, timeout, tls).await?;
         return Ok(Dialed { stream, server });
     }
+    let exit_server = Target {
+        host: option.server.clone(),
+        port: option.port,
+    };
+    let stream = super::connect_via_hops(hops, &exit_server, timeout, tls).await?;
     let (stream, server) =
         connect_stream(option, Handshake::OpenTcp, Some(target), stream, server).await?;
     Ok(Dialed { stream, server })

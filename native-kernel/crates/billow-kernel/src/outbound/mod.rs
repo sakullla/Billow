@@ -208,13 +208,27 @@ async fn dial_through(
     if hops.is_empty() {
         return dial_inner(&exit.protocol, target, &[], timeout, tls).await;
     }
-    if !matches!(exit.protocol, Protocol::Socks5(_) | Protocol::Sudoku(_)) {
+    if let Protocol::Sudoku(option) = &exit.protocol {
+        // Sudoku owns the hop stream: with `multiplex: on` a cached session is
+        // reused before any hop connection is opened, and a new session needs
+        // the KIP `StartMux` handshake over the hop tunnel.
+        return sudoku::dial_chained(
+            option,
+            target,
+            hops,
+            peer_of(exit),
+            timeout,
+            tls,
+        )
+        .await;
+    }
+    if !matches!(exit.protocol, Protocol::Socks5(_)) {
         return Err(exit_over_stream_error(exit));
     }
     // The exit's own server is the destination of its dialer hop.
     let exit_server = server_target(exit);
     let stream = connect_via_hops(hops, &exit_server, timeout, tls).await?;
-    dial_over(exit, stream, target, hops).await
+    dial_over(exit, stream, target).await
 }
 
 /// Only protocols whose handshake can run over a stream someone else produced
@@ -230,7 +244,7 @@ fn exit_over_stream_error(exit: &Proxy) -> DialError {
 /// A stream connected to `destination`, tunnelled through `hops`: `hops[0]`
 /// carries the connection, and when there are more hops its own server is
 /// reached through them (`hops[0]`'s server is `hops[1]`'s destination).
-async fn connect_via_hops(
+pub(crate) async fn connect_via_hops(
     hops: &[&Proxy],
     destination: &Target,
     timeout: Duration,
@@ -334,13 +348,11 @@ impl tokio::io::AsyncWrite for Joined {
     }
 }
 
-/// Run the protocol of `proxy` over an already established stream (the proxy's
-/// server connection reached through its `dialer-proxy` hops).
+/// Run a SOCKS5 exit's negotiation over a stream its hop chain produced.
 async fn dial_over(
     proxy: &Proxy,
     stream: BoxStream,
     target: &Target,
-    hops: &[&Proxy],
 ) -> Result<Dialed, DialError> {
     match &proxy.protocol {
         Protocol::Socks5(option) => {
@@ -351,9 +363,6 @@ async fn dial_over(
                 stream,
                 server: super::outbound::peer_of(proxy),
             })
-        }
-        Protocol::Sudoku(option) => {
-            sudoku::dial_over(option, stream, peer_of(proxy), target, hops).await
         }
         _other => Err(exit_over_stream_error(proxy)),
     }

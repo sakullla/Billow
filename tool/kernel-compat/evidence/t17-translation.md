@@ -68,9 +68,9 @@ Explicitly rejected at load time, with the reason recorded:
 `sudoku` is TCP-only in the kernel; `multiplex: auto` behaves like `off`
 because it only reuses an HTTP tunnel connection.
 
-## Repairs (T17-A3)
+## Repairs (T17-A3 and T17-A4)
 
-Review found four defects in the first delivery; all are fixed here.
+Review found five defects; all are fixed here.
 
 - **`dialer-proxy` dropped the exit.** `dial_chain` sliced the chain from the
   first hop without a `dialer-proxy` and dialled that hop straight to the
@@ -82,13 +82,24 @@ Review found four defects in the first delivery; all are fixed here.
   protocol cannot run over a stream fails with a named chain error instead of
   letting a hop dial the target; the exit is never dropped. The T4/T12 UDP
   chain cases still pass (UDP uses its own association path).
+- **`multiplex: on` + `dialer-proxy` failed every time (T17-A4).** The mux
+  branch handed the raw hop stream to `MuxClient`, which only splits it; the
+  KIP `StartMux` handshake was missing, so the pinned listener answered
+  `INVALID_SUDOKU_MAP_MISS`. A new session now runs
+  `connect_stream(option, Handshake::StartMux, None, hop_stream, server)` before
+  the mux client is created, and the hop connection is opened lazily: a live
+  cached session is reused without dialling the exit server and closing it
+  again. The mux cache key includes the hop chain.
 - **Regression tests.** `tests/protocols.rs::tcp_dialer_proxy_reaches_the_exit_
   through_the_hop` (socks5 exit + socks5 hop: the hop is asked for the exit
   server and the exit for the final target) and `...::tcp_dialer_proxy_never_
   bypasses_an_unsupported_exit`; `tests/mihomo_peers.rs::sudoku_dialer_proxy_
   carries_the_exit_through_the_socks5_hop` (sudoku exit + recording SOCKS5 hop
   + pinned Mihomo listener: exactly one hop CONNECT, addressed to the sudoku
-  server, and the sink receives the marker). The pre-existing two-hop peer case
+  server, and the sink receives the marker);
+  `...::sudoku_multiplex_over_a_dialer_proxy_reaches_the_receiving_side` (three
+  sequential tunnels over one mux session, one hop CONNECT) and its wrong-key
+  negative. The pre-existing two-hop peer case
   (`dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo`) had passed
   only because the bypass delivered the marker; it now uses a recording hop
   and asserts the hop's sole CONNECT is the exit server.
@@ -139,7 +150,7 @@ through `tool/kernel-compat/peers/sudoku-vectors`
 
 | check | command | result |
 | --- | --- | --- |
-| pinned peer, 12 positive cases | `tool/kernel-compat/peer-tests.sh` | default session, no HTTP mask, ascii + packed downlink, directional table, custom table, table rotation, aes-128-gcm, `none`, private/public key material, sequential mux, concurrent mux, and a `dialer-proxy` chain through a recording SOCKS5 hop |
+| pinned peer, 14 positive cases | `tool/kernel-compat/peer-tests.sh` | default session, no HTTP mask, ascii + packed downlink, directional table, custom table, table rotation, aes-128-gcm, `none`, private/public key material, sequential mux, concurrent mux, and a `dialer-proxy` chain through a recording SOCKS5 hop |
 | pinned peer, 2 negative cases | same | a wrong key and a mismatched `table-type` fail the dial and never reach the sink |
 | codec differential | `cargo test --test protocols -- --ignored sudoku_codec_matches_the_pinned_implementation` | pinned encode -> Rust decode and Rust encode -> pinned decode, pure and packed, padding 0-0 and 10-30, for entropy/ascii/directional/custom layouts |
 | default suite | `cargo test --manifest-path native-kernel/Cargo.toml --locked` | table/record/KIP/mux unit tests and `tests/config.rs::sudoku_options_are_strict` |
@@ -151,8 +162,8 @@ target lock):
 
 | run | result |
 | --- | --- |
-| `cargo test --manifest-path native-kernel/Cargo.toml --locked` | 286 passed, 0 failed, 87 ignored (15 test binaries; first canonical attempt hit the documented peer-start flake in the unrelated `trojan_without_skip_cert_verify_fails_on_an_untrusted_certificate` case with an empty peer log, the immediate rerun passed, and the same case also passed in the isolated run) |
-| `tool/kernel-compat/peer-tests.sh` | 64 passed, 0 failed (`evidence/protocol-peers-run.log`) |
+| `cargo test --manifest-path native-kernel/Cargo.toml --locked` | 286 passed, 0 failed, 89 ignored (15 test binaries; T17-A4 rerun) |
+| `tool/kernel-compat/peer-tests.sh` | 66 passed, 0 failed (`evidence/protocol-peers-run.log`) |
 | `tool/kernel-compat/family-peers.sh` | exit 0; sudoku hint/padding vectors match and the codec differential passes (`evidence/family-peers-run.log`) |
 | `node --test tool/kernel-compat/runner.test.mjs` | 10 passed, 0 failed |
 | `node tool/kernel-compat/option-probe.mjs --rust <release> --mihomo <pinned>` | 261 no-op / 283 enabled / 0 problems (`evidence/option-matrix.txt`) |
@@ -170,6 +181,22 @@ The exact counts of each run are in the sibling logs
 Platform: `macos-aarch64`. The peer harness binds loopback ports only and
 terminates both Mihomo processes in a `finally` block; the Go vector generator
 needs `go` and the gitignored module cache.
+
+## Byte-level differences from the pinned implementation
+
+Interoperability is verified against the pinned peer, but the wire is not
+claimed byte-for-byte identical:
+
+- **Padding slots.** The pinned `appendSudokuPayload` draws one candidate slot
+  before each hint and keeps none after the last hint; this encoder also draws
+  a slot after every hint, so a write can carry one extra trailing padding slot
+  (decoders skip padding, so both sides interoperate).
+- **KIP features.** The client advertises `FEATURE_OPEN_TCP` (plus
+  `FEATURE_MUX` for `StartMux`) rather than every `KIPFeatAll` bit. The server
+  masks the offer with `KIPFeatAll` and only the requested command matters.
+- **Mux keepalive.** The pinned session sends an empty `DATA` frame on stream 0
+  every 15 s; this client sends a `PING` frame (the peer answers `PONG`), which
+  keeps the session alive without claiming identical keepalive bytes.
 
 ## Known limitations
 

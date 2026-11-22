@@ -621,32 +621,55 @@ pub async fn dial(
     dial_session(option, target, cache_key, None).await
 }
 
-/// A chained dial: the first session is opened over the stream the
-/// `dialer-proxy` hop produced; a live cached session is still reused.
-pub async fn dial_over(
+/// Parameters for opening a session through a `dialer-proxy` hop chain. The
+/// hop connection is opened only when a new session is actually needed, so a
+/// cache hit never dials the exit server and closes it again.
+struct ChainContext<'a> {
+    hops: &'a [&'a crate::proxies::Proxy],
+    server: std::net::SocketAddr,
+    timeout: std::time::Duration,
+    tls: &'a crate::outbound::tls::ClientTls,
+}
+
+/// A chained dial: a new session performs the KIP `StartMux` handshake over the
+/// hop tunnel; a live cached session is reused without opening a hop
+/// connection.
+pub async fn dial_chained(
     option: &SudokuOutbound,
     target: &Target,
     cache_key: &str,
-    stream: BoxStream,
+    hops: &[&crate::proxies::Proxy],
     server: std::net::SocketAddr,
+    timeout: std::time::Duration,
+    tls: &crate::outbound::tls::ClientTls,
 ) -> Result<(BoxStream, std::net::SocketAddr), DialError> {
-    dial_session(option, target, cache_key, Some((stream, server))).await
+    dial_session(
+        option,
+        target,
+        cache_key,
+        Some(ChainContext {
+            hops,
+            server,
+            timeout,
+            tls,
+        }),
+    )
+    .await
 }
 
 async fn dial_session(
     option: &SudokuOutbound,
     target: &Target,
     cache_key: &str,
-    preconnected: Option<(BoxStream, std::net::SocketAddr)>,
+    chain: Option<ChainContext<'_>>,
 ) -> Result<(BoxStream, std::net::SocketAddr), DialError> {
     let address = crate::outbound::SocksAddr::encode(target);
-    let mut preconnected = preconnected;
     for attempt in 0..2 {
         let client = match cached_client(cache_key) {
             Some(client) if !client.is_closed() => client,
             _ => {
-                let client = match preconnected.take() {
-                    Some((stream, server)) => MuxClient::connect_stream(stream, server).await?,
+                let client = match chain.as_ref() {
+                    Some(context) => connect_chained(option, context).await?,
                     None => MuxClient::connect(option).await?,
                 };
                 store_client(cache_key, Arc::clone(&client));
@@ -672,6 +695,35 @@ async fn dial_session(
         "sudoku mux",
         io::Error::new(io::ErrorKind::ConnectionAborted, "sudoku mux: session failed twice"),
     ))
+}
+
+/// Open a new session through the hop chain: reach the exit server over the
+/// hops, run the KIP `StartMux` handshake on that tunnel, then split the mux
+/// transport into the client.
+async fn connect_chained(
+    option: &SudokuOutbound,
+    context: &ChainContext<'_>,
+) -> Result<Arc<MuxClient>, DialError> {
+    let exit_target = Target {
+        host: option.server.clone(),
+        port: option.port,
+    };
+    let raw = crate::outbound::connect_via_hops(
+        context.hops,
+        &exit_target,
+        context.timeout,
+        context.tls,
+    )
+    .await?;
+    let (stream, server) = super::connect_stream(
+        option,
+        Handshake::StartMux,
+        None,
+        raw,
+        context.server,
+    )
+    .await?;
+    MuxClient::connect_stream(stream, server).await
 }
 
 fn clients() -> &'static Mutex<HashMap<String, Arc<MuxClient>>> {
