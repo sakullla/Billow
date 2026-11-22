@@ -726,6 +726,116 @@ fn save_profile_override(app: AppHandle, id: String, text: String) -> ProfileSna
     with_profile(&app, |session| session.book.save_override(&id, &text))
 }
 
+fn with_session_result<T>(
+    app: &AppHandle,
+    change: impl FnOnce(&mut ProfileSession) -> Result<T, String>,
+) -> Result<T, String> {
+    let kernel_path = {
+        let store = app.state::<KernelStore>();
+        lock_kernel(&store.manager).installed_path()
+    };
+    let store = app.state::<ProfileStore>();
+    let mut session = lock_profiles(&store.session);
+    session.runtime.set_kernel_path(kernel_path.clone());
+    session.tun.set_kernel_path(kernel_path);
+    let outcome = change(&mut session);
+    if outcome.is_ok() {
+        let ProfileSession { book, proxy, .. } = &mut *session;
+        book.reconcile_system_proxy(proxy);
+    }
+    outcome
+}
+
+#[tauri::command(async)]
+fn preview_custom_nodes_import(app: AppHandle, raw: String) -> custom_nodes::ParseNodesResult {
+    with_profile(&app, |session| session.book.preview_custom_nodes_import(&raw))
+}
+
+#[tauri::command(async)]
+fn import_custom_nodes(
+    app: AppHandle,
+    raw: String,
+    dialer: Option<custom_nodes::DialerTarget>,
+) -> Result<profile::CustomNodesImportResult, String> {
+    let result = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.import_custom_nodes(&raw, dialer, runtime)
+    })?;
+    publish_android(&app);
+    Ok(result)
+}
+
+#[tauri::command(async)]
+fn save_custom_node(
+    app: AppHandle,
+    input: profile::SaveCustomNodeInput,
+) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.save_custom_node(input, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn delete_custom_node(app: AppHandle, id: String) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.delete_custom_node(&id, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn set_custom_node_enabled(
+    app: AppHandle,
+    id: String,
+    enabled: bool,
+) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.set_custom_node_enabled(&id, enabled, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn set_custom_nodes_overlay(app: AppHandle, enabled: bool) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.set_custom_nodes_overlay(enabled, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn save_landing_rules(
+    app: AppHandle,
+    rules_enabled: bool,
+    rules: Vec<custom_nodes::LandingRule>,
+) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.save_landing_rules(rules_enabled, rules, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn use_custom_profile(app: AppHandle) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.use_custom_profile(runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
 #[tauri::command(async)]
 fn connect_session(app: AppHandle) -> Result<ProfileSnapshot, String> {
     let snapshot = with_session(&app, |session| {
@@ -2487,6 +2597,14 @@ pub fn run() {
             update_profile,
             save_profile_override,
             preview_profile_override,
+            preview_custom_nodes_import,
+            import_custom_nodes,
+            save_custom_node,
+            delete_custom_node,
+            set_custom_node_enabled,
+            set_custom_nodes_overlay,
+            save_landing_rules,
+            use_custom_profile,
             connect_session,
             disconnect_session,
             set_system_proxy,

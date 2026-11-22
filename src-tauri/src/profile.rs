@@ -13,6 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
 use crate::age_key;
+use crate::custom_nodes::{
+    self, CUSTOM_PROFILE_ID, CUSTOM_PROFILE_NAME, CustomNode, CustomNodeWarning, CustomNodesState,
+    DialerTarget, LANDING_PRESETS, LandingPresetInfo, LandingRule, LandingRuleKind,
+    ParseItemError, ParseNodesResult, SimpleProxyForm,
+};
 use crate::diagnostics::{self, ConnectionView, LogView, TrafficTotals};
 use crate::nodes::{
     self, ControllerEndpoint, KERNEL_DOWN, NEED_PROFILE, NO_MATCH, NO_NODES, NOT_MANUAL, NodeDelay,
@@ -129,45 +134,51 @@ struct NodeMetadata {
     config: ConfigValues,
 }
 
+impl NodeMetadata {
+    fn from_value(value: &Value) -> Self {
+        let flag = |name: &str| mapping_get(value, name).and_then(Value::as_bool);
+        let groups = nodes::parse_proxy_groups(value);
+        let global_group = nodes::synthesize_global_group(value, &groups);
+        Self {
+            groups,
+            global_group,
+            types: nodes::proxy_infos(value),
+            config: ConfigValues {
+                mixed_port: read_i64(value, "mixed-port").or_else(|| read_i64(value, "port")),
+                allow_lan: flag("allow-lan"), ipv6: flag("ipv6"),
+                log_level: read_string(value, "log-level"),
+                unified_delay: flag("unified-delay"), tcp_concurrent: flag("tcp-concurrent"),
+                find_process_mode: read_string(value, "find-process-mode"),
+                keep_alive_interval: read_i64(value, "keep-alive-interval"),
+                disable_keep_alive: flag("disable-keep-alive"),
+                socks_port: read_i64(value, "socks-port"),
+                http_port: read_i64(value, "port"),
+                redir_port: read_i64(value, "redir-port"),
+                tproxy_port: read_i64(value, "tproxy-port"),
+                interface_name: read_string(value, "interface-name"),
+                routing_mark: read_i64(value, "routing-mark"),
+                sniffer: mapping_get(value, "sniffer").and_then(|s| mapping_get(s, "enable")).and_then(Value::as_bool),
+                sniff_http_ports: sniff_config_ports(value, "HTTP"),
+                sniff_tls_ports: sniff_config_ports(value, "TLS"),
+                sniff_quic_ports: sniff_config_ports(value, "QUIC"),
+                sniff_force_domain: mapping_get(value, "sniffer").and_then(|s| yaml_strings(mapping_get(s, "force-domain"))),
+                sniff_skip_domain: mapping_get(value, "sniffer").and_then(|s| yaml_strings(mapping_get(s, "skip-domain"))),
+                sniff_override_destination: mapping_get(value, "sniffer")
+                    .and_then(|s| mapping_get(s, "override-destination"))
+                    .and_then(Value::as_bool),
+                tun_route_address: mapping_get(value, "tun").and_then(|t| yaml_strings(mapping_get(t, "route-address"))),
+                tun_route_exclude_address: mapping_get(value, "tun")
+                    .and_then(|t| yaml_strings(mapping_get(t, "route-exclude-address"))),
+            },
+        }
+    }
+}
+
 impl Profile {
     fn node_metadata(&self) -> Option<&NodeMetadata> {
         self.node_metadata.get_or_init(|| {
             let value = document_value(self)?;
-            let flag = |name: &str| mapping_get(&value, name).and_then(Value::as_bool);
-            let groups = nodes::parse_proxy_groups(&value);
-            let global_group = nodes::synthesize_global_group(&value, &groups);
-            Some(NodeMetadata {
-                groups,
-                global_group,
-                types: nodes::proxy_infos(&value),
-                config: ConfigValues {
-                    mixed_port: read_i64(&value, "mixed-port").or_else(|| read_i64(&value, "port")),
-                    allow_lan: flag("allow-lan"), ipv6: flag("ipv6"),
-                    log_level: read_string(&value, "log-level"),
-                    unified_delay: flag("unified-delay"), tcp_concurrent: flag("tcp-concurrent"),
-                    find_process_mode: read_string(&value, "find-process-mode"),
-                    keep_alive_interval: read_i64(&value, "keep-alive-interval"),
-                    disable_keep_alive: flag("disable-keep-alive"),
-                    socks_port: read_i64(&value, "socks-port"),
-                    http_port: read_i64(&value, "port"),
-                    redir_port: read_i64(&value, "redir-port"),
-                    tproxy_port: read_i64(&value, "tproxy-port"),
-                    interface_name: read_string(&value, "interface-name"),
-                    routing_mark: read_i64(&value, "routing-mark"),
-                    sniffer: mapping_get(&value, "sniffer").and_then(|s| mapping_get(s, "enable")).and_then(Value::as_bool),
-                    sniff_http_ports: sniff_config_ports(&value, "HTTP"),
-                    sniff_tls_ports: sniff_config_ports(&value, "TLS"),
-                    sniff_quic_ports: sniff_config_ports(&value, "QUIC"),
-                    sniff_force_domain: mapping_get(&value, "sniffer").and_then(|s| yaml_strings(mapping_get(s, "force-domain"))),
-                    sniff_skip_domain: mapping_get(&value, "sniffer").and_then(|s| yaml_strings(mapping_get(s, "skip-domain"))),
-                    sniff_override_destination: mapping_get(&value, "sniffer")
-                        .and_then(|s| mapping_get(s, "override-destination"))
-                        .and_then(Value::as_bool),
-                    tun_route_address: mapping_get(&value, "tun").and_then(|t| yaml_strings(mapping_get(t, "route-address"))),
-                    tun_route_exclude_address: mapping_get(&value, "tun")
-                        .and_then(|t| yaml_strings(mapping_get(t, "route-exclude-address"))),
-                },
-            })
+            Some(NodeMetadata::from_value(&value))
         }).as_ref()
     }
 }
@@ -887,6 +898,39 @@ pub struct ProfileSnapshot {
     pub settings: KernelSettings,
     pub config_values: ConfigValues,
     pub notice: Option<String>,
+    pub custom_nodes: CustomNodesState,
+    pub custom_nodes_warnings: Vec<CustomNodeWarning>,
+    pub custom_profile_active: bool,
+    pub landing_presets: Vec<LandingPresetInfo>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CustomNodesImportResult {
+    pub snapshot: ProfileSnapshot,
+    pub imported: Vec<CustomNode>,
+    pub errors: Vec<ParseItemError>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SaveCustomNodeInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub dialer: DialerTarget,
+    #[serde(default)]
+    pub simple: Option<SimpleProxyForm>,
+    #[serde(default)]
+    pub raw_yaml: Option<String>,
 }
 
 #[cfg(any(target_os = "android", test))]
@@ -2125,6 +2169,12 @@ struct DiskState<'a> {
     chosen_mode: Option<String>,
     #[serde(default)]
     settings: KernelSettings,
+    #[serde(default)]
+    custom_nodes: CustomNodesState,
+    #[serde(default)]
+    custom_selected: BTreeMap<String, String>,
+    #[serde(default)]
+    custom_fixed: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2181,6 +2231,12 @@ pub struct ProfileBackup {
     pub included_packages: Vec<String>,
     pub app_mode: String,
     pub chosen_mode: Option<String>,
+    #[serde(default)]
+    pub custom_nodes: CustomNodesState,
+    #[serde(default)]
+    pub custom_selected: BTreeMap<String, String>,
+    #[serde(default)]
+    pub custom_fixed: BTreeMap<String, String>,
 }
 
 /// One configuration entry in a backup: subscription URL, YAML, 覆写 and the age
@@ -2272,6 +2328,9 @@ pub struct ProfileBook {
     /// Set only while [`ProfileBook::restart_kernel`] runs: the next launch stops
     /// and respawns the process even for an unchanged YAML.
     force_launch: bool,
+    custom_nodes: CustomNodesState,
+    custom_selected: BTreeMap<String, String>,
+    custom_fixed: BTreeMap<String, String>,
     /// Test-only write-failure injection for the restore rollback path (R38).
     #[cfg(test)]
     persist_failures: AtomicUsize,
@@ -2306,6 +2365,9 @@ struct BookRestorePoint {
     mixed_port: Option<i64>,
     mode: Option<String>,
     connected: bool,
+    custom_nodes: CustomNodesState,
+    custom_selected: BTreeMap<String, String>,
+    custom_fixed: BTreeMap<String, String>,
 }
 
 impl ProfileBook {
@@ -2365,6 +2427,9 @@ impl ProfileBook {
             crash_recoveries: 0,
             last_crash_ms: None,
             force_launch: false,
+            custom_nodes: CustomNodesState::default(),
+            custom_selected: BTreeMap::new(),
+            custom_fixed: BTreeMap::new(),
             #[cfg(test)]
             persist_failures: AtomicUsize::new(0),
         };
@@ -2450,6 +2515,10 @@ impl ProfileBook {
             settings: self.settings.clone(),
             config_values: self.config_values(),
             notice: self.notice.clone(),
+            custom_nodes: self.custom_nodes.clone(),
+            custom_nodes_warnings: self.custom_nodes_warnings(),
+            custom_profile_active: self.active_id.as_deref() == Some(CUSTOM_PROFILE_ID),
+            landing_presets: LANDING_PRESETS.to_vec(),
         }
     }
 
@@ -2716,6 +2785,12 @@ impl ProfileBook {
     /// (R43): the history stores the name, so a later rename keeps old rows.
     pub fn active_profile(&self) -> Option<(String, String)> {
         let id = self.active_id.as_deref()?;
+        if id == CUSTOM_PROFILE_ID {
+            return Some((
+                CUSTOM_PROFILE_ID.to_string(),
+                CUSTOM_PROFILE_NAME.to_string(),
+            ));
+        }
         self.profiles
             .iter()
             .find(|profile| profile.id == id)
@@ -3273,6 +3348,9 @@ impl ProfileBook {
         kernel: &mut dyn KernelLaunch,
         refresh: bool,
     ) -> ProfileSnapshot {
+        if id == CUSTOM_PROFILE_ID {
+            return self.activate_custom(kernel);
+        }
         let Some(index) = self.profiles.iter().position(|profile| profile.id == id) else {
             self.home_failure = Some(missing_profile());
             return self.snapshot();
@@ -3312,9 +3390,16 @@ impl ProfileBook {
                 return self.snapshot();
             }
         };
+        let overlaid = match custom_nodes::inject_overlay(&prepared.yaml, &self.custom_nodes) {
+            Ok(result) => result,
+            Err(message) => {
+                self.fail_activation(index, message);
+                return self.publish(kernel);
+            }
+        };
         let selected = self.profiles[index].selected.clone();
         let desktop = self.platform == ClientPlatform::Desktop;
-        let (settled, settled_port) = match apply_settings(&prepared.yaml, &self.settings, desktop)
+        let (settled, settled_port) = match apply_settings(&overlaid.yaml, &self.settings, desktop)
             .and_then(|(yaml, port)| {
                 // Subscription TUN settings must not replace the authorized session.
                 // In particular, an omitted enable flag disables Mihomo's TUN on reload.
@@ -3379,6 +3464,101 @@ impl ProfileBook {
         self.mixed_port = settled_port.or(prepared.mixed_port);
         self.mode = prepared.mode.clone();
         self.chosen_mode = prepared.mode;
+        self.home_failure = None;
+        self.input_error = None;
+        self.apply_live_selections(kernel);
+        self.persist();
+        self.publish(kernel)
+    }
+
+    fn fail_activation_standalone(&mut self, message: String) {
+        self.home_failure = Some(message);
+        let endpoint = self.our_endpoint.clone();
+        self.pending_release = Some(PlatformRelease {
+            endpoint: endpoint.clone(),
+            close_tun: self.takeover.tun,
+            close_vpn: self.takeover.vpn,
+        });
+        self.takeover.tun = false;
+        self.takeover.vpn = false;
+        self.connected = false;
+        if endpoint.is_none() {
+            self.takeover.system_proxy = false;
+        }
+        self.persist();
+        self.remember_current_failure();
+    }
+
+    fn activate_custom(&mut self, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+        let standalone = match custom_nodes::generate_standalone_yaml(&self.custom_nodes) {
+            Ok(result) => result,
+            Err(message) => {
+                self.fail_activation_standalone(message);
+                return self.publish(kernel);
+            }
+        };
+        let desktop = self.platform == ClientPlatform::Desktop;
+        let (settled, settled_port) =
+            match apply_settings(&standalone.yaml, &self.settings, desktop)
+                .and_then(|(yaml, port)| {
+                    if desktop {
+                        force_tun(&yaml, self.takeover.tun, None).map(|yaml| (yaml, port))
+                    } else {
+                        Ok((yaml, port))
+                    }
+                })
+                .and_then(|(yaml, port)| {
+                    ensure_tun_dns(&yaml, &self.settings).map(|yaml| (yaml, port))
+                })
+            {
+                Ok(result) => result,
+                Err(message) => {
+                    self.fail_activation_standalone(message);
+                    return self.publish(kernel);
+                }
+            };
+        let settled = match self.mode.as_deref().and_then(normalize_outbound) {
+            Some(mode) => match force_mode(&settled, mode) {
+                Ok(yaml) => yaml,
+                Err(message) => {
+                    self.fail_activation_standalone(message);
+                    return self.publish(kernel);
+                }
+            },
+            None => settled,
+        };
+        let yaml =
+            nodes::ensure_controller(&nodes::prioritize_selections(&settled, &self.custom_selected));
+        self.runtime_catalog = nodes::RuntimeCatalog::default();
+        self.auto_now.clear();
+        if let Err(message) = kernel.start_or_reload(&yaml) {
+            let message = if message.is_empty() {
+                kernel_error()
+            } else {
+                message
+            };
+            if message.starts_with(takeover::TUN_AUTHORIZATION_FAILED) {
+                self.pending_failure_hint = Some(FailureHint::Tun);
+                let reason =
+                    crate::i18n::tr(crate::i18n::Key::TunAuthorizationFailed).to_string();
+                self.home_failure = Some(reason);
+                self.remember_current_failure();
+            } else {
+                self.pending_failure_hint = kernel.take_failure_hint();
+                self.fail_activation_standalone(message);
+            }
+            return self.publish(kernel);
+        }
+        self.runtime_base = Some(yaml);
+        self.disabled_rules.clear();
+        self.active_id = Some(CUSTOM_PROFILE_ID.to_string());
+        self.mixed_port = settled_port.or(Some(7890));
+        let mode = self
+            .chosen_mode
+            .clone()
+            .or_else(|| Some("rule".to_string()));
+        self.mode = mode.clone();
+        self.chosen_mode = mode;
         self.home_failure = None;
         self.input_error = None;
         self.apply_live_selections(kernel);
@@ -3543,16 +3723,28 @@ impl ProfileBook {
     pub fn config_overview(&self) -> Result<ConfigOverview, String> {
         let effective_yaml = self.effective_config()?;
         let effective: Value = serde_yaml::from_str(&effective_yaml).map_err(|_| content_error())?;
-        let profile = self
-            .active_id
-            .as_ref()
-            .and_then(|id| self.profiles.iter().find(|profile| &profile.id == id))
-            .ok_or_else(|| crate::i18n::tr(crate::i18n::Key::NoProfile).to_string())?;
-        let raw = parse_config(&profile.content).unwrap_or(Value::Null);
-        let prepared = prepare(&profile.content, &profile.applied_override)
-            .ok()
-            .and_then(|prepared| serde_yaml::from_str::<Value>(&prepared.yaml).ok())
-            .unwrap_or_else(|| raw.clone());
+        let (raw, prepared) = if self.active_id.as_deref() == Some(CUSTOM_PROFILE_ID) {
+            let standalone = custom_nodes::generate_standalone_yaml(&self.custom_nodes)?;
+            let parsed = serde_yaml::from_str::<Value>(&standalone.yaml).unwrap_or(Value::Null);
+            (parsed.clone(), parsed)
+        } else {
+            let profile = self
+                .active_id
+                .as_ref()
+                .and_then(|id| self.profiles.iter().find(|profile| &profile.id == id))
+                .ok_or_else(|| crate::i18n::tr(crate::i18n::Key::NoProfile).to_string())?;
+            let raw = parse_config(&profile.content).unwrap_or(Value::Null);
+            let prepared = prepare(&profile.content, &profile.applied_override)
+                .ok()
+                .and_then(|prepared| {
+                    custom_nodes::inject_overlay(&prepared.yaml, &self.custom_nodes)
+                        .ok()
+                        .and_then(|overlaid| serde_yaml::from_str::<Value>(&overlaid.yaml).ok())
+                        .or_else(|| serde_yaml::from_str::<Value>(&prepared.yaml).ok())
+                })
+                .unwrap_or_else(|| raw.clone());
+            (raw, prepared)
+        };
         let (counts, group_types) = overview_counts(&effective);
         Ok(ConfigOverview {
             effective: overview_options(&effective),
@@ -3568,6 +3760,35 @@ impl ProfileBook {
         let Some(active) = self.active_id.clone() else {
             return Err(StartError::Idle(crate::i18n::tr(crate::i18n::Key::NoProfile).to_string()));
         };
+        if active == CUSTOM_PROFILE_ID {
+            let standalone = custom_nodes::generate_standalone_yaml(&self.custom_nodes)
+                .map_err(StartError::Failed)?;
+            let (settled, settled_port) = apply_settings(
+                &standalone.yaml,
+                &self.settings,
+                self.platform == ClientPlatform::Desktop,
+            )
+            .map_err(StartError::Failed)?;
+            let standalone_port = serde_yaml::from_str::<Value>(&standalone.yaml)
+                .ok()
+                .and_then(|value| read_i64(&value, "mixed-port"));
+            let Some(port) = settled_port
+                .or(standalone_port)
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|value| *value > 0)
+            else {
+                return Err(StartError::Failed("没有本地端口".to_string()));
+            };
+            let yaml = force_tun(&settled, tun_enable, fd).map_err(StartError::Failed)?;
+            let yaml = ensure_tun_dns(&yaml, &self.settings).map_err(StartError::Failed)?;
+            let yaml = match self.mode.as_deref().and_then(normalize_outbound) {
+                Some(mode) => force_mode(&yaml, mode).map_err(StartError::Failed)?,
+                None => yaml,
+            };
+            let yaml =
+                nodes::ensure_controller(&nodes::prioritize_selections(&yaml, &self.custom_selected));
+            return Ok((yaml, port));
+        }
         let Some(profile) = self.profiles.iter().find(|profile| profile.id == active) else {
             return Err(StartError::Idle(crate::i18n::tr(crate::i18n::Key::NoProfile).to_string()));
         };
@@ -3576,8 +3797,10 @@ impl ProfileBook {
             Err(PrepareError::Override(reason)) => return Err(StartError::Failed(format!("{}: {reason}", crate::i18n::tr(crate::i18n::Key::OverrideError)))),
             Err(PrepareError::Content) => return Err(StartError::Failed(content_error())),
         };
+        let overlaid = custom_nodes::inject_overlay(&prepared.yaml, &self.custom_nodes)
+            .map_err(StartError::Failed)?;
         let (settled, settled_port) =
-            apply_settings(&prepared.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
+            apply_settings(&overlaid.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
                 .map_err(StartError::Failed)?;
         let prepared = Prepared {
             mixed_port: settled_port.or(prepared.mixed_port),
@@ -3709,10 +3932,15 @@ impl ProfileBook {
             .collect();
         self.settings = disk.settings;
         nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
-        let known = self
-            .profiles
-            .iter()
-            .any(|profile| disk.active_id.as_deref() == Some(profile.id.as_str()));
+        self.custom_nodes = disk.custom_nodes;
+        normalize_custom_nodes_state(&mut self.custom_nodes);
+        self.custom_selected = disk.custom_selected;
+        self.custom_fixed = disk.custom_fixed;
+        let known = disk.active_id.as_deref() == Some(CUSTOM_PROFILE_ID)
+            || self
+                .profiles
+                .iter()
+                .any(|profile| disk.active_id.as_deref() == Some(profile.id.as_str()));
         self.active_id = if known { disk.active_id } else { None };
         self.tun_wanted = disk.tun_wanted;
         self.excluded = disk
@@ -3755,6 +3983,27 @@ impl ProfileBook {
         let Some(active) = self.active_id.as_deref() else {
             return;
         };
+        if active == CUSTOM_PROFILE_ID {
+            if let Ok(standalone) = custom_nodes::generate_standalone_yaml(&self.custom_nodes) {
+                let configured = apply_settings(
+                    &standalone.yaml,
+                    &self.settings,
+                    self.platform == ClientPlatform::Desktop,
+                )
+                .ok()
+                .and_then(|(_, port)| port)
+                .or(Some(7890));
+                let running = self
+                    .runtime_base
+                    .as_deref()
+                    .filter(|_| self.kernel_running)
+                    .and_then(|yaml| serde_yaml::from_str::<Value>(yaml).ok())
+                    .and_then(|value| read_i64(&value, "mixed-port"));
+                self.mixed_port = running.or(configured);
+                self.mode = self.chosen_mode.clone().or_else(|| Some("rule".to_string()));
+            }
+            return;
+        }
         let Some(profile) = self.profiles.iter().find(|profile| profile.id == active) else {
             return;
         };
@@ -3818,6 +4067,9 @@ impl ProfileBook {
             proxy_port: self.our_endpoint.as_ref().map(|endpoint| endpoint.port),
             chosen_mode: self.chosen_mode.clone(),
             settings: self.settings.clone(),
+            custom_nodes: self.custom_nodes.clone(),
+            custom_selected: self.custom_selected.clone(),
+            custom_fixed: self.custom_fixed.clone(),
             profiles: self
                 .profiles
                 .iter()
@@ -3879,6 +4131,9 @@ impl ProfileBook {
             included_packages: self.included.clone(),
             app_mode: self.app_mode.clone(),
             chosen_mode: self.chosen_mode.clone(),
+            custom_nodes: self.custom_nodes.clone(),
+            custom_selected: self.custom_selected.clone(),
+            custom_fixed: self.custom_fixed.clone(),
         }
     }
 
@@ -3950,6 +4205,9 @@ impl ProfileBook {
             mixed_port: self.mixed_port,
             mode: self.mode.clone(),
             connected: self.connected,
+            custom_nodes: self.custom_nodes.clone(),
+            custom_selected: self.custom_selected.clone(),
+            custom_fixed: self.custom_fixed.clone(),
         }
     }
 
@@ -3969,6 +4227,9 @@ impl ProfileBook {
         self.mixed_port = point.mixed_port;
         self.mode = point.mode;
         self.connected = point.connected;
+        self.custom_nodes = point.custom_nodes;
+        self.custom_selected = point.custom_selected;
+        self.custom_fixed = point.custom_fixed;
         nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
     }
 
@@ -4032,10 +4293,15 @@ impl ProfileBook {
             .collect();
         self.settings = state.settings.normalized();
         nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
-        let known = state
-            .active_id
-            .as_deref()
-            .is_some_and(|id| self.profiles.iter().any(|profile| profile.id == id));
+        self.custom_nodes = state.custom_nodes;
+        normalize_custom_nodes_state(&mut self.custom_nodes);
+        self.custom_selected = state.custom_selected;
+        self.custom_fixed = state.custom_fixed;
+        let known = state.active_id.as_deref() == Some(CUSTOM_PROFILE_ID)
+            || state
+                .active_id
+                .as_deref()
+                .is_some_and(|id| self.profiles.iter().any(|profile| profile.id == id));
         self.active_id = if known { state.active_id } else { None };
         self.tun_wanted = state.tun_wanted;
         self.excluded = state
@@ -4215,15 +4481,17 @@ impl ProfileBook {
         self.sync_nodes(kernel);
         let group_name = group.trim();
         let node_name = node.trim();
-        let Some(index) = self.nodes_profile_index() else {
+        let Some(target) = self.nodes_target() else {
             self.nodes_error = Some(NEED_PROFILE.to_string());
             return self.snapshot();
         };
-        if self.profiles[index].content.trim().is_empty() {
-            self.nodes_error = Some(NEED_PROFILE.to_string());
-            return self.snapshot();
+        if let NodesTarget::Profile(index) = target {
+            if self.profiles[index].content.trim().is_empty() {
+                self.nodes_error = Some(NEED_PROFILE.to_string());
+                return self.snapshot();
+            }
         }
-        let Some(document) = document_value(&self.profiles[index]) else {
+        let Some(document) = self.nodes_document(target) else {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
@@ -4234,7 +4502,7 @@ impl ProfileBook {
         };
         if found.pinnable {
             let found = found.clone();
-            return self.fix_node(index, &found, node_name, kernel);
+            return self.fix_node(target, &found, node_name, kernel);
         }
         if !found.manual {
             self.nodes_error = Some(NOT_MANUAL.to_string());
@@ -4244,8 +4512,10 @@ impl ProfileBook {
             self.nodes_error = Some("没有这个节点".to_string());
             return self.snapshot();
         }
-        let previous = self.auto_now.get(group_name)
-            .or_else(|| self.profiles[index].selected.get(group_name))
+        let previous = self
+            .auto_now
+            .get(group_name)
+            .or_else(|| self.target_selected(target).get(group_name))
             .or_else(|| found.proxies.first());
         let changed = previous.map(String::as_str) != Some(node_name);
         if self.kernel_running && changed {
@@ -4258,8 +4528,7 @@ impl ProfileBook {
                 return self.snapshot();
             }
         }
-        self.profiles[index]
-            .selected
+        self.target_selected_mut(target)
             .insert(group_name.to_string(), node_name.to_string());
         if self.kernel_running {
             self.auto_now.insert(group_name.to_string(), node_name.to_string());
@@ -4297,7 +4566,7 @@ impl ProfileBook {
     /// pin lives in the controller, and Billow only replays it after reloads.
     fn fix_node(
         &mut self,
-        index: usize,
+        target: NodesTarget,
         group: &ParsedGroup,
         node: &str,
         kernel: &mut dyn KernelLaunch,
@@ -4315,7 +4584,8 @@ impl ProfileBook {
             self.nodes_error = Some(if message.is_empty() { SELECT_FAILED.to_string() } else { message });
             return self.snapshot();
         }
-        self.profiles[index].fixed.insert(group.name.clone(), node.to_string());
+        self.target_fixed_mut(target)
+            .insert(group.name.clone(), node.to_string());
         self.runtime_catalog.fixed.insert(group.name.clone(), node.to_string());
         self.runtime_catalog.now.insert(group.name.clone(), node.to_string());
         self.auto_now.insert(group.name.clone(), node.to_string());
@@ -4336,11 +4606,11 @@ impl ProfileBook {
     pub fn unfix_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
         self.sync_nodes(kernel);
         let group_name = group.trim();
-        let Some(index) = self.nodes_profile_index() else {
+        let Some(target) = self.nodes_target() else {
             self.nodes_error = Some(NEED_PROFILE.to_string());
             return self.snapshot();
         };
-        let Some(document) = document_value(&self.profiles[index]) else {
+        let Some(document) = self.nodes_document(target) else {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
@@ -4361,7 +4631,7 @@ impl ProfileBook {
             self.nodes_error = Some(if message.is_empty() { nodes::UNFIX_FAILED.to_string() } else { message });
             return self.snapshot();
         }
-        self.profiles[index].fixed.remove(group_name);
+        self.target_fixed_mut(target).remove(group_name);
         self.nodes_error = None;
         // The group picks again by its own strategy; read what it chose.
         self.runtime_catalog = kernel.node_catalog();
@@ -4386,11 +4656,11 @@ impl ProfileBook {
             self.nodes_error = Some(KERNEL_DOWN.to_string());
             return self.snapshot();
         }
-        let Some(index) = self.nodes_profile_index() else {
+        let Some(target) = self.nodes_target() else {
             self.nodes_error = Some(NEED_PROFILE.to_string());
             return self.snapshot();
         };
-        let Some(document) = document_value(&self.profiles[index]) else {
+        let Some(document) = self.nodes_document(target) else {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
@@ -4411,7 +4681,7 @@ impl ProfileBook {
         }
         let mut seen = BTreeSet::new();
         members.retain(|name| seen.insert(name.clone()));
-        let profile_id = self.profiles[index].id.clone();
+        let profile_id = self.target_id(target);
         let mut tested = 0;
         let total = members.len();
         match kernel.probe_delays_with_progress(&group_key, &members, &mut |name, delay, failed| {
@@ -4422,7 +4692,7 @@ impl ProfileBook {
                 // A named proxy has one result for the chosen test URL, even
                 // when several groups list it. Keep the final snapshot aligned
                 // with the streamed per-node overlay.
-                let groups = self.delay_target_groups(index).unwrap_or_default();
+                let groups = self.delay_target_groups(target).unwrap_or_default();
                 self.record_delays(&profile_id, &groups, results);
                 self.nodes_error = None;
             }
@@ -4437,6 +4707,77 @@ impl ProfileBook {
         self.snapshot()
     }
 
+    fn nodes_target(&self) -> Option<NodesTarget> {
+        if self.active_id.as_deref() == Some(CUSTOM_PROFILE_ID) {
+            return Some(NodesTarget::Custom);
+        }
+        if let Some(index) = self.nodes_profile_index() {
+            return Some(NodesTarget::Profile(index));
+        }
+        if self.custom_nodes.has_enabled_nodes() {
+            return Some(NodesTarget::Custom);
+        }
+        None
+    }
+
+    fn target_id(&self, target: NodesTarget) -> String {
+        match target {
+            NodesTarget::Profile(index) => self.profiles[index].id.clone(),
+            NodesTarget::Custom => CUSTOM_PROFILE_ID.to_string(),
+        }
+    }
+
+    fn target_selected(&self, target: NodesTarget) -> &BTreeMap<String, String> {
+        match target {
+            NodesTarget::Profile(index) => &self.profiles[index].selected,
+            NodesTarget::Custom => &self.custom_selected,
+        }
+    }
+
+    fn target_selected_mut(&mut self, target: NodesTarget) -> &mut BTreeMap<String, String> {
+        match target {
+            NodesTarget::Profile(index) => &mut self.profiles[index].selected,
+            NodesTarget::Custom => &mut self.custom_selected,
+        }
+    }
+
+    fn target_fixed(&self, target: NodesTarget) -> &BTreeMap<String, String> {
+        match target {
+            NodesTarget::Profile(index) => &self.profiles[index].fixed,
+            NodesTarget::Custom => &self.custom_fixed,
+        }
+    }
+
+    fn target_fixed_mut(&mut self, target: NodesTarget) -> &mut BTreeMap<String, String> {
+        match target {
+            NodesTarget::Profile(index) => &mut self.profiles[index].fixed,
+            NodesTarget::Custom => &mut self.custom_fixed,
+        }
+    }
+
+    fn nodes_document(&self, target: NodesTarget) -> Option<Value> {
+        match target {
+            NodesTarget::Custom => custom_nodes::generate_standalone_yaml(&self.custom_nodes)
+                .ok()
+                .and_then(|res| serde_yaml::from_str::<Value>(&res.yaml).ok()),
+            NodesTarget::Profile(index) => {
+                let profile = &self.profiles[index];
+                if self.custom_nodes.overlay_enabled && self.custom_nodes.has_enabled_nodes() {
+                    if let Ok(prepared) = prepare(&profile.content, &profile.applied_override) {
+                        if let Ok(overlaid) =
+                            custom_nodes::inject_overlay(&prepared.yaml, &self.custom_nodes)
+                        {
+                            if let Ok(value) = serde_yaml::from_str::<Value>(&overlaid.yaml) {
+                                return Some(value);
+                            }
+                        }
+                    }
+                }
+                document_value(profile)
+            }
+        }
+    }
+
     fn nodes_profile_index(&self) -> Option<usize> {
         if let Some(id) = self.active_id.as_deref() {
             if let Some(index) = self.profiles.iter().position(|profile| profile.id == id) {
@@ -4449,16 +4790,32 @@ impl ProfileBook {
     }
 
     fn node_views(&self) -> (Vec<NodeGroupView>, Option<String>, Option<String>) {
-        let Some(index) = self.nodes_profile_index() else {
+        let Some(target) = self.nodes_target() else {
             return (Vec::new(), Some(NEED_PROFILE.to_string()), None);
         };
-        let profile = &self.profiles[index];
-        let profile_id = profile.id.clone();
-        if profile.content.trim().is_empty() {
-            return (Vec::new(), Some(NEED_PROFILE.to_string()), Some(profile_id));
+        let profile_id = self.target_id(target);
+        if let NodesTarget::Profile(index) = target {
+            if self.profiles[index].content.trim().is_empty() {
+                return (Vec::new(), Some(NEED_PROFILE.to_string()), Some(profile_id));
+            }
         }
-        let Some(metadata) = profile.node_metadata() else {
-            return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
+        let owned_meta;
+        let metadata: &NodeMetadata = match target {
+            NodesTarget::Profile(index)
+                if !(self.custom_nodes.overlay_enabled && self.custom_nodes.has_enabled_nodes()) =>
+            {
+                let Some(meta) = self.profiles[index].node_metadata() else {
+                    return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
+                };
+                meta
+            }
+            _ => {
+                let Some(value) = self.nodes_document(target) else {
+                    return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
+                };
+                owned_meta = NodeMetadata::from_value(&value);
+                &owned_meta
+            }
         };
         let is_global = self.mode.as_deref() == Some("global");
         let has_config_global = metadata.groups.iter().any(|group| group.name == nodes::GLOBAL_GROUP);
@@ -4488,16 +4845,14 @@ impl ProfileBook {
         if metadata.groups.is_empty() && synthetic_global.is_none() {
             return (Vec::new(), Some(NO_NODES.to_string()), Some(profile_id));
         }
-        // Borrow provider members and protocol maps. The UI owns sorting and
-        // filtering, so a second full catalog would only create unused copies.
         let mut catalog: Vec<NodeGroupView> = Vec::with_capacity(metadata.groups.len() + usize::from(synthetic_global.is_some()));
         if let Some((global_group, members)) = synthetic_global {
-            catalog.push(self.present_group(profile, &global_group, members, &metadata.types));
+            catalog.push(self.present_group(target, &global_group, members, &metadata.types));
         }
         for group in &metadata.groups {
             let members = self.runtime_catalog.members.get(&group.name)
                 .map(Vec::as_slice).unwrap_or(&group.proxies);
-            let view = self.present_group(profile, group, members, &metadata.types);
+            let view = self.present_group(target, group, members, &metadata.types);
             if is_global && view.name == nodes::GLOBAL_GROUP {
                 catalog.insert(0, view);
             } else {
@@ -4513,7 +4868,7 @@ impl ProfileBook {
 
     fn present_group(
         &self,
-        profile: &Profile,
+        target: NodesTarget,
         group: &ParsedGroup,
         members: &[String],
         types: &BTreeMap<String, nodes::ProxyInfo>,
@@ -4528,7 +4883,7 @@ impl ProfileBook {
             } else if self.kernel_running {
                 self.runtime_catalog.fixed.get(&group.name).cloned()
             } else {
-                profile.fixed.get(&group.name).cloned()
+                self.target_fixed(target).get(&group.name).cloned()
             };
             let now = self.auto_now.get(&group.name).cloned()
                 .or_else(|| fixed.clone())
@@ -4536,7 +4891,7 @@ impl ProfileBook {
             let extra = (!now.is_empty() && !members.contains(&now)).then_some(&now);
             let nodes = members
                 .iter().chain(extra)
-                .map(|name| self.node_item(profile, &group.name, name, !now.is_empty() && *name == now, types))
+                .map(|name| self.node_item(target, &group.name, name, !now.is_empty() && *name == now, types))
                 .collect();
             return NodeGroupView {
                 name: group.name.clone(),
@@ -4552,7 +4907,7 @@ impl ProfileBook {
             };
         }
         let chosen = self.auto_now.get(&group.name)
-            .or_else(|| profile.selected.get(&group.name))
+            .or_else(|| self.target_selected(target).get(&group.name))
             .filter(|name| members.iter().any(|item| item == *name))
             .cloned();
         let now = chosen
@@ -4565,7 +4920,7 @@ impl ProfileBook {
                     Some(choice) => choice == name,
                     None => members.first() == Some(name),
                 };
-                self.node_item(profile, &group.name, name, selected, types)
+                self.node_item(target, &group.name, name, selected, types)
             })
             .collect();
         NodeGroupView {
@@ -4584,15 +4939,16 @@ impl ProfileBook {
 
     fn node_item(
         &self,
-        profile: &Profile,
+        target: NodesTarget,
         group: &str,
         name: &str,
         selected: bool,
         types: &BTreeMap<String, nodes::ProxyInfo>,
     ) -> nodes::NodeItemView {
+        let profile_id = self.target_id(target);
         let mark = self
             .delays
-            .get(&profile.id)
+            .get(&profile_id)
             .and_then(|groups| groups.get(group))
             .and_then(|nodes| nodes.get(name));
         let mut tags = types.get(name).map(|info| info.tags.clone()).unwrap_or_default();
@@ -4636,24 +4992,28 @@ impl ProfileBook {
         let Some(id) = self.active_id.as_deref() else {
             return;
         };
-        let Some(profile) = self.profiles.iter().find(|profile| profile.id == id) else {
+        let target = if id == CUSTOM_PROFILE_ID {
+            NodesTarget::Custom
+        } else if let Some(index) = self.profiles.iter().position(|profile| profile.id == id) {
+            NodesTarget::Profile(index)
+        } else {
             return;
         };
-        if profile.selected.is_empty() && profile.fixed.is_empty() {
+        if self.target_selected(target).is_empty() && self.target_fixed(target).is_empty() {
             return;
         }
         self.runtime_catalog = kernel.node_catalog();
         self.auto_now = self.runtime_catalog.now.clone();
-        let Some(document) = document_value(profile) else {
+        let Some(document) = self.nodes_document(target) else {
             return;
         };
         let mut pinned = Vec::new();
         let mut selected_applied = Vec::new();
         for group in nodes::resolved_groups_with_global(&document, &self.runtime_catalog) {
             let saved = if group.manual {
-                &profile.selected
+                self.target_selected(target)
             } else if group.pinnable {
-                &profile.fixed
+                self.target_fixed(target)
             } else {
                 continue;
             };
@@ -5299,11 +5659,16 @@ const REFRESH_SLACK_MS: u64 = 60_000;
 
 impl ProfileBook {
     fn config_values(&self) -> ConfigValues {
-        let Some(profile) = self
-            .active_id
-            .as_deref()
-            .and_then(|id| self.profiles.iter().find(|profile| profile.id == id))
-        else {
+        let Some(active) = self.active_id.as_deref() else {
+            return ConfigValues::default();
+        };
+        if active == CUSTOM_PROFILE_ID {
+            return self
+                .nodes_document(NodesTarget::Custom)
+                .map(|value| NodeMetadata::from_value(&value).config)
+                .unwrap_or_default();
+        }
+        let Some(profile) = self.profiles.iter().find(|profile| profile.id == active) else {
             return ConfigValues::default();
         };
         profile.node_metadata().map(|metadata| metadata.config.clone()).unwrap_or_default()
@@ -5755,8 +6120,8 @@ impl ProfileBook {
         }
     }
 
-    fn delay_target_groups(&self, index: usize) -> Option<Vec<(String, Vec<String>)>> {
-        let document = document_value(&self.profiles[index])?;
+    fn delay_target_groups(&self, target: NodesTarget) -> Option<Vec<(String, Vec<String>)>> {
+        let document = self.nodes_document(target)?;
         Some(
             nodes::resolved_groups_with_global(&document, &self.runtime_catalog)
                 .into_iter()
@@ -5773,8 +6138,8 @@ impl ProfileBook {
         )
     }
 
-    fn tested_groups(&self, index: usize) -> Option<Vec<(String, Vec<String>)>> {
-        let document = document_value(&self.profiles[index])?;
+    fn tested_groups(&self, target: NodesTarget) -> Option<Vec<(String, Vec<String>)>> {
+        let document = self.nodes_document(target)?;
         let mut parsed = nodes::resolved_groups(&document, &self.runtime_catalog);
         if parsed.is_empty() && self.mode.as_deref() == Some("global") {
             if let Some(global) = nodes::global_group(&document, &parsed, &self.runtime_catalog) {
@@ -5810,11 +6175,11 @@ impl ProfileBook {
             self.nodes_error = Some(KERNEL_DOWN.to_string());
             return self.snapshot();
         }
-        let Some(index) = self.nodes_profile_index() else {
+        let Some(target) = self.nodes_target() else {
             self.nodes_error = Some(NEED_PROFILE.to_string());
             return self.snapshot();
         };
-        let Some(groups) = self.tested_groups(index) else {
+        let Some(groups) = self.tested_groups(target) else {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
@@ -5828,14 +6193,14 @@ impl ProfileBook {
             }
         }
         let total = unique.len();
-        let profile_id = self.profiles[index].id.clone();
+        let profile_id = self.target_id(target);
         let mut tested = 0usize;
         match kernel.probe_delays_with_progress("", &unique, &mut |name, delay, failed| {
             tested += 1;
             on_progress(name, delay, failed, tested, total);
         }) {
             Ok(results) => {
-                let target_groups = self.delay_target_groups(index).unwrap_or(groups);
+                let target_groups = self.delay_target_groups(target).unwrap_or(groups);
                 self.record_delays(&profile_id, &target_groups, results);
                 self.nodes_error = None;
             }
@@ -5852,16 +6217,16 @@ impl ProfileBook {
             self.nodes_error = Some(KERNEL_DOWN.to_string());
             return self.snapshot();
         }
-        let Some(index) = self.nodes_profile_index() else {
+        let Some(target) = self.nodes_target() else {
             self.nodes_error = Some(NEED_PROFILE.to_string());
             return self.snapshot();
         };
-        let Some(groups) = self.delay_target_groups(index) else {
+        let Some(groups) = self.delay_target_groups(target) else {
             self.nodes_error = Some(NO_NODES.to_string());
             return self.snapshot();
         };
         let node = node.trim().to_string();
-        let profile_id = self.profiles[index].id.clone();
+        let profile_id = self.target_id(target);
         match kernel.probe_delays("", std::slice::from_ref(&node)) {
             Ok(results) => {
                 self.record_delays(&profile_id, &groups, results);
@@ -5904,14 +6269,17 @@ impl ProfileBook {
 
     /// Full rule list from the active profile, keys computed over the original order.
     fn active_config_rules(&self) -> Vec<diagnostics::ConfigRule> {
-        let Some(profile) = self
-            .active_id
-            .as_deref()
-            .and_then(|id| self.profiles.iter().find(|profile| profile.id == id))
-        else {
+        let Some(active) = self.active_id.as_deref() else {
             return Vec::new();
         };
-        let Some(value) = document_value(profile) else {
+        let target = if active == CUSTOM_PROFILE_ID {
+            NodesTarget::Custom
+        } else if let Some(index) = self.profiles.iter().position(|profile| profile.id == active) {
+            NodesTarget::Profile(index)
+        } else {
+            return Vec::new();
+        };
+        let Some(value) = self.nodes_document(target) else {
             return Vec::new();
         };
         diagnostics::config_rules(&value)
@@ -6015,6 +6383,455 @@ impl ProfileBook {
         self.logs.clear();
         self.snapshot()
     }
+
+    fn custom_nodes_warnings(&self) -> Vec<CustomNodeWarning> {
+        if self.active_id.as_deref() == Some(CUSTOM_PROFILE_ID) {
+            if self.custom_nodes.nodes.is_empty() {
+                return Vec::new();
+            }
+            return match custom_nodes::generate_standalone_yaml(&self.custom_nodes) {
+                Ok(result) => result.warnings,
+                Err(message) => vec![CustomNodeWarning {
+                    code: "standalone_error".to_string(),
+                    node_id: None,
+                    rule_id: None,
+                    message,
+                }],
+            };
+        }
+        if !self.custom_nodes.overlay_enabled || !self.custom_nodes.has_enabled_nodes() {
+            return Vec::new();
+        }
+        if let Some(profile) = self
+            .active_id
+            .as_deref()
+            .and_then(|id| self.profiles.iter().find(|p| p.id == id))
+        {
+            if let Ok(prepared) =
+                prepare_named(&profile.content, &profile.applied_override, &profile.name)
+            {
+                return match custom_nodes::inject_overlay(&prepared.yaml, &self.custom_nodes) {
+                    Ok(result) => result.warnings,
+                    Err(message) => vec![CustomNodeWarning {
+                        code: "overlay_error".to_string(),
+                        node_id: None,
+                        rule_id: None,
+                        message,
+                    }],
+                };
+            }
+        }
+        match custom_nodes::validate_dialer_cycles(&self.custom_nodes.nodes) {
+            Ok(()) => Vec::new(),
+            Err(message) => vec![CustomNodeWarning {
+                code: "dialer_cycle".to_string(),
+                node_id: None,
+                rule_id: None,
+                message,
+            }],
+        }
+    }
+
+    fn maybe_auto_activate_custom_profile(&mut self) {
+        if self.profiles.is_empty()
+            && self.active_id.is_none()
+            && self.custom_nodes.has_enabled_nodes()
+        {
+            self.active_id = Some(CUSTOM_PROFILE_ID.to_string());
+        }
+    }
+
+    fn rollback_custom_mutation(
+        &mut self,
+        point: BookRestorePoint,
+        was_connected: bool,
+        takeover_before: Takeover,
+        endpoint_before: Option<ProxyEndpoint>,
+        release_before: Option<PlatformRelease>,
+        runtime_base_before: Option<String>,
+        need_reload: bool,
+        kernel: &mut dyn KernelLaunch,
+    ) {
+        self.apply_restore_point(point.clone());
+        self.restore_session(
+            takeover_before,
+            endpoint_before.clone(),
+            release_before.clone(),
+            was_connected,
+        );
+        self.runtime_base = runtime_base_before.clone();
+        let _ = self.persist_checked();
+        if was_connected && (need_reload || !kernel.running()) {
+            let _ = self.reload(kernel, takeover_before.tun, None);
+            self.apply_restore_point(point);
+            self.restore_session(takeover_before, endpoint_before, release_before, was_connected);
+            self.runtime_base = runtime_base_before;
+            let _ = self.persist_checked();
+        }
+    }
+
+    fn mutate_custom_nodes<F>(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+        mutate: F,
+    ) -> Result<ProfileSnapshot, String>
+    where
+        F: FnOnce(&mut ProfileBook) -> Result<(), String>,
+    {
+        let point = self.restore_point();
+        let was_connected = point.connected;
+        let takeover_before = self.takeover;
+        let endpoint_before = self.our_endpoint.clone();
+        let release_before = self.pending_release.clone();
+        let runtime_base_before = self.runtime_base.clone();
+
+        if let Err(reason) = mutate(self) {
+            self.rollback_custom_mutation(
+                point,
+                was_connected,
+                takeover_before,
+                endpoint_before,
+                release_before,
+                runtime_base_before,
+                false,
+                kernel,
+            );
+            return Err(reason);
+        }
+
+        if let Err(reason) = custom_nodes::validate_dialer_cycles(&self.custom_nodes.nodes) {
+            self.rollback_custom_mutation(
+                point,
+                was_connected,
+                takeover_before,
+                endpoint_before,
+                release_before,
+                runtime_base_before,
+                false,
+                kernel,
+            );
+            return Err(reason);
+        }
+
+        let live = self.connected || self.kernel_running;
+        if live {
+            if let Err(err) = self.reload(kernel, self.takeover.tun, None) {
+                let reason = match err {
+                    StartError::Idle(message) | StartError::Failed(message) => message,
+                };
+                self.rollback_custom_mutation(
+                    point,
+                    was_connected,
+                    takeover_before,
+                    endpoint_before,
+                    release_before,
+                    runtime_base_before,
+                    false,
+                    kernel,
+                );
+                return Err(reason);
+            }
+        } else {
+            self.runtime_base = None;
+            if self.active_id.as_deref() == Some(CUSTOM_PROFILE_ID) {
+                if !self.custom_nodes.has_enabled_nodes() {
+                    if self.custom_nodes.nodes.is_empty() {
+                        self.active_id = None;
+                    }
+                } else if let Err(reason) = custom_nodes::generate_standalone_yaml(&self.custom_nodes) {
+                    self.rollback_custom_mutation(
+                        point,
+                        was_connected,
+                        takeover_before,
+                        endpoint_before,
+                        release_before,
+                        runtime_base_before,
+                        false,
+                        kernel,
+                    );
+                    return Err(reason);
+                }
+            }
+        }
+
+        if let Err(reason) = self.persist_checked() {
+            self.rollback_custom_mutation(
+                point,
+                was_connected,
+                takeover_before,
+                endpoint_before,
+                release_before,
+                runtime_base_before,
+                live,
+                kernel,
+            );
+            return Err(reason);
+        }
+
+        self.recompute_effective();
+        Ok(self.publish(kernel))
+    }
+
+    pub fn preview_custom_nodes_import(&self, raw: &str) -> ParseNodesResult {
+        let existing: Vec<String> = self
+            .custom_nodes
+            .nodes
+            .iter()
+            .map(|node| node.name.clone())
+            .collect();
+        custom_nodes::parse_nodes_input(raw, &existing)
+    }
+
+    pub fn import_custom_nodes(
+        &mut self,
+        raw: &str,
+        dialer: Option<DialerTarget>,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<CustomNodesImportResult, String> {
+        let preview = self.preview_custom_nodes_import(raw);
+        if preview.parsed.is_empty() {
+            let reason = preview
+                .errors
+                .first()
+                .map(|err| err.reason.clone())
+                .unwrap_or_else(|| "没有识别到可导入的节点".to_string());
+            return Err(reason);
+        }
+        let target_dialer = dialer.unwrap_or(DialerTarget::Direct);
+        let parsed = preview.parsed;
+        let errors = preview.errors;
+        let mut imported = Vec::with_capacity(parsed.len());
+        let snapshot = self.mutate_custom_nodes(kernel, |book| {
+            for item in parsed {
+                let id = book.custom_nodes.alloc_node_id();
+                let node = CustomNode {
+                    id,
+                    name: item.name,
+                    enabled: true,
+                    note: item.note,
+                    protocol: item.protocol,
+                    raw_yaml: item.raw_yaml,
+                    dialer: target_dialer.clone(),
+                };
+                imported.push(node.clone());
+                book.custom_nodes.nodes.push(node);
+            }
+            book.maybe_auto_activate_custom_profile();
+            Ok(())
+        })?;
+        Ok(CustomNodesImportResult {
+            snapshot,
+            imported,
+            errors,
+        })
+    }
+
+    pub fn save_custom_node(
+        &mut self,
+        input: SaveCustomNodeInput,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<ProfileSnapshot, String> {
+        let editing_id = input
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
+        let name_override = input
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+
+        let parsed = if let Some(mut form) = input.simple {
+            if form.name.trim().is_empty() {
+                if let Some(name) = &name_override {
+                    form.name = name.clone();
+                }
+            }
+            custom_nodes::build_simple_proxy_yaml(&form)?
+        } else if let Some(raw_yaml) = input.raw_yaml.as_deref() {
+            custom_nodes::validate_raw_node_yaml(raw_yaml, name_override.as_deref())?
+        } else if let Some(existing_id) = editing_id.as_deref() {
+            let existing = self
+                .custom_nodes
+                .nodes
+                .iter()
+                .find(|node| node.id == existing_id)
+                .ok_or_else(|| "找不到对应的自建节点".to_string())?;
+            custom_nodes::validate_raw_node_yaml(&existing.raw_yaml, name_override.as_deref())?
+        } else {
+            return Err("请提供节点配置或表单信息".to_string());
+        };
+
+        let enabled = input.enabled;
+        let note = input.note.trim().to_string();
+        let dialer = input.dialer;
+
+        self.mutate_custom_nodes(kernel, |book| {
+            let duplicate = book.custom_nodes.nodes.iter().any(|node| {
+                node.name == parsed.name
+                    && editing_id.as_deref() != Some(node.id.as_str())
+            });
+            if duplicate {
+                return Err(format!("已存在同名自建节点：{}", parsed.name));
+            }
+            if let Some(id) = editing_id {
+                let Some(existing) = book
+                    .custom_nodes
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == id)
+                else {
+                    return Err("找不到对应的自建节点".to_string());
+                };
+                existing.name = parsed.name;
+                existing.enabled = enabled;
+                existing.note = note;
+                existing.protocol = parsed.protocol;
+                existing.raw_yaml = parsed.raw_yaml;
+                existing.dialer = dialer;
+            } else {
+                let id = book.custom_nodes.alloc_node_id();
+                book.custom_nodes.nodes.push(CustomNode {
+                    id,
+                    name: parsed.name,
+                    enabled,
+                    note,
+                    protocol: parsed.protocol,
+                    raw_yaml: parsed.raw_yaml,
+                    dialer,
+                });
+            }
+            book.maybe_auto_activate_custom_profile();
+            Ok(())
+        })
+    }
+
+    pub fn delete_custom_node(
+        &mut self,
+        id: &str,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<ProfileSnapshot, String> {
+        let id = id.trim().to_string();
+        self.mutate_custom_nodes(kernel, |book| {
+            let Some(pos) = book
+                .custom_nodes
+                .nodes
+                .iter()
+                .position(|node| node.id == id)
+            else {
+                return Err("找不到对应的自建节点".to_string());
+            };
+            book.custom_nodes.nodes.remove(pos);
+            Ok(())
+        })
+    }
+
+    pub fn set_custom_node_enabled(
+        &mut self,
+        id: &str,
+        enabled: bool,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<ProfileSnapshot, String> {
+        let id = id.trim().to_string();
+        self.mutate_custom_nodes(kernel, |book| {
+            let Some(node) = book
+                .custom_nodes
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == id)
+            else {
+                return Err("找不到对应的自建节点".to_string());
+            };
+            node.enabled = enabled;
+            if enabled {
+                book.maybe_auto_activate_custom_profile();
+            }
+            Ok(())
+        })
+    }
+
+    pub fn set_custom_nodes_overlay(
+        &mut self,
+        enabled: bool,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<ProfileSnapshot, String> {
+        self.mutate_custom_nodes(kernel, |book| {
+            book.custom_nodes.overlay_enabled = enabled;
+            Ok(())
+        })
+    }
+
+    pub fn save_landing_rules(
+        &mut self,
+        rules_enabled: bool,
+        rules: Vec<LandingRule>,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<ProfileSnapshot, String> {
+        for rule in &rules {
+            match &rule.rule {
+                LandingRuleKind::Preset { id } => {
+                    if custom_nodes::find_preset(id).is_none() {
+                        return Err(format!("不支持的预设规则：{id}"));
+                    }
+                }
+                LandingRuleKind::Domain { pattern } => {
+                    custom_nodes::normalize_domain_pattern(pattern)?;
+                }
+            }
+        }
+        self.mutate_custom_nodes(kernel, |book| {
+            let mut normalized = Vec::with_capacity(rules.len());
+            for mut rule in rules {
+                if rule.id.trim().is_empty() {
+                    rule.id = book.custom_nodes.alloc_rule_id();
+                }
+                normalized.push(rule);
+            }
+            book.custom_nodes.rules_enabled = rules_enabled;
+            book.custom_nodes.rules = normalized;
+            Ok(())
+        })
+    }
+
+    pub fn use_custom_profile(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<ProfileSnapshot, String> {
+        if !self.custom_nodes.has_enabled_nodes() {
+            return Err("还没有启用的自建节点，请先导入或启用至少一个节点".to_string());
+        }
+        self.mutate_custom_nodes(kernel, |book| {
+            book.active_id = Some(CUSTOM_PROFILE_ID.to_string());
+            Ok(())
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodesTarget {
+    Profile(usize),
+    Custom,
+}
+
+fn normalize_custom_nodes_state(state: &mut CustomNodesState) {
+    let max_node = state
+        .nodes
+        .iter()
+        .filter_map(|node| node.id.strip_prefix("cn")?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    state.next_node_id = state.next_node_id.max(max_node + 1).max(1);
+
+    let max_rule = state
+        .rules
+        .iter()
+        .filter_map(|rule| rule.id.strip_prefix("lr")?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    state.next_rule_id = state.next_rule_id.max(max_rule + 1).max(1);
 }
 
 struct Prepared {
@@ -11118,5 +11935,345 @@ proxy-groups:
         let back_to_global = book.set_outbound_mode("global", &mut kernel);
         assert_eq!(back_to_global.node_catalog[0].name, "GLOBAL");
         assert_eq!(back_to_global.node_catalog[0].now, "HK");
+    }
+
+    #[derive(Default)]
+    struct CustomTestKernel {
+        running: bool,
+        fail_next: Option<String>,
+        loaded: Vec<String>,
+    }
+
+    impl KernelLaunch for CustomTestKernel {
+        fn start_or_reload(&mut self, yaml: &str) -> Result<(), String> {
+            if let Some(err) = self.fail_next.take() {
+                return Err(err);
+            }
+            self.running = true;
+            self.loaded.push(yaml.to_string());
+            Ok(())
+        }
+
+        fn running(&mut self) -> bool {
+            self.running
+        }
+    }
+
+    #[test]
+    fn custom_nodes_persist_across_profile_lifecycle_and_roundtrip_v1_compatible_backups() {
+        let dir = temp_dir("custom_nodes_persist_and_backup");
+        let mut book = ProfileBook::open(&dir.0);
+        let mut kernel = CustomTestKernel::default();
+        let sub_yaml = r#"
+mode: rule
+mixed-port: 7890
+proxies:
+  - { name: HK-01, type: ss, server: 1.1.1.1, port: 443 }
+proxy-groups:
+  - name: 节点选择
+    type: select
+    proxies: [HK-01]
+rules:
+  - MATCH,节点选择
+"#;
+        let added = book.add_local("机场 A", sub_yaml);
+        let p1 = added.profiles[0].id.clone();
+        book.enable(&p1, &RejectSource, &mut kernel);
+
+        let imported = book
+            .import_custom_nodes(
+                "anytls://secret@any.example.com:443/?sni=any.example.com#AnyTLS-US\nbad://line",
+                Some(DialerTarget::ProfileGroup { group: None }),
+                &mut kernel,
+            )
+            .expect("valid anytls node should import despite invalid second line");
+        assert_eq!(imported.imported.len(), 1);
+        assert_eq!(imported.errors.len(), 1);
+        assert_eq!(imported.imported[0].protocol, "anytls");
+
+        book.save_custom_node(
+            SaveCustomNodeInput {
+                id: None,
+                name: None,
+                enabled: true,
+                note: "家宽".to_string(),
+                dialer: DialerTarget::ProfileGroup { group: None },
+                simple: Some(SimpleProxyForm {
+                    name: "US-Home".to_string(),
+                    protocol: "socks5".to_string(),
+                    server: "home.example.com".to_string(),
+                    port: 1080,
+                    username: "alice".to_string(),
+                    password: "pw".to_string(),
+                    tls: false,
+                    skip_cert_verify: false,
+                    udp: true,
+                }),
+                raw_yaml: None,
+            },
+            &mut kernel,
+        )
+        .expect("socks5 quick form should save");
+
+        let rules_snap = book
+            .save_landing_rules(
+                true,
+                vec![
+                    LandingRule {
+                        id: String::new(),
+                        enabled: true,
+                        rule: LandingRuleKind::Preset {
+                            id: "ai".to_string(),
+                        },
+                        target: custom_nodes::LandingRuleTarget::CustomGroup,
+                    },
+                    LandingRule {
+                        id: String::new(),
+                        enabled: true,
+                        rule: LandingRuleKind::Domain {
+                            pattern: ".example.org".to_string(),
+                        },
+                        target: custom_nodes::LandingRuleTarget::CustomGroup,
+                    },
+                ],
+                &mut kernel,
+            )
+            .expect("landing rules should save");
+        assert_eq!(rules_snap.custom_nodes.nodes.len(), 2);
+        assert_eq!(rules_snap.custom_nodes.rules.len(), 2);
+
+        // Deleting the subscription profile while disconnected must preserve custom nodes.
+        kernel.running = false;
+        book.sync_runtime(&mut kernel);
+        book.delete_profile(&p1);
+        let reloaded = ProfileBook::open(&dir.0);
+        assert_eq!(reloaded.snapshot().custom_nodes.nodes.len(), 2);
+        assert_eq!(reloaded.snapshot().custom_nodes.rules.len(), 2);
+
+        // Round-trip through ProfileBackup JSON.
+        let backup_json = serde_json::to_string(&reloaded.backup_state()).unwrap();
+        let parsed_backup: ProfileBackup = serde_json::from_str(&backup_json).unwrap();
+        let dir2 = temp_dir("custom_nodes_backup_restore");
+        let mut restored_book = ProfileBook::open(&dir2.0);
+        let restored = restored_book
+            .restore_backup(parsed_backup, &RejectSource, &mut kernel)
+            .expect("backup with custom nodes should restore");
+        assert_eq!(restored.custom_nodes.nodes.len(), 2);
+        assert_eq!(restored.custom_nodes.rules.len(), 2);
+
+        // Legacy v1 backup JSON without `custom_nodes` field must still deserialize & restore cleanly.
+        let legacy_v1 = r#"{
+            "next_id": 2,
+            "active_id": null,
+            "profiles": [],
+            "settings": {},
+            "tun_wanted": false,
+            "excluded_packages": [],
+            "included_packages": [],
+            "app_mode": "exclude",
+            "chosen_mode": null
+        }"#;
+        let legacy: ProfileBackup = serde_json::from_str(legacy_v1).expect("v1 backup must parse");
+        assert!(legacy.custom_nodes.overlay_enabled);
+        assert!(legacy.custom_nodes.nodes.is_empty());
+        let after_legacy = restored_book
+            .restore_backup(legacy, &RejectSource, &mut kernel)
+            .expect("legacy v1 backup must restore");
+        assert!(after_legacy.custom_nodes.nodes.is_empty());
+    }
+
+    #[test]
+    fn standalone_zero_yaml_custom_profile_auto_activates_and_compiles_cleanly() {
+        let dir = temp_dir("custom_nodes_standalone");
+        let mut book = ProfileBook::open(&dir.0);
+        let mut kernel = CustomTestKernel::default();
+
+        // Refuses pure custom mode when no enabled custom nodes exist.
+        let err = book
+            .use_custom_profile(&mut kernel)
+            .expect_err("empty custom nodes must be refused");
+        assert!(err.contains("还没有启用的自建节点"), "unexpected error: {err}");
+
+        // Importing enabled custom nodes with zero subscriptions auto-activates `__custom__`.
+        let result = book
+            .import_custom_nodes(
+                "anytls://pass123@us.example.com:443/?sni=us.example.com#US-AnyTLS",
+                None,
+                &mut kernel,
+            )
+            .expect("import should succeed");
+        assert_eq!(result.snapshot.active_id.as_deref(), Some(CUSTOM_PROFILE_ID));
+        assert!(result.snapshot.custom_profile_active);
+        assert_eq!(
+            book.active_profile(),
+            Some((CUSTOM_PROFILE_ID.to_string(), CUSTOM_PROFILE_NAME.to_string()))
+        );
+
+        let effective = book
+            .effective_config()
+            .expect("effective_config should compile standalone YAML");
+        assert!(effective.contains("US-AnyTLS"));
+        assert!(effective.contains("节点选择"));
+        assert!(effective.contains("自动选择"));
+        assert!(effective.contains("GEOSITE,cn,DIRECT"));
+        assert!(effective.contains("GEOIP,cn,DIRECT,no-resolve"));
+        assert!(effective.contains("MATCH,节点选择"));
+
+        let (kyaml, port) = book
+            .kernel_yaml(false, None)
+            .ok()
+            .expect("kernel_yaml should succeed in standalone mode");
+        assert!(port > 0);
+        assert!(kyaml.contains("US-AnyTLS"));
+        assert!(result
+            .snapshot
+            .node_catalog
+            .iter()
+            .any(|g| g.name == "节点选择"));
+    }
+
+    #[test]
+    fn overlay_toggle_switches_effective_config_and_node_catalog_cleanly() {
+        let dir = temp_dir("custom_nodes_overlay_toggle");
+        let mut book = ProfileBook::open(&dir.0);
+        let mut kernel = CustomTestKernel::default();
+        let sub_yaml = r#"
+mode: rule
+mixed-port: 7890
+proxies:
+  - { name: HK-01, type: ss, server: 1.1.1.1, port: 443 }
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [HK-01]
+rules:
+  - MATCH,Proxy
+"#;
+        let added = book.add_local("Sub", sub_yaml);
+        let id = added.profiles[0].id.clone();
+        book.enable(&id, &RejectSource, &mut kernel);
+        kernel.running = false;
+        book.sync_runtime(&mut kernel);
+
+        book.import_custom_nodes(
+            "socks5://user:pass@1.2.3.4:1080#US-Landing",
+            Some(DialerTarget::ProfileGroup { group: None }),
+            &mut kernel,
+        )
+        .expect("import should succeed");
+
+        let on_yaml = book.effective_config().expect("overlay on yaml");
+        assert!(on_yaml.contains("自建落地"));
+        assert!(on_yaml.contains("US-Landing"));
+        assert!(on_yaml.contains("dialer-proxy: 链式前置"));
+        assert!(book
+            .snapshot()
+            .node_catalog
+            .iter()
+            .any(|group| group.name == "自建落地"));
+
+        let off_snap = book
+            .set_custom_nodes_overlay(false, &mut kernel)
+            .expect("overlay off should succeed");
+        assert!(!off_snap.custom_nodes.overlay_enabled);
+        let off_yaml = book.effective_config().expect("overlay off yaml");
+        assert!(!off_yaml.contains("自建落地"));
+        assert!(!off_yaml.contains("US-Landing"));
+        assert!(off_snap
+            .node_catalog
+            .iter()
+            .all(|group| group.name != "自建落地"));
+    }
+
+    #[test]
+    fn live_custom_node_mutations_roll_back_atomically_on_cycle_reload_or_persist_failure() {
+        let dir = temp_dir("custom_nodes_rollback");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        let mut kernel = CustomTestKernel::default();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+
+        let imported = book
+            .import_custom_nodes(
+                "socks5://a:b@1.1.1.1:1080#Node-A\nsocks5://c:d@2.2.2.2:1080#Node-B",
+                None,
+                &mut kernel,
+            )
+            .expect("import two nodes");
+        let node_a = imported.imported[0].id.clone();
+        let node_b = imported.imported[1].id.clone();
+
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected);
+        assert!(book.is_connected());
+
+        // 1. Cycle rejection rolls back without dropping the active connection.
+        let cycle_err = book
+            .save_custom_node(
+                SaveCustomNodeInput {
+                    id: Some(node_a.clone()),
+                    name: None,
+                    enabled: true,
+                    note: String::new(),
+                    dialer: DialerTarget::CustomNode { id: node_a.clone() },
+                    simple: None,
+                    raw_yaml: None,
+                },
+                &mut kernel,
+            )
+            .expect_err("self-cycle must be rejected");
+        assert!(cycle_err.contains("循环"), "unexpected cycle error: {cycle_err}");
+        assert!(book.is_connected());
+        assert_eq!(
+            book.snapshot().custom_nodes.nodes[0].dialer,
+            DialerTarget::Direct
+        );
+
+        // 2. Kernel reload failure rolls back cleanly without dropping the connection.
+        kernel.fail_next = Some("内核重载失败：模拟错误".to_string());
+        let reload_err = book
+            .set_custom_node_enabled(&node_b, false, &mut kernel)
+            .expect_err("failed reload must return error");
+        assert!(reload_err.contains("模拟错误"));
+        assert!(book.is_connected());
+        assert!(
+            book.snapshot().custom_nodes.nodes[1].enabled,
+            "node_b must remain enabled after rollback"
+        );
+
+        // 3. Persist failure rolls back cleanly without dropping the connection.
+        book.fail_next_save(1);
+        let persist_err = book
+            .save_landing_rules(
+                true,
+                vec![LandingRule {
+                    id: String::new(),
+                    enabled: true,
+                    rule: LandingRuleKind::Preset {
+                        id: "ai".to_string(),
+                    },
+                    target: custom_nodes::LandingRuleTarget::CustomGroup,
+                }],
+                &mut kernel,
+            )
+            .expect_err("persist failure must roll back");
+        assert!(!persist_err.is_empty());
+        assert!(book.is_connected());
+        assert!(book.snapshot().custom_nodes.rules.is_empty());
+
+        // 4. Disabling the last enabled node while connected in pure custom mode fails & rolls back.
+        book.set_custom_node_enabled(&node_b, false, &mut kernel)
+            .expect("disabling second of two nodes succeeds");
+        let empty_err = book
+            .set_custom_node_enabled(&node_a, false, &mut kernel)
+            .expect_err("disabling last enabled node while connected must fail");
+        assert!(empty_err.contains("还没有启用的自建节点"));
+        assert!(book.is_connected());
+        assert!(
+            book.snapshot().custom_nodes.nodes[0].enabled,
+            "last enabled node must remain enabled after rollback"
+        );
     }
 }
