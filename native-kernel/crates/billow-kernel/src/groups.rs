@@ -349,6 +349,9 @@ pub struct GroupRegistry {
     providers: Arc<RuleProviders>,
     tls: Arc<ClientTls>,
     dial_timeout: Duration,
+    /// DNS runtime for proxy server names and DIRECT probe targets (T22);
+    /// `None` keeps the OS resolver, like a DNS-disabled pinned engine.
+    dns: Option<Arc<crate::dns::DnsService>>,
     groups: Vec<GroupRuntime>,
     index: BTreeMap<String, usize>,
     health: Mutex<BTreeMap<(MemberSource, String, String), HealthState>>,
@@ -385,6 +388,7 @@ impl GroupRegistry {
         dial_timeout: Duration,
         base_dir: PathBuf,
         cache_path: Option<PathBuf>,
+        dns: Option<Arc<crate::dns::DnsService>>,
     ) -> Result<Arc<Self>, ConfigError> {
         let inline = config.proxies.iter().cloned().map(Arc::new).collect::<Vec<_>>();
         let mut inline_index = BTreeMap::new();
@@ -436,6 +440,7 @@ impl GroupRegistry {
             providers,
             tls,
             dial_timeout,
+            dns,
             groups,
             index,
             health: Mutex::new(BTreeMap::new()),
@@ -1503,7 +1508,7 @@ impl GroupRegistry {
             port: parsed.port,
         };
         let started = Instant::now();
-        let result = tokio::time::timeout(timeout, async {
+        let probe = async {
             let target = crate::rules::Target::new(&parsed.host, parsed.host.parse().ok())
                 .with_port(parsed.port)
                 .with_network(crate::config::NetworkKind::Tcp);
@@ -1526,12 +1531,30 @@ impl GroupRegistry {
             };
             let stream: outbound::BoxStream = match selected {
                 Selected::Direct => {
-                    let stream = tokio::net::TcpStream::connect((
-                        parsed.host.as_str(),
-                        parsed.port,
-                    ))
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    let stream = match &self.dns {
+                        // Pinned `Direct` uses `DirectHostResolver` for its
+                        // probe target; with DNS on that is the configured
+                        // resolver (direct-nameserver or the main list).
+                        Some(dns) => {
+                            let mut ips = dns
+                                .resolve_direct(&parsed.host)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            ips.sort_by_key(|ip| if ip.is_ipv4() { 0 } else { 1 });
+                            let ip = ips.first().copied().ok_or_else(|| {
+                                "direct probe target resolved to no address".to_string()
+                            })?;
+                            tokio::net::TcpStream::connect((ip, parsed.port))
+                                .await
+                                .map_err(|e| e.to_string())?
+                        }
+                        None => tokio::net::TcpStream::connect((
+                            parsed.host.as_str(),
+                            parsed.port,
+                        ))
+                        .await
+                        .map_err(|e| e.to_string())?,
+                    };
                     Box::new(stream)
                 }
                 Selected::Proxy { proxy, .. } => {
@@ -1572,8 +1595,13 @@ impl GroupRegistry {
                 read_status(&mut stream).await?
             };
             Ok::<u16, String>(request)
-        })
-        .await;
+        };
+        let result = match &self.dns {
+            Some(dns) => {
+                tokio::time::timeout(timeout, outbound::with_proxy_dns(dns.clone(), probe)).await
+            }
+            None => tokio::time::timeout(timeout, probe).await,
+        };
         let (alive, delay) = match result {
             Ok(Ok(status)) => {
                 let delay = started.elapsed().as_millis().min(u128::from(u16::MAX)) as u16;

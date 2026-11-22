@@ -18,8 +18,9 @@
 //! key the pinned type does not declare is ignored exactly as Mihomo ignores
 //! it, so a valid upstream configuration loads. Proxy groups (T23: select,
 //! url-test, fallback, load-balance, nested groups, provider `use`, filters,
-//! health checks and a selection cache) are implemented; DNS, hosts and the
-//! control API are still T22/T25.
+//! health checks and a selection cache) and T22 DNS/hosts (UDP/TCP/DoT/DoH
+//! upstreams, nameserver policies, fallback filters, fake-ip, the optional DNS
+//! server and rule-time resolution) are implemented; the control API is T25.
 //!
 //! ```no_run
 //! # fn main() -> anyhow::Result<()> {
@@ -33,6 +34,7 @@
 //! ```
 
 pub mod config;
+pub mod dns;
 pub mod engine;
 pub mod geodata;
 pub mod groups;
@@ -44,6 +46,10 @@ pub mod rules;
 pub use config::{
     load_config, Action, Config, ConfigError, ExpectedStatus, GeoSiteDatabase, GroupKind,
     LoadBalanceStrategy, LoadedConfig, Matcher, NetworkKind, InType, ProfileConfig, ProxyGroup,
+};
+pub use dns::{
+    DnsConfig, DnsError, DnsService, EnhancedMode, FakeIpFilterMode, HostValue, HostsConfig,
+    HostsTable, NameServer, NameServerNet, NameServerPolicy,
 };
 pub use engine::{Kernel, KernelOptions, Limits, StartError, Stats, VERSION};
 pub use groups::{

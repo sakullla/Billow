@@ -750,14 +750,16 @@ rules:
 fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
     let yaml = billow_effective_yaml(free_port());
 
-    // The full artifact is not claimed to load directly: the behavior-changing
-    // cross-task blocks are named rejections.
+    // The full artifact is not claimed to load directly: the remaining
+    // behavior-changing cross-task blocks (`external-controller`, `sniffer`,
+    // `tun`) are named rejections; `dns`/`hosts` are T22 and are validated by
+    // the DNS runtime instead.
     let error = billow_kernel::load_config(&yaml, "effective.yaml")
         .err()
         .expect("cross-task blocks must be rejected");
     let text = error.to_string();
     assert!(
-        ["external-controller", "dns", "sniffer", "tun"]
+        ["external-controller", "sniffer", "tun"]
             .iter()
             .any(|key| text.contains(key)),
         "{text}"
@@ -765,16 +767,31 @@ fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
 
     // Each boundary is individually named. `proxy-groups` is implemented by
     // T23 now: a group subset loads and a rule target resolves to it.
-    for (key, value) in [
-        ("external-controller", "127.0.0.1:49152"),
-        ("dns", "{enable: true}"),
-    ] {
-        let yaml = format!("mixed-port: {}\n{key}: {value}\n", free_port());
-        let error = billow_kernel::load_config(&yaml, "effective.yaml")
-            .err()
-            .expect("must be rejected");
-        assert!(error.to_string().contains(key), "{key}: {error}");
-    }
+    let yaml = format!(
+        "mixed-port: {}\nexternal-controller: 127.0.0.1:49152\n",
+        free_port()
+    );
+    let error = billow_kernel::load_config(&yaml, "effective.yaml")
+        .err()
+        .expect("the control API must be rejected");
+    assert!(error.to_string().contains("external-controller"), "{error}");
+    // T22: a DNS block with a nameserver loads; only an unimplemented shape is
+    // a named rejection.
+    let yaml = format!(
+        "mixed-port: {}\ndns:\n  enable: true\n  nameserver: ['223.5.5.5']\n",
+        free_port()
+    );
+    let loaded = billow_kernel::load_config(&yaml, "effective.yaml")
+        .expect("a pinned DNS block loads");
+    assert!(loaded.config.dns.enable);
+    let yaml = format!(
+        "mixed-port: {}\ndns:\n  enable: true\n  nameserver: ['quic://dns.example']\n",
+        free_port()
+    );
+    let error = billow_kernel::load_config(&yaml, "effective.yaml")
+        .err()
+        .expect("DoQ must be rejected");
+    assert!(error.to_string().contains("DoQ"), "{error}");
     for key in ["sniffer", "tun"] {
         let yaml = format!("mixed-port: {}\n{key}: {{enable: true}}\n", free_port());
         let error = billow_kernel::load_config(&yaml, "effective.yaml")

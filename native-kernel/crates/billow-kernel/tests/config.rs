@@ -41,14 +41,11 @@ fn defaults_to_mihomo_port_and_loopback() {
 #[test]
 fn rejects_every_unimplemented_top_level_key() {
     for key in [
-        "dns",
-        "hosts",
         "listeners",
         "tunnels",
         "external-controller",
         "secret",
         "experimental",
-        "ipv6",
         "unified-delay",
         "global-client-fingerprint",
     ] {
@@ -417,11 +414,16 @@ fn unknown_top_level_keys_are_ignored_like_mihomo() {
         loaded.warnings
     );
     // Known but unimplemented keys still fail with their name.
-    for key in ["dns", "hosts", "listeners"] {
+    for key in ["listeners", "ntp"] {
         let yaml = format!("mixed-port: 1\n{key}: {{}}\n");
         let e = err_tag(&yaml);
         assert!(e.starts_with("unsupported"), "{key}: {e}");
     }
+    // DNS and hosts are implemented (T22): an empty block is inert, and an
+    // enabled DNS block is validated.
+    let loaded = load_config("mixed-port: 1\ndns: {}\nhosts: {}\n", "t").expect("empty blocks load");
+    assert!(!loaded.config.dns.enable);
+    assert!(loaded.config.hosts.entries.is_empty());
     // The do-nothing forms of TUN/sniffer and inert geox-url are registered
     // with a warning; enabling them still fails by name.
     let loaded = load_config(

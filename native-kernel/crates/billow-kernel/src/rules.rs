@@ -110,6 +110,49 @@ impl std::fmt::Display for RuleMatch {
     }
 }
 
+/// State carried between rule evaluations when an IP-based rule needs the
+/// destination resolved. The engine first evaluates with
+/// [`MatchInput::default`], resolves the host when [`MatchStep::NeedResolve`]
+/// comes back, and then re-evaluates with `resolved: true` and the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MatchInput {
+    /// Address learned by a previous resolution pass.
+    pub ip: Option<IpAddr>,
+    /// `true` after a resolution attempt (a `None` IP then means "resolution
+    /// failed", and no rule asks again).
+    pub resolved: bool,
+}
+
+/// One step of the lazy IP resolution used by the pinned `RuleMatchHelper`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatchStep {
+    /// The first matching rule (and the outbound it selects).
+    Matched(RuleMatch),
+    /// An IP-based rule with `no-resolve` unset needs the host resolved; the
+    /// engine resolves it, then calls [`RuleSet::evaluate_step`] again with the
+    /// same start index.
+    NeedResolve,
+    /// No rule matched; the built-in DIRECT fallthrough applies.
+    Fallthrough,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Yes,
+    No,
+    /// An IP-based rule needs the destination resolved first.
+    Resolve,
+}
+
+/// Per-pass resolution state: the address learned earlier (or supplied by the
+/// caller) and whether a resolution attempt already failed.
+struct ResolveState {
+    ip: Option<IpAddr>,
+    resolved: bool,
+    /// `SUB-RULE`'s selected action from the rule that just matched.
+    selected: Option<Action>,
+}
+
 /// One compiled rule and the declarative source used for labels.
 #[derive(Debug, Clone)]
 pub struct CompiledRule {
@@ -159,16 +202,33 @@ pub struct CompiledRuleSet {
 }
 
 impl CompiledRuleSet {
-    pub fn matches(&self, target: &Target, set: &RuleSet) -> bool {
+    fn matches_state(
+        &self,
+        target: &Target,
+        state: &mut ResolveState,
+        set: &RuleSet,
+        allow_resolve: bool,
+        source: bool,
+    ) -> Outcome {
         match self.behavior {
-            crate::config::RuleBehavior::Domain => self.domain.matches(&target.host),
-            crate::config::RuleBehavior::IpCidr => target.ip.is_some_and(|ip| {
-                self.cidr.iter().any(|net| net.contains(ip))
-            }),
-            crate::config::RuleBehavior::Classical => self
-                .classical
-                .iter()
-                .any(|rule| rule.matches(target, set).is_some()),
+            crate::config::RuleBehavior::Domain => flag(self.domain.matches(&target.host)),
+            crate::config::RuleBehavior::IpCidr => {
+                let ip = match resolve_ip(target, state, source, allow_resolve) {
+                    Ok(ip) => ip,
+                    Err(()) => return Outcome::Resolve,
+                };
+                flag(ip.is_some_and(|ip| self.cidr.iter().any(|net| net.contains(ip))))
+            }
+            crate::config::RuleBehavior::Classical => {
+                for rule in &self.classical {
+                    match rule.matches_state(target, state, set, allow_resolve) {
+                        Outcome::Yes => return Outcome::Yes,
+                        Outcome::Resolve => return Outcome::Resolve,
+                        Outcome::No => {}
+                    }
+                }
+                Outcome::No
+            }
         }
     }
 }
@@ -213,19 +273,8 @@ impl RuleSet {
         self.providers.rule_provider_count()
     }
 
-    /// First matching rule wins; without `MATCH`, built-in DIRECT.
-    pub fn evaluate(&self, target: &Target) -> RuleMatch {
-        for (index, rule) in self.rules.iter().enumerate() {
-            if let Some(action) = rule.matches(target, self) {
-                let mut source = rule.source.clone();
-                source.action = action;
-                return RuleMatch {
-                    rule: source,
-                    index,
-                    action,
-                };
-            }
-        }
+    /// The built-in fallthrough used when no rule matches: DIRECT.
+    pub fn fallthrough_match() -> RuleMatch {
         RuleMatch {
             rule: Rule {
                 matcher: Matcher::Match,
@@ -237,53 +286,161 @@ impl RuleSet {
         }
     }
 
-    fn match_sub_rules(&self, name: &str, target: &Target, depth: usize) -> Option<Action> {
+    /// First matching rule wins; without `MATCH`, built-in DIRECT. This entry
+    /// never resolves a name (the caller provides `target.ip` when known), so
+    /// diagnostics and tests keep the pre-DNS behaviour.
+    pub fn evaluate(&self, target: &Target) -> RuleMatch {
+        match self.evaluate_step(
+            target,
+            MatchInput {
+                ip: target.ip,
+                resolved: true,
+            },
+            0,
+        ) {
+            MatchStep::Matched(found) => found,
+            MatchStep::NeedResolve | MatchStep::Fallthrough => RuleMatch {
+                rule: Rule {
+                    matcher: Matcher::Match,
+                    action: Action::Direct,
+                    no_resolve: false,
+                },
+                index: usize::MAX,
+                action: Action::Direct,
+            },
+        }
+    }
+
+    /// Evaluate from `start`. An IP-based rule whose `no-resolve` flag is unset
+    /// stops the pass with [`MatchStep::NeedResolve`] when the destination is a
+    /// name and no address is known yet; the caller resolves and calls again
+    /// with the same `start` and `resolved: true`.
+    pub fn evaluate_step(&self, target: &Target, input: MatchInput, start: usize) -> MatchStep {
+        let mut state = ResolveState {
+            ip: input.ip,
+            resolved: input.resolved,
+            selected: None,
+        };
+        for (index, rule) in self.rules.iter().enumerate().skip(start) {
+            match rule.matches_state(target, &mut state, self, true) {
+                Outcome::Resolve => return MatchStep::NeedResolve,
+                Outcome::Yes => {
+                    // `SUB-RULE` may choose a different outbound than its own
+                    // action; the matching pass records it in the state.
+                    let action = state.selected.take().unwrap_or(rule.source.action);
+                    let mut source = rule.source.clone();
+                    source.action = action;
+                    return MatchStep::Matched(RuleMatch {
+                        rule: source,
+                        index,
+                        action,
+                    });
+                }
+                Outcome::No => {}
+            }
+        }
+        MatchStep::Fallthrough
+    }
+
+    fn match_sub_rules(
+        &self,
+        name: &str,
+        target: &Target,
+        state: &mut ResolveState,
+        depth: usize,
+    ) -> Result<Option<Action>, ()> {
         if depth > 32 {
             // The loader rejects cycles; the bound only protects a bug.
-            return None;
+            return Ok(None);
         }
-        let rules = self.sub_rules.get(name)?;
+        let Some(rules) = self.sub_rules.get(name) else {
+            return Ok(None);
+        };
         for rule in rules {
-            if let CompiledMatcher::SubRule { gate, name } = &rule.matcher {
-                if gate.matches(target, self).is_some() {
-                    if let Some(action) = self.match_sub_rules(name, target, depth + 1) {
-                        return Some(action);
-                    }
-                    continue;
+            match rule.matches_state(target, state, self, true) {
+                Outcome::Resolve => return Err(()),
+                Outcome::Yes => {
+                    return Ok(Some(state.selected.take().unwrap_or(rule.source.action)))
                 }
-            }
-            if let Some(action) = rule.matches(target, self) {
-                return Some(action);
+                Outcome::No => {}
             }
         }
-        None
+        Ok(None)
     }
 }
 
 impl CompiledRule {
-    /// `Some(action)` when this rule (and, for SUB-RULE, its selected list) matches.
-    pub fn matches(&self, target: &Target, set: &RuleSet) -> Option<Action> {
+    fn matches_state(
+        &self,
+        target: &Target,
+        state: &mut ResolveState,
+        set: &RuleSet,
+        outer_allow: bool,
+    ) -> Outcome {
+        let allow = outer_allow && !self.source.no_resolve;
         match &self.matcher {
             CompiledMatcher::SubRule { gate, name } => {
-                if gate.matches(target, set).is_some() {
-                    set.match_sub_rules(name, target, 0)
-                } else {
-                    None
+                match gate.matches_state(target, state, set, allow) {
+                    Outcome::No => Outcome::No,
+                    Outcome::Resolve => Outcome::Resolve,
+                    Outcome::Yes => match set.match_sub_rules(name, target, state, 0) {
+                        Ok(Some(action)) => {
+                            state.selected = Some(action);
+                            Outcome::Yes
+                        }
+                        Ok(None) => Outcome::No,
+                        Err(()) => Outcome::Resolve,
+                    },
                 }
             }
-            matcher => {
-                if matcher.matches(target, set).is_some() {
-                    Some(self.source.action)
-                } else {
-                    None
-                }
-            }
+            matcher => matcher.matches_state(target, state, set, allow),
         }
     }
 }
 
+/// `true`/`false` as an [`Outcome`] without a resolution request.
+fn flag(value: bool) -> Outcome {
+    if value {
+        Outcome::Yes
+    } else {
+        Outcome::No
+    }
+}
+
+fn resolve_ip(
+    target: &Target,
+    state: &mut ResolveState,
+    source: bool,
+    allow: bool,
+) -> Result<Option<IpAddr>, ()> {
+    if source {
+        return Ok(target.source_ip);
+    }
+    if let Some(ip) = target.ip {
+        return Ok(Some(ip));
+    }
+    if let Some(ip) = state.ip {
+        return Ok(Some(ip));
+    }
+    if state.resolved {
+        return Ok(None);
+    }
+    if !allow || target.host.is_empty() {
+        return Ok(None);
+    }
+    // The engine resolves and re-evaluates; `state` is rebuilt from the
+    // returned `MatchInput`, so a failed resolution is remembered there.
+    Err(())
+}
+
 impl CompiledMatcher {
-    pub fn matches(&self, target: &Target, set: &RuleSet) -> Option<()> {
+    fn matches_state(
+        &self,
+        target: &Target,
+        state: &mut ResolveState,
+        set: &RuleSet,
+        allow_resolve: bool,
+    ) -> Outcome {
         let hit = match self {
             CompiledMatcher::Domain(value) => target.host == *value,
             CompiledMatcher::DomainSuffix(value) => {
@@ -296,7 +453,10 @@ impl CompiledMatcher {
                 domains.matches(&target.host) != *negate
             }
             CompiledMatcher::GeoIp { matcher, source } => {
-                let ip = if *source { target.source_ip } else { target.ip };
+                let ip = match resolve_ip(target, state, *source, allow_resolve) {
+                    Ok(ip) => ip,
+                    Err(()) => return Outcome::Resolve,
+                };
                 ip.is_some_and(|ip| matcher.matches(ip))
             }
             CompiledMatcher::IpAsn {
@@ -304,30 +464,27 @@ impl CompiledMatcher {
                 source,
                 db,
             } => {
-                let ip = if *source {
-                    target.source_ip
-                } else {
-                    target.ip
+                let ip = match resolve_ip(target, state, *source, allow_resolve) {
+                    Ok(ip) => ip,
+                    Err(()) => return Outcome::Resolve,
                 };
                 let Some(ip) = ip else {
-                    return None;
+                    return Outcome::No;
                 };
                 let (found, _) = db.asn(ip);
                 found == *asn
             }
             CompiledMatcher::IpCidr { net, source } => {
-                let ip = if *source {
-                    target.source_ip
-                } else {
-                    target.ip
+                let ip = match resolve_ip(target, state, *source, allow_resolve) {
+                    Ok(ip) => ip,
+                    Err(()) => return Outcome::Resolve,
                 };
                 ip.is_some_and(|ip| net.contains(ip))
             }
             CompiledMatcher::IpSuffix { net, source } => {
-                let ip = if *source {
-                    target.source_ip
-                } else {
-                    target.ip
+                let ip = match resolve_ip(target, state, *source, allow_resolve) {
+                    Ok(ip) => ip,
+                    Err(()) => return Outcome::Resolve,
                 };
                 ip.is_some_and(|ip| ip_suffix_matches(net, ip))
             }
@@ -356,7 +513,7 @@ impl CompiledMatcher {
                     ProcessKind::Path => target.process_path.as_deref(),
                 };
                 let Some(value) = value else {
-                    return None;
+                    return Outcome::No;
                 };
                 match regex {
                     Some(regex) => regex.is_match(value),
@@ -369,7 +526,7 @@ impl CompiledMatcher {
                     ProcessKind::Path => target.process_path.as_deref(),
                 };
                 let Some(value) = value else {
-                    return None;
+                    return Outcome::No;
                 };
                 // Pinned `rules/common/process.go` lowercases both sides and
                 // uses `component/wildcard`.
@@ -379,10 +536,14 @@ impl CompiledMatcher {
                 )
             }
             CompiledMatcher::RuleSet { name, source } => {
-                let snapshot = set.providers.rule_provider(name)?.snapshot();
+                let Some(slot) = set.providers.rule_provider(name) else {
+                    return Outcome::No;
+                };
+                let snapshot = slot.snapshot();
                 if *source {
-                    // Mihomo swaps source and destination for `src` rule sets;
-                    // the rule host is unchanged, the IP/port become the source.
+                    // Mihomo swaps source and destination for `src` rule sets
+                    // and disables resolution (helper.ResolveIP = nil); the
+                    // rule host is unchanged.
                     let swapped = Target {
                         ip: target.source_ip,
                         port: target.source_port,
@@ -390,31 +551,54 @@ impl CompiledMatcher {
                         source_port: target.port,
                         ..target.clone()
                     };
-                    snapshot.compiled.matches(&swapped, set)
-                } else {
-                    snapshot.compiled.matches(target, set)
+                    return snapshot.compiled.matches_state(
+                        &swapped,
+                        state,
+                        set,
+                        false,
+                        false,
+                    );
                 }
+                return snapshot.compiled.matches_state(
+                    target,
+                    state,
+                    set,
+                    allow_resolve,
+                    false,
+                );
             }
             CompiledMatcher::And(rules) => {
-                return rules
-                    .iter()
-                    .all(|rule| rule.matches(target, set).is_some())
-                    .then_some(())
+                for rule in rules {
+                    match rule.matches_state(target, state, set, allow_resolve) {
+                        Outcome::Yes => {}
+                        Outcome::No => return Outcome::No,
+                        Outcome::Resolve => return Outcome::Resolve,
+                    }
+                }
+                return Outcome::Yes;
             }
             CompiledMatcher::Or(rules) => {
-                return rules
-                    .iter()
-                    .any(|rule| rule.matches(target, set).is_some())
-                    .then_some(())
+                for rule in rules {
+                    match rule.matches_state(target, state, set, allow_resolve) {
+                        Outcome::Yes => return Outcome::Yes,
+                        Outcome::No => {}
+                        Outcome::Resolve => return Outcome::Resolve,
+                    }
+                }
+                return Outcome::No;
             }
             CompiledMatcher::Not(rule) => {
-                return rule.matches(target, set).is_none().then_some(())
+                return match rule.matches_state(target, state, set, allow_resolve) {
+                    Outcome::Yes => Outcome::No,
+                    Outcome::No => Outcome::Yes,
+                    Outcome::Resolve => Outcome::Resolve,
+                };
             }
             CompiledMatcher::Match => true,
-            // SUB-RULE is resolved by `CompiledRule::matches`.
+            // SUB-RULE is resolved by `CompiledRule::matches_state`.
             CompiledMatcher::SubRule { .. } => false,
         };
-        hit.then_some(())
+        flag(hit)
     }
 }
 

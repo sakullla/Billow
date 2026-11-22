@@ -55,8 +55,12 @@ LGPL derivative; the workspace is distributed under GPL-3.0-only. See
 families are partial: their gaps are named in
 [Not implemented](#not-implemented) and in
 `tool/kernel-compat/evidence/rust-mapping.json`.
-**Not implemented yet** (rejected with
-`[unsupported]`, never ignored): DNS and `hosts` (T22), the control API (T25),
+T22 added DNS and `hosts`: the pinned domain trie, UDP/TCP/DoT/DoH upstreams,
+nameserver policies, fallback filters, `respect-rules`, the three enhanced
+modes, fake-ip allocation and destination rebuild, and the optional DNS server
+on `dns.listen` (see [DNS and hosts](#dns-and-hosts-t22)). **Not implemented
+yet** (rejected with
+`[unsupported]`, never ignored): the control API (T25),
 `tun`/`redir`/`tproxy`, the
 families listed under
 [Protocol families outside this slice](#protocol-families-outside-this-slice),
@@ -93,6 +97,8 @@ native-kernel/
 └── crates/
     ├── billow-kernel/              # library (rlib + staticlib)
     │   ├── src/config.rs           # strict YAML/rule/provider parsing
+    │   ├── src/dns.rs              # hosts, DNS clients (UDP/TCP/DoT/DoH), policies,
+    │   │                           # fake-ip, DNS server, rule-time resolution
     │   ├── src/geodata.rs          # MRS, GeoSite.dat/GeoIP.dat protobuf, MaxMind DB
     │   ├── src/provider.rs         # file/http/inline providers, filters, generation swaps
     │   ├── src/proxies.rs          # strict `proxies:` option tables
@@ -133,8 +139,9 @@ listener), `socks-port` (legacy alias for `mixed-port`), `allow-lan`,
 `bind-address`, `mode: rule`, `log-level`, `authentication`, `tls` (extra
 roots only), `proxies`, `proxy-groups`, `profile` (`store-selected`), `rules`, `sub-rules`,
 `rule-providers`, `proxy-providers`, `geodata-mode`, `geodata-loader`,
-`geosite-matcher`, `geo-auto-update` (`false` only) and `geo-update-interval`
-(parsed). A listener
+`geosite-matcher`, `geo-auto-update` (`false` only), `geo-update-interval`
+(parsed), `hosts` and `dns` (T22), and `ipv6` (general switch, default `true`).
+A listener
 port of `0` means disabled (Mihomo's meaning); if every listener key is 0 the
 load fails by name instead of binding an ephemeral port.
 
@@ -143,9 +150,10 @@ Billow's `profile.rs` effective YAML (`prepare`/`apply_settings`/
 **not** claimed to load directly. Its rule/provider/proxy subset loads; the
 launcher keys are handled explicitly: a disabled `tun`/`sniffer` block is
 inert with a warning, `geox-url` is recorded with a warning, and
-`external-controller`, `dns`/`hosts`, or an enabled `tun`/`sniffer` are
-rejected with the key named (T25/T22/T6-T7). `proxy-groups` is implemented by
-T23 (see [Proxy groups](#proxy-groups-t23)).
+`external-controller` or an enabled `tun`/`sniffer` is rejected with the key
+named (T25/T6-T7); `hosts` and `dns` load through the T22 runtime (see
+[DNS and hosts](#dns-and-hosts-t22)). `proxy-groups` is implemented by T23
+(see [Proxy groups](#proxy-groups-t23)).
 
 Rules (T24): `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`,
 `DOMAIN-WILDCARD`, `GEOSITE`, `GEOIP`, `SRC-GEOIP`, `IP-ASN`, `SRC-IP-ASN`,
@@ -155,10 +163,12 @@ Rules (T24): `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`,
 `PROCESS-PATH-WILDCARD`, `NETWORK`, `IN-TYPE`, `SUB-RULE`,
 `AND`, `OR`, `NOT`, `RULE-SET` and `MATCH`. Outbounds are `DIRECT`, `REJECT`,
 `REJECT-DROP` (close without an inbound reply) or the name of a configured
-proxy or proxy group. The optional `no-resolve`/`src` parameters are accepted on IP/GEOIP/
-IP-ASN/RULE-SET rules and recorded; this kernel never resolves a name while
-matching (DNS is T22), so an IP/GEOIP rule matches only a destination that is
-already an IP. The first matching rule wins; without a `MATCH` rule the
+proxy or proxy group. The optional `no-resolve`/`src` parameters are accepted
+on IP/GEOIP/IP-ASN/RULE-SET rules. Evaluation resolves a destination name
+lazily when the first IP-based rule that is allowed to resolve is reached
+(pinned `RuleMatchHelper.ResolveIP`), then continues with that address; a
+`no-resolve` rule never queries DNS, and a failed lookup is remembered so later
+IP rules do not retry. The first matching rule wins; without a `MATCH` rule the
 built-in fallback is `DIRECT`, as in Mihomo. `SUB-RULE` uses the same
 outermost-group syntax as the pinned parser (`SUB-RULE,(NETWORK,TCP),branch`)
 and the named list selects the outbound; circular references are rejected.
@@ -251,16 +261,94 @@ rules:
 ```
 
 A key the pinned version declares but this kernel does not implement (a
-top-level key such as `dns`/`hosts`, or a proxy option such as `tfo`) fails when
-its value asks for something; a key the pinned version does not declare at all
+top-level key such as `external-controller`, or a proxy option such as `tfo`)
+fails when its value asks for something; a key the pinned version does not declare at all
 is ignored with a warning, exactly as Mihomo's decoder ignores it, so a valid
 upstream configuration is not rejected (R2). Errors are categorized by a stable tag: `invalid_yaml`,
 `invalid_value`, `unsupported`, plus `bind` and `limits` at start-up. Example:
 
 ```
-error: [unsupported] unsupported configuration: top-level key 'dns' is not implemented by the Rust kernel slice
+error: [unsupported] unsupported configuration: top-level key 'external-controller' is not implemented by the Rust kernel slice (the control API is T25)
 error: [unsupported] proxies[0] (name=s1, type=vless): option 'flow' value 'xtls-rprx-vision' is not implemented
 ```
+
+## DNS and hosts (T22)
+
+`dns.rs` implements the pinned v1.19.34 resolver and `hosts` table; the engine
+uses them for rule-time resolution, DIRECT dials, proxy-server names and
+SOCKS5 UDP destinations.
+
+**hosts** is a domain trie with the pinned `component/trie/domain.go` forms and
+priority (exact label > `*` label > `.`/`+` suffix node): an exact name,
+`*.example.com` (one label), `.example.com` (subdomains only),
+`+.example.com` (the name and any depth) and `sub.*.example.com`. Values are
+one IP, an IP list, or a domain that is followed (cycles are rejected at load).
+The built-in `localhost -> 127.0.0.1` exists even without a `hosts` block, and
+`use-system-hosts: true` adds `/etc/hosts` (read with a five-second cache when
+the file's mtime/size change). `hosts` is applied to rule matching even when
+`dns.enable` is false, exactly like the pinned `updateHosts`.
+
+**dns** supports `enable`, `listen`, `ipv6` (+`ipv6-timeout`), `use-hosts`,
+`use-system-hosts`, `respect-rules`, `nameserver`, `default-nameserver`,
+`fallback`, `fallback-filter` (`geoip`, `geoip-code`, `ipcidr`, `domain`,
+`geosite`), `fallback-lazy-query`, `nameserver-policy`, `proxy-server-nameserver`
+(+`-policy`), `direct-nameserver` (+`-follow-policy`), `enhanced-mode`,
+`fake-ip-range`/`fake-ip-range6`, `fake-ip-filter`/`-mode`/`-ttl`,
+`cache-algorithm`/`cache-max-size` and `prefer-h3`.
+
+- **Upstreams** are `udp://` (default), `tcp://`, `tls://` (DoT, SNI = the
+  nameserver host) and `http://`/`https://` (DoH over HTTP/1.1 GET `?dns=`,
+  Accept `application/dns-message`; `http://` is plain TCP). A nameserver hostname is bootstrapped through
+  `default-nameserver` (validated as pure IPs). `skip-cert-verify`,
+  `disable-ipv4`/`disable-ipv6`/`disable-qtype-<n>` are honoured; a truncated
+  UDP reply is retried over TCP. `#h3=true`, `quic://`, `system://`,
+  `dhcp://`, `ts://`/`et://`, `rcode://`, `ecs`/`ecs-override`,
+  `name-cert-verify` and a `#proxy` name are rejected with the form named.
+- **Selection** mirrors the pinned resolver: a `nameserver-policy` match wins
+  first (plain-domain keys use the pinned trie specificity; `geosite:` and
+  domain-behavior `rule-set:` use their domain sets in declaration order), a
+  matching `fallback-filter.domain`/`geosite` sends the query only to the
+  fallback, and otherwise main and fallback race. A main answer that is LAN is
+  never replaced; an address inside `fallback-filter.ipcidr` or outside
+  `fallback-filter.geoip` falls back. All servers of one list race and the
+  first non-SERVFAIL/REFUSED answer wins.
+- **Cache**: question-keyed, minimal TTL over the answer and authority
+  sections (so an NXDOMAIN/NODATA SOA caches the negative answer), SERVFAIL
+  cached for five seconds, bounded by `cache-max-size` (4096 default).
+  `cache-algorithm: arc` is accepted but served by the same LRU (answers/TTLs
+  unchanged).
+- **Fake-ip** allocates gateway+3 onward (`198.18.0.4` for the default range),
+  wraps at the broadcast address and evicts a reused slot; the in-memory host
+  store is bounded at 1000 entries (arbitrary eviction under pressure, unlike
+  the pinned LRU, but the same bound); `fake-ip-ttl` is set
+  on answers and `fake-ip-filter` (blacklist/whitelist) plus the fallback
+  nameserver hostnames decide which names are real. An inbound destination
+  that is a fake IP is mapped back to its host before rules
+  (`preHandleMetadata`), then resolved through the direct/proxy resolver; an
+  unknown fake IP fails with `fake DNS record <ip> missing`. `redir-host` maps
+  every answer IP back to its host for ten minutes (bounded at 4096 entries).
+  `profile.store-fake-ip: true` is accepted with a warning: the pool is
+  in-memory, so allocations do not survive a restart (the pinned cache.db
+  persistence is a named gap).
+- **DNS server**: `dns.listen` binds UDP and TCP and applies the pinned
+  middleware order hosts → fake-ip → mapping → resolver. It answers
+  A/AAAA/CNAME; other qtypes get NOTIMP (a named gap).
+- **respect-rules** routes TCP/TLS/HTTPS upstreams through the rule set and
+  proxy groups (the same `DnsRoute` the engine uses for sessions). A UDP
+  upstream with `respect-rules` is rejected by name because proxy UDP routing
+  is not implemented.
+- **Engine integration**: IP-based rules (`GEOIP`, `IP-ASN`, `IP-CIDR`,
+  `IP-SUFFIX`, IP/CIDR `RULE-SET`s and their logic combinations) resolve
+  lazily in first-match order and honour `no-resolve`; a failed resolution is
+  remembered. DIRECT dials use `direct-nameserver` (or the main list) when DNS
+  is on; proxy server names use `proxy-server-nameserver` (+policy) when
+  configured, otherwise the main list. Without `dns.enable` the OS resolver is
+  the pinned `SystemResolver` equivalent.
+
+Named gaps: DoQ, DHCP/system/overlay/rcode nameservers, `#proxy` names, EDNS
+client subnet, `name-cert-verify`, HTTP/2/3 DoH (`prefer-h3` is recorded),
+`fake-ip-filter-mode: rule`, `profile.store-fake-ip` persistence, negated
+`fallback-filter.geosite`, and DNS-server qtypes beyond A/AAAA/CNAME.
 
 ## Proxy groups (T23)
 
@@ -342,8 +430,9 @@ selections to `<cache-dir>/cache.yaml` and restores them before traffic, like
 pinned `patchSelectGroup`. The file holds the same group→member map as pinned's
 bbolt `cache.db` (the files are not interchangeable). Hosts pass a cache
 directory through `KernelOptions`; the CLI uses the configuration directory and
-warns when no directory is available. `profile.store-fake-ip` is recorded with
-a warning because the fake-ip store is T22.
+warns when no directory is available. `profile.store-fake-ip` is accepted with
+a warning: the fake-ip pool and mapping are in-memory, so allocations do not
+survive a restart (the pinned cache.db store is a named gap).
 
 Rule targets and API: a rule or `MATCH` may name a group; the engine resolves
 nested groups on each dial and reports the group path in the session log.
@@ -449,10 +538,11 @@ is evaluated by the same rule set as TCP before it is forwarded. Per family:
 `vless` UDP would need `packet-addr`/XUDP, `anytls` needs UoT, and a SOCKS5
 outbound would need its own UDP relay: all three are explicit gaps recorded in
 `tool/kernel-compat/evidence/rust-mapping.json`, not silent successes.
-Fragmented datagrams (`FRAG != 0`) are dropped. Destination names are resolved
-with the system resolver because there is no in-kernel DNS before T22 (a
-datagram to a name therefore leaves with the resolved address, as Mihomo's
-system resolver does). For a chained association the *server* name is resolved
+Fragmented datagrams (`FRAG != 0`) are dropped. Destination names follow the
+same path as TCP: a fake-ip/redir-host mapping is applied first, the rule set
+may resolve the name lazily, and a DIRECT send uses `direct-nameserver` (or the
+main DNS list) when `dns.enable` is true, the OS resolver otherwise. Proxy
+datagrams keep the domain, as the pinned adapters do. For a chained association the *server* name is resolved
 once and the whole address set is kept: a multi-A record (or a server answering
 from another of its addresses) is accepted, while a reply from an address the
 name did not resolve to is dropped. A resolver that returns only one family
@@ -488,7 +578,8 @@ The pinned parser lists 28 outbound types, matching the status recorded in
   XX/secure-datagram AES-GCM/ChaCha20, translated from the locked LGPL source
   and verified against the pinned core; the tunnel needs T6/T7);
 - **built-ins (4)**: `direct`, `dns`, `reject` and `rematch` as `proxies`
-  entries (T22 DNS, T23 groups/rematch).
+  entries (the `dns` proxy adapter is separate from the T22 resolver; none of
+  the four is implemented as an outbound).
 
 Every unimplemented type is rejected by name at load time, so no configuration
 is silently reduced:
@@ -498,7 +589,7 @@ is silently reduced:
 | `wireguard`, `openvpn` | the protocol halves are implemented (`src/outbound/wireguard.rs`, `src/outbound/openvpn.rs`) and verified against controlled peers, but turning their IP packets into TCP streams needs the userspace IP stack and TUN device owned by T6/T7 | **T16**: transport + configuration semantics; a `dial()` names the T6/T7 device gap. `outbound::wireguard::WireguardTunnel` and `outbound::openvpn::OpenVpnTunnel` are the interfaces for that layer |
 | `tailscale`, `zerotier` | the protocol/configuration adapters are implemented in `src/outbound/{tailscale,zerotier}.rs` and verified against controlled peers built from the locked Go modules; the tunnel's TCP/UDP socket layer needs the T6/T7 userspace IP stack and TUN device | **T19 partial**: control/DERP and identity/planet/VL1/VL2 are available to T6/T7/T22/T23; `dial()` names the device gap; registration-only Tailscale prefs and ZeroTier TCP fallback are rejected by name |
 | `easytier` | `src/outbound/easytier.rs` is an LGPL-3.0-or-later translation of the locked EasyTier source: cleartext host/discovery, Noise XX and secure-datagram AES-GCM/ChaCha20; the userspace IP stack/TUN and OSPF/route identity belong to T6/T7 | **T20 partial**: cleartext and secure handshakes/encrypted data verified against the pinned core; distribution must honor LGPL |
-| `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules, group members may name `DIRECT`/`REJECT`/`COMPATIBLE`, and there are no `dns`/`rematch` adapters | **T22** (`dns`); `direct`/`reject`/`rematch` entries stay rejected by name |
+| `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules, group members may name `DIRECT`/`REJECT`/`COMPATIBLE`, and there are no `dns`/`rematch` outbound adapters (T22 implements the resolver configuration, not `type: dns`) | `direct`/`dns`/`reject`/`rematch` proxy entries stay rejected by name |
 
 T13 delivered `mieru` in the single-session TCP slice: an independent
 implementation of the published protocol (the module is GPL-3.0, so no mieru
@@ -629,8 +720,9 @@ workspace `rust-version` to 1.89 instead of shipping an inconsistent MSRV.
 `03-execution-plan.md`
 defines T9/T11 (non-QUIC), T10 (QUIC), T16 (device-family protocol halves;
 device/TUN and the IP stack remain T6/T7) and the configuration-plane tasks
-T22 (DNS/hosts), T24 (rules/providers/GEO) and T25 (control interface); T23
-(groups/selection) is implemented and its boundaries are named below. The capability index
+T22 (DNS/hosts), T24 (rules/providers/GEO) and T25 (control interface). T22
+and T23 are implemented; T25 is not, and the remaining boundaries are named
+below. The capability index
 records each family at the status the kernel actually reaches: `implemented`,
 `partial` (with the missing options named) or `unimplemented`; none can be
 reported as compatible.
@@ -638,14 +730,15 @@ reported as compatible.
 ### Not implemented
 
 Configuration-plane gaps not claimed by T24 (each is rejected with the key or
-value named): DNS/`hosts` and `find-process-mode` (T22), the control API (T25),
+value named): `find-process-mode` (T22/T6 process lookup), the control API (T25),
 `geo-auto-update: true`,
 an HTTP provider fetched through a configured `proxy`, compressed provider
 responses, `path-in-bundle`, `age-secret-key`, unsupported `override.<field>`
 values, geosite/process regex look-around or backreferences that Rust `regex`
 cannot express, and unknown MaxMind DB data types (the reader covers the
 Country/ASN shapes above). Provider `health-check` fields drive the T23 health
-scheduler; `profile.store-fake-ip` is recorded (fake-ip is T22). Rule names
+scheduler; `profile.store-fake-ip` is accepted with a warning (the fake-ip pool is
+in-memory; cache.db persistence is not implemented). Rule names
 `UID`, `DSCP`,
 `IN-USER`, `IN-NAME`, `REMATCH-NAME` and `PASS`/`PASS-RULE` are rejected by
 name; `PROCESS-NAME-WILDCARD`/`PROCESS-PATH-WILDCARD` are implemented with the
@@ -800,7 +893,7 @@ then prints a session summary:
 
 ```
 instance=<uuid> pid=<pid> version=0.1.0 listen=127.0.0.1:17890 overridden_port=- config=sha256:<digest> rules=3 geosite_dir=- state_dir=-
-features: mixed-inbound(tcp,http-connect,socks5); rules=inline(3 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss1=ss,tj1=trojan,jump=socks5,vl1=vless; dns=none
+features: mixed-inbound(tcp,http-connect,socks5); rules=inline(3 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss1=ss,tj1=trojan,jump=socks5,vl1=vless; hosts=0; dns=off
 stopped instance=<uuid> accepted=4 active=0 completed=2 rejected=2 failed=0 bytes_up=40 bytes_down=40
 ```
 
@@ -872,7 +965,12 @@ Default suite (no external binaries; real loopback listeners):
 cargo test --manifest-path native-kernel/Cargo.toml --locked
 ```
 
-T24's rules/providers/GEO differential is separate because it needs the pinned
+T22's DNS/hosts differential is separate too:
+`node tool/kernel-compat/t22-differential.mjs --mihomo <binary> --rust
+<billow-kernel> --out tool/kernel-compat/evidence/t22-dns.json`
+(see `evidence/t22-dns.md`; it starts fixed UDP/TCP/DoT/DoH DNS fixtures and
+compares listener answers, fallback/policy/fake-ip behaviour, `respect-rules`
+and CONNECT cases). T24's rules/providers/GEO differential needs the pinned
 Mihomo binary and a loopback provider server:
 `node tool/kernel-compat/t24-differential.mjs --mihomo <binary> --rust
 <billow-kernel> --out tool/kernel-compat/evidence/t24-differential.json`
@@ -899,6 +997,11 @@ group differential runs the same pinned binary with loopback CONNECT nodes:
   `BILLOW_MMDB_DIR` is set), and Billow's effective YAML: its
   rule/provider/proxy subset loads in override order while the launcher keys
   are registered as inert-with-warning or named rejections.
+- `tests/dns.rs` — T22: pinned hosts trie forms/priority and domain chains,
+  strict nameserver/fake-ip/hosts rejections, UDP/TCP/DoT/DoH resolution,
+  cache TTL, nameserver policy, fallback IP/domain filters, timeout, fake-ip
+  pool/allocation/filter/TTL and the DNS listener, plus engine cases for
+  rule-time `IP-CIDR` resolution, `no-resolve` and fake-ip destination rebuild.
 - `tests/sessions.rs` — inbound sessions, half-close, stop/restart, limits.
 - `tests/quic_peers.rs` — T10/T14 QUIC loopback peers: TUIC v5 (auth token,
   domain and IP targets, wrong password, v4 token rejection, unimplemented

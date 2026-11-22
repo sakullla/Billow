@@ -384,7 +384,7 @@ fn process_rejects_unimplemented_config_and_exits_non_zero() {
     let config = dir.join("bad.yaml");
     std::fs::write(
         &config,
-        "mixed-port: 1\ndns:\n  enable: true\nrules:\n  - 'MATCH,DIRECT'\n",
+        "mixed-port: 1\nexternal-controller: 127.0.0.1:9090\nrules:\n  - 'MATCH,DIRECT'\n",
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
@@ -394,7 +394,22 @@ fn process_rejects_unimplemented_config_and_exits_non_zero() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[unsupported]"), "{stderr}");
-    assert!(stderr.contains("'dns'"), "{stderr}");
+    assert!(stderr.contains("'external-controller'"), "{stderr}");
+
+    // An implemented block still rejects an unimplemented shape by name.
+    std::fs::write(
+        &config,
+        "mixed-port: 1\ndns:\n  enable: true\n  nameserver: ['quic://dns.example']\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[unsupported]"), "{stderr}");
+    assert!(stderr.contains("DoQ"), "{stderr}");
 
     std::fs::write(&config, "mixed-port: 1\nrules:\n  - 'DSCP,4,DIRECT'\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))

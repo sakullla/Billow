@@ -60,6 +60,14 @@ node tool/kernel-compat/t24-differential.mjs \
   --out tool/kernel-compat/evidence/t24-differential.json \
   [--mmdb-dir <dir-with-Country.mmdb-and-ASN.mmdb>]
 
+# T22 DNS/hosts/fake-ip differential: controlled UDP/TCP/DoT/DoH DNS fixtures
+# with fixed answers, a silent port for the timeout case, and a loopback SOCKS5
+# hop for respect-rules. Both engines answer on dns.listen with the same
+# effective config; rcode/address/TTL and the CONNECT cases are compared.
+node tool/kernel-compat/t22-differential.mjs \
+  --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
+  --out tool/kernel-compat/evidence/t22-dns.json
+
 # T23 group/selection/health differential: every member is a loopback HTTP
 # CONNECT node (a health node answers the probe HEAD with a fixed or sequenced
 # delay/status); Mihomo is driven through its external-controller and the Rust
@@ -208,6 +216,7 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
 T23 fills `groups` and `configFields.proxy-groups`/`profile` in the mapping:
 `select`/`url-test`/`fallback`/`load-balance` are implemented (load-balance
 partial), `relay` is a named rejection because pinned v1.19.34 removed it, and
+`evidence/t22-dns.md` records the DNS/hosts differential and its named gaps;
 `evidence/t23-groups.md` records the 27-case differential plus the persistence
 case (including startup probes under the default lazy config, provider snapshot
 re-checks, the url-test computation-cache window, nested lazy re-probing,

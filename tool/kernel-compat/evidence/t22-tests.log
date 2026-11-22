@@ -1,0 +1,38 @@
+# T22 default suite: cargo test --manifest-path native-kernel/Cargo.toml --locked
+# 2026-11-22T15:53:00Z EXIT=0
+     Running unittests src/lib.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/billow_kernel-ebb6c34defc90544)
+test result: ok. 160 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.82s
+     Running tests/config.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/config-7052b4445103cedf)
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.37s
+     Running tests/dns.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/dns-0310efa91b8839f2)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.64s
+     Running tests/groups.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/groups-9617f2833e4d4f49)
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.27s
+     Running tests/independent_peers.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/independent_peers-dbd7623798b96259)
+test result: ok. 0 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mesh_peers.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/mesh_peers-53a55c32434b2bf0)
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mihomo_peers.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/mihomo_peers-7a506a3ae19fc046)
+test result: ok. 0 passed; 0 failed; 66 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/openvpn_peer.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/openvpn_peer-026dc0f01616a97d)
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/protocols.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/protocols-b3fc7c7c56c92bb6)
+test result: ok. 50 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.86s
+     Running tests/quic_peers.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/quic_peers-b4dc16ada8eead72)
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.41s
+     Running tests/resources.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/resources-9d57aa37abf31cef)
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.41s
+     Running tests/sessions.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/sessions-ebe725de03b7e5fa)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+     Running tests/shadowquic_stream.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/shadowquic_stream-f6de69b26cfcdfbe)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+     Running tests/wireguard_peer.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/wireguard_peer-b0d8e62cb7b7ad5c)
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/main.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/billow_kernel-7d753d60c9a16b1a)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/cli.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/cli-39a87d41020d2483)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.12s
+     Running tests/family_cli.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/billow-t22-target/debug/deps/family_cli-8fa4e222f1511b11)
+test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.52s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+# tests/dns.rs: 15 passed, 0 failed

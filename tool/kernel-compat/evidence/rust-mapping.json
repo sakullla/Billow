@@ -3,7 +3,7 @@
   "version": 3,
   "engine": "rust",
   "kernel": "billow-kernel",
-  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,groups.rs,engine.rs,outbound/*.rs} and tests/{config,groups,protocols,mihomo_peers,quic_peers,resources}.rs",
+  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,dns.rs,proxies.rs,inbound.rs,groups.rs,engine.rs,outbound/*.rs} and tests/{config,dns,groups,protocols,mihomo_peers,quic_peers,resources}.rs",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -201,10 +201,19 @@
       ]
     },
     "dns": {
-      "status": "unimplemented",
-      "reason": "DNS/hosts are T22; rejected by name",
+      "status": "partial",
+      "reason": "Implemented for the shapes a pinned v1.19.34 configuration can observe: nameserver/default-nameserver/fallback/fallback-filter/nameserver-policy/proxy-server-nameserver(+policy)/direct-nameserver, respect-rules, ipv6/ipv6-timeout, enhanced-mode normal/redir-host/fake-ip, fake-ip-range(6)/fake-ip-filter(blacklist|whitelist)/fake-ip-ttl, use-hosts/use-system-hosts, cache-algorithm lru|arc (arc served by the LRU cache), cache-max-size, listen (UDP+TCP A/AAAA/CNAME only) and prefer-h3 (recorded; DoH uses HTTP/1.1). Unimplemented upstream forms are rejected by name: quic:// DoQ, system://, dhcp://, ts/et overlay DNS, rcode://, #h3=true, EDNS client subnet, name-cert-verify, #proxy names and fake-ip-filter-mode rule.",
       "evidence": [
-        "tests/config.rs::rejects_every_unimplemented_top_level_key"
+        "tests/dns.rs::parses_dns_and_hosts_like_the_pinned_defaults",
+        "tests/dns.rs::rejects_unimplemented_dns_shapes_by_name",
+        "tests/dns.rs::udp_resolution_and_cache_ttl",
+        "tests/dns.rs::fallback_ip_and_domain_filters",
+        "tests/dns.rs::nameserver_policy_selects_the_configured_server",
+        "tests/dns.rs::tcp_transport",
+        "tests/dns.rs::dot_and_doh_transports_verify_the_server_certificate",
+        "tests/dns.rs::timeout_is_reported_and_the_call_returns",
+        "tests/dns.rs::fake_ip_pool_ttl_filter_and_dns_server",
+        "tool/kernel-compat/evidence/t22-dns.json"
       ]
     },
     "proxy-groups": {
@@ -218,10 +227,26 @@
     },
     "profile": {
       "status": "partial",
-      "reason": "`store-selected` is implemented: selections persist to `<cache-dir>/cache.yaml` (pinned stores the same map in bbolt cache.db) and are restored before traffic. A cache directory is host-supplied; without one the kernel warns instead of silently dropping the selection. `store-fake-ip` is parsed and warned about (fake-ip store is T22).",
+      "reason": "`store-selected` is implemented: selections persist to `<cache-dir>/cache.yaml` (pinned stores the same map in bbolt cache.db) and are restored before traffic. A cache directory is host-supplied; without one the kernel warns. `store-fake-ip` is accepted with a warning: fake-ip allocations are in-memory and do not survive a restart (cache.db persistence is a named gap).",
       "evidence": [
         "tests/groups.rs::rule_targeting_a_group_dials_the_selected_member_and_persists",
         "crates/billow-kernel-cli/tests/cli.rs::process_prints_groups_and_persists_a_selection"
+      ]
+    },
+    "hosts": {
+      "status": "implemented",
+      "reason": "Domain trie with the pinned exact / `*.x` (one label) / `.x` (subdomains) / `+.x` (name and any depth) / `sub.*.x` semantics and the pinned static > `*` > `.` priority; IP lists, domain-valued entries with cycle rejection, the built-in `localhost -> 127.0.0.1`, and `use-system-hosts` for rule-time and DNS-server lookups. `lan` (interface addresses) is rejected by name.",
+      "evidence": [
+        "tests/dns.rs::hosts_patterns_follow_the_pinned_trie_priority",
+        "tests/dns.rs::parses_dns_and_hosts_like_the_pinned_defaults",
+        "tool/kernel-compat/evidence/t22-dns.json"
+      ]
+    },
+    "ipv6": {
+      "status": "implemented",
+      "reason": "General IPv6 switch (pinned default true), combined with dns.ipv6 as pinned (`ipv6 && dns.ipv6`). With IPv6 off, rule-time lookups ask A only and the DNS server answers an empty AAAA; with it on, A and AAAA are joined with the pinned 100ms ipv6-timeout.",
+      "evidence": [
+        "tests/dns.rs::ipv6_disabled_aaaa"
       ]
     }
   },
@@ -1707,12 +1732,13 @@
     }
   },
   "unmappedNotes": [
+    "DNS/hosts (T22) resolve names for GEOIP/IP-ASN/IP-CIDR/IP-SUFFIX/RULE-SET IP rules lazily in rule order and honor `no-resolve`; DIRECT and proxy-server names use direct-nameserver/proxy-server-nameserver when `dns.enable` is true. With DNS disabled the OS resolver is the pinned `SystemResolver` equivalent.",
     "Every proxy type outside the implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it.",
-    "GEOIP/IP-ASN/IP-CIDR rules match a destination only when it is already an IP; DNS/hosts (T22) provide name resolution. A warning records this at load.",
     "geodata-mode false uses Country.mmdb; geodata-mode true uses GeoIP.dat; GEOSITE always uses GeoSite.dat. MRS rule-provider decoding shares the Tauri mrs.rs algorithm (ported, not shared code).",
     "Proxy-provider health-check fields are parsed and exposed but latency probing is T23; provider updates are exposed through Kernel::update_*_provider for T25.",
     "Proxy groups (T23) are implemented per pinned outboundgroup semantics; rule targets may name them. `dialer-proxy` still resolves only inline proxy names (a group or provider proxy target is a named load rejection), and PASS/PASS-RULE markers remain rejected.",
-    "`profile.store-selected` persists fixed group selections; the file is `<cache-dir>/cache.yaml` and hosts must provide a cache directory (the CLI uses the configuration directory). Pinned writes bbolt cache.db, so the file is not interchangeable; the selected-map semantics are."
+    "`profile.store-selected` persists fixed group selections; the file is `<cache-dir>/cache.yaml` and hosts must provide a cache directory (the CLI uses the configuration directory). Pinned writes bbolt cache.db, so the file is not interchangeable; the selected-map semantics are.",
+    "DoQ, DHCP/system/overlay/rcode nameservers, nameserver #proxy names, EDNS client subnet, name-cert-verify, HTTP/2/3 DoH, fake-ip-filter rule mode, profile.store-fake-ip persistence and non-A/AAAA/CNAME DNS server qtypes are rejected by name (see the dns section)."
   ],
   "ignoredByPinnedVersion": {
     "note": "Keys the pinned type does not declare (or declares only as a no-op in the given configuration) are accepted and ignored, exactly as Mihomo ignores them. They are not compatibility gaps.",
@@ -1753,5 +1779,61 @@
     "memory": "one Endpoint + one Connection per dial (masque: per UDP association); transport windows capped to stream receive 512 KiB, connection receive 2 MiB, send 2 MiB, datagram buffers 64 KiB (quinn defaults: 1.25 MB / VarInt::MAX / 10 MB / ~1 MB). masque adds at most 32 request streams per association, each with a 2 x 65,535 B outbound queue and at most 131,102 B of pending capsule data; its per-association worst case (~19 MB decimal, including the QUIC windows) is recorded in t14-feasibility.json. shadowquic uses the same endpoint/connection profile plus one control stream and a 32-packet receive queue per UDP association; its `max-datagram-frame-size` (default 1400) sizes the datagram buffers. T7 must measure the whole iOS extension against the 40,000,000-byte budget; these tasks record the dependency and the caps, not a device measurement.",
     "platform": "macOS arm64 loopback and pinned-Mihomo runs; Linux/Android/iOS compile from the same code path; Windows compiles but no run is recorded"
   },
-  "groupPolicy": "Member expansion follows outboundgroup.GroupBase.GetProxies: inline `proxies` block first, then `use` provider snapshots; filter pieces split on backticks and matched case-sensitively like regexp2.None; multiple providers/filters reorder the combined list by filter; exclude-filter then exclude-type are applied; an empty list becomes `empty-fallback` (default COMPATIBLE). Health state is per (member source, name, test URL): a URL with no record yet is alive and LastDelayForTestUrl is 65535, matching the pinned adapter's initial state. Interval checks run on each task's own interval boundary (select has no automatic check; other types default to 300 s; `lazy: true` skips an interval when the group was not touched recently). A real dial touches every group on the resolved path and its `use` providers; a probe of a nested group also touches it (pinned `Proxy.URLTest` -> `DialContext` -> `GetProxies(true)`), so nested lazy ticks keep probing, while `now`/status reads never touch. Provider `health-check` drives provider members; an explicit group URL registers an extra probe on its `use` providers with the provider's `health-check.timeout` (not the group's), and is ignored when equal to the provider's `health-check.url`. `filter` on a group only filters named providers (the inline/compatible block is never filtered), as in pinned GetProxies."
+  "groupPolicy": "Member expansion follows outboundgroup.GroupBase.GetProxies: inline `proxies` block first, then `use` provider snapshots; filter pieces split on backticks and matched case-sensitively like regexp2.None; multiple providers/filters reorder the combined list by filter; exclude-filter then exclude-type are applied; an empty list becomes `empty-fallback` (default COMPATIBLE). Health state is per (member source, name, test URL): a URL with no record yet is alive and LastDelayForTestUrl is 65535, matching the pinned adapter's initial state. Interval checks run on each task's own interval boundary (select has no automatic check; other types default to 300 s; `lazy: true` skips an interval when the group was not touched recently). A real dial touches every group on the resolved path and its `use` providers; a probe of a nested group also touches it (pinned `Proxy.URLTest` -> `DialContext` -> `GetProxies(true)`), so nested lazy ticks keep probing, while `now`/status reads never touch. Provider `health-check` drives provider members; an explicit group URL registers an extra probe on its `use` providers with the provider's `health-check.timeout` (not the group's), and is ignored when equal to the provider's `health-check.url`. `filter` on a group only filters named providers (the inline/compatible block is never filtered), as in pinned GetProxies.",
+  "dns": {
+    "status": "partial",
+    "transports": {
+      "udp": "implemented (default port 53; a TC=1 reply is retried over TCP, like the pinned client)",
+      "tcp": "implemented (default port 53, length-prefixed)",
+      "dot": "implemented (default port 853; SNI is the nameserver host, platform+custom roots, `skip-cert-verify`)",
+      "doh": "implemented over HTTP/1.1 GET `?dns=<base64url>` with Accept: application/dns-message (default 443/80); HTTP/2 and HTTP/3 are not used, so prefer-h3 is recorded and #h3=true is rejected",
+      "doq": "not implemented: quic:// is rejected by name",
+      "others": "system://, dhcp://, ts://, et://, rcode:// are rejected by name"
+    },
+    "resolverSemantics": {
+      "batch": "all servers of a list race and the first successful message wins; SERVFAIL/REFUSED answers count as failures (pinned batchExchange)",
+      "fallback": "nameserver-policy wins first; a matching fallback-filter.domain or fallback-filter.geosite sends only the fallback; otherwise main and fallback race and a main answer whose IP is LAN is never replaced, while an IP in fallback-filter.ipcidr or outside fallback-filter.geoip falls back",
+      "cache": "question-keyed cache with the minimal TTL over answer+authority records (negative NXDOMAIN/NODATA answers cache through their SOA), SERVFAIL cached for 5s, `cache-max-size` entries; `arc` is accepted but served by the LRU",
+      "policies": "plain-domain keys use the pinned trie (specificity within a contiguous group), `geosite:` and `rule-set:` (domain behavior) use their domain sets in declaration order",
+      "respectRules": "TCP/TLS/HTTPS upstreams follow the rule set and proxy groups (T23); UDP upstreams are rejected by name because proxy UDP routing is not implemented",
+      "defaultNameserver": "used only to bootstrap a nameserver's hostname and validated as pure IPs, like the pinned parse"
+    },
+    "fakeIp": {
+      "pool": "gateway = network+1, first allocation = network+4, wrap at the broadcast address, reused slots evicted (pinned component/fakeip); the in-memory host store is bounded at 1000 entries (arbitrary eviction under pressure vs the pinned LRU)",
+      "filter": "blacklist/whitelist domain patterns, plus the hostnames of fallback nameservers (pinned parseDNS)",
+      "ttl": "fake-ip-ttl (clamped to >=1) on A/AAAA answers; the IP->host mapping and fake pool are in-memory",
+      "rebuild": "an inbound destination that is a fake IP is mapped back to its host before rules, then resolved through direct/proxy resolvers; an unknown fake IP fails with `fake DNS record <ip> missing`",
+      "persistence": "profile.store-fake-ip is accepted with a warning: the pool and mapping are in-memory, so allocations do not survive a restart (the pinned cache.db store is a named gap)"
+    },
+    "server": {
+      "listen": "UDP and TCP on dns.listen; middleware order hosts -> fake-ip -> mapping -> resolver",
+      "qtypes": "A/AAAA/CNAME are answered; other qtypes get NOTIMP (the pinned server forwards every type)"
+    },
+    "engineIntegration": {
+      "ruleResolution": "GEOIP/IP-ASN/IP-CIDR/IP-SUFFIX/RULE-SET IP rules resolve lazily in first-match order; a failing resolution is remembered and later IP rules do not re-query; `no-resolve` blocks the query (a hosts entry still pre-fills the address, as pinned does)",
+      "direct": "DIRECT dials resolve a domain through direct-nameserver (or the main list) when DNS is on, the OS resolver otherwise",
+      "proxyServer": "proxy server names resolve through proxy-server-nameserver(+policy) when configured, otherwise the main list",
+      "hosts": "configured hosts are applied to a domain destination before the first rule (pinned `resolveMetadata` sets DstIP from DefaultHosts), so an IP rule matches through hosts even with `no-resolve`; hosts are also consulted by rule-time lookups, DIRECT dials and the DNS server even when dns.enable is false",
+      "udp": "SOCKS5 UDP destinations follow the same pre-handle/rule/resolve path before a DIRECT send; proxy datagrams keep the domain"
+    },
+    "notImplemented": [
+      "quic:// DoQ",
+      "system://, dhcp://, ts://, et://, rcode:// nameservers",
+      "nameserver #proxy names",
+      "EDNS client subnet (ecs/ecs-override)",
+      "name-cert-verify",
+      "h3=true / DoH over HTTP/2 or HTTP/3",
+      "fake-ip-filter-mode: rule",
+      "DNS server forwarding of qtypes other than A/AAAA/CNAME",
+      "fallback-filter.geosite with ! negation",
+      "respect-rules with UDP upstreams",
+      "ARPA/PTR and other non-IP lookup shapes",
+      "profile.store-fake-ip persistence (accepted but in-memory)"
+    ],
+    "evidence": [
+      "tests/dns.rs (15 cases)",
+      "tool/kernel-compat/t22-differential.mjs",
+      "tool/kernel-compat/evidence/t22-dns.json"
+    ]
+  }
 }

@@ -477,6 +477,12 @@ impl DomainSet {
     pub fn matches(&self, host: &str) -> bool {
         !host.is_empty() && self.patterns.iter().any(|pattern| pattern.matches(host))
     }
+
+    /// The compiled patterns, used to fold a geosite/rule-set policy into
+    /// another domain set (DNS fallback filters, fake-ip filters).
+    pub fn patterns(&self) -> &[DomainPattern] {
+        &self.patterns
+    }
 }
 
 // ---------------------------------------------------------------------------

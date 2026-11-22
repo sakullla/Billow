@@ -46,8 +46,10 @@ pub mod warp;
 pub mod wireguard;
 pub mod ws;
 
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -538,10 +540,43 @@ pub(crate) async fn connect_hop(
     Ok((stream, peer))
 }
 
+tokio::task_local! {
+    /// Proxy-server resolver installed for a session or health probe: the
+    /// pinned engine resolves proxy `server` names through
+    /// `proxy-server-nameserver` (`resolver.ProxyServerHostResolver`), not
+    /// through the OS resolver.
+    static PROXY_DNS: Arc<crate::dns::DnsService>;
+}
+
+/// Run `future` with `dns` as the resolver for proxy server names.
+pub(crate) async fn with_proxy_dns<F: Future>(dns: Arc<crate::dns::DnsService>, future: F) -> F::Output {
+    PROXY_DNS.scope(dns, future).await
+}
+
 /// Resolve the server name once, preferring addresses of the given family order.
 pub(crate) async fn resolve(server: &str, port: u16) -> Result<SocketAddr, DialError> {
     if let Ok(ip) = server.parse::<IpAddr>() {
         return Ok(SocketAddr::new(ip, port));
+    }
+    let dns = PROXY_DNS.try_with(|dns| dns.clone()).ok();
+    if let Some(dns) = dns {
+        let ips = dns
+            .resolve_proxy_server(server)
+            .await
+            .map_err(|error| DialError::Resolve {
+                host: server.to_string(),
+                source: io::Error::other(error.to_string()),
+            })?;
+        let mut ips = ips;
+        ips.sort_by_key(|ip| if ip.is_ipv4() { 0 } else { 1 });
+        return ips
+            .into_iter()
+            .next()
+            .map(|ip| SocketAddr::new(ip, port))
+            .ok_or_else(|| DialError::Resolve {
+                host: server.to_string(),
+                source: io::Error::new(io::ErrorKind::NotFound, "resolved to no address"),
+            });
     }
     let mut addrs = tokio::net::lookup_host((server, port))
         .await

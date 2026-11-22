@@ -35,6 +35,9 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "geosite-matcher",
     "geo-auto-update",
     "geo-update-interval",
+    "hosts",
+    "dns",
+    "ipv6",
 ];
 /// Top-level keys the pinned `RawConfig` declares but this kernel does not
 /// implement. They fail with `[unsupported]`; a key outside both lists is not a
@@ -42,14 +45,14 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
 /// a valid configuration must load).
 pub const KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "redir-port", "tproxy-port", "ss-config", "vmess-config", "inbound-tfo", "inbound-mptcp",
-    "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips", "unified-delay", "ipv6",
+    "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips", "unified-delay",
     "external-controller", "external-controller-routing-mark", "external-controller-pipe",
     "external-controller-unix", "external-controller-tls", "external-controller-cors",
     "external-ui", "external-ui-url", "external-ui-name", "external-doh-server", "secret",
     "interface-name", "routing-mark", "tunnels", "tcp-concurrent", "find-process-mode",
     "global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
     "keep-alive-interval", "disable-keep-alive",
-    "listeners", "hosts", "dns", "ntp", "tun", "tuic-server",
+    "listeners", "ntp", "tun", "tuic-server",
     "iptables", "experimental", "geox-url", "sniffer", "clash-for-android"
 ];
 
@@ -827,6 +830,13 @@ pub struct Config {
     /// of `tls.certificate`) used to verify outbound TLS instead of / besides
     /// the platform store.
     pub tls_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
+    /// `dns:` block (pinned `RawDNS`/`config.DNS`); `enable: false` keeps the
+    /// system resolver for rule-time lookups, like the pinned engine.
+    pub dns: crate::dns::DnsConfig,
+    /// Top-level `hosts:` (always active, pinned `updateHosts`).
+    pub hosts: crate::dns::HostsConfig,
+    /// Top-level `ipv6` (pinned default `true`); combined with `dns.ipv6`.
+    pub ipv6: bool,
     /// Kept so the identity survives a reload that is rejected.
     pub digest: String,
 }
@@ -862,6 +872,31 @@ impl Config {
                 }
             }
         }
+        // DNS fallback filters and nameserver policies can reference geosite
+        // lists and the GEOIP database too (pinned `parseDNS` loads them).
+        if self.dns.enable {
+            let filter = &self.dns.fallback_filter;
+            if !self.dns.fallback.is_empty() {
+                if filter.geoip
+                    && filter.geoip_code.trim_start_matches('!').to_ascii_lowercase() != "lan"
+                {
+                    requirements.geoip = true;
+                }
+                for key in &filter.geosite {
+                    requirements.geosite_keys.insert(key.clone());
+                }
+            }
+            for policy in self
+                .dns
+                .nameserver_policy
+                .iter()
+                .chain(self.dns.proxy_server_nameserver_policy.iter())
+            {
+                if let Some(list) = policy.key.to_ascii_lowercase().strip_prefix("geosite:") {
+                    requirements.geosite_keys.insert(list.to_string());
+                }
+            }
+        }
         requirements
     }
 
@@ -876,13 +911,32 @@ impl Config {
                 .collect::<Vec<_>>()
                 .join(",")
         };
+        let dns = if self.dns.enable {
+            let listen = self
+                .dns
+                .listen
+                .map(|addr| format!(",listen={addr}"))
+                .unwrap_or_default();
+            format!(
+                "dns={}(nameserver={},default={},fallback={},policy={}{})",
+                self.dns.enhanced_mode.as_str(),
+                self.dns.nameserver.len(),
+                self.dns.default_nameserver.len(),
+                self.dns.fallback.len(),
+                self.dns.nameserver_policy.len(),
+                listen
+            )
+        } else {
+            "dns=off".to_string()
+        };
         format!(
-            "mixed-inbound(tcp,http-connect,socks5); rules=inline({} entries); rule-providers={}; proxy-providers={}; proxy-groups={}; sub-rules={}; outbounds=DIRECT,REJECT; protocols={protocols}; dns=none",
+            "mixed-inbound(tcp,http-connect,socks5); rules=inline({} entries); rule-providers={}; proxy-providers={}; proxy-groups={}; sub-rules={}; outbounds=DIRECT,REJECT; protocols={protocols}; hosts={}; {dns}",
             self.rules.len(),
             self.rule_providers.len(),
             self.proxy_providers.len(),
             self.proxy_groups.len(),
-            self.sub_rules.len()
+            self.sub_rules.len(),
+            self.hosts.entries.len()
         )
     }
 
@@ -984,6 +1038,9 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     let mut geodata_loader = "memconservative".to_string();
     let mut geosite_matcher = "succinct".to_string();
     let mut geo_auto_update = false;
+    let mut dns = crate::dns::DnsConfig::default();
+    let mut hosts = crate::dns::HostsConfig::default();
+    let mut general_ipv6 = true;
 
     for (key, value) in mapping.iter() {
         let key = key.as_str().ok_or_else(|| {
@@ -1112,6 +1169,9 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             }
             "authentication" => authentication = parse_authentication(value, path)?,
             "tls" => tls_roots = parse_tls(value, path)?,
+            "hosts" => hosts = crate::dns::HostsConfig::parse(value, path)?,
+            "dns" => dns = crate::dns::DnsConfig::parse(value, path, &mut warnings)?,
+            "ipv6" => general_ipv6 = parse_bool(value, path, key)?,
             // Inert forms of blocks the native kernel does not serve. Billow's
             // effective YAML commonly carries `tun: {enable: false}`,
             // `sniffer: {enable: false}` and `geox-url`; accepting the
@@ -1262,14 +1322,6 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         Some(value) => (parse_rules(value, path, &context, "rules")?, RulesSource::Inline),
     };
 
-    // A warning, not a rejection: the pinned engine resolves names for these
-    // rules, while this kernel only sees the request metadata (DNS is T22).
-    if rules.iter().any(rule_needs_resolution) || sub_rules.values().flatten().any(rule_needs_resolution) {
-        warnings.push(
-            "GEOIP/IP-ASN/IP-CIDR rules match the destination only when it is already an IP; name resolution is T22 (DNS/hosts)".to_string(),
-        );
-    }
-
     let config = Config {
         listen: SocketAddr::new(host, port),
         port_rebound_from: requested_port.filter(|p| Some(*p) != listen_port),
@@ -1290,27 +1342,14 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         geo_auto_update,
         inbound_users: authentication,
         tls_roots,
+        dns,
+        hosts,
+        ipv6: general_ipv6,
         digest,
     };
     Ok(LoadedConfig { config, warnings })
 }
 
-fn rule_needs_resolution(rule: &Rule) -> bool {
-    match &rule.matcher {
-        Matcher::GeoIp {
-            country, no_resolve, ..
-        } => {
-            country.trim_start_matches('!').to_ascii_lowercase() != "lan" && !no_resolve
-        }
-        Matcher::IpAsn { no_resolve, .. } => !no_resolve,
-        Matcher::IpCidr { no_resolve, .. } => !no_resolve,
-        Matcher::IpSuffix { no_resolve, .. } => !no_resolve,
-        Matcher::RuleSet { no_resolve, .. } => !no_resolve,
-        Matcher::And(rules) | Matcher::Or(rules) => rules.iter().any(rule_needs_resolution),
-        Matcher::Not(rule) | Matcher::SubRule { gate: rule, .. } => rule_needs_resolution(rule),
-        _ => false,
-    }
-}
 
 /// Names visible to a rule line while it is parsed.
 struct RuleContext<'a> {
@@ -2171,7 +2210,7 @@ fn parse_profile(
     }
     if profile.store_fake_ip {
         warnings.push(
-            "profile.store-fake-ip is recorded but has no effect: fake-ip allocation and its store are DNS (T22)"
+            "profile.store-fake-ip is true but the fake-ip pool and its IP->host mapping are in-memory only: the pinned cache.db persistence of allocations across restarts is not implemented"
                 .to_string(),
         );
     }

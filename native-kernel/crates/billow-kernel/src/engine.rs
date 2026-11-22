@@ -19,12 +19,13 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::config::{Action, Config, ConfigError, InType, LoadedConfig, NetworkKind};
+use crate::dns::{DnsRoute, DnsService, HostValue, HostsTable, RouteStreamBox};
 use crate::groups::{GroupRegistry, Selected};
 use crate::identity::Identity;
 use crate::inbound::{self, HandshakeError, InboundAuth};
 use crate::outbound::tls::ClientTls;
 use crate::outbound;
-use crate::rules::{RuleSet, Target};
+use crate::rules::{MatchInput, MatchStep, RuleMatch, RuleSet, Target};
 
 /// Version of this kernel (crate version).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -130,6 +131,13 @@ struct SessionContext {
     /// Trust anchors of this kernel: platform store plus the configuration's
     /// `tls.custom-cert`/`tls.certificate` entries.
     tls: Arc<ClientTls>,
+    /// DNS runtime (T22); `None` when `dns.enable` is false or absent, in
+    /// which case rule-time lookups use the OS resolver like the pinned
+    /// engine's `SystemResolver` fallback.
+    dns: Option<Arc<DnsService>>,
+    /// Configured `hosts` trie plus the built-in `localhost` entry; active
+    /// even when DNS is disabled (pinned `updateHosts`).
+    hosts: Arc<HostsTable>,
     /// `authentication` users for the mixed inbound (SOCKS5 RFC 1929 / HTTP 407).
     auth: InboundAuth,
     /// Actual bound mixed-listener port (`IN-PORT` rules).
@@ -145,6 +153,8 @@ pub struct Kernel {
     rules: Arc<RuleSet>,
     providers: Arc<crate::provider::RuleProviders>,
     groups: Arc<GroupRegistry>,
+    dns: Option<Arc<DnsService>>,
+    hosts: Arc<HostsTable>,
     limits: Limits,
     counters: Arc<Counters>,
     stop_tx: watch::Sender<bool>,
@@ -254,7 +264,31 @@ impl Kernel {
             &base_dir,
             tls.clone(),
         )?;
-        // 4. Group runtime: member expansion, selection and health checks.
+        // 4. `hosts` and the DNS runtime. Hosts are always active; the DNS
+        //    runtime exists only with `dns.enable: true`.
+        let hosts = Arc::new(HostsTable::build(
+            &config.hosts,
+            config.dns.enable && config.dns.use_system_hosts,
+        )?);
+        let dns = if config.dns.enable {
+            Some(Arc::new(DnsService::build(
+                &config.dns,
+                config.ipv6,
+                hosts.clone(),
+                tls.clone(),
+                &providers,
+                &mut warnings,
+            )?))
+        } else {
+            if config.dns.listen.is_some() {
+                warnings.push(
+                    "dns.listen is recorded but DNS is disabled; no DNS server is started (set dns.enable: true)"
+                        .to_string(),
+                );
+            }
+            None
+        };
+        // 5. Group runtime: member expansion, selection and health checks.
         //    `profile.store-selected` without a cache directory is surfaced.
         let cache_path = options.cache_dir.as_ref().map(|dir| dir.join("cache.yaml"));
         if config.profile.store_selected && cache_path.is_none() && !config.proxy_groups.is_empty()
@@ -271,8 +305,20 @@ impl Kernel {
             limits.dial_timeout,
             base_dir.clone(),
             cache_path,
+            dns.clone(),
         )?;
         let rules = RuleSet::compile(&config, providers.clone())?;
+        if let Some(dns) = &dns {
+            // `respect-rules`: DNS upstreams follow the rule set and proxy
+            // groups through the same engine path as client sessions.
+            dns.set_route(Arc::new(EngineRoute {
+                config: config.clone(),
+                rules: rules.clone(),
+                groups: groups.clone(),
+                tls: tls.clone(),
+                timeout: limits.dial_timeout,
+            }));
+        }
 
         // Bind with a short-lived current-thread runtime on this thread; the
         // caller may itself be inside a tokio runtime (tests, hosts), so the
@@ -293,6 +339,16 @@ impl Kernel {
             addr: requested,
             source: Arc::new(source),
         })?;
+        let dns_listeners = match dns.as_ref().and_then(|dns| dns.listen_addr()) {
+            Some(addr) => Some(
+                crate::dns::bind_dns_listeners(addr)
+                    .map_err(|source| StartError::Bind {
+                        addr,
+                        source: Arc::new(source),
+                    })?,
+            ),
+            None => None,
+        };
 
         let counters = Arc::new(Counters::default());
         let (stop_tx, stop_rx) = watch::channel(false);
@@ -300,6 +356,8 @@ impl Kernel {
             rules: rules.clone(),
             groups: groups.clone(),
             tls: tls.clone(),
+            dns: dns.clone(),
+            hosts: hosts.clone(),
             auth: InboundAuth {
                 users: loaded.config.inbound_users.clone(),
             },
@@ -309,6 +367,7 @@ impl Kernel {
         });        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let config_for_thread = config.clone();
         let groups_for_thread = groups.clone();
+        let dns_for_thread = dns.clone();
         let supervisor = std::thread::Builder::new()
             .name("billow-kernel-supervisor".to_string())
             .spawn(move || {
@@ -317,6 +376,8 @@ impl Kernel {
                     context,
                     config_for_thread,
                     groups_for_thread,
+                    dns_for_thread,
+                    dns_listeners,
                     stop_rx,
                     started_tx,
                 )
@@ -341,6 +402,8 @@ impl Kernel {
                 rules,
                 providers,
                 groups,
+                dns,
+                hosts,
                 limits,
                 counters,
                 stop_tx,
@@ -382,6 +445,17 @@ impl Kernel {
     /// API from this handle).
     pub fn groups(&self) -> &Arc<GroupRegistry> {
         &self.groups
+    }
+
+    /// DNS runtime (T22); `None` when the configuration disables DNS.
+    pub fn dns(&self) -> Option<&Arc<DnsService>> {
+        self.dns.as_ref()
+    }
+
+    /// Effective `hosts` table (configured entries, `localhost`, and the
+    /// platform hosts file when `use-system-hosts` is on).
+    pub fn hosts_table(&self) -> &Arc<HostsTable> {
+        &self.hosts
     }
 
     /// Group statuses (`now`, `all`, per-member liveness/delay).
@@ -505,6 +579,8 @@ fn supervisor_thread(
     context: Arc<SessionContext>,
     config: Arc<Config>,
     groups: Arc<GroupRegistry>,
+    dns: Option<Arc<DnsService>>,
+    dns_listeners: Option<(std::net::UdpSocket, std::net::TcpListener)>,
     mut stop: watch::Receiver<bool>,
     started: std::sync::mpsc::SyncSender<()>,
 ) {
@@ -528,6 +604,10 @@ fn supervisor_thread(
         };
         // Interval health checks run on this runtime and stop with the kernel.
         groups.spawn_scheduler(stop.clone());
+        // The optional DNS server (`dns.listen`) shares the same stop signal.
+        if let (Some(service), Some((udp, tcp))) = (dns.clone(), dns_listeners) {
+            tokio::spawn(crate::dns::serve_dns(service, udp, tcp, stop.clone()));
+        }
         let _ = started.send(());
 
         let r = listen_loop(&listener, &mut stop, &context, &config).await;
@@ -641,6 +721,233 @@ enum SessionOutcome {
     Failed,
 }
 
+/// `respect-rules` routing for DNS upstreams: evaluate the upstream address
+/// through the same rule set and group selection as a client session.
+struct EngineRoute {
+    config: Arc<Config>,
+    rules: Arc<RuleSet>,
+    groups: Arc<GroupRegistry>,
+    tls: Arc<ClientTls>,
+    timeout: Duration,
+}
+
+impl DnsRoute for EngineRoute {
+    fn connect<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> crate::dns::BoxFuture<'a, io::Result<RouteStreamBox>> {
+        Box::pin(async move {
+            let ip = host.parse::<IpAddr>().ok();
+            let target = Target::new(host, ip)
+                .with_port(port)
+                .with_network(NetworkKind::Tcp);
+            let decision = self.rules.evaluate(&target);
+            if matches!(decision.action, Action::Reject | Action::RejectDrop) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("DNS upstream {host}:{port} rejected by rule {decision}"),
+                ));
+            }
+            let selected = self
+                .groups
+                .resolve_action(decision.rule.action, &target, true)
+                .map_err(io::Error::other)?;
+            match selected {
+                Selected::Direct => {
+                    let stream = TcpStream::connect((host, port)).await?;
+                    let _ = stream.set_nodelay(true);
+                    let stream: RouteStreamBox = Box::new(stream);
+                    Ok(stream)
+                }
+                Selected::Proxy { proxy, .. } => {
+                    let hops = chain_for(&self.config, &proxy);
+                    let dialed = outbound::dial_chain(
+                        &hops,
+                        &outbound::Target {
+                            host: host.to_string(),
+                            port,
+                        },
+                        self.timeout,
+                        &self.tls,
+                    )
+                    .await
+                    .map_err(io::Error::other)?;
+                    Ok(dialed.stream)
+                }
+                Selected::Reject | Selected::RejectDrop => Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("DNS upstream {host}:{port} rejected by group"),
+                )),
+            }
+        })
+    }
+}
+
+/// Pinned `preHandleMetadata`: hosts domain mapping, redir-host/fake-ip
+/// reconstruction. Without a DNS runtime only the hosts mapping applies.
+async fn pre_handle_destination(
+    context: &SessionContext,
+    host: &str,
+    ip: Option<IpAddr>,
+) -> Result<(String, Option<IpAddr>), String> {
+    // Pinned `fixMetadata`: an IP literal in `Host` becomes `DstIP` and the
+    // host string is cleared before `preHandleMetadata` runs.
+    let (host, ip) = match host.parse::<IpAddr>() {
+        Ok(literal) => (String::new(), Some(literal)),
+        Err(_) => (host.to_string(), ip),
+    };
+    match &context.dns {
+        Some(dns) => dns.pre_handle(&host, ip),
+        None => {
+            if let Some((HostValue::Domain(domain), _)) = context.hosts.search(&host, true) {
+                Ok((domain, ip))
+            } else {
+                Ok((host, ip))
+            }
+        }
+    }
+}
+
+/// Resolve `host` for rule matching (pinned `resolver.ResolveIP`): the DNS
+/// runtime when configured, otherwise the OS resolver.
+async fn resolve_for_rules(context: &SessionContext, host: &str) -> Option<IpAddr> {
+    if host.is_empty() {
+        return None;
+    }
+    // Pinned `resolver.LookupIPWithResolver` consults the configured hosts
+    // before any resolver, with or without `dns.enable`.
+    let hosted = context.hosts.lookup_ips(host);
+    if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
+        return Some(*ip);
+    }
+    if let Some(dns) = &context.dns {
+        return dns.resolve_one(host).await;
+    }
+    match tokio::net::lookup_host((host, 0)).await {
+        Ok(addrs) => {
+            let mut ipv4 = None;
+            let mut any = None;
+            for addr in addrs {
+                any.get_or_insert(addr.ip());
+                if addr.is_ipv4() {
+                    ipv4 = Some(addr.ip());
+                    break;
+                }
+            }
+            ipv4.or(any)
+        }
+        Err(_) => None,
+    }
+}
+
+/// First-match evaluation with lazy IP resolution (`no-resolve` is honoured
+/// by [`RuleSet::evaluate_step`]). `target.ip` is updated when a resolution
+/// happens so group resolution sees the same address.
+async fn rule_decision(context: &SessionContext, target: &mut Target) -> RuleMatch {
+    // Pinned `resolveMetadata` applies a hosts entry to `DstIP` before the
+    // first rule runs, independently of `no-resolve`.
+    if target.ip.is_none() && !target.host.is_empty() {
+        let hosted = context.hosts.lookup_ips(&target.host);
+        if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
+            target.ip = Some(*ip);
+        }
+    }
+    let mut input = MatchInput::default();
+    loop {
+        match context.rules.evaluate_step(target, input, 0) {
+            MatchStep::Matched(found) => return found,
+            MatchStep::Fallthrough => return RuleSet::fallthrough_match(),
+            MatchStep::NeedResolve => {
+                let host = target.host.clone();
+                input.ip = resolve_for_rules(context, &host).await;
+                input.resolved = true;
+                if let Some(ip) = input.ip {
+                    target.ip = Some(ip);
+                }
+            }
+        }
+    }
+}
+
+/// DIRECT TCP dial: the pinned `Direct` adapter resolves a domain through
+/// `DirectHostResolver` (configured DNS when on, the OS resolver otherwise).
+async fn direct_stream(
+    context: &SessionContext,
+    host: &str,
+    ip: Option<IpAddr>,
+    port: u16,
+) -> Result<TcpStream, String> {
+    if let Some(ip) = ip {
+        return TcpStream::connect((ip, port))
+            .await
+            .map_err(|e| format!("connect {ip}:{port}: {e}"));
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return TcpStream::connect((ip, port))
+            .await
+            .map_err(|e| format!("connect {ip}:{port}: {e}"));
+    }
+    let hosted = context.hosts.lookup_ips(host);
+    if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
+        return TcpStream::connect((*ip, port))
+            .await
+            .map_err(|e| format!("connect {ip}:{port}: {e}"));
+    }
+    if let Some(dns) = &context.dns {
+        let mut ips = dns
+            .resolve_direct(host)
+            .await
+            .map_err(|e| format!("resolve {host}: {e}"))?;
+        ips.sort_by_key(|ip| if ip.is_ipv4() { 0 } else { 1 });
+        let mut last = format!("resolve {host}: no address");
+        for ip in ips {
+            match TcpStream::connect((ip, port)).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => last = format!("connect {ip}:{port}: {e}"),
+            }
+        }
+        return Err(last);
+    }
+    TcpStream::connect((host, port))
+        .await
+        .map_err(|e| format!("connect {host}:{port}: {e}"))
+}
+
+/// DIRECT UDP destination (pinned `Direct.ResolveUDP`).
+async fn direct_udp_destination(
+    context: &SessionContext,
+    host: &str,
+    ip: Option<IpAddr>,
+    port: u16,
+) -> io::Result<SocketAddr> {
+    if let Some(ip) = ip {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    let hosted = context.hosts.lookup_ips(host);
+    if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
+        return Ok(SocketAddr::new(*ip, port));
+    }
+    if let Some(dns) = &context.dns {
+        let mut ips = dns
+            .resolve_direct(host)
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        ips.sort_by_key(|ip| if ip.is_ipv4() { 0 } else { 1 });
+        return ips.into_iter().next().map(|ip| SocketAddr::new(ip, port)).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "resolved to no address")
+        });
+    }
+    let mut addrs = tokio::net::lookup_host((host, port)).await?;
+    addrs
+        .find(|addr| addr.is_ipv4())
+        .or_else(|| addrs.next())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "resolved to no address"))
+}
+
 /// The `dialer-proxy` chain of `proxy`, starting with the proxy itself. The
 /// loader has already rejected unknown references and cycles.
 fn chain_for<'a>(
@@ -688,8 +995,18 @@ async fn serve_request(
     if request.command == inbound::Command::UdpAssociate {
         return serve_udp_associate(client, peer, id, context, config).await;
     }
-    let ip: Option<IpAddr> = request.host.parse().ok();
-    let target = Target::new(&request.host, ip)
+    let raw_ip: Option<IpAddr> = request.host.parse().ok();
+    // Pinned `preHandleMetadata`: a fake-ip/redir-host mapped address becomes
+    // its host name again, and a domain-valued `hosts` entry is followed.
+    let (host, ip) = match pre_handle_destination(context, &request.host, raw_ip).await {
+        Ok(pair) => pair,
+        Err(reason) => {
+            warn!(session = id, target = %request.authority(), "destination mapping failed: {reason}");
+            inbound::reply_failure(&mut client, protocol, 0x01).await;
+            return Err(SessionOutcome::Failed);
+        }
+    };
+    let mut target = Target::new(&host, ip)
         .with_port(request.port)
         .with_network(NetworkKind::Tcp)
         .with_source(peer.ip(), peer.port())
@@ -700,26 +1017,35 @@ async fn serve_request(
                 inbound::Protocol::HttpConnect => InType::Https,
             },
         );
-    let decision = context.rules.evaluate(&target);
+    let decision = rule_decision(context, &mut target).await;
+    let display_host = if host.is_empty() {
+        ip.map(|ip| ip.to_string()).unwrap_or_default()
+    } else {
+        host.clone()
+    };
+    let authority = if display_host.contains(':') {
+        format!("[{display_host}]:{}", request.port)
+    } else {
+        format!("{display_host}:{}", request.port)
+    };
     debug!(
-        session = id, peer = %peer, protocol = protocol.as_str(), target = %request.authority(),
+        session = id, peer = %peer, protocol = protocol.as_str(), target = %authority,
         rule = %decision, config = %config.digest, "request matched"
     );
 
     match decision.action {
         Action::Reject => {
-            info!(session = id, target = %request.authority(), protocol = protocol.as_str(), rule = %decision, "REJECT");
+            info!(session = id, target = %authority, protocol = protocol.as_str(), rule = %decision, "REJECT");
             inbound::reply_failure(&mut client, protocol, 0x07).await;
             return Err(SessionOutcome::Rejected);
         }
         Action::RejectDrop => {
-            info!(session = id, target = %request.authority(), protocol = protocol.as_str(), rule = %decision, "REJECT-DROP");
+            info!(session = id, target = %authority, protocol = protocol.as_str(), rule = %decision, "REJECT-DROP");
             return Err(SessionOutcome::Rejected);
         }
         _ => {}
     }
 
-    let authority = request.authority();
     // Group selection decides the leaf outbound (T23). REJECT was handled
     // above; a group may still choose REJECT/REJECT-DROP/DIRECT.
     let selected = match context
@@ -748,8 +1074,11 @@ async fn serve_request(
     let group_path: Vec<String> = selected.path().to_vec();
     let (upstream, outbound, outbound_kind): (Box<dyn outbound::Stream>, String, &str) = match selected {
         Selected::Direct => {
-            let stream = match tokio::time::timeout(limits.dial_timeout, TcpStream::connect(&authority))
-                .await
+            let stream = match tokio::time::timeout(
+                limits.dial_timeout,
+                direct_stream(context, &host, ip, request.port),
+            )
+            .await
             {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(e)) => {
@@ -772,12 +1101,33 @@ async fn serve_request(
         }
         Selected::Proxy { proxy, .. } => {
             let hops = chain_for(config, &proxy);
-            let target = outbound::Target { host: request.host.clone(), port: request.port };
-            match tokio::time::timeout(
-                limits.dial_timeout,
-                outbound::dial_chain(&hops, &target, limits.dial_timeout, &context.tls),
-            )
-            .await
+            let dial_host = if host.is_empty() {
+                ip.map(|ip| ip.to_string()).unwrap_or_default()
+            } else {
+                host.clone()
+            };
+            let dial_target = outbound::Target {
+                host: dial_host,
+                port: request.port,
+            };
+            // Proxy server names resolve through `proxy-server-nameserver`
+            // when DNS is on (pinned `ProxyServerHostResolver`).
+            let dial = async {
+                match &context.dns {
+                    Some(dns) => {
+                        outbound::with_proxy_dns(
+                            dns.clone(),
+                            outbound::dial_chain(&hops, &dial_target, limits.dial_timeout, &context.tls),
+                        )
+                        .await
+                    }
+                    None => {
+                        outbound::dial_chain(&hops, &dial_target, limits.dial_timeout, &context.tls)
+                            .await
+                    }
+                }
+            };
+            match tokio::time::timeout(limits.dial_timeout, dial).await
             {
                 Err(_) => {
                     warn!(session = id, target = %authority, rule = %decision, proxy = %proxy.name, "outbound dial timed out after {:?}", limits.dial_timeout);
@@ -1000,13 +1350,27 @@ async fn serve_udp_associate(
                     continue;
                 };
                 let payload = &client_buf[datagram.offset..read];
-                let ip: Option<IpAddr> = datagram.target.host.parse().ok();
-                let udp_target = Target::new(&datagram.target.host, ip)
+                let raw_ip: Option<IpAddr> = datagram.target.host.parse().ok();
+                let (host, ip) = match pre_handle_destination(
+                    context,
+                    &datagram.target.host,
+                    raw_ip,
+                )
+                .await
+                {
+                    Ok(pair) => pair,
+                    Err(reason) => {
+                        debug!(session = id, target = %datagram.target.host, "UDP destination mapping failed: {reason}");
+                        failed = true;
+                        continue;
+                    }
+                };
+                let mut udp_target = Target::new(&host, ip)
                     .with_port(datagram.target.port)
                     .with_network(NetworkKind::Udp)
                     .with_source(peer.ip(), peer.port())
                     .with_inbound(context.listen_port, InType::Socks5);
-                let decision = context.rules.evaluate(&udp_target);
+                let decision = rule_decision(context, &mut udp_target).await;
                 let action = decision.action;
                 if matches!(action, Action::Reject | Action::RejectDrop) {
                     debug!(session = id, target = %datagram.target.host, rule = %decision, "UDP REJECT");
@@ -1038,9 +1402,25 @@ async fn serve_udp_associate(
                         Some(proxy)
                     }
                 };
+                let dial_host = if host.is_empty() {
+                    ip.map(|ip| ip.to_string()).unwrap_or_default()
+                } else {
+                    host.clone()
+                };
+                let outgoing = outbound::Target {
+                    host: dial_host,
+                    port: datagram.target.port,
+                };
                 let sent = match proxy {
                     None => {
-                        let destination = match outbound::udp::resolve(&datagram.target).await {
+                        let destination = match direct_udp_destination(
+                            context,
+                            &outgoing.host,
+                            ip,
+                            outgoing.port,
+                        )
+                        .await
+                        {
                             Ok(addr) => addr,
                             Err(e) => {
                                 debug!(session = id, target = %datagram.target.host, "UDP resolve failed: {e}");
@@ -1091,7 +1471,7 @@ async fn serve_udp_associate(
                                     }
                                 }
                             }
-                            ss.as_mut().expect("connected above").send(&datagram.target, payload).await
+                            ss.as_mut().expect("connected above").send(&outgoing, payload).await
                         }
                         crate::proxies::Protocol::Trojan(option) if option.udp => {
                             if trojan.is_none() {
@@ -1115,7 +1495,7 @@ async fn serve_udp_associate(
                                     }
                                 }
                             }
-                            trojan.as_mut().expect("connected above").send(&datagram.target, payload).await
+                            trojan.as_mut().expect("connected above").send(&outgoing, payload).await
                         }
                         crate::proxies::Protocol::Ssr(option) if option.udp => {
                             if ssr.is_none() {
@@ -1148,20 +1528,20 @@ async fn serve_udp_associate(
                             // The pinned relay binds one association to one
                             // target, so a new destination replaces the
                             // association (and its in-flight replies).
-                            let reuse = gost_target.as_ref() == Some(&datagram.target);
+                            let reuse = gost_target.as_ref() == Some(&outgoing);
                             if !reuse {
                                 gost = None;
                                 gost_target = None;
                                 match outbound::gost_relay::GostRelayUdp::connect(
                                     option,
-                                    &datagram.target,
+                                    &outgoing,
                                     &context.tls,
                                 )
                                 .await
                                 {
                                     Ok(association) => {
                                         gost = Some(association);
-                                        gost_target = Some(datagram.target.clone());
+                                        gost_target = Some(outgoing.clone());
                                         gost_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
                                     }
                                     Err(e) => {
