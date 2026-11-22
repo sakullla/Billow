@@ -19,6 +19,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::config::{Action, Config, ConfigError, InType, LoadedConfig, NetworkKind};
+use crate::groups::{GroupRegistry, Selected};
 use crate::identity::Identity;
 use crate::inbound::{self, HandshakeError, InboundAuth};
 use crate::outbound::tls::ClientTls;
@@ -27,6 +28,16 @@ use crate::rules::{RuleSet, Target};
 
 /// Version of this kernel (crate version).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Options a host can set beyond [`Limits`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KernelOptions {
+    /// Directory that holds the selection cache (`cache.yaml`). `None`
+    /// disables `profile.store-selected` persistence; the kernel warns when the
+    /// configuration asks for it. The CLI and T25 pass the configuration
+    /// directory (pinned uses `<homeDir>/cache.db`).
+    pub cache_dir: Option<PathBuf>,
+}
 
 /// Tunables. Defaults keep memory bounded (R3/R4); T7 can shrink buffers for the extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +125,8 @@ impl Counters {
 /// Shared, immutable session context.
 struct SessionContext {
     rules: Arc<RuleSet>,
+    /// Proxy groups, health state and selection cache (T23).
+    groups: Arc<GroupRegistry>,
     /// Trust anchors of this kernel: platform store plus the configuration's
     /// `tls.custom-cert`/`tls.certificate` entries.
     tls: Arc<ClientTls>,
@@ -131,6 +144,7 @@ pub struct Kernel {
     config: Arc<Config>,
     rules: Arc<RuleSet>,
     providers: Arc<crate::provider::RuleProviders>,
+    groups: Arc<GroupRegistry>,
     limits: Limits,
     counters: Arc<Counters>,
     stop_tx: watch::Sender<bool>,
@@ -185,6 +199,17 @@ impl Kernel {
         base_dir: PathBuf,
         limits: Limits,
     ) -> Result<(Kernel, Vec<String>), StartError> {
+        Kernel::start_with_options(loaded, geodata_dir, base_dir, limits, &KernelOptions::default())
+    }
+
+    /// Start with host options (selection cache location).
+    pub fn start_with_options(
+        loaded: &LoadedConfig,
+        geodata_dir: Option<PathBuf>,
+        base_dir: PathBuf,
+        limits: Limits,
+        options: &KernelOptions,
+    ) -> Result<(Kernel, Vec<String>), StartError> {
         validate_limits(&limits)?;
         let config = Arc::new(loaded.config.clone());
         let mut warnings = loaded.warnings.clone();
@@ -229,6 +254,24 @@ impl Kernel {
             &base_dir,
             tls.clone(),
         )?;
+        // 4. Group runtime: member expansion, selection and health checks.
+        //    `profile.store-selected` without a cache directory is surfaced.
+        let cache_path = options.cache_dir.as_ref().map(|dir| dir.join("cache.yaml"));
+        if config.profile.store_selected && cache_path.is_none() && !config.proxy_groups.is_empty()
+        {
+            warnings.push(
+                "profile.store-selected is true but no cache directory was given: manual group selections last only for this process (pass a cache dir to persist them)"
+                    .to_string(),
+            );
+        }
+        let groups = GroupRegistry::new(
+            &config,
+            providers.clone(),
+            tls.clone(),
+            limits.dial_timeout,
+            base_dir.clone(),
+            cache_path,
+        )?;
         let rules = RuleSet::compile(&config, providers.clone())?;
 
         // Bind with a short-lived current-thread runtime on this thread; the
@@ -255,6 +298,7 @@ impl Kernel {
         let (stop_tx, stop_rx) = watch::channel(false);
         let context = Arc::new(SessionContext {
             rules: rules.clone(),
+            groups: groups.clone(),
             tls: tls.clone(),
             auth: InboundAuth {
                 users: loaded.config.inbound_users.clone(),
@@ -262,13 +306,20 @@ impl Kernel {
             listen_port: local.port(),
             limits,
             counters: counters.clone(),
-        });
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        });        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let config_for_thread = config.clone();
+        let groups_for_thread = groups.clone();
         let supervisor = std::thread::Builder::new()
             .name("billow-kernel-supervisor".to_string())
             .spawn(move || {
-                supervisor_thread(listener, context, config_for_thread, stop_rx, started_tx)
+                supervisor_thread(
+                    listener,
+                    context,
+                    config_for_thread,
+                    groups_for_thread,
+                    stop_rx,
+                    started_tx,
+                )
             })
             .map_err(|e| StartError::Limits(format!("spawn supervisor: {e}")))?;
         if let Err(e) = started_rx.recv() {
@@ -289,6 +340,7 @@ impl Kernel {
                 config,
                 rules,
                 providers,
+                groups,
                 limits,
                 counters,
                 stop_tx,
@@ -324,6 +376,22 @@ impl Kernel {
     /// Provider registry (rule + proxy snapshots) for hosts and the T25 API.
     pub fn providers(&self) -> &Arc<crate::provider::RuleProviders> {
         &self.providers
+    }
+
+    /// Group runtime: status list, selection and health probes (T25 builds its
+    /// API from this handle).
+    pub fn groups(&self) -> &Arc<GroupRegistry> {
+        &self.groups
+    }
+
+    /// Group statuses (`now`, `all`, per-member liveness/delay).
+    pub fn group_statuses(&self) -> Vec<crate::groups::GroupStatus> {
+        self.groups.snapshot()
+    }
+
+    /// Fix a group's selection; `Ok(false)` means the member does not exist.
+    pub fn select_group(&self, group: &str, member: &str) -> Result<bool, crate::groups::GroupError> {
+        self.groups.select(group, member)
     }
 
     /// Re-read one rule provider. On failure the old snapshot stays in use.
@@ -430,6 +498,7 @@ fn supervisor_thread(
     listener: std::net::TcpListener,
     context: Arc<SessionContext>,
     config: Arc<Config>,
+    groups: Arc<GroupRegistry>,
     mut stop: watch::Receiver<bool>,
     started: std::sync::mpsc::SyncSender<()>,
 ) {
@@ -451,6 +520,8 @@ fn supervisor_thread(
             Ok(listener) => listener,
             Err(e) => return Err(io::Error::other(format!("adopt listener: {e}"))),
         };
+        // Interval health checks run on this runtime and stop with the kernel.
+        groups.spawn_scheduler(stop.clone());
         let _ = started.send(());
 
         let r = listen_loop(&listener, &mut stop, &context, &config).await;
@@ -643,22 +714,34 @@ async fn serve_request(
     }
 
     let authority = request.authority();
-    // REJECT was handled above; other actions name a configured proxy, and any
-    // rule without a proxy (including the implicit DIRECT fallback) dials the
-    // target directly.
-    let proxy = match decision.rule.action {
-        Action::Proxy(index) => match config.proxies.get(index) {
-            Some(proxy) => Some(proxy),
-            None => {
-                warn!(session = id, rule = %decision, "rule names a proxy that is no longer configured");
-                inbound::reply_failure(&mut client, protocol, 0x01).await;
-                return Err(SessionOutcome::Failed);
-            }
-        },
-        _ => None,
+    // Group selection decides the leaf outbound (T23). REJECT was handled
+    // above; a group may still choose REJECT/REJECT-DROP/DIRECT.
+    let selected = match context
+        .groups
+        .resolve_action(decision.rule.action, &target, true)
+    {
+        Ok(selected) => selected,
+        Err(error) => {
+            warn!(session = id, target = %authority, rule = %decision, "group resolution failed: {error}");
+            inbound::reply_failure(&mut client, protocol, 0x01).await;
+            return Err(SessionOutcome::Failed);
+        }
     };
-    let (upstream, outbound, outbound_kind): (Box<dyn outbound::Stream>, String, &str) = match proxy {
-        None => {
+    match selected {
+        Selected::Reject => {
+            info!(session = id, target = %authority, protocol = protocol.as_str(), rule = %decision, "REJECT (group member)");
+            inbound::reply_failure(&mut client, protocol, 0x07).await;
+            return Err(SessionOutcome::Rejected);
+        }
+        Selected::RejectDrop => {
+            info!(session = id, target = %authority, protocol = protocol.as_str(), rule = %decision, "REJECT-DROP (group member)");
+            return Err(SessionOutcome::Rejected);
+        }
+        _ => {}
+    }
+    let group_path: Vec<String> = selected.path().to_vec();
+    let (upstream, outbound, outbound_kind): (Box<dyn outbound::Stream>, String, &str) = match selected {
+        Selected::Direct => {
             let stream = match tokio::time::timeout(limits.dial_timeout, TcpStream::connect(&authority))
                 .await
             {
@@ -681,8 +764,8 @@ async fn serve_request(
                 .unwrap_or_else(|_| "?".to_string());
             (Box::new(stream) as Box<dyn outbound::Stream>, peer, "DIRECT")
         }
-        Some(proxy) => {
-            let hops = chain_for(config, proxy);
+        Selected::Proxy { proxy, .. } => {
+            let hops = chain_for(config, &proxy);
             let target = outbound::Target { host: request.host.clone(), port: request.port };
             match tokio::time::timeout(
                 limits.dial_timeout,
@@ -692,15 +775,18 @@ async fn serve_request(
             {
                 Err(_) => {
                     warn!(session = id, target = %authority, rule = %decision, proxy = %proxy.name, "outbound dial timed out after {:?}", limits.dial_timeout);
+                    context.groups.note_dial_failure(&group_path, "timeout");
                     inbound::reply_failure(&mut client, protocol, 0x01).await;
                     return Err(SessionOutcome::Failed);
                 }
                 Ok(Err(e)) => {
                     warn!(session = id, target = %authority, rule = %decision, proxy = %proxy.name, "outbound dial failed: {e}");
+                    context.groups.note_dial_failure(&group_path, &e.to_string());
                     inbound::reply_failure(&mut client, protocol, 0x01).await;
                     return Err(SessionOutcome::Failed);
                 }
                 Ok(Ok(dialed)) => {
+                    context.groups.note_dial_success(&group_path);
                     let label = hops
                         .iter()
                         .map(|hop| hop.name.as_str())
@@ -714,6 +800,7 @@ async fn serve_request(
                 }
             }
         }
+        Selected::Reject | Selected::RejectDrop => unreachable!("handled above"),
     };
     info!(
         session = id, target = %authority, protocol = protocol.as_str(), rule = %decision,
@@ -908,21 +995,42 @@ async fn serve_udp_associate(
                 };
                 let payload = &client_buf[datagram.offset..read];
                 let ip: Option<IpAddr> = datagram.target.host.parse().ok();
-                let decision = context.rules.evaluate(
-                    &Target::new(&datagram.target.host, ip)
-                        .with_port(datagram.target.port)
-                        .with_network(NetworkKind::Udp)
-                        .with_source(peer.ip(), peer.port())
-                        .with_inbound(context.listen_port, InType::Socks5),
-                );
+                let udp_target = Target::new(&datagram.target.host, ip)
+                    .with_port(datagram.target.port)
+                    .with_network(NetworkKind::Udp)
+                    .with_source(peer.ip(), peer.port())
+                    .with_inbound(context.listen_port, InType::Socks5);
+                let decision = context.rules.evaluate(&udp_target);
                 let action = decision.action;
                 if matches!(action, Action::Reject | Action::RejectDrop) {
                     debug!(session = id, target = %datagram.target.host, rule = %decision, "UDP REJECT");
                     continue;
                 }
-                let proxy = match action {
-                    Action::Proxy(index) => config.proxies.get(index),
-                    _ => None,
+                let selected = match context.groups.resolve_action(action, &udp_target, true) {
+                    Ok(selected) => selected,
+                    Err(error) => {
+                        debug!(session = id, target = %datagram.target.host, "UDP group resolution failed: {error}");
+                        failed = true;
+                        continue;
+                    }
+                };
+                let proxy = match selected {
+                    Selected::Direct => None,
+                    Selected::Reject | Selected::RejectDrop => {
+                        debug!(session = id, target = %datagram.target.host, rule = %decision, "UDP REJECT (group member)");
+                        continue;
+                    }
+                    Selected::Proxy { proxy, path } => {
+                        if context.groups.path_disables_udp(&path) {
+                            debug!(
+                                session = id, target = %datagram.target.host, group = %path.join("->"),
+                                "UDP datagram dropped: the group sets disable-udp"
+                            );
+                            failed = true;
+                            continue;
+                        }
+                        Some(proxy)
+                    }
                 };
                 let sent = match proxy {
                     None => {
@@ -957,7 +1065,7 @@ async fn serve_udp_associate(
                     Some(proxy) => match &proxy.protocol {
                         crate::proxies::Protocol::Shadowsocks(option) if option.udp => {
                             if ss.is_none() {
-                                let hops = chain_for(config, proxy);
+                                let hops = chain_for(config, &proxy);
                             match outbound::udp::SsUdp::connect(
                                 option,
                                 &hops,
@@ -981,7 +1089,7 @@ async fn serve_udp_associate(
                         }
                         crate::proxies::Protocol::Trojan(option) if option.udp => {
                             if trojan.is_none() {
-                                let hops = chain_for(config, proxy);
+                                let hops = chain_for(config, &proxy);
                                 match outbound::udp::TrojanUdp::connect(
                                     option,
                                     &hops,
@@ -1005,7 +1113,7 @@ async fn serve_udp_associate(
                         }
                         crate::proxies::Protocol::Ssr(option) if option.udp => {
                             if ssr.is_none() {
-                                let hops = chain_for(config, proxy);
+                                let hops = chain_for(config, &proxy);
                                 match outbound::udp::SsrUdp::connect(
                                     option,
                                     &hops,

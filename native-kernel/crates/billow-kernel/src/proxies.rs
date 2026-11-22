@@ -1039,6 +1039,37 @@ impl Proxy {
         }
     }
 
+    /// The pinned `AdapterType.String()` spelling, which is what a group's
+    /// `exclude-type` is compared against (`"Shadowsocks"`, `"Socks5"`, ...).
+    pub fn adapter_type_name(&self) -> &'static str {
+        match self.protocol {
+            Protocol::Socks5(_) => "Socks5",
+            Protocol::Http(_) => "Http",
+            Protocol::Shadowsocks(_) => "Shadowsocks",
+            Protocol::Trojan(_) => "Trojan",
+            Protocol::Vless(_) => "Vless",
+            Protocol::Anytls(_) => "AnyTLS",
+            Protocol::Vmess(_) => "Vmess",
+            Protocol::Snell(_) => "Snell",
+            Protocol::TrustTunnel(_) => "TrustTunnel",
+            Protocol::GostRelay(_) => "GostRelay",
+            Protocol::Ssh(_) => "Ssh",
+            Protocol::Ssr(_) => "ShadowsocksR",
+            Protocol::Tuic(_) => "Tuic",
+            Protocol::Hysteria(_) => "Hysteria",
+            Protocol::Hysteria2(_) => "Hysteria2",
+            Protocol::Mieru(_) => "Mieru",
+            Protocol::Sudoku(_) => "Sudoku",
+            Protocol::Masque(_) => "Masque",
+            Protocol::ShadowQuic(_) => "ShadowQuic",
+            Protocol::Wireguard(_) => "WireGuard",
+            Protocol::OpenVpn(_) => "OpenVPN",
+            Protocol::Tailscale(_) => "Tailscale",
+            Protocol::Zerotier(_) => "ZeroTier",
+            Protocol::Easytier(_) => "EasyTier",
+        }
+    }
+
     pub fn server(&self) -> (&str, u16) {
         match &self.protocol {
             Protocol::Socks5(p) => (&p.server, p.port),

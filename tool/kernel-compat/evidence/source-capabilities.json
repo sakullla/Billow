@@ -30,7 +30,7 @@
       "nested": null,
       "rustMapping": {
         "status": "partial",
-        "reason": "recorded only; the mixed listener is the only bound port",
+        "reason": "recorded; 0 disables the alias (Mihomo meaning), and an all-zero listener set fails by name instead of binding an ephemeral port",
         "evidence": [
           "tests/config.rs"
         ]
@@ -262,7 +262,10 @@
       "nested": null,
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "control API is T25; rejected by name",
+        "evidence": [
+          "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly"
+        ]
       }
     },
     {
@@ -594,7 +597,7 @@
       "nested": null,
       "rustMapping": {
         "status": "partial",
-        "reason": "file/http/inline vehicles, filter/exclude-filter/exclude-type/dialer-proxy and health-check fields are loaded; latency probing and group use/providers are T23",
+        "reason": "file/http/inline vehicles; filter/exclude-filter split on a backtick; exclude-type split on |; override (udp, skip-cert-verify, dialer-proxy, additional-prefix/suffix, proxy-name) applied; other pinned override fields, age-secret-key, and group use/providers are named/rejected. Latency probing is T23.",
         "evidence": [
           "tests/config.rs",
           "tests/resources.rs"
@@ -609,7 +612,7 @@
       "nested": null,
       "rustMapping": {
         "status": "partial",
-        "reason": "file/http/inline vehicles; yaml/text/mrs; domain/ipcidr/classical; explicit update swaps snapshots and keeps the old generation on failure. The declared interval is parsed but not scheduled; hosts/T25 call the update API.",
+        "reason": "file/http/inline vehicles; yaml/text/mrs; domain/ipcidr/classical; provider paths are lexically confined to the configuration root or SAFE_PATHS (pinned IsSafePath); a classical provider rejects an unsupported/malformed entry by name instead of dropping it; path-in-bundle is named. Explicit update swaps snapshots and keeps the old generation on failure. The declared interval is parsed but not scheduled; hosts/T25 call the update API.",
         "evidence": [
           "tests/resources.rs",
           "evidence/t24-differential.json"
@@ -639,8 +642,13 @@
       "source": "config/config.go:455",
       "nested": null,
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "implemented",
+        "reason": "T23: select/url-test/fallback/load-balance with nested groups, `proxies` (inline/DIRECT/REJECT/REJECT-DROP/COMPATIBLE), `use` providers, include-all/include-all-proxies/include-all-providers, backtick-separated filter/exclude-filter, `|`-separated exclude-type compared against the pinned adapter name, interval/timeout/lazy/max-failed-times/expected-status/tolerance, default-selected, disable-udp/hidden/icon and empty-fallback. `relay` is rejected with the pinned v1.19.34 removal message. load-balance strategies: consistent-hashing (deterministic FNV-1a key; pinned maphash uses a per-process random seed), round-robin, sticky-sessions. hash-key `in-user` is named as unimplemented. Rule targets may name a group.",
+        "evidence": [
+          "tests/groups.rs",
+          "evidence/t23-differential.json",
+          "native-kernel/README.md#t23-proxy-groups-selection-and-health-checks"
+        ]
       }
     },
     {
@@ -895,7 +903,10 @@
       },
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "reason": "DNS/hosts are T22; rejected by name",
+        "evidence": [
+          "tests/config.rs::rejects_every_unimplemented_top_level_key"
+        ]
       }
     },
     {
@@ -1323,8 +1334,11 @@
         ]
       },
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "disabled block is inert with a warning; enable: true is rejected by name (device/TUN is T6/T7)",
+        "evidence": [
+          "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly"
+        ]
       }
     },
     {
@@ -1537,8 +1551,12 @@
         ]
       },
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "`store-selected` is implemented: selections persist to `<cache-dir>/cache.yaml` (pinned stores the same map in bbolt cache.db) and are restored before traffic. A cache directory is host-supplied; without one the kernel warns instead of silently dropping the selection. `store-fake-ip` is parsed and warned about (fake-ip store is T22).",
+        "evidence": [
+          "tests/groups.rs::rule_targeting_a_group_dials_the_selected_member_and_persists",
+          "crates/billow-kernel-cli/tests/cli.rs::process_prints_groups_and_persists_a_selection"
+        ]
       }
     },
     {
@@ -1580,8 +1598,11 @@
         ]
       },
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "mapping is accepted with a warning; no downloader runs and geo-auto-update: true is rejected",
+        "evidence": [
+          "tests/config.rs::unknown_top_level_keys_are_ignored_like_mihomo"
+        ]
       }
     },
     {
@@ -1672,8 +1693,11 @@
         ]
       },
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "not recorded by the Rust kernel; treat as unimplemented (T4/T5 scope)"
+        "status": "partial",
+        "reason": "disabled block is inert with a warning; enable: true is rejected by name (sniffer is T22)",
+        "evidence": [
+          "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly"
+        ]
       }
     },
     {
@@ -3273,8 +3297,12 @@
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:188",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "proxy groups/selection are T23"
+        "status": "implemented",
+        "reason": "pinned fast()-algorithm: first member until probes exist, then lowest LastDelayForTestUrl among alive members, `tolerance` keeps the current node, fixed selection wins while alive, on-dial-failure thresholds trigger a health check.",
+        "evidence": [
+          "tests/groups.rs::url_test_picks_the_lowest_delay_and_falls_back",
+          "evidence/t23-differential.json"
+        ]
       }
     },
     {
@@ -3282,8 +3310,12 @@
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:195",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "proxy groups/selection are T23"
+        "status": "implemented",
+        "reason": "first member unless `default-selected`/API/cache fixes one; `fixed` selection survives provider updates; `disable-udp` drops UDP datagrams (pinned SupportUDP).",
+        "evidence": [
+          "tests/groups.rs::rule_targeting_a_group_dials_the_selected_member_and_persists",
+          "evidence/t23-differential.json"
+        ]
       }
     },
     {
@@ -3291,8 +3323,12 @@
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:202",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "proxy groups/selection are T23"
+        "status": "implemented",
+        "reason": "first member AliveForTestUrl; a fixed selection that died is cleared and scanning continues; members with no probe record yet are alive (pinned initial alive=true).",
+        "evidence": [
+          "tests/groups.rs::fallback_moves_off_a_dead_node",
+          "evidence/t23-differential.json"
+        ]
       }
     },
     {
@@ -3300,8 +3336,13 @@
       "constructor": null,
       "source": "adapter/outboundgroup/parser.go:209",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "proxy groups/selection are T23"
+        "status": "partial",
+        "reason": "consistent-hashing/round-robin/sticky-sessions implemented with pinned jumpHash; retry on dead members and full traversal fallback. The consistent-hashing bucket mapping is not byte-identical to pinned because pinned hashes with a per-process random maphash seed; `hash-key: in-user` is rejected by name.",
+        "evidence": [
+          "tests/groups.rs::load_balance_round_robin_cycles_the_alive_members",
+          "tests/groups.rs::load_balance_consistent_hashing_pins_one_destination",
+          "evidence/t23-differential.json"
+        ]
       }
     },
     {
@@ -3310,7 +3351,11 @@
       "source": "adapter/outboundgroup/parser.go:216",
       "rustMapping": {
         "status": "unimplemented",
-        "reason": "proxy groups/selection are T23"
+        "reason": "pinned v1.19.34 removed the relay type (`unsupported type: The group [x] with relay type was removed, please using dialer-proxy instead`); the Rust kernel reproduces that named rejection instead of implementing a type the pinned engine refuses.",
+        "evidence": [
+          "tests/groups.rs::relay_is_rejected_with_the_pinned_removal_message",
+          "evidence/t23-differential.json"
+        ]
       }
     }
   ],
@@ -3562,16 +3607,23 @@
       "type": "PROCESS-NAME-WILDCARD",
       "source": "rules/parser.go:66",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "wildcard process matching is rejected by name"
+        "status": "implemented",
+        "reason": "pinned component/wildcard semantics, case-insensitive, over host-supplied process metadata",
+        "evidence": [
+          "tests/resources.rs::every_rule_type_matches_with_the_pinned_metadata",
+          "tests/resources.rs::rule_providers_cover_every_vehicle_and_format"
+        ]
       }
     },
     {
       "type": "PROCESS-PATH-WILDCARD",
       "source": "rules/parser.go:68",
       "rustMapping": {
-        "status": "unimplemented",
-        "reason": "wildcard process matching is rejected by name"
+        "status": "implemented",
+        "reason": "pinned component/wildcard semantics, case-insensitive, over host-supplied process metadata",
+        "evidence": [
+          "tests/resources.rs::every_rule_type_matches_with_the_pinned_metadata"
+        ]
       }
     },
     {
@@ -4256,11 +4308,6 @@
     {
       "kind": "rust-scope",
       "name": "*",
-      "reason": "Rule types UID/DSCP/IN-USER/IN-NAME/REMATCH-NAME/PROCESS-*-WILDCARD are rejected by name. PASS/PASS-RULE markers and proxy-group targets are T23."
-    },
-    {
-      "kind": "rust-scope",
-      "name": "*",
       "reason": "GEOIP/IP-ASN/IP-CIDR rules match a destination only when it is already an IP; DNS/hosts (T22) provide name resolution. A warning records this at load."
     },
     {
@@ -4272,6 +4319,16 @@
       "kind": "rust-scope",
       "name": "*",
       "reason": "Proxy-provider health-check fields are parsed and exposed but latency probing is T23; provider updates are exposed through Kernel::update_*_provider for T25."
+    },
+    {
+      "kind": "rust-scope",
+      "name": "*",
+      "reason": "Proxy groups (T23) are implemented per pinned outboundgroup semantics; rule targets may name them. `dialer-proxy` still resolves only inline proxy names (a group or provider proxy target is a named load rejection), and PASS/PASS-RULE markers remain rejected."
+    },
+    {
+      "kind": "rust-scope",
+      "name": "*",
+      "reason": "`profile.store-selected` persists fixed group selections; the file is `<cache-dir>/cache.yaml` and hosts must provide a cache directory (the CLI uses the configuration directory). Pinned writes bbolt cache.db, so the file is not interchangeable; the selected-map semantics are."
     }
   ],
   "rust": {
@@ -4295,9 +4352,9 @@
     "note": "rustMapping on each entry comes from that file; partial entries name the options they reject, unimplemented entries are rejected at load time and are never compatible."
   },
   "coverage": {
-    "mapped": 49,
-    "partial": 27,
-    "unimplemented": 79,
+    "mapped": 55,
+    "partial": 32,
+    "unimplemented": 68,
     "total": 155,
     "note": "mapped counts only entries the Rust kernel implements and tests observe; partial and unimplemented entries are not compatibility claims."
   }

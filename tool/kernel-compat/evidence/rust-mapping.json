@@ -3,7 +3,7 @@
   "version": 3,
   "engine": "rust",
   "kernel": "billow-kernel",
-  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,engine.rs,outbound/*.rs} and tests/{config,protocols,mihomo_peers,quic_peers}.rs",
+  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,proxies.rs,inbound.rs,groups.rs,engine.rs,outbound/*.rs} and tests/{config,groups,protocols,mihomo_peers,quic_peers,resources}.rs",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -202,10 +202,20 @@
       ]
     },
     "proxy-groups": {
-      "status": "unimplemented",
-      "reason": "groups/selection are T23; rejected by name",
+      "status": "implemented",
+      "reason": "T23: select/url-test/fallback/load-balance with nested groups, `proxies` (inline/DIRECT/REJECT/REJECT-DROP/COMPATIBLE), `use` providers, include-all/include-all-proxies/include-all-providers, backtick-separated filter/exclude-filter, `|`-separated exclude-type compared against the pinned adapter name, interval/timeout/lazy/max-failed-times/expected-status/tolerance, default-selected, disable-udp/hidden/icon and empty-fallback. `relay` is rejected with the pinned v1.19.34 removal message. load-balance strategies: consistent-hashing (deterministic FNV-1a key; pinned maphash uses a per-process random seed), round-robin, sticky-sessions. hash-key `in-user` is named as unimplemented. Rule targets may name a group.",
       "evidence": [
-        "tests/config.rs::rejects_every_unimplemented_top_level_key"
+        "tests/groups.rs",
+        "evidence/t23-differential.json",
+        "native-kernel/README.md#t23-proxy-groups-selection-and-health-checks"
+      ]
+    },
+    "profile": {
+      "status": "partial",
+      "reason": "`store-selected` is implemented: selections persist to `<cache-dir>/cache.yaml` (pinned stores the same map in bbolt cache.db) and are restored before traffic. A cache directory is host-supplied; without one the kernel warns instead of silently dropping the selection. `store-fake-ip` is parsed and warned about (fake-ip store is T22).",
+      "evidence": [
+        "tests/groups.rs::rule_targeting_a_group_dials_the_selected_member_and_persists",
+        "crates/billow-kernel-cli/tests/cli.rs::process_prints_groups_and_persists_a_selection"
       ]
     }
   },
@@ -1387,24 +1397,45 @@
   },
   "groups": {
     "select": {
-      "status": "unimplemented",
-      "reason": "proxy groups/selection are T23"
+      "status": "implemented",
+      "reason": "first member unless `default-selected`/API/cache fixes one; `fixed` selection survives provider updates; `disable-udp` drops UDP datagrams (pinned SupportUDP).",
+      "evidence": [
+        "tests/groups.rs::rule_targeting_a_group_dials_the_selected_member_and_persists",
+        "evidence/t23-differential.json"
+      ]
     },
     "url-test": {
-      "status": "unimplemented",
-      "reason": "proxy groups/selection are T23"
+      "status": "implemented",
+      "reason": "pinned fast()-algorithm: first member until probes exist, then lowest LastDelayForTestUrl among alive members, `tolerance` keeps the current node, fixed selection wins while alive, on-dial-failure thresholds trigger a health check.",
+      "evidence": [
+        "tests/groups.rs::url_test_picks_the_lowest_delay_and_falls_back",
+        "evidence/t23-differential.json"
+      ]
     },
     "fallback": {
-      "status": "unimplemented",
-      "reason": "proxy groups/selection are T23"
+      "status": "implemented",
+      "reason": "first member AliveForTestUrl; a fixed selection that died is cleared and scanning continues; members with no probe record yet are alive (pinned initial alive=true).",
+      "evidence": [
+        "tests/groups.rs::fallback_moves_off_a_dead_node",
+        "evidence/t23-differential.json"
+      ]
     },
     "load-balance": {
-      "status": "unimplemented",
-      "reason": "proxy groups/selection are T23"
+      "status": "partial",
+      "reason": "consistent-hashing/round-robin/sticky-sessions implemented with pinned jumpHash; retry on dead members and full traversal fallback. The consistent-hashing bucket mapping is not byte-identical to pinned because pinned hashes with a per-process random maphash seed; `hash-key: in-user` is rejected by name.",
+      "evidence": [
+        "tests/groups.rs::load_balance_round_robin_cycles_the_alive_members",
+        "tests/groups.rs::load_balance_consistent_hashing_pins_one_destination",
+        "evidence/t23-differential.json"
+      ]
     },
     "relay": {
       "status": "unimplemented",
-      "reason": "proxy groups/selection are T23"
+      "reason": "pinned v1.19.34 removed the relay type (`unsupported type: The group [x] with relay type was removed, please using dialer-proxy instead`); the Rust kernel reproduces that named rejection instead of implementing a type the pinned engine refuses.",
+      "evidence": [
+        "tests/groups.rs::relay_is_rejected_with_the_pinned_removal_message",
+        "evidence/t23-differential.json"
+      ]
     }
   },
   "rules": {
@@ -1667,7 +1698,8 @@
     "GEOIP/IP-ASN/IP-CIDR rules match a destination only when it is already an IP; DNS/hosts (T22) provide name resolution. A warning records this at load.",
     "geodata-mode false uses Country.mmdb; geodata-mode true uses GeoIP.dat; GEOSITE always uses GeoSite.dat. MRS rule-provider decoding shares the Tauri mrs.rs algorithm (ported, not shared code).",
     "Proxy-provider health-check fields are parsed and exposed but latency probing is T23; provider updates are exposed through Kernel::update_*_provider for T25.",
-    "Rule types UID/DSCP/IN-USER/IN-NAME/REMATCH-NAME are rejected by name, including when they appear in a classical rule-provider (the provider/entry/type are named and the load fails instead of silently dropping the rule). PROCESS-NAME-WILDCARD and PROCESS-PATH-WILDCARD are implemented. PASS/PASS-RULE markers and proxy-group targets are T23."
+    "Proxy groups (T23) are implemented per pinned outboundgroup semantics; rule targets may name them. `dialer-proxy` still resolves only inline proxy names (a group or provider proxy target is a named load rejection), and PASS/PASS-RULE markers remain rejected.",
+    "`profile.store-selected` persists fixed group selections; the file is `<cache-dir>/cache.yaml` and hosts must provide a cache directory (the CLI uses the configuration directory). Pinned writes bbolt cache.db, so the file is not interchangeable; the selected-map semantics are."
   ],
   "ignoredByPinnedVersion": {
     "note": "Keys the pinned type does not declare (or declares only as a no-op in the given configuration) are accepted and ignored, exactly as Mihomo ignores them. They are not compatibility gaps.",
@@ -1707,5 +1739,6 @@
     "offlineSource": "local cargo registry cache; no h3/qpack/connect-ip/IP-stack/wireguard/mesh/OpenVPN crate is cached. JLS has no Rust crate: T15 implements the random seal in-tree and uses the locked jls-tls package only as a vector generator (tool/kernel-compat/peers/shadowquic-jls-vectors). quinn-proto and typenum became direct dependencies for the session wrapper and the 32-byte GCM nonce; both were already in the lockfile.",
     "memory": "one Endpoint + one Connection per dial (masque: per UDP association); transport windows capped to stream receive 512 KiB, connection receive 2 MiB, send 2 MiB, datagram buffers 64 KiB (quinn defaults: 1.25 MB / VarInt::MAX / 10 MB / ~1 MB). masque adds at most 32 request streams per association, each with a 2 x 65,535 B outbound queue and at most 131,102 B of pending capsule data; its per-association worst case (~19 MB decimal, including the QUIC windows) is recorded in t14-feasibility.json. shadowquic uses the same endpoint/connection profile plus one control stream and a 32-packet receive queue per UDP association; its `max-datagram-frame-size` (default 1400) sizes the datagram buffers. T7 must measure the whole iOS extension against the 40,000,000-byte budget; these tasks record the dependency and the caps, not a device measurement.",
     "platform": "macOS arm64 loopback and pinned-Mihomo runs; Linux/Android/iOS compile from the same code path; Windows compiles but no run is recorded"
-  }
+  },
+  "groupPolicy": "Member expansion follows outboundgroup.GroupBase.GetProxies: inline `proxies` block first, then `use` provider snapshots; filter pieces split on backticks and matched case-sensitively like regexp2.None; multiple providers/filters reorder the combined list by filter; exclude-filter then exclude-type are applied; an empty list becomes `empty-fallback` (default COMPATIBLE). Health state is per (member source, name, test URL): a URL with no record yet is alive and LastDelayForTestUrl is 65535, matching the pinned adapter's initial state. Interval checks run on each task's own interval boundary (select has no automatic check; other types default to 300 s; `lazy: true` skips an interval when the group was not touched). Provider `health-check` drives provider members; an explicit group URL registers an extra probe on its `use` providers. `filter` on a group only filters named providers (the inline/compatible block is never filtered), as in pinned GetProxies."
 }

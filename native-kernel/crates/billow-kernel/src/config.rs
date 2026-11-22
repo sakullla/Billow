@@ -27,6 +27,8 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "rules",
     "rule-providers",
     "proxy-providers",
+    "proxy-groups",
+    "profile",
     "sub-rules",
     "geodata-mode",
     "geodata-loader",
@@ -47,8 +49,8 @@ pub const KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "interface-name", "routing-mark", "tunnels", "tcp-concurrent", "find-process-mode",
     "global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
     "keep-alive-interval", "disable-keep-alive",
-    "proxy-groups", "listeners", "hosts", "dns", "ntp", "tun", "tuic-server",
-    "iptables", "experimental", "profile", "geox-url", "sniffer", "clash-for-android"
+    "listeners", "hosts", "dns", "ntp", "tun", "tuic-server",
+    "iptables", "experimental", "geox-url", "sniffer", "clash-for-android"
 ];
 
 /// Rule types understood by the kernel. `IP-ASN` needs `ASN.mmdb`; the other
@@ -394,6 +396,9 @@ pub enum Action {
     RejectDrop,
     /// Index into [`Config::proxies`].
     Proxy(usize),
+    /// Index into [`Config::proxy_groups`] (T23). The group decides the actual
+    /// leaf outbound at dial time.
+    Group(usize),
 }
 
 impl Action {
@@ -404,6 +409,7 @@ impl Action {
             Action::RejectDrop => "REJECT-DROP",
             // The name is not known here; callers with a Config use `Proxy::name`.
             Action::Proxy(_) => "PROXY",
+            Action::Group(_) => "GROUP",
         }
     }
 }
@@ -486,6 +492,196 @@ impl Default for HealthCheckConfig {
             timeout: 0,
             lazy: true,
             expected_status: String::new(),
+        }
+    }
+}
+
+/// `url-test`, `fallback`, `load-balance` or `select` (T23). `relay` was
+/// removed from the pinned engine (v1.19.34 rejects it with "using
+/// dialer-proxy instead"), so it is a named rejection rather than a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupKind {
+    Select,
+    UrlTest,
+    Fallback,
+    LoadBalance,
+}
+
+impl GroupKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupKind::Select => "select",
+            GroupKind::UrlTest => "url-test",
+            GroupKind::Fallback => "fallback",
+            GroupKind::LoadBalance => "load-balance",
+        }
+    }
+}
+
+/// `load-balance.strategy` (default `consistent-hashing`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadBalanceStrategy {
+    ConsistentHashing,
+    RoundRobin,
+    StickySessions,
+}
+
+impl LoadBalanceStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoadBalanceStrategy::ConsistentHashing => "consistent-hashing",
+            LoadBalanceStrategy::RoundRobin => "round-robin",
+            LoadBalanceStrategy::StickySessions => "sticky-sessions",
+        }
+    }
+}
+
+/// `load-balance.hash-key` (default empty = the strategy's own key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashKey {
+    Default,
+    InUser,
+}
+
+/// `expected-status`: a `/` or `,` separated list of HTTP status codes and
+/// inclusive ranges, e.g. `200/204/301-308`. Empty or `*` accepts every status.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExpectedStatus {
+    segments: Vec<(u16, u16)>,
+}
+
+impl ExpectedStatus {
+    /// Parse the pinned `utils.NewUnsignedRanges` syntax.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        if text.is_empty() || text == "*" {
+            return Ok(ExpectedStatus::default());
+        }
+        let normalized = text.replace(',', "/");
+        let list: Vec<&str> = normalized.split('/').collect();
+        if list.len() > 28 {
+            return Err("too many ranges to use, maximum support 28 ranges".to_string());
+        }
+        let mut segments = Vec::new();
+        for item in list {
+            if item.is_empty() {
+                continue;
+            }
+            let item = item.trim();
+            let parts: Vec<&str> = item.split('-').collect();
+            match parts.len() {
+                1 => {
+                    let value = parse_status(parts[0])?;
+                    segments.push((value, value));
+                }
+                2 => {
+                    let start = parse_status(parts[0])?;
+                    let end = parse_status(parts[1])?;
+                    segments.push((start, end));
+                }
+                _ => return Err(format!("invalid range: {item}")),
+            }
+        }
+        Ok(ExpectedStatus { segments })
+    }
+
+    /// A status is accepted when the list is empty (any) or one segment contains it.
+    pub fn check(&self, status: u16) -> bool {
+        self.segments.is_empty()
+            || self
+                .segments
+                .iter()
+                .any(|(start, end)| (*start..=*end).contains(&status))
+    }
+
+    /// The pinned display form: `*` or `200/204/301-308`.
+    pub fn as_spec(&self) -> String {
+        if self.segments.is_empty() {
+            return "*".to_string();
+        }
+        self.segments
+            .iter()
+            .map(|(start, end)| {
+                if start == end {
+                    start.to_string()
+                } else {
+                    format!("{start}-{end}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+}
+
+fn parse_status(text: &str) -> Result<u16, String> {
+    let trimmed = text.trim().trim_matches(|c| c == '[' || c == ']').trim();
+    let value: u64 = trimmed
+        .parse()
+        .map_err(|_| format!("invalid range: {text}"))?;
+    Ok(value as u16)
+}
+
+/// `empty-fallback`: the proxy a group selects when its resolved member list is
+/// empty. `COMPATIBLE` is the pinned default and behaves like DIRECT for a
+/// routing decision; a configured proxy name is resolved at load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptyFallback {
+    Direct,
+    Reject,
+    RejectDrop,
+    Proxy(usize),
+}
+
+/// One `proxy-groups` entry (T23).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyGroup {
+    pub name: String,
+    pub kind: GroupKind,
+    /// `proxies` in declaration order (includes the include-all expansion).
+    pub proxies: Vec<String>,
+    /// `use` proxy providers, in declaration order.
+    pub use_providers: Vec<String>,
+    pub url: String,
+    /// Whether `url` was written in the configuration (pinned registers that
+    /// URL as an extra health check on every `use` provider).
+    pub url_explicit: bool,
+    /// Auto health-check interval in seconds; 0 means no scheduled check
+    /// (`select` and `relay` keep their declared value, others default to 300).
+    pub interval: u64,
+    /// `timeout` in milliseconds (0 becomes 5000).
+    pub timeout: u64,
+    pub lazy: bool,
+    /// `max-failed-times` (0 becomes 5).
+    pub max_failed_times: usize,
+    pub expected_status: ExpectedStatus,
+    /// `filter` split on backticks, compiled by the group runtime.
+    pub filter: Vec<String>,
+    pub exclude_filter: Vec<String>,
+    /// `exclude-type` split on `|`, lowercased.
+    pub exclude_type: Vec<String>,
+    pub tolerance: u16,
+    pub strategy: LoadBalanceStrategy,
+    pub hash_key: HashKey,
+    pub default_selected: Option<String>,
+    pub disable_udp: bool,
+    pub hidden: bool,
+    pub icon: String,
+    pub empty_fallback: EmptyFallback,
+}
+
+/// `profile` (the selection cache switch; `store-fake-ip` belongs to DNS/T22).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileConfig {
+    pub store_selected: bool,
+    pub store_fake_ip: bool,
+}
+
+impl Default for ProfileConfig {
+    fn default() -> Self {
+        // Pinned `DefaultRawConfig` sets StoreSelected: true, StoreFakeIP: false.
+        ProfileConfig {
+            store_selected: true,
+            store_fake_ip: false,
         }
     }
 }
@@ -606,6 +802,10 @@ pub struct Config {
     pub rule_providers: Vec<RuleProviderConfig>,
     /// `proxy-providers` entries in declaration order.
     pub proxy_providers: Vec<ProxyProviderConfig>,
+    /// `proxy-groups` entries in declaration order (T23).
+    pub proxy_groups: Vec<ProxyGroup>,
+    /// `profile` selection-cache switches.
+    pub profile: ProfileConfig,
     /// `sub-rules` used by `SUB-RULE`.
     pub sub_rules: BTreeMap<String, Vec<Rule>>,
     /// `geodata-mode: true` reads GeoIP.dat; false reads Country.mmdb.
@@ -669,10 +869,11 @@ impl Config {
                 .join(",")
         };
         format!(
-            "mixed-inbound(tcp,http-connect,socks5); rules=inline({} entries); rule-providers={}; proxy-providers={}; sub-rules={}; outbounds=DIRECT,REJECT; protocols={protocols}; dns=none",
+            "mixed-inbound(tcp,http-connect,socks5); rules=inline({} entries); rule-providers={}; proxy-providers={}; proxy-groups={}; sub-rules={}; outbounds=DIRECT,REJECT; protocols={protocols}; dns=none",
             self.rules.len(),
             self.rule_providers.len(),
             self.proxy_providers.len(),
+            self.proxy_groups.len(),
             self.sub_rules.len()
         )
     }
@@ -686,7 +887,23 @@ impl Config {
                 .get(index)
                 .map(|p| p.name.clone())
                 .unwrap_or_else(|| "<missing proxy>".to_string()),
+            Action::Group(index) => self
+                .proxy_groups
+                .get(index)
+                .map(|g| g.name.clone())
+                .unwrap_or_else(|| "<missing group>".to_string()),
         }
+    }
+
+    /// Names addressable as a rule target: proxy names, then proxy groups.
+    pub fn outbound_name(&self, name: &str) -> Option<Action> {
+        if let Some(index) = self.proxies.iter().position(|proxy| proxy.name == name) {
+            return Some(Action::Proxy(index));
+        }
+        self.proxy_groups
+            .iter()
+            .position(|group| group.name == name)
+            .map(Action::Group)
     }
 }
 
@@ -740,6 +957,8 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     let mut proxies_value = None;
     let mut rule_providers_value = None;
     let mut proxy_providers_value = None;
+    let mut proxy_groups_value = None;
+    let mut profile = ProfileConfig::default();
     let mut sub_rules_value = None;
     let mut authentication = Vec::new();
     let mut tls_roots: Vec<rustls_pki_types::CertificateDer<'static>> = Vec::new();
@@ -832,6 +1051,8 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             "proxies" => proxies_value = Some(value),
             "rule-providers" => rule_providers_value = Some(value),
             "proxy-providers" => proxy_providers_value = Some(value),
+            "proxy-groups" => proxy_groups_value = Some(value),
+            "profile" => profile = parse_profile(value, path, &mut warnings)?,
             "sub-rules" => sub_rules_value = Some(value),
             "geodata-mode" => geodata_mode = parse_bool(value, path, key)?,
             "geodata-loader" => {
@@ -915,7 +1136,6 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             _ => {
                 if KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS.contains(&key) {
                     let boundary = match key {
-                        "proxy-groups" => " (proxy groups and selection are T23)",
                         "dns" | "hosts" => " (DNS/hosts are T22)",
                         "external-controller" | "external-controller-unix"
                         | "external-controller-tls" | "external-controller-pipe" => {
@@ -984,6 +1204,16 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         .iter()
         .map(|provider| provider.name.clone())
         .collect::<BTreeSet<_>>();
+    let proxy_groups = match proxy_groups_value {
+        None => Vec::new(),
+        Some(value) => parse_proxy_groups(
+            value,
+            path,
+            &proxies,
+            &proxy_providers,
+            &mut warnings,
+        )?,
+    };
 
     let sub_rule_names = match sub_rules_value {
         None => BTreeSet::new(),
@@ -1009,6 +1239,7 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
 
     let context = RuleContext {
         proxies: &proxies,
+        groups: &proxy_groups,
         providers: &provider_names,
         sub_rules: &sub_rule_names,
     };
@@ -1042,6 +1273,8 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         proxies,
         rule_providers,
         proxy_providers,
+        proxy_groups,
+        profile,
         sub_rules,
         geodata_mode,
         geodata_loader,
@@ -1074,6 +1307,7 @@ fn rule_needs_resolution(rule: &Rule) -> bool {
 /// Names visible to a rule line while it is parsed.
 struct RuleContext<'a> {
     proxies: &'a [crate::proxies::Proxy],
+    groups: &'a [ProxyGroup],
     providers: &'a BTreeSet<String>,
     sub_rules: &'a BTreeSet<String>,
 }
@@ -1085,6 +1319,7 @@ impl RuleContext<'_> {
         let (providers, sub_rules) = EMPTY.get_or_init(|| (BTreeSet::new(), BTreeSet::new()));
         RuleContext {
             proxies: &[],
+            groups: &[],
             providers,
             sub_rules,
         }
@@ -1335,7 +1570,7 @@ fn parse_rule_line(
         // SUB-RULE's target is the sub-rule list name; the list selects the
         // outbound, so the outer action field is unused.
         Some(_) if rule_type == "SUB-RULE" => Action::Direct,
-        Some(target) => parse_action_with(target, context.proxies)?,
+        Some(target) => parse_action_with(target, context)?,
     };
 
     let matcher = match rule_type.as_str() {
@@ -1712,7 +1947,7 @@ fn parse_logic_groups(payload: &str) -> Result<Vec<String>, ConfigError> {
     Ok(groups)
 }
 
-fn parse_action_with(raw: &str, proxies: &[crate::proxies::Proxy]) -> Result<Action, ConfigError> {
+fn parse_action_with(raw: &str, context: &RuleContext<'_>) -> Result<Action, ConfigError> {
     match raw {
         "DIRECT" => Ok(Action::Direct),
         "REJECT" => Ok(Action::Reject),
@@ -1725,13 +1960,16 @@ fn parse_action_with(raw: &str, proxies: &[crate::proxies::Proxy]) -> Result<Act
         "PASS" | "PASS-RULE" => Err(ConfigError::Unsupported(format!(
             "outbound '{raw}' (PASS markers are not implemented)"
         ))),
-        other => match proxies.iter().position(|p| p.name == other) {
+        other => match context.proxies.iter().position(|p| p.name == other) {
             Some(index) => Ok(Action::Proxy(index)),
-            // A named outbound that is not a configured proxy (groups, providers,
-            // built-ins of other tasks) is outside this task's scope.
-            None => Err(ConfigError::Unsupported(format!(
-                "outbound '{other}' is not a configured proxy (proxy groups are T23; DIRECT, REJECT, REJECT-DROP and inline proxies are available)"
-            ))),
+            None => match context.groups.iter().position(|group| group.name == other) {
+                Some(index) => Ok(Action::Group(index)),
+                // A named outbound that is not a configured proxy or group
+                // (providers, built-ins of other tasks) is named explicitly.
+                None => Err(ConfigError::Unsupported(format!(
+                    "outbound '{other}' is not a configured proxy or proxy group (DIRECT, REJECT, REJECT-DROP, inline proxies and proxy groups are available)"
+                ))),
+            },
         },
     }
 }
@@ -1893,6 +2131,413 @@ fn parse_proxy_providers(
     Ok(providers)
 }
 
+/// `profile`: `store-selected` gates the selection cache (T23);
+/// `store-fake-ip` belongs to the DNS/fake-ip store (T22) and is recorded only.
+fn parse_profile(
+    value: &serde_yaml::Value,
+    path: &str,
+    warnings: &mut Vec<String>,
+) -> Result<ProfileConfig, ConfigError> {
+    if value.is_null() {
+        return Ok(ProfileConfig::default());
+    }
+    let mapping = value.as_mapping().ok_or_else(|| {
+        ConfigError::InvalidValue(format!("{path}: profile must be a mapping"))
+    })?;
+    let mut profile = ProfileConfig::default();
+    for (key, item) in mapping {
+        let key = key.as_str().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{path}: profile keys must be strings"))
+        })?;
+        match key {
+            "store-selected" => {
+                profile.store_selected = yaml_bool(item, path, "profile.store-selected")?
+            }
+            "store-fake-ip" => {
+                profile.store_fake_ip = yaml_bool(item, path, "profile.store-fake-ip")?
+            }
+            // Pinned `RawProfile` declares exactly these two keys; its decoder
+            // tolerates extra keys, so they are ignored the same way.
+            _ => {}
+        }
+    }
+    if profile.store_fake_ip {
+        warnings.push(
+            "profile.store-fake-ip is recorded but has no effect: fake-ip allocation and its store are DNS (T22)"
+                .to_string(),
+        );
+    }
+    Ok(profile)
+}
+
+/// The pinned default test URL for groups and proxies.
+pub const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
+
+/// `proxy-groups` (T23). Groups are validated as a DAG so a nested reference
+/// may point at a group declared later (the pinned engine topological-sorts
+/// `proxy-groups` before constructing them).
+fn parse_proxy_groups(
+    value: &serde_yaml::Value,
+    path: &str,
+    proxies: &[crate::proxies::Proxy],
+    providers: &[ProxyProviderConfig],
+    warnings: &mut Vec<String>,
+) -> Result<Vec<ProxyGroup>, ConfigError> {
+    let seq = match value.as_sequence() {
+        Some(seq) => seq,
+        None if value.is_null() => return Ok(Vec::new()),
+        None => {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: proxy-groups must be a list"
+            )))
+        }
+    };
+    let provider_names = providers
+        .iter()
+        .map(|provider| provider.name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut all_proxy_names = proxies
+        .iter()
+        .map(|proxy| proxy.name.clone())
+        .collect::<Vec<_>>();
+    all_proxy_names.sort();
+    let group_names = seq
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let mapping = item.as_mapping().ok_or_else(|| {
+                ConfigError::InvalidValue(format!(
+                    "{path}: proxy-groups[{index}] must be a mapping"
+                ))
+            })?;
+            let name = optional_string(mapping, "name")?.ok_or_else(|| {
+                ConfigError::InvalidValue(format!("{path}: proxy group {index}: missing name"))
+            })?;
+            if name.is_empty() {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{path}: proxy group {index}: name must not be empty"
+                )));
+            }
+            Ok(name)
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+    let mut seen = BTreeSet::new();
+    for name in &group_names {
+        if !seen.insert(name.clone()) {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: ProxyGroup {name}: duplicate group name"
+            )));
+        }
+        if matches!(
+            name.as_str(),
+            "DIRECT" | "REJECT" | "REJECT-DROP" | "COMPATIBLE" | "PASS" | "PASS-RULE" | "GLOBAL"
+        ) || proxies.iter().any(|proxy| &proxy.name == name)
+        {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: proxy group {name}: the duplicate name"
+            )));
+        }
+    }
+    let group_set = seen.clone();
+    verify_group_cycles(seq, &group_names, &group_set)?;
+
+    let mut groups = Vec::with_capacity(seq.len());
+    for (index, item) in seq.iter().enumerate() {
+        let mapping = item.as_mapping().expect("checked above");
+        let location = format!("{path}: proxy group[{index}]");
+        let name = group_names[index].clone();
+        let location = format!("{location} ({name})");
+        let kind_raw = optional_string(mapping, "type")?.unwrap_or_default();
+        let kind = match kind_raw.as_str() {
+            "select" => GroupKind::Select,
+            "url-test" => GroupKind::UrlTest,
+            "fallback" => GroupKind::Fallback,
+            "load-balance" => GroupKind::LoadBalance,
+            // Pinned v1.19.34 removed the relay group type with this message.
+            "relay" => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: unsupported type: The group [{name}] with relay type was removed, please using dialer-proxy instead"
+                )))
+            }
+            "" => {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{location}: format error (type is required)"
+                )))
+            }
+            other => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: unsupported type: {other}"
+                )))
+            }
+        };
+        // The pinned decoder reads these keys but only logs a removal notice.
+        for (key, message) in [
+            ("routing-mark", "routing-mark"),
+            ("interface-name", "interface-name"),
+            ("dialer-proxy", "dialer-proxy"),
+        ] {
+            if optional_value(mapping, key)?.is_some() {
+                warnings.push(format!(
+                    "{location}: '{message}' is not allowed on a group; set it on the proxy instead (pinned logs the same and continues)"
+                ));
+            }
+        }
+        let mut proxies_list = optional_string_list(mapping, "proxies")?;
+        let mut use_providers = optional_string_list(mapping, "use")?;
+        let include_all = optional_bool(mapping, "include-all")?.unwrap_or(false);
+        let mut include_all_proxies = optional_bool(mapping, "include-all-proxies")?.unwrap_or(false);
+        let mut include_all_providers =
+            optional_bool(mapping, "include-all-providers")?.unwrap_or(false);
+        if include_all {
+            include_all_providers = true;
+            include_all_proxies = true;
+        }
+        if include_all_providers {
+            use_providers = provider_names.iter().cloned().collect();
+        }
+        let filter = split_backtick(optional_string(mapping, "filter")?);
+        let exclude_filter = split_backtick(optional_string(mapping, "exclude-filter")?);
+        for (key, patterns) in [("filter", &filter), ("exclude-filter", &exclude_filter)] {
+            for pattern in patterns {
+                validate_regex(pattern).map_err(|e| {
+                    config_error_with_prefix(e, &format!("{location}: {key} {pattern:?}"))
+                })?;
+            }
+        }
+        if include_all_proxies {
+            if filter.is_empty() {
+                proxies_list.extend(all_proxy_names.iter().cloned());
+            } else {
+                for pattern in &filter {
+                    let regex = regex::Regex::new(pattern).expect("validated above");
+                    for candidate in &all_proxy_names {
+                        if regex.is_match(candidate) {
+                            proxies_list.push(candidate.clone());
+                        }
+                    }
+                }
+            }
+            if proxies_list.is_empty() && use_providers.is_empty() {
+                proxies_list.push("COMPATIBLE".to_string());
+            }
+        }
+        if proxies_list.is_empty() && use_providers.is_empty() {
+            return Err(ConfigError::InvalidValue(format!(
+                "{location}: `use` or `proxies` missing"
+            )));
+        }
+        for member in &proxies_list {
+            if member == "PASS" || member == "PASS-RULE" {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: group member '{member}' (PASS markers are not implemented)"
+                )));
+            }
+            let known = member == "DIRECT"
+                || member == "REJECT"
+                || member == "REJECT-DROP"
+                || member == "COMPATIBLE"
+                || proxies.iter().any(|proxy| &proxy.name == member)
+                || group_set.contains(member);
+            if !known {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{location}: '{member}' not found"
+                )));
+            }
+        }
+        for provider in &use_providers {
+            if !provider_names.contains(provider) {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{location}: '{provider}' not found"
+                )));
+            }
+        }
+        let explicit_url = optional_string(mapping, "url")?
+            .map(|url| url.trim().to_string())
+            .filter(|url| !url.is_empty());
+        let url = match &explicit_url {
+            Some(url) => url.clone(),
+            None => {
+                // Pinned uses the first `use` provider's health-check URL when
+                // the group has no URL; otherwise the built-in default.
+                let from_provider = use_providers.iter().find_map(|name| {
+                    providers
+                        .iter()
+                        .find(|provider| &provider.name == name)
+                        .and_then(|provider| provider.health_check.url.clone())
+                        .filter(|url| !url.trim().is_empty())
+                });
+                from_provider.unwrap_or_else(|| DEFAULT_TEST_URL.to_string())
+            }
+        };
+        let mut interval = optional_positive_int(mapping, "interval")?.unwrap_or(0);
+        let timeout = optional_positive_int(mapping, "timeout")?.unwrap_or(0);
+        let max_failed_times = optional_positive_int(mapping, "max-failed-times")?.unwrap_or(0)
+            as usize;
+        let lazy = optional_bool(mapping, "lazy")?.unwrap_or(true);
+        let expected_status = ExpectedStatus::parse(
+            &optional_string_or_number(mapping, "expected-status")?.unwrap_or_default(),
+        )
+        .map_err(|e| ConfigError::InvalidValue(format!("{location}: {e}")))?;
+        let exclude_type = optional_string(mapping, "exclude-type")?
+            .map(|types| {
+                types
+                    .split('|')
+                    .map(|value| value.trim().to_ascii_lowercase())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        // A `select` group has no automatic health check; every other type
+        // defaults to 300 s, but only when the group owns an inline member
+        // provider (the pinned parser sets it inside that branch).
+        if kind != GroupKind::Select && interval == 0 && !proxies_list.is_empty() {
+            interval = 300;
+        }
+        let tolerance = optional_positive_int(mapping, "tolerance")?.unwrap_or(0);
+        if tolerance > u64::from(u16::MAX) {
+            return Err(ConfigError::InvalidValue(format!(
+                "{location}: tolerance {tolerance} exceeds 65535"
+            )));
+        }
+        let tolerance = tolerance as u16;
+        let strategy = match optional_string(mapping, "strategy")?.as_deref() {
+            None | Some("") | Some("consistent-hashing") => {
+                LoadBalanceStrategy::ConsistentHashing
+            }
+            Some("round-robin") => LoadBalanceStrategy::RoundRobin,
+            Some("sticky-sessions") => LoadBalanceStrategy::StickySessions,
+            Some(other) => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: unsupported strategy: {other}"
+                )))
+            }
+        };
+        let hash_key = match optional_string(mapping, "hash-key")?.as_deref() {
+            None | Some("") => HashKey::Default,
+            Some("in-user") => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: hash-key 'in-user' is not implemented (the authenticated inbound user is not propagated to the outbound in this kernel)"
+                )))
+            }
+            Some(other) => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: unsupported hash-key: {other}"
+                )))
+            }
+        };
+        if strategy == LoadBalanceStrategy::RoundRobin && hash_key != HashKey::Default {
+            return Err(ConfigError::Unsupported(format!(
+                "{location}: hash-key with round-robin is not implemented (round-robin does not hash)"
+            )));
+        }
+        let default_selected = optional_string(mapping, "default-selected")?;
+        let empty_fallback_name = optional_string(mapping, "empty-fallback")?
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "COMPATIBLE".to_string());
+        let empty_fallback = match empty_fallback_name.as_str() {
+            "COMPATIBLE" | "DIRECT" => EmptyFallback::Direct,
+            "REJECT" => EmptyFallback::Reject,
+            "REJECT-DROP" => EmptyFallback::RejectDrop,
+            other => match proxies.iter().position(|proxy| proxy.name == other) {
+                Some(index) => EmptyFallback::Proxy(index),
+                None => {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "{location}: empty fallback proxy '{other}' not found"
+                    )))
+                }
+            },
+        };
+        groups.push(ProxyGroup {
+            name,
+            kind,
+            proxies: proxies_list,
+            use_providers,
+            url,
+            url_explicit: explicit_url.is_some(),
+            interval,
+            timeout,
+            lazy,
+            max_failed_times,
+            expected_status,
+            filter,
+            exclude_filter,
+            exclude_type,
+            tolerance,
+            strategy,
+            hash_key,
+            default_selected: default_selected.filter(|name| !name.is_empty()),
+            disable_udp: optional_bool(mapping, "disable-udp")?.unwrap_or(false),
+            hidden: optional_bool(mapping, "hidden")?.unwrap_or(false),
+            icon: optional_string(mapping, "icon")?.unwrap_or_default(),
+            empty_fallback,
+        });
+    }
+    Ok(groups)
+}
+
+fn split_backtick(raw: Option<String>) -> Vec<String> {
+    match raw {
+        None => Vec::new(),
+        Some(text) => {
+            // Pinned `strings.Split(filter, "`")` after a non-empty check: an
+            // empty piece is a valid regexp that matches every name.
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                text.split('`').map(str::to_string).collect()
+            }
+        }
+    }
+}
+
+/// Reject group cycles (including self references) with the pinned "loop"
+/// wording. Nested references may point forwards; only cycles fail.
+fn verify_group_cycles(
+    seq: &[serde_yaml::Value],
+    names: &[String],
+    group_set: &BTreeSet<String>,
+) -> Result<(), ConfigError> {
+    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (index, item) in seq.iter().enumerate() {
+        let mapping = item.as_mapping().expect("checked by the caller");
+        let members = optional_string_list(mapping, "proxies")?;
+        edges.insert(
+            names[index].clone(),
+            members
+                .into_iter()
+                .filter(|member| group_set.contains(member))
+                .collect(),
+        );
+    }
+    fn visit(
+        name: &str,
+        edges: &BTreeMap<String, Vec<String>>,
+        stack: &mut Vec<String>,
+    ) -> Result<(), ConfigError> {
+        if let Some(position) = stack.iter().position(|entry| entry == name) {
+            let mut chain = stack[position..].to_vec();
+            chain.push(name.to_string());
+            return Err(ConfigError::InvalidValue(format!(
+                "ProxyGroup {name}: loop detected: {}",
+                chain.join(" -> ")
+            )));
+        }
+        stack.push(name.to_string());
+        if let Some(children) = edges.get(name) {
+            for child in children {
+                visit(child, edges, stack)?;
+            }
+        }
+        stack.pop();
+        Ok(())
+    }
+    for name in names {
+        visit(name, &edges, &mut Vec::new())?;
+    }
+    Ok(())
+}
+
 fn validate_provider_filter(
     patterns: &str,
     location: &str,
@@ -2028,9 +2673,9 @@ fn parse_health_check(
     config.interval = optional_seconds(mapping, "interval")?
         .map(|duration| duration.as_secs())
         .unwrap_or(300);
-    config.timeout = optional_seconds(mapping, "timeout")?
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+    // Pinned `NewHealthCheck` reads this as milliseconds (`time.Duration(t) *
+    // time.Millisecond`), like the group `timeout` key.
+    config.timeout = optional_positive_int(mapping, "timeout")?.unwrap_or(0);
     config.lazy = optional_bool(mapping, "lazy")?.unwrap_or(true);
     config.expected_status = match optional_value(mapping, "expected-status")? {
         None | Some(serde_yaml::Value::Null) => String::new(),
@@ -2050,11 +2695,11 @@ fn parse_health_check(
             "{location}: health-check.enable needs a url"
         )));
     }
-    // Validate the expected-status syntax even though T23 owns probing, so a
-    // typo fails here instead of being discovered by a later task.
+    // Validate the expected-status syntax now so a typo fails at load instead
+    // of being discovered by the health scheduler.
     if !config.expected_status.trim().is_empty() {
-        parse_port_ranges(&config.expected_status)
-            .map_err(|e| config_error_with_prefix(e, location))?;
+        ExpectedStatus::parse(&config.expected_status)
+            .map_err(|e| config_error_with_prefix(ConfigError::InvalidValue(e), location))?;
     }
     Ok(config)
 }
@@ -2152,6 +2797,23 @@ fn optional_string(fields: &serde_yaml::Mapping, key: &str) -> Result<Option<Str
         Some(serde_yaml::Value::String(value)) => Ok(Some(value.clone())),
         Some(other) => Err(ConfigError::InvalidValue(format!(
             "'{key}' must be a string, found {}",
+            kind_of(other)
+        ))),
+    }
+}
+
+/// Strings that the pinned weakly-typed decoder also accepts as numbers
+/// (e.g. `expected-status: 204`).
+fn optional_string_or_number(
+    fields: &serde_yaml::Mapping,
+    key: &str,
+) -> Result<Option<String>, ConfigError> {
+    match optional_value(fields, key)? {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(serde_yaml::Value::String(value)) => Ok(Some(value.clone())),
+        Some(serde_yaml::Value::Number(value)) => Ok(Some(value.to_string())),
+        Some(other) => Err(ConfigError::InvalidValue(format!(
+            "'{key}' must be a string or number, found {}",
             kind_of(other)
         ))),
     }

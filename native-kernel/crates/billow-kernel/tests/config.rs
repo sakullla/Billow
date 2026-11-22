@@ -41,14 +41,12 @@ fn defaults_to_mihomo_port_and_loopback() {
 #[test]
 fn rejects_every_unimplemented_top_level_key() {
     for key in [
-        "proxy-groups",
         "dns",
         "hosts",
         "listeners",
         "tunnels",
         "external-controller",
         "secret",
-        "profile",
         "experimental",
         "ipv6",
         "unified-delay",
@@ -419,7 +417,7 @@ fn unknown_top_level_keys_are_ignored_like_mihomo() {
         loaded.warnings
     );
     // Known but unimplemented keys still fail with their name.
-    for key in ["dns", "hosts", "proxy-groups", "listeners"] {
+    for key in ["dns", "hosts", "listeners"] {
         let yaml = format!("mixed-port: 1\n{key}: {{}}\n");
         let e = err_tag(&yaml);
         assert!(e.starts_with("unsupported"), "{key}: {e}");

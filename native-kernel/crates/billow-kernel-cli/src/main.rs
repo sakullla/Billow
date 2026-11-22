@@ -31,6 +31,24 @@ struct Args {
     /// Concurrent session cap.
     #[arg(long, default_value_t = 256)]
     max_sessions: usize,
+    /// Directory for the selection cache (`profile.store-selected`).
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
+    /// Fix a group selection before traffic, e.g. `--select PROXY=node-b`
+    /// (repeatable). Persisted when the configuration enables
+    /// `profile.store-selected` and a cache directory is set.
+    #[arg(long = "select", value_name = "GROUP=MEMBER")]
+    selections: Vec<String>,
+    /// Run every group/provider health check once after start.
+    #[arg(long)]
+    probe_groups: bool,
+    /// Wait this many milliseconds after start, then print group state.
+    #[arg(long, default_value_t = 0)]
+    wait_ms: u64,
+    /// Print one machine-readable `GROUPS {...}` line with the group list,
+    /// current selections and per-member health.
+    #[arg(long)]
+    print_groups: bool,
     /// Validate the configuration and rule set, then exit without listening.
     #[arg(long)]
     check: bool,
@@ -76,6 +94,12 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
+    let options = billow_kernel::KernelOptions {
+        cache_dir: args
+            .cache_dir
+            .clone()
+            .or_else(|| Some(base_dir.clone())),
+    };
     if args.check {
         let (mut kernel, _) = start(
             &billow_kernel::LoadedConfig {
@@ -84,6 +108,7 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
             },
             &args,
             &base_dir,
+            &options,
         )?;
         println!("{}", kernel.identity().to_line());
         kernel.stop().map_err(|e| e.to_string())?;
@@ -98,10 +123,22 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
         },
         &args,
         &base_dir,
+        &options,
     )?;
     let identity = kernel.identity().clone();
     println!("{}", identity.to_line());
     println!("features: {}", identity.features);
+
+    if args.print_groups || args.probe_groups || args.wait_ms > 0 || !args.selections.is_empty() {
+        run_diagnostics(&kernel, &args)?;
+        // A scripted diagnostic session: report, stop, and exit instead of
+        // waiting for a signal. (Selection-only invocations without
+        // `--print-groups`/`--wait-ms` keep running below.)
+        if args.print_groups || args.probe_groups || args.wait_ms > 0 {
+            kernel.stop().map_err(|e| e.to_string())?;
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
 
     let reason = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -118,19 +155,113 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Apply scripted selections, wait for health checks, then print the group
+/// state. Used by hosts/tests and the T23 differential probe.
+fn run_diagnostics(kernel: &Kernel, args: &Args) -> Result<(), String> {
+    for selection in &args.selections {
+        let (group, member) = selection.split_once('=').ok_or_else(|| {
+            format!("--select expects GROUP=MEMBER, got '{selection}'")
+        })?;
+        kernel
+            .select_group(group, member)
+            .map_err(|error| format!("--select {group}={member}: {error}"))?;
+    }
+    if args.wait_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(args.wait_ms));
+    }
+    if args.probe_groups {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let probed = runtime.block_on(kernel.groups().probe_all());
+        tracing::info!(probed, "explicit health check finished");
+    }
+    if args.print_groups {
+        println!("GROUPS {}", groups_json(kernel));
+    }
+    Ok(())
+}
+
+fn groups_json(kernel: &Kernel) -> String {
+    let mut out = String::from("{\"groups\":[");
+    for (index, status) in kernel.group_statuses().iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"name\":{},\"type\":{},\"now\":{},\"all\":[{}],\"testUrl\":{},\"expectedStatus\":{},\"hidden\":{},\"members\":[{}]}}",
+            json_string(&status.name),
+            json_string(status.kind),
+            json_string(&status.now),
+            status
+                .all
+                .iter()
+                .map(|name| json_string(name))
+                .collect::<Vec<_>>()
+                .join(","),
+            json_string(&status.test_url),
+            json_string(&status.expected_status),
+            status.hidden,
+            status
+                .members
+                .iter()
+                .map(|member| format!(
+                    "{{\"name\":{},\"alive\":{},\"delay\":{}}}",
+                    json_string(&member.name),
+                    member.alive,
+                    member
+                        .delay
+                        .map(|delay| delay.to_string())
+                        .unwrap_or_else(|| "null".to_string())
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    out.push_str("]}");
+    out
+}
+
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other if (other as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", other as u32));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn start(
     loaded: &billow_kernel::LoadedConfig,
     args: &Args,
     base_dir: &std::path::Path,
+    options: &billow_kernel::KernelOptions,
 ) -> Result<(Kernel, Vec<String>), String> {
     let limits = Limits {
         buffer_size: args.buffer_bytes,
         max_sessions: args.max_sessions,
         ..Limits::default()
     };
-    let (mut kernel, warnings) =
-        Kernel::start_with_dir(loaded, args.geosite_dir.clone(), base_dir.to_path_buf(), limits)
-            .map_err(|e| format!("[{}] {e}", e.tag()))?;
+    let (mut kernel, warnings) = Kernel::start_with_options(
+        loaded,
+        args.geosite_dir.clone(),
+        base_dir.to_path_buf(),
+        limits,
+        options,
+    )
+    .map_err(|e| format!("[{}] {e}", e.tag()))?;
     let identity = kernel.identity().clone().with_port_override(args.port);
     kernel.set_identity(identity);
     Ok((kernel, warnings))

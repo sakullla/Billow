@@ -59,6 +59,15 @@ node tool/kernel-compat/t24-differential.mjs \
   --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
   --out tool/kernel-compat/evidence/t24-differential.json \
   [--mmdb-dir <dir-with-Country.mmdb-and-ASN.mmdb>]
+
+# T23 group/selection/health differential: every member is a loopback HTTP
+# CONNECT node (a health node answers the probe HEAD with a fixed delay/status);
+# Mihomo is driven through its external-controller and the Rust kernel through
+# --select/--probe-groups/--print-groups. 17 cases plus the selection cache
+# across a restart.
+node tool/kernel-compat/t23-differential.mjs \
+  --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
+  --out tool/kernel-compat/evidence/t23-differential.json
 ```
 
 The Rust binary's path follows the cargo target directory: `native-kernel/target/release/billow-kernel`
@@ -191,6 +200,11 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   verification record is `evidence/t17-translation.md`, the differential vectors
   are in `peers/sudoku-vectors/`, and the 13 pinned-peer cases are part of
   `peer-tests.sh`.
+
+T23 fills `groups` and `configFields.proxy-groups`/`profile` in the mapping:
+`select`/`url-test`/`fallback`/`load-balance` are implemented (load-balance
+partial), `relay` is a named rejection because pinned v1.19.34 removed it, and
+`evidence/t23-groups.md` records the 18-case differential plus the unit suite.
 
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo

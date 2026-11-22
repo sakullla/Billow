@@ -257,3 +257,163 @@ pub async fn wait_until<F: Fn() -> bool>(timeout: Duration, predicate: F) -> boo
     }
     predicate()
 }
+
+/// A local HTTP CONNECT proxy used as a group member. `Health` answers the
+/// health-check `HEAD` itself (with a controllable delay/status); `Forward`
+/// tunnels to the requested target.
+#[derive(Debug, Clone, Copy)]
+pub enum ProxyNodeMode {
+    Health { delay: Duration, status: u16 },
+    Forward,
+}
+
+pub struct ProxyNode {
+    pub port: u16,
+    pub connections: std::sync::Arc<AtomicU64>,
+    pub heads: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// Spawn a proxy node on a reserved loopback port (call inside a runtime).
+pub fn spawn_http_proxy_node(mode: ProxyNodeMode) -> ProxyNode {
+    let std_listener = bind_loopback();
+    let port = std_listener.local_addr().unwrap().port();
+    std_listener
+        .set_nonblocking(true)
+        .expect("nonblocking proxy node");
+    let listener = tokio::net::TcpListener::from_std(std_listener)
+        .expect("adopt proxy listener");
+    let connections = std::sync::Arc::new(AtomicU64::new(0));
+    let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let state = (connections.clone(), heads.clone());
+    std::mem::forget(tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let (connections, heads) = state.clone();
+            tokio::spawn(async move {
+                connections.fetch_add(1, Ordering::Relaxed);
+                let _ = serve_proxy_node(stream, mode, heads).await;
+            });
+        }
+    }));
+    ProxyNode {
+        port,
+        connections,
+        heads,
+    }
+}
+
+async fn serve_proxy_node(
+    mut stream: TcpStream,
+    mode: ProxyNodeMode,
+    heads: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> std::io::Result<()> {
+    let mut buffer = vec![0u8; 4096];
+    let mut head = Vec::new();
+    loop {
+        let read = stream.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(());
+        }
+        head.extend_from_slice(&buffer[..read]);
+        if head.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if head.len() > 16 * 1024 {
+            return Err(std::io::Error::other("proxy head too large"));
+        }
+    }
+    let text = String::from_utf8_lossy(&head).to_string();
+    heads
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(text.lines().next().unwrap_or_default().to_string());
+    let mut lines = text.lines();
+    let request = lines.next().unwrap_or_default();
+    let mut parts = request.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let target = parts.next().unwrap_or_default();
+    let (host, port) = match target.rsplit_once(':') {
+        Some((host, port)) => (
+            host.trim_start_matches('[').trim_end_matches(']').to_string(),
+            port.parse::<u16>().ok(),
+        ),
+        None => (String::new(), None),
+    };
+    if !method.eq_ignore_ascii_case("CONNECT") {
+        stream
+            .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n")
+            .await?;
+        return Ok(());
+    }
+    stream
+        .write_all(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: test-node\r\n\r\n")
+        .await?;
+    // Any bytes after the CONNECT head belong to the tunneled stream.
+    let head_end = head
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
+        .unwrap_or(head.len());
+    let mut leftover = head[head_end..].to_vec();
+
+    let mut first_request = Vec::new();
+    if let ProxyNodeMode::Health { delay, status } = mode {
+        // Serve the health-check HEAD here; tunnel anything else.
+        if leftover.is_empty() {
+            let read = stream.read(&mut buffer).await?;
+            if read == 0 {
+                return Ok(());
+            }
+            first_request.extend_from_slice(&buffer[..read]);
+        } else {
+            first_request = std::mem::take(&mut leftover);
+        }
+        if first_request.starts_with(b"HEAD ") {
+            while !first_request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await?;
+                if read == 0 {
+                    return Ok(());
+                }
+                first_request.extend_from_slice(&buffer[..read]);
+                if first_request.len() > 16 * 1024 {
+                    return Ok(());
+                }
+            }
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let reason = if status == 204 { "No Content" } else { "OK" };
+            stream
+                .write_all(
+                    format!("HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+                )
+                .await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+        leftover = first_request;
+    }
+
+    let Ok(port) = port.ok_or(()) else {
+        stream
+            .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+            .await?;
+        return Ok(());
+    };
+    match TcpStream::connect((host.as_str(), port)).await {
+        Ok(mut upstream) => {
+            if !leftover.is_empty() {
+                upstream.write_all(&leftover).await?;
+            }
+            let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+        }
+        Err(_) => {
+            stream
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+        }
+    }
+    Ok(())
+}

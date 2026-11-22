@@ -757,17 +757,17 @@ fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
         .expect("cross-task blocks must be rejected");
     let text = error.to_string();
     assert!(
-        ["external-controller", "dns", "proxy-groups", "sniffer", "tun"]
+        ["external-controller", "dns", "sniffer", "tun"]
             .iter()
             .any(|key| text.contains(key)),
         "{text}"
     );
 
-    // Each boundary is individually named.
+    // Each boundary is individually named. `proxy-groups` is implemented by
+    // T23 now: a group subset loads and a rule target resolves to it.
     for (key, value) in [
         ("external-controller", "127.0.0.1:49152"),
         ("dns", "{enable: true}"),
-        ("proxy-groups", "[]"),
     ] {
         let yaml = format!("mixed-port: {}\n{key}: {value}\n", free_port());
         let error = billow_kernel::load_config(&yaml, "effective.yaml")
@@ -782,6 +782,19 @@ fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
             .expect("enabled block must be rejected");
         assert!(error.to_string().contains(key), "{key}: {error}");
     }
+
+    let groups_only = format!(
+        "mixed-port: {}\nproxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}\nproxy-groups:\n  - {{name: PROXY, type: select, proxies: [node-a]}}\nrules:\n  - MATCH,PROXY\n",
+        free_port()
+    );
+    let loaded = billow_kernel::load_config(&groups_only, "effective.yaml")
+        .expect("proxy-groups subset loads");
+    assert_eq!(loaded.config.proxy_groups.len(), 1);
+    assert_eq!(
+        loaded.config.rules[0].action,
+        Action::Group(0),
+        "a rule target must resolve to the group"
+    );
 
     // `port: 0`/`socks-port: 0` are disabled listener aliases, not ephemeral
     // binds; `mixed-port` still selects the listener. A file whose only ports
@@ -810,7 +823,6 @@ fn billow_effective_configuration_rule_subset_keeps_override_order() {
         "tun",
         "sniffer",
         "geox-url",
-        "proxy-groups",
     ] {
         mapping.remove(serde_yaml::Value::String(key.to_string()));
     }
@@ -820,6 +832,7 @@ fn billow_effective_configuration_rule_subset_keeps_override_order() {
     assert_eq!(loaded.config.rules.len(), 4);
     assert_eq!(loaded.config.rule_providers.len(), 1);
     assert_eq!(loaded.config.proxies.len(), 1);
+    assert_eq!(loaded.config.proxy_groups.len(), 1);
     assert_eq!(loaded.config.listen.port(), mixed_port);
     let kernel = start(&subset, None);
     assert_eq!(domain_eval(&kernel, "x.override.example"), Action::Reject);

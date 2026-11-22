@@ -642,3 +642,50 @@ fn process_loads_t14_masque() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("mq=masque"), "{stdout}");
 }
+
+/// T23 group entry: `--select` fixes a group, `--print-groups` exposes the
+/// status line, and `--cache-dir` persists the choice for the next process.
+#[test]
+fn process_prints_groups_and_persists_a_selection() {
+    let dir = std::env::temp_dir().join(format!("billow-cli-groups-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let port = free_port();
+    let config = dir.join("config.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "mixed-port: {port}\nprofile: {{store-selected: true}}\nproxies:\n  - {{name: A, type: socks5, server: 127.0.0.1, port: 9}}\n  - {{name: B, type: socks5, server: 127.0.0.1, port: 9}}\nproxy-groups:\n  - {{name: G, type: select, proxies: [A, B]}}\nrules:\n  - 'MATCH,G'\n"
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
+        .arg(&config)
+        .arg("--cache-dir")
+        .arg(&dir)
+        .args(["--select", "G=B", "--print-groups", "--wait-ms", "0"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("GROUPS "), "{stdout}");
+    assert!(stdout.contains("\"now\":\"B\""), "{stdout}");
+    assert!(dir.join("cache.yaml").exists(), "selection cache written");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
+        .arg(&config)
+        .arg("--cache-dir")
+        .arg(&dir)
+        .args(["--print-groups", "--wait-ms", "0"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"now\":\"B\""),
+        "the next process restores the cached selection: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -16,8 +16,10 @@
 //! rule or protocol option the kernel does not
 //! implement fails configuration loading when its value asks for something; a
 //! key the pinned type does not declare is ignored exactly as Mihomo ignores
-//! it, so a valid upstream configuration loads. DNS, proxy groups, providers
-//! and the control API are T5.
+//! it, so a valid upstream configuration loads. Proxy groups (T23: select,
+//! url-test, fallback, load-balance, nested groups, provider `use`, filters,
+//! health checks and a selection cache) are implemented; DNS, hosts and the
+//! control API are still T22/T25.
 //!
 //! ```no_run
 //! # fn main() -> anyhow::Result<()> {
@@ -33,16 +35,20 @@
 pub mod config;
 pub mod engine;
 pub mod geodata;
+pub mod groups;
 pub mod identity;
 pub mod inbound;
 pub mod provider;
 pub mod rules;
 
 pub use config::{
-    load_config, Action, Config, ConfigError, GeoSiteDatabase, LoadedConfig, Matcher,
-    NetworkKind, InType,
+    load_config, Action, Config, ConfigError, ExpectedStatus, GeoSiteDatabase, GroupKind,
+    LoadBalanceStrategy, LoadedConfig, Matcher, NetworkKind, InType, ProfileConfig, ProxyGroup,
 };
-pub use engine::{Kernel, Limits, StartError, Stats, VERSION};
+pub use engine::{Kernel, KernelOptions, Limits, StartError, Stats, VERSION};
+pub use groups::{
+    GroupError, GroupRegistry, GroupStatus, MemberHealth, Selected, SelectionCache,
+};
 pub use identity::Identity;
 pub use provider::{ProviderUpdate, RuleProviders};
 pub use rules::{RuleSet, Target};

@@ -56,14 +56,17 @@ families are partial: their gaps are named in
 [Not implemented](#not-implemented) and in
 `tool/kernel-compat/evidence/rust-mapping.json`.
 **Not implemented yet** (rejected with
-`[unsupported]`, never ignored): DNS and `hosts` (T22), proxy groups and
-selection/latency (T23), the control API (T25), `tun`/`redir`/`tproxy`, the
+`[unsupported]`, never ignored): DNS and `hosts` (T22), the control API (T25),
+`tun`/`redir`/`tproxy`, the
 families listed under
 [Protocol families outside this slice](#protocol-families-outside-this-slice),
 and the protocol options listed in [Not implemented](#not-implemented). T24
 implements the rule types, rule/proxy providers, GEO/MRS reads and Billow's
-effective override configuration; the remaining configuration-plane ownership
-is split across T22/T23/T25 and is named at each boundary.
+effective override configuration, and T23 implements proxy groups, selection
+and health checks (`select`/`url-test`/`fallback`/`load-balance`, nested
+groups, provider `use`, filters, latency probes and a selection cache); the
+remaining configuration-plane ownership is split across T22/T25 and is named
+at each boundary.
 
 ## License
 
@@ -128,9 +131,10 @@ native-kernel/
 Top-level keys: `mixed-port`, `port` (recorded, does not bind a separate
 listener), `socks-port` (legacy alias for `mixed-port`), `allow-lan`,
 `bind-address`, `mode: rule`, `log-level`, `authentication`, `tls` (extra
-roots only), `proxies`, `rules`, `sub-rules`, `rule-providers`,
-`proxy-providers`, `geodata-mode`, `geodata-loader`, `geosite-matcher`,
-`geo-auto-update` (`false` only) and `geo-update-interval` (parsed). A listener
+roots only), `proxies`, `proxy-groups`, `profile` (`store-selected`), `rules`, `sub-rules`,
+`rule-providers`, `proxy-providers`, `geodata-mode`, `geodata-loader`,
+`geosite-matcher`, `geo-auto-update` (`false` only) and `geo-update-interval`
+(parsed). A listener
 port of `0` means disabled (Mihomo's meaning); if every listener key is 0 the
 load fails by name instead of binding an ephemeral port.
 
@@ -139,8 +143,9 @@ Billow's `profile.rs` effective YAML (`prepare`/`apply_settings`/
 **not** claimed to load directly. Its rule/provider/proxy subset loads; the
 launcher keys are handled explicitly: a disabled `tun`/`sniffer` block is
 inert with a warning, `geox-url` is recorded with a warning, and
-`external-controller`, `dns`/`hosts`, `proxy-groups`, or an enabled
-`tun`/`sniffer` are rejected with the key named (T25/T22/T23/T6-T7).
+`external-controller`, `dns`/`hosts`, or an enabled `tun`/`sniffer` are
+rejected with the key named (T25/T22/T6-T7). `proxy-groups` is implemented by
+T23 (see [Proxy groups](#proxy-groups-t23)).
 
 Rules (T24): `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`,
 `DOMAIN-WILDCARD`, `GEOSITE`, `GEOIP`, `SRC-GEOIP`, `IP-ASN`, `SRC-IP-ASN`,
@@ -150,7 +155,7 @@ Rules (T24): `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`,
 `PROCESS-PATH-WILDCARD`, `NETWORK`, `IN-TYPE`, `SUB-RULE`,
 `AND`, `OR`, `NOT`, `RULE-SET` and `MATCH`. Outbounds are `DIRECT`, `REJECT`,
 `REJECT-DROP` (close without an inbound reply) or the name of a configured
-proxy. The optional `no-resolve`/`src` parameters are accepted on IP/GEOIP/
+proxy or proxy group. The optional `no-resolve`/`src` parameters are accepted on IP/GEOIP/
 IP-ASN/RULE-SET rules and recorded; this kernel never resolves a name while
 matching (DNS is T22), so an IP/GEOIP rule matches only a destination that is
 already an IP. The first matching rule wins; without a `MATCH` rule the
@@ -203,9 +208,9 @@ Other pinned override fields (`tfo`, `mptcp`, `udp-over-tcp`, `up`/`down`,
 `name-cert-verify`, `interface-name`, `routing-mark`, `ip-version`,
 `override-expr`) are rejected with `override.<field>`; a non-empty
 `age-secret-key` is rejected because age decryption is not implemented. The
-proxies and filters are loaded and exposed; group `use`/`providers` references
-and latency probing belong to T23, so a `proxy-groups` key is still rejected by
-name. `Kernel::update_proxy_provider` applies the same
+proxies and filters are loaded and exposed; group `use` references and latency
+probing are T23 (see [Proxy groups](#proxy-groups-t23)).
+`Kernel::update_proxy_provider` applies the same
 success-replaces/failure-keeps-old rule.
 
 `authentication: ["user:pass", ...]` guards the mixed inbound (SOCKS5 RFC 1929
@@ -256,6 +261,83 @@ upstream configuration is not rejected (R2). Errors are categorized by a stable 
 error: [unsupported] unsupported configuration: top-level key 'dns' is not implemented by the Rust kernel slice
 error: [unsupported] proxies[0] (name=s1, type=vless): option 'flow' value 'xtls-rprx-vision' is not implemented
 ```
+
+## Proxy groups (T23)
+
+`proxy-groups` implements the pinned `adapter/outboundgroup` semantics. Every
+member expansion follows `GroupBase.GetProxies`: the inline `proxies` list is
+the "compatible" block and comes first, then each `use` provider snapshot; a
+group `filter` (backtick-separated regexes, matched case-sensitively like
+`regexp2.None`) selects from named providers only, `exclude-filter` removes by
+name, and `exclude-type` (`|`-separated) compares the pinned adapter name
+(`Http`, `Shadowsocks`, `Socks5`, ...), not the YAML `type`. Multiple providers
+with multiple filters reorder the combined list by filter and append the rest,
+exactly as pinned. An empty result selects `empty-fallback` (default
+`COMPATIBLE`, which routes like `DIRECT`). `include-all` implies both
+`include-all-proxies` (sorted proxy names through `filter`) and
+`include-all-providers` (sorted provider names). Nested groups may be declared
+in any order; cycles are rejected (`loop detected`) and the member list is
+rebuilt when a provider generation changes.
+
+Types: `select` (first member, `default-selected`, or a fixed selection),
+`url-test` (the pinned `fast()` algorithm: lowest `LastDelayForTestUrl` among
+alive members, `tolerance` keeps the current node, a fixed selection wins while
+alive), `fallback` (first alive member; a fixed member that died is cleared and
+scanning continues) and `load-balance` (`consistent-hashing` default,
+`round-robin`, `sticky-sessions`, all using the pinned `jumpHash`; a dead
+bucket is retried up to five times and then the list is traversed). Pinned
+v1.19.34 removed `relay` ("please using dialer-proxy instead"), so the Rust
+kernel rejects that type with the same named reason instead of implementing a
+shape the pinned engine refuses. `hash-key: in-user` is rejected (the mixed
+inbound does not propagate the authenticated user to the outbound), and
+`routing-mark`/`interface-name`/`dialer-proxy` on a group are recorded as
+warnings exactly as pinned logs them.
+
+Health checks: `interval`, `timeout` (milliseconds, default 5000),
+`max-failed-times` (default 5), `lazy` (default true), `url` (default
+`https://www.gstatic.com/generate_204` or the first `use` provider's
+health-check URL) and `expected-status` (pinned `/`/`,` range syntax) are
+honoured. A `select` group has no automatic probe; other types default to a
+300 s interval. Each task probes on its own interval boundary; `lazy` skips a
+boundary when the group was not touched since the previous one. Probes dial
+through the member (including nested groups) and issue `HEAD`, then record the
+per-URL alive flag and delay. The initial state matches pinned: a member with
+no probe record yet is alive and its delay is `65535`, so an untested group
+selects its first member. A failed dial triggers the pinned `onDialFailed`
+thresholds (a connection-refused error triggers immediately, otherwise
+`max-failed-times` within `timeout` trigger a health check; success resets the
+count). Provider `health-check` drives `use` provider members; an explicit
+group `url` additionally probes those members at the group URL with the group
+`filter`/`expected-status`. UDP datagrams through a group with `disable-udp`
+are dropped and logged.
+
+Selection persistence: `profile.store-selected` (default true) writes fixed
+selections to `<cache-dir>/cache.yaml` and restores them before traffic, like
+pinned `patchSelectGroup`. The file holds the same group→member map as pinned's
+bbolt `cache.db` (the files are not interchangeable). Hosts pass a cache
+directory through `KernelOptions`; the CLI uses the configuration directory and
+warns when no directory is available. `profile.store-fake-ip` is recorded with
+a warning because the fake-ip store is T22.
+
+Rule targets and API: a rule or `MATCH` may name a group; the engine resolves
+nested groups on each dial and reports the group path in the session log.
+`Kernel::group_statuses()`, `Kernel::groups().group_status(name)`,
+`Kernel::select_group(group, member)` and the async
+`GroupRegistry::probe_group/probe_all` are the T25-facing surface. `GroupStatus`
+carries `type`, `now`, the ordered `all` list, `fixed`/`default-selected`,
+`testUrl`, `expectedStatus`, `hidden`/`icon`, `emptyFallback` and per-member
+alive/delay, which is what pinned `/proxies` exposes.
+
+Not claimed: `dialer-proxy` still resolves only inline proxy names (a group or
+provider proxy as the dialer target is rejected at load), consistent-hashing
+buckets are not byte-identical to pinned (pinned `maphash` is seeded per
+process; the Rust key is deterministic FNV-1a over the effective domain), the
+public-suffix approximation for the hash key is the last two labels (no PSL
+table in the kernel), and `load-balance.Now()` is empty exactly as pinned.
+Evidence: `tests/groups.rs` (parsing, filters/include-all, nesting, selection,
+failover, round-robin/consistent-hashing, provider `use`, persistence) and
+`tool/kernel-compat/evidence/t23-differential.json` (17 pinned-Mihomo cases +
+persistence, all matching).
 
 ## Protocol outbounds
 
@@ -383,7 +465,7 @@ is silently reduced:
 | `wireguard`, `openvpn` | the protocol halves are implemented (`src/outbound/wireguard.rs`, `src/outbound/openvpn.rs`) and verified against controlled peers, but turning their IP packets into TCP streams needs the userspace IP stack and TUN device owned by T6/T7 | **T16**: transport + configuration semantics; a `dial()` names the T6/T7 device gap. `outbound::wireguard::WireguardTunnel` and `outbound::openvpn::OpenVpnTunnel` are the interfaces for that layer |
 | `tailscale`, `zerotier` | the protocol/configuration adapters are implemented in `src/outbound/{tailscale,zerotier}.rs` and verified against controlled peers built from the locked Go modules; the tunnel's TCP/UDP socket layer needs the T6/T7 userspace IP stack and TUN device | **T19 partial**: control/DERP and identity/planet/VL1/VL2 are available to T6/T7/T22/T23; `dial()` names the device gap; registration-only Tailscale prefs and ZeroTier TCP fallback are rejected by name |
 | `easytier` | `src/outbound/easytier.rs` is an LGPL-3.0-or-later translation of the locked EasyTier source: cleartext host/discovery, Noise XX and secure-datagram AES-GCM/ChaCha20; the userspace IP stack/TUN and OSPF/route identity belong to T6/T7 | **T20 partial**: cleartext and secure handshakes/encrypted data verified against the pinned core; distribution must honor LGPL |
-| `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules and no `dns`/`rematch` adapters | **T22/T23** (DNS and group/rematch integration) |
+| `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules, group members may name `DIRECT`/`REJECT`/`COMPATIBLE`, and there are no `dns`/`rematch` adapters | **T22** (`dns`); `direct`/`reject`/`rematch` entries stay rejected by name |
 
 T13 delivered `mieru` in the single-session TCP slice: an independent
 implementation of the published protocol (the module is GPL-3.0, so no mieru
@@ -514,8 +596,8 @@ workspace `rust-version` to 1.89 instead of shipping an inconsistent MSRV.
 `03-execution-plan.md`
 defines T9/T11 (non-QUIC), T10 (QUIC), T16 (device-family protocol halves;
 device/TUN and the IP stack remain T6/T7) and the configuration-plane tasks
-T22 (DNS/hosts), T23 (groups/selection), T24 (rules/providers/GEO) and T25
-(control interface). The capability index
+T22 (DNS/hosts), T24 (rules/providers/GEO) and T25 (control interface); T23
+(groups/selection) is implemented and its boundaries are named below. The capability index
 records each family at the status the kernel actually reaches: `implemented`,
 `partial` (with the missing options named) or `unimplemented`; none can be
 reported as compatible.
@@ -523,14 +605,15 @@ reported as compatible.
 ### Not implemented
 
 Configuration-plane gaps not claimed by T24 (each is rejected with the key or
-value named): proxy groups and `use`/`providers` references (T23), DNS/`hosts`
-and `find-process-mode` (T22), the control API (T25), `geo-auto-update: true`,
+value named): DNS/`hosts` and `find-process-mode` (T22), the control API (T25),
+`geo-auto-update: true`,
 an HTTP provider fetched through a configured `proxy`, compressed provider
 responses, `path-in-bundle`, `age-secret-key`, unsupported `override.<field>`
 values, geosite/process regex look-around or backreferences that Rust `regex`
 cannot express, and unknown MaxMind DB data types (the reader covers the
-Country/ASN shapes above). Provider `health-check` fields are parsed and
-exposed, but probing/selection belongs to T23. Rule names `UID`, `DSCP`,
+Country/ASN shapes above). Provider `health-check` fields drive the T23 health
+scheduler; `profile.store-fake-ip` is recorded (fake-ip is T22). Rule names
+`UID`, `DSCP`,
 `IN-USER`, `IN-NAME`, `REMATCH-NAME` and `PASS`/`PASS-RULE` are rejected by
 name; `PROCESS-NAME-WILDCARD`/`PROCESS-PATH-WILDCARD` are implemented with the
 pinned `component/wildcard` semantics (case-insensitive).
@@ -665,20 +748,26 @@ are in `tool/kernel-compat/evidence/option-matrix.txt`.
 
 ```
 cargo run -p billow-kernel-cli -- <config.yaml> [--port N] [--geosite-dir DIR] \
-    [--buffer-bytes N] [--max-sessions N] [--check]
+    [--buffer-bytes N] [--max-sessions N] [--cache-dir DIR] \
+    [--select GROUP=MEMBER]... [--probe-groups] [--wait-ms N] [--print-groups] [--check]
 ```
 
 `--geosite-dir` (alias `--geodata-dir`) is the geodata directory. Relative
 provider paths resolve against the configuration file's directory (and must
 stay under it or `SAFE_PATHS`), never the process cwd. `--check` validates the
 configuration and rule set, starts the listener to prove
-the bind, prints the identity and exits. A normal run prints one identity line,
+the bind, prints the identity and exits. `--cache-dir` holds the T23 selection
+cache (`profile.store-selected`; the default is the configuration directory),
+`--select GROUP=MEMBER` fixes a selection before traffic, `--probe-groups` runs
+every health check once, and `--wait-ms N --print-groups` waits and prints one
+`GROUPS {json}` status line (type, now, all, per-member alive/delay) instead of
+serving until a signal; the differential probe uses that shape. A normal run prints one identity line,
 serves until SIGINT/SIGTERM (on Windows the host drives the library API; T6),
 then prints a session summary:
 
 ```
 instance=<uuid> pid=<pid> version=0.1.0 listen=127.0.0.1:17890 overridden_port=- config=sha256:<digest> rules=3 geosite_dir=- state_dir=-
-features: mixed-inbound(tcp,http-connect,socks5); rules=inline(3 entries); rule-providers=0; proxy-providers=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss1=ss,tj1=trojan,jump=socks5,vl1=vless; dns=none
+features: mixed-inbound(tcp,http-connect,socks5); rules=inline(3 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss1=ss,tj1=trojan,jump=socks5,vl1=vless; dns=none
 stopped instance=<uuid> accepted=4 active=0 completed=2 rejected=2 failed=0 bytes_up=40 bytes_down=40
 ```
 
@@ -702,8 +791,14 @@ Stable entry points:
 - `Kernel::start(path, geosite_dir, limits)` / `Kernel::start_from_yaml(yaml, geosite_dir, limits)`
   / `Kernel::start_with_yaml(&LoadedConfig, geosite_dir, limits)` — the last one
   lets a host adjust the listener before binding and keeps the warnings.
+- `Kernel::start_with_options(&LoadedConfig, geosite_dir, base_dir, limits, &KernelOptions)`
+  — `KernelOptions { cache_dir }` locates the T23 selection cache.
 - `Kernel::identity()`, `Kernel::listen_addr()`, `Kernel::stats()`,
   `Kernel::evaluate(host, ip)`, `Kernel::config()`, `Kernel::stop()`.
+- `Kernel::groups()` / `Kernel::group_statuses()` / `Kernel::select_group(group, member)`
+  — group list, current selection, fixed selection and per-member health for
+  T25; `GroupRegistry::probe_group(name).await` / `probe_all().await` run an
+  explicit latency test.
 - `load_config` / `parse_rule` for validation without starting.
 - `Limits { buffer_size, max_sessions, handshake_timeout, dial_timeout, half_close_timeout, udp_idle_timeout }`.
 
@@ -748,9 +843,18 @@ T24's rules/providers/GEO differential is separate because it needs the pinned
 Mihomo binary and a loopback provider server:
 `node tool/kernel-compat/t24-differential.mjs --mihomo <binary> --rust
 <billow-kernel> --out tool/kernel-compat/evidence/t24-differential.json`
-(see `evidence/t24-geodata-rules.md`, including the `--mmdb-dir` cases).
+(see `evidence/t24-geodata-rules.md`, including the `--mmdb-dir` cases). The T23
+group differential runs the same pinned binary with loopback CONNECT nodes:
+`node tool/kernel-compat/t23-differential.mjs --mihomo <binary> --rust
+<billow-kernel> --out tool/kernel-compat/evidence/t23-differential.json`
+(17 cases plus persistence; see `evidence/t23-groups.md`).
 
 - `tests/config.rs` — parsing, strict option tables, error tags.
+- `tests/groups.rs` — T23: every group type/field, relay rejection, cycles,
+  filter/exclude/include-all expansion, `use` provider members, rule targets
+  naming a group, url-test/fallback failover with controlled delays, nested
+  groups, load-balance round-robin/consistent-hashing and selection
+  persistence across a restart.
 - `tests/resources.rs` — T24: every implemented rule type against the
   connection metadata, `SUB-RULE` action selection, all rule-provider
   vehicles/formats (including MRS), proxy-provider filters, generated
@@ -932,6 +1036,12 @@ node tool/kernel-compat/runner.mjs \
 
 # the harness's own acceptance command
 node --test tool/kernel-compat/runner.test.mjs
+
+# T23 group/selection/health differential (17 cases + persistence)
+node tool/kernel-compat/t23-differential.mjs \
+  --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 \
+  --rust native-kernel/target/release/billow-kernel \
+  --out tool/kernel-compat/evidence/t23-differential.json
 
 # controlled peers for the families with no Mihomo listener (gost-relay, ssh,
 # ssr), the independent Go SSR peers (including the pinned-client cross-check)
