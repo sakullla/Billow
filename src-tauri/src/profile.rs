@@ -6371,9 +6371,11 @@ mod tests {
         assert_eq!(marker_through_proxy(port, target, "mihomo-2"), "pong:mihomo-2");
 
         // A configuration the native kernel cannot accept is refused before the
-        // live Mihomo session is released.
+        // live Mihomo session is released. `sniffer.enable` stays a named
+        // rejection (proxy groups became supported in T23, so they are no
+        // longer a valid negative case).
         let grouped = format!(
-            "mixed-port: {port}\nmode: rule\nproxy-groups:\n  - {{name: G, type: select, proxies: [DIRECT]}}\nrules:\n  - MATCH,G\n"
+            "mixed-port: {port}\nmode: rule\nsniffer:\n  enable: true\nrules:\n  - MATCH,DIRECT\n"
         );
         book.save_profile_content("p1", &grouped, &mut runtime);
         let refused = book

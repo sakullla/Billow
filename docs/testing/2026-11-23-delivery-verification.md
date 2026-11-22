@@ -60,7 +60,7 @@
 | 14 | `tool/ios/verify-rust-kernel.sh` | **PASS 20/20**；模拟器 smoke 进程 `peakRssBytes=28475392`（非 R3） | `t8-ios-simulator-smoke.log` |
 | 15 | `xcodebuild`：BillowRust / BillowMihomo，simulator debug + device release，`CODE_SIGNING_ALLOWED=NO` | 全部 **BUILD SUCCEEDED** | `t8-ios-xcodebuild-*.log` |
 | 16 | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | **234 passed / 0 failed / 10 ignored** | `t8-srctauri-tests.log` |
-| 17 | `BILLOW_TEST_RESOURCES=<当前候选 runtime> cargo test … packaged_engines_switch_both_ways_with_a_marked_request -- --ignored` | **FAILED（0 passed / 1 failed）**：`src-tauri/src/profile.rs:6381` 负例仍期望 Rust 拒绝 `proxy-groups`，但 T23 后内核已支持该配置 | `t8-macos-switch.log` |
+| 17 | `BILLOW_TEST_RESOURCES=<当前候选 runtime> cargo test … packaged_engines_switch_both_ways_with_a_marked_request -- --ignored` | **PASSED（1 passed）**（交付复审后返修：负例改用仍被具名拒绝的 `sniffer.enable: true`；正向 `mihomo-1/rust-1/mihomo-2` 与拒绝后 `mihomo-3` 均通过） | `t8-macos-switch.log`（原始红）、`t8-macos-switch-rework.log`（返修后绿） |
 
 注：`t8-*` 文件位于 `tool/kernel-compat/evidence/`。差分脚本的完整命令形式见 `tool/kernel-compat/README.md`；本次实际使用的 pinned 二进制与候选二进制路径记录在对应 JSON 的 `mihomo`/`rust` 字段。T9 记录过 306 passed / 91 ignored；当前树已包含 `controller`/`dns`/`groups`/`resources` 等测试二进制，本次 **400 passed / 92 ignored** 是当前候选的准确计数。
 
@@ -114,10 +114,12 @@ T6 的历史实跑（`tool/engine-switch.md`、`task-runs/T6-run.md`）在 macOS
 ## 6. 本轮修正
 
 - 修正 T7 证据中的 ignored 计数：`tool/kernel-compat/evidence/t7-ios-ffi.md` 与 `t7-ios-a3.json` 中 `cargo test -p billow-kernel --features ios-vpn` 的 **1 ignored** 改为本次复跑的 **91 ignored**（417 passed / 91 ignored，17 个 test binary）。`--lib` 单跑仍为 192 passed / 1 ignored，未改。
+- 交付复审后返修 macOS 打包双向切换测试：负例不再使用 T23 已支持的 `proxy-groups`，改用仍被具名拒绝的 `sniffer.enable: true`；`tool/engine-switch.md` 同步更新。返修后 `packaged_engines_switch_both_ways_with_a_marked_request` 为 **1 passed**（`t8-macos-switch-rework.log`）。
 
 ## 7. 交付前必须补齐
 
-1. 更新并重跑 macOS 打包双引擎切换测试的负例（当前测试红）。
+1. ~~更新并重跑 macOS 打包双引擎切换测试的负例~~（已返修：`sniffer.enable` 负例，macOS 1 passed）。
 2. 在 Windows/Linux/Android 宿主实跑打包后的双向切换与标记流量；Android 需先补齐 Rust 内核的 VpnService TUN 路径。
 3. 物理 iPhone 上完成 iOS 双向切换、R3 六类峰值、R4 逐轮回收，并附原始 trace/status JSON。
-4. Delivery 在以上证据补齐前保持未通过结论。
+4. R2 仍有多项 pinned Mihomo 接受而 Rust 具名拒绝的有效配置（见选项矩阵与 rust-mapping），需补齐实现或由需求方收窄范围。
+5. Delivery 在以上证据与 R2 缺口处理前保持未通过结论。

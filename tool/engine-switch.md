@@ -28,7 +28,7 @@ BILLOW_TEST_RESOURCES="$PWD/src-tauri/resources/runtime" \
 1. Mihomo 承载带标记的 HTTP CONNECT，目标端记录 `mihomo-1`；
 2. 切换到 Rust 后由 `billow-kernel` 承载，目标端记录 `rust-1`，并核对实例身份行；
 3. 切回 Mihomo 后目标端记录 `mihomo-2`；
-4. 换成 Rust 不接受的配置（`proxy-groups`）时，切换在释放旧会话前被拒绝，Mihomo 仍承载 `mihomo-3`。
+4. 换成 Rust 不接受的配置（`sniffer.enable: true`）时，切换在释放旧会话前被拒绝，Mihomo 仍承载 `mihomo-3`。
 
 macOS 已按此入口实跑通过。Windows/Linux 由 `.github/workflows/release.yml` 在对应 runner 上执行同一命令
 （`Verify both packaged engines switch with marked traffic`）；本仓库当前未在 Windows/Linux 实跑。
