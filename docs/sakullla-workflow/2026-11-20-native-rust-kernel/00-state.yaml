@@ -1020,7 +1020,7 @@ tasks:
     history_count: 1
 blocker: null
 delivery:
-  status: pending
+  status: active
 plan_input_digest: sha256:cebfc2273565b86f81415262f08f66b31de8e4b01d086c3d69de42894b7bce61
 scheduling:
   capacities: {}
@@ -1441,4 +1441,4 @@ scheduling:
       evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t8-a1-invocation.json
       admission_evidence_ref: ""
   bypasses: {}
-result_inbox_ref: evidence/results/362.json
+result_inbox_ref: evidence/results/364.json
