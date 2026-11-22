@@ -10,6 +10,8 @@ import {
   type ConnectionRow,
   type DnsQueryType,
   type EnginesState,
+  type IosEngineState,
+  type IosVpnStatus,
   type KernelChannel,
   type KernelEngine,
   type KernelSettings,
@@ -130,6 +132,10 @@ export function createStore(backend: Backend) {
   const snapshot = shallowRef<Snapshot>(emptySnapshot())
   const kernel = ref<KernelStatus>({ channel: 'stable', failure: null, ready: false, version: null })
   const engines = ref<EnginesState | null>(null)
+  /** iOS packet-tunnel rows and the last per-engine status (null on other platforms). */
+  const iosEngines = ref<IosEngineState[]>([])
+  const iosSelected = ref<KernelEngine>('mihomo')
+  const iosStatus = ref<Partial<Record<KernelEngine, IosVpnStatus | null>>>({})
   const app = ref<AppInfo | null>(null)
   const theme = ref<ThemePreference>('system')
   const page = ref<PageId>('home')
@@ -199,6 +205,7 @@ export function createStore(backend: Backend) {
   /** Desktop OS from `AppInfo.platform` (Rust `std::env::consts::OS`); gates Linux / macOS-only options. */
   const isLinux = computed(() => !isAndroid.value && app.value?.platform === 'linux')
   const isMac = computed(() => !isAndroid.value && app.value?.platform === 'macos')
+  const isIos = computed(() => app.value?.platform === 'ios')
   const connecting = computed(() => Boolean(busy.connect))
   const connectStage = ref('')
   /** True while 重启内核 runs; the home status reads 重启中 instead of 断开中. */
@@ -992,6 +999,10 @@ export function createStore(backend: Backend) {
     isAndroid,
     isLinux,
     isMac,
+    isIos,
+    iosEngines,
+    iosSelected,
+    iosStatus,
     connecting,
     connectStage,
     restarting,
@@ -1175,6 +1186,90 @@ export function createStore(backend: Backend) {
         engines.value = await backend.engines()
       } catch (error) {
         console.error(error)
+      }
+    },
+    /** iOS: two embedded packet-tunnel extensions plus their last status. */
+    async refreshIosVpn() {
+      if (!isIos.value) return
+      try {
+        iosEngines.value = await backend.iosEngines()
+        iosSelected.value = await backend.iosSelected()
+      } catch (error) {
+        toast(`读取 iOS 扩展失败：${error}`, 'error')
+      }
+    },
+    async selectIosEngine(engine: KernelEngine) {
+      if (busy.engine) return
+      busy.engine = true
+      try {
+        iosSelected.value = await backend.iosSelect(engine)
+        await this.refreshIosVpn()
+        toast(`已选择 ${engine === 'rust' ? 'Rust' : 'Mihomo'} 扩展`, 'success')
+      } catch (error) {
+        toast(String(error), 'error')
+      } finally {
+        delete busy.engine
+      }
+    },
+    async prepareIosResources() {
+      if (busy.connect) return
+      busy.connect = true
+      try {
+        const result = await backend.iosPrepareActive()
+        await this.refreshIosVpn()
+        toast(`已准备资源 ${result.version}（${result.engines.join(' / ')}）`, 'success')
+        return result
+      } catch (error) {
+        toast(`准备资源失败：${error}`, 'error')
+        throw error
+      } finally {
+        delete busy.connect
+      }
+    },
+    async connectIos() {
+      if (connecting.value) return
+      const engine = iosSelected.value
+      const row = iosEngines.value.find((item) => item.engine === engine)
+      const version = row?.version ?? (await backend.iosActiveVersion().catch(() => null))
+      if (!version) {
+        toast('没有准备好的配置，请先准备资源', 'error')
+        return
+      }
+      busy.connect = true
+      try {
+        await backend.iosConnect(engine, version)
+        iosStatus.value = { ...iosStatus.value, [engine]: await backend.iosStatus(engine) }
+        await this.refreshIosVpn()
+        toast('iOS 扩展已连接', 'success')
+      } catch (error) {
+        toast(String(error), 'error')
+        await this.refreshIosVpn()
+      } finally {
+        delete busy.connect
+      }
+    },
+    async disconnectIos() {
+      if (busy.connect) return
+      busy.connect = true
+      try {
+        await backend.iosDisconnect()
+        iosStatus.value = {}
+        await this.refreshIosVpn()
+        toast('iOS 扩展已断开', 'success')
+      } catch (error) {
+        toast(String(error), 'error')
+      } finally {
+        delete busy.connect
+      }
+    },
+    async reloadIos() {
+      const engine = iosSelected.value
+      try {
+        await backend.iosReload(engine)
+        iosStatus.value = { ...iosStatus.value, [engine]: await backend.iosStatus(engine) }
+        toast('iOS 扩展已重载配置', 'success')
+      } catch (error) {
+        toast(String(error), 'error')
       }
     },
     async setAutostart(enabled: boolean) {

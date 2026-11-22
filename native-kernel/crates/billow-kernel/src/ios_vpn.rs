@@ -66,7 +66,9 @@ impl PacketSink for CallbackSink {
 }
 
 struct State {
-    tunnel: Option<Tunnel>,
+    /// Shared so drain/write/reload can release the global lock before a
+    /// potentially blocking engine call.
+    tunnel: Option<Arc<Tunnel>>,
     home: Option<PathBuf>,
 }
 
@@ -111,6 +113,91 @@ fn container_of(home: &Path) -> Option<PathBuf> {
         return None;
     }
     versions.parent().map(Path::to_path_buf)
+}
+
+/// One Rust-specific view of the shared `config.yaml`.
+#[derive(Debug)]
+struct Staged {
+    yaml: String,
+    path: PathBuf,
+}
+
+/// Prepares the configuration the Rust kernel can actually run:
+///
+/// * `mixed-port` (and every other listener key) is preserved: the engine
+///   binds its mixed listener from this file;
+/// * a vendor `tun` block with `enable: true` is removed. On iOS the Packet
+///   Tunnel itself is the device side and the device route belongs to
+///   NetworkExtension; the shared file keeps the block for Mihomo, which uses
+///   its launcher TUN;
+/// * `rule-providers.*.path` / `proxy-providers.*.path` files referenced
+///   outside the version directory are copied next to the config and the path
+///   is rewritten to the basename (the extension cannot read the host sandbox);
+/// * the result is written to `config.rust.yaml` beside the shared file.
+fn stage_config(home: &Path, yaml: &str) -> Result<Staged, String> {
+    let mut value: serde_yaml::Value = serde_yaml::from_str(yaml)
+        .map_err(|error| format!("ios-staging: config.yaml is not YAML: {error}"))?;
+    let mapping = value
+        .as_mapping_mut()
+        .ok_or_else(|| "ios-staging: config.yaml top level must be a mapping".to_string())?;
+    if block_enabled(mapping.get(serde_yaml::Value::String("tun".into()))) {
+        mapping.remove(serde_yaml::Value::String("tun".into()));
+        tracing::warn!(
+            "tun.enable was removed for the Rust engine: the iOS Packet Tunnel owns the device route"
+        );
+    }
+    for group in ["rule-providers", "proxy-providers"] {
+        let Some(providers) = mapping
+            .get_mut(serde_yaml::Value::String(group.into()))
+            .and_then(serde_yaml::Value::as_mapping_mut)
+        else {
+            continue;
+        };
+        for (_name, provider) in providers.iter_mut() {
+            let Some(entry) = provider.as_mapping_mut() else {
+                continue;
+            };
+            let key = serde_yaml::Value::String("path".into());
+            let Some(raw) = entry.get(&key).and_then(serde_yaml::Value::as_str) else {
+                continue;
+            };
+            let raw = raw.to_string();
+            let source = if Path::new(&raw).is_absolute() {
+                PathBuf::from(&raw)
+            } else {
+                home.join(&raw)
+            };
+            let Some(name) = source.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if source.is_file() {
+                let destination = home.join(name);
+                if source != destination {
+                    std::fs::copy(&source, &destination).map_err(|error| {
+                        format!("ios-staging: copy {}: {error}", source.display())
+                    })?;
+                }
+                entry.insert(key, serde_yaml::Value::String(name.to_string()));
+            }
+        }
+    }
+    let yaml = serde_yaml::to_string(&value)
+        .map_err(|error| format!("ios-staging: serialize config: {error}"))?;
+    let path = home.join("config.rust.yaml");
+    std::fs::write(&path, &yaml)
+        .map_err(|error| format!("ios-staging: write {}: {error}", path.display()))?;
+    Ok(Staged { yaml, path })
+}
+
+fn block_enabled(block: Option<&serde_yaml::Value>) -> bool {
+    match block {
+        Some(serde_yaml::Value::Bool(value)) => *value,
+        Some(serde_yaml::Value::Mapping(mapping)) => mapping
+            .get(serde_yaml::Value::String("enable".into()))
+            .and_then(serde_yaml::Value::as_bool)
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 /// Read `engine.json` (written by the host when the engine is selected):
@@ -182,12 +269,15 @@ pub unsafe extern "C" fn billow_ios_vpn_start(
             return 2;
         }
     };
-    {
+    let previous = {
         let mut guard = lock();
         guard.home = Some(home.clone());
-        if let Some(tunnel) = guard.tunnel.take() {
-            tunnel.stop();
-        }
+        guard.tunnel.take()
+    };
+    // Stop the previous generation outside the global lock: `stop` waits for
+    // the engine tasks and must not block drain/write/status on other threads.
+    if let Some(tunnel) = previous {
+        tunnel.stop();
     }
     let config_path = home.join("config.yaml");
     let yaml = match std::fs::read_to_string(&config_path) {
@@ -203,6 +293,13 @@ pub unsafe extern "C" fn billow_ios_vpn_start(
             return 1;
         }
     };
+    let staged = match stage_config(&home, &yaml) {
+        Ok(staged) => staged,
+        Err(message) => {
+            set_error(error, &format!("billow_ios_vpn_start: {message}"));
+            return 1;
+        }
+    };
     let sink: Option<Arc<dyn PacketSink>> = if !port.is_null() && !ctx.is_null() {
         let write = (*port).write;
         match write {
@@ -212,11 +309,11 @@ pub unsafe extern "C" fn billow_ios_vpn_start(
     } else {
         None
     };
-    match Tunnel::start(&yaml, home.clone(), tunnel_options(), sink) {
+    match Tunnel::start_at(&staged.yaml, staged.path, home.clone(), tunnel_options(), sink) {
         Ok(tunnel) => {
             let mut guard = lock();
             guard.home = Some(home);
-            guard.tunnel = Some(tunnel);
+            guard.tunnel = Some(Arc::new(tunnel));
             RUNNING.store(true, Ordering::Relaxed);
             0
         }
@@ -242,8 +339,8 @@ pub unsafe extern "C" fn billow_ios_vpn_drain(
         return -2;
     }
     *packet_count = 0;
-    let guard = lock();
-    let Some(tunnel) = guard.tunnel.as_ref() else {
+    let tunnel = lock().tunnel.clone();
+    let Some(tunnel) = tunnel else {
         return -1;
     };
     // The ABI has no buffer length; clamp the record count so a wrong caller
@@ -281,8 +378,8 @@ pub unsafe extern "C" fn billow_ios_vpn_write(packet: *mut c_void, length: u32) 
     } else {
         bytes
     };
-    let guard = lock();
-    let Some(tunnel) = guard.tunnel.as_ref() else {
+    let tunnel = lock().tunnel.clone();
+    let Some(tunnel) = tunnel else {
         return -1;
     };
     match tunnel.ingest(payload) {
@@ -302,6 +399,9 @@ pub extern "C" fn billow_ios_vpn_stop() {
         guard.tunnel.take()
     };
     RUNNING.store(false, Ordering::Relaxed);
+    // `stop` joins the data-plane tasks and the engine supervisor before it
+    // returns (bounded by the tunnel's stop timeout), matching the header
+    // contract: no callback or buffer from an earlier call is used afterwards.
     if let Some(tunnel) = tunnel {
         tunnel.stop();
     }
@@ -327,8 +427,8 @@ pub unsafe extern "C" fn billow_ios_vpn_version(buf: *mut c_char, size: i32) -> 
 /// The App Group directory comes from the last [`billow_ios_vpn_set_home`].
 #[no_mangle]
 pub extern "C" fn billow_ios_vpn_selected() -> i32 {
-    let guard = lock();
-    match guard.home.as_deref() {
+    let home = lock().home.clone();
+    match home.as_deref() {
         Some(home) => selected_at(home),
         None => -1,
     }
@@ -355,11 +455,37 @@ pub unsafe extern "C" fn billow_ios_vpn_reload(error: *mut *mut c_char) -> i32 {
     if !error.is_null() {
         *error = std::ptr::null_mut();
     }
-    let guard = lock();
-    let Some(tunnel) = guard.tunnel.as_ref() else {
+    let (tunnel, home) = {
+        let guard = lock();
+        (guard.tunnel.clone(), guard.home.clone())
+    };
+    let Some(tunnel) = tunnel else {
         set_error(error, "billow_ios_vpn_reload: no tunnel is running");
         return -1;
     };
+    // The host may have switched versions or edited the shared config while
+    // this session stayed alive: restage `config.yaml` before re-reading the
+    // Rust-specific file the tunnel actually runs.
+    if let Some(home) = home {
+        match std::fs::read_to_string(home.join("config.yaml")) {
+            Ok(yaml) => {
+                if let Err(message) = stage_config(&home, &yaml) {
+                    set_error(error, &format!("billow_ios_vpn_reload: {message}"));
+                    return 1;
+                }
+            }
+            Err(read_error) => {
+                set_error(
+                    error,
+                    &format!(
+                        "billow_ios_vpn_reload: read {}: {read_error}",
+                        home.join("config.yaml").display()
+                    ),
+                );
+                return 1;
+            }
+        }
+    }
     match tunnel.reload() {
         Ok(warnings) => {
             for warning in &warnings {
@@ -395,10 +521,10 @@ pub unsafe extern "C" fn billow_ios_vpn_stats(buf: *mut c_char, size: i32) -> i3
 
 fn stats_json() -> String {
     let (running, stats) = {
-        let guard = lock();
+        let tunnel = lock().tunnel.clone();
         (
-            guard.tunnel.is_some(),
-            guard.tunnel.as_ref().map(|tunnel| tunnel.stats()),
+            tunnel.is_some(),
+            tunnel.as_ref().map(|tunnel| tunnel.stats()),
         )
     };
     let peak = peak_rss_bytes();
@@ -589,5 +715,92 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(value["running"], serde_json::Value::Bool(false));
         assert!(text.contains("peakRssBytes"));
+    }
+
+    fn stage_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "billow-t7-stage-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn staging_strips_enabled_tun_and_keeps_mixed_port() {
+        let home = stage_dir("tun");
+        let yaml = "mixed-port: 17890\n\
+                    tun:\n  enable: true\n  stack: gvisor\n\
+                    rules:\n  - MATCH,DIRECT\n";
+        let staged = stage_config(&home, yaml).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&staged.yaml).unwrap();
+        assert_eq!(
+            value.get("mixed-port").and_then(serde_yaml::Value::as_u64),
+            Some(17_890)
+        );
+        assert!(value.get("tun").is_none(), "{}", staged.yaml);
+        assert!(staged.path.ends_with("config.rust.yaml"));
+        assert!(std::fs::read_to_string(&staged.path)
+            .unwrap()
+            .contains("mixed-port"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn staging_keeps_a_disabled_tun_block_for_the_config_loader() {
+        let home = stage_dir("tun-off");
+        let yaml = "mixed-port: 17891\ntun:\n  enable: false\nrules:\n  - MATCH,DIRECT\n";
+        let staged = stage_config(&home, yaml).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&staged.yaml).unwrap();
+        assert_eq!(
+            value
+                .get("tun")
+                .and_then(|tun| tun.get("enable"))
+                .and_then(serde_yaml::Value::as_bool),
+            Some(false)
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn staging_copies_referenced_rule_sets_into_the_home_and_rewrites_paths() {
+        let root = stage_dir("providers");
+        let home = root.join("versions").join("v1");
+        std::fs::create_dir_all(&home).unwrap();
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("ads.mrs"), b"mrs-bytes").unwrap();
+        let mrs = outside.join("ads.mrs");
+        let yaml = format!(
+            "mixed-port: 17892\n\
+             rule-providers:\n  ads:\n    type: file\n    behavior: domain\n    format: mrs\n    path: '{}'\n\
+             proxy-providers:\n  local:\n    type: file\n    path: '{}'\n\
+             rules:\n  - RULE-SET,ads,DIRECT\n  - MATCH,DIRECT\n",
+            mrs.display(),
+            outside.join("proxies.yaml").display()
+        );
+        std::fs::write(outside.join("proxies.yaml"), b"proxies: []\n").unwrap();
+        let staged = stage_config(&home, &yaml).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&staged.yaml).unwrap();
+        assert_eq!(
+            value["rule-providers"]["ads"]["path"],
+            serde_yaml::Value::String("ads.mrs".to_string())
+        );
+        assert_eq!(
+            value["proxy-providers"]["local"]["path"],
+            serde_yaml::Value::String("proxies.yaml".to_string())
+        );
+        assert_eq!(std::fs::read(home.join("ads.mrs")).unwrap(), b"mrs-bytes");
+        assert!(home.join("proxies.yaml").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staging_rejects_non_mapping_configuration() {
+        let home = stage_dir("bad");
+        let error = stage_config(&home, "- just\n- a\n- list\n").unwrap_err();
+        assert!(error.contains("top level must be a mapping"), "{error}");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

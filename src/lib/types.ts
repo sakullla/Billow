@@ -458,6 +458,42 @@ export interface EnginesState {
   rust: EngineInfo
 }
 
+/** One row from the iOS host (`ios_vpn_engines`). */
+export interface IosEngineState {
+  engine: KernelEngine
+  installed: boolean
+  connected: boolean
+  version: string | null
+  engineVersion: string | null
+  lastError: string | null
+}
+
+/** `ProviderStatus` from a running iOS packet-tunnel extension. */
+export interface IosVpnStatus {
+  extensionId: string
+  engine: string
+  embeddedVersion: string | null
+  running: boolean
+  version: string | null
+  loopbackPort: number | null
+  loopbackListen: string | null
+  lastError: string | null
+  errorCode: number | null
+  startedAt: string | null
+}
+
+export interface IosPrepareResult {
+  version: string
+  engines: string[]
+  files: number
+}
+
+export interface IosVpnError {
+  code: number
+  message: string
+  domain: string
+}
+
 export interface AppInfo {
   version: string
   platform: string

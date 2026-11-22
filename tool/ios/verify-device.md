@@ -22,25 +22,30 @@ Everything below needs that environment.
 3. Host + IPA: `npx tauri ios build --export-method debugging --ci`
    (runs "Build Rust Code" -> libapp.a, compiles host, embeds both extensions)
 4. Install: `xcrun devicectl device install app --device <UDID> "<ipa or .app>"`
-5. Prepare resources (host Settings, T6): stage config.yaml + geo, call
-   `ios_vpn_prepare`, then `ios_vpn_connect(engine: "mihomo", version)`.
-   `ios_vpn_prepare` validates both engines' names, so the same version can be
-   started by either extension.
-6. Check identity: `ios_vpn_status("mihomo")` reports
-   `extensionId == app.billow.client.mihomo` and the embedded version
-   `v1.19.34`; VPN system icon appears; `ios_vpn_status("rust")` reports a
-   stable per-engine state: with `Externals/arm64/rust/libapp.a` linked
-   (T7 kernel) `billow_ios_vpn_version` non-empty and `running` false while
-   not connected; without the archive code 4 (`engineNotAvailable`) written to
-   `status/rust.json`. Selecting "rust" and starting must produce exactly one
-   completion: connected, or the mapped error (4, 10 `hostNotReady`, or 2 with
-   the Rust message).
+5. Prepare resources from the app's real settings page: Settings → 内核 →
+   iOS 扩展 → **准备当前配置**. This calls `ios_vpn_prepare_active` (stage the
+   active profile, rewrite referenced paths, copy geo) and
+   `ios_vpn_prepare(version, engines = [mihomo, rust])`. The same
+   `versions/<version>` must validate for both extensions; the command answers
+   `{version, engines, files}` and the engine rows show the active version.
+6. Check identity from the same card: the Mihomo row reports the embedded
+   version `v1.19.34`; after **连接** the VPN system icon appears and
+   `ios_vpn_status("mihomo")` reports
+   `extensionId == app.billow.client.mihomo`. Select Rust and **连接** again:
+   with `Externals/arm64/rust/libapp.a` linked, `ios_vpn_status("rust")`
+   reports `billow-rust 0.1.0` and `stats.peakRssBytes`; without the archive
+   the row shows code 4 (`engineNotAvailable`) from `status/rust.json`.
+   Each connect must produce exactly one completion: connected, or the mapped
+   error (4, 10 `hostNotReady`, or 2 with the Rust message).
 7. Traffic: request the controlled TCP HTTP endpoint and a UDP DNS query to
    the controlled resolver from another app; confirm payloads on the server
-   side and the VPN interface via `nscurl`/app logs.
-8. Stop/restart three times (`ios_vpn_disconnect`/`connect`); each start must
-   report a fresh `startedAt` and no stale error; re-check after a Wi-Fi ->
-   cellular switch (path monitor re-applies settings).
+   side and in `ios_vpn_status("rust").stats` (`tcpOpened`, `udpReplies`,
+   `dnsQueries`). Two device sockets to the same remote must not receive each
+   other's UDP replies (per-flow NAT key).
+8. Stop/restart three times (**断开** / **连接**); each start must report a
+   fresh `startedAt` and no stale error; re-check after a Wi-Fi -> cellular
+   switch (path monitor re-applies settings). **重载** calls
+   `ios_vpn_reload`; `stats.generation` increments and `tcpFlows == 0`.
 9. Failure paths: corrupt a file in `versions/<v>/` -> start must fail with
    code 1 (fileMismatch) and the previous version must stay listed; remove
    the App Group entitlement -> code 1 "App Group unavailable".

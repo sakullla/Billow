@@ -87,4 +87,4 @@ xcrun xctrace record --device <UDID> --template 'VM Tracker' --attach BillowRust
 - R3：**未验证**（无真机数字）。
 - R4：**未验证**（无逐轮基线）。
 - 代码侧的输入已就绪：缓冲/队列上限见 `tool/kernel-compat/evidence/t7-ios-ffi.md` 的 Bounds 表；reload 会关闭全部流与关联并递增 `generation`；`stats` 暴露高水位与丢弃计数。
-- 待补：宿主设置入口（`ios_vpn_*` 命令与 TS 调用）与 Rust 引擎资源准备路径；两者完成后才能从真实设置页启动两个扩展并按本表测量。
+- 宿主设置入口与资源准备已接通（T7-A2）：设置 → 内核 → iOS 扩展可读取两个扩展、选择、准备当前配置、连接/断开/重载并显示错误码；`ios_vpn_prepare_active` 负责 staging，`ResourcesInstaller` 对同一版本同时保留 mihomo/rust manifest。下一步只剩真机执行本表并附原始 trace/状态 JSON。

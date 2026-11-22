@@ -5,6 +5,7 @@ mod diagnostics;
 mod engine;
 #[cfg(target_os = "windows")]
 mod elevation;
+mod ios_vpn;
 mod kernel;
 mod mrs;
 mod nodes;
@@ -866,6 +867,136 @@ fn effective_config(app: AppHandle) -> Result<String, String> {
     with_profile(&app, |session| session.book.effective_config())
 }
 
+/// Stages the active profile's effective configuration for the iOS host and
+/// asks the NetworkExtension bridge to prepare it for both extensions.
+///
+/// The extension cannot read the app's private sandbox, so referenced
+/// rule-provider/proxy-provider files and the standard geo assets are copied
+/// into the staging directory and the YAML paths are rewritten to their
+/// basenames. `ios_vpn_prepare` then moves the staging tree into the App Group
+/// and validates the manifest for both engines.
+#[tauri::command]
+async fn ios_vpn_prepare_active(
+    app: AppHandle,
+    version: Option<String>,
+    engine: Option<String>,
+) -> Result<ios_vpn::IosPrepareResult, ios_vpn::IosVpnError> {
+    if !cfg!(target_os = "ios") {
+        return Err(ios_vpn::IosVpnError::not_ios_error());
+    }
+    let staging_app = app.clone();
+    let (staged_version, staged_dir) =
+        tauri::async_runtime::spawn_blocking(move || {
+            stage_ios_config(&staging_app, version.as_deref())
+        })
+        .await
+        .map_err(|error| ios_vpn::IosVpnError::host(format!("staging task failed: {error}")))??;
+    ios_vpn::ios_vpn_prepare(staged_version, staged_dir, engine).await
+}
+
+fn stage_ios_config(
+    app: &AppHandle,
+    version: Option<&str>,
+) -> Result<(String, String), ios_vpn::IosVpnError> {
+    use sha2::{Digest, Sha256};
+
+    let yaml = with_profile(app, |session| session.book.effective_config())
+        .map_err(ios_vpn::IosVpnError::host)?;
+    let home = kernel_home(app).ok_or_else(|| {
+        ios_vpn::IosVpnError::host("iOS staging: kernel home directory is unavailable")
+    })?;
+    if let Ok(resources) = app.path().resource_dir() {
+        let _ = bundled_geo::seed_directory(&resources.join("runtime").join("geo"), &home);
+    }
+    let version = match version.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value.to_string(),
+        None => Sha256::digest(yaml.as_bytes())
+            .iter()
+            .take(6)
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    };
+    let staging = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| ios_vpn::IosVpnError::host(format!("iOS staging: cache dir: {error}")))?
+        .join("ios-staging")
+        .join(&version);
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|error| {
+            ios_vpn::IosVpnError::host(format!("iOS staging: clear {}: {error}", staging.display()))
+        })?;
+    }
+    std::fs::create_dir_all(&staging).map_err(|error| {
+        ios_vpn::IosVpnError::host(format!("iOS staging: create {}: {error}", staging.display()))
+    })?;
+    let mut value: serde_yaml::Value = serde_yaml::from_str(&yaml).map_err(|error| {
+        ios_vpn::IosVpnError::host(format!("iOS staging: effective config is not YAML: {error}"))
+    })?;
+    stage_provider_files(&mut value, &home, &staging)?;
+    for name in ["ASN.mmdb", "Country.mmdb", "GeoIP.dat", "GeoSite.dat"] {
+        let source = home.join(name);
+        if source.is_file() {
+            std::fs::copy(&source, staging.join(name)).map_err(|error| {
+                ios_vpn::IosVpnError::host(format!(
+                    "iOS staging: copy {}: {error}",
+                    source.display()
+                ))
+            })?;
+        }
+    }
+    let staged_yaml = serde_yaml::to_string(&value).map_err(|error| {
+        ios_vpn::IosVpnError::host(format!("iOS staging: serialize config: {error}"))
+    })?;
+    std::fs::write(staging.join("config.yaml"), staged_yaml).map_err(|error| {
+        ios_vpn::IosVpnError::host(format!("iOS staging: write config.yaml: {error}"))
+    })?;
+    Ok((version, staging.to_string_lossy().to_string()))
+}
+
+fn stage_provider_files(
+    value: &mut serde_yaml::Value,
+    home: &std::path::Path,
+    staging: &std::path::Path,
+) -> Result<(), ios_vpn::IosVpnError> {
+    for group in ["rule-providers", "proxy-providers"] {
+        let Some(providers) = value.get_mut(group).and_then(|value| value.as_mapping_mut()) else {
+            continue;
+        };
+        for (_, provider) in providers.iter_mut() {
+            let Some(path) = provider
+                .as_mapping_mut()
+                .and_then(|mapping| mapping.get_mut(serde_yaml::Value::String("path".into())))
+                .and_then(|value| value.as_str().map(str::to_string))
+            else {
+                continue;
+            };
+            let source = if std::path::Path::new(&path).is_absolute() {
+                std::path::PathBuf::from(&path)
+            } else {
+                home.join(&path)
+            };
+            let Some(name) = source.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if source.is_file() {
+                std::fs::copy(&source, staging.join(name)).map_err(|error| {
+                    ios_vpn::IosVpnError::host(format!(
+                        "iOS staging: copy {}: {error}",
+                        source.display()
+                    ))
+                })?;
+                *provider
+                    .as_mapping_mut()
+                    .unwrap()
+                    .get_mut(serde_yaml::Value::String("path".into()))
+                    .unwrap() = serde_yaml::Value::String(name.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command(async)]
 fn config_overview(app: AppHandle) -> Result<profile::ConfigOverview, String> {
     with_profile(&app, |session| session.book.config_overview())
@@ -1650,6 +1781,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_update::check_android_app_update,
             prepare_app_update,
+            ios_vpn::ios_vpn_engines,
+            ios_vpn::ios_vpn_active_version,
+            ios_vpn::ios_vpn_selected,
+            ios_vpn::ios_vpn_prepare,
+            ios_vpn::ios_vpn_select,
+            ios_vpn::ios_vpn_connect,
+            ios_vpn::ios_vpn_disconnect,
+            ios_vpn::ios_vpn_status,
+            ios_vpn::ios_vpn_reload,
+            ios_vpn::ios_vpn_prune,
+            ios_vpn_prepare_active,
             shell_state,
             set_theme,
             set_last_entry,

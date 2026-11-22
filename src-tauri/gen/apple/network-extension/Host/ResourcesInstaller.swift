@@ -7,9 +7,11 @@ import Foundation
 ///  1. write config.yaml + geo/rule assets into a staging directory (outside
 ///     the App Group, e.g. the app's caches), rewriting external paths to
 ///     files that will be copied alongside;
-///  2. `prepare(version:engine:stagedDir:)` copies the staging directory to
-///     versions/<version>, hashes every file into manifest.json, validates and
-///     activates it. The previous version stays until `prune`.
+///  2. `prepare(version:engines:stagedDir:)` merges the staging directory into
+///     versions/<version>, hashes every file into manifest.json, validates every
+///     engine and activates it. The previous version stays until `prune`, and a
+///     later prepare keeps the union of engines so both extensions can validate
+///     the same tree.
 ///  3. connect with `requestedVersion:`; the extension validates again before
 ///     it starts the engine.
 final class ResourcesInstaller {
@@ -28,15 +30,22 @@ final class ResourcesInstaller {
     @discardableResult
     func prepare(version: String, engine: BillowVPNManager.Engine, stagedDir: URL,
                  appVersion: String? = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) throws -> SharedManifest {
-        // One manifest names the engines it serves; the host prepares the
-        // version for the engine it was asked about (a later prepare for the
-        // other engine rewrites the manifest with both).
+        try prepare(version: version, engines: [engine], stagedDir: stagedDir, appVersion: appVersion)
+    }
+
+    /// Prepares one version for every supplied engine. The manifest keeps the
+    /// union of the engines seen for that version, so a later prepare for a
+    /// single engine never revokes the other engine's `validatedResources`.
+    @discardableResult
+    func prepare(version: String, engines: [BillowVPNManager.Engine], stagedDir: URL,
+                 appVersion: String? = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) throws -> SharedManifest {
+        let names = engines.map(\.rawValue)
         let manifest = try store.prepareVersion(version: version,
                                                 stagedDir: stagedDir,
-                                                engines: [engine.rawValue],
+                                                engines: names,
                                                 options: nil,
                                                 appVersion: appVersion)
-        log.info("prepared \(engine.rawValue) resources \(version) (\(manifest.files.count) files)")
+        log.info("prepared \(names.joined(separator: ",")) resources \(version) (\(manifest.files.count) files, engines \(manifest.engines.joined(separator: ",")))")
         return manifest
     }
 

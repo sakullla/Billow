@@ -51,6 +51,19 @@ xcodebuild: the target's pre-build script runs `tauri ios xcode-script`,
 which only works inside `npx tauri ios build` / `tauri ios dev`. Use
 `npx tauri ios build --debug --ci` on a machine with a Team.
 
+The Rust host target can still be checked without signing:
+
+```sh
+cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-ios
+```
+
+T7-A2 fixed the two pre-existing host blockers this exposed: `rquickjs` 0.14
+ships no iOS bindings (the iOS target now enables its `bindgen` feature, like
+Android), and `current_desktop_os()` had no `ios` branch. The host also gets
+`BILLOW_ENGINE_MIHOMO` in `project.yml` because `Shared/ProviderSupport.swift`
+requires exactly one engine identity, and the App Intents are marked
+`@available(iOS 16.0, *)` while the deployment target stays 15.0.
+
 ## Engineers' notes (verified on macOS 27.2, Xcode 27.2, Go 1.26.2)
 
 - `GOOS=ios` exists from Go 1.26. `-buildmode=c-archive` requires a `main`
@@ -88,18 +101,23 @@ to the configured `dns`) -> mihomo `tunnel.HandleTCPConn/HandleUDPPacket` ->
 egress `WritePackets` -> `writePackets`. Source mapping to the pinned tree is
 in the header of `src-tauri/gen/apple/mihomo-ios/bridge.go`.
 
-## Host API (T6/T7 wiring)
+## Host API (T7, wired)
 
-`network-extension/Host/BillowVPNManager.swift` and
-`ResourcesInstaller.swift` are compiled into `billow_iOS`. Suggested Tauri
-commands (`src-tauri/src`, T6):
+`network-extension/Host/BillowMobileBridge.swift` exports one C ABI,
+`billow_mobile_request(json)` / `billow_mobile_free(ptr)`, implemented on top
+of `BillowVPNManager`, `ResourcesInstaller` and `BillowMobileEntry`.
+`src-tauri/src/ios_vpn.rs` wraps it as Tauri commands; `src/lib/backend.ts`
+and the settings kernel tab call them. On desktop and Android the same
+commands exist and answer code 11 (`notIos`) instead of failing to build.
 
-| Command | Call |
+| Command | Host call |
 | --- | --- |
 | `ios_vpn_engines` -> `[{engine, installed, connected, version, engineVersion, lastError}]` | `BillowMobileEntry.engineStates()` |
-| `ios_vpn_prepare(version, engine, stagedDir)` | `ResourcesInstaller.prepare(...)` |
-| `ios_vpn_select(engine)` | `BillowVPNManager.shared.setSelected` |
-| `ios_vpn_connect(engine, version)` | `connect(engine:requestedVersion:)` then `waitForState(.connected)`; on failure `describeLastError` |
+| `ios_vpn_active_version` -> `String?` | `BillowMobileEntry.activeVersion()` |
+| `ios_vpn_selected` / `ios_vpn_select(engine)` | App Group `engine.json` via `BillowVPNManager.selected/setSelected` |
+| `ios_vpn_prepare(version, stagedDir, engine?)` | `ResourcesInstaller.prepare(version:engines:stagedDir:)`; the engine list defaults to both |
+| `ios_vpn_prepare_active(version?, engine?)` | host-only: stage the active profile (effective YAML + referenced rule sets + geo) and then call `ios_vpn_prepare`; version defaults to a content hash |
+| `ios_vpn_connect(engine, version)` | `connect(engine:requestedVersion:)` then `waitForState(.connected)`; a timeout/refusal carries `describeLastError` |
 | `ios_vpn_disconnect()` | `disconnect()` |
 | `ios_vpn_reload(engine)` | `reload(engine:)` (sendProviderMessage `reload`) |
 | `ios_vpn_status(engine)` | `status(of:)` |
@@ -108,9 +126,15 @@ commands (`src-tauri/src`, T6):
 Error codes (`BillowVPNError.domain`, `code`): 0 providerFailed,
 1 resourceInvalid, 2 engineStartFailed, 3 configurationMissing,
 4 engineNotAvailable, 5 networkUnavailable, 6 engineStopped,
-7 loopbackFailed, 8 unsupportedCommand, 9 tunnelSetupFailed. Status is also
-written to the App Group `status/<engine>.json` so the host can explain a
-start failure without a session.
+7 loopbackFailed, 8 unsupportedCommand, 9 tunnelSetupFailed,
+10 hostNotReady. The Rust bridge adds 11 `notIos` and 12 `badResponse`.
+Status is also written to the App Group `status/<engine>.json` so the host
+can explain a start failure without a session.
+
+Both engines validate the same `versions/<version>`: `prepareVersion` merges
+the directory and the `manifest.engines` list instead of removing the version,
+and `tool/ios/verify-app-group.sh` runs the dual-engine manifest smoke on the
+host without signing.
 
 ## Rust extension wiring (T7)
 
@@ -181,11 +205,23 @@ BillowRustEngine.swift
    real `config.yaml`, one UDP datagram through DIRECT to a host echo server
    and back through `port->write`, reload, stop and restart. It is a code/ABI
    smoke, not a device memory measurement.
-7. Not wired yet: the host-side Tauri commands (`ios_vpn_prepare/select/
-   connect/...`) and the resource staging for `home/config.yaml`. The staged
-   configuration must keep a listener (`mixed-port`/`port`/`socks-port`)
-   because the engine binds its mixed listener, and geo assets must sit next to
-   `config.yaml` (the tunnel passes `home` as the geodata directory).
+7. Configuration staging is implemented on both sides (T7-A2). The host
+   `ios_vpn_prepare_active` writes the active profile's effective YAML plus
+   referenced rule sets and the four geo assets into a staging directory,
+   rewriting paths to basenames, then `ios_vpn_prepare` copies it into
+   `versions/<version>`. Inside the extension `stage_config` reads the shared
+   `config.yaml` and writes `config.rust.yaml` in the same `home`:
+   - `mixed-port` (and any other listener key) is preserved because the engine
+     binds its mixed listener;
+   - `tun.enable: true` is removed with a stable warning, because the iOS
+     Packet Tunnel already owns the device route (Mihomo keeps the original
+     block in `config.yaml`);
+   - `rule-providers.*.path` / `proxy-providers.*.path` files outside the
+     version directory are copied next to the config and rewritten to their
+     basenames.
+   `reload` re-reads the shared `config.yaml`, restages `config.rust.yaml` and
+   then reloads the engine. Extra `billow_rust_kernel_drain` derives its record
+   count from the caller's byte capacity.
 
 For the reverse path (Rust packets into mihomo for fair switching), the
 Mihomo archive exports `GoMihomoLoopbackStart("127.0.0.1:<port>", fraction)`:

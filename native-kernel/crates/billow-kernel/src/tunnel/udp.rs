@@ -7,10 +7,12 @@
 //! `DIRECT`. A family without a UDP association in this kernel is refused by
 //! name instead of being sent the wrong way.
 //!
-//! Memory is bounded: at most [`MAX_ASSOCIATIONS`] live associations (one per
-//! proxy, shared by every destination like the pinned association), two
-//! DIRECT sockets (one per address family), one 64 KiB receive buffer per
-//! association and one per DIRECT socket.
+//! Memory is bounded: at most [`MAX_ASSOCIATIONS`] live proxy associations and
+//! at most [`crate::tunnel::TunnelOptions::max_udp_flows`] tracked device
+//! flows. Each flow owns its DIRECT socket or proxy association so replies are
+//! delivered by the exact `(device src, device dst)` key; each task keeps one
+//! 64 KiB receive buffer. Expired flows abort their socket reader and drop the
+//! association channel.
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -28,12 +30,20 @@ use crate::proxies::{Protocol, Proxy};
 
 use crate::tunnel::Inner;
 
-/// One association per proxy name; a configuration with more UDP-capable
-/// proxies than this drops the excess by name (bounded, never unbounded).
-pub(crate) const MAX_ASSOCIATIONS: usize = 8;
+/// One association per device UDP flow (see [`UdpReply::flow`]); a
+/// configuration with more concurrently active UDP flows than this drops the
+/// excess by name. Bounded, never unbounded.
+pub(crate) const MAX_ASSOCIATIONS: usize = 32;
 
-/// A datagram that a transport received: the remote it came from.
+/// Device 4-tuple of one UDP flow.
+pub(crate) type UdpFlowKey = (SocketAddr, SocketAddr);
+
+/// A datagram that a transport received. `flow` is the device 4-tuple the
+/// reply belongs to, so two device sockets that reach the same remote never
+/// receive each other's datagrams (the direct reader and the proxied
+/// association both tag every reply with their own flow).
 pub(crate) struct UdpReply {
+    pub flow: UdpFlowKey,
     pub from: SocketAddr,
     pub payload: Vec<u8>,
 }
@@ -96,6 +106,7 @@ pub(crate) async fn association_task(
     inner: Arc<Inner>,
     name: String,
     proxy: std::sync::Arc<Proxy>,
+    flow: UdpFlowKey,
     mut commands: mpsc::Receiver<AssocCommand>,
     replies: mpsc::Sender<UdpReply>,
 ) {
@@ -146,7 +157,11 @@ pub(crate) async fn association_task(
             reply = transport.recv(&mut buffer) => match reply {
                 Ok(Some((from, read))) => {
                     idle = tokio::time::Instant::now() + idle_limit;
-                    let _ = replies.try_send(UdpReply { from, payload: buffer[..read].to_vec() });
+                    let _ = replies.try_send(UdpReply {
+                        flow,
+                        from,
+                        payload: buffer[..read].to_vec(),
+                    });
                 }
                 Ok(None) => break,
                 Err(error) => {
@@ -170,9 +185,12 @@ pub(crate) async fn association_task(
     inner.note_udp_association_closed(&name);
 }
 
-/// A DIRECT UDP socket reader: every received datagram is a reply candidate.
+/// One DIRECT UDP socket per device flow (the socket is connected to the
+/// flow's remote, so the kernel only delivers packets from that remote). The
+/// reader tags every datagram with the owning flow.
 pub(crate) async fn direct_reader(
     socket: std::sync::Arc<tokio::net::UdpSocket>,
+    flow: UdpFlowKey,
     replies: mpsc::Sender<UdpReply>,
 ) {
     let mut buffer = vec![0u8; MAX_DATAGRAM];
@@ -181,6 +199,7 @@ pub(crate) async fn direct_reader(
             Ok((read, from)) => {
                 if replies
                     .try_send(UdpReply {
+                        flow,
                         from,
                         payload: buffer[..read].to_vec(),
                     })

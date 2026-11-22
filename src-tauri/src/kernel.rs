@@ -241,7 +241,7 @@ fn current_android_abi() -> AndroidAbi {
 
 #[cfg(not(target_os = "android"))]
 fn current_desktop_os() -> DesktopOs {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         DesktopOs::Darwin
     }

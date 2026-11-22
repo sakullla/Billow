@@ -93,7 +93,17 @@ int32_t billow_rust_kernel_write(void *packet, uint32_t length) {
 }
 
 int32_t billow_rust_kernel_drain(void *packet, uint32_t length, uint32_t *produced) {
-    return billow_ios_vpn_drain((uint8_t *)packet, 1, produced);
+    // `length` is the caller's writable byte capacity. One record is at most
+    // 4 + 65535 bytes, so this is the only count that cannot overrun it; a
+    // buffer smaller than one worst-case record yields 0 records.
+    uint32_t max_count = length / (4u + 65535u);
+    if (max_count == 0) {
+        if (produced != NULL) {
+            *produced = 0;
+        }
+        return 0;
+    }
+    return billow_ios_vpn_drain((uint8_t *)packet, max_count, produced);
 }
 
 int32_t billow_rust_kernel_reload(char **error) { return billow_ios_vpn_reload(error); }

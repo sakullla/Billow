@@ -763,6 +763,58 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(0)
     },
 
+    async iosEngines() {
+      const running = state.kernel_running ? state.running_engine : null
+      return (['mihomo', 'rust'] as const).map((engine) => ({
+        engine,
+        installed: true,
+        connected: running === engine,
+        version: 'demo',
+        engineVersion: engine === 'rust' ? 'billow-rust 0.1.0' : kernel.version,
+        lastError: null,
+      }))
+    },
+    async iosActiveVersion() {
+      return state.kernel_running ? 'demo' : null
+    },
+    async iosSelected() {
+      return state.engine
+    },
+    async iosPrepareActive() {
+      return { version: 'demo', engines: ['mihomo', 'rust'], files: 2 }
+    },
+    async iosPrepare(version) {
+      return { version, engines: ['mihomo', 'rust'], files: 2 }
+    },
+    async iosSelect(engine) {
+      state.engine = engine
+      return engine
+    },
+    async iosConnect() {
+      await wait(200)
+    },
+    async iosDisconnect() {
+      await wait(100)
+    },
+    async iosStatus(engine) {
+      return {
+        extensionId: `app.billow.client.${engine}`,
+        engine,
+        embeddedVersion: engine === 'rust' ? 'billow-rust 0.1.0' : kernel.version,
+        running: state.kernel_running && state.running_engine === engine,
+        version: 'demo',
+        loopbackPort: null,
+        loopbackListen: null,
+        lastError: null,
+        errorCode: null,
+        startedAt: new Date().toISOString(),
+      }
+    },
+    async iosReload() {
+      await wait(100)
+    },
+    async iosPrune() {},
+
     state: async () => snapshot(),
     async addSubscription(url) {
       try {

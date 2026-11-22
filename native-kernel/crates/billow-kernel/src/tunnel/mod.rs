@@ -38,7 +38,7 @@ use crate::engine::{Kernel, KernelOptions, Limits, SessionContext};
 use crate::outbound::ipstack;
 use crate::outbound::tcp::{build_segment, parse_segment, FLAG_ACK, FLAG_FIN, FLAG_RST, FLAG_SYN};
 use crate::tunnel::tcp_server::{ServerConfig, ServerTcp};
-use crate::tunnel::udp::{direct_reader, AssocCommand, UdpReply, MAX_ASSOCIATIONS};
+use crate::tunnel::udp::{direct_reader, AssocCommand, UdpFlowKey, UdpReply, MAX_ASSOCIATIONS};
 
 /// Default tunnel MTU: the extension configures 9000 for the Mihomo (gVisor)
 /// stack, but this stack advertises a conservative Ethernet-sized MSS so the
@@ -46,6 +46,8 @@ use crate::tunnel::udp::{direct_reader, AssocCommand, UdpReply, MAX_ASSOCIATIONS
 pub const DEFAULT_MTU: usize = 1500;
 /// Fixed hop limit of emitted packets (nothing routes them further).
 const HOP_LIMIT: u8 = 64;
+/// Upper bound for the explicit `Tunnel::stop` teardown wait.
+const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// DNS queries answered concurrently (each is one UDP packet in flight).
 const DNS_SLOTS: usize = 32;
 
@@ -315,6 +317,20 @@ impl Tunnel {
         sink: Option<Arc<dyn PacketSink>>,
     ) -> Result<Tunnel, String> {
         let config_path = base_dir.join("config.yaml");
+        Self::start_at(config_yaml, config_path, base_dir, options, sink)
+    }
+
+    /// [`Tunnel::start`] with an explicit configuration file: the iOS host
+    /// stages a Rust-specific view (`config.rust.yaml`, `tun` stripped and
+    /// referenced assets copied into the home) while the shared `config.yaml`
+    /// stays untouched for the Mihomo extension.
+    pub fn start_at(
+        config_yaml: &str,
+        config_path: PathBuf,
+        base_dir: PathBuf,
+        options: TunnelOptions,
+        sink: Option<Arc<dyn PacketSink>>,
+    ) -> Result<Tunnel, String> {
         let loaded = crate::config::load_config(config_yaml, &config_path.display().to_string())
             .map_err(|error| format!("configuration: {error}"))?;
         let (kernel, warnings) = Kernel::start_with_options(
@@ -755,10 +771,21 @@ impl Tunnel {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
         {
-            // `shutdown_background` is safe from an async context (a host may
-            // call stop from its own runtime); the tasks observe the closed
-            // channels first.
-            runtime.shutdown_background();
+            // The FFI contract says stop must not return while a task can
+            // still call the packet sink. `shutdown_timeout` cancels and joins
+            // every task; dropping the runtime on a plain thread keeps the
+            // call safe even when a host invokes stop from an async context.
+            let stopper = std::thread::Builder::new()
+                .name("billow-tunnel-stop".to_string())
+                .spawn(move || runtime.shutdown_timeout(STOP_TIMEOUT));
+            match stopper {
+                Ok(thread) => {
+                    let _ = thread.join();
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "tunnel stop thread could not start; tasks are detached");
+                }
+            }
         }
         // Take the kernel out of the lock first: stopping it joins its
         // supervisor thread, and a tunnel task may still be asking for a
@@ -1213,11 +1240,16 @@ async fn udp_task(
     };
     // The flow index is shared with `Tunnel::stats`, so the high-water values
     // a host samples are the ones this task keeps.
-    let flows: Arc<Mutex<HashMap<(SocketAddr, SocketAddr), tokio::time::Instant>>> =
-        inner.udp_flows.clone();
-    let mut direct4: Option<Arc<tokio::net::UdpSocket>> = None;
-    let mut direct6: Option<Arc<tokio::net::UdpSocket>> = None;
-    let mut associations: HashMap<String, mpsc::Sender<AssocCommand>> = HashMap::new();
+    let flows: Arc<Mutex<HashMap<UdpFlowKey, tokio::time::Instant>>> = inner.udp_flows.clone();
+    // One DIRECT socket per device flow: a shared socket cannot tell two
+    // device 4-tuples that reach the same remote apart. The task handle lets
+    // an expired flow release the socket immediately (R4) instead of leaving
+    // a reader blocked on a socket the map has already forgotten.
+    let mut direct: HashMap<UdpFlowKey, (Arc<tokio::net::UdpSocket>, tokio::task::JoinHandle<()>)> =
+        HashMap::new();
+    // One association per device flow, so every reply carries the exact
+    // `(device src, device dst)` key.
+    let mut associations: HashMap<UdpFlowKey, (String, mpsc::Sender<AssocCommand>)> = HashMap::new();
     loop {
         let next_expiry = {
             let guard = flows
@@ -1238,8 +1270,7 @@ async fn udp_task(
                         &session,
                         datagram,
                         &flows,
-                        &mut direct4,
-                        &mut direct6,
+                        &mut direct,
                         &mut associations,
                         &reply_tx,
                     ).await;
@@ -1247,11 +1278,12 @@ async fn udp_task(
                 Some(UdpCommand::Reload) => {
                     // Release the previous generation's transports and flows.
                     associations.clear();
+                    for (_key, (_socket, task)) in direct.drain() {
+                        task.abort();
+                    }
                     flows.lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .clear();
-                    direct4 = None;
-                    direct6 = None;
                     if let Some(refreshed) = inner.session() {
                         session = refreshed;
                     }
@@ -1266,10 +1298,25 @@ async fn udp_task(
             },
             _ = tokio::time::sleep_until(timer) => {
                 let now = tokio::time::Instant::now();
-                flows
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .retain(|_, deadline| *deadline > now);
+                let live: std::collections::HashSet<UdpFlowKey> = {
+                    let mut guard = flows
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.retain(|_, deadline| *deadline > now);
+                    guard.keys().copied().collect()
+                };
+                // Release expired per-flow sockets and associations with the
+                // flow entry: a later flow to the same destination starts a
+                // fresh transport instead of inheriting a stale generation.
+                direct.retain(|key, entry| {
+                    if live.contains(key) {
+                        true
+                    } else {
+                        entry.1.abort();
+                        false
+                    }
+                });
+                associations.retain(|key, _| live.contains(key));
             },
         }
     }
@@ -1280,10 +1327,9 @@ async fn handle_datagram(
     inner: &Arc<Inner>,
     session: &SessionContext,
     datagram: UdpIn,
-    flows: &Arc<Mutex<HashMap<(SocketAddr, SocketAddr), tokio::time::Instant>>>,
-    direct4: &mut Option<Arc<tokio::net::UdpSocket>>,
-    direct6: &mut Option<Arc<tokio::net::UdpSocket>>,
-    associations: &mut HashMap<String, mpsc::Sender<AssocCommand>>,
+    flows: &Arc<Mutex<HashMap<UdpFlowKey, tokio::time::Instant>>>,
+    direct: &mut HashMap<UdpFlowKey, (Arc<tokio::net::UdpSocket>, tokio::task::JoinHandle<()>)>,
+    associations: &mut HashMap<UdpFlowKey, (String, mpsc::Sender<AssocCommand>)>,
     reply_tx: &mpsc::Sender<UdpReply>,
 ) {
     let key = (datagram.src, datagram.dst);
@@ -1330,15 +1376,22 @@ async fn handle_datagram(
     };
     match route {
         route::Route::Direct => {
-            let ipv4 = datagram.dst.is_ipv4();
-            let slot = if ipv4 { direct4 } else { direct6 };
-            if slot.is_none() {
+            if !direct.contains_key(&key) {
+                let ipv4 = datagram.dst.is_ipv4();
                 let bind = if ipv4 { "0.0.0.0:0" } else { "[::]:0" };
                 match tokio::net::UdpSocket::bind(bind).await {
                     Ok(socket) => {
+                        // Connect the socket to the flow's remote: the kernel
+                        // then only delivers packets from that remote, and the
+                        // reader task owns exactly this device flow.
+                        if let Err(error) = socket.connect(datagram.dst).await {
+                            tracing::warn!(dst = %datagram.dst, %error, "UDP DIRECT connect failed");
+                            inner.stats.dropped_inbound.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
                         let socket = Arc::new(socket);
-                        tokio::spawn(direct_reader(socket.clone(), reply_tx.clone()));
-                        *slot = Some(socket);
+                        let task = tokio::spawn(direct_reader(socket.clone(), key, reply_tx.clone()));
+                        direct.insert(key, (socket, task));
                     }
                     Err(error) => {
                         tracing::warn!(%error, "UDP DIRECT bind failed");
@@ -1347,16 +1400,16 @@ async fn handle_datagram(
                     }
                 }
             }
-            let socket = slot.as_ref().expect("bound above");
-            if let Err(error) = socket.send_to(&datagram.payload, datagram.dst).await {
+            let socket = &direct.get(&key).expect("bound above").0;
+            if let Err(error) = socket.send(&datagram.payload).await {
                 tracing::debug!(dst = %datagram.dst, %error, "UDP DIRECT send failed");
                 inner.stats.dropped_inbound.fetch_add(1, Ordering::Relaxed);
             }
         }
         route::Route::Proxy { proxy, .. } => {
             let name = proxy.name.clone();
-            let sender = match associations.get(&name) {
-                Some(sender) => sender.clone(),
+            let sender = match associations.get(&key) {
+                Some((_, sender)) => sender.clone(),
                 None => {
                     if associations.len() >= MAX_ASSOCIATIONS {
                         inner
@@ -1373,10 +1426,11 @@ async fn handle_datagram(
                         task_inner,
                         task_name,
                         proxy.clone(),
+                        key,
                         receiver,
                         reply_tx.clone(),
                     ));
-                    associations.insert(name.clone(), sender.clone());
+                    associations.insert(key, (name.clone(), sender.clone()));
                     sender
                 }
             };
@@ -1406,37 +1460,42 @@ async fn handle_datagram(
 
 fn emit_udp_reply(
     inner: &Inner,
-    flows: &Arc<Mutex<HashMap<(SocketAddr, SocketAddr), tokio::time::Instant>>>,
+    flows: &Arc<Mutex<HashMap<UdpFlowKey, tokio::time::Instant>>>,
     reply: &UdpReply,
 ) {
-    let mut matched = false;
-    let guard = flows
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for (src, dst) in guard.keys() {
-        if *dst != reply.from {
-            continue;
-        }
-        matched = true;
-        match ipstack::build_udp_packet(
-            reply.from.ip(),
-            src.ip(),
-            reply.from.port(),
-            src.port(),
-            &reply.payload,
-            HOP_LIMIT,
-        ) {
-            Ok(packet) => inner.emit(packet),
-            Err(error) => {
-                tracing::debug!(error = %error, "UDP reply could not be built");
-            }
+    let (src, _dst) = reply.flow;
+    let mut dropped = false;
+    {
+        let guard = flows
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !guard.contains_key(&reply.flow) {
+            dropped = true;
         }
     }
-    drop(guard);
-    if matched {
-        inner.stats.udp_replies.fetch_add(1, Ordering::Relaxed);
-    } else {
-        tracing::debug!(from = %reply.from, "UDP reply without a matching device flow dropped");
+    if dropped {
+        tracing::debug!(
+            from = %reply.from,
+            src = %src,
+            "UDP reply for an expired device flow dropped"
+        );
+        return;
+    }
+    match ipstack::build_udp_packet(
+        reply.from.ip(),
+        src.ip(),
+        reply.from.port(),
+        src.port(),
+        &reply.payload,
+        HOP_LIMIT,
+    ) {
+        Ok(packet) => {
+            inner.emit(packet);
+            inner.stats.udp_replies.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(error) => {
+            tracing::debug!(error = %error, "UDP reply could not be built");
+        }
     }
 }
 

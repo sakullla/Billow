@@ -1,7 +1,8 @@
 # T7 iOS Rust tunnel: FFI, userspace IP stack and what was actually run
 
-Workflow: `2026-11-20-native-rust-kernel` / Task T7 (attempt T7-A1).
-Date: 2026-11-23. Host: macOS (arm64), Xcode 27.2, iOS 27.2 SDK, rustc 1.98.1.
+Workflow: `2026-11-20-native-rust-kernel` / Task T7 (attempts T7-A1 + T7-A2
+repair). Date: 2026-11-23/24. Host: macOS (arm64), Xcode 27.2, iOS 27.2 SDK,
+rustc 1.98.1.
 
 This note records the implementation and the verification that was executed.
 Nothing about a physical iPhone is claimed: no iPhone was connected
@@ -62,8 +63,10 @@ tunnel thread, and `stop` joins/finishes every task before returning.
   `trojan`, `ssr`, `masque`, `shadowquic` (the same association types the mixed
   listener uses). Families without a UDP association in this kernel are
   refused **by name** (`unsupported_protocols`) instead of being sent the wrong
-  way. Associations are per proxy and shared by destination, exactly like the
-  pinned `UDP ASSOCIATE`.
+  way. T7-A2 keys each flow by its device 4-tuple `(src, dst)`: DIRECT owns one
+  connected socket per flow and a proxied flow owns its own association, so a
+  reply from a remote shared by two device sockets is delivered only to the
+  flow that sent the datagram.
 * **Routing** mirrors `engine::serve_request`/`serve_udp_associate`: destination
   -> `preHandleMetadata` (hosts/fake-ip) -> rule decision -> proxy group ->
   `DIRECT` or `dial_chain` (dialer-proxy chain, proxy-server DNS). `IN-TYPE,TUN`
@@ -127,20 +130,20 @@ Full log: [`t7-ios-build.log`](t7-ios-build.log),
    interface and a scenario table but **no measurements**. Any number in this
    note about memory is simulator/host `ru_maxrss` (≈ 25-28 MB for the smoke
    process) and must not be read as the extension's device peak.
-2. **Host settings entry**: the Swift host API (`BillowVPNManager`,
-   `ResourcesInstaller`, `BillowMobileEntry`) now typechecks and `setSelected`
-   writes `engine.json`, but no Tauri command (`ios_vpn_prepare/select/
-   connect/...`) or TS entry calls it yet, so "start both extensions from the
-   app's real settings screen" is not wired (and the host target still cannot be
-   built with plain `xcodebuild`: its pre-build phase runs `tauri ios
-   xcode-script`). The extension-level start/stop path is exercised only from
-   the simulator smoke and the Rust tests.
-3. **Resource staging for the Rust engine**: `home/config.yaml` must exist and
-   must enable a listener (`mixed-port`, `port` or `socks-port`); the engine
-   always binds its mixed listener and rejects a configuration without one.
-   Billow profiles set `mixed-port`, but the iOS stager must keep it and must
-   copy the geo assets next to `config.yaml` (the tunnel passes `home` as the
-   geodata directory). This belongs to the host wiring above.
+2. **Host settings entry**: T7-A2 wired `BillowMobileBridge.swift`,
+   `src-tauri/src/ios_vpn.rs`, `src/lib/backend.ts` and the settings kernel
+   tab; the host target now checks with
+   `cargo check --target aarch64-apple-ios` and the Swift host/shared sources
+   typecheck. It is still not executed on a device (same physical-iPhone gap
+   as item 1), and plain `xcodebuild` still cannot run the Tauri pre-build
+   phase (`tauri ios xcode-script`).
+3. **Resource staging for the Rust engine**: the host stages the active
+   profile and `stage_config` writes `config.rust.yaml` inside the version
+   directory. It preserves `mixed-port`, copies referenced provider files and
+   geo assets into `home`, and removes `tun.enable: true` with a warning
+   because the iOS Packet Tunnel owns the device route. A configuration that
+   still needs a feature the engine rejects (for example `sniffer.enable:
+   true`) fails with the engine's named error instead of starting silently.
 4. **UDP over `gost-relay`, `sudoku`, `tuic`, `hysteria*`, `mieru`, `wireguard`,
    `openvpn`, `tailscale`, `zerotier`, `easytier`**: no UDP association is
    implemented for those families in this kernel; the tunnel drops such
@@ -152,4 +155,40 @@ Full log: [`t7-ios-build.log`](t7-ios-build.log),
    measurement.
 6. **`billow_ios_vpn_drain` buffer contract**: a polling host must size the
    buffer as `max_count * (4 + 65535)`. The extension's main route uses
-   `port->write` and never calls `drain`, so this only affects hosts/tests.
+   `port->write` and never calls `drain`, so this only affects hosts/tests. The
+   `billow_rust_kernel_drain` C wrapper now derives `max_count` from the
+   caller's byte `length` (`length / (4 + 65535)`), so it cannot overrun a
+   caller-sized buffer.
+
+## T7-A2 repair (2026-11-24)
+
+Review findings addressed:
+
+| Finding | Change |
+| --- | --- |
+| P0 host entry missing | `BillowMobileBridge.swift` (`@_cdecl billow_mobile_request/free`) exposes engines/prepare/select/connect/disconnect/status/reload/prune; `src-tauri/src/ios_vpn.rs` wraps it as Tauri commands with stable codes (11 `notIos`, 12 `badResponse`); `src/lib/backend.ts`, the store and the settings kernel tab call it; `src-tauri/permissions/ios-vpn.toml` and `capabilities/default.json` grant the commands. |
+| P1 manifest overwrite | `AppGroupStore.prepareVersion` merges the version directory and unions `manifest.engines`; `ResourcesInstaller.prepare` can prepare both engines. `tool/ios/verify-app-group.sh` asserts a second prepare keeps the first engine and both `validatedResources` pass. |
+| P1 Rust staging / `tun` | `stage_config` in `native-kernel/.../ios_vpn.rs` writes `config.rust.yaml`, preserves `mixed-port`, copies referenced provider files into `home`, rewrites paths, removes `tun.enable: true`; `Tunnel::start_at` and reload use it. Host `ios_vpn_prepare_active` stages effective YAML + geo + referenced files. |
+| P1 UDP fan-out | `UdpReply` carries `(device src, device dst)`; DIRECT uses one connected socket per flow, proxied flows use one association per flow. `concurrent_device_sockets_to_one_remote_keep_their_replies` covers two sockets to one remote. |
+| P2 stop/drain | `Tunnel::stop` waits for `shutdown_timeout(5 s)`; `ios_vpn_start`/`reload` no longer hold the global state lock while stopping/reloading (state stores `Arc<Tunnel>`); `billow_rust_kernel_drain` uses the caller's `length`. |
+
+Execution evidence for this attempt:
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p billow-kernel --features ios-vpn` | 191 lib tests + 43 resources + 15 … suites pass; `ios_tunnel` 6 passed including the new two-socket UDP test; new `ios_vpn::tests::staging_*` pass |
+| `cargo test -p billow-kernel` (default) | all suites pass (no tunnel compiled) |
+| `cargo test --manifest-path src-tauri/Cargo.toml ios_vpn` | 7 passed: request field names (prepare + connect), row decode, host error code/domain, malformed response, null status, non-iOS code 11 |
+| `cargo check --manifest-path src-tauri/Cargo.toml` | host macOS ok |
+| `cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-ios` | ok after enabling the iOS `rquickjs` bindgen feature and adding the `ios` branch to `current_desktop_os` |
+| `xcrun swiftc -typecheck` Shared + Host (iOS 15 simulator) | ok; App Intents marked `@available(iOS 16.0, *)`, host gets `BILLOW_ENGINE_MIHOMO` |
+| `tool/ios/verify-app-group.sh` | `ok: one version validates for mihomo and rust; later prepares preserve both` |
+| `node tool/ios/build-rust-kernel.mjs --platform device|simulator` | both archives rebuilt (88.6/88.7 MiB) |
+| `xcodegen generate` + `xcodebuild -scheme BillowRust -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO` | BUILD SUCCEEDED; `BillowMobileBridge.swift` is in the host target and the shared resource code still compiles with `BILLOW_ENGINE_RUST` |
+| `tool/ios/verify-rust-kernel.sh` | 20/20 checks pass (UDP reply through `port->write`, reload, stop, restart) |
+| `cargo test -p billow-kernel --features ios-vpn` with an independent `CARGO_TARGET_DIR` | all suites pass; `ios_tunnel` 6/6 |
+| `cargo test -p billow-kernel` with the same independent target | all suites pass |
+| `npm test` / `npm run build` | 341 frontend tests pass; type-check + vite build pass |
+
+Still not executed: physical-device R3/R4, `.github` iOS CI, and a real
+`npx tauri ios build` with a Team.

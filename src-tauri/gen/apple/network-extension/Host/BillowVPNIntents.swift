@@ -3,6 +3,7 @@ import Foundation
 
 /// App Intents the system shows in Settings > VPN. They reuse
 /// BillowVPNManager, which T6 can also expose to Tauri.
+@available(iOS 16.0, *)
 struct ToggleBillowVPNIntent: AppIntent {
     static let title: LocalizedStringResource = "Toggle Billow VPN"
     static let description = IntentDescription("Connect or disconnect the selected Billow engine.")
@@ -14,7 +15,7 @@ struct ToggleBillowVPNIntent: AppIntent {
         if await manager.isConnected(engine: engine) {
             try await manager.disconnect()
         } else {
-            let installer = try ResourcesInstaller()
+            let installer = ResourcesInstaller()
             let version = try installer.activeVersion()
             try await manager.connect(engine: engine, requestedVersion: version)
         }
@@ -22,6 +23,7 @@ struct ToggleBillowVPNIntent: AppIntent {
     }
 }
 
+@available(iOS 16.0, *)
 struct SelectBillowEngineIntent: AppIntent {
     static let title: LocalizedStringResource = "Select Billow engine"
     static let description = IntentDescription("Choose which engine Billow connects with.")

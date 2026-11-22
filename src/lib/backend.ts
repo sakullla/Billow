@@ -10,6 +10,9 @@ import {
   type DnsQueryResult,
   type DnsQueryType,
   type EnginesState,
+  type IosEngineState,
+  type IosPrepareResult,
+  type IosVpnStatus,
   type OverridePreview,
   type KernelChannel,
   type KernelEngine,
@@ -59,6 +62,22 @@ export interface Backend {
   engines(): Promise<EnginesState>
   /** Serialized switch; rejects with the reason when the target is refused. */
   setEngine(engine: KernelEngine): Promise<Snapshot>
+
+  /** iOS only: engines served by the embedded packet-tunnel extensions. */
+  iosEngines(): Promise<IosEngineState[]>
+  /** iOS only: active App Group resource version, if the host prepared one. */
+  iosActiveVersion(): Promise<string | null>
+  iosSelected(): Promise<KernelEngine>
+  /** iOS only: stage the active profile and prepare it for both extensions. */
+  iosPrepareActive(version?: string, engine?: KernelEngine): Promise<IosPrepareResult>
+  /** iOS only: prepare an already staged directory (host tests/diagnostics). */
+  iosPrepare(version: string, stagedDir: string, engine?: KernelEngine): Promise<IosPrepareResult>
+  iosSelect(engine: KernelEngine): Promise<KernelEngine>
+  iosConnect(engine: KernelEngine, version: string): Promise<void>
+  iosDisconnect(): Promise<void>
+  iosStatus(engine: KernelEngine): Promise<IosVpnStatus | null>
+  iosReload(engine: KernelEngine): Promise<void>
+  iosPrune(keeping: string[]): Promise<void>
 
   state(): Promise<Snapshot>
   addSubscription(url: string): Promise<Snapshot>
@@ -204,6 +223,48 @@ function createTauriBackend(): Backend {
     refreshKernel: () => kern('refresh_kernel'),
     engines: async () => normalizeEngines(await call<unknown>('kernel_engines')),
     setEngine: (engine) => snap('set_kernel_engine', { engine }),
+
+    iosEngines: async () => {
+      const raw = await call<unknown>('ios_vpn_engines')
+      if (!Array.isArray(raw)) return []
+      return raw.flatMap((row) => {
+        const value = row && typeof row === 'object' ? (row as Record<string, unknown>) : {}
+        if (value.engine !== 'mihomo' && value.engine !== 'rust') return []
+        return [{
+          engine: value.engine,
+          installed: Boolean(value.installed),
+          connected: Boolean(value.connected),
+          version: typeof value.version === 'string' ? value.version : null,
+          engineVersion: typeof value.engineVersion === 'string' ? value.engineVersion : null,
+          lastError: typeof value.lastError === 'string' ? value.lastError : null,
+        } satisfies IosEngineState]
+      })
+    },
+    iosActiveVersion: async () => {
+      const raw = await call<string | null>('ios_vpn_active_version')
+      return typeof raw === 'string' && raw ? raw : null
+    },
+    iosSelected: async () => {
+      const raw = await call<{ selected?: unknown }>('ios_vpn_selected')
+      return raw?.selected === 'rust' ? 'rust' : 'mihomo'
+    },
+    iosPrepareActive: (version, engine) =>
+      call<IosPrepareResult>('ios_vpn_prepare_active', { version: version ?? null, engine: engine ?? null }),
+    iosPrepare: (version, stagedDir, engine) =>
+      call<IosPrepareResult>('ios_vpn_prepare', { version, stagedDir, engine: engine ?? null }),
+    iosSelect: async (engine) => {
+      const raw = await call<{ selected?: unknown }>('ios_vpn_select', { engine })
+      return raw?.selected === 'rust' ? 'rust' : 'mihomo'
+    },
+    iosConnect: (engine, version) => call<void>('ios_vpn_connect', { engine, version }),
+    iosDisconnect: () => call<void>('ios_vpn_disconnect'),
+    iosStatus: async (engine) => {
+      const raw = await call<unknown>('ios_vpn_status', { engine })
+      if (!raw || typeof raw !== 'object') return null
+      return raw as IosVpnStatus
+    },
+    iosReload: (engine) => call<void>('ios_vpn_reload', { engine }),
+    iosPrune: (keeping) => call<void>('ios_vpn_prune', { keeping }),
 
     state: () => snap('profile_state'),
     addSubscription: (url) => snap('add_subscription_profile', { url }),

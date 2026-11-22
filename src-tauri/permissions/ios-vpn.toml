@@ -1,0 +1,58 @@
+# iOS host commands backed by the NetworkExtension bridge
+# (network-extension/Host/BillowMobileBridge.swift). The commands exist on
+# every platform and answer the stable notIos code (11) off iOS.
+
+[[permission]]
+identifier = "allow-ios-vpn-engines"
+description = "Lists the two iOS packet-tunnel extensions and their last status."
+commands.allow = ["ios_vpn_engines"]
+
+[[permission]]
+identifier = "allow-ios-vpn-active-version"
+description = "Reports the active App Group resource version prepared for the iOS extensions."
+commands.allow = ["ios_vpn_active_version"]
+
+[[permission]]
+identifier = "allow-ios-vpn-selected"
+description = "Reports the extension selected in the App Group."
+commands.allow = ["ios_vpn_selected"]
+
+[[permission]]
+identifier = "allow-ios-vpn-prepare"
+description = "Prepares a staged resource directory for both iOS extensions."
+commands.allow = ["ios_vpn_prepare"]
+
+[[permission]]
+identifier = "allow-ios-vpn-prepare-active"
+description = "Stages the active profile and prepares it for both iOS extensions."
+commands.allow = ["ios_vpn_prepare_active"]
+
+[[permission]]
+identifier = "allow-ios-vpn-select"
+description = "Selects the iOS extension used by the next connect."
+commands.allow = ["ios_vpn_select"]
+
+[[permission]]
+identifier = "allow-ios-vpn-connect"
+description = "Starts the selected iOS packet-tunnel extension."
+commands.allow = ["ios_vpn_connect"]
+
+[[permission]]
+identifier = "allow-ios-vpn-disconnect"
+description = "Stops the running iOS packet-tunnel extension."
+commands.allow = ["ios_vpn_disconnect"]
+
+[[permission]]
+identifier = "allow-ios-vpn-status"
+description = "Reads the running iOS extension status and counters."
+commands.allow = ["ios_vpn_status"]
+
+[[permission]]
+identifier = "allow-ios-vpn-reload"
+description = "Reloads the running iOS extension configuration."
+commands.allow = ["ios_vpn_reload"]
+
+[[permission]]
+identifier = "allow-ios-vpn-prune"
+description = "Removes stale App Group resource versions."
+commands.allow = ["ios_vpn_prune"]

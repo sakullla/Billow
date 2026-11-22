@@ -1,8 +1,7 @@
 import Foundation
 
-/// Compiled into billow_iOS. T6 replaces the stubs with Tauri commands that
-/// call BillowVPNManager / ResourcesInstaller (suggested command names and
-/// payloads are listed in tool/ios/README.md).
+/// Compiled into billow_iOS and called by the Tauri commands in
+/// `src-tauri/src/ios_vpn.rs` through `BillowMobileBridge.swift`.
 enum BillowMobileEntry {
     struct EngineState: Codable {
         var engine: String
@@ -13,10 +12,13 @@ enum BillowMobileEntry {
         var lastError: String?
     }
 
+    static func activeVersion(groupId: String = BillowVPNManager.shared.appGroupId) -> String? {
+        (try? AppGroupStore(groupId: groupId)?.activeVersion()) ?? nil
+    }
+
     static func engineStates() async -> [EngineState] {
         let manager = BillowVPNManager.shared
-        let installer = try? ResourcesInstaller()
-        let version = try? installer?.activeVersion()
+        let version = activeVersion()
         var states: [EngineState] = []
         for engine in BillowVPNManager.Engine.allCases {
             let status = try? await manager.status(of: engine)

@@ -630,7 +630,17 @@ watch(
   () => store.settingsTab.value,
   (next, prev) => {
     if (prev === 'kernel') flushKernelInputs()
-    if (next === 'kernel') void store.refreshEngines()
+    if (next === 'kernel') {
+      void store.refreshEngines()
+      if (store.isIos.value) void store.refreshIosVpn()
+    }
+  },
+)
+
+watch(
+  () => store.isIos.value,
+  (ios) => {
+    if (ios && store.settingsTab.value === 'kernel') void store.refreshIosVpn()
   },
 )
 
@@ -1715,7 +1725,60 @@ const TABS = computed(() => [
 
     <!-- ───────── 内核 ───────── -->
     <template v-else-if="store.settingsTab.value === 'kernel'">
-      <section class="card" data-testid="engine-card">
+      <section v-if="store.isIos.value" class="card" data-testid="ios-vpn-card">
+        <header class="card-head">
+          <h2>iOS 扩展</h2>
+          <span class="tag" :class="store.iosEngines.value.some((row) => row.connected) ? 'ok' : 'warn'">
+            {{ store.iosEngines.value.some((row) => row.connected) ? '已连接' : '未连接' }}
+          </span>
+        </header>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>实际转发扩展</strong>
+            <p class="muted small">
+              两个网络扩展随应用安装。选择后首次连接会启动对应扩展；启动失败时错误码与最后错误会显示在下方。
+            </p>
+          </div>
+          <Segmented
+            :model-value="store.iosSelected.value"
+            :options="ENGINES"
+            size="sm"
+            label="iOS 扩展"
+            :disabled="Boolean(store.busy.engine)"
+            @update:model-value="store.selectIosEngine"
+          />
+        </div>
+        <div v-for="row in store.iosEngines.value" :key="row.engine" class="setting-row">
+          <div class="grow">
+            <strong>{{ engineName(row.engine) }}</strong>
+            <p class="muted small">
+              {{ row.installed
+                ? (row.engineVersion ?? row.version ?? '已安装')
+                : '当前安装包未找到该扩展' }}
+              <template v-if="row.connected"> · 正在承载流量</template>
+              <template v-if="row.lastError"> · 最后错误：{{ row.lastError }}</template>
+            </p>
+          </div>
+          <span class="tag" :class="row.connected ? 'ok' : ''">{{ row.connected ? '已连接' : '未连接' }}</span>
+        </div>
+        <p v-if="!store.iosEngines.value.length" class="muted small card-note" data-testid="ios-vpn-empty">
+          未读取到扩展状态。请确认 App Group 与 Network Extension 权限已配置。
+        </p>
+        <div class="setting-row">
+          <div class="grow">
+            <strong>资源与连接</strong>
+            <p class="muted small">准备当前配置（离线写入 App Group 并校验两个扩展）后即可连接。</p>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap">
+            <button type="button" class="btn ghost sm" :disabled="Boolean(store.busy.connect)" data-testid="ios-prepare" @click="store.prepareIosResources()">准备当前配置</button>
+            <button type="button" class="btn primary sm" :disabled="Boolean(store.busy.connect)" data-testid="ios-connect" @click="store.connectIos()">连接</button>
+            <button type="button" class="btn ghost sm" :disabled="Boolean(store.busy.connect)" data-testid="ios-disconnect" @click="store.disconnectIos()">断开</button>
+            <button type="button" class="btn ghost sm" :disabled="Boolean(store.busy.connect)" data-testid="ios-reload" @click="store.reloadIos()">重载</button>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="!store.isIos.value" class="card" data-testid="engine-card">
         <header class="card-head">
           <h2>内核引擎</h2>
           <span class="tag" :class="snap.kernel_running ? 'ok' : 'warn'">{{ runningEngineText }}</span>

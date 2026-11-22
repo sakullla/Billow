@@ -45,6 +45,12 @@ rquickjs = { version = "0.14", default-features = false, features = ["std", "bin
 jni = "0.21"
 ndk-context = "0.1"
 
+[target.'cfg(target_os = "ios")'.dependencies]
+# rquickjs 0.14 ships no iOS bindings either. The host target (T7) must compile
+# for the NetworkExtension bridge, so generate them from the iOS SDK like the
+# Android target does with the NDK.
+rquickjs = { version = "0.14", default-features = false, features = ["std", "bindgen"] }
+
 [dev-dependencies]
 brotli = "9"
 

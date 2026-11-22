@@ -312,6 +312,75 @@ async fn udp_datagrams_cross_the_tunnel_in_both_directions() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn concurrent_device_sockets_to_one_remote_keep_their_replies() {
+    // Two device sockets (different source ports) reach the same remote at
+    // the same time. The shared-socket design would broadcast each reply to
+    // both sockets; the per-flow NAT key must deliver each payload exactly to
+    // the socket that sent it.
+    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let target = server.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buffer = [0u8; 128];
+        loop {
+            let Ok((read, from)) = server.recv_from(&mut buffer).await else {
+                return;
+            };
+            let payload = buffer[..read].to_vec();
+            if server.send_to(&payload, from).await.is_err() {
+                return;
+            }
+        }
+    });
+
+    let device = Device::start(&direct_config(), TunnelOptions::default());
+    let first = device.next_port();
+    let second = device.next_port();
+    for (port, payload) in [(first, b"first".as_slice()), (second, b"second".as_slice())] {
+        let packet = ipstack::build_udp_packet(
+            DEVICE_IP,
+            target.ip(),
+            port,
+            target.port(),
+            payload,
+            64,
+        )
+        .unwrap();
+        device.send(&packet);
+    }
+    let packets = device
+        .sink
+        .wait_for(|packets| {
+            let mut replies = 0;
+            for packet in packets {
+                if let Ok(parsed) = ipstack::parse_ip_packet(packet) {
+                    if parsed.protocol == ipstack::IPPROTO_UDP {
+                        replies += 1;
+                    }
+                }
+            }
+            replies >= 2
+        })
+        .await;
+    let mut by_port = std::collections::HashMap::new();
+    for packet in &packets {
+        let Ok(parsed) = ipstack::parse_ip_packet(packet) else {
+            continue;
+        };
+        if parsed.protocol != ipstack::IPPROTO_UDP {
+            continue;
+        }
+        let udp = ipstack::parse_udp(&parsed).expect("UDP reply");
+        by_port.insert(udp.dst_port, udp.payload.to_vec());
+    }
+    assert_eq!(by_port.get(&first).map(Vec::as_slice), Some(b"first".as_slice()));
+    assert_eq!(by_port.get(&second).map(Vec::as_slice), Some(b"second".as_slice()));
+    let stats = device.tunnel.stats();
+    assert_eq!(stats.udp_flows, 2, "{stats:?}");
+    assert_eq!(stats.udp_replies, 2, "{stats:?}");
+    device.tunnel.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn dns_queries_are_answered_from_the_configured_resolver() {
     // A fake upstream resolver: answers every query with NXDOMAIN-shaped
     // header flags so the test only asserts routing, not DNS semantics.

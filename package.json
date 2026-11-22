@@ -17,7 +17,8 @@
     "build:android": "tauri android build",
     "icons": "tauri icon assets/icon-manifest.json && python tool/sync_icons.py",
     "ios:rust-kernel": "node tool/ios/build-rust-kernel.mjs --platform all",
-    "ios:verify-rust": "tool/ios/verify-rust-kernel.sh"
+    "ios:verify-rust": "tool/ios/verify-rust-kernel.sh",
+    "ios:verify-app-group": "tool/ios/verify-app-group.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",

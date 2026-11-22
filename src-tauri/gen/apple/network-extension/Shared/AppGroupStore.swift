@@ -83,12 +83,18 @@ final class AppGroupStore {
     let rootURL: URL
     private let fm = FileManager.default
 
-    init?(groupId: String) {
+    convenience init?(groupId: String) {
         guard let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupId) else {
             return nil
         }
+        self.init(rootURL: url, groupId: groupId)
+    }
+
+    /// Testable root: the packaging smoke (`tool/ios/verify-app-group.sh`)
+    /// validates the manifest merge without a signed App Group entitlement.
+    init(rootURL: URL, groupId: String) {
         self.groupId = groupId
-        self.rootURL = url
+        self.rootURL = rootURL
     }
 
     var currentURL: URL { rootURL.appendingPathComponent(AppGroupLayout.currentFile) }
@@ -134,40 +140,87 @@ final class AppGroupStore {
         return (manifest, dir)
     }
 
-    /// Copies `stagedDir` to versions/<version>, writes and validates the
-    /// manifest, then activates it. Everything is written before current.json
-    /// changes, so a failure leaves the previous version active.
+    /// Copies `stagedDir` over versions/<version>, merges the engine list with
+    /// the existing manifest, writes and validates the manifest, then
+    /// activates it. Everything is written before current.json changes, so a
+    /// failure leaves the previous version active.
+    ///
+    /// The directory is merged instead of removed: the host prepares one
+    /// version and both packet-tunnel extensions must validate the same
+    /// `versions/<version>` tree. Preparing for the second engine therefore
+    /// keeps the first engine in `manifest.engines` and keeps any file the
+    /// other engine needs.
     @discardableResult
     func prepareVersion(version: String, stagedDir: URL, engines: [String], options: SharedManifest.Options?,
                         appVersion: String?) throws -> SharedManifest {
         guard !version.isEmpty, !version.contains("/"), !version.contains("..") else {
             throw AppGroupError.corruptManifest
         }
-        let files = try listedFiles(stagedDir)
-        guard files[AppGroupLayout.configFile] != nil else {
+        let stagedFiles = try listedFiles(stagedDir)
+        guard stagedFiles[AppGroupLayout.configFile] != nil else {
             throw AppGroupError.corruptManifest
+        }
+        let target = versionURL(version)
+        try fm.createDirectory(at: versionsURL, withIntermediateDirectories: true)
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        try mergeContents(of: stagedDir, into: target)
+        // Re-hash whatever is now in the version directory: the merged tree
+        // may contain files from an earlier prepare for the other engine.
+        let files = try listedFiles(target)
+        var merged = engines
+        if let data = try? Data(contentsOf: target.appendingPathComponent(AppGroupLayout.manifestFile)),
+           let existing = try? JSONDecoder().decode(SharedManifest.self, from: data) {
+            for engine in existing.engines where !merged.contains(engine) {
+                merged.append(engine)
+            }
         }
         let manifest = SharedManifest(
             version: version,
-            engines: engines,
+            engines: merged,
             appVersion: appVersion,
             createdAt: ISO8601DateFormatter().string(from: Date()),
             files: files,
             options: options
         )
-        let target = versionURL(version)
-        try? fm.removeItem(at: target)
-        try fm.createDirectory(at: versionsURL, withIntermediateDirectories: true)
-        try fm.copyItem(at: stagedDir, to: target)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(manifest).write(to: target.appendingPathComponent(AppGroupLayout.manifestFile),
                                            options: .atomic)
-        for engine in engines {
+        for engine in merged {
             _ = try validatedResources(version, expectedEngine: engine)
         }
         try JSONEncoder().encode(ActiveVersionRecord(active: version)).write(to: currentURL, options: .atomic)
         return manifest
+    }
+
+    /// Copies every file from `source` into `destination`, replacing files but
+    /// leaving destination-only files in place (they belong to the other
+    /// engine's view of the same version).
+    private func mergeContents(of source: URL, into destination: URL) throws {
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
+        guard let walker = fm.enumerator(at: source, includingPropertiesForKeys: keys) else {
+            return
+        }
+        let base = source.standardizedFileURL.path
+        for case let url as URL in walker {
+            let values = try url.resourceValues(forKeys: Set(keys))
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(base + "/") else { continue }
+            let relative = String(path.dropFirst(base.count + 1))
+            if relative == AppGroupLayout.manifestFile { continue }
+            let target = destination.appendingPathComponent(relative)
+            if values.isDirectory == true {
+                try fm.createDirectory(at: target, withIntermediateDirectories: true)
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
+            try fm.createDirectory(at: target.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            if fm.fileExists(atPath: target.path) {
+                try fm.removeItem(at: target)
+            }
+            try fm.copyItem(at: url, to: target)
+        }
     }
 
     /// Removes every version except the active one and those listed in
