@@ -11,14 +11,12 @@ Scope: `native-kernel/`, `tool/kernel-compat/`.
 epochs) is not described at byte level in public material, and asked the Owner
 to choose between keeping `type: sudoku` rejected and translating the pinned
 GPL-3.0 source. The Owner chose the translation option; the authorization is
-recorded in
+recorded in `docs/coordination/t17-handoff.md` (updated 2026-11-22 to authorise
+the source translation), in
 `docs/sakullla-workflow/2026-11-20-native-rust-kernel/02-technical-solution.md`
 ("用户已明确授权 `sudoku`（T17）… 直接依据锁定源码翻译实现") and in the T17
 recipe outcomes
 (`03-execution-plan.md#tasks/T17`, "依据锁定 transport/sudoku 源码翻译实现必要子集").
-The `docs/coordination/t17-handoff.md` interface file still states the earlier
-`T17-A1` clean-room rule and has not been updated; it is Owner material, so the
-contradiction is reported rather than edited here.
 
 Consequences, and how they are recorded in the repository:
 
@@ -29,9 +27,13 @@ Consequences, and how they are recorded in the repository:
   repository root `LICENSE`), and `native-kernel/THIRD_PARTY_NOTICES.md` lists
   every translated file with its upstream source and the distribution
   obligations.
-- Every translated file starts with `SPDX-License-Identifier: GPL-3.0-only`
-  and a `Derived from Mihomo transport/sudoku (GPL-3.0)` header naming the
-  pinned version, commit and source paths.
+- Every standalone translated module file starts with
+  `SPDX-License-Identifier: GPL-3.0-only` and a `Derived from Mihomo
+  transport/sudoku (GPL-3.0)` header naming the pinned version, commit and
+  source paths. `keys.rs` (`sudoku_seed`) and `proxies.rs` (`SudokuOutbound`,
+  `parse_sudoku`) are mixed files: the same header sits on the GPL item and the
+  module docs state that only that item is derived, while the rest of those
+  files is original MIT code.
 - `native-kernel/README.md` states the licence and no longer claims the module
   is MIT or unimplemented.
 - The earlier T13-A3 removal audit
@@ -66,6 +68,42 @@ Explicitly rejected at load time, with the reason recorded:
 `sudoku` is TCP-only in the kernel; `multiplex: auto` behaves like `off`
 because it only reuses an HTTP tunnel connection.
 
+## Repairs (T17-A3)
+
+Review found four defects in the first delivery; all are fixed here.
+
+- **`dialer-proxy` dropped the exit.** `dial_chain` sliced the chain from the
+  first hop without a `dialer-proxy` and dialled that hop straight to the
+  target, so a sudoku exit (and every other exit) was bypassed by a hop. It now
+  keeps `chain[0]`: `connect_via_hops` tunnels the exit's server connection
+  through the hop chain (the last hop is dialled locally, every earlier hop is
+  negotiated over the stream produced by the hop below it), and `dial_over`
+  runs the exit protocol over that stream toward the target. An exit whose
+  protocol cannot run over a stream fails with a named chain error instead of
+  letting a hop dial the target; the exit is never dropped. The T4/T12 UDP
+  chain cases still pass (UDP uses its own association path).
+- **Regression tests.** `tests/protocols.rs::tcp_dialer_proxy_reaches_the_exit_
+  through_the_hop` (socks5 exit + socks5 hop: the hop is asked for the exit
+  server and the exit for the final target) and `...::tcp_dialer_proxy_never_
+  bypasses_an_unsupported_exit`; `tests/mihomo_peers.rs::sudoku_dialer_proxy_
+  carries_the_exit_through_the_socks5_hop` (sudoku exit + recording SOCKS5 hop
+  + pinned Mihomo listener: exactly one hop CONNECT, addressed to the sudoku
+  server, and the sink receives the marker). The pre-existing two-hop peer case
+  (`dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo`) had passed
+  only because the bypass delivered the marker; it now uses a recording hop
+  and asserts the hop's sole CONNECT is the exit server.
+- **Mux session lifetime.** `mux::close_all()` closes every cached session and
+  `Kernel::stop` calls it, so a restarted engine in the same process never
+  reuses a dead session; the mux cache key also includes the hop chain.
+- **WriteQueue wake window.** `pop` signals with `notify_one` (which leaves a
+  permit) instead of `notify_waiters`, so a sender between a failed `try_push`
+  and `notified().await` cannot lose the wake.
+- **GPL labelling.** `keys.rs::sudoku_seed` and `proxies.rs`'s
+  `SudokuOutbound`/`parse_sudoku` now carry `SPDX-License-Identifier:
+  GPL-3.0-only` item headers; `THIRD_PARTY_NOTICES.md` lists both mixed files
+  with their derived range, and the stale "session mux not implemented"
+  comment is corrected.
+
 ## Files
 
 - `native-kernel/crates/billow-kernel/src/outbound/sudoku/mod.rs` — option
@@ -79,7 +117,14 @@ because it only reuses an HTTP tunnel connection.
 - `.../sudoku/go_rand.rs` — Go `math/rand` `rngSource`/`rngCooked`/`Shuffle`
   (BSD-3-Clause, notice kept on top of the GPL-3.0 header).
 - `native-kernel/crates/billow-kernel/src/proxies.rs` — `SudokuOutbound` option
-  parsing (strict, rejects the names above).
+  table and `parse_sudoku` (strict; rejects the names above). GPL-3.0-derived
+  items only; the rest of the file is original MIT code.
+- `native-kernel/crates/billow-kernel/src/keys.rs` — `sudoku_seed`, the
+  canonical AEAD seed translated from `sudoku.ClientAEADSeed`. GPL-3.0-derived
+  item only; the rest of the file is original MIT code.
+- `native-kernel/crates/billow-kernel/src/outbound/mod.rs` — `dial_chain` /
+  `connect_via_hops` (not a translation): the `dialer-proxy` dispatcher that
+  carries the exit's server connection through the hop chain.
 - `tool/kernel-compat/peers/sudoku-vectors/` — test-only Go differential
   generator built against the pinned tree.
 - `native-kernel/COPYING.GPL-3.0`,
@@ -94,7 +139,7 @@ through `tool/kernel-compat/peers/sudoku-vectors`
 
 | check | command | result |
 | --- | --- | --- |
-| pinned peer, 11 positive cases | `tool/kernel-compat/peer-tests.sh` | default session, no HTTP mask, ascii + packed downlink, directional table, custom table, table rotation, aes-128-gcm, `none`, private/public key material, sequential mux, concurrent mux |
+| pinned peer, 12 positive cases | `tool/kernel-compat/peer-tests.sh` | default session, no HTTP mask, ascii + packed downlink, directional table, custom table, table rotation, aes-128-gcm, `none`, private/public key material, sequential mux, concurrent mux, and a `dialer-proxy` chain through a recording SOCKS5 hop |
 | pinned peer, 2 negative cases | same | a wrong key and a mismatched `table-type` fail the dial and never reach the sink |
 | codec differential | `cargo test --test protocols -- --ignored sudoku_codec_matches_the_pinned_implementation` | pinned encode -> Rust decode and Rust encode -> pinned decode, pure and packed, padding 0-0 and 10-30, for entropy/ascii/directional/custom layouts |
 | default suite | `cargo test --manifest-path native-kernel/Cargo.toml --locked` | table/record/KIP/mux unit tests and `tests/config.rs::sudoku_options_are_strict` |
@@ -106,8 +151,8 @@ target lock):
 
 | run | result |
 | --- | --- |
-| `cargo test --manifest-path native-kernel/Cargo.toml --locked` | 284 passed, 0 failed, 86 ignored (15 test binaries; first canonical attempt hit the documented peer-start flake in the unrelated `trojan_without_skip_cert_verify_fails_on_an_untrusted_certificate` case with an empty peer log, the immediate rerun passed, and the same case also passed in the isolated run) |
-| `tool/kernel-compat/peer-tests.sh` | 63 passed, 0 failed in 60 s (`evidence/protocol-peers-run.log`) |
+| `cargo test --manifest-path native-kernel/Cargo.toml --locked` | 286 passed, 0 failed, 87 ignored (15 test binaries; first canonical attempt hit the documented peer-start flake in the unrelated `trojan_without_skip_cert_verify_fails_on_an_untrusted_certificate` case with an empty peer log, the immediate rerun passed, and the same case also passed in the isolated run) |
+| `tool/kernel-compat/peer-tests.sh` | 64 passed, 0 failed (`evidence/protocol-peers-run.log`) |
 | `tool/kernel-compat/family-peers.sh` | exit 0; sudoku hint/padding vectors match and the codec differential passes (`evidence/family-peers-run.log`) |
 | `node --test tool/kernel-compat/runner.test.mjs` | 10 passed, 0 failed |
 | `node tool/kernel-compat/option-probe.mjs --rust <release> --mihomo <pinned>` | 261 no-op / 283 enabled / 0 problems (`evidence/option-matrix.txt`) |

@@ -13,6 +13,11 @@
 //! ```
 //!
 //! So a configuration is never accepted with a silently ignored field.
+//!
+//! One option table is GPL-derived: [`SudokuOutbound`] and `parse_sudoku` are
+//! translated from Mihomo `adapter/outbound/sudoku.go` (GPL-3.0). Only those
+//! items are GPL-derived; the rest of this file is original MIT code. See
+//! `native-kernel/THIRD_PARTY_NOTICES.md`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -295,6 +300,12 @@ pub enum SudokuMultiplex {
     On,
 }
 
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Derived from Mihomo `transport/sudoku` (GPL-3.0), `adapter/outbound/sudoku.go`
+// (option names, defaults and validation). Only the Sudoku option table below
+// and `parse_sudoku` are GPL-derived; the rest of `proxies.rs` is original MIT
+// code. See `native-kernel/THIRD_PARTY_NOTICES.md`.
 /// Sudoku (`adapter/outbound/sudoku.go`): table-driven obfuscation, a record
 /// layer and the KIP handshake. TCP sessions, the legacy HTTP mask, the pure
 /// and packed downlink codecs and the session mux (`multiplex: on`) are
@@ -2784,10 +2795,15 @@ fn finish_mieru(
     })
 }
 
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Derived from Mihomo `transport/sudoku` (GPL-3.0), `adapter/outbound/sudoku.go`.
+// Only this parser and the `SudokuOutbound` option table are GPL-derived; the
+// rest of `proxies.rs` is original MIT code. See `THIRD_PARTY_NOTICES.md`.
 /// Sudoku (`adapter/outbound/sudoku.go`). The pinned type validates the AEAD
 /// method, the padding range, the table type and the HTTP mask mode; this
-/// kernel implements the legacy mask and TCP sessions and rejects the tunnel
-/// modes, the session mux and UoT with the reason recorded.
+/// kernel implements the legacy mask, TCP sessions and the session mux, and
+/// rejects the tunnel modes and UoT with the reason recorded.
 fn parse_sudoku(entry: &mut Entry<'_>) -> Result<SudokuOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;

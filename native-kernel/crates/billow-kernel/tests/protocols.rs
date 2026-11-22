@@ -2962,6 +2962,85 @@ async fn shadowsocks_udp_goes_through_the_dialer_proxy_hop() {
     kernel.stop().unwrap();
 }
 
+/// `dialer-proxy` keeps the matched exit (regression: the dispatcher used to
+/// drop `chain[0]`, so the last hop dialled the final target directly and the
+/// exit never saw the request). The hop must be asked to CONNECT the exit's
+/// server; the exit then carries the request to the final target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tcp_dialer_proxy_reaches_the_exit_through_the_hop() {
+    let (echo_port, received) = echo_target().await;
+    let (exit_port, exit_log) = socks5_peer("exit-user", "exit-pass").await;
+    let (hop_port, hop_log) = socks5_peer("hop-user", "hop-pass").await;
+    let dir = scratch("tcp-dialer-chain");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: exit, type: socks5, server: 127.0.0.1, port: {exit_port}, username: exit-user, password: exit-pass, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}, username: hop-user, password: hop-pass}}\nrules:\n  - 'MATCH,exit'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let payload = b"chain-keeps-the-exit";
+    let reply = roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, payload)
+        .await
+        .expect("the chained dial must reach the echo through the exit");
+    assert_eq!(reply, payload);
+    let hop = detail(&hop_log);
+    assert!(
+        hop.iter()
+            .any(|d| d == &format!("target=127.0.0.1:{exit_port}")),
+        "the hop must be asked for the exit server: {hop:?}"
+    );
+    assert!(
+        !hop.iter()
+            .any(|d| d == &format!("target=127.0.0.1:{echo_port}")),
+        "the hop must not dial the final target directly: {hop:?}"
+    );
+    let exit = detail(&exit_log);
+    assert!(
+        exit.iter()
+            .any(|d| d == &format!("target=127.0.0.1:{echo_port}")),
+        "the exit must receive the final target: {exit:?}"
+    );
+    wait_for(&received, payload.len() as u64).await;
+    kernel.stop().unwrap();
+}
+
+/// An exit whose protocol cannot run over a hop must fail with the chain
+/// error, not quietly let the hop dial the final target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tcp_dialer_proxy_never_bypasses_an_unsupported_exit() {
+    let (echo_port, received) = echo_target().await;
+    let (hop_port, hop_log) = socks5_peer("hop-user", "hop-pass").await;
+    let dir = scratch("tcp-dialer-chain-unsupported");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: exit, type: ss, server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}, username: hop-user, password: hop-pass}}\nrules:\n  - 'MATCH,exit'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let result = roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"must-not-arrive").await;
+    assert!(result.is_err(), "the unsupported exit must fail the dial: {result:?}");
+    let hop = detail(&hop_log);
+    assert!(
+        !hop.iter()
+            .any(|d| d == &format!("target=127.0.0.1:{echo_port}")),
+        "the hop must never dial the final target: {hop:?}"
+    );
+    assert_eq!(
+        received.load(Ordering::Relaxed),
+        0,
+        "the target must not be reached when the exit cannot be used"
+    );
+    kernel.stop().unwrap();
+}
+
 /// A trojan UDP peer whose stream ends after each reply: the association must
 /// reconnect on the next datagram instead of staying deaf (the EOF flag must be
 /// reset when the transport is dropped).

@@ -176,72 +176,115 @@ pub async fn dial(
 
 /// Dial `target` through the `dialer-proxy` chain that starts at `chain[0]`;
 /// `chain[i].dialer_proxy == chain[i+1].name` (validated at configuration
-/// load). Every hop except the last dials the next hop's `server:port` as its
-/// own destination, so the servers after the first hop are resolved and
-/// reached by the previous hop, never locally. Each hop is bounded by the same
-/// timeout; the total is bounded by the caller's own timeout.
+/// load). `chain[0]` is the exit the rule selected; the exit is never dropped:
+/// its server connection is tunnelled through `chain[1..]` (the last hop is
+/// dialled locally, every earlier hop is entered through the hop after it),
+/// then the exit protocol runs over that stream toward `target`. The total is
+/// bounded by the caller's timeout.
 pub async fn dial_chain(
     chain: &[&Proxy],
     target: &Target,
     timeout: Duration,
     tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
-    // The matched proxy may itself be reached through `dialer-proxy`; the
-    // effective chain starts at the first hop without one.
-    let head = chain
-        .iter()
-        .position(|proxy| proxy.dialer_proxy().is_none())
-        .ok_or_else(|| DialError::Chain(format!("no chain head without a dialer-proxy in [{}]", chain.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "))))?;
-    let chain = &chain[head..];
-    let Some((first, rest)) = chain.split_first() else {
+    let Some((exit, hops)) = chain.split_first() else {
         return Err(DialError::Chain("empty dialer-proxy chain".to_string()));
     };
-    let hop_target = match rest.first() {
-        Some(next) => Target {
-            host: next.server().0.to_string(),
-            port: next.server().1,
-        },
-        None => target.clone(),
-    };
-    let inner = dial_with_rest(first, &hop_target, rest, timeout, tls);
+    let inner = dial_through(exit, hops, target, timeout, tls);
     match tokio::time::timeout(timeout, inner).await {
         Ok(result) => result,
         Err(_) => Err(DialError::Timeout(timeout)),
     }
 }
 
-async fn dial_with_rest(
-    first: &Proxy,
+/// Establish `exit` over `hops`, then run the exit protocol toward `target`.
+async fn dial_through(
+    exit: &Proxy,
+    hops: &[&Proxy],
     target: &Target,
-    rest: &[&Proxy],
     timeout: Duration,
     tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
-    let (next, tail) = match rest.split_first() {
-        Some(pair) => pair,
-        None => return dial_inner(&first.protocol, target, &[], timeout, tls).await,
+    if hops.is_empty() {
+        return dial_inner(&exit.protocol, target, &[], timeout, tls).await;
+    }
+    if !matches!(exit.protocol, Protocol::Socks5(_) | Protocol::Sudoku(_)) {
+        return Err(exit_over_stream_error(exit));
+    }
+    // The exit's own server is the destination of its dialer hop.
+    let exit_server = server_target(exit);
+    let stream = connect_via_hops(hops, &exit_server, timeout, tls).await?;
+    dial_over(exit, stream, target, hops).await
+}
+
+/// Only protocols whose handshake can run over a stream someone else produced
+/// can be an exit with a `dialer-proxy`; the exit is never dropped or bypassed.
+fn exit_over_stream_error(exit: &Proxy) -> DialError {
+    DialError::Chain(format!(
+        "dialer-proxy exit {}({}) is not supported: its protocol cannot run over a connection established through a hop (only socks5 and sudoku exits can); the exit is never bypassed",
+        exit.name,
+        exit.type_name()
+    ))
+}
+
+/// A stream connected to `destination`, tunnelled through `hops`: `hops[0]`
+/// carries the connection, and when there are more hops its own server is
+/// reached through them (`hops[0]`'s server is `hops[1]`'s destination).
+async fn connect_via_hops(
+    hops: &[&Proxy],
+    destination: &Target,
+    timeout: Duration,
+    tls: &ClientTls,
+) -> Result<BoxStream, DialError> {
+    if hops.is_empty() {
+        return Err(DialError::Chain("empty dialer-proxy hop list".to_string()));
+    }
+    // Only a SOCKS5 hop can be entered through the previous hop, so every hop
+    // must be SOCKS5 before any connection is made.
+    let mut layers = Vec::with_capacity(hops.len());
+    for hop in hops {
+        let Protocol::Socks5(option) = &hop.protocol else {
+            return Err(DialError::Chain(format!(
+                "dialer-proxy hop {}({}) cannot carry the next server connection: only a socks5 hop can be entered through a previous hop",
+                hop.name,
+                hop.type_name()
+            )));
+        };
+        layers.push((*hop, option));
+    }
+    let last = layers.len() - 1;
+    let (read, write) = if last == 0 {
+        // One hop: dial it locally and ask it for `destination`.
+        socks5::tunnel(layers[0].1, &destination.host, destination.port, &[], timeout, tls)
+            .await?
+    } else {
+        // The deepest hop is dialled locally and asked for the server of the
+        // hop above it; then each hop above is negotiated over that stream.
+        let below = server_target(layers[last - 1].0);
+        socks5::tunnel(layers[last].1, &below.host, below.port, &[], timeout, tls).await?
     };
-    match (&first.protocol, &next.protocol) {
-        (Protocol::Socks5(option), _) => {
-            // The next hop's server connection is a SOCKS5 tunnel through this hop.
-            let (host, port) = next.server();
-            let (read, write) = socks5::tunnel(option, host, port, tail, timeout, tls).await?;
-            let stream: BoxStream = Box::new(Joined { read, write });
-            dial_over(next, stream, target, tail, timeout, tls).await
+    let mut stream: BoxStream = Box::new(Joined { read, write });
+    if last > 0 {
+        for index in (0..last).rev() {
+            let target = if index == 0 {
+                destination.clone()
+            } else {
+                server_target(layers[index - 1].0)
+            };
+            stream = socks5::negotiate_stream(stream, layers[index].1, &target)
+                .await
+                .map_err(|e| handshake("socks5", e))?;
         }
-        (_, Protocol::Socks5(_)) => Err(DialError::Chain(format!(
-            "dialer-proxy chain {}({}) -> {}(socks5): a socks5 hop over a non-socks5 hop is not supported",
-            first.name,
-            first.type_name(),
-            next.name
-        ))),
-        _ => Err(DialError::Chain(format!(
-            "dialer-proxy chain {}({}) -> {}({}) is not supported: only a socks5 hop can carry another hop",
-            first.name,
-            first.type_name(),
-            next.name,
-            next.type_name()
-        ))),
+    }
+    Ok(stream)
+}
+
+/// `server:port` of a proxy as a dial destination.
+fn server_target(proxy: &Proxy) -> Target {
+    let (host, port) = proxy.server();
+    Target {
+        host: host.to_string(),
+        port,
     }
 }
 
@@ -291,15 +334,13 @@ impl tokio::io::AsyncWrite for Joined {
     }
 }
 
-/// Run the protocol of `proxy` over an already established stream (a hop
-/// reached through its `dialer-proxy` chain).
+/// Run the protocol of `proxy` over an already established stream (the proxy's
+/// server connection reached through its `dialer-proxy` hops).
 async fn dial_over(
     proxy: &Proxy,
     stream: BoxStream,
     target: &Target,
-    tail: &[&Proxy],
-    timeout: Duration,
-    tls: &ClientTls,
+    hops: &[&Proxy],
 ) -> Result<Dialed, DialError> {
     match &proxy.protocol {
         Protocol::Socks5(option) => {
@@ -311,14 +352,10 @@ async fn dial_over(
                 server: super::outbound::peer_of(proxy),
             })
         }
-        _other => {
-            let _ = (tail, timeout, tls);
-            Err(DialError::Chain(format!(
-                "hop {} ({}) reached through a dialer-proxy is not supported",
-                proxy.name,
-                proxy.type_name()
-            )))
+        Protocol::Sudoku(option) => {
+            sudoku::dial_over(option, stream, peer_of(proxy), target, hops).await
         }
+        _other => Err(exit_over_stream_error(proxy)),
     }
 }
 

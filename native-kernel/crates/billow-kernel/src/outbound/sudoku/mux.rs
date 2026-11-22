@@ -126,7 +126,10 @@ impl WriteQueue {
         };
         if let Some(frame) = &frame {
             self.bytes.fetch_sub(frame.len(), Ordering::SeqCst);
-            self.notify.notify_waiters();
+            // `notify_one` stores a permit when no waiter is registered yet,
+            // so a sender that fails `try_push` and has not reached
+            // `notified().await` still observes the freed capacity.
+            self.notify.notify_one();
             self.capacity.wake_all();
         }
         frame
@@ -213,6 +216,14 @@ impl MuxClient {
     /// Open the mux session: KIP handshake with `KIPTypeStartMux`.
     pub async fn connect(option: &SudokuOutbound) -> Result<Arc<MuxClient>, DialError> {
         let (stream, server) = connect(option, Handshake::StartMux, None).await?;
+        MuxClient::connect_stream(stream, server).await
+    }
+
+    /// Open the mux session over a stream a `dialer-proxy` hop established.
+    pub async fn connect_stream(
+        stream: BoxStream,
+        server: std::net::SocketAddr,
+    ) -> Result<Arc<MuxClient>, DialError> {
         let (mut reader, writer) = tokio::io::split(stream);
         let client = Arc::new(MuxClient {
             queue: Arc::new(WriteQueue::new()),
@@ -607,12 +618,37 @@ pub async fn dial(
     target: &Target,
     cache_key: &str,
 ) -> Result<(BoxStream, std::net::SocketAddr), DialError> {
+    dial_session(option, target, cache_key, None).await
+}
+
+/// A chained dial: the first session is opened over the stream the
+/// `dialer-proxy` hop produced; a live cached session is still reused.
+pub async fn dial_over(
+    option: &SudokuOutbound,
+    target: &Target,
+    cache_key: &str,
+    stream: BoxStream,
+    server: std::net::SocketAddr,
+) -> Result<(BoxStream, std::net::SocketAddr), DialError> {
+    dial_session(option, target, cache_key, Some((stream, server))).await
+}
+
+async fn dial_session(
+    option: &SudokuOutbound,
+    target: &Target,
+    cache_key: &str,
+    preconnected: Option<(BoxStream, std::net::SocketAddr)>,
+) -> Result<(BoxStream, std::net::SocketAddr), DialError> {
     let address = crate::outbound::SocksAddr::encode(target);
+    let mut preconnected = preconnected;
     for attempt in 0..2 {
         let client = match cached_client(cache_key) {
             Some(client) if !client.is_closed() => client,
             _ => {
-                let client = MuxClient::connect(option).await?;
+                let client = match preconnected.take() {
+                    Some((stream, server)) => MuxClient::connect_stream(stream, server).await?,
+                    None => MuxClient::connect(option).await?,
+                };
                 store_client(cache_key, Arc::clone(&client));
                 client
             }
@@ -661,6 +697,19 @@ fn store_client(key: &str, client: Arc<MuxClient>) {
 
 fn drop_client(key: &str) {
     clients().lock().expect("sudoku mux cache").remove(key);
+}
+
+/// Close every cached mux session. The engine calls this when it stops so a
+/// restarted engine (same process, same configuration) does not reuse a
+/// session whose socket/threads belong to the stopped engine.
+pub(crate) fn close_all() {
+    let clients = {
+        let mut cache = clients().lock().expect("sudoku mux cache");
+        std::mem::take(&mut *cache)
+    };
+    for client in clients.values() {
+        client.close_with("sudoku mux: the kernel stopped");
+    }
 }
 
 /// `trimASCII` of the pinned reset reason (kept for parity in tests).

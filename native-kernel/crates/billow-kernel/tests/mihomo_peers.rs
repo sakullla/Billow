@@ -1376,26 +1376,22 @@ fn chained_trojan_udp_rejected_by_the_hop_never_reaches_the_echo() {
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
 fn dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo() {
-    // Two hops, both real visitors: A is a Mihomo `mixed` listener, B is a
-    // Mihomo `socks` listener, and B forwards through A to a plain sink. The
-    // rule selects A with `dialer-proxy: B`, so the kernel must reach A's
-    // server only through B and dial the sink from A.
+    // A is the exit: a Mihomo socks listener that requires credentials. B is a
+    // recording SOCKS5 hop. The rule selects A with `dialer-proxy: B`, so the
+    // kernel must ask B for A's server, authenticate to A through that tunnel,
+    // and let A dial the sink. A regression that lets B dial the sink directly
+    // would still deliver the marker, so the hop's recorded target is asserted.
     let a_port = free_port();
-    let b_port = free_port();
-    let listeners = format!(
-        "{}{}",
-        // A: a `mixed` listener reached through B (its own socks hop).
-        listener(
-            "mixed",
-            a_port,
-            &format!(", users: [{{username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\"}}]"),
-        ),
-        listener("socks", b_port, &format!(", users: [{{username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\"}}]")),
+    let listeners = listener(
+        "socks",
+        a_port,
+        &format!(", users: [{{username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\"}}]"),
     );
     with_peer("dialer-proxy-two-hop", &listeners, |sink, _mihomo, _| {
-        // The sink must be reachable through A (Mihomo), which is the exit hop.
+        let hop = Socks5Hop::start();
         let proxies = format!(
-            "  - {{name: p0, type: socks5, server: 127.0.0.1, port: {a_port}, dialer-proxy: p1}}\n  - {{name: p1, type: socks5, server: 127.0.0.1, port: {b_port}, username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\"}}\n"
+            "  - {{name: p0, type: socks5, server: 127.0.0.1, port: {a_port}, username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\", dialer-proxy: p1}}\n  - {{name: p1, type: socks5, server: 127.0.0.1, port: {}}}\n",
+            hop.port
         );
         let (running, _) = start_kernel(&proxies);
         let marker = "marker-two-hop-through-mihomo";
@@ -1407,8 +1403,13 @@ fn dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo() {
                 expect_marker("dialer-proxy-two-hop", sink, marker);
             },
         );
-        eprintln!("two-hop client outcome: {status:?}");
-        assert!(sink.received().contains(marker), "the sink saw:\n{}", sink.received());
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        let targets = hop.targets();
+        assert_eq!(
+            targets,
+            vec![format!("127.0.0.1:{a_port}")],
+            "the hop must carry the connection to the exit server, not the sink"
+        );
     });
 }
 
@@ -2206,6 +2207,109 @@ fn mieru_closed_peer_port_never_reaches_the_sink() {
 
 const SUDOKU_KEY: &str = "test-key-123";
 
+/// Minimal recording SOCKS5 hop for the `dialer-proxy` cases: it replies to
+/// CONNECT, records the requested `host:port`, and relays bytes blindly (the
+/// client speaks the exit protocol through the tunnel).
+struct Socks5Hop {
+    port: u16,
+    targets: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Socks5Hop {
+    fn start() -> Socks5Hop {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind hop");
+        let port = listener.local_addr().unwrap().port();
+        common::reserve_port(port);
+        listener.set_nonblocking(true).unwrap();
+        let targets = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (thread_targets, thread_stop) = (targets.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut client, _)) => {
+                        let log = thread_targets.clone();
+                        std::thread::spawn(move || {
+                            let _ = socks5_hop_serve(&mut client, &log);
+                        });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+        Socks5Hop { port, targets, stop }
+    }
+
+    fn targets(&self) -> Vec<String> {
+        self.targets.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Socks5Hop {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn socks5_hop_serve(client: &mut TcpStream, log: &Arc<Mutex<Vec<String>>>) -> std::io::Result<()> {
+    // BSD/macOS may hand back an accepted socket that inherits O_NONBLOCK from
+    // the listener; the handshake below is blocking.
+    client.set_nonblocking(false)?;
+    let mut head = [0u8; 2];
+    client.read_exact(&mut head)?;
+    if head[0] != 5 {
+        return Ok(());
+    }
+    let mut methods = vec![0u8; head[1] as usize];
+    client.read_exact(&mut methods)?;
+    client.write_all(&[5, 0])?;
+    let mut request = [0u8; 4];
+    client.read_exact(&mut request)?;
+    let host = match request[3] {
+        1 => {
+            let mut addr = [0u8; 4];
+            client.read_exact(&mut addr)?;
+            std::net::Ipv4Addr::from(addr).to_string()
+        }
+        3 => {
+            let mut len = [0u8; 1];
+            client.read_exact(&mut len)?;
+            let mut name = vec![0u8; len[0] as usize];
+            client.read_exact(&mut name)?;
+            String::from_utf8_lossy(&name).into_owned()
+        }
+        4 => {
+            let mut addr = [0u8; 16];
+            client.read_exact(&mut addr)?;
+            std::net::Ipv6Addr::from(addr).to_string()
+        }
+        _ => return Ok(()),
+    };
+    let mut port = [0u8; 2];
+    client.read_exact(&mut port)?;
+    let port = u16::from_be_bytes(port);
+    log.lock().unwrap().push(format!("{host}:{port}"));
+    client.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])?;
+    let upstream = TcpStream::connect((host.as_str(), port))?;
+    upstream.set_nodelay(true).ok();
+    client.set_nodelay(true).ok();
+    let mut client_read = client.try_clone()?;
+    let mut upstream_write = upstream.try_clone()?;
+    let up = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut client_read, &mut upstream_write);
+        let _ = upstream_write.shutdown(std::net::Shutdown::Write);
+    });
+    let mut upstream_read = upstream;
+    let _ = std::io::copy(&mut upstream_read, client);
+    let _ = client.shutdown(std::net::Shutdown::Write);
+    let _ = up.join();
+    Ok(())
+}
+
 fn sudoku_listener(port: u16, extra: &str) -> String {
     listener(
         "sudoku",
@@ -2231,6 +2335,40 @@ fn sudoku_tcp_session_reaches_the_receiving_side_through_mihomo() {
             || expect_marker("sudoku-tcp", sink, marker),
         );
         assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop() {
+    let port = free_port();
+    let listeners = sudoku_listener(port, "");
+    with_peer("sudoku-dialer-proxy", &listeners, |sink, _mihomo, _| {
+        let hop = Socks5Hop::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {}}}\n",
+            hop.port
+        ));
+        let marker = "marker-sudoku-dialer-proxy";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("sudoku-dialer-proxy", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        let targets = hop.targets();
+        assert!(
+            targets.iter().any(|target| target == &format!("127.0.0.1:{port}")),
+            "the hop must carry the connection to the sudoku exit server: {targets:?}"
+        );
+        assert!(
+            !targets
+                .iter()
+                .any(|target| target == &format!("127.0.0.1:{}", sink.port)),
+            "the hop must not dial the final target directly: {targets:?}"
+        );
+        assert_eq!(targets.len(), 1, "exactly one hop connection: {targets:?}");
     });
 }
 

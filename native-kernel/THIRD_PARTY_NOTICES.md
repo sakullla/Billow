@@ -15,8 +15,10 @@ Upstream: <https://github.com/MetaCubeX/mihomo>, version `v1.19.34`, commit
 `tool/kernel-compat/.cache/source/tree-v1.19.34` (gitignored; used as the
 translation source and as the controlled peer).
 
-The following files are translations of that GPL-3.0 code and carry the
-`SPDX-License-Identifier: GPL-3.0-only` header with the same provenance note:
+The following files are translations of that GPL-3.0 code. The standalone
+module files carry the `SPDX-License-Identifier: GPL-3.0-only` header with the
+same provenance note; `keys.rs` and `proxies.rs` are mixed files whose GPL
+items carry the same header at the item, with the scope stated there:
 
 | file | upstream source |
 | --- | --- |
@@ -27,6 +29,8 @@ The following files are translations of that GPL-3.0 code and carry the
 | `crates/billow-kernel/src/outbound/sudoku/mux.rs` | `transport/sudoku/multiplex/session.go`, `multiplex_dialer.go` (client side) |
 | `crates/billow-kernel/src/outbound/sudoku/codec.rs` | `transport/sudoku/obfs/httpmask/{masker,pathroot}.go`, `obfs/sudoku/{conn,packed}.go` wrappers |
 | `crates/billow-kernel/src/outbound/sudoku/go_rand.rs` | Go standard library `math/rand/rng.go` + `rand.go` (`rngSource`, `rngCooked`, `Shuffle`), BSD-3-Clause |
+| `crates/billow-kernel/src/keys.rs` | `transport/sudoku` `ClientAEADSeed`/`ServerAEADSeed` → `sudoku_seed` only; the rest of the file is original MIT code |
+| `crates/billow-kernel/src/proxies.rs` | `adapter/outbound/sudoku.go` → `SudokuOutbound` + `parse_sudoku` (option names, defaults, validation) only; the rest of the file is original MIT code |
 | `tool/kernel-compat/peers/sudoku-vectors/main.go` | test-only generator built against the pinned tree (GPL-3.0); never linked into the kernel |
 
 `go_rand.rs` keeps the Go BSD-3-Clause notice on top of the GPL-3.0 header: the

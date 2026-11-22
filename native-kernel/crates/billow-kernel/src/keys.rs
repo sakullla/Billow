@@ -5,6 +5,10 @@
 //! - Trojan: SHA-224 hex of the password (56-byte ASCII, as in trojan-go and
 //!   Mihomo's `transport/trojan`).
 //! - VMess-style UUID parsing for VLESS: 16 hex digits or a dashed UUID.
+//! - Sudoku: the canonical AEAD seed (`ClientAEADSeed`/`ServerAEADSeed`), a
+//!   translation of Mihomo `transport/sudoku` (GPL-3.0). Only that item is
+//!   GPL-derived; the rest of this file is original MIT code. See
+//!   `native-kernel/THIRD_PARTY_NOTICES.md`.
 
 use sha2::{Digest, Sha224};
 
@@ -307,6 +311,11 @@ mod tests {
     }
 }
 
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Derived from Mihomo `transport/sudoku` (GPL-3.0), `sudoku.ClientAEADSeed` /
+// `ServerAEADSeed`. Only this item is GPL-derived; the rest of `keys.rs` is
+// original MIT code. See `native-kernel/THIRD_PARTY_NOTICES.md`.
 /// Sudoku's canonical AEAD seed (`ClientAEADSeed`/`ServerAEADSeed` of the
 /// pinned source): a hex key is interpreted as key material and replaced by
 /// the compressed public point it carries or derives, anything else is used

@@ -2607,7 +2607,7 @@
       "source": "adapter/parser.go:177",
       "rustMapping": {
         "status": "partial",
-        "reason": "TCP sessions with the legacy HTTP mask, the pure and packed downlink codecs, table rotation, all three record AEAD methods and the session mux (`multiplex: on`) are translated from the pinned GPL-3.0 `transport/sudoku` (T17); the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`) and the UoT association are rejected at load with the reason recorded",
+        "reason": "TCP sessions with the legacy HTTP mask, the pure and packed downlink codecs, table rotation, all three record AEAD methods, the session mux (`multiplex: on`) and `dialer-proxy` (the exit's server connection is carried by a socks5 hop chain, repaired in T17-A3) are translated from the pinned GPL-3.0 `transport/sudoku` (T17); the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`) and the UoT association are rejected at load with the reason recorded",
         "license": "GPL-3.0-derived translation of Mihomo `transport/sudoku` v1.19.34 (commit 0455d0d28c4526937380505153e65a843d8612e8); the kernel workspace is GPL-3.0-only, any distribution of the combined work must follow GPL-3.0 (source availability etc.), see native-kernel/COPYING.GPL-3.0 and THIRD_PARTY_NOTICES.md",
         "options": [
           "server",
@@ -2638,16 +2638,19 @@
           "ip-version"
         ],
         "notes": [
-          "the module files carry `SPDX-License-Identifier: GPL-3.0-only` and the upstream version/commit; distribution must follow GPL-3.0 (native-kernel/COPYING.GPL-3.0)",
+          "the module files carry `SPDX-License-Identifier: GPL-3.0-only` and the upstream version/commit; `src/keys.rs` (`sudoku_seed`) and `src/proxies.rs` (`SudokuOutbound`, `parse_sudoku`) are mixed files with the same header on the derived item and the scope stated in their module docs; distribution must follow GPL-3.0 (native-kernel/COPYING.GPL-3.0)",
           "multiplex is the translated client side of `transport/sudoku/multiplex/session.go` (frames open/data/close/reset/ping/pong, one shared session per configuration, recreated after failure); frames are queued whole so streams do not interleave",
           "the HTTP tunnel modes are a mihomo extension (`transport/sudoku/obfs/httpmask/tunnel_*`, ~1.8k lines) and stay rejected by name; the legacy header mask is implemented",
           "tables are built once per configuration (288-grid shuffle, 1820 puzzle candidates per byte) and cached in-process",
           "`multiplex: auto` behaves like `off`: the pinned mode only reuses an HTTP tunnel connection, and the HTTP tunnel layer is rejected"
         ],
         "evidence": [
-          "tests/mihomo_peers.rs (11 sudoku cases: entropy/ascii/directional/custom/rotation tables, packed downlink, three AEAD methods, with/without the HTTP mask, private/public key material, wrong key, mismatched table type)",
+          "tests/mihomo_peers.rs (12 sudoku cases: entropy/ascii/directional/custom/rotation tables, packed downlink, three AEAD methods, with/without the HTTP mask, private/public key material, a dialer-proxy chain through a recording SOCKS5 hop, wrong key, mismatched table type)",
           "tests/mihomo_peers.rs::sudoku_multiplex_carries_two_streams_over_one_session",
           "tests/mihomo_peers.rs::sudoku_multiplex_handles_concurrent_streams",
+        "tests/mihomo_peers.rs::sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop",
+        "tests/protocols.rs::tcp_dialer_proxy_reaches_the_exit_through_the_hop",
+        "tests/protocols.rs::tcp_dialer_proxy_never_bypasses_an_unsupported_exit",
           "tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation",
           "src/outbound/sudoku/table.rs::pinned_vectors::the_pinned_encoder_output_decodes_with_our_table",
           "src/outbound/sudoku/mux.rs::tests::frames_are_demultiplexed_and_half_closed",

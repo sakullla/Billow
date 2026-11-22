@@ -365,7 +365,8 @@
           "sudoku_unencrypted_record_layer_reaches_the_receiving_side",
           "sudoku_private_key_material_matches_the_public_key_peer",
           "sudoku_multiplex_carries_two_streams_over_one_session",
-          "sudoku_multiplex_handles_concurrent_streams"
+          "sudoku_multiplex_handles_concurrent_streams",
+          "sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop"
         ],
         "negative": [
           "sudoku_wrong_key_never_reaches_the_sink",
@@ -374,7 +375,7 @@
       },
       "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
       "peer": "listeners: type: sudoku with the default (entropy table, pure downlink, legacy HTTP mask) and the configured variants (prefer_ascii, up_ascii_down_entropy, custom-table(s), enable-pure-downlink: false, disable-http-mask, aead-method)",
-      "notes": "GPL-3.0-derived translation of the pinned `transport/sudoku` (T17; see t17 below). Table construction uses Go's math/rand shuffle, so the 288-grid order matches; both pure and packed downlink codecs, the record layer (chacha20-poly1305/aes-128-gcm/none), the KIP X25519/HKDF handshake and the session mux (two streams, sequential and concurrent) are covered. `tool/kernel-compat/peers/sudoku-vectors` is the locked Go codec used by `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` (pinned encode -> Rust decode, Rust encode -> pinned decode, with and without padding) for entropy/ascii/directional/custom tables. HTTP tunnel modes and UoT are rejected at load with the reason recorded."
+      "notes": "GPL-3.0-derived translation of the pinned `transport/sudoku` (T17; see t17 below). Table construction uses Go's math/rand shuffle, so the 288-grid order matches; both pure and packed downlink codecs, the record layer (chacha20poly1305/aes-128-gcm/none), the KIP X25519/HKDF handshake, the session mux (two streams, sequential and concurrent) and a `dialer-proxy` chain (a recording SOCKS5 hop carries the exit's server connection; T17-A3) are covered. `tool/kernel-compat/peers/sudoku-vectors` is the locked Go codec used by `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` (pinned encode -> Rust decode, Rust encode -> pinned decode, with and without padding) for entropy/ascii/directional/custom tables. HTTP tunnel modes and UoT are rejected at load with the reason recorded."
     }
   },
   "loopbackOnlyEvidence": {
@@ -394,7 +395,7 @@
     "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
     "families still unimplemented after T15 (the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case. shadowquic is partial: TCP/UDP and JLS are covered above; zero-rtt and the Brutal congestion options are rejected by name.",
     "WireGuard/OpenVPN positive data-path cases stop at the IP packet (WireGuard ICMP echo through the locked device; OpenVPN AEAD keepalive decrypt): TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device.",
-    "sudoku: the T17-A1 clean-room attempt stayed blocked (the keyed table, KIP handshake and record layers are not publicly specified; evidence/t17-cleanroom.md, evidence/t17-observe.log). T17-A2 translated the pinned GPL-3.0 module (see t17): TCP sessions with the legacy HTTP mask, pure/packed downlink, three record AEAD methods and the session mux are covered by 13 pinned-peer cases; `udp: true` (UoT) and the HTTP tunnel modes are rejected at load and have no peer case."
+    "sudoku: the T17-A1 clean-room attempt stayed blocked (the keyed table, KIP handshake and record layers are not publicly specified; evidence/t17-cleanroom.md, evidence/t17-observe.log). T17-A2 translated the pinned GPL-3.0 module (see t17): TCP sessions with the legacy HTTP mask, pure/packed downlink, three record AEAD methods, the session mux and a `dialer-proxy` chain are covered by 14 pinned-peer cases; `udp: true` (UoT) and the HTTP tunnel modes are rejected at load and have no peer case."
   ],
   "t9": {
     "date": "2026-11-21",
@@ -493,7 +494,7 @@
       "sudoku udp: true (the UoT association)"
     ],
     "translation": {
-      "authorization": "Owner authorization recorded in docs/sakullla-workflow/2026-11-20-native-rust-kernel/02-technical-solution.md and the T17 recipe outcomes: translate the locked GPL-3.0 transport/sudoku; the derivative is distributed under GPL-3.0 with the obligations recorded in native-kernel/THIRD_PARTY_NOTICES.md (the docs/coordination/t17-handoff.md interface file still states the earlier T17-A1 clean-room rule and was not updated)",
+      "authorization": "Owner authorization recorded in docs/coordination/t17-handoff.md (updated 2026-11-22), docs/sakullla-workflow/2026-11-20-native-rust-kernel/02-technical-solution.md and the T17 recipe outcomes: translate the locked GPL-3.0 transport/sudoku; the derivative is distributed under GPL-3.0 with the obligations recorded in native-kernel/THIRD_PARTY_NOTICES.md",
       "source": "pinned Mihomo v1.19.34 transport/sudoku (GPL-3.0), commit 0455d0d28c4526937380505153e65a843d8612e8, tree tool/kernel-compat/.cache/source/tree-v1.19.34",
       "files": [
         "native-kernel/crates/billow-kernel/src/outbound/sudoku/mod.rs (handshake, session keys, table probe, dial)",
@@ -505,10 +506,10 @@
         "native-kernel/crates/billow-kernel/src/outbound/sudoku/go_rand.rs (Go math/rand rngSource, BSD-3-Clause)",
         "native-kernel/COPYING.GPL-3.0, native-kernel/THIRD_PARTY_NOTICES.md"
       ],
-      "scope": "TCP sessions; legacy HTTP/1.1 header mask; pure and packed downlink; entropy/ascii/directional/custom tables with rotation and table hints; record layer chacha20-poly1305/aes-128-gcm/none with epoch-derived keys, sequence checks and replay rejection; KIP X25519+HKDF handshake with timestamp/user-hash/nonce/table hint and rekey; session mux (multiplex: on) with open/data/close/reset/ping/pong frames"
+      "scope": "TCP sessions; legacy HTTP/1.1 header mask; pure and packed downlink; entropy/ascii/directional/custom tables with rotation and table hints; record layer chacha20-poly1305/aes-128-gcm/none with epoch-derived keys, sequence checks and replay rejection; KIP X25519+HKDF handshake with timestamp/user-hash/nonce/table hint and rekey; session mux (multiplex: on) with open/data/close/reset/ping/pong frames; `dialer-proxy` through a socks5 hop chain (the exit's server connection is tunnelled, never bypassed; T17-A3)"
     },
     "verification": {
-      "peerCases": "13 cases under families.sudoku in this file (11 positive, 2 negative), run through tool/kernel-compat/peer-tests.sh",
+      "peerCases": "14 cases under families.sudoku in this file (12 positive, 2 negative), run through tool/kernel-compat/peer-tests.sh",
       "codecDifferential": "tool/kernel-compat/peers/sudoku-vectors (locked Go codec, GPL-3.0 test-only) against tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation: pinned encode -> Rust decode and Rust encode -> pinned decode, pure and packed, with and without padding, for the entropy/ascii/directional/custom layouts",
       "defaultSuite": "cargo test --manifest-path native-kernel/Cargo.toml --locked runs the sudoku table/record/kip/mux unit tests and tests/config.rs::sudoku_options_are_strict"
     },

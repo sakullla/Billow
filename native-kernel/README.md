@@ -65,7 +65,11 @@ cover that derivative, so `native-kernel/Cargo.toml` declares
 to the repository root `LICENSE`), and `THIRD_PARTY_NOTICES.md` lists every
 translated file and its upstream source. A binary that links `billow-kernel`
 must therefore be distributed under the GPL-3.0, including source availability
-for the combined work. The other vendored or derived material and its licences
+for the combined work. `src/keys.rs` (`sudoku_seed`) and `src/proxies.rs`
+(`SudokuOutbound`, `parse_sudoku`) are mixed files: the GPL-derived item
+carries its own `SPDX-License-Identifier: GPL-3.0-only` header and the rest of
+the file is original MIT code. The other vendored or derived material and its
+licences
 (Go standard library `math/rand` data under BSD-3-Clause, `jls-tls`, the Rust
 crate licences) are recorded in the same notices file.
 
@@ -196,7 +200,7 @@ identities of the servers are logged as the session exit.
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
 | `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
-| `sudoku` | table-driven obfuscation: key-derived 4x4 Sudoku table, KIP X25519 + HKDF handshake, record layer (chacha20-poly1305 / aes-128-gcm / none with epoch keys and sequence validation), legacy HTTP mask, pure and packed downlink, `table-type` (entropy/ascii/directional), `custom-table(s)` rotation, `padding-min/max`, `path-root`, `multiplex: on` session mux (**GPL-3.0-derived translation**) | no: `udp: true` (UoT) rejected at load | `listeners: type: sudoku` (default, no mask, ascii + packed downlink, directional, custom table, table rotation, aes-128-gcm, none, private/public key material, two-stream and concurrent session mux, wrong key, mismatched table type); pinned Go codec differential in `tool/kernel-compat/peers/sudoku-vectors` |
+| `sudoku` | table-driven obfuscation: key-derived 4x4 Sudoku table, KIP X25519 + HKDF handshake, record layer (chacha20-poly1305 / aes-128-gcm / none with epoch keys and sequence validation), legacy HTTP mask, pure and packed downlink, `table-type` (entropy/ascii/directional), `custom-table(s)` rotation, `padding-min/max`, `path-root`, `multiplex: on` session mux, `dialer-proxy` through a SOCKS5 hop (**GPL-3.0-derived translation**) | no: `udp: true` (UoT) rejected at load | `listeners: type: sudoku` (default, no mask, ascii + packed downlink, directional, custom table, table rotation, aes-128-gcm, none, private/public key material, two-stream and concurrent session mux, a `dialer-proxy` chain through a recording SOCKS5 hop, wrong key, mismatched table type); pinned Go codec differential in `tool/kernel-compat/peers/sudoku-vectors` |
 | `masque` | two shapes over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): (1) RFC 9484 CONNECT-IP for the pinned Cloudflare WARP configuration — base64 SEC1 P-256 client key → the pinned adapter's self-signed client certificate, `public-key` (DER SPKI) pinning the endpoint, `:protocol cf-connect-ip`, `uri` (default `https://cloudflareaccess.com`), `capsule-protocol: ?1`, a `ROUTE_ADVERTISEMENT` for every IPv4/IPv6 destination, `ADDRESS_ASSIGN`/`ROUTE_ADVERTISEMENT` parsing, whole IP packets in HTTP Datagrams (quarter stream ID + context ID 0), a minimal IPv4/IPv6/UDP stack with header/UDP checksums and a per-destination UDP flow table (32 flows, LRU eviction), `mtu` (default 1280), `ip-stack` mode selection and tunnel DNS (`remote-dns-resolve`/`dns`); (2) the RFC 9298 CONNECT-UDP subset (`:protocol connect-udp`, one request stream per destination, `DATAGRAM` capsules) | `udp: true` for both shapes (UDP only; a TCP dial is refused by name) | controlled HTTP/3 peers in `tests/quic_peers.rs` (CONNECT-IP: request shape, client certificate and SPKI, endpoint pin, route advertisement, ADDRESS_ASSIGN, IPv4/IPv6 UDP echo with an independent IP codec, tunnel DNS, missing datagram settings, ADDRESS_REQUEST, 403, TCP refusal; CONNECT-UDP: request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate, peer-FIN reopen, 32 closed flows then a new destination) plus the shipped CLI's SOCKS5 UDP ASSOCIATE in `family_cli.rs`; no Mihomo listener exists and a WARP registration endpoint is not reachable offline |
 
 The mieru module the pinned outbound wraps is GPL-3.0: this repository contains
@@ -690,18 +694,18 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
 
   T13 added 5 mieru cases against `listeners: type: mieru`: the TCP session,
   `port-range`, an idle session across the five-second heartbeat, a wrong
-  password and a closed peer port. T17 added 13 sudoku cases against
+  password and a closed peer port. T17 added 14 sudoku cases against
   `listeners: type: sudoku`: the default session, no HTTP mask, ascii + packed
   downlink, directional tables, a custom table, table rotation, aes-128-gcm,
   `none`, private/public key material, two sequential and two concurrent
-  session-mux streams, a wrong key and a mismatched table type (the last two
-  must never reach the sink). The locked Go codec
+  session-mux streams, a `dialer-proxy` chain through a recording SOCKS5 hop,
+  a wrong key and a mismatched table type (the last two must never reach the
+  sink). The locked Go codec
   (`tool/kernel-compat/peers/sudoku-vectors`, GPL-3.0, test-only) is run by
   `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` in both
   directions (pinned encode -> Rust decode, Rust encode -> pinned decode,
   pure and packed, with and without padding) for the entropy, ascii,
-  directional and custom table layouts. `peer-tests.sh` runs 63 cases in
-  total.
+  directional and custom table layouts. `peer-tests.sh` runs 64 cases in total.
   T15 added 4 shadowquic cases: TCP, UDP over QUIC datagrams, UDP over
   `udp-over-stream`, and a wrong-password case that is forwarded to the
   camouflage upstream and never reaches the sink. The JLS seal is also
@@ -713,7 +717,7 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   `tests/shadowquic_stream.rs` is a default-suite controlled quinn peer that
   stops a client uni stream and closes the control send half; it proves the
   client reopens the uni stream and rebuilds the control association with the
-  live ids. `tool/kernel-compat/peer-tests.sh` runs 63 cases in total (the T17 sudoku
+  live ids. `tool/kernel-compat/peer-tests.sh` runs 64 cases in total (the T17 sudoku
   additions included). `masque` has
   no Mihomo listener (the pinned adapter is a Cloudflare WARP client) and no
   reachable WARP endpoint offline, so its fifteen default-suite cases run against
@@ -745,17 +749,16 @@ missing marker.
 
 The immutable coordination inputs are in `docs/coordination/`: `t11-handoff.md`
 (this subset), `t12-handoff.md` (SSR plugin layers and gost UDP/smux),
-`t13-handoff.md` (mieru), `t17-handoff.md` (the sudoku family interface; it
-still carries the `T17-A1` clean-room rule and does not record the later
-source-translation authorization),
+`t13-handoff.md` (mieru), `t17-handoff.md` (the sudoku family; it authorises
+the source translation and records the GPL-3.0 obligations),
 `t14-handoff.md` (CONNECT-UDP) and
 `t18-handoff.md` (CONNECT-IP, IP stack and WARP shape). They are
 Owner material and are not modified by the kernel tasks. The concrete blockers
 and next steps for the families still deferred by T10 are in
 `tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers mieru,
-T17's translation authorization is recorded in the T17 recipe
-(`02-technical-solution.md`; the handoff file predates it) and
-`evidence/t17-translation.md`, T14's and T18's cover
+T17's translation authorization is recorded in the T17 handoff, the T17 recipe
+(`02-technical-solution.md`) and `evidence/t17-translation.md`; T14's and
+T18's cover
 `masque` (the CONNECT-UDP subset in `evidence/t14-feasibility.json` and the
 CONNECT-IP/WARP UDP path with its TCP/`h2`/`h3-l4proxy` gaps in
 `evidence/t18-feasibility.json`), and T15's covers

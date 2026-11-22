@@ -298,6 +298,9 @@ impl Kernel {
                 join_error = Some(io::Error::other("kernel thread panicked"));
             }
         }
+        // A mux session holds a socket and background tasks created by this
+        // engine; do not let a later engine in the same process reuse it.
+        crate::outbound::sudoku::mux::close_all();
         let stats = self.stats();
         info!(
             instance = %self.identity.uuid, sessions = stats.accepted, active = stats.active,

@@ -52,7 +52,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::net::TcpStream;
 
 use super::{connect_tcp, handshake, BoxStream, DialError, Dialed, Target};
 use crate::proxies::{SudokuAead, SudokuMultiplex, SudokuOutbound};
@@ -193,14 +192,14 @@ struct Shared {
 }
 
 struct SendHalf {
-    socket: tokio::io::WriteHalf<TcpStream>,
+    socket: tokio::io::WriteHalf<BoxStream>,
     obfs: Encoder,
     record: RecordSender,
 }
 
 /// Read loop: raw bytes -> obfuscation decode -> record open -> inbox.
 async fn read_loop(
-    mut socket: tokio::io::ReadHalf<TcpStream>,
+    mut socket: tokio::io::ReadHalf<BoxStream>,
     mut downlink: Box<dyn Downlink>,
     mut record: RecordReceiver,
     shared: Arc<Shared>,
@@ -434,7 +433,7 @@ impl AsyncRead for SudokuStream {
 
 /// The plaintext stream during the handshake: one KIP message at a time.
 struct HandshakeIo {
-    socket: TcpStream,
+    socket: BoxStream,
     obfs: Encoder,
     record_tx: RecordSender,
     record_rx: RecordReceiver,
@@ -524,6 +523,21 @@ pub(crate) async fn connect(
     kind: Handshake,
     target: Option<&Target>,
 ) -> Result<(BoxStream, std::net::SocketAddr), DialError> {
+    let socket = connect_tcp(&option.server, option.port).await?;
+    let server = socket.peer_addr().map_err(|e| handshake("sudoku", e))?;
+    connect_stream(option, kind, target, Box::new(socket) as BoxStream, server).await
+}
+
+/// The same handshake over a connection already established by a
+/// `dialer-proxy` hop (the exit's server connection); `server` is the address
+/// the hop carried the stream to.
+pub(crate) async fn connect_stream(
+    option: &SudokuOutbound,
+    kind: Handshake,
+    target: Option<&Target>,
+    socket: BoxStream,
+    server: std::net::SocketAddr,
+) -> Result<(BoxStream, std::net::SocketAddr), DialError> {
     let tables = cached_tables(option).map_err(DialError::Chain)?;
     if tables.is_empty() {
         return Err(DialError::Chain("sudoku: no table configured".into()));
@@ -537,8 +551,6 @@ pub(crate) async fn connect(
         (Arc::clone(&tables[index]), Some(tables[index].uplink.hint))
     };
 
-    let socket = connect_tcp(&option.server, option.port).await?;
-    let server = socket.peer_addr().map_err(|e| handshake("sudoku", e))?;
     let mut socket = socket;
 
     if option.http_mask {
@@ -688,4 +700,37 @@ pub async fn dial(option: &SudokuOutbound, target: &Target) -> Result<Dialed, Di
     }
     let (stream, server) = connect(option, Handshake::OpenTcp, Some(target)).await?;
     Ok(Dialed { stream, server })
+}
+
+/// A chained dial: `stream` is already connected to the Sudoku server through
+/// the `dialer-proxy` hops. The mux cache key includes the hop chain so a
+/// session opened through one hop is never reused for another.
+pub async fn dial_over(
+    option: &SudokuOutbound,
+    stream: BoxStream,
+    server: std::net::SocketAddr,
+    target: &Target,
+    hops: &[&crate::proxies::Proxy],
+) -> Result<Dialed, DialError> {
+    if option.multiplex == SudokuMultiplex::On {
+        let key = mux_cache_key(option) + &chain_suffix(hops);
+        let (stream, server) = mux::dial_over(option, target, &key, stream, server).await?;
+        return Ok(Dialed { stream, server });
+    }
+    let (stream, server) =
+        connect_stream(option, Handshake::OpenTcp, Some(target), stream, server).await?;
+    Ok(Dialed { stream, server })
+}
+
+/// Identity of the hop chain for the mux session cache (name, type and port).
+fn chain_suffix(hops: &[&crate::proxies::Proxy]) -> String {
+    if hops.is_empty() {
+        return String::new();
+    }
+    let hops = hops
+        .iter()
+        .map(|proxy| format!("{}:{}:{}", proxy.name, proxy.type_name(), proxy.server().1))
+        .collect::<Vec<_>>()
+        .join("\u{2}");
+    format!("\u{1}chain\u{1}{hops}")
 }

@@ -153,7 +153,7 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   under the Owner authorization recorded in the T17 recipe (see below), so the
   type is implemented again, now with GPL-3.0 headers and notices. The mieru
   option rows stay (5 no-op / 8 enabled) and its five pinned-Mihomo peer cases
-  are part of `peer-tests.sh` (63 cases, including the T17 sudoku cases).
+  are part of `peer-tests.sh` (64 cases, including the T17 sudoku cases).
 
   T19 added the mesh adapters. `peers/tailscale-peer` uses the locked
   BSD-3-Clause `controlbase.Server` for the Noise transport and an HTTP/2
