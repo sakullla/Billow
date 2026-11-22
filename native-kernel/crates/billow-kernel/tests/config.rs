@@ -1142,6 +1142,7 @@ fn mesh_control_planes_load_the_pinned_shapes() {
         format!("proxies:\n  - {{name: m, type: zerotier, network: 8056c2e21c000001, identity-secret: {identity}}}\nrules: ['MATCH,m']\n"),
         "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['udp://127.0.0.1:11010']}\nrules: ['MATCH,m']\n".to_string(),
         "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['tcp://127.0.0.1:11010'], encryption-algorithm: chacha20, disable-p2p: true}\nrules: ['MATCH,m']\n".to_string(),
+        "proxies:\n  - {name: m, type: easytier, network-name: billow-test, network-secret: billow-secret, peers: ['tcp://127.0.0.1:11010'], secure-mode: true, enable-encryption: true, encryption-algorithm: aes-gcm}\nrules: ['MATCH,m']\n".to_string(),
     ];
     for yaml in cases {
         assert_eq!(proxy_err(&yaml), "ok", "{yaml}");
@@ -1175,7 +1176,7 @@ fn mesh_control_planes_load_the_pinned_shapes() {
         ),
         (
             "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1'], enable-encryption: true}\nrules: ['MATCH,m']\n",
-            "secure-datagram",
+            "secure-mode",
         ),
         (
             "proxies:\n  - {name: m, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1'], hostname: h}\nrules: ['MATCH,m']\n",

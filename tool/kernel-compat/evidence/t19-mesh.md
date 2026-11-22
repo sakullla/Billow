@@ -86,11 +86,11 @@ interoperate. T20 translated the locked LGPL-3.0-or-later source for the
 cleartext host/discovery path: the real `DefaultHasher` digest, 16-byte
 little-endian peer-manager frame, `HandshakeRequest`, `PeerManagerHeader` and
 PingPong are in `native-kernel/crates/billow-kernel/src/outbound/easytier.rs`
-and verified against the pinned wasm core with `enable_encryption=false`. The
-secure-datagram/Noise XX layer remains unimplemented and
-`enable-encryption: true`/secure mode are rejected at load. See
-`evidence/t20-easytier.md`. No EasyTier compatibility is claimed for the
-secure/encrypted path; device/TUN remains T6/T7.
+and verified against the pinned wasm core with `enable_encryption=false`. T20
+also translated the Noise XX handshake and secure-datagram AES-GCM/ChaCha20
+path and verified it against the pinned core with `secure-mode: true` and
+`enable-encryption: true`; see `evidence/t20-easytier.md`. Device/TUN and
+OSPF/route host identity remain T6/T7.
 
 ## Offline dependency and licence decisions
 
@@ -120,5 +120,5 @@ secure/encrypted path; device/TUN remains T6/T7.
 * ZeroTier's controller membership/config, TCP fallback relay, DNS resolver and
   real TCP/UDP exits are not implemented (T5/T6/T7); `encrypted-hello` uses
   protocol-13 extended armor but the surrounding node/path machinery is T6/T7.
-* EasyTier's cleartext host/discovery path is implemented under LGPL; secure
-  datagram/Noise and the device/TUN path are not.
+* EasyTier's cleartext and Noise/secure-datagram paths are implemented under
+  LGPL; the device/TUN and OSPF/route host identity are not.

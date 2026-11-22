@@ -385,14 +385,15 @@
       "peer": "tool/kernel-compat/peers/easytier-peer (locked easytier-go wasm core, enable_encryption=false, no secure mode)",
       "cases": {
         "positive": [
-          "easytier_pinned_core_cleartext_handshake"
+          "easytier_pinned_core_cleartext_handshake",
+          "easytier_pinned_core_secure_datagram"
         ],
         "negative": [
-          "wrong network secret is rejected",
+          "wrong network secret is rejected (cleartext and secure)",
           "foreign network name is rejected"
         ]
       },
-      "notes": "T20 LGPL-3.0-or-later translation of the cleartext host/discovery path; secure-datagram/Noise rejected. See evidence/t20-easytier.md."
+      "notes": "T20 LGPL-3.0-or-later translation of the cleartext, Noise XX and secure-datagram/AES-GCM/ChaCha20 path; OSPF/route and device/TUN remain T6/T7. See evidence/t20-easytier.md."
     }
   },
   "loopbackOnlyEvidence": {
@@ -440,8 +441,8 @@
       "easytier"
     ],
     "result": {
-      "cases": 16,
-      "passed": 16,
+      "cases": 17,
+      "passed": 17,
       "failed": 0
     },
     "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server; the Sudoku section builds the locked Go codec (`peers/sudoku-vectors`, GPL-3.0 test-only) and runs the Rust-vs-Go differential. `result` counts the 15 test functions of that group (gost 5, ssh 4, ssr Rust 3 + independent Go 2, sudoku codec 1); T16's WireGuard/OpenVPN peers are recorded under `t16` and run by the same script.",

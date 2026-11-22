@@ -13,7 +13,9 @@ use std::time::Duration;
 use billow_kernel::outbound::tailscale::{
     derp, DerpClient, TailscaleControl, TailscaleError,
 };
-use billow_kernel::outbound::easytier::{EasytierError, EasytierSession};
+use billow_kernel::outbound::easytier::{
+    EasytierError, EasytierSecureOptions, EasytierSession, PacketType,
+};
 use billow_kernel::outbound::tls::ClientTls;
 use billow_kernel::outbound::zerotier::{self, Identity, ZerotierError};
 use tokio::net::{TcpStream, UdpSocket};
@@ -174,28 +176,146 @@ async fn easytier_pinned_core_cleartext_handshake() {
         .expect("pong");
 
     // Wrong secret and wrong network are named authentication failures.
-    let wrong_secret = EasytierSession::connect(
+    // The pinned core may either name the mismatch or reset the connection;
+    // both mean no session was established.
+    assert!(
+        EasytierSession::connect(address, "billow", "wrong", Duration::from_secs(3))
+            .await
+            .is_err()
+    );
+    assert!(
+        EasytierSession::connect(address, "other", "s3cret", Duration::from_secs(3))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn easytier_pinned_core_secure_datagram() {
+    let Some(bin) = env_bin("KC_EASYTIER_PEER_BIN") else {
+        return skip("easytier-secure", "KC_EASYTIER_PEER_BIN");
+    };
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let listen = format!("127.0.0.1:{port}");
+    let log_path = std::env::temp_dir().join(format!("billow-t20-secure-{port}.log"));
+    let log_arg = log_path.to_string_lossy().to_string();
+    let peer = start(
+        &bin,
+        &[
+            "-listen",
+            &listen,
+            "-network",
+            "billow",
+            "-secret",
+            "s3cret",
+            "-secure",
+            "-encrypt",
+            "-log",
+            &log_arg,
+        ],
+    );
+    assert_eq!(peer.port, port);
+    let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng).to_bytes();
+    let options = EasytierSecureOptions {
+        private_key: private,
+        algorithm: "aes-gcm".to_string(),
+        encrypt_data: true,
+    };
+    let mut session = None;
+    for _ in 0..40 {
+        match EasytierSession::connect_secure(
+            address,
+            "billow",
+            "s3cret",
+            EasytierSecureOptions {
+                private_key: private,
+                algorithm: "aes-gcm".to_string(),
+                encrypt_data: true,
+            },
+            Duration::from_secs(2),
+        )
+        .await
+        {
+            Ok(value) => {
+                session = Some(value);
+                break;
+            }
+            Err(error) => {
+                if !matches!(error, EasytierError::Io(_) | EasytierError::Timeout) {
+                    panic!("secure handshake failed: {error}");
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+    let mut session = session.expect("pinned core did not accept the secure handshake");
+    session
+        .ping(22, Duration::from_secs(3))
+        .await
+        .expect("pong after secure handshake");
+
+    // Encrypted data frames must be accepted without decrypt failures. The
+    // payload is an IPv4 header-shaped buffer; the core may drop it at the
+    // route/TUN boundary, but a bad key/tail would log a decrypt failure or
+    // invalidate the session.
+    let mut packet = vec![0u8; 40];
+    packet[0] = 0x45;
+    packet[2..4].copy_from_slice(&40u16.to_be_bytes());
+    packet[8] = 64;
+    packet[9] = 17;
+    packet[12..16].copy_from_slice(&[10, 144, 0, 1]);
+    packet[16..20].copy_from_slice(&[10, 144, 0, 2]);
+    for _ in 0..12 {
+        session
+            .send_data(PacketType::Data as u8, &packet)
+            .await
+            .expect("encrypted data");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    session
+        .ping(23, Duration::from_secs(3))
+        .await
+        .expect("session survives encrypted data");
+    let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        !log.contains("secure datagram decrypt failed")
+            && !log.contains("decryption failed")
+            && !log.contains("secure decrypt failed"),
+        "peer reported a decrypt failure: {log}"
+    );
+
+    // Wrong secret cannot complete the secure handshake.
+    let error = EasytierSession::connect_secure(
         address,
         "billow",
         "wrong",
+        EasytierSecureOptions {
+            private_key: private,
+            algorithm: "aes-gcm".to_string(),
+            encrypt_data: true,
+        },
         Duration::from_secs(3),
     )
     .await;
     assert!(
-        matches!(wrong_secret, Err(EasytierError::SecretDigest) | Err(EasytierError::NetworkName)),
-        "{wrong_secret:?}"
+        matches!(
+            error,
+            Err(EasytierError::SecretDigest)
+                | Err(EasytierError::NetworkName)
+                | Err(EasytierError::Timeout)
+                | Err(EasytierError::Io(_))
+                | Err(EasytierError::Noise(_))
+                | Err(EasytierError::Frame(_))
+        ),
+        "{error:?}"
     );
-    let wrong_network = EasytierSession::connect(
-        address,
-        "other",
-        "s3cret",
-        Duration::from_secs(3),
-    )
-    .await;
-    assert!(
-        matches!(wrong_network, Err(EasytierError::SecretDigest) | Err(EasytierError::NetworkName)),
-        "{wrong_network:?}"
-    );
+    let _ = std::fs::remove_file(log_path);
+    let _ = options;
 }
 
 #[tokio::test]

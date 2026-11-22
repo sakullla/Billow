@@ -1117,20 +1117,21 @@
     },
     "easytier": {
       "status": "partial",
-      "reason": "T20 translated the locked EasyTier LGPL-3.0-or-later source for the cleartext host/discovery path: the real DefaultHasher-based network_secret_digest, the 16-byte little-endian PeerManagerHeader/TCP frame, HandshakeRequest and PingPong are implemented in src/outbound/easytier.rs and verified against the pinned wasm core with enable_encryption=false. The secure-datagram/Noise XX layer is not translated and enable-encryption:true/secure-mode are rejected at load; TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device.",
+      "reason": "T20 translated the locked EasyTier LGPL-3.0-or-later source: the real DefaultHasher network_secret_digest, 16-byte little-endian PeerManagerHeader/TCP frame, HandshakeRequest/PingPong, Noise XX handshake (msg1/2/3, secret proof, root key) and the secure-datagram AES-GCM/ChaCha20 data path are implemented in src/outbound/easytier.rs and verified against the pinned wasm core with enable_encryption=false and with SecureMode()+Encryption(true). TCP/UDP through the tunnel and OSPF/route host identity need T6/T7; hostname/ipv4/dhcp and the remaining options are rejected by name.",
       "options": [
         "network-name",
         "network-secret",
-        "hostname",
-        "ipv4",
-        "dhcp",
         "peers",
         "listeners",
         "no-listener",
         "instance-name",
         "state-dir",
         "udp",
+        "enable-encryption",
+        "secure-mode",
         "encryption-algorithm",
+        "local-private-key",
+        "local-public-key",
         "disable-p2p"
       ],
       "evidence": [
@@ -1139,9 +1140,10 @@
         "src/outbound/easytier.rs::tests::handshake_roundtrips_and_ignores_unknown_fields",
         "tests/config.rs::mesh_control_planes_load_the_pinned_shapes",
         "tests/mesh_peers.rs::easytier_pinned_core_cleartext_handshake",
+        "tests/mesh_peers.rs::easytier_pinned_core_secure_datagram",
         "tool/kernel-compat/evidence/t20-easytier.md"
       ],
-      "notes": "The secure-datagram/Noise XX, KCP/QUIC, private-mode, exit-node/DNS, mapped-listeners and local key material are rejected by name. The source is LGPL-3.0-or-later; the workspace is distributed under GPL-3.0-only and the module's LGPL obligations remain. Device/TUN is T6/T7.",
+      "notes": "Secure-datagram/Noise XX is now implemented and verified; OSPF/route host identity (hostname/ipv4/dhcp), KCP/QUIC, private-mode, exit-node/DNS, mapped-listeners and proxied networks are rejected by name. Device/TUN is T6/T7. Public translation revision 45a6b6f1769f95590a396f4962e58d654b6e0380; pinned wasm reports 5f1eaa7c9f9d3e89e9b75a6d87531a436fae40c4 (not public).",
       "license": "LGPL-3.0-or-later translation of the locked EasyTier source; the workspace is distributed under GPL-3.0-only. See native-kernel/THIRD_PARTY_NOTICES.md and native-kernel/third_party/EasyTier-LGPL-3.0.txt."
     },
     "openvpn": {
@@ -1306,7 +1308,7 @@
     }
   },
   "familiesNotImplemented": {
-    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters; T17/T18 added sudoku/masque-CONNECT-IP; T19 added tailscale/zerotier (partial; device/TUN remains T6/T7); T20 added the LGPL-3.0-or-later EasyTier cleartext host/discovery translation (secure-datagram/Noise remains rejected). T5 owns the built-in direct/dns/reject/rematch adapters.",
+    "note": "T4 delivered 9 outbound types; T11 added gost-relay/ssh/ssr; T10 added tuic/hysteria/hysteria2 (QUIC); T14 added masque (CONNECT-UDP); T15 added shadowquic; T16 added the wireguard/openvpn transport adapters; T17/T18 added sudoku/masque-CONNECT-IP; T19 added tailscale/zerotier (partial; device/TUN remains T6/T7); T20 added the LGPL-3.0-or-later EasyTier cleartext + Noise XX/secure-datagram translation; OSPF/route and device/TUN remain out of scope. T5 owns the built-in direct/dns/reject/rematch adapters.",
     "entries": {
       "direct": {
         "owner": "T5",

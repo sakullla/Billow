@@ -289,9 +289,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 independent test process; no Tailscale source is vendored or linked into the
 kernel. `tool/kernel-compat/peers/zerotier-peer` builds the locked
 `github.com/metacubex/zerotier-go` module (MPL-2.0) under the same test-only
-rule. EasyTier is rejected as a whole type; its LGPL-3.0 `easytier-go`/wasm
-module is not used by the current tree and no EasyTier peer remains. None of
-these test peers is part of the kernel distribution.
+rule. EasyTier was rejected in T19 and is implemented in T20 from the locked
+LGPL-3.0-or-later source; `tool/kernel-compat/peers/easytier-peer` runs the
+pinned `easytier-go`/wasm module as a test fixture only. None of these test
+peers is part of the kernel distribution.
 
 ## EasyTier `outbound/easytier.rs` (LGPL-3.0-or-later derivative)
 
@@ -302,19 +303,21 @@ License, version 3 or (at your option) any later version. The full license text
 is committed at `native-kernel/third_party/EasyTier-LGPL-3.0.txt`.
 
 Translation sources (upstream `github.com/EasyTier/EasyTier`, public `main`
-tree; the Go module `github.com/easytier/easytier/easytier-go`
+tree revision `45a6b6f1769f95590a396f4962e58d654b6e0380`; the Go module
+`github.com/easytier/easytier/easytier-go`
 v0.0.0-20261111015056-2abb1676b475 pins the wasm core built from commit
-`5f1eaa7c9f9d3e89e9b75a6d87531a436fae40c4`):
+`5f1eaa7c9f9d3e89e9b75a6d87531a436fae40c4`, which is not in the public
+history):
 
 | translated Rust file | upstream source |
 | --- | --- |
-| `crates/billow-kernel/src/outbound/easytier.rs` | `easytier-core/src/config/mod.rs` (`network_secret_digest`), `easytier-core/src/packet/mod.rs` (`PeerManagerHeader`, `TCPTunnelHeader`, `PacketType`, little-endian layout), `easytier-core/src/peers/conn/peer_conn.rs` (cleartext `HandshakeRequest`), `easytier-core/src/peers/conn/peer_conn_ping.rs` (Ping/Pong) |
+| `crates/billow-kernel/src/outbound/easytier.rs` | `easytier-core/src/config/mod.rs` (`network_secret_digest`), `easytier-core/src/packet/mod.rs` (`PeerManagerHeader`, `TCPTunnelHeader`, `PacketType`, little-endian layout), `easytier-core/src/peers/conn/peer_conn.rs` (cleartext handshake, Noise XX msg1/2/3, secret proof), `easytier-core/src/peers/conn/peer_conn_ping.rs` (Ping/Pong), `easytier-core/src/peers/conn/peer_session.rs` and `easytier-core/src/tunnel/secure_datagram.rs` (root/traffic keys), `easytier-core/src/tunnel/encrypt/{aes_gcm,chacha20}.rs` (AEAD tail) |
 
 The translation is LGPL-3.0-or-later. The workspace as distributed is
 GPL-3.0-only (because of the sudoku translation); a binary containing this
 module must comply with both the workspace GPL-3.0 obligations and the LGPL
-relinking/source-offer requirements for this module. The secure-datagram/Noise XX layer
-is not translated; `enable-encryption: true` and the related options are
-rejected at load. The controlled peer
+relinking/source-offer requirements for this module. The cleartext and
+Noise XX/secure-datagram layers are translated; OSPF/route identity and the
+userspace IP stack/TUN remain out of scope. The controlled peer
 `tool/kernel-compat/peers/easytier-peer` runs the locked Go/wasm module as a
 test fixture only and is not linked into the kernel.

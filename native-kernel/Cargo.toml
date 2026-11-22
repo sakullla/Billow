@@ -12,8 +12,9 @@ edition = "2021"
 rust-version = "1.89"
 # The sudoku outbound is a translation of Mihomo's GPL-3.0 `transport/sudoku`,
 # so the workspace as distributed is GPL-3.0 (the repository root LICENSE is
-# the same GPL-3.0 text, copied here as COPYING.GPL-3.0). See
-# THIRD_PARTY_NOTICES.md for the file list and the upstream commit.
+# the same GPL-3.0 text, copied here as COPYING.GPL-3.0). The EasyTier module
+# is additionally an LGPL-3.0-or-later translation; see THIRD_PARTY_NOTICES.md
+# for the file list, upstream revisions and both license obligations.
 license = "GPL-3.0-only"
 publish = false
 

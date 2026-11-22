@@ -163,10 +163,10 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   covers success, authentication failure and a boundary for those two families.
   T20 translated the locked LGPL-3.0-or-later EasyTier source for the
   cleartext host/discovery path (`DefaultHasher` digest, 16-byte little-endian
-  frame, HandshakeRequest/PingPong); `peers/easytier-peer` runs the pinned wasm
-  core as a test fixture. The secure-datagram/Noise path remains rejected. The
-  dependency/licence/decision records are `evidence/t19-mesh.md` and
-  `evidence/t20-easytier.md`.
+  frame, HandshakeRequest/PingPong), Noise XX and the secure-datagram
+  AES-GCM/ChaCha20 data path; `peers/easytier-peer` runs the pinned wasm core
+  as a test fixture. The dependency/licence/decision records are
+  `evidence/t19-mesh.md` and `evidence/t20-easytier.md`.
 
   T17-A1 tried a clean-room `sudoku` client and produced none: the protocol is
   not specified at byte level anywhere public and the pinned listener rejects a

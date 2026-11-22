@@ -478,7 +478,7 @@ async fn dial_inner(
                 "easytier",
                 io::Error::new(
                     io::ErrorKind::Unsupported,
-                    "the LGPL-3.0-derived cleartext host/discovery frame, HandshakeRequest, PeerManagerHeader and PingPong are implemented in outbound/easytier.rs, but TCP/UDP through the network needs the userspace IP stack and TUN device owned by T6/T7; the secure-datagram path is rejected at load",
+                    "the LGPL-3.0-derived cleartext host/discovery frame, HandshakeRequest, PeerManagerHeader and PingPong are implemented in outbound/easytier.rs, but TCP/UDP through the network needs the userspace IP stack and TUN device owned by T6/T7; the secure-datagram path is available to the T6/T7 layer",
                 ),
             ))
         }

@@ -19,6 +19,9 @@ import (
 func main() {
 	_ = flag.String("mode", "core", "core (kept for the test command line)")
 	listen := flag.String("listen", "127.0.0.1:0", "TCP listen address")
+	secure := flag.Bool("secure", false, "enable EasyTier secure mode (Noise XX)")
+	encrypt := flag.Bool("encrypt", false, "enable EasyTier data encryption")
+	logPath := flag.String("log", "", "write peer logs to this file")
 	network := flag.String("network", "billow-test", "network name")
 	secret := flag.String("secret", "billow-secret", "network secret")
 	flag.Parse()
@@ -29,20 +32,37 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	host, err := corehost.New(ctx, corehost.Options{Platform: platform.Services{}, LogWriter: os.Stderr})
+	var err error
+	var logWriter *os.File
+	if *logPath != "" {
+		logWriter, err = os.Create(*logPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "log:", err)
+			os.Exit(1)
+		}
+		defer logWriter.Close()
+	}
+	var writer *os.File = logWriter
+	if writer == nil {
+		writer = os.Stderr
+	}
+	host, err := corehost.New(ctx, corehost.Options{Platform: platform.Services{}, LogWriter: writer})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "host:", err)
 		os.Exit(1)
 	}
 	defer host.Close(ctx)
-	config, err := corehost.NewInstanceConfigBuilder(*network).
+	builder := corehost.NewInstanceConfigBuilder(*network).
 		NetworkSecret(*secret).
 		Hostname("billow-t20-core").
 		IPv4(netip.MustParsePrefix("10.144.0.1/24")).
 		P2P(corehost.P2PPolicy{Disable: true}).
-		Encryption(false).
-		AddListeners("tcp://" + *listen).
-		Build()
+		Encryption(*encrypt).
+		AddListeners("tcp://" + *listen)
+	if *secure {
+		builder = builder.SecureMode()
+	}
+	config, err := builder.Build()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config:", err)
 		os.Exit(1)

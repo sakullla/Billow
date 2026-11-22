@@ -552,10 +552,10 @@ pub struct ZerotierOutbound {
 /// EasyTier (`adapter/outbound/easytier.go` + the pinned `easytier-go`).
 ///
 /// `outbound/easytier.rs` is an LGPL-3.0-or-later derivative of the locked
-/// EasyTier source for the cleartext host/discovery path: network secret
-/// digest, peer-manager frame, `HandshakeRequest`, `PeerManagerHeader` and
-/// PingPong. The secure-datagram/Noise path and the userspace IP stack/TUN
-/// are not implemented here and are rejected/owned by T6/T7.
+/// EasyTier source: network secret digest, peer-manager frame,
+/// `HandshakeRequest`/PingPong, Noise XX handshake and secure-datagram
+/// AES-GCM/ChaCha20 data path. The userspace IP stack/TUN and OSPF/route
+/// exchange remain T6/T7.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EasytierOutbound {
     pub network_name: String,
@@ -2191,9 +2191,10 @@ fn parse_easytier(entry: &mut Entry<'_>) -> Result<EasytierOutbound, ConfigError
     if !matches!(encryption_algorithm.as_str(), "aes-gcm" | "chacha20") {
         return Err(entry.invalid("option 'encryption-algorithm' must be aes-gcm or chacha20"));
     }
-    if enable_encryption {
+    let secure_mode = entry.bool("secure-mode")?;
+    if enable_encryption && secure_mode != Some(true) {
         return Err(entry.unsupported(
-            "option 'enable-encryption: true' is not implemented: the cleartext host/discovery translation is available, but the secure-datagram/Noise XX layer is not translated yet (outbound/easytier.rs names the gap)",
+            "option 'enable-encryption: true' requires 'secure-mode: true' (the source enables data encryption only through the Noise/secure-datagram session)",
         ));
     }
     let private_mode = entry.bool("private-mode")?;
@@ -2226,16 +2227,27 @@ fn parse_easytier(entry: &mut Entry<'_>) -> Result<EasytierOutbound, ConfigError
     if tld_dns_zone.is_some() {
         return Err(entry.unsupported("option 'tld-dns-zone' is not implemented (T5 DNS)"));
     }
-    let secure_mode = entry.bool("secure-mode")?;
-    if secure_mode == Some(true) {
-        return Err(entry.unsupported("option 'secure-mode' is not implemented"));
-    }
     let local_private_key = entry.string("local-private-key")?.filter(|v| !v.is_empty()).map(Secret::new);
     let local_public_key = entry.string("local-public-key")?.filter(|v| !v.is_empty()).map(Secret::new);
-    if local_private_key.is_some() || local_public_key.is_some() {
+    if (local_private_key.is_some() || local_public_key.is_some()) && secure_mode != Some(true) {
         return Err(entry.unsupported(
-            "options 'local-private-key'/'local-public-key' are the Noise static keys of the unimplemented secure path",
+            "options 'local-private-key'/'local-public-key' require 'secure-mode: true'",
         ));
+    }
+    if let Some(private_key) = &local_private_key {
+        let private = crate::outbound::easytier::parse_private_key(private_key.expose())
+            .map_err(|_| entry.invalid("option 'local-private-key' must be a base64 32-byte X25519 key"))?;
+        if let Some(public_key) = &local_public_key {
+            let public = crate::outbound::easytier::parse_public_key(public_key.expose())
+                .map_err(|_| entry.invalid("option 'local-public-key' must be a base64 32-byte X25519 key"))?;
+            if crate::outbound::easytier::derive_public_key(&private) != public {
+                return Err(entry.invalid(
+                    "option 'local-public-key' does not match 'local-private-key'",
+                ));
+            }
+        }
+    } else if local_public_key.is_some() && secure_mode == Some(true) {
+        return Err(entry.invalid("option 'local-public-key' requires 'local-private-key'"));
     }
     entry.reject_unknown(
         &[
