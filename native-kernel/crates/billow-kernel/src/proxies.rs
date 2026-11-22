@@ -16,9 +16,11 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::net::{IpAddr, SocketAddr};
 
 use crate::config::ConfigError;
 use crate::keys::{parse_uuid, Secret};
+use crate::outbound::ipstack::IpPrefix;
 
 /// Shadowsocks AEAD 2017 ciphers (16/32-byte keys, 16-byte tags).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,12 +497,18 @@ pub struct ZerotierOutbound {
     pub orbit: Vec<ZerotierOrbit>,
 }
 
-/// MASQUE (RFC 9298 CONNECT-UDP over HTTP/3). Only the CONNECT-UDP data path
-/// is implemented: one QUIC/HTTP/3 association, one request stream per
-/// destination, UDP payloads in `DATAGRAM` capsules. The pinned adapter's
-/// Cloudflare WARP CONNECT-IP flow (`private-key`/`public-key`, `uri`, `ip`,
-/// `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve`/`dns`) and the `h2` /
-/// `h3-l4proxy` networks are rejected by name at load time.
+/// MASQUE over HTTP/3, in the two shapes the pinned adapter serves:
+///
+/// * the RFC 9298 CONNECT-UDP subset (T14): a server with `udp: true`, one
+///   request stream per destination and UDP payloads in `DATAGRAM` capsules;
+/// * the pinned Cloudflare WARP CONNECT-IP client (RFC 9484): `private-key`
+///   and `public-key` (the ECDSA client identity and the pinned endpoint key),
+///   `ip`/`ipv6` local addresses, `uri`, `mtu`, `ip-stack`,
+///   `remote-dns-resolve`/`dns`. The tunnel carries whole IP packets, which
+///   this kernel terminates for UDP only: TCP needs a TCP state machine the
+///   kernel does not have, so a TCP dial through it is refused by name.
+///
+/// The `h2` CONNECT-IP variant and `h3-l4proxy` are still rejected by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MasqueOutbound {
     pub server: String,
@@ -508,10 +516,42 @@ pub struct MasqueOutbound {
     pub tls_settings: TlsSettings,
     /// `handshake-timeout` in seconds; 0 keeps the dial timeout.
     pub handshake_timeout: u64,
-    /// `udp`: CONNECT-UDP is the only implemented mode, so `false` leaves an
+    /// `udp`: for CONNECT-IP this enables the UDP-over-IP association; for
+    /// CONNECT-UDP it is the only implemented mode, so `false` leaves an
     /// outbound that refuses every dial explicitly.
     pub udp: bool,
+    /// `Some` when the configuration carries the WARP CONNECT-IP shape.
+    pub connect_ip: Option<MasqueConnectIp>,
 }
+
+/// The pinned Cloudflare WARP CONNECT-IP configuration
+/// (`adapter/outbound/masque.go`, `MasqueOption`). Every field is validated at
+/// load, so a configuration Mihomo accepts for this shape loads here too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MasqueConnectIp {
+    /// base64 SEC1 `ECPrivateKey` (P-256); redacted in debug output.
+    pub private_key: Secret,
+    /// base64 DER `SubjectPublicKeyInfo` of the endpoint (P-256).
+    pub public_key: Secret,
+    /// The decoded endpoint key, used as the TLS pin.
+    pub public_key_der: Vec<u8>,
+    /// `uri` (default `https://cloudflareaccess.com`) and the request fields
+    /// derived from it: the URI must be absolute https and template-free.
+    pub uri: String,
+    pub uri_authority: String,
+    pub uri_path: String,
+    /// Local addresses from `ip`/`ipv6` (at least one), in prefix order.
+    pub local: Vec<IpPrefix>,
+    /// `mtu` (pinned default 1280).
+    pub mtu: u16,
+    /// `ip-stack.mode` normalized (`auto` when unset).
+    pub ip_stack_mode: String,
+    /// `remote-dns-resolve`: resolve through the tunnel's own name servers.
+    pub remote_dns_resolve: bool,
+    /// `dns`: UDP name servers used when `remote-dns-resolve` is set.
+    pub dns: Vec<SocketAddr>,
+}
+
 
 /// ShadowsocksR stream cipher (`transport/shadowsocks/shadowstream`). Only the
 /// stream ciphers are reachable from SSR; AEAD ciphers are not in Mihomo's SSR
@@ -3381,12 +3421,309 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     })
 }
 
-/// MASQUE (`adapter/outbound/masque.go` + `transport/masque`): the pinned
-/// adapter is a Cloudflare WARP client that pins the endpoint key, presents a
-/// generated ECDSA certificate and sends `cf-connect-ip` (RFC 9484) into a
-/// userspace IP stack. This kernel implements the RFC 9298 CONNECT-UDP data
-/// path instead (see `outbound/masque.rs`), so every option that only selects
-/// the CONNECT-IP/WARP flow is rejected by name instead of being dropped.
+/// MASQUE (`adapter/outbound/masque.go` + `transport/masque`). Two shapes:
+///
+/// * a bare server (`udp: true`) is the RFC 9298 CONNECT-UDP subset
+///   (`outbound/masque.rs`);
+/// * `private-key`/`public-key` (with `ip`/`ipv6`) is the pinned Cloudflare
+///   WARP CONNECT-IP client (`outbound/masque_ip.rs`): the keys are parsed and
+///   validated here (P-256 only, as the pinned adapter's ECDSA assertion),
+///   `uri` becomes the request URI, `ip`/`ipv6` the tunnel's local addresses,
+///   `mtu` its packet bound, `ip-stack` the userspace-stack selection and
+///   `remote-dns-resolve`/`dns` the tunnel's resolver. The `h2` CONNECT-IP
+///   variant, `h3-l4proxy`, the QUIC congestion-controller options and
+///   `dialer-proxy` are still rejected by name.
+fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
+    let server = entry.server()?;
+    let port = entry.port()?;
+    if let Some(network) = entry.string("network")?.filter(|value| !value.is_empty()) {
+        let mode = match network.as_str() {
+            "h2" => "HTTP/2 CONNECT-IP",
+            "h3-l4proxy" => "the h3-l4proxy L4 client",
+            _ => "a non-HTTP/3 transport",
+        };
+        return Err(entry.unsupported(format!(
+            "option 'network' value '{network}' ({mode}) is not implemented: this kernel implements CONNECT-IP over HTTP/3 (`network` unset) and the RFC 9298 CONNECT-UDP subset"
+        )));
+    }
+    let private_key = entry.string("private-key")?.filter(|value| !value.is_empty());
+    let public_key = entry.string("public-key")?.filter(|value| !value.is_empty());
+    let uri = entry.string("uri")?.filter(|value| !value.is_empty());
+    let ip = entry.string("ip")?.filter(|value| !value.is_empty());
+    let ipv6 = entry.string("ipv6")?.filter(|value| !value.is_empty());
+    let mtu = match entry.int("mtu")? {
+        Some(value) if !(0..=65535).contains(&value) => {
+            return Err(entry.invalid("option 'mtu' must be in 0..=65535"))
+        }
+        Some(value) => value as u16,
+        None => 0,
+    };
+    let ip_stack = entry.block("ip-stack")?;
+    let remote_dns_resolve = entry.bool("remote-dns-resolve")?.unwrap_or(false);
+    let dns = entry.string_list("dns")?;
+
+    let mut ip_stack_mode = "auto".to_string();
+    let mut ip_stack_options = 0usize;
+    if let Some(block) = ip_stack {
+        for (key, value) in block {
+            let key = key
+                .as_str()
+                .ok_or_else(|| entry.invalid("ip-stack keys must be strings"))?;
+            ip_stack_options += 1;
+            match key {
+                "mode" => {
+                    let mode = value.as_str().unwrap_or("").to_ascii_lowercase();
+                    match mode.as_str() {
+                        "" | "auto" | "mips" => ip_stack_mode = mode,
+                        "gvisor" => {
+                            return Err(entry.unsupported(
+                                "option 'ip-stack.mode' value 'gvisor' is not implemented: gVisor's userspace stack is the build-tagged `with_gvisor` dependency of the pinned binary, which this kernel does not link; the in-tree UDP-only IP stack is used instead",
+                            ))
+                        }
+                        other => {
+                            return Err(entry.invalid(format!(
+                                "option 'ip-stack.mode' value '{other}' is not valid; expected auto, gvisor, or mips"
+                            )))
+                        }
+                    }
+                }
+                "congestion-controller" => {
+                    let controller = value.as_str().unwrap_or("").to_ascii_lowercase();
+                    // These select the TCP congestion controller of the
+                    // userspace stack; this kernel terminates UDP only, so the
+                    // value is validated and has no effect (registered as a
+                    // TCP-over-tunnel gap, never a silent success).
+                    match controller.as_str() {
+                        "" | "cubic" | "reno" | "bbr" | "bbr3" => {}
+                        other => {
+                            return Err(entry.invalid(format!(
+                                "option 'ip-stack.congestion-controller' value '{other}' is not valid; expected cubic, reno, bbr, or bbr3"
+                            )))
+                        }
+                    }
+                }
+                other => {
+                    return Err(entry.unsupported(format!(
+                        "option 'ip-stack.{other}' is not implemented: the pinned userspace stack has only 'mode' and 'congestion-controller'"
+                    )))
+                }
+            }
+        }
+    }
+
+    let connect_ip = if private_key.is_some()
+        || public_key.is_some()
+        || uri.is_some()
+        || ip.is_some()
+        || ipv6.is_some()
+        || mtu != 0
+        || ip_stack_options > 0
+        || remote_dns_resolve
+        || !dns.is_empty()
+    {
+        let private_key = private_key.ok_or_else(|| {
+            entry.invalid(
+                "option 'private-key' is required for the Cloudflare WARP CONNECT-IP shape; a plain server without it selects the RFC 9298 CONNECT-UDP subset",
+            )
+        })?;
+        let public_key = public_key.ok_or_else(|| {
+            entry.invalid("option 'public-key' is required for the Cloudflare WARP CONNECT-IP shape")
+        })?;
+        // Validate the key material now, as the pinned adapter does while
+        // constructing the outbound; the identity is rebuilt at connect.
+        crate::outbound::warp::parse_private_key(&private_key)
+            .map_err(|error| entry.invalid(error))?;
+        let public_key_der = crate::outbound::warp::parse_public_key(&public_key)
+            .map_err(|error| entry.invalid(error))?;
+        let mut local = Vec::new();
+        for (key, value) in [("ip", &ip), ("ipv6", &ipv6)] {
+            if let Some(value) = value {
+                let prefix = IpPrefix::parse(value)
+                    .map_err(|error| entry.invalid(format!("option '{key}': {error}")))?;
+                let expected_v4 = key == "ip";
+                if prefix.addr.is_ipv4() != expected_v4 {
+                    return Err(entry.invalid(format!(
+                        "option '{key}' value '{value}' is not an {} address",
+                        if expected_v4 { "IPv4" } else { "IPv6" }
+                    )));
+                }
+                local.push(prefix);
+            }
+        }
+        if local.is_empty() {
+            return Err(entry.invalid(
+                "missing local address: the CONNECT-IP shape needs 'ip' and/or 'ipv6' (the pinned `Prefixes` refuses an empty address list)",
+            ));
+        }
+        let uri = uri.unwrap_or_else(|| crate::outbound::masque_ip::DEFAULT_WARP_URI.to_string());
+        let (uri_authority, uri_path) = crate::outbound::masque_ip::parse_connect_uri(&uri)
+            .map_err(|error| entry.invalid(error))?;
+        let mut servers = Vec::new();
+        for value in &dns {
+            let server = parse_masque_dns_server(value)
+                .map_err(|error| entry.invalid(format!("option 'dns': {error}")))?;
+            servers.push(server);
+        }
+        let mtu = if mtu == 0 {
+            crate::outbound::ipstack::DEFAULT_MTU
+        } else if usize::from(mtu) < crate::outbound::ipstack::MIN_MTU {
+            return Err(entry.invalid(format!(
+                "option 'mtu' value {mtu} is below the IPv4 minimum of {}",
+                crate::outbound::ipstack::MIN_MTU
+            )));
+        } else {
+            mtu
+        };
+        Some(MasqueConnectIp {
+            private_key: Secret::new(private_key),
+            public_key: Secret::new(public_key),
+            public_key_der,
+            uri,
+            uri_authority,
+            uri_path,
+            local,
+            mtu,
+            ip_stack_mode,
+            remote_dns_resolve,
+            dns: servers,
+        })
+    } else {
+        None
+    };
+
+    if entry
+        .string("congestion-controller")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+        || entry
+            .string("bbr-profile")?
+            .filter(|value| !value.is_empty())
+            .is_some()
+        || entry.int("cwnd")?.unwrap_or(0) != 0
+    {
+        return Err(entry.unsupported(
+            "options 'congestion-controller'/'cwnd'/'bbr-profile' are not implemented: quinn exposes only its own congestion controller, so the pinned adapter's QUIC controller knobs have no equivalent",
+        ));
+    }
+    if entry
+        .string("dialer-proxy")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(
+            "option 'dialer-proxy' is not implemented for masque: a QUIC endpoint cannot be reached through the supported socks5 TCP hop, so the server is always dialled locally",
+        ));
+    }
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let handshake_timeout = match entry.int("handshake-timeout")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'handshake-timeout' must not be negative"))
+        }
+        Some(value) => value as u64,
+        None => 0,
+    };
+    let tls_settings = entry.tls_settings(true, false)?;
+    // A pinned placeholder: the adapter sets the option but never verifies a
+    // certificate name (it pins the endpoint key instead), so it is a no-op.
+    let _ = entry.string("name-cert-verify")?;
+    let allowed = [
+        "name",
+        "type",
+        "server",
+        "port",
+        "private-key",
+        "public-key",
+        "ip",
+        "ipv6",
+        "uri",
+        "sni",
+        "mtu",
+        "udp",
+        "handshake-timeout",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "network",
+        "congestion-controller",
+        "cwnd",
+        "bbr-profile",
+        "ip-stack",
+        "remote-dns-resolve",
+        "dns",
+    ];
+    entry.reject_unknown(&allowed, true, None)?;
+    Ok(MasqueOutbound {
+        server,
+        port,
+        tls_settings,
+        handshake_timeout,
+        udp,
+        connect_ip,
+    })
+}
+
+/// One `dns` entry of the pinned resolver: a UDP name server. Accepted forms
+/// are `1.1.1.1`, `1.1.1.1:53`, `[fd00::1]`, `[fd00::1]:53` and
+/// `udp://<the same>`. DoH/DoT/TCP name servers and the `#param` suffixes need
+/// transports this kernel does not have, so they are refused by name.
+fn parse_masque_dns_server(value: &str) -> Result<SocketAddr, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("empty name server".to_string());
+    }
+    if let Some((_, params)) = value.split_once('#') {
+        if !params.is_empty() {
+            return Err(format!(
+                "'{value}': name server parameters ('#...') are not implemented"
+            ));
+        }
+    }
+    let rest = match value.split_once("://") {
+        Some((scheme, rest)) => {
+            if !scheme.eq_ignore_ascii_case("udp") {
+                return Err(format!(
+                    "'{value}': only udp:// name servers are implemented (DNS over TCP/DoT/DoH needs transports the CONNECT-IP tunnel does not carry)"
+                ));
+            }
+            rest
+        }
+        None => value,
+    };
+    let rest = rest.trim_end_matches('/');
+    let (host, port) = if let Some(bracketed) = rest.strip_prefix('[') {
+        let (host, tail) = bracketed
+            .split_once(']')
+            .ok_or_else(|| format!("'{value}': unbalanced IPv6 brackets"))?;
+        let port = match tail.strip_prefix(':') {
+            Some(port) => port
+                .parse::<u16>()
+                .map_err(|_| format!("'{value}': invalid port '{port}'"))?,
+            None if tail.is_empty() => 53,
+            None => return Err(format!("'{value}': unexpected '{tail}' after the address")),
+        };
+        (host.to_string(), port)
+    } else {
+        match rest.rsplit_once(':') {
+            Some((host, port)) if !host.contains(':') => (
+                host.to_string(),
+                port.parse::<u16>()
+                    .map_err(|_| format!("'{value}': invalid port '{port}'"))?,
+            ),
+            _ => (rest.to_string(), 53),
+        }
+    };
+    let ip: IpAddr = host
+        .parse()
+        .map_err(|_| format!("'{value}': '{host}' is not an IP address (name servers are not resolved recursively)"))?;
+    if port == 0 {
+        return Err(format!("'{value}': port 0 is not a name server port"));
+    }
+    Ok(SocketAddr::new(ip, port))
+}
+
+/// WireGuard (`adapter/outbound/wireguard.go`): the Noise IK transport is
+/// implemented (`outbound/wireguard.rs`); the userspace IP stack that turns
+/// the tunnel into TCP/UDP sockets is T6/T7, so `ip-stack`, `remote-dns-resolve`
+/// and `dns` are rejected by name.
 fn parse_wireguard(entry: &mut Entry<'_>) -> Result<WireguardOutbound, ConfigError> {
     let private_key_text = entry.required_string("private-key")?;
     if crate::outbound::wireguard::decode_key(&private_key_text).is_err() {
@@ -4094,138 +4431,6 @@ fn wireguard_u16(entry: &mut Entry<'_>, key: &str, default: u16) -> Result<u16, 
         Some(value) => Ok(value as u16),
         None => Ok(default),
     }
-}
-
-fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
-    let server = entry.server()?;
-    let port = entry.port()?;
-    if let Some(network) = entry.string("network")?.filter(|value| !value.is_empty()) {
-        let mode = match network.as_str() {
-            "h2" => "HTTP/2 CONNECT-IP",
-            "h3-l4proxy" => "the h3-l4proxy L4 client",
-            _ => "a non-HTTP/3 transport",
-        };
-        return Err(entry.unsupported(format!(
-            "option 'network' value '{network}' ({mode}) is not implemented: it belongs to the pinned Cloudflare WARP CONNECT-IP adapter; this kernel implements RFC 9298 CONNECT-UDP over HTTP/3"
-        )));
-    }
-    for key in ["private-key", "public-key"] {
-        if entry
-            .string(key)?
-            .filter(|value| !value.is_empty())
-            .is_some()
-        {
-            return Err(entry.unsupported(format!(
-                "option '{key}' is not implemented: the pinned adapter uses the ECDSA key pair for the Cloudflare WARP client certificate and endpoint pinning (cf-connect-ip); this kernel implements RFC 9298 CONNECT-UDP and does not use that registration"
-            )));
-        }
-    }
-    if let Some(uri) = entry.string("uri")?.filter(|value| !value.is_empty()) {
-        return Err(entry.unsupported(format!(
-            "option 'uri' value '{uri}' is not implemented: it selects the pinned CONNECT-IP request URI; CONNECT-UDP derives the request path from the destination"
-        )));
-    }
-    for key in ["ip", "ipv6"] {
-        if entry
-            .string(key)?
-            .filter(|value| !value.is_empty())
-            .is_some()
-        {
-            return Err(entry.unsupported(format!(
-                "option '{key}' is not implemented: it configures the pinned CONNECT-IP tunnel's local address and needs an IP stack (RFC 9484); this kernel implements CONNECT-UDP only"
-            )));
-        }
-    }
-    if entry.int("mtu")?.unwrap_or(0) != 0 {
-        return Err(entry.unsupported(
-            "option 'mtu' is not implemented: it sizes the pinned CONNECT-IP IP stack; CONNECT-UDP keeps UDP payloads whole",
-        ));
-    }
-    if entry
-        .block("ip-stack")?
-        .is_some_and(|block| !block.is_empty())
-    {
-        return Err(entry.unsupported(
-            "option 'ip-stack' is not implemented: it selects the pinned CONNECT-IP userspace stack (mips/gVisor); this kernel has no IP stack",
-        ));
-    }
-    if entry.bool("remote-dns-resolve")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'remote-dns-resolve' is not implemented: it resolves through the pinned CONNECT-IP tunnel's own resolver",
-        ));
-    }
-    if !entry.string_list("dns")?.is_empty() {
-        return Err(entry.unsupported(
-            "option 'dns' is not implemented: it configures the pinned CONNECT-IP tunnel's resolver",
-        ));
-    }
-    if entry
-        .string("congestion-controller")?
-        .filter(|value| !value.is_empty())
-        .is_some()
-        || entry
-            .string("bbr-profile")?
-            .filter(|value| !value.is_empty())
-            .is_some()
-        || entry.int("cwnd")?.unwrap_or(0) != 0
-    {
-        return Err(entry.unsupported(
-            "options 'congestion-controller'/'cwnd'/'bbr-profile' are not implemented: one QUIC connection per UDP association, with quinn's default congestion controller",
-        ));
-    }
-    if entry
-        .string("dialer-proxy")?
-        .filter(|value| !value.is_empty())
-        .is_some()
-    {
-        return Err(entry.unsupported(
-            "option 'dialer-proxy' is not implemented for masque: a QUIC endpoint cannot be reached through the supported socks5 TCP hop, so the server is always dialled locally",
-        ));
-    }
-    let udp = entry.bool("udp")?.unwrap_or(false);
-    let handshake_timeout = match entry.int("handshake-timeout")? {
-        Some(value) if value < 0 => {
-            return Err(entry.invalid("option 'handshake-timeout' must not be negative"))
-        }
-        Some(value) => value as u64,
-        None => 0,
-    };
-    let tls_settings = entry.tls_settings(true, false)?;
-    // A pinned placeholder: the adapter sets the option but never verifies a
-    // certificate name (it pins the endpoint key instead), so it is a no-op.
-    let _ = entry.string("name-cert-verify")?;
-    let allowed = [
-        "name",
-        "type",
-        "server",
-        "port",
-        "private-key",
-        "public-key",
-        "ip",
-        "ipv6",
-        "uri",
-        "sni",
-        "mtu",
-        "udp",
-        "handshake-timeout",
-        "skip-cert-verify",
-        "name-cert-verify",
-        "network",
-        "congestion-controller",
-        "cwnd",
-        "bbr-profile",
-        "ip-stack",
-        "remote-dns-resolve",
-        "dns",
-    ];
-    entry.reject_unknown(&allowed, true, None)?;
-    Ok(MasqueOutbound {
-        server,
-        port,
-        tls_settings,
-        handshake_timeout,
-        udp,
-    })
 }
 
 /// ShadowQUIC (`adapter/outbound/shadowquic.go`). Option policy:

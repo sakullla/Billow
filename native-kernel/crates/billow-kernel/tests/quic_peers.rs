@@ -79,6 +79,16 @@ impl Drop for Cert {
 }
 
 fn make_cert(name: &str) -> Cert {
+    make_cert_with(name, false)
+}
+
+/// A P-256 certificate: the WARP endpoint pins an ECDSA key (the pinned
+/// adapter refuses anything else), so the CONNECT-IP peer uses one.
+fn make_warp_cert(name: &str) -> Cert {
+    make_cert_with(name, true)
+}
+
+fn make_cert_with(name: &str, ecdsa: bool) -> Cert {
     let dir = std::env::temp_dir().join(format!(
         "billow-quic-{name}-{}-{}",
         std::process::id(),
@@ -90,8 +100,15 @@ fn make_cert(name: &str) -> Cert {
     std::fs::create_dir_all(&dir).unwrap();
     let key = dir.join("key.pem");
     let cert = dir.join("cert.pem");
-    let status = Command::new("openssl")
-        .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes"])
+    let mut command = Command::new("openssl");
+    command.args(["req", "-x509", "-newkey"]);
+    if ecdsa {
+        command.args(["ec", "-pkeyopt", "ec_paramgen_curve:P-256"]);
+    } else {
+        command.arg("rsa:2048");
+    }
+    let status = command
+        .arg("-nodes")
         .arg("-keyout")
         .arg(&key)
         .arg("-out")
@@ -1591,5 +1608,826 @@ async fn masque_reclaims_peer_closed_flows_for_new_destinations() {
         masque_path_count(&log, "path=/.well-known/masque/udp/203.0.113.250/9999/",) >= 1,
         "{log:?}"
     );
+    kernel.stop().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// T18: MASQUE CONNECT-IP (RFC 9484) peer.
+//
+// An independent `quinn` HTTP/3 server: it requires the WARP client
+// certificate, advertises extended CONNECT and HTTP Datagrams, answers the
+// `cf-connect-ip` request, reads the ROUTE_ADVERTISEMENT capsule, assigns
+// addresses, and echoes IP/UDP packets received as HTTP Datagrams. The IP and
+// UDP codec below is written against RFC 791/8200/768 rather than reusing the
+// client's `outbound::ipstack`, so a checksum or header bug cannot cancel out.
+// ---------------------------------------------------------------------------
+
+/// Throwaway P-256 SEC1 private key (base64) for the CONNECT-IP tests.
+const WARP_TEST_KEY: &str = "MHcCAQEEIDKh56LbUI7PTfKO5ojiPkNrK2H8jcLrmfdlhv3TsqRzoAoGCCqGSM49AwEHoUQDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==";
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum WarpMode {
+    Accept,
+    /// No `SETTINGS_H3_DATAGRAM` (0x33) and no draft-00 (0x276).
+    NoDatagramSetting,
+    Refuse(u16),
+    /// Send an `ADDRESS_REQUEST` after the assignment: this client has no
+    /// address-assignment policy and must fail by name.
+    AddressRequest,
+}
+
+/// A rustls server verifier that requires the WARP client certificate and
+/// records the SubjectPublicKeyInfo it carries.
+#[derive(Debug)]
+struct RecordingClientCerts {
+    log: PeerLog,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::server::danger::ClientCertVerifier for RecordingClientCerts {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        match billow_kernel::outbound::warp::spki_of_certificate(end_entity.as_ref()) {
+            Some(spki) => {
+                note(&self.log, format!("client-spki={}", hex::encode(spki)));
+                Ok(rustls::server::danger::ClientCertVerified::assertion())
+            }
+            None => Err(rustls::Error::General(
+                "client certificate has no SubjectPublicKeyInfo".to_string(),
+            )),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+fn warp_server_config(cert: &Cert, log: &PeerLog) -> quinn::ServerConfig {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Arc::new(RecordingClientCerts {
+        log: log.clone(),
+        provider: provider.clone(),
+    });
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(
+            vec![CertificateDer::from(cert.der.clone())],
+            rustls_pemfile::private_key(&mut std::io::BufReader::new(
+                std::fs::File::open(&cert.key).unwrap(),
+            ))
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    config.alpn_protocols = vec![b"h3".to_vec()];
+    let mut transport = quinn::TransportConfig::default();
+    transport.datagram_receive_buffer_size(Some(64 * 1024));
+    transport.datagram_send_buffer_size(64 * 1024);
+    let crypto = QuicServerConfig::try_from(config).unwrap();
+    let mut server = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    server.transport_config(Arc::new(transport));
+    server
+}
+
+/// RFC 1071 one's-complement sum, written out independently of the client.
+fn warp_sum(bytes: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        sum += u32::from(u16::from_be_bytes([bytes[index], bytes[index + 1]]));
+        index += 2;
+    }
+    if index < bytes.len() {
+        sum += u32::from(bytes[index]) << 8;
+    }
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    sum as u16
+}
+
+fn warp_pseudo_sum(src: std::net::IpAddr, dst: std::net::IpAddr, udp: &[u8], with_checksum: bool) -> u16 {
+    let mut bytes = Vec::new();
+    match (src, dst) {
+        (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => {
+            bytes.extend_from_slice(&src.octets());
+            bytes.extend_from_slice(&dst.octets());
+            bytes.extend_from_slice(&[0, 17]);
+            bytes.extend_from_slice(&(udp.len() as u16).to_be_bytes());
+        }
+        (std::net::IpAddr::V6(src), std::net::IpAddr::V6(dst)) => {
+            bytes.extend_from_slice(&src.octets());
+            bytes.extend_from_slice(&dst.octets());
+            bytes.extend_from_slice(&(udp.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(&[0, 0, 0, 17]);
+        }
+        _ => return 0xffff,
+    }
+    if !with_checksum {
+        // Verification sums the datagram with its checksum field in place.
+        let mut zeroed = udp.to_vec();
+        zeroed[6] = 0;
+        zeroed[7] = 0;
+        bytes.extend_from_slice(&zeroed);
+    } else {
+        bytes.extend_from_slice(udp);
+    }
+    warp_sum(&bytes)
+}
+
+struct WarpUdp<'a> {
+    src: std::net::IpAddr,
+    dst: std::net::IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    payload: &'a [u8],
+}
+
+/// Parse an IPv4/IPv6 UDP packet, verifying both checksums.
+fn warp_parse_udp(packet: &[u8]) -> Option<WarpUdp<'_>> {
+    match packet.first()? >> 4 {
+        4 => {
+            if packet.len() < 28 {
+                return None;
+            }
+            let header_len = usize::from(packet[0] & 0x0f) * 4;
+            if header_len < 20 || header_len > packet.len() {
+                return None;
+            }
+            let total = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
+            if total < header_len + 8 || total > packet.len() || packet[9] != 17 {
+                return None;
+            }
+            if warp_sum(&packet[..header_len]) != 0xffff {
+                return None;
+            }
+            let src = std::net::IpAddr::from(<[u8; 4]>::try_from(&packet[12..16]).ok()?);
+            let dst = std::net::IpAddr::from(<[u8; 4]>::try_from(&packet[16..20]).ok()?);
+            let udp = &packet[header_len..total];
+            warp_udp(src, dst, udp)
+        }
+        6 => {
+            if packet.len() < 48 {
+                return None;
+            }
+            let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
+            if packet.len() < 40 + payload_len || packet[6] != 17 {
+                return None;
+            }
+            let src = std::net::IpAddr::from(<[u8; 16]>::try_from(&packet[8..24]).ok()?);
+            let dst = std::net::IpAddr::from(<[u8; 16]>::try_from(&packet[24..40]).ok()?);
+            let udp = &packet[40..40 + payload_len];
+            warp_udp(src, dst, udp)
+        }
+        _ => None,
+    }
+}
+
+fn warp_udp<'a>(src: std::net::IpAddr, dst: std::net::IpAddr, udp: &'a [u8]) -> Option<WarpUdp<'a>> {
+    let length = usize::from(u16::from_be_bytes([udp[4], udp[5]]));
+    if length < 8 || length > udp.len() {
+        return None;
+    }
+    let udp = &udp[..length];
+    if warp_pseudo_sum(src, dst, udp, true) != 0xffff {
+        return None;
+    }
+    Some(WarpUdp {
+        src,
+        dst,
+        src_port: u16::from_be_bytes([udp[0], udp[1]]),
+        dst_port: u16::from_be_bytes([udp[2], udp[3]]),
+        payload: &udp[8..],
+    })
+}
+
+/// Build one IPv4/IPv6 UDP packet with valid checksums.
+fn warp_build_udp(
+    src: std::net::IpAddr,
+    dst: std::net::IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut udp = Vec::new();
+    udp.extend_from_slice(&src_port.to_be_bytes());
+    udp.extend_from_slice(&dst_port.to_be_bytes());
+    udp.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+    udp.extend_from_slice(&[0, 0]);
+    udp.extend_from_slice(payload);
+    let mut sum = warp_pseudo_sum(src, dst, &udp, false);
+    sum = !sum;
+    if sum == 0 && src.is_ipv6() {
+        sum = 0xffff;
+    }
+    udp[6..8].copy_from_slice(&sum.to_be_bytes());
+
+    match (src, dst) {
+        (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => {
+            let mut packet = vec![0x45, 0];
+            packet.extend_from_slice(&((20 + udp.len()) as u16).to_be_bytes());
+            packet.extend_from_slice(&[0, 0, 0x40, 0, 64, 17, 0, 0]);
+            packet.extend_from_slice(&src.octets());
+            packet.extend_from_slice(&dst.octets());
+            let checksum = !warp_sum(&packet);
+            packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+            packet.extend_from_slice(&udp);
+            packet
+        }
+        (std::net::IpAddr::V6(src), std::net::IpAddr::V6(dst)) => {
+            let mut packet = vec![0x60, 0, 0, 0];
+            packet.extend_from_slice(&(udp.len() as u16).to_be_bytes());
+            packet.push(17);
+            packet.push(64);
+            packet.extend_from_slice(&src.octets());
+            packet.extend_from_slice(&dst.octets());
+            packet.extend_from_slice(&udp);
+            packet
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The peer's answer to one tunnelled packet: an echo with the addresses and
+/// ports swapped, or (for a DNS query to 1.1.1.1:53) an A answer.
+fn warp_answer(packet: &[u8], log: &PeerLog) -> Option<Vec<u8>> {
+    let udp = warp_parse_udp(packet)?;
+    note(
+        log,
+        format!(
+            "ip src={} dst={} {}:{} -> {}:{} bytes={}",
+            if udp.src.is_ipv4() { "v4" } else { "v6" },
+            if udp.dst.is_ipv4() { "v4" } else { "v6" },
+            udp.src,
+            udp.src_port,
+            udp.dst,
+            udp.dst_port,
+            udp.payload.len()
+        ),
+    );
+    if udp.dst_port == 53 && udp.payload.len() > 12 {
+        let query = udp.payload;
+        let name = dns_name_of(query);
+        note(log, format!("dns-query name={name}"));
+        let mut answer = Vec::new();
+        answer.extend_from_slice(&query[..2]); // ID
+        answer.extend_from_slice(&0x8180u16.to_be_bytes());
+        answer.extend_from_slice(&1u16.to_be_bytes()); // questions
+        answer.extend_from_slice(&1u16.to_be_bytes()); // answers
+        answer.extend_from_slice(&[0, 0, 0, 0]);
+        answer.extend_from_slice(&query[12..]); // the question, verbatim
+        answer.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 198, 51, 100, 7]);
+        return Some(warp_build_udp(
+            udp.dst,
+            udp.src,
+            udp.dst_port,
+            udp.src_port,
+            &answer,
+        ));
+    }
+    Some(warp_build_udp(
+        udp.dst,
+        udp.src,
+        udp.dst_port,
+        udp.src_port,
+        udp.payload,
+    ))
+}
+
+fn dns_name_of(query: &[u8]) -> String {
+    let mut labels = Vec::new();
+    let mut pos = 12;
+    while let Some(&length) = query.get(pos) {
+        if length == 0 {
+            break;
+        }
+        let label = &query[pos + 1..(pos + 1 + usize::from(length)).min(query.len())];
+        labels.push(String::from_utf8_lossy(label).to_string());
+        pos += 1 + usize::from(length);
+    }
+    labels.join(".")
+}
+
+async fn handle_warp_connection(
+    connection: quinn::Connection,
+    mode: WarpMode,
+    log: PeerLog,
+) -> io::Result<()> {
+    let mut control = connection.open_uni().await?;
+    let mut settings = Vec::new();
+    put_varint(0x08, &mut settings);
+    put_varint(1, &mut settings);
+    if mode != WarpMode::NoDatagramSetting {
+        put_varint(0x33, &mut settings);
+        put_varint(1, &mut settings);
+        put_varint(0x276, &mut settings);
+        put_varint(1, &mut settings);
+    }
+    let mut frame = Vec::new();
+    put_varint(0x04, &mut frame);
+    put_varint(settings.len() as u64, &mut frame);
+    frame.extend_from_slice(&settings);
+    control.write_all(&[0x00]).await?;
+    control.write_all(&frame).await?;
+    let mut keep = vec![control];
+    for kind in [0x02u8, 0x03u8] {
+        if let Ok(mut stream) = connection.open_uni().await {
+            let _ = stream.write_all(&[kind]).await;
+            keep.push(stream);
+        }
+    }
+    let (mut send, mut recv) = connection.accept_bi().await?;
+    let quarter = recv.id().index();
+    let mut fields = None;
+    while let Some((frame_type, payload)) = peer_read_frame(&mut recv).await? {
+        if frame_type == 0x01 {
+            fields = Some(
+                peer_decode_headers(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("QPACK: {e}")))?,
+            );
+            break;
+        }
+    }
+    let fields =
+        fields.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no HEADERS frame"))?;
+    let get = |name: &str| {
+        fields
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or("")
+    };
+    note(&log, format!("method={}", get(":method")));
+    note(&log, format!("protocol={}", get(":protocol")));
+    note(&log, format!("authority={}", get(":authority")));
+    note(&log, format!("path={}", get(":path")));
+    note(&log, format!("capsule-protocol={}", get("capsule-protocol")));
+    if let WarpMode::Refuse(status) = mode {
+        peer_write_headers(&mut send, &[(":status", &status.to_string())]).await?;
+        let _ = send.finish();
+        note(&log, format!("refused={status}"));
+        return Ok(());
+    }
+    peer_write_headers(&mut send, &[(":status", "200"), ("capsule-protocol", "?1")]).await?;
+
+    // ADDRESS_ASSIGN: the two prefixes the client's `ip`/`ipv6` select.
+    let mut assign = Vec::new();
+    put_varint(0, &mut assign);
+    assign.push(4);
+    assign.extend_from_slice(&[172, 16, 0, 2]);
+    assign.push(32);
+    put_varint(0, &mut assign);
+    assign.push(6);
+    let fd00: std::net::Ipv6Addr = "fd00::2".parse().unwrap();
+    assign.extend_from_slice(&fd00.octets());
+    assign.push(128);
+    for (kind, value) in [(0x01u64, assign), (0x02u64, vec![0, 4, 172, 16, 0, 3, 32])] {
+        if kind == 0x02 && mode != WarpMode::AddressRequest {
+            continue;
+        }
+        let mut capsule = Vec::new();
+        put_varint(0x00, &mut capsule); // DATA
+        let mut body = Vec::new();
+        put_varint(kind, &mut body);
+        put_varint(value.len() as u64, &mut body);
+        body.extend_from_slice(&value);
+        put_varint(body.len() as u64, &mut capsule);
+        capsule.extend_from_slice(&body);
+        send.write_all(&capsule).await?;
+        note(
+            &log,
+            format!("sent-capsule={kind} bytes={}", value.len()),
+        );
+    }
+    // Capsule reader: ROUTE_ADVERTISEMENT arrives on the same stream.
+    let capsule_log = log.clone();
+    tokio::spawn(async move {
+        let mut pending = Vec::new();
+        while let Ok(Some((frame_type, data))) = peer_read_frame(&mut recv).await {
+            if frame_type != 0x00 {
+                continue;
+            }
+            pending.extend_from_slice(&data);
+            while let Ok(Some((kind, value))) = peer_take_capsule(&mut pending) {
+                note(&capsule_log, format!("capsule type={kind} bytes={}", value.len()));
+            }
+        }
+    });
+    // Datagram echo loop.
+    loop {
+        let datagram = match connection.read_datagram().await {
+            Ok(datagram) => datagram,
+            Err(_) => return Ok(()),
+        };
+        let mut pos = 0;
+        let Some(stream) = take_varint(&datagram, &mut pos) else {
+            continue;
+        };
+        if stream != quarter {
+            note(&log, format!("datagram-quarter={stream}"));
+            continue;
+        }
+        let Some(context) = take_varint(&datagram, &mut pos) else {
+            continue;
+        };
+        if context != 0 {
+            continue;
+        }
+        match warp_answer(&datagram[pos..], &log) {
+            Some(reply) => {
+                let mut datagram = Vec::new();
+                put_varint(quarter, &mut datagram);
+                put_varint(0, &mut datagram);
+                datagram.extend_from_slice(&reply);
+                if connection.send_datagram(datagram.into()).is_err() {
+                    return Ok(());
+                }
+            }
+            None => note(&log, "unparseable-ip-packet"),
+        }
+    }
+}
+
+async fn spawn_warp_peer(mode: WarpMode, cert: Cert) -> (u16, PeerLog) {
+    let port = free_udp_port();
+    let log: PeerLog = Arc::new(Mutex::new(Vec::new()));
+    let config = warp_server_config(&cert, &log);
+    let endpoint = quinn::Endpoint::server(config, SocketAddr::from(([127, 0, 0, 1], port)))
+        .expect("CONNECT-IP QUIC peer endpoint");
+    let shared = log.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let log = shared.clone();
+            tokio::spawn(async move {
+                let connection = match incoming.await {
+                    Ok(connection) => connection,
+                    Err(e) => {
+                        note(&log, format!("handshake-failed={e}"));
+                        return;
+                    }
+                };
+                let _ = handle_warp_connection(connection, mode, log).await;
+            });
+        }
+    });
+    (port, log)
+}
+
+fn warp_endpoint_public_key(cert: &Cert) -> String {
+    let spki = billow_kernel::outbound::warp::spki_of_certificate(&cert.der)
+        .expect("the peer certificate carries a SubjectPublicKeyInfo");
+    billow_kernel::outbound::warp::base64_encode(&spki)
+}
+
+fn start_warp_kernel(peer_port: u16, endpoint_key: &str, extra: &str) -> Kernel {
+    let yaml = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2{extra}}}\nrules:\n  - MATCH,mq\n",
+        free_port()
+    );
+    let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits())
+        .unwrap_or_else(|e| panic!("kernel rejected the CONNECT-IP config: {e}\n{yaml}"));
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    kernel
+}
+
+fn masque_udp_exchange_v6(
+    socket: &std::net::UdpSocket,
+    relay: std::net::SocketAddr,
+    target: std::net::SocketAddr,
+    payload: &[u8],
+    wait: Duration,
+) -> Option<Vec<u8>> {
+    let mut packet = vec![0u8, 0u8, 0u8, 0x04];
+    match target.ip() {
+        std::net::IpAddr::V6(v6) => packet.extend_from_slice(&v6.octets()),
+        _ => return None,
+    }
+    packet.extend_from_slice(&target.port().to_be_bytes());
+    packet.extend_from_slice(payload);
+    socket.send_to(&packet, relay).ok()?;
+    socket.set_read_timeout(Some(wait)).ok()?;
+    let mut buffer = [0u8; 65535];
+    let (read, _) = socket.recv_from(&mut buffer).ok()?;
+    Some(buffer[22..read].to_vec())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_tunnels_udp_over_ipv4_and_ipv6() {
+    let cert = make_warp_cert("warp-ip");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, log) = spawn_warp_peer(WarpMode::Accept, cert).await;
+    let mut kernel = start_warp_kernel(peer_port, &endpoint_key, "");
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let first: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(&socket, relay, first, b"connect-ip-v4", Duration::from_secs(5))
+        .expect("an IPv4 datagram must come back through the tunnel");
+    assert_eq!(reply, b"connect-ip-v4");
+    let second: SocketAddr = "[2001:db8::42]:9999".parse().unwrap();
+    let reply = masque_udp_exchange_v6(
+        &socket,
+        relay,
+        second,
+        b"connect-ip-v6",
+        Duration::from_secs(5),
+    )
+    .expect("an IPv6 datagram must come back through the tunnel");
+    assert_eq!(reply, b"connect-ip-v6");
+
+    // Request shape: RFC 9484 extended CONNECT with the pinned protocol token
+    // and the default `uri` from the pinned adapter.
+    let lines = log.lock().unwrap().clone();
+    for line in [
+        "method=CONNECT",
+        "protocol=cf-connect-ip",
+        "authority=cloudflareaccess.com",
+        "path=/",
+        "capsule-protocol=?1",
+        "capsule type=3 bytes=44",
+    ] {
+        assert!(lines.iter().any(|entry| entry == line), "{line} missing: {lines:?}");
+    }
+    // The client advertised every destination (two routes: IPv4 then IPv6).
+    assert!(
+        lines.iter().any(|entry| entry == &format!("client-spki={}", {
+            billow_kernel::outbound::warp::parse_private_key(WARP_TEST_KEY)
+                .unwrap()
+                .spki
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        })),
+        "the configured client key must be the certificate key: {lines:?}"
+    );
+    // Tunnelled headers: the client's `ip`/`ipv6` are the packet sources.
+    assert!(
+        lines
+            .iter()
+            .any(|entry| entry.starts_with("ip src=v4 dst=v4 172.16.0.2:")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|entry| entry.starts_with("ip src=v6 dst=v6 fd00::2:")),
+        "{lines:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_requires_the_pinned_endpoint_key() {
+    let cert = make_warp_cert("warp-pin");
+    let wrong = billow_kernel::outbound::warp::base64_encode(
+        &billow_kernel::outbound::warp::parse_private_key(WARP_TEST_KEY)
+            .unwrap()
+            .spki,
+    );
+    let (peer_port, log) = spawn_warp_peer(WarpMode::Accept, cert).await;
+    let mut kernel = start_warp_kernel(peer_port, &wrong, "");
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(&socket, relay, target, b"pinned", Duration::from_secs(2));
+    assert!(reply.is_none(), "a wrong endpoint pin must not connect: {reply:?}");
+    // The pin is checked by our verifier, so the QUIC/TLS handshake completes
+    // on paper but the certificate is refused; the peer sees a close.
+    let lines = log.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|entry| entry.starts_with("handshake-failed=")),
+        "{lines:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_without_http_datagrams_is_refused_by_name() {
+    use billow_kernel::outbound::masque_ip::MasqueIp;
+    use billow_kernel::outbound::tls::ClientTls;
+    use billow_kernel::proxies::Protocol;
+
+    let cert = make_warp_cert("warp-nodatagram");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, _log) = spawn_warp_peer(WarpMode::NoDatagramSetting, cert).await;
+    let yaml = format!(
+        "proxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2}}\nrules: ['MATCH,mq']\n"
+    );
+    let loaded = billow_kernel::load_config(&yaml, "warp.yaml").unwrap();
+    let Protocol::Masque(option) = &loaded.config.proxies[0].protocol else {
+        panic!("not masque");
+    };
+    let tls = ClientTls::new(&[]);
+    let error = match MasqueIp::connect(option, &tls, Duration::from_secs(5)).await {
+        Ok(_) => panic!("datagram support is required"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("HTTP Datagrams"),
+        "the refusal must name the missing datagram support: {message}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_refuses_address_request() {
+    use billow_kernel::outbound::masque_ip::MasqueIp;
+    use billow_kernel::outbound::tls::ClientTls;
+    use billow_kernel::proxies::Protocol;
+
+    let cert = make_warp_cert("warp-address-request");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, log) = spawn_warp_peer(WarpMode::AddressRequest, cert).await;
+    let yaml = format!(
+        "proxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2}}\nrules: ['MATCH,mq']\n"
+    );
+    let loaded = billow_kernel::load_config(&yaml, "warp.yaml").unwrap();
+    let Protocol::Masque(option) = &loaded.config.proxies[0].protocol else {
+        panic!("not masque");
+    };
+    let tls = ClientTls::new(&[]);
+    let mut association = MasqueIp::connect(option, &tls, Duration::from_secs(5))
+        .await
+        .expect("the request itself succeeds");
+    let mut buffer = [0u8; 1500];
+    let error = association
+        .recv(&mut buffer)
+        .await
+        .expect_err("ADDRESS_REQUEST must fail the association");
+    assert!(
+        error.to_string().contains("ADDRESS_REQUEST"),
+        "the refusal must name ADDRESS_REQUEST: {error}"
+    );
+    assert!(peer_log_has(&log, "sent-capsule=2"), "{log:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_refusal_fails_without_a_reply() {
+    let cert = make_warp_cert("warp-refuse");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, log) = spawn_warp_peer(WarpMode::Refuse(403), cert).await;
+    let mut kernel = start_warp_kernel(peer_port, &endpoint_key, "");
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(&socket, relay, target, b"refused", Duration::from_secs(2));
+    assert!(reply.is_none(), "a refused CONNECT-IP must not echo: {reply:?}");
+    assert!(wait_for_peer_log(&log, "refused=403").await, "{log:?}");
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_resolves_through_the_tunnel_dns() {
+    let cert = make_warp_cert("warp-dns");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, log) = spawn_warp_peer(WarpMode::Accept, cert).await;
+    let mut kernel = start_warp_kernel(
+        peer_port,
+        &endpoint_key,
+        ", remote-dns-resolve: true, dns: [1.1.1.1]",
+    );
+    let (_control, relay) = masque_udp_associate(kernel.listen_addr());
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    // The relay payload carries a hostname; only the tunnel's DNS can turn it
+    // into the address the peer answers for.
+    let mut packet = vec![0u8, 0u8, 0u8, 0x03, 15];
+    packet.extend_from_slice(b"dns-target.test");
+    packet.extend_from_slice(&5353u16.to_be_bytes());
+    packet.extend_from_slice(b"resolved-through-tunnel");
+    socket.send_to(&packet, relay).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut buffer = [0u8; 65535];
+    let (read, _) = socket.recv_from(&mut buffer).expect("the resolved datagram must echo");
+    // The reply carries the destination the client asked for (the relay's
+    // existing convention: a hostname stays a hostname).
+    assert_eq!(buffer[3], 0x03, "{:?}", &buffer[..read]);
+    assert_eq!(buffer[4], 15);
+    assert_eq!(&buffer[5..20], b"dns-target.test");
+    assert_eq!(&buffer[20..22], &5353u16.to_be_bytes());
+    assert_eq!(&buffer[22..read], b"resolved-through-tunnel");
+    assert!(wait_for_peer_log(&log, "dns-query name=dns-target.test").await, "{log:?}");
+    assert!(
+        peer_log_has(&log, "ip src=v4 dst=v4 172.16.0.2:"),
+        "the DNS query itself must travel the tunnel: {log:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_records_the_assignment_and_bounds_the_mtu() {
+    use billow_kernel::outbound::masque_ip::MasqueIp;
+    use billow_kernel::outbound::tls::ClientTls;
+    use billow_kernel::outbound::Target;
+    use billow_kernel::proxies::Protocol;
+
+    let cert = make_warp_cert("warp-assign");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let (peer_port, _log) = spawn_warp_peer(WarpMode::Accept, cert).await;
+    let yaml = format!(
+        "proxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2, mtu: 1280}}\nrules: ['MATCH,mq']\n"
+    );
+    let loaded = billow_kernel::load_config(&yaml, "warp.yaml").unwrap();
+    let Protocol::Masque(option) = &loaded.config.proxies[0].protocol else {
+        panic!("not masque");
+    };
+    let tls = ClientTls::new(&[]);
+    let mut association = MasqueIp::connect(option, &tls, Duration::from_secs(5))
+        .await
+        .expect("CONNECT-IP connects");
+    // ADDRESS_ASSIGN arrives out of band on the request stream.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut assigned = Vec::new();
+    while std::time::Instant::now() < deadline {
+        assigned = association.assigned_prefixes();
+        if assigned.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let rendered: Vec<String> = assigned
+        .iter()
+        .map(|prefix| format!("{}/{}", prefix.addr, prefix.bits))
+        .collect();
+    assert_eq!(rendered, ["172.16.0.2/32", "fd00::2/128"]);
+    assert_eq!(
+        association
+            .local_prefixes()
+            .iter()
+            .map(|prefix| prefix.addr.to_string())
+            .collect::<Vec<_>>(),
+        ["172.16.0.2", "fd00::2"]
+    );
+    // 1280 - 28 (IPv4 + UDP) leaves 1252 payload bytes.
+    let target = Target {
+        host: "198.51.100.7".to_string(),
+        port: 5353,
+    };
+    let error = association
+        .send(&target, &vec![0u8; 1300])
+        .await
+        .expect_err("a datagram over the tunnel MTU must be refused");
+    assert!(error.to_string().contains("mtu"), "{error}");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    // 1252 bytes is the largest that fits.
+    association
+        .send(&target, &vec![0u8; 1252])
+        .await
+        .expect("a datagram at the MTU limit is sent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masque_connect_ip_tcp_dial_is_refused_by_name() {
+    // No peer is needed: the TCP path is refused before any connection.
+    let cert = make_warp_cert("warp-tcp");
+    let endpoint_key = warp_endpoint_public_key(&cert);
+    let port = free_udp_port();
+    let mut kernel = start_warp_kernel(port, &endpoint_key, "");
+    let (tunnel, status) = common::http_connect(kernel.listen_addr(), "127.0.0.1:9")
+        .await
+        .unwrap();
+    drop(tunnel);
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
     kernel.stop().unwrap();
 }

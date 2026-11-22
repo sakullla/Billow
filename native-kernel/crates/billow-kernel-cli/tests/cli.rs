@@ -542,6 +542,37 @@ fn process_loads_t15_shadowquic() {
     assert!(stdout.contains("sq=shadowquic"), "{stdout}");
 }
 
+/// T18: the pinned Cloudflare WARP CONNECT-IP shape loads in the shipped
+/// process (keys, local addresses, URI, MTU, resolver options), a TCP tunnel
+/// routed to it is refused by name (there is no TCP stack), and the process
+/// stays up. The UDP-over-IP path is exercised against a CONNECT-IP peer in
+/// `tests/family_cli.rs` and `tests/quic_peers.rs`.
+#[test]
+fn process_loads_t18_masque_connect_ip() {
+    // Throwaway P-256 SEC1 key and endpoint SPKI (base64), as the pinned
+    // adapter's x509 parsers read them.
+    let key = "MHcCAQEEIDKh56LbUI7PTfKO5ojiPkNrK2H8jcLrmfdlhv3TsqRzoAoGCCqGSM49AwEHoUQDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==";
+    let endpoint_key = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==";
+    let masque_port = free_port();
+    let port = free_port();
+    let kernel = KernelProcess::start_body(
+        &format!(
+            "proxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {masque_port}, udp: true, private-key: '{key}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2, uri: https://cloudflareaccess.com, mtu: 1280, ip-stack: {{mode: auto}}, remote-dns-resolve: true, dns: [1.1.1.1]}}\nrules:\n  - 'MATCH,mq'\n"
+        ),
+        port,
+    );
+    let proxy: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let (mut tunnel, status) = http_connect(proxy, "127.0.0.1:9").unwrap();
+    assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+    let _ = tunnel.write_all(b"unused");
+    drop(tunnel);
+    let mut kernel = kernel;
+    let output = kernel.sigint();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("mq=masque"), "{stdout}");
+}
+
 #[test]
 fn process_loads_t14_masque() {
     let masque_port = free_port();

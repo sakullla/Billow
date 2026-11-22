@@ -6,8 +6,16 @@
 //! ECDSA public key, presents a generated client certificate, sends
 //! `:protocol cf-connect-ip` and terminates the returned IP packets in a
 //! userspace IP stack (`connect-ip-go`), which is how it serves both TCP and
-//! UDP. This kernel does not have an IP stack or a CONNECT-IP client, so that
-//! flow is rejected by name at load time.
+//! UDP. That shape is implemented here as CONNECT-IP over the kernel's own
+//! minimal IP stack ([`super::masque_ip`], [`super::ipstack`]) for UDP; TCP
+//! needs a TCP state machine and is refused by name.
+//!
+//! Two shapes share this module:
+//!
+//! * [`MasqueUdp`] — the RFC 9298 CONNECT-UDP subset below (a plain server);
+//! * [`super::masque_ip::MasqueIp`] — CONNECT-IP (RFC 9484) for the WARP
+//!   configuration; [`MasqueUdpAssociation`] picks one for the UDP
+//!   association.
 //!
 //! Implemented here is the RFC 9298 CONNECT-UDP subset on top of the same QUIC
 //! dependency profile as T10 (`quinn` 0.11, TLS 1.3, ALPN `h3`):
@@ -38,9 +46,9 @@
 //! capsules; server push, the WebTransport capsule protocol and 0-RTT are not
 //! implemented.
 //!
-//! TCP over masque needs CONNECT-IP (RFC 9484) plus an IP stack, and the
-//! pinned `h2`/`h3-l4proxy` modes are Cloudflare specific; both are refused
-//! with a named error rather than silently dropped (CONNECT-IP is T18).
+//! TCP over masque needs a TCP/IP stack on top of CONNECT-IP (RFC 9484), and
+//! the pinned `h2`/`h3-l4proxy` modes are Cloudflare specific; both are
+//! refused with a named error rather than silently dropped.
 
 use std::collections::HashMap;
 use std::io;
@@ -52,6 +60,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use super::h3::{self, Session};
+use super::masque_ip::MasqueIp;
 use super::quic::{self, QuicOptions};
 use super::tls::ClientTls;
 use super::{DialError, Dialed, Target};
@@ -141,7 +150,7 @@ impl MasqueUdp {
         if !option.udp {
             return Err(handshake(
                 io::ErrorKind::Unsupported,
-                "masque has no supported mode with 'udp: false': TCP needs CONNECT-IP (RFC 9484) and an IP stack; set 'udp: true' to use CONNECT-UDP",
+                "masque has no supported mode with 'udp: false': TCP needs a TCP/IP stack over CONNECT-IP; set 'udp: true' to use CONNECT-UDP",
             ));
         }
         let handshake_timeout = if option.handshake_timeout == 0 {
@@ -406,19 +415,61 @@ impl Drop for MasqueUdp {
     }
 }
 
-/// TCP through the pinned masque adapter is CONNECT-IP (RFC 9484) plus a
-/// userspace IP stack; this kernel has neither, so the dial fails with the
-/// reason instead of bypassing the proxy.
+/// TCP through masque: CONNECT-UDP cannot carry it, and CONNECT-IP carries
+/// whole IP packets that this kernel terminates for UDP only (no TCP state
+/// machine), so the dial fails with the reason instead of bypassing the proxy.
 pub async fn dial(
-    _option: &MasqueOutbound,
+    option: &MasqueOutbound,
     _target: &Target,
     _tls: &ClientTls,
     _timeout: Duration,
 ) -> Result<Dialed, DialError> {
-    Err(handshake(
-        io::ErrorKind::Unsupported,
-        "TCP over masque is not implemented: the pinned adapter tunnels IP packets with CONNECT-IP (RFC 9484) and terminates TCP in a userspace IP stack; this kernel implements RFC 9298 CONNECT-UDP for the UDP association only",
-    ))
+    let reason = if option.connect_ip.is_some() {
+        "TCP over masque is not implemented: the CONNECT-IP (RFC 9484) tunnel carries IP packets and serving TCP needs a TCP state machine (the pinned adapter uses mipstack/gVisor); this kernel terminates UDP over the tunnel only"
+    } else {
+        "TCP over masque is not implemented: the RFC 9298 CONNECT-UDP subset carries UDP only, and the pinned CONNECT-IP shape needs 'private-key'/'public-key' plus 'ip'/'ipv6' and a TCP stack this kernel does not have"
+    };
+    Err(handshake(io::ErrorKind::Unsupported, reason))
+}
+
+/// The UDP association of a `masque` outbound: RFC 9298 CONNECT-UDP for a
+/// plain server, RFC 9484 CONNECT-IP for the WARP configuration.
+pub enum MasqueUdpAssociation {
+    ConnectUdp(MasqueUdp),
+    ConnectIp(MasqueIp),
+}
+
+impl MasqueUdpAssociation {
+    /// Open the association the configuration selects.
+    pub async fn connect(
+        option: &MasqueOutbound,
+        tls: &ClientTls,
+        timeout: Duration,
+    ) -> Result<MasqueUdpAssociation, DialError> {
+        if option.connect_ip.is_some() {
+            Ok(MasqueUdpAssociation::ConnectIp(
+                MasqueIp::connect(option, tls, timeout).await?,
+            ))
+        } else {
+            Ok(MasqueUdpAssociation::ConnectUdp(
+                MasqueUdp::connect(option, tls, timeout).await?,
+            ))
+        }
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        match self {
+            MasqueUdpAssociation::ConnectUdp(association) => association.send(target, payload).await,
+            MasqueUdpAssociation::ConnectIp(association) => association.send(target, payload).await,
+        }
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        match self {
+            MasqueUdpAssociation::ConnectUdp(association) => association.recv(buffer).await,
+            MasqueUdpAssociation::ConnectIp(association) => association.recv(buffer).await,
+        }
+    }
 }
 
 /// The RFC 9298 request path for `target`:

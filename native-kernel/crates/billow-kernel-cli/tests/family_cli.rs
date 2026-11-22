@@ -711,6 +711,16 @@ impl Drop for QuicCert {
 }
 
 fn make_quic_cert(name: &str) -> QuicCert {
+    make_quic_cert_with(name, false)
+}
+
+/// A P-256 certificate: the WARP endpoint key is ECDSA (the pinned adapter
+/// refuses anything else), so the CONNECT-IP CLI peer needs one.
+fn make_quic_ec_cert(name: &str) -> QuicCert {
+    make_quic_cert_with(name, true)
+}
+
+fn make_quic_cert_with(name: &str, ecdsa: bool) -> QuicCert {
     let dir = std::env::temp_dir().join(format!(
         "billow-cli-quic-{name}-{}-{}",
         std::process::id(),
@@ -722,8 +732,15 @@ fn make_quic_cert(name: &str) -> QuicCert {
     std::fs::create_dir_all(&dir).unwrap();
     let key = dir.join("key.pem");
     let cert = dir.join("cert.pem");
-    let status = Command::new("openssl")
-        .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes"])
+    let mut command = Command::new("openssl");
+    command.args(["req", "-x509", "-newkey"]);
+    if ecdsa {
+        command.args(["ec", "-pkeyopt", "ec_paramgen_curve:P-256"]);
+    } else {
+        command.arg("rsa:2048");
+    }
+    let status = command
+        .arg("-nodes")
         .arg("-keyout")
         .arg(&key)
         .arg("-out")
@@ -1259,6 +1276,183 @@ fn spawn_masque_cli_peer() -> u16 {
     rx.recv().unwrap()
 }
 
+/// A T18 CONNECT-IP peer for the shipped process: it advertises extended
+/// CONNECT and HTTP Datagrams, answers `cf-connect-ip`, assigns the client's
+/// local addresses and echoes every tunnelled IP/UDP packet. It returns the
+/// port and the endpoint SubjectPublicKeyInfo (base64) the client pins.
+/// The IP codec is the kernel's `outbound::ipstack`; the HTTP/3 and datagram
+/// framing is written here, and `tests/quic_peers.rs` covers the same path
+/// with an independent IP codec and a mandatory client certificate.
+fn spawn_masque_connect_ip_cli_peer() -> (u16, String) {
+    use billow_kernel::outbound::h3;
+    use billow_kernel::outbound::ipstack;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let cert = make_quic_ec_cert("masque-ip");
+            let endpoint_key = billow_kernel::outbound::warp::base64_encode(
+                &billow_kernel::outbound::warp::spki_of_certificate(&cert.der)
+                    .expect("peer SPKI"),
+            );
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let mut tls = rustls::ServerConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![rustls::pki_types::CertificateDer::from(cert.der.clone())],
+                    rustls_pemfile::private_key(&mut std::io::BufReader::new(
+                        std::fs::File::open(&cert.key).unwrap(),
+                    ))
+                    .unwrap()
+                    .unwrap(),
+                )
+                .unwrap();
+            tls.alpn_protocols = vec![b"h3".to_vec()];
+            let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls).unwrap();
+            let mut transport = quinn::TransportConfig::default();
+            transport.datagram_receive_buffer_size(Some(64 * 1024));
+            transport.datagram_send_buffer_size(64 * 1024);
+            let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+            config.transport_config(Arc::new(transport));
+            let endpoint =
+                quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
+            tx.send((endpoint.local_addr().unwrap().port(), endpoint_key))
+                .unwrap();
+            while let Some(incoming) = endpoint.accept().await {
+                tokio::spawn(async move {
+                    let Ok(connection) = incoming.await else {
+                        return;
+                    };
+                    let Ok(mut control) = connection.open_uni().await else {
+                        return;
+                    };
+                    let mut settings = Vec::new();
+                    for id in [0x08u64, 0x33, 0x276] {
+                        h3::encode_varint(id, &mut settings);
+                        h3::encode_varint(1, &mut settings);
+                    }
+                    let mut frame = Vec::new();
+                    h3::encode_varint(0x04, &mut frame);
+                    h3::encode_varint(settings.len() as u64, &mut frame);
+                    frame.extend_from_slice(&settings);
+                    if control.write_all(&[0x00]).await.is_err()
+                        || control.write_all(&frame).await.is_err()
+                    {
+                        return;
+                    }
+                    let Ok(mut encoder) = connection.open_uni().await else {
+                        return;
+                    };
+                    let _ = encoder.write_all(&[0x02]).await;
+                    let Ok(mut decoder) = connection.open_uni().await else {
+                        return;
+                    };
+                    let _ = decoder.write_all(&[0x03]).await;
+                    let _keep = (control, encoder, decoder);
+                    let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                        return;
+                    };
+                    let quarter = recv.id().index();
+                    let mut headers = false;
+                    while let Ok(Some((frame_type, _))) = h3::read_frame(&mut recv).await {
+                        if frame_type == 0x01 {
+                            headers = true;
+                            break;
+                        }
+                    }
+                    if !headers {
+                        return;
+                    }
+                    let block =
+                        h3::encode_field_section(&[(":status", "200"), ("capsule-protocol", "?1")]);
+                    let mut response = Vec::new();
+                    h3::encode_varint(0x01, &mut response);
+                    h3::encode_varint(block.len() as u64, &mut response);
+                    response.extend_from_slice(&block);
+                    // ADDRESS_ASSIGN (0x01): 172.16.0.2/32 and fd00::2/128.
+                    let mut assign = Vec::new();
+                    assign.extend_from_slice(&[0, 4, 172, 16, 0, 2, 32]);
+                    let fd00: std::net::Ipv6Addr = "fd00::2".parse().unwrap();
+                    assign.push(0);
+                    assign.push(6);
+                    assign.extend_from_slice(&fd00.octets());
+                    assign.push(128);
+                    let mut body = Vec::new();
+                    h3::encode_varint(0x01, &mut body);
+                    h3::encode_varint(assign.len() as u64, &mut body);
+                    body.extend_from_slice(&assign);
+                    h3::encode_varint(0x00, &mut response);
+                    h3::encode_varint(body.len() as u64, &mut response);
+                    response.extend_from_slice(&body);
+                    if send.write_all(&response).await.is_err() {
+                        return;
+                    }
+                    // Drain the request stream (the client's route advertisement)
+                    // and echo tunnelled packets.
+                    let mut capsule_buf = Vec::new();
+                    loop {
+                        tokio::select! {
+                            frame = h3::read_frame(&mut recv) => {
+                                match frame {
+                                    Ok(Some((0x00, data))) => capsule_buf.extend_from_slice(&data),
+                                    Ok(Some(_)) => {}
+                                    Ok(None) | Err(_) => return,
+                                }
+                                let _ = (&mut capsule_buf, quarter);
+                            }
+                            datagram = connection.read_datagram() => {
+                                let Ok(datagram) = datagram else { return };
+                                let mut pos = 0;
+                                let Some(stream) = h3::decode_varint(&datagram, &mut pos) else {
+                                    continue;
+                                };
+                                if stream != quarter {
+                                    continue;
+                                }
+                                let Some(context) = h3::decode_varint(&datagram, &mut pos) else {
+                                    continue;
+                                };
+                                if context != 0 {
+                                    continue;
+                                }
+                                let Ok(packet) = ipstack::parse_ip_packet(&datagram[pos..]) else {
+                                    continue;
+                                };
+                                let Ok(udp) = ipstack::parse_udp(&packet) else {
+                                    continue;
+                                };
+                                let Ok(reply) = ipstack::build_udp_packet(
+                                    udp.dst,
+                                    udp.src,
+                                    udp.dst_port,
+                                    udp.src_port,
+                                    udp.payload,
+                                    64,
+                                ) else {
+                                    continue;
+                                };
+                                let mut out = Vec::new();
+                                h3::encode_varint(quarter, &mut out);
+                                h3::encode_varint(0, &mut out);
+                                out.extend_from_slice(&reply);
+                                if connection.send_datagram(out.into()).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    });
+    rx.recv().unwrap()
+}
+
 fn masque_cli_capsule(buffer: &mut Vec<u8>) -> Option<(u64, Vec<u8>)> {
     use billow_kernel::outbound::h3;
     let mut pos = 0;
@@ -1340,6 +1534,38 @@ fn cli_process_tunnels_udp_through_masque() {
     )
     .expect("a CONNECT-UDP datagram through the CLI must echo");
     assert_eq!(reply, b"cli-masque-marker");
+    drop(control);
+    stop_cli(child);
+}
+
+/// Throwaway P-256 SEC1 private key (base64) for the CONNECT-IP CLI case.
+const WARP_CLI_KEY: &str = "MHcCAQEEIDKh56LbUI7PTfKO5ojiPkNrK2H8jcLrmfdlhv3TsqRzoAoGCCqGSM49AwEHoUQDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==";
+
+/// T18's CONNECT-IP path in the shipped process: a WARP-shaped configuration
+/// (keys, local addresses, pinned endpoint key) loads, and a SOCKS5 UDP
+/// datagram is tunnelled as an IP/UDP packet and comes back.
+#[test]
+fn cli_process_tunnels_udp_through_masque_connect_ip() {
+    let (peer_port, endpoint_key) = spawn_masque_connect_ip_cli_peer();
+    let port = free_port();
+    let child = start_cli(
+        &format!(
+            "proxies:\n  - {{name: p, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_CLI_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2}}\nrules:\n  - 'MATCH,p'\n"
+        ),
+        port,
+    );
+    let (control, relay) = masque_udp_associate(format!("127.0.0.1:{port}").parse().unwrap());
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target: SocketAddr = "198.51.100.7:5353".parse().unwrap();
+    let reply = masque_udp_exchange(
+        &socket,
+        relay,
+        target,
+        b"cli-connect-ip-marker",
+        Duration::from_secs(10),
+    )
+    .expect("a CONNECT-IP datagram through the CLI must echo");
+    assert_eq!(reply, b"cli-connect-ip-marker");
     drop(control);
     stop_cli(child);
 }

@@ -1,9 +1,8 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
 # rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 237, enabled cases: 263, problems: 0
+# no-op cases: 250, enabled cases: 270, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
-# skipped: masque (- the pinned base requires private-key/public-key (Cloudflare WARP CONNECT-IP registration) that this kernel rejects; the RFC 9298 CONNECT-UDP subset is verified in tests/quic_peers.rs and the boundary is in evidence/t14-feasibility.json)
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
 noop    socks5  sni                          rust=accept mihomo=accept
@@ -151,6 +150,19 @@ noop    ssh     host-key                     rust=accept mihomo=accept
 noop    ssh     host-key-algorithms          rust=accept mihomo=accept
 noop    ssr     protocol-param               rust=accept mihomo=accept
 noop    ssr     obfs-param                   rust=accept mihomo=accept
+noop    masque  sni                          rust=accept mihomo=accept
+noop    masque  skip-cert-verify             rust=accept mihomo=accept
+noop    masque  name-cert-verify             rust=accept mihomo=accept
+noop    masque  handshake-timeout            rust=accept mihomo=accept
+noop    masque  mtu                          rust=accept mihomo=accept
+noop    masque  uri                          rust=accept mihomo=accept
+noop    masque  ipv6                         rust=accept mihomo=accept
+noop    masque  ip-stack                     rust=accept mihomo=accept
+noop    masque  ip-stack                     rust=accept mihomo=accept
+noop    masque  ip-stack                     rust=accept mihomo=accept
+noop    masque  remote-dns-resolve           rust=accept mihomo=accept
+noop    masque  dns                          rust=accept mihomo=accept
+noop    masque  network                      rust=accept mihomo=accept
 noop    tuic    tfo                          rust=accept mihomo=accept
 noop    tuic    mptcp                        rust=accept mihomo=accept
 noop    tuic    interface-name               rust=accept mihomo=accept
@@ -505,3 +517,10 @@ enabled openvpn ip-stack.congestion-controller rust=reject mihomo=accept
 enabled openvpn remote-dns-resolve           rust=reject mihomo=accept
 enabled openvpn dns                          rust=reject mihomo=accept
 enabled openvpn dialer-proxy                 rust=reject mihomo=reject
+enabled masque  network                      rust=reject mihomo=accept
+enabled masque  network                      rust=reject mihomo=accept
+enabled masque  congestion-controller        rust=reject mihomo=accept
+enabled masque  cwnd                         rust=reject mihomo=accept
+enabled masque  bbr-profile                  rust=reject mihomo=accept
+enabled masque  ip-stack.mode                rust=reject mihomo=accept
+enabled masque  dialer-proxy                 rust=reject mihomo=reject

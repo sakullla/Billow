@@ -1,0 +1,208 @@
+{
+  "format": "kernel-t18-feasibility",
+  "task": "T18",
+  "workflow": "2026-11-20-native-rust-kernel",
+  "generatedAt": "2026-11-22T08:25:00Z",
+  "platform": {
+    "verified": [
+      "macos-aarch64"
+    ],
+    "compilesButNotRun": [
+      "linux-x86_64",
+      "linux-aarch64",
+      "android",
+      "ios-simulator"
+    ],
+    "windows": "compiles; the Windows session path is T6 and no Windows QUIC run has been recorded",
+    "note": "The CONNECT-IP peers are loopback HTTP/3 servers on macOS arm64. Nothing is claimed for a platform that was not run."
+  },
+  "pinnedImplementation": {
+    "source": "tool/kernel-compat/.cache/source/tree-v1.19.34",
+    "adapter": "adapter/outbound/masque.go (540 lines)",
+    "transport": "transport/masque/masque.go (224 lines) + client_h2.go + l4proxy.go",
+    "shape": [
+      "private-key is base64 of a SEC1 ECPrivateKey (x509.ParseECPrivateKey); public-key is base64 of a DER SubjectPublicKeyInfo (x509.ParsePKIXPublicKey) asserted to be ECDSA; both are P-256 in every WARP registration",
+      "the client certificate is generated with x509.CreateCertificate from a zero template: serial 0, empty issuer/subject, one-day validity; the endpoint certificate is accepted by pinning its public key (InsecureSkipVerify + VerifyConnection), so certificate names are not verified",
+      "SNI defaults to consumer-masque.cloudflareclient.com and uri to https://cloudflareaccess.com; a URI template with variables is refused ('IP flow forwarding not supported')",
+      "QUIC with datagrams (InitialPacketSize 1242, keepalive 30 s); HTTP/3 SETTINGS additionally sends the draft-00 datagram identifier 0x276; the peer must advertise extended CONNECT and datagrams",
+      ":protocol cf-connect-ip, :scheme https, :authority/:path from uri, capsule-protocol ?1, empty user-agent",
+      "ROUTE_ADVERTISEMENT 0.0.0.0-255.255.255.255 and ::-all-ones with protocol 0; ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT parsed from the request stream; ADDRESS_REQUEST is an error in connect-ip-go",
+      "IP packets are sent in QUIC DATAGRAM frames (quarter stream ID + context ID 0 + packet) and terminated in mipstack or gVisor, which is what serves TCP and UDP",
+      "mtu defaults to 1280; ip/ipv6 default to a /32 and /128 host prefix"
+    ],
+    "sha256": "0455d0d28c4526937380505153e65a843d8612e8 (locked Mihomo v1.19.34 source tree)"
+  },
+  "implementedSubset": {
+    "status": "partial",
+    "protocol": "RFC 9484 CONNECT-IP over HTTP/3 (RFC 9114) with HTTP Datagrams (RFC 9297), the capsule protocol and extended CONNECT (RFC 9220), for UDP; RFC 9298 CONNECT-UDP from T14 is unchanged",
+    "files": [
+      "native-kernel/crates/billow-kernel/src/outbound/masque_ip.rs (CONNECT-IP: request, capsules, IP packets, flows, tunnel DNS)",
+      "native-kernel/crates/billow-kernel/src/outbound/ipstack.rs (minimal IPv4/IPv6/UDP codec)",
+      "native-kernel/crates/billow-kernel/src/outbound/warp.rs (SEC1/PKCS#8 key parsing, client certificate, SPKI pin, TLS config)",
+      "native-kernel/crates/billow-kernel/src/outbound/masque.rs (CONNECT-UDP subset + MasqueUdpAssociation dispatch + TCP refusal)",
+      "native-kernel/crates/billow-kernel/src/outbound/h3.rs (legacy SETTINGS 0x276, connection accessor)",
+      "native-kernel/crates/billow-kernel/src/outbound/quic.rs (connect_with_tls_config for the WARP client certificate and pin)",
+      "native-kernel/crates/billow-kernel/src/proxies.rs (MasqueOutbound/MasqueConnectIp and the strict option table)",
+      "native-kernel/crates/billow-kernel/src/engine.rs (UDP association dispatch)",
+      "native-kernel/crates/billow-kernel/tests/quic_peers.rs (CONNECT-IP peer and cases)",
+      "native-kernel/crates/billow-kernel/tests/config.rs (WARP shape acceptance and strictness)",
+      "native-kernel/crates/billow-kernel-cli/tests/cli.rs (process loads the WARP shape, TCP refused)",
+      "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs (SOCKS5 UDP ASSOCIATE through a CONNECT-IP peer)"
+    ],
+    "wireBehaviour": [
+      "one QUIC connection per UDP association, ALPN h3, keep-alive 30 s, T10 transport windows, datagram receive/send buffers 64 KiB each",
+      "client SETTINGS: ENABLE_CONNECT_PROTOCOL (0x08), H3_DATAGRAM (0x33) and the draft-00 identifier (0x276); the peer must advertise extended CONNECT and at least one datagram setting, otherwise the association fails with a named error before opening a request",
+      "request: :method CONNECT, :protocol cf-connect-ip, :scheme https, :authority/:path from uri (default https://cloudflareaccess.com), capsule-protocol ?1, empty user-agent; 2xx plus capsule-protocol ?1 required",
+      "TLS: the client certificate is generated from the configured P-256 key (serial 0, empty names, one day, ecdsa-with-SHA256); the endpoint certificate is accepted only when its SubjectPublicKeyInfo equals public-key (skip-cert-verify drops the pin); neither the chain nor the name is verified, matching the pinned adapter",
+      "ROUTE_ADVERTISEMENT (0x03) with the pinned IPv4 and IPv6 full ranges and protocol 0 is sent after the 2xx; the peer's ADDRESS_ASSIGN (0x01) and ROUTE_ADVERTISEMENT are parsed and exposed; ADDRESS_REQUEST (0x02) fails the association by name",
+      "IP packets: IPv4 with 20-byte headers (DF set, header checksum, fragments refused) or IPv6 with 40-byte headers (extension headers refused); UDP checksum verified and always computed; TTL/hop limit 64; payload bounded by mtu (default 1280: 1252 bytes over IPv4, 1232 over IPv6). A packet larger than what one QUIC datagram frame of the current path can carry is a named error (TooLarge), not a silent drop or a synthesised ICMP",
+      "sending: one QUIC DATAGRAM frame per packet with quarter stream ID + context ID 0 + packet; receiving: the same frames, plus DATAGRAM capsules (0x00) on the request stream; datagrams for another quarter stream or context are ignored",
+      "UDP flows: one local source port per destination (40000-65535), at most 32 per association, least-recently-used eviction; a reply is delivered only when its destination address/port and source address match the flow",
+      "remote-dns-resolve + dns: an A then AAAA UDP query to each configured name server through the tunnel, with a bounded pending queue for other datagrams received during the lookup; without it, the host resolves locally before the packet is built",
+      "the client does not send ADDRESS_REQUEST: the pinned adapter relies on the configured ip/ipv6 prefixes and the server's ADDRESS_ASSIGN (WARP assigns the addresses itself); an address request from the peer is refused"
+    ],
+    "acceptedOptions": [
+      "server",
+      "port",
+      "udp",
+      "sni",
+      "skip-cert-verify",
+      "name-cert-verify (no-op, as in the pinned adapter)",
+      "handshake-timeout",
+      "private-key",
+      "public-key",
+      "uri",
+      "ip",
+      "ipv6",
+      "mtu",
+      "ip-stack.mode auto|mips",
+      "ip-stack.congestion-controller (validated; TCP-only, so no effect)",
+      "remote-dns-resolve",
+      "dns (udp:// IP literals)"
+    ],
+    "rejectedAtLoad": [
+      "network: h2 (HTTP/2 CONNECT-IP)",
+      "network: h3-l4proxy",
+      "ip-stack.mode: gvisor (the pinned build-tagged dependency)",
+      "unknown ip-stack keys",
+      "congestion-controller / cwnd / bbr-profile (QUIC controller: quinn has no equivalent)",
+      "dialer-proxy (a QUIC endpoint is dialled locally)",
+      "dns entries that are not udp:// IP literals (TCP/DoT/DoH, #params)",
+      "uri templates (IP flow forwarding, RFC 9484 §8.2)",
+      "a CONNECT-IP shape without private-key/public-key or without ip/ipv6",
+      "non-P-256 private or endpoint keys"
+    ],
+    "rejectedAtDial": [
+      "TCP over masque: CONNECT-IP carries IP packets and serving TCP needs a TCP state machine (mipstack/gVisor in the pinned adapter); the dial fails with that reason (inbound 502) and never falls back to DIRECT"
+    ],
+    "notImplemented": [
+      "TCP over the tunnel",
+      "HTTP/2 CONNECT-IP and h3-l4proxy",
+      "ip-stack.mode: gvisor",
+      "ICMP: incoming ICMP is reported/dropped, no ICMP error is synthesised for a datagram that does not fit the QUIC datagram limit",
+      "IPv4 options, IPv4 reassembly, IPv6 extension headers",
+      "IP flow forwarding / URI templates, and assigning addresses to the peer (ADDRESS_REQUEST)",
+      "DNS over TCP/DoT/DoH name servers and DNS name servers named by hostname",
+      "capsule-carried datagrams for sending (the pinned adapter sends QUIC datagram frames)",
+      "DATA frames larger than 2 KiB, capsules larger than 1536 bytes and more than 32 flows per association (local bounds)",
+      "server push, WebTransport, 0-RTT, connection pooling"
+    ]
+  },
+  "minimalIpStack": {
+    "scope": "IPv4/IPv6 + UDP only, in native-kernel/crates/billow-kernel/src/outbound/ipstack.rs",
+    "ipv4": "20-byte headers, total-length and header-checksum validation, DF set on built packets, fragments refused, protocol other than UDP reported",
+    "ipv6": "40-byte headers, payload-length validation, next header must be UDP (or ICMPv6, reported), no extension-header walk",
+    "udp": "length validation, checksum verified when present (mandatory over IPv6) and always computed; pseudo-header per family; zero checksum sent as 0xffff over IPv6",
+    "independentVectors": "the IPv4 packet vector in ipstack.rs::tests::ipv4_udp_packet_matches_an_independent_vector and the IPv6 UDP checksum (0x8a77) were computed with a separate Python RFC 1071 implementation: checksum(b) = ~fold(sum16(b)) over the header (checksum field zero), UDP checksum over src||dst||0x0011||len||udp (IPv4) or src||dst||len32||0x00000011||udp (IPv6); the CONNECT-IP peer in tests/quic_peers.rs uses its own IP/UDP codec again, so one implementation cannot mask the other's bug"
+  },
+  "memory": {
+    "budget": "T7 verifies 40,000,000 bytes (decimal) for the whole iOS VPN extension (R3)",
+    "perAssociation": [
+      "QUIC: stream receive window 512 KiB + connection receive 2 MiB + send window 2 MiB = 4,718,592 B",
+      "QUIC datagram receive 64 KiB + send 64 KiB = 131,072 B",
+      "request stream: one 2 KiB DATA frame + a 3 KiB capsule buffer + one packet copy (~MTU) = ~6.4 KB",
+      "inbound packet queue: 4 x up to 65,535 B = 262,140 B (quinn's datagram receive buffer bounds one datagram below 64 KiB)",
+      "flow table: 32 flows + a port index (~8 KB with Target strings)",
+      "pending datagrams during a tunnel-DNS lookup: 8 x MTU = 10,240 B",
+      "key material, certificate and verifier state: < 4 KB"
+    ],
+    "approxWorstCaseBytes": 5144000,
+    "note": "About 5.2 MB decimal per CONNECT-IP association (CONNECT-UDP remains ~19 MB, recorded in t14-feasibility.json). The engine creates one association per SOCKS5 UDP ASSOCIATE and Limits.max_sessions defaults to 256, so T7/T6 must cap concurrent masque associations (or lower max_sessions). Dropping the association closes the QUIC connection and both reader tasks end (their channel sends fail); no pool exists.",
+    "notMeasured": "no device RSS: the numbers are analytic bounds from the configured windows and buffers, not a measurement on an iPhone"
+  },
+  "verification": {
+    "defaultSuite": {
+      "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
+      "result": "pass: 260 passed, 72 ignored (external peers/pinned binary), 0 failed (see repeat)",
+      "connectIpCases": [
+        "tests/quic_peers.rs::masque_connect_ip_tunnels_udp_over_ipv4_and_ipv6 (request shape, client certificate SPKI, route advertisement, ADDRESS_ASSIGN, IPv4 and IPv6 UDP echo through the tunnel, both checksums validated by the peer)",
+        "tests/quic_peers.rs::masque_connect_ip_requires_the_pinned_endpoint_key (a wrong pin fails)",
+        "tests/quic_peers.rs::masque_connect_ip_without_http_datagrams_is_refused_by_name",
+        "tests/quic_peers.rs::masque_connect_ip_refuses_address_request",
+        "tests/quic_peers.rs::masque_connect_ip_refusal_fails_without_a_reply (403)",
+        "tests/quic_peers.rs::masque_connect_ip_resolves_through_the_tunnel_dns (A query as a tunnelled packet, then the datagram to the resolved address)",
+        "tests/quic_peers.rs::masque_connect_ip_records_the_assignment_and_bounds_the_mtu (ADDRESS_ASSIGN prefixes and local addresses recorded; a 1300-byte datagram is refused by mtu, 1252 bytes is sent)",
+        "tests/quic_peers.rs::masque_connect_ip_tcp_dial_is_refused_by_name (inbound 502)"
+      ],
+      "unit": [
+        "src/outbound/ipstack.rs::tests::prefix_parsing_matches_the_pinned_defaults",
+        "src/outbound/ipstack.rs::tests::ipv4_udp_packet_matches_an_independent_vector",
+        "src/outbound/ipstack.rs::tests::ipv4_round_trip_and_checksum_rejection",
+        "src/outbound/ipstack.rs::tests::ipv6_round_trip_is_mandatory_checksum",
+        "src/outbound/ipstack.rs::tests::fragments_and_other_protocols_are_named",
+        "src/outbound/ipstack.rs::tests::truncation_and_family_mismatch_are_rejected",
+        "src/outbound/warp.rs::tests::a_sec1_private_key_round_trips_through_the_pkcs8_form",
+        "src/outbound/warp.rs::tests::the_public_key_pin_is_the_encoded_spki",
+        "src/outbound/warp.rs::tests::non_p256_and_garbage_keys_are_refused_by_name",
+        "src/outbound/warp.rs::tests::the_client_certificate_carries_the_key_and_a_valid_self_signature",
+        "src/outbound/warp.rs::tests::utc_time_formats_calendar_dates",
+        "src/outbound/warp.rs::tests::base64_round_trip_and_padding_rules",
+        "src/outbound/masque_ip.rs::tests::route_advertisement_matches_the_pinned_capsule",
+        "src/outbound/masque_ip.rs::tests::address_assign_round_trip_and_validation",
+        "src/outbound/masque_ip.rs::tests::connect_uri_defaults_and_templates",
+        "src/outbound/masque_ip.rs::tests::datagram_framing_carries_quarter_stream_and_context",
+        "src/outbound/masque_ip.rs::tests::capsules_are_framed_with_varint_type_and_length",
+        "src/outbound/masque_ip.rs::tests::dns_query_and_answers",
+        "src/outbound/h3.rs::tests::settings_read_extended_connect_and_the_legacy_datagram_id"
+      ],
+      "configAndCli": [
+        "tests/config.rs::masque_accepts_the_connect_udp_subset",
+        "tests/config.rs::masque_accepts_the_pinned_connect_ip_shape",
+        "tests/config.rs::masque_connect_ip_shape_is_strict",
+        "crates/billow-kernel-cli/tests/cli.rs::process_loads_t18_masque_connect_ip",
+        "crates/billow-kernel-cli/tests/cli.rs::process_loads_t14_masque",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_udp_through_masque_connect_ip",
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_udp_through_masque"
+      ],
+      "masqueFilter": "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers masque -> 16 passed (8 CONNECT-IP, 8 CONNECT-UDP)",
+      "repeat": "the default suite was run four consecutive times on macOS arm64 after the change: three runs green, one run failed two cases in tests/protocols.rs (unrelated SS/Trojan loopback peers); that binary then passed three isolated reruns (48 passed, 1 ignored each) and two further full-suite runs, so the failure is the documented loaded-host loopback race and not a masque regression (the 16 masque cases were green in every run)."
+    },
+    "controlledPeer": {
+      "where": "tests/quic_peers.rs",
+      "what": "a quinn HTTP/3 server that requires the client certificate (recording its SubjectPublicKeyInfo), advertises 0x08/0x33/0x276, answers `cf-connect-ip`, reads the ROUTE_ADVERTISEMENT, assigns 172.16.0.2/32 and fd00::2/128, and echoes tunnelled IP/UDP packets with its own IPv4/IPv6/UDP codec (header and UDP checksums validated, DNS A answers for tunnel-resolved names); modes: no datagram settings, ADDRESS_REQUEST, 403 refusal",
+      "whyNotPinnedMihomo": "the pinned masque adapter is a client for Cloudflare WARP with no `listeners:` mode and an endpoint that is not reachable offline, so no pinned-binary interop is claimed"
+    },
+    "optionMatrix": {
+      "command": "node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <pinned mihomo>",
+      "result": "250 no-op cases / 270 enabled cases, 0 problems; masque is no longer skipped: its WARP base carries a throwaway P-256 key pair and local address, every no-op form is accepted by both engines, and the rejected modes (h2, h3-l4proxy, gvisor stack, QUIC congestion knobs, dialer-proxy) are named",
+      "note": "the enabled `dialer-proxy` row is rejected by both engines (Mihomo rejects it for masque too)"
+    },
+    "harness": {
+      "runner": "node tool/kernel-compat/runner.test.mjs -> 10 pass, 0 fail",
+      "pinnedPeers": "tool/kernel-compat/peer-tests.sh (pinned Mihomo v1.19.34 binary, the 50 #[ignore]d mihomo_peers cases) -> test result: ok. 50 passed; 0 failed; 0 ignored",
+      "controlledPeers": "tool/kernel-compat/family-peers.sh -> exit 0, 9 green cargo test runs (Go SSR cipher vectors, independent Go SSR server/plugin peer + pinned-client cross-check, gost pinned-dialer harness, Rust gost/ssh/ssr peers, wireguard-go device, OpenVPN 2.7.9, zerotier/tailscale peers); no failures",
+      "note": "neither script exercises masque (the pinned adapter has no listener); they are the regression run for the families the change shares code with (proxies.rs, engine.rs, h3.rs, quic.rs)."
+    }
+  },
+  "decisionsForT9": [
+    "masque is still partial: the WARP CONNECT-IP shape now loads and serves UDP, but TCP over the tunnel is refused by name and the h2/h3-l4proxy modes remain rejected. Do not count masque as fully compatible until a TCP stack (or the T6/T7 device layer) terminates the tunnel's TCP.",
+    "CONNECT-IP reuses the T14 HTTP/3 client; the new SETTINGS value 0x276 is parsed in the same place, so a future HTTP/3 feature does not need a second client.",
+    "A WARP registration is not required for the configuration to load: the key pair and endpoint pin are parsed and used, and the certificate is generated locally. Only an actual WARP endpoint is missing offline, which is why the peer is controlled."
+  ],
+  "decisionsForT7": [
+    "Cap concurrent masque associations: one CONNECT-IP association is ~5.2 MB decimal analytic worst case (CONNECT-UDP ~19 MB); with the 40,000,000-byte extension budget, a few concurrent associations plus the rest of the extension must be measured and bounded.",
+    "The CONNECT-IP association closes its QUIC connection when dropped; both reader tasks end on the closed channel/connection, and no flow state outlives the association.",
+    "iOS Network Extension build: no new dependency was added (ring, rustls, quinn and bytes were already used); there is no C library and no Go code in the binary."
+  ],
+  "license": "No GPL-3.0 source is vendored, linked, copied or translated. The client is written from RFC 9484/9298/9297/9220/9114; the pinned `adapter/outbound/masque.go` and `transport/masque` (GPL-3.0) were read only to record which option names, defaults and capsule flows the pinned binary accepts (the same compatibility exercise as the option tables in proxies.rs), and the implementation here is independent: the DER/base64/calendar helpers are written from the encoding rules, the IPv4/IPv6/UDP codec from RFC 791/8200/768, and the ECDSA signature/verification uses `ring` (already the TLS provider). The QPACK static table and Huffman table in src/outbound/h3.rs remain the MIT metacubex/qpack and BSD-3-Clause x/net tables recorded in native-kernel/THIRD_PARTY_NOTICES.md; T18 added no third-party material and no new dependency."
+}

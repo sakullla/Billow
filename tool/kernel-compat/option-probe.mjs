@@ -85,6 +85,14 @@ const bases = {
     off: 'ip: 10.13.13.2, private-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, peers: [{server: 127.0.0.1, port: 1, public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, allowed-ips: [0.0.0.0/0]}]',
     on: 'ip: 10.13.13.2, private-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, peers: [{server: 127.0.0.1, port: 1, public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, allowed-ips: [0.0.0.0/0]}]',
   },
+  // T18: the pinned masque type is a Cloudflare WARP CONNECT-IP client, so
+  // its base carries the required key pair and local address. The P-256 key
+  // and endpoint SPKI are throwaway test material (nothing is registered with
+  // them): both engines only parse them under `-t`.
+  masque: {
+    off: `server: 127.0.0.1, port: 1, udp: true, private-key: 'MHcCAQEEIDKh56LbUI7PTfKO5ojiPkNrK2H8jcLrmfdlhv3TsqRzoAoGCCqGSM49AwEHoUQDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==', public-key: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==', ip: 172.16.0.2`,
+    on: `server: 127.0.0.1, port: 1, udp: true, private-key: 'MHcCAQEEIDKh56LbUI7PTfKO5ojiPkNrK2H8jcLrmfdlhv3TsqRzoAoGCCqGSM49AwEHoUQDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==', public-key: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==', ip: 172.16.0.2, sni: consumer-masque.cloudflareclient.com`,
+  },
   openvpn: {
     off: 'server: 127.0.0.1, port: 1, username: u, password: p, ca: "-----BEGIN CERTIFICATE-----\\nMIIBeDCCAR6gAwIBAgIUNGxTOw8p4EwO9gCDn0yLtj+cTSEwCgYIKoZIzj0EAwIw\\nIjEgMB4GA1UEAwwXQmlsbG93IE9wdGlvbiBNYXRyaXggQ0EwHhcNMjYxMTIxMjMx\\nNzE5WhcNMzYxMTE4MjMxNzE5WjAiMSAwHgYDVQQDDBdCaWxsb3cgT3B0aW9uIE1h\\ndHJpeCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCwKe7m/tSYnofl9zXGB\\n6imRADX7EOIt14x3sj8Q/Q6z8LFfLclUHxwQhCKZVSLU0OFzZ0OEX8E4JfzTh5Fz\\nvEijMjAwMB0GA1UdDgQWBBQ0WIDTOFy2zdCN8RfgUCVQqwz69DAPBgNVHRMBAf8E\\nBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIAXkgPSMN+BkP+IuwAiVTPUx/r8sv2v4\\nR/iS/uiN/Q0XAiEA2sVdFi6rQvNnpbPOlU0qXOPYZOK4KKNG/w4+o+JVVrA=\\n-----END CERTIFICATE-----"',
     on: 'server: 127.0.0.1, port: 1, username: u, password: p, ca: "-----BEGIN CERTIFICATE-----\\nMIIBeDCCAR6gAwIBAgIUNGxTOw8p4EwO9gCDn0yLtj+cTSEwCgYIKoZIzj0EAwIw\\nIjEgMB4GA1UEAwwXQmlsbG93IE9wdGlvbiBNYXRyaXggQ0EwHhcNMjYxMTIxMjMx\\nNzE5WhcNMzYxMTE4MjMxNzE5WjAiMSAwHgYDVQQDDBdCaWxsb3cgT3B0aW9uIE1h\\ndHJpeCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCwKe7m/tSYnofl9zXGB\\n6imRADX7EOIt14x3sj8Q/Q6z8LFfLclUHxwQhCKZVSLU0OFzZ0OEX8E4JfzTh5Fz\\nvEijMjAwMB0GA1UdDgQWBBQ0WIDTOFy2zdCN8RfgUCVQqwz69DAPBgNVHRMBAf8E\\nBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIAXkgPSMN+BkP+IuwAiVTPUx/r8sv2v4\\nR/iS/uiN/Q0XAiEA2sVdFi6rQvNnpbPOlU0qXOPYZOK4KKNG/w4+o+JVVrA=\\n-----END CERTIFICATE-----"',
@@ -166,7 +174,7 @@ for (const [type, entry] of Object.entries(mapping.proxies)) {
   // shapes do not match their required fields (`protocol`, `ports`, ...).
   // shadowquic is explicit for the same reason: `quic-versions` is a list and
   // `up`/`down` are rate strings.
-  if (['tuic', 'hysteria', 'hysteria2', 'shadowquic', 'wireguard', 'openvpn'].includes(type)) continue
+  if (['tuic', 'hysteria', 'hysteria2', 'shadowquic', 'wireguard', 'openvpn', 'masque'].includes(type)) continue
   for (const option of entry.notImplemented ?? []) {
     const parsed = /^([a-z0-9.-]+)(?::\s*true)?$/.exec(option)
     if (!parsed) continue
@@ -321,7 +329,18 @@ const t16Enabled = [
   ['openvpn', 'dns', 'dns: [1.1.1.1]'],
   ['openvpn', 'dialer-proxy', 'dialer-proxy: p'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
-const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled, ...t15Enabled, ...t16Enabled]
+// T18 masque: the pinned WARP shape loads; the modes and QUIC/stack knobs it
+// does not implement must be rejected by name.
+const t18Enabled = [
+  ['masque', 'network', 'network: h2'],
+  ['masque', 'network', 'network: h3-l4proxy'],
+  ['masque', 'congestion-controller', 'congestion-controller: bbr'],
+  ['masque', 'cwnd', 'cwnd: 32'],
+  ['masque', 'bbr-profile', 'bbr-profile: standard'],
+  ['masque', 'ip-stack.mode', 'ip-stack: {mode: gvisor}'],
+  ['masque', 'dialer-proxy', 'dialer-proxy: hop'],
+].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
+const allEnabled = [...uniqueEnabled, ...t10Enabled, ...t13Enabled, ...t15Enabled, ...t16Enabled, ...t18Enabled]
 
 // No-op forms Mihomo accepts (checked against the binary when provided).
 const noops = []
@@ -415,6 +434,26 @@ add('ssh', 'host-key', '[]')
 add('ssh', 'host-key-algorithms', '[]')
 add('ssr', 'protocol-param', "''")
 add('ssr', 'obfs-param', "''")
+// T18 masque: the pinned WARP shape's no-op forms (the endpoint key pin is the
+// only verification, so name and TLS options do not change behaviour; the
+// stack selection is wire-invisible and the resolver is opt-in).
+for (const [key, value] of [
+  ['sni', 'example.org'],
+  ['skip-cert-verify', 'true'],
+  ['name-cert-verify', 'example.org'],
+  ['handshake-timeout', '5'],
+  ['mtu', '1280'],
+  ['uri', 'https://cloudflareaccess.com'],
+  ['ipv6', 'fd00::2'],
+  ['ip-stack', '{mode: auto}'],
+  ['ip-stack', '{mode: mips}'],
+  ['ip-stack', '{congestion-controller: cubic}'],
+  ['remote-dns-resolve', 'false'],
+  ['dns', '[]'],
+  ['network', "''"],
+]) {
+  add('masque', key, value)
+}
 
 // T10 families: no-op forms accepted by both engines.
 for (const type of ['tuic', 'hysteria', 'hysteria2']) {
@@ -563,12 +602,7 @@ for (const entry of allEnabled) runCase(entry, true, 'enabled')
 // selects behaviour this kernel rejects, so every row would report the base's
 // rejection instead of the option under test. It is named here rather than
 // dropped silently.
-const skipped = [
-  [
-    'masque',
-    'the pinned base requires private-key/public-key (Cloudflare WARP CONNECT-IP registration) that this kernel rejects; the RFC 9298 CONNECT-UDP subset is verified in tests/quic_peers.rs and the boundary is in evidence/t14-feasibility.json',
-  ],
-]
+const skipped = []
 const header = [
   '# Proxy option matrix: no-op forms must load, enabled forms must be rejected.',
   `# rust: ${binary}`,

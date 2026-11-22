@@ -224,6 +224,48 @@ pub async fn connect(
     .await
 }
 
+/// Establish one QUIC connection with a caller-built TLS client configuration
+/// (the MASQUE WARP path needs the generated client certificate and the
+/// endpoint-key pin, which the shared `TlsSettings` surface cannot express).
+pub async fn connect_with_tls_config(
+    server: &str,
+    address: &str,
+    port: u16,
+    options: &QuicOptions,
+    client_config: Arc<rustls::ClientConfig>,
+    timeout: Duration,
+) -> Result<(Connection, Endpoint), DialError> {
+    if options.alpn.is_empty() {
+        return Err(DialError::Handshake {
+            protocol: "quic",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a QUIC handshake needs at least one ALPN protocol",
+            ),
+        });
+    }
+    let quic_crypto =
+        QuicClientConfig::try_from(client_config).map_err(|e| DialError::Handshake {
+            protocol: "quic tls",
+            source: io::Error::new(io::ErrorKind::InvalidInput, e.to_string()),
+        })?;
+    let settings = TlsSettings {
+        sni: None,
+        skip_cert_verify: false,
+        alpn: Vec::new(),
+    };
+    connect_with_crypto(
+        server,
+        address,
+        port,
+        &settings,
+        options,
+        timeout,
+        Arc::new(quic_crypto),
+    )
+    .await
+}
+
 /// Establish one ShadowQUIC QUIC connection: the same transport as
 /// [`connect`], but with the JLS-sealing TLS session and the JLS-aware
 /// certificate verifier.

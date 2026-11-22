@@ -704,7 +704,7 @@ async fn serve_udp_associate(
     let mut ssr: Option<outbound::udp::SsrUdp> = None;
     let mut gost: Option<outbound::gost_relay::GostRelayUdp> = None;
     let mut gost_target: Option<outbound::Target> = None;
-    let mut masque: Option<outbound::masque::MasqueUdp> = None;
+    let mut masque: Option<outbound::masque::MasqueUdpAssociation> = None;
     let mut shadowquic: Option<outbound::shadowquic::ShadowQuicUdp> = None;
     // One datagram buffer for the client, plus one reply buffer per transport
     // that is actually used: a direct-only association never allocates the ss
@@ -953,7 +953,7 @@ async fn serve_udp_associate(
                         }
                         crate::proxies::Protocol::Masque(option) if option.udp => {
                             if masque.is_none() {
-                                match outbound::masque::MasqueUdp::connect(
+                                match outbound::masque::MasqueUdpAssociation::connect(
                                     option,
                                     &context.tls,
                                     limits.dial_timeout,

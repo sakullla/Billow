@@ -68,6 +68,8 @@ pub struct Settings {
     /// CONNECT, which CONNECT-UDP needs.
     pub enable_connect_protocol: bool,
     /// `SETTINGS_H3_DATAGRAM` (0x33): the peer supports HTTP Datagrams.
+    /// The draft-00 identifier (0x276) that Cloudflare's WARP endpoint still
+    /// sends is folded into this flag: either setting advertises datagrams.
     pub h3_datagram: bool,
 }
 
@@ -126,6 +128,12 @@ impl Session {
 
     pub fn settings(&self) -> Option<Settings> {
         self.server_settings
+    }
+
+    /// The QUIC connection under the HTTP/3 session (CONNECT-IP sends IP
+    /// packets in QUIC DATAGRAM frames and needs the connection directly).
+    pub fn connection(&self) -> &Connection {
+        &self.connection
     }
 
     /// Close the underlying QUIC connection (application close code). Used when
@@ -281,6 +289,9 @@ pub fn parse_settings(payload: &[u8]) -> io::Result<Settings> {
         match id {
             0x08 => settings.enable_connect_protocol = value != 0,
             0x33 => settings.h3_datagram = value != 0,
+            // draft-ietf-masque-h3-datagram-00, still sent by Cloudflare's
+            // endpoint next to 0x33 (the pinned adapter sends both).
+            0x276 => settings.h3_datagram |= value != 0,
             _ => {}
         }
     }
@@ -711,6 +722,18 @@ mod tests {
         assert_eq!(static_entry(17).unwrap(), (":method", "GET"));
         assert_eq!(static_entry(25).unwrap(), (":status", "200"));
         assert_eq!(static_entry(98).unwrap(), ("x-frame-options", "sameorigin"));
+    }
+
+    #[test]
+    fn settings_read_extended_connect_and_the_legacy_datagram_id() {
+        let mut payload = Vec::new();
+        encode_varint(0x08, &mut payload);
+        encode_varint(1, &mut payload);
+        encode_varint(0x276, &mut payload);
+        encode_varint(1, &mut payload);
+        let settings = parse_settings(&payload).unwrap();
+        assert!(settings.enable_connect_protocol);
+        assert!(settings.h3_datagram, "0x276 advertises HTTP Datagrams too");
     }
 
     #[test]

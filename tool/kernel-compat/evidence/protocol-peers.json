@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 50,
-    "passed": 50,
+    "cases": 58,
+    "passed": 58,
     "failed": 0
   },
   "families": {
@@ -327,21 +327,29 @@
       "status": "pass",
       "cases": {
         "positive": [
+          "masque_connect_ip_tunnels_udp_over_ipv4_and_ipv6",
+          "masque_connect_ip_resolves_through_the_tunnel_dns",
+          "masque_connect_ip_records_the_assignment_and_bounds_the_mtu",
+          "masque_connect_ip_requires_the_pinned_endpoint_key",
           "masque_connect_udp_forwards_datagrams_per_destination",
           "masque_reopens_a_request_stream_the_peer_ended",
           "masque_reclaims_peer_closed_flows_for_new_destinations"
         ],
         "negative": [
+          "masque_connect_ip_without_http_datagrams_is_refused_by_name",
+          "masque_connect_ip_refuses_address_request",
+          "masque_connect_ip_refusal_fails_without_a_reply",
           "masque_connect_udp_refusal_fails_without_a_reply",
           "masque_connect_udp_verifies_the_server_certificate_by_default",
           "masque_requires_extended_connect_advertisement",
           "masque_requires_the_capsule_protocol_in_the_response",
-          "masque_tcp_dial_is_refused_by_name"
+          "masque_tcp_dial_is_refused_by_name",
+          "masque_connect_ip_tcp_dial_is_refused_by_name"
         ]
       },
       "command": "native-kernel/crates/billow-kernel/tests/quic_peers.rs",
-      "peer": "a controlled HTTP/3 peer in tests/quic_peers.rs (quinn server, ALPN h3, its own QPACK/capsule codec, SETTINGS_ENABLE_CONNECT_PROTOCOL); no pinned listener",
-      "notes": "T14 implements RFC 9298 CONNECT-UDP, not the pinned Cloudflare WARP CONNECT-IP flow: the pinned `adapter/outbound/masque.go` has no `listeners:` mode and its endpoint (`cf-connect-ip` after ECDSA pinning and a generated client certificate) is not reachable offline, so no pinned-binary interop is claimed. The positive cases open destinations on one association, check the proxy `:authority`, the expanded `/.well-known/masque/udp/<host>/<port>/` path, `:protocol connect-udp`, `capsule-protocol: ?1` and a DATAGRAM capsule echo, reopen a request stream the peer ended for the same destination, and recover a new destination after 32 held-open flows were closed by the peer. The negative cases cover a 403 response, a peer without extended CONNECT, a 200 without the capsule protocol, an untrusted certificate, and the named refusal of TCP (CONNECT-IP needs an IP stack). The CLI success path is family_cli.rs::cli_process_tunnels_udp_through_masque (SOCKS5 UDP ASSOCIATE through the shipped process). Default-suite cases were run three consecutive times for T14 with no failure or hang."
+      "peer": "two controlled HTTP/3 peers in tests/quic_peers.rs (quinn servers, ALPN h3, their own QPACK/capsule codecs): a CONNECT-UDP peer with SETTINGS_ENABLE_CONNECT_PROTOCOL, and a CONNECT-IP peer that requires the WARP client certificate, advertises SETTINGS_H3_DATAGRAM 0x33 and draft-00 0x276, answers `cf-connect-ip`, reads ROUTE_ADVERTISEMENT, assigns 172.16.0.2/32 and fd00::2/128, and echoes tunnelled IPv4/IPv6 UDP packets with its own independent IP/UDP codec; no pinned listener",
+      "notes": "T18 implements the pinned Cloudflare WARP CONNECT-IP shape (RFC 9484) and keeps T14's RFC 9298 CONNECT-UDP subset. The pinned `adapter/outbound/masque.go` has no `listeners:` mode and a WARP registration endpoint is not reachable offline, so no pinned-binary interop is claimed: the CONNECT-IP peer is a controlled HTTP/3 server. The positive cases check the request (:method CONNECT, :protocol cf-connect-ip, authority/path from the default uri, capsule-protocol ?1), the ROUTE_ADVERTISEMENT capsule, ADDRESS_ASSIGN, a self-signed client certificate carrying the configured P-256 key (the peer verifies it is required and records its SPKI), endpoint-key pinning (a wrong pin fails), IPv4 and IPv6 UDP echo paths (the peer validates both checksums), and DNS resolution through the tunnel (a hostname target becomes an A query carried as a tunnelled IP/UDP packet). The negative cases cover a peer without HTTP Datagrams, ADDRESS_REQUEST, a 403, a peer without extended CONNECT, a 200 without the capsule protocol, an untrusted certificate, and the named refusal of TCP (no TCP state machine). The CLI paths are cli.rs::process_loads_t18_masque_connect_ip and family_cli.rs::cli_process_tunnels_udp_through_masque_connect_ip."
     }
   },
   "loopbackOnlyEvidence": {
@@ -601,5 +609,17 @@
     "license": "the pinned Mihomo tree and the upstream Sudoku project are both GPL-3.0 (the upstream adds a name clause); no GPL code, table, vector or attribute data is vendored or linked, and the T13-A3 removed module was not restored. The pinned release binary runs only as a test peer.",
     "decision": "Owner decision needed: keep `sudoku` rejected (current), authorise a documented specification-consultation process against the GPL-3.0 implementation, or wait for a public byte-level specification (evidence/t17-cleanroom.md#decision-needed)",
     "platform": "macos-aarch64 for the recorded observations; the harness binds loopback ports only"
+  },
+  "t18": {
+    "date": "2026-11-22",
+    "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked --test quic_peers masque",
+    "result": {
+      "cases": 16,
+      "passed": 16,
+      "failed": 0
+    },
+    "cli": "crates/billow-kernel-cli/tests/cli.rs::process_loads_t18_masque_connect_ip; crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_udp_through_masque_connect_ip",
+    "evidence": "tool/kernel-compat/evidence/t18-feasibility.json",
+    "note": "T18 implemented CONNECT-IP (RFC 9484) with the pinned WARP configuration shape, a minimal IPv4/IPv6/UDP stack, key-derived client certificates and endpoint-key pinning, and tunnel DNS; TCP over the tunnel and the h2/h3-l4proxy modes stay rejected by name. The 16 masque cases (8 CONNECT-IP, 8 CONNECT-UDP) are in the default suite and need no external binary."
   }
 }

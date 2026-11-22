@@ -16,8 +16,10 @@ pub mod h3;
 pub mod http;
 pub mod hysteria;
 pub mod hysteria2;
+pub mod ipstack;
 pub mod jls;
 pub mod masque;
+pub mod masque_ip;
 pub mod mieru;
 pub mod openvpn;
 pub mod shadowsocks;
@@ -37,6 +39,7 @@ pub mod tuic;
 pub mod udp;
 pub mod vless;
 pub mod vmess;
+pub mod warp;
 pub mod wireguard;
 pub mod ws;
 

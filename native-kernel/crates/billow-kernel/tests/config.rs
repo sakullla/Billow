@@ -1275,6 +1275,44 @@ fn masque_accepts_the_connect_udp_subset() {
         "server: 127.0.0.1, port: 443, udp: true, name-cert-verify: example.org".to_string(),
         // `udp: false` loads as in Mihomo; every dial then refuses by name.
         "server: 127.0.0.1, port: 443".to_string(),
+        // Empty values ask for nothing and leave the CONNECT-UDP subset.
+        "server: 127.0.0.1, port: 443, udp: true, ip: '', ipv6: '', uri: '', network: '', private-key: '', public-key: '', mtu: 0, ip-stack: {}".to_string(),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: m, type: masque, {body}}}\nrules: ['MATCH,m']\n");
+        load_config(&yaml, "t").unwrap_or_else(|e| panic!("{body}: {e}"));
+    }
+}
+
+/// Throwaway P-256 key material for the configuration tests: a SEC1
+/// `ECPrivateKey` and an endpoint `SubjectPublicKeyInfo`, both base64, as the
+/// pinned adapter's `x509.ParseECPrivateKey`/`x509.ParsePKIXPublicKey` read
+/// them. They authenticate nothing; they only exercise the WARP shape.
+const MASQUE_TEST_KEY: &str = "MHcCAQEEIDKh56LbUI7PTfKO5ojiPkNrK2H8jcLrmfdlhv3TsqRzoAoGCCqGSM49AwEHoUQDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==";
+const MASQUE_TEST_ENDPOINT_KEY: &str = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMAUkhPqJXQGTsDj6a3yC7F2zxIWXs6UJCc/Mwr6wL3GWgqbrP6tvB52ZUbnalrJXSxMwUFXDTHNqxPhpzzUawA==";
+
+#[test]
+fn masque_accepts_the_pinned_connect_ip_shape() {
+    // The pinned `MasqueOption`: keys, local addresses, URI, MTU, ip-stack,
+    // remote resolution and the TLS options all load.
+    for body in [
+        format!(
+            "server: 127.0.0.1, port: 443, udp: true, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, ipv6: fd00::2"
+        ),
+        format!(
+            "server: 127.0.0.1, port: 443, udp: true, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2/32, uri: https://example.org/tunnel, mtu: 1400"
+        ),
+        format!(
+            "server: 127.0.0.1, port: 443, udp: true, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ipv6: fd00::2/128, ip-stack: {{mode: mips, congestion-controller: bbr}}"
+        ),
+        format!(
+            "server: 127.0.0.1, port: 443, udp: true, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, remote-dns-resolve: true, dns: [1.1.1.1, 'udp://1.1.1.1:5353', '[fd00::1]:53']"
+        ),
+        format!(
+            "server: 127.0.0.1, port: 443, udp: true, sni: consumer-masque.cloudflareclient.com, skip-cert-verify: true, handshake-timeout: 5, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2"
+        ),
+        format!(
+            "server: 127.0.0.1, port: 443, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2"
+        ),
     ] {
         let yaml = format!("proxies:\n  - {{name: m, type: masque, {body}}}\nrules: ['MATCH,m']\n");
         load_config(&yaml, "t").unwrap_or_else(|e| panic!("{body}: {e}"));
@@ -1282,36 +1320,105 @@ fn masque_accepts_the_connect_udp_subset() {
 }
 
 #[test]
-fn masque_rejects_the_pinned_connect_ip_options_by_name() {
+fn masque_connect_ip_shape_is_strict() {
     for (body, needle) in [
-        ("server: x, port: 1, udp: true, private-key: abc", "option 'private-key'"),
-        ("server: x, port: 1, udp: true, public-key: abc", "option 'public-key'"),
-        ("server: x, port: 1, udp: true, uri: https://cloudflareaccess.com", "option 'uri'"),
-        ("server: x, port: 1, udp: true, ip: 172.16.0.2", "option 'ip'"),
-        ("server: x, port: 1, udp: true, ipv6: fd10::2", "option 'ipv6'"),
-        ("server: x, port: 1, udp: true, mtu: 1280", "option 'mtu'"),
-        ("server: x, port: 1, udp: true, ip-stack: {mode: gvisor}", "option 'ip-stack'"),
-        ("server: x, port: 1, udp: true, remote-dns-resolve: true", "option 'remote-dns-resolve'"),
-        ("server: x, port: 1, udp: true, dns: [1.1.1.1]", "option 'dns'"),
-        ("server: x, port: 1, udp: true, network: h2", "option 'network' value 'h2'"),
-        ("server: x, port: 1, udp: true, network: h3-l4proxy", "h3-l4proxy"),
-        ("server: x, port: 1, udp: true, congestion-controller: bbr", "congestion-controller"),
-        ("server: x, port: 1, udp: true, cwnd: 32", "cwnd"),
-        ("server: x, port: 1, udp: true, bbr-profile: standard", "bbr-profile"),
-        ("server: x, port: 1, udp: true, dialer-proxy: hop", "option 'dialer-proxy'"),
+        (
+            format!("server: x, port: 1, public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2"),
+            "option 'private-key' is required",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', ip: 172.16.0.2"),
+            "option 'public-key' is required",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}'"),
+            "missing local address",
+        ),
+        (
+            "server: x, port: 1, private-key: not-base64!, public-key: x, ip: 172.16.0.2".to_string(),
+            "option 'private-key'",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_KEY}', ip: 172.16.0.2"),
+            "option 'public-key'",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: fd00::2"),
+            "not an IPv4 address",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, mtu: 40"),
+            "option 'mtu'",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, mtu: -1"),
+            "option 'mtu'",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, ip-stack: {{mode: gvisor}}"),
+            "gvisor",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, ip-stack: {{mode: auto, tcp: true}}"),
+            "ip-stack.tcp",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, ip-stack: {{congestion-controller: vegas}}"),
+            "congestion-controller",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, dns: ['https://1.1.1.1/dns-query']"),
+            "udp://",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, dns: [dns.example]"),
+            "not an IP address",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, uri: http://example.org"),
+            "https",
+        ),
+        (
+            format!("server: x, port: 1, private-key: '{MASQUE_TEST_KEY}', public-key: '{MASQUE_TEST_ENDPOINT_KEY}', ip: 172.16.0.2, uri: 'https://example.org/{{target}}'"),
+            "URI template",
+        ),
+        (
+            "server: x, port: 1, udp: true, network: h2".to_string(),
+            "option 'network' value 'h2'",
+        ),
+        (
+            "server: x, port: 1, udp: true, network: h3-l4proxy".to_string(),
+            "h3-l4proxy",
+        ),
+        (
+            "server: x, port: 1, udp: true, congestion-controller: bbr".to_string(),
+            "congestion-controller",
+        ),
+        (
+            "server: x, port: 1, udp: true, cwnd: 32".to_string(),
+            "cwnd",
+        ),
+        (
+            "server: x, port: 1, udp: true, bbr-profile: standard".to_string(),
+            "bbr-profile",
+        ),
+        (
+            "server: x, port: 1, udp: true, dialer-proxy: hop".to_string(),
+            "option 'dialer-proxy'",
+        ),
+        (
+            "server: x, port: 1, udp: true, mtu: 1280".to_string(),
+            "option 'private-key' is required",
+        ),
+        (
+            "server: x, port: 1, udp: true, handshake-timeout: -1".to_string(),
+            "handshake-timeout",
+        ),
     ] {
         let yaml = format!("proxies:\n  - {{name: m, type: masque, {body}}}\nrules: ['MATCH,m']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(needle), "{body}: {e}");
     }
-    // An empty value asks for nothing and loads, as in Mihomo.
-    load_config(
-        "proxies:\n  - {name: m, type: masque, server: x, port: 1, udp: true, ip: '', ipv6: '', uri: '', network: '', private-key: '', public-key: '', mtu: 0, ip-stack: {}}\nrules: ['MATCH,m']\n",
-        "t",
-    )
-    .expect("empty CONNECT-IP values are no-ops");
-    let e = proxy_err("proxies:\n  - {name: m, type: masque, server: x, port: 1, udp: true, handshake-timeout: -1}\nrules: ['MATCH,m']\n");
-    assert!(e.contains("handshake-timeout"), "{e}");
 }
 
 #[test]
