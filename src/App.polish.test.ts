@@ -1533,5 +1533,34 @@ describe('UI/UX polish', () => {
       expect(body().find('[data-testid="uwp-dirty-count"]').exists()).toBe(false)
       expect(body().find('[data-uwp-family="Microsoft.WindowsTerminal_8wekyb3d8bbwe"]').attributes('aria-pressed')).toBe('true')
     })
+
+    it('supports left-mouse drag-to-scroll and wheel horizontal scroll on proxy group pills without accidental clicks', async () => {
+      const { wrapper } = await mountApp()
+      await openPage(wrapper, 'proxies')
+      const bar = wrapper.find('[data-testid="group-jump-bar"]')
+      expect(bar.exists()).toBe(true)
+      const el = bar.element as HTMLElement
+      Object.defineProperty(el, 'scrollWidth', { value: 900, configurable: true })
+      Object.defineProperty(el, 'clientWidth', { value: 300, configurable: true })
+      el.scrollLeft = 40
+
+      // Left-mouse drag left scrolls right
+      el.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 200, bubbles: true }))
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 120, bubbles: true }))
+      expect(el.scrollLeft).toBe(120)
+      window.dispatchEvent(new MouseEvent('mouseup', { clientX: 120, bubbles: true }))
+
+      // Synthetic click right after drag is suppressed
+      const pill = bar.findAll('button.group-pill')[2]!
+      const clickEv = new MouseEvent('click', { bubbles: true, cancelable: true })
+      pill.element.dispatchEvent(clickEv)
+      expect(clickEv.defaultPrevented).toBe(true)
+
+      // Vertical wheel translates to horizontal scroll
+      const wheelEv = new WheelEvent('wheel', { deltaY: 60, bubbles: true, cancelable: true })
+      el.dispatchEvent(wheelEv)
+      expect(wheelEv.defaultPrevented).toBe(true)
+      expect(el.scrollLeft).toBe(180)
+    })
   })
 })

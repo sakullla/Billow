@@ -3172,6 +3172,8 @@ button.delay:hover:not(:disabled) {
   gap: 6px;
   overflow-x: auto;
   scrollbar-width: none;
+  user-select: none;
+  -webkit-user-select: none;
   margin: 2px calc(var(--page-pad-x) * -1) 0;
   padding: 2px var(--page-pad-x);
 }
@@ -7884,6 +7886,11 @@ details.cfg-section[open] .cfg-fold-icon {
 .shell:not(.compact) .group-pills {
   gap: 4px;
   margin-top: 4px;
+  cursor: grab;
+}
+.shell:not(.compact) .group-pills.dragging,
+.shell:not(.compact) .group-pills.dragging * {
+  cursor: grabbing;
 }
 .shell:not(.compact) .group-pill {
   height: 28px;

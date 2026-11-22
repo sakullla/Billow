@@ -350,6 +350,7 @@ fn spawn_traffic_recorder(app: &AppHandle) {
     std::thread::spawn(move || {
         let mut profile: Option<String> = None;
         let store = handle.state::<TrafficStore>();
+        let mut next_sleep = std::time::Duration::from_secs(1);
         loop {
             {
                 let history = lock_traffic(&store.history);
@@ -361,7 +362,7 @@ fn spawn_traffic_recorder(app: &AppHandle) {
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                 }
             }
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(next_sleep);
             if !lock_traffic(&store.history).enabled() {
                 continue;
             }
@@ -376,8 +377,14 @@ fn spawn_traffic_recorder(app: &AppHandle) {
                 if profile.take().is_some() {
                     reset_traffic_baselines(&handle);
                 }
+                next_sleep = if cfg!(target_os = "android") {
+                    std::time::Duration::from_secs(10)
+                } else {
+                    std::time::Duration::from_secs(5)
+                };
                 continue;
             };
+            next_sleep = traffic_sample_interval();
             if profile.as_deref() != Some(id.as_str()) {
                 // A profile switch starts a new kernel; its connections restart
                 // their counters, so the old ids must not contribute.
@@ -1915,21 +1922,25 @@ fn spawn_kernel_guardian(app: &AppHandle) {
             refresh_tray(&handle, &snapshot);
             let _ = handle.emit("profile-changed", snapshot);
         }
+        let mut next_sleep = std::time::Duration::from_secs(3);
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let exited = with_profile(&handle, |session| {
+            std::thread::sleep(next_sleep);
+            let (exited, connected, guard_pending) = with_profile(&handle, |session| {
                 let ProfileSession { book, runtime, .. } = session;
-                if !(book.is_connected() || book.startup_guard_pending()) {
-                    return false;
+                let connected = book.is_connected();
+                let guard_pending = book.startup_guard_pending();
+                if !(connected || guard_pending) {
+                    return (false, false, false);
                 }
                 if !runtime.running() {
-                    return true;
+                    return (true, connected, guard_pending);
                 }
-                if book.startup_guard_pending() {
+                if guard_pending {
                     book.check_startup_uptime(runtime.kernel_uptime_secs());
                 }
-                false
+                (false, connected, guard_pending)
             });
+            next_sleep = kernel_guardian_interval(connected, guard_pending);
             if !exited {
                 continue;
             }
@@ -2437,14 +2448,66 @@ fn publish_android(app: &AppHandle) {
 #[cfg(not(target_os = "android"))]
 fn publish_android(_app: &AppHandle) {}
 
+fn android_screen_interactive() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        ANDROID_SCREEN_INTERACTIVE.load(Ordering::Relaxed)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        true
+    }
+}
+
+fn traffic_sample_interval() -> std::time::Duration {
+    #[cfg(target_os = "android")]
+    {
+        if android_screen_interactive() {
+            std::time::Duration::from_secs(3)
+        } else {
+            std::time::Duration::from_secs(15)
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        std::time::Duration::from_secs(1)
+    }
+}
+
+fn kernel_guardian_interval(connected: bool, guard_pending: bool) -> std::time::Duration {
+    if guard_pending {
+        return std::time::Duration::from_secs(3);
+    }
+    if !connected {
+        return std::time::Duration::from_secs(15);
+    }
+    if cfg!(target_os = "android") && !android_screen_interactive() {
+        std::time::Duration::from_secs(20)
+    } else {
+        std::time::Duration::from_secs(5)
+    }
+}
+
 /// The tile and the widget keep showing the two rates while no window exists,
 /// so the publish loop lives in Rust, not in the page (R41).
+/// Backs off aggressively when disconnected or when the screen is off to save battery.
 #[cfg(target_os = "android")]
 fn spawn_android_status(app: &AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        publish_android(&handle);
+        let interactive = android_screen_interactive();
+        let connected = with_profile(&handle, |session| session.book.is_connected());
+        let wait = if !interactive {
+            std::time::Duration::from_secs(30)
+        } else if !connected {
+            std::time::Duration::from_secs(10)
+        } else {
+            std::time::Duration::from_secs(2)
+        };
+        std::thread::sleep(wait);
+        if android_screen_interactive() {
+            publish_android(&handle);
+        }
     });
 }
 
@@ -2545,6 +2608,138 @@ pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeRevoked(
         refresh_tray(&app, &snapshot);
         let _ = app.emit("profile-changed", snapshot);
     });
+}
+
+#[cfg(target_os = "android")]
+static ANDROID_RECOVERY_BUSY: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "android")]
+static ANDROID_SCREEN_INTERACTIVE: AtomicBool = AtomicBool::new(true);
+
+/// Recovers Android VPN connectivity after underlying network roaming, Doze exit,
+/// or returning to foreground:
+/// - When the kernel is alive and `flush_sockets` is set, closes stale half-open
+///   sockets and flushes the DNS cache so traffic resumes cleanly on the new network.
+/// - When the kernel died or became unresponsive while Billow still believes it is
+///   connected, restarts the kernel automatically (or cleanly disconnects if recovery
+///   fails) so the app never displays a fake "已连接" state.
+#[cfg(target_os = "android")]
+fn recover_android_connection(app: AppHandle, flush_sockets: bool) {
+    if ANDROID_RECOVERY_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            ANDROID_RECOVERY_BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = Guard;
+
+    let (connected, endpoint) = with_profile(&app, |session| {
+        let connected = session.book.is_connected();
+        let endpoint = if connected {
+            profile::ProfileBook::controller_of(&mut session.runtime)
+        } else {
+            None
+        };
+        (connected, endpoint)
+    });
+    if !connected {
+        return;
+    }
+
+    let mut needs_restart = endpoint.is_none();
+    if let Some(ep) = endpoint {
+        if flush_sockets {
+            let close_ok = diagnostics::close_connections(&ep, None).is_ok();
+            let dns_ok = diagnostics::flush_cache(&ep, "dns").is_ok();
+            if !close_ok && !dns_ok {
+                needs_restart = true;
+            }
+        } else if diagnostics::flush_cache(&ep, "dns").is_err() {
+            needs_restart = true;
+        }
+    }
+
+    if !needs_restart {
+        return;
+    }
+
+    let recovered = with_session_raw(&app, |session| {
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = session;
+        if !book.is_connected() {
+            return Ok(None);
+        }
+        book.restart_kernel(runtime, proxy, tun, vpn).map(Some)
+    });
+    match recovered {
+        Ok(Some(snapshot)) => {
+            publish_android(&app);
+            refresh_tray(&app, &snapshot);
+            let _ = app.emit("profile-changed", snapshot);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            let snapshot = disconnect_session(app.clone());
+            publish_android(&app);
+            refresh_tray(&app, &snapshot);
+            let _ = app.emit("profile-changed", snapshot);
+        }
+    }
+}
+
+/// Underlying network changed or device exited Doze mode.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeNetworkChanged(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    _reason: *mut std::ffi::c_void,
+) {
+    let Some(app) = android_app() else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || recover_android_connection(app, true));
+}
+
+/// App resumed to foreground: verify the kernel is still alive if marked connected.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeResumeCheck(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    let Some(app) = android_app() else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || recover_android_connection(app, false));
+}
+
+/// Screen interactive state changed: refresh widget immediately on wake, back off when off.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeScreenInteractive(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    interactive: i32,
+) {
+    let is_on = interactive != 0;
+    let was_on = ANDROID_SCREEN_INTERACTIVE.swap(is_on, Ordering::SeqCst);
+    if is_on && !was_on {
+        if let Some(app) = android_app() {
+            tauri::async_runtime::spawn_blocking(move || publish_android(&app));
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

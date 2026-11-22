@@ -51,6 +51,7 @@ class MainActivity : TauriActivity() {
     override fun onResume() {
         super.onResume()
         runPendingTap()
+        Thread { BillowVpnBridge.checkHealthOnResume() }.start()
     }
 
     override fun onDestroy() {

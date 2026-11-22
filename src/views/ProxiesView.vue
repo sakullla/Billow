@@ -756,6 +756,87 @@ const denseLabel = computed(() => tr('双列视图'))
 const denseIcon = 'grid'
 
 const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card' || (hideFailed.value && failedNodeCount.value > 0))
+
+const groupPillsEl = ref<HTMLElement | null>(null)
+const draggingPills = ref(false)
+let pillsDragCleanup: (() => void) | null = null
+let suppressNextPillClick = false
+let suppressClickTimer: ReturnType<typeof setTimeout> | null = null
+
+function stopPillsDrag() {
+  pillsDragCleanup?.()
+  pillsDragCleanup = null
+  draggingPills.value = false
+}
+
+function onPillsMouseDown(event: MouseEvent) {
+  if (event.button !== 0) return
+  const el = groupPillsEl.value
+  if (!el || el.scrollWidth <= el.clientWidth) return
+  stopPillsDrag()
+  const startX = event.clientX
+  const startScrollLeft = el.scrollLeft
+  let moved = false
+
+  const onMove = (moveEvent: MouseEvent) => {
+    const dx = moveEvent.clientX - startX
+    if (!moved && Math.abs(dx) >= 4) {
+      moved = true
+      draggingPills.value = true
+    }
+    if (moved) {
+      el.scrollLeft = startScrollLeft - dx
+      moveEvent.preventDefault()
+    }
+  }
+
+  const onUp = () => {
+    stopPillsDrag()
+    if (moved) {
+      suppressNextPillClick = true
+      if (suppressClickTimer) clearTimeout(suppressClickTimer)
+      suppressClickTimer = setTimeout(() => {
+        suppressNextPillClick = false
+        suppressClickTimer = null
+      }, 0)
+    }
+  }
+
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp, { once: true })
+  pillsDragCleanup = () => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+}
+
+function onPillsClickCapture(event: MouseEvent) {
+  if (!suppressNextPillClick) return
+  suppressNextPillClick = false
+  if (suppressClickTimer) {
+    clearTimeout(suppressClickTimer)
+    suppressClickTimer = null
+  }
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function onPillsWheel(event: WheelEvent) {
+  const el = groupPillsEl.value
+  if (!el || el.scrollWidth <= el.clientWidth) return
+  if (Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0) {
+    el.scrollLeft += event.deltaY
+    event.preventDefault()
+  }
+}
+
+onBeforeUnmount(() => {
+  stopPillsDrag()
+  if (suppressClickTimer) {
+    clearTimeout(suppressClickTimer)
+    suppressClickTimer = null
+  }
+})
 </script>
 
 <template>
@@ -947,9 +1028,14 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
 
       <nav
         v-if="groups.length > 2 && !needle"
+        ref="groupPillsEl"
         class="group-pills"
+        :class="{ dragging: draggingPills }"
         :aria-label="tr('代理组快速跳转')"
         data-testid="group-jump-bar"
+        @mousedown="onPillsMouseDown"
+        @click.capture="onPillsClickCapture"
+        @wheel="onPillsWheel"
       >
         <button
           v-for="group in groups"

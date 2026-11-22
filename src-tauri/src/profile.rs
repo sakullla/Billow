@@ -1827,8 +1827,17 @@ impl ProcessRuntime {
         let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
         let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
         #[cfg(target_os = "android")]
-        if tun {
-            takeover::inherit_vpn_tunnel(&mut command, read_i64(&config["tun"], "file-descriptor"))?;
+        {
+            if tun {
+                takeover::inherit_vpn_tunnel(&mut command, read_i64(&config["tun"], "file-descriptor"))?;
+            }
+            // Balance memory pressure (avoid Android LMK kills) vs GC CPU wakeups on mobile.
+            if std::env::var_os("GOGC").is_none() {
+                command.env("GOGC", "50");
+            }
+            if std::env::var_os("GOMEMLIMIT").is_none() {
+                command.env("GOMEMLIMIT", "96MiB");
+            }
         }
         command.arg("-d").arg(&self.home_dir);
         command
@@ -5428,7 +5437,22 @@ fn apply_settings(
             map.insert(key("disable-keep-alive"), Value::Bool(false));
             map.insert(key("keep-alive-interval"), Value::Number(u64::from(secs).into()));
         }
-        None => {}
+        None => {
+            #[cfg(target_os = "android")]
+            {
+                let disabled = map
+                    .get(key("disable-keep-alive"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !disabled && !map.contains_key(key("keep-alive-interval")) {
+                    // 60s idle / 30s interval lets 4G/5G radios sleep between bursts while beating NAT timeouts.
+                    map.insert(key("keep-alive-interval"), Value::Number(30u64.into()));
+                    if !map.contains_key(key("keep-alive-idle")) {
+                        map.insert(key("keep-alive-idle"), Value::Number(60u64.into()));
+                    }
+                }
+            }
+        }
     }
     if !settings.lan_auth.is_empty() {
         map.insert(

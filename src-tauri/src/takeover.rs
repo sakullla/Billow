@@ -3725,15 +3725,27 @@ mod tests {
         assert!(source.contains("prepare"));
         assert!(source.contains("start"));
         assert!(source.contains("BillowVpnBridge"));
+        assert!(source.contains("registerNetworkCallback"));
+        assert!(source.contains("setUnderlyingNetworks"));
+        assert!(source.contains("ACTION_DEVICE_IDLE_MODE_CHANGED"));
+        assert!(source.contains("nativeNetworkChanged"));
+        assert!(source.contains("nativeResumeCheck"));
+        assert!(source.contains("nativeScreenInteractive"));
+        assert!(source.contains("ACTION_SCREEN_OFF"));
         assert!(!source.to_ascii_lowercase().contains("mihomo"));
         let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
         assert!(manifest.contains("android.net.VpnService"));
         assert!(manifest.contains("BIND_VPN_SERVICE"));
+        assert!(manifest.contains("ACCESS_NETWORK_STATE"));
         assert!(manifest.contains("BillowVpnService"));
         assert!(manifest.contains("QUERY_ALL_PACKAGES"));
         let activity =
             include_str!("../gen/android/app/src/main/java/app/billow/client/MainActivity.kt");
         assert!(activity.contains("BillowVpnBridge.onActivityResult"));
+        assert!(activity.contains("BillowVpnBridge.checkHealthOnResume"));
+        let lib_rs = include_str!("lib.rs");
+        assert!(lib_rs.contains("Java_app_billow_client_BillowVpnBridge_nativeNetworkChanged"));
+        assert!(lib_rs.contains("Java_app_billow_client_BillowVpnBridge_nativeResumeCheck"));
     }
 
     #[test]
