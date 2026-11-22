@@ -2,12 +2,16 @@
 const refreshResultWindow = new WeakMap<object, number>()
 </script>
 
-<script setup lang="ts">import { tr } from '../lib/i18n'
+<script setup lang="ts">import { t, tr } from '../lib/i18n'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import ContextMenu from '../components/ContextMenu.vue'
+import CustomNodeEditModal from '../components/CustomNodeEditModal.vue'
+import CustomNodeImportModal from '../components/CustomNodeImportModal.vue'
+import CustomNodesPanel from '../components/CustomNodesPanel.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
+import LandingRulesModal from '../components/LandingRulesModal.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
 import Modal from '../components/Modal.vue'
 import Segmented from '../components/Segmented.vue'
@@ -17,7 +21,7 @@ import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent
 import { matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import { subscriptionUserAgent } from '../lib/subscription'
-import type { OverridePreview, ProfileItem } from '../lib/types'
+import type { CustomNode, OverridePreview, ProfileItem } from '../lib/types'
 import { shortcutKeyLabel } from '../lib/ui/shortcuts'
 import { mergeOverrideAppend } from '../lib/yaml/mergeOverride'
 import { overrideLanguage, scriptTemplate, yamlTemplate, type OverrideLanguage } from '../lib/yaml/script'
@@ -49,6 +53,49 @@ const quickUrl = ref('')
 const quickError = ref<string | null>(null)
 const quickInputEl = ref<HTMLInputElement | null>(null)
 const pageDragging = ref(false)
+
+const customImportOpen = ref(false)
+const customImportInitial = ref('')
+const customEditOpen = ref(false)
+const editingCustomNode = ref<CustomNode | null>(null)
+const landingRulesOpen = ref(false)
+
+const NODE_SCHEME_RE = /^(vless|vmess|trojan|ss|hysteria2|hy2|tuic|anytls|socks5|socks):\/\//i
+const HTTP_PROXY_CRED_RE = /^https?:\/\/[^/\s@]+@[^/\s]+$/i
+
+function looksLikeCustomNodeInput(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!trimmed) return false
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.some((line) => NODE_SCHEME_RE.test(line))) return true
+  if (lines.length === 1 && HTTP_PROXY_CRED_RE.test(lines[0]!)) return true
+  if (/^proxies\s*:/im.test(trimmed) || (/\btype\s*:/i.test(trimmed) && /\bserver\s*:/i.test(trimmed))) {
+    return true
+  }
+  if (!/^https?:\/\//i.test(trimmed)) {
+    const compact = trimmed.replace(/\s+/g, '')
+    if (compact.length >= 16 && /^[A-Za-z0-9+/=_-]+$/.test(compact)) return true
+  }
+  return false
+}
+
+function openCustomImport(initial = '') {
+  customImportInitial.value = initial
+  customImportOpen.value = true
+}
+
+function openCustomAdd() {
+  editingCustomNode.value = null
+  customEditOpen.value = true
+}
+
+function openCustomEdit(node: CustomNode) {
+  editingCustomNode.value = node
+  customEditOpen.value = true
+}
 
 async function importLocalFile(file: File | undefined) {
   if (!file) return
@@ -109,6 +156,11 @@ async function quickImport() {
   const value = quickUrl.value.trim()
   if (!value) return
   quickError.value = null
+  if (looksLikeCustomNodeInput(value)) {
+    quickUrl.value = ''
+    openCustomImport(value)
+    return
+  }
   // Trimmed comparison first, so a duplicate never creates a card or a request.
   const existing = snap.value.profiles.find(
     (item) => item.kind === 'subscription' && item.source.trim() === value,
@@ -883,17 +935,21 @@ const failedSubscriptionIds = computed(() =>
           <Icon v-else name="refresh" :size="15" />
           {{ updateAllLabel }}
         </button>
+        <button type="button" class="btn ghost sm" data-testid="add-custom-node-entry" @click="openCustomImport()">
+          <Icon name="globe" :size="15" /> {{ t('customNodes.add') }}
+        </button>
         <button type="button" class="btn primary sm" data-testid="add-profile" @click="store.adding.value = true">
           <Icon name="plus" :size="15" /> {{ tr('添加') }} </button>
       </div>
     </header>
 
-    <form class="quick-import" @submit.prevent="quickImport">
+    <form class="quick-import" novalidate @submit.prevent="quickImport">
       <Icon name="link" :size="16" class="muted" />
       <input
         ref="quickInputEl"
         v-model="quickUrl"
-        type="url"
+        type="text"
+        inputmode="url"
         :placeholder="compact ? tr('粘贴订阅链接') : tr('粘贴订阅链接回车导入，或直接拖入 YAML 文件')"
         spellcheck="false"
         :aria-invalid="quickError ? 'true' : undefined"
@@ -956,7 +1012,7 @@ const failedSubscriptionIds = computed(() =>
     </div>
 
     <EmptyState
-      v-if="!snap.profiles.length"
+      v-if="!snap.profiles.length && !store.hasCustomNodes.value"
       variant="no-data"
       icon="layers"
       :title="tr('还没有配置')"
@@ -967,7 +1023,7 @@ const failedSubscriptionIds = computed(() =>
       </template>
     </EmptyState>
     <EmptyState
-      v-else-if="!filteredProfiles.length"
+      v-else-if="snap.profiles.length && !filteredProfiles.length"
       compact
       variant="no-match"
       :title="tr('没有匹配的配置')"
@@ -979,7 +1035,7 @@ const failedSubscriptionIds = computed(() =>
       </template>
     </EmptyState>
 
-    <div v-else class="profile-grid">
+    <div v-else-if="filteredProfiles.length" class="profile-grid">
       <article
         v-for="profile in filteredProfiles"
         :key="profile.id"
@@ -1139,6 +1195,15 @@ const failedSubscriptionIds = computed(() =>
         </div>
       </article>
     </div>
+
+    <CustomNodesPanel
+      v-if="store.hasCustomNodes.value || store.customProfileActive.value"
+      :compact="compact"
+      @open-import="openCustomImport"
+      @open-add="openCustomAdd"
+      @open-edit="openCustomEdit"
+      @open-rules="landingRulesOpen = true"
+    />
 
     <Modal
       :open="Boolean(editing)"
@@ -1491,6 +1556,27 @@ const failedSubscriptionIds = computed(() =>
       :label="tr('配置操作')"
       @select="onProfileContextSelect"
       @close="ctxMenu = null"
+    />
+
+    <CustomNodeImportModal
+      :open="customImportOpen"
+      :initial-text="customImportInitial"
+      :compact="compact"
+      @close="customImportOpen = false"
+      @switch-to-form="customImportOpen = false; openCustomAdd()"
+    />
+
+    <CustomNodeEditModal
+      :open="customEditOpen"
+      :node="editingCustomNode"
+      :compact="compact"
+      @close="customEditOpen = false"
+    />
+
+    <LandingRulesModal
+      :open="landingRulesOpen"
+      :compact="compact"
+      @close="landingRulesOpen = false"
     />
   </div>
 </template>

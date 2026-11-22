@@ -8917,3 +8917,248 @@ details.cfg-section[open] .cfg-fold-icon {
 
 
 
+
+/* ───────────── Custom Nodes & Chain Proxy (R1–R7, R9) ───────────── */
+.custom-nodes-panel {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.custom-panel-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-nodes-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+}
+
+.custom-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.custom-control-row + .custom-control-row {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.custom-node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.custom-node-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.custom-node-row.disabled {
+  opacity: 0.62;
+}
+
+.custom-node-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.custom-node-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  min-width: 0;
+}
+
+.custom-node-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.custom-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.custom-import-textarea,
+.custom-yaml-textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.custom-preview-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-preview-box {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.custom-preview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.custom-preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.custom-preview-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.custom-preview-name {
+  font-weight: 560;
+  min-width: 0;
+}
+
+.custom-error-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.custom-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.custom-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.custom-rules-master {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+}
+
+.custom-section-title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.custom-preset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.custom-preset-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.custom-preset-target {
+  margin-top: 8px;
+  max-width: 260px;
+}
+
+.custom-domain-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-domain-target-select {
+  min-width: 150px;
+}
+
+.custom-domain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.custom-domain-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.stack-sm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stack-xs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
