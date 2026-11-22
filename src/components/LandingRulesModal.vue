@@ -267,7 +267,10 @@ async function submit() {
         <div class="grow min0">
           <div class="custom-panel-title-row">
             <strong>{{ t('customNodes.rules.masterToggle') }}</strong>
-            <span v-if="enabledSummaryCount > 0" class="custom-stat-pill accent">
+            <span v-if="!rulesEnabled" class="custom-stat-pill">
+              {{ tr('已暂停') }}
+            </span>
+            <span v-else-if="enabledSummaryCount > 0" class="custom-stat-pill accent">
               {{ tr('已选 {0} 项', { 0: enabledSummaryCount }) }}
             </span>
           </div>
@@ -280,7 +283,7 @@ async function submit() {
         />
       </div>
 
-      <section class="stack-sm">
+      <section class="stack-sm custom-rules-body" :class="{ 'rules-paused': !rulesEnabled }">
         <h3 class="custom-section-title">{{ t('customNodes.rules.presets') }}</h3>
         <div class="custom-preset-grid">
           <div
@@ -336,7 +339,7 @@ async function submit() {
         </div>
       </section>
 
-      <section class="stack-sm">
+      <section class="stack-sm custom-rules-body" :class="{ 'rules-paused': !rulesEnabled }">
         <h3 class="custom-section-title">{{ t('customNodes.rules.customDomains') }}</h3>
         <form class="custom-domain-add-row" @submit.prevent="addDomainRule">
           <input

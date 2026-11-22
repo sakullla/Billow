@@ -26,6 +26,14 @@ const activeRuleCount = computed(() =>
   customNodes.value.rules_enabled ? customNodes.value.rules.filter((rule) => rule.enabled).length : 0,
 )
 const hasSubscription = computed(() => store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value)
+const overlayPaused = computed(() => hasSubscription.value && !customNodes.value.overlay_enabled)
+
+function rulesForNode(nodeId: string): string[] {
+  if (!customNodes.value.rules_enabled) return []
+  return customNodes.value.rules
+    .filter((rule) => rule.enabled && rule.target.kind === 'custom_node' && rule.target.id === nodeId)
+    .map(describeRule)
+}
 
 const deleting = ref<CustomNode | null>(null)
 const disabling = ref<CustomNode | null>(null)
@@ -198,19 +206,19 @@ async function confirmDelete() {
 </script>
 
 <template>
-  <section class="card custom-nodes-panel" data-testid="custom-nodes-panel">
+  <section
+    class="card custom-nodes-panel"
+    :class="{ 'standalone-active': store.customProfileActive.value }"
+    data-testid="custom-nodes-panel"
+  >
     <header class="custom-panel-hero">
       <div class="custom-panel-head-main grow min0">
         <div class="custom-entry-icon" aria-hidden="true">
-          <Icon name="layers" :size="19" />
+          <Icon name="layers" :size="17" />
         </div>
         <div class="grow min0">
           <div class="custom-panel-title-row">
             <h2>{{ t('customNodes.title') }}</h2>
-            <span class="custom-stat-pill">{{ t('customNodes.count', { count: nodes.length, enabled: enabledCount }) }}</span>
-            <span v-if="chainedCount > 0" class="custom-stat-pill accent">
-              <Icon name="globe" :size="11" /> {{ tr('{0} 链式', { 0: chainedCount }) }}
-            </span>
             <span
               v-if="store.customProfileActive.value"
               class="tag accent sm"
@@ -219,7 +227,15 @@ async function confirmDelete() {
               {{ t('customNodes.standaloneActive') }}
             </span>
           </div>
-          <p class="muted small">{{ t('customNodes.subtitle') }}</p>
+          <div class="custom-panel-meta-row">
+            <span class="custom-stat-pill">{{ t('customNodes.count', { count: nodes.length, enabled: enabledCount }) }}</span>
+            <span v-if="chainedCount > 0" class="custom-stat-pill accent">
+              <Icon name="globe" :size="11" /> {{ tr('{0} 链式', { 0: chainedCount }) }}
+            </span>
+            <span v-if="overlayPaused" class="custom-stat-pill warn" data-testid="custom-overlay-paused-badge">
+              {{ tr('已暂停叠加') }}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -229,6 +245,7 @@ async function confirmDelete() {
           class="btn sm custom-secondary-btn custom-rules-btn"
           :class="{ 'has-rules': activeRuleCount > 0 }"
           data-testid="open-landing-rules"
+          :title="t('customNodes.landingRulesHint')"
           @click="emit('openRules')"
         >
           <Icon name="route" :size="14" />
@@ -245,7 +262,7 @@ async function confirmDelete() {
         </button>
         <button
           type="button"
-          class="btn primary sm"
+          class="btn tonal sm"
           data-testid="open-custom-import"
           @click="emit('openImport')"
         >
@@ -254,16 +271,20 @@ async function confirmDelete() {
       </div>
     </header>
 
-    <!-- Sleek Mode Bar -->
-    <div class="custom-mode-bar" :class="{ 'single-col': store.snapshot.value.profiles.length === 0 }">
+    <!-- Sleek Mode Strip -->
+    <div
+      class="custom-mode-bar"
+      :class="{ 'single-col': store.snapshot.value.profiles.length === 0 || store.customProfileActive.value }"
+    >
       <div
-        v-if="store.snapshot.value.profiles.length > 0"
+        v-if="store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value"
         class="custom-mode-item"
         :class="{ inactive: !customNodes.overlay_enabled }"
+        :title="t('customNodes.overlayHint')"
       >
         <div class="custom-mode-copy grow min0">
           <span class="custom-mode-label">{{ t('customNodes.overlay') }}</span>
-          <span class="muted small custom-mode-hint">{{ t('customNodes.overlayHint') }}</span>
+          <span class="muted small custom-mode-hint ellipsis">{{ t('customNodes.overlayHint') }}</span>
         </div>
         <Toggle
           :model-value="customNodes.overlay_enabled"
@@ -274,14 +295,24 @@ async function confirmDelete() {
         />
       </div>
 
-      <div class="custom-mode-divider" v-if="store.snapshot.value.profiles.length > 0" aria-hidden="true" />
+      <div
+        v-if="store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value"
+        class="custom-mode-divider"
+        aria-hidden="true"
+      />
 
-      <div class="custom-mode-item custom-mode-standalone">
+      <div class="custom-mode-item custom-mode-standalone" :title="t('customNodes.standaloneDetail')">
         <div class="custom-mode-copy grow min0">
           <span class="custom-mode-label">
             {{ store.customProfileActive.value ? t('customNodes.standaloneActive') : t('customNodes.useStandalone') }}
           </span>
-          <span class="muted small custom-mode-hint">{{ t('customNodes.standaloneDetail') }}</span>
+          <span class="muted small custom-mode-hint ellipsis">
+            {{
+              store.customProfileActive.value && store.snapshot.value.profiles.length > 0
+                ? tr('点击上方任意订阅卡片可切回订阅模式')
+                : t('customNodes.standaloneDetail')
+            }}
+          </span>
         </div>
         <span v-if="store.customProfileActive.value" class="tag ok sm">{{ tr('使用中') }}</span>
         <button
@@ -324,7 +355,11 @@ async function confirmDelete() {
     </div>
 
     <!-- Clean Node Cards -->
-    <ul v-if="filteredNodes.length > 0" class="custom-node-grid" :class="{ single: filteredNodes.length === 1 }">
+    <ul
+      v-if="filteredNodes.length > 0"
+      class="custom-node-grid"
+      :class="{ single: filteredNodes.length === 1, 'overlay-paused': overlayPaused }"
+    >
       <li
         v-for="node in filteredNodes"
         :key="node.id"
@@ -343,7 +378,8 @@ async function confirmDelete() {
                 {{ node.protocol.toUpperCase() }}
               </span>
               <strong class="custom-node-name ellipsis" :title="node.name">{{ node.name }}</strong>
-              <span v-if="node.note" class="custom-node-note-tag ellipsis" :title="node.note">{{ node.note }}</span>
+              <span v-if="!node.enabled" class="custom-node-note-tag">{{ tr('已停用') }}</span>
+              <span v-else-if="node.note" class="custom-node-note-tag ellipsis" :title="node.note">{{ node.note }}</span>
             </div>
             <span
               v-if="extractEndpoint(node.raw_yaml)"
@@ -385,7 +421,12 @@ async function confirmDelete() {
         </div>
 
         <div class="custom-route-strip">
-          <div class="custom-route-flow grow min0" :title="dialerMeta(node.dialer).fullLabel">
+          <button
+            type="button"
+            class="custom-route-trigger grow min0"
+            :title="tr('{0} · 点击调整中转方式', { 0: dialerMeta(node.dialer).fullLabel })"
+            @click="emit('openEdit', node)"
+          >
             <span class="custom-hop-pill" :class="dialerMeta(node.dialer).kind">
               <Icon :name="dialerMeta(node.dialer).icon" :size="12" />
               <span class="ellipsis">{{ dialerMeta(node.dialer).fullLabel }}</span>
@@ -394,7 +435,19 @@ async function confirmDelete() {
               <span class="custom-route-arrow" aria-hidden="true">→</span>
               <span class="custom-hop-exit ellipsis">{{ tr('此节点落地') }}</span>
             </template>
-          </div>
+            <span
+              v-if="rulesForNode(node.id).length > 0"
+              class="custom-rule-hit-pill ellipsis"
+              :title="rulesForNode(node.id).join('、')"
+            >
+              <Icon name="route" :size="11" />
+              {{
+                rulesForNode(node.id).length === 1
+                  ? rulesForNode(node.id)[0]
+                  : tr('{0} 条落地', { 0: rulesForNode(node.id).length })
+              }}
+            </span>
+          </button>
 
           <button
             v-if="hasSubscription && node.enabled"

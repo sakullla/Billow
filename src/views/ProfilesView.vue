@@ -82,6 +82,20 @@ function looksLikeCustomNodeInput(raw: string): boolean {
   return false
 }
 
+const quickLooksLikeNode = computed(() => looksLikeCustomNodeInput(quickUrl.value))
+const overlayActiveCount = computed(() =>
+  store.customNodes.value.overlay_enabled && !store.customProfileActive.value
+    ? store.enabledCustomNodes.value.length
+    : 0,
+)
+
+function profileSubtitle(profile: ProfileItem): string {
+  if (profile.kind === 'local') return tr('本地文件')
+  const host = hostOf(profile.source)
+  if (host && host.toLowerCase() !== profile.name.trim().toLowerCase()) return host
+  return tr('远程订阅')
+}
+
 function openCustomImport(initial = '') {
   customImportInitial.value = initial
   customImportOpen.value = true
@@ -940,8 +954,8 @@ const failedSubscriptionIds = computed(() =>
       </div>
     </header>
 
-    <form class="quick-import" novalidate @submit.prevent="quickImport">
-      <Icon name="link" :size="16" class="muted" />
+    <form class="quick-import" :class="{ 'is-node-input': quickLooksLikeNode }" novalidate @submit.prevent="quickImport">
+      <Icon :name="quickLooksLikeNode ? 'layers' : 'link'" :size="16" :class="quickLooksLikeNode ? 'text-accent' : 'muted'" />
       <input
         ref="quickInputEl"
         v-model="quickUrl"
@@ -953,6 +967,9 @@ const failedSubscriptionIds = computed(() =>
         :aria-describedby="quickError ? 'quick-import-error' : undefined"
         @input="quickError = null"
       />
+      <span v-if="quickLooksLikeNode" class="tag accent sm quick-detect-tag" data-testid="quick-detect-node">
+        {{ tr('节点链接') }}
+      </span>
       <template v-if="!quickUrl">
         <button
           type="button"
@@ -977,13 +994,22 @@ const failedSubscriptionIds = computed(() =>
       >
         <Icon name="x" :size="14" />
       </button>
-      <button type="submit" class="btn primary sm" :disabled="!quickUrl.trim() || store.busy.add">{{ tr('导入') }}</button>
+      <button
+        type="submit"
+        class="btn sm"
+        :class="quickUrl.trim() ? 'primary' : 'quick-submit-idle'"
+        :disabled="!quickUrl.trim() || store.busy.add"
+      >{{ tr('导入') }}</button>
     </form>
     <p v-if="quickError" id="quick-import-error" class="field-error small" role="alert">{{ quickError }}</p>
 
     <div v-if="snap.profiles.length > 1 || profileQuery" class="toolbar profiles-toolbar" data-testid="profiles-toolbar">
-      <div class="search grow">
-        <Icon name="search" :size="16" />
+      <div v-if="!compact" class="profiles-section-label">
+        <span>{{ tr('订阅与配置') }}</span>
+        <span class="profiles-section-count mono">{{ snap.profiles.length }}</span>
+      </div>
+      <div class="search profiles-search">
+        <Icon name="search" :size="15" />
         <input
           v-model="profileQuery"
           type="search"
@@ -1055,7 +1081,7 @@ const failedSubscriptionIds = computed(() =>
               <span v-else class="profile-switch-hint" aria-hidden="true">{{ tr('点击启用') }}</span>
             </div>
             <p class="muted small ellipsis">
-              {{ profile.kind === 'local' ? tr('本地文件') : hostOf(profile.source) }}
+              {{ profileSubtitle(profile) }}
             </p>
           </div>
           <span v-if="store.busy[`enable:${profile.id}`]" class="spinner sm" />
@@ -1142,6 +1168,14 @@ const failedSubscriptionIds = computed(() =>
             @click.stop="openYaml(profile, 'override')"
           > {{ tr('覆写') }} </button>
           <span v-if="profile.age_recipients.length" class="tag" :title="tr('订阅内容使用 age 私钥解密')"><Icon name="shield" :size="11" />age</span>
+          <span
+            v-if="profile.current && overlayActiveCount > 0"
+            class="tag accent sm profile-overlay-tag"
+            :title="tr('已叠加 {0} 个自建节点到当前订阅', { 0: overlayActiveCount })"
+            data-testid="profile-overlay-badge"
+          >
+            <Icon name="layers" :size="11" />+{{ overlayActiveCount }} {{ tr('自建') }}
+          </span>
         </footer>
         <p v-if="profile.failure && store.profileUpdates[profile.id]?.state !== 'failure'" class="field-error small">
           <Icon name="alert" :size="13" /> {{ tr(profile.failure) }}
@@ -1224,19 +1258,19 @@ const failedSubscriptionIds = computed(() =>
       <div class="custom-entry-actions">
         <button
           type="button"
-          class="btn primary sm"
-          data-testid="add-custom-node-entry"
-          @click="openCustomImport()"
-        >
-          <Icon name="link" :size="14" /> {{ t('customNodes.import') }}
-        </button>
-        <button
-          type="button"
           class="btn ghost sm"
           data-testid="add-custom-node-manual"
           @click="openCustomAdd"
         >
           <Icon name="plus" :size="14" /> {{ tr('手动添加') }}
+        </button>
+        <button
+          type="button"
+          class="btn tonal sm"
+          data-testid="add-custom-node-entry"
+          @click="openCustomImport()"
+        >
+          <Icon name="link" :size="14" /> {{ t('customNodes.import') }}
         </button>
       </div>
     </section>

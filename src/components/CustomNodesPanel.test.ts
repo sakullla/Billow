@@ -441,7 +441,7 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
 
     await setInput(
       '[data-testid="custom-node-import-input"]',
-      'anytls://example-password@192.0.2.10:24443?security=tls&sni=relay.example.invalid&insecure=1&type=tcp#🇭🇰香港-Example',
+      'anytls://example-password@192.0.2.10:8443?security=tls&sni=relay.example.invalid&insecure=1&type=tcp#🇭🇰香港-Example',
     )
     await waitDemo(160)
     expect(find('[data-testid="custom-node-import-confirm"]').textContent).toContain('导入 1 个节点')
@@ -470,5 +470,32 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     await click('[data-testid="custom-import-clear"]')
     expect(find<HTMLTextAreaElement>('[data-testid="custom-node-import-input"]').value).toBe('')
     expect(find<HTMLButtonElement>('[data-testid="custom-node-import-confirm"]').disabled).toBe(true)
+  })
+
+  it('shows quick-import node detection tag, active profile overlay badge, overlay-paused cue, and clickable route strip', async () => {
+    const { store } = await setupProfiles()
+
+    // Quick-import detects share links inline before submit
+    const quickInput = find<HTMLInputElement>('.quick-import input')
+    quickInput.value = 'vless://11111111-1111-1111-1111-111111111111@vless.example.com:443#US-Exit'
+    quickInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(find('[data-testid="quick-detect-node"]').textContent).toContain('节点链接')
+
+    // Import one custom node -> active profile card displays overlay badge
+    await store.importCustomNodes('socks5://1.2.3.4:1080#US-Exit', { kind: 'profile_group', group: null })
+    await waitDemo()
+    expect(find('[data-testid="profile-overlay-badge"]').textContent).toContain('+1')
+    expect(document.querySelector('[data-testid="custom-overlay-paused-badge"]')).toBeNull()
+
+    // Toggle overlay off -> active profile badge hides and paused cue appears
+    await click('[data-testid="custom-overlay-toggle"]')
+    await waitDemo()
+    expect(document.querySelector('[data-testid="profile-overlay-badge"]')).toBeNull()
+    expect(find('[data-testid="custom-overlay-paused-badge"]').textContent).toContain('已暂停叠加')
+
+    // Clicking the route strip opens the edit modal directly
+    await click('.custom-route-trigger')
+    expect(document.querySelector('[data-testid="custom-node-save"]')).not.toBeNull()
   })
 })

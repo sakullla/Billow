@@ -501,6 +501,8 @@ async function submit() {
                 spellcheck="false"
                 :placeholder="tr('name: 我的节点\ntype: anytls\nserver: example.com\nport: 443\npassword: secret')"
                 data-testid="custom-node-yaml-input"
+                @keydown.meta.enter.prevent="submit"
+                @keydown.ctrl.enter.prevent="submit"
               />
             </label>
           </div>

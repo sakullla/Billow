@@ -3348,7 +3348,7 @@ private-key: abc
 
     #[test]
     fn anytls_chain_overlay_excludes_custom_nodes_from_include_all_and_prevents_transitive_loops() {
-        let uri = "anytls://example-password@192.0.2.10:24443?security=tls&sni=relay.example.invalid&insecure=1&type=tcp#🇭🇰香港-Example";
+        let uri = "anytls://example-password@192.0.2.10:8443?security=tls&sni=relay.example.invalid&insecure=1&type=tcp#🇭🇰香港-Example";
         let parsed = parse_nodes_input(uri, &[]);
         assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
         assert_eq!(parsed.parsed.len(), 1);
@@ -3356,7 +3356,7 @@ private-key: abc
         assert_eq!(item.name, "🇭🇰香港-Example");
         assert_eq!(item.protocol, "anytls");
         assert_eq!(item.server, "192.0.2.10");
-        assert_eq!(item.port, 24443);
+        assert_eq!(item.port, 8443);
 
         let base = r#"
 mixed-port: 7890

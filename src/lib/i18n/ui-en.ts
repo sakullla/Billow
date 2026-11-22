@@ -1713,5 +1713,13 @@ export const UI_EN: Record<string, string> = {
   '没有匹配的自建节点': 'No matching custom nodes',
   '粘贴订阅或节点链接': 'Paste a subscription or node link',
   '粘贴订阅或节点链接回车导入，或直接拖入 YAML 文件': 'Paste a subscription or node link and press Enter, or drop a YAML file',
+  '订阅与配置': 'Profiles',
+  '节点链接': 'Node link',
+  '已叠加 {0} 个自建节点到当前订阅': '{0} custom nodes overlaid on this profile',
+  '已暂停叠加': 'Overlay paused',
+  '点击上方任意订阅卡片可切回订阅模式': 'Click any subscription card above to switch back',
+  '{0} · 点击调整中转方式': '{0} · Click to edit relay',
+  '{0} 条落地': '{0} rules',
+  '已暂停': 'Paused',
 }
 

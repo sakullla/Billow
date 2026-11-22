@@ -229,6 +229,8 @@ async function submit() {
           :placeholder="t('customNodes.import.placeholder')"
           data-testid="custom-node-import-input"
           @input="schedulePreview(raw)"
+          @keydown.meta.enter.prevent="submit"
+          @keydown.ctrl.enter.prevent="submit"
         />
         <div v-if="!raw.trim()" class="custom-proto-strip" aria-hidden="true">
           <span class="custom-proto-mini">VLESS</span>
