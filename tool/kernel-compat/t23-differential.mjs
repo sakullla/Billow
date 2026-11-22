@@ -58,8 +58,8 @@ function startEchoServer() {
  * HTTP CONNECT node. `delayMs`/`status` configure the health-check HEAD reply;
  * other tunnels are forwarded to their CONNECT target.
  */
-function startNode({ delayMs = 0, status = 204 } = {}) {
-  const counters = { connects: 0 }
+function startNode({ delayMs = 0, headDelays = null, status = 204 } = {}) {
+  const counters = { connects: 0, heads: 0 }
   const server = net.createServer((socket) => {
     let head = Buffer.alloc(0)
     let target = null
@@ -95,7 +95,11 @@ function startNode({ delayMs = 0, status = 204 } = {}) {
             socket.write(`HTTP/1.1 ${status} ${reason}\r\nContent-Length: 0\r\n\r\n`)
             socket.end()
           }
-          if (delayMs > 0) setTimeout(respond, delayMs)
+          const delay = headDelays
+            ? headDelays[Math.min(counters.heads, headDelays.length - 1)]
+            : delayMs
+          counters.heads += 1
+          if (delay > 0) setTimeout(respond, delay)
           else respond()
         }
         if (request.indexOf('\r\n\r\n') >= 0) waitForHead(Buffer.alloc(0))
@@ -120,6 +124,7 @@ function startNode({ delayMs = 0, status = 204 } = {}) {
       resolveServer({
         port: server.address().port,
         connects: () => counters.connects,
+        resetHeads: () => { counters.heads = 0 },
         close: () => new Promise((done) => server.close(done)),
       })
     })
@@ -333,6 +338,9 @@ async function trafficObservation(engine, item, root, context, echo) {
     ? ['-d', dir, '-f', join(dir, 'config.yaml')]
     : [join(dir, 'config.yaml'), '--port', String(context.mixedPort), '--cache-dir', dir]
   if (engine === 'rust' && item.select) args.push('--select', item.select)
+  // Both engines run against the same node pool; reset per-run HEAD counters so
+  // a delay sequence starts at its first value for each engine.
+  for (const node of item.nodes) node.resetHeads?.()
   const handle = startProcess(engine === 'mihomo' ? context.mihomo : context.rust, args, dir)
   const ready = await waitPort(context.mixedPort)
   const result = { engine, ready, attempts: [] }
@@ -343,7 +351,13 @@ async function trafficObservation(engine, item, root, context, echo) {
     return result
   }
   if (item.waitMs) await sleep(item.waitMs)
-  for (let index = 0; index < (item.requests ?? 1); index += 1) {
+  const schedule = item.attemptAtMs ?? null
+  const started = performance.now()
+  for (let index = 0; index < (schedule?.length ?? item.requests ?? 1); index += 1) {
+    if (schedule) {
+      const remaining = schedule[index] - (performance.now() - started)
+      if (remaining > 0) await sleep(remaining)
+    }
     const before = item.nodes.map((node) => node.connects())
     const observation = await attempt(context.mixedPort, echo.host, echo.port, item.marker ?? 't23ok')
     const served = item.nodes
@@ -378,9 +392,11 @@ async function main() {
     const nodeFast = await startNode({ delayMs: 10, status: 204 })
     const nodeHttpError = await startNode({ delayMs: 5, status: 500 })
     const nodeMid = await startNode({ delayMs: 100, status: 204 })
-    const nodeMidSlow = await startNode({ delayMs: 180, status: 204 })
+    // First HEAD 200 ms, every later HEAD 90 ms: used to establish a previous
+    // `fastNode` and then place a faster node inside/outside `tolerance`.
+    const nodeChanging = await startNode({ headDelays: [200, 90], status: 204 })
     const deadPort = await reservePort()
-    const nodes = [nodeSlow, nodeFast, nodeHttpError, nodeMid, nodeMidSlow]
+    const nodes = [nodeSlow, nodeFast, nodeHttpError, nodeMid, nodeChanging]
     try {
       const base = { rust: args.rust, mihomo: args.mihomo }
       const cases = [
@@ -456,14 +472,70 @@ async function main() {
           compareAll: true,
         },
         {
-          id: 'tolerance-keeps-sticky',
-          reason: 'url-test keeps the current member while the difference is within tolerance',
+          id: 'url-test-probes-with-default-lazy',
+          reason: 'the default configuration (no lazy/interval keys) still probes once at startup, so the 10 ms member wins over the 300 ms one',
           group: 'AUTO',
-          proxies: [nodeLine('first', nodeMid.port), nodeLine('second', nodeMidSlow.port)],
-          groups: [`{name: AUTO, type: url-test, proxies: [first, second], url: 'http://127.0.0.1:${echo.port}/generate_204', interval: 1, lazy: false, timeout: 1000, tolerance: 200}`],
+          proxies: [nodeLine('slow', nodeSlow.port), nodeLine('fast', nodeFast.port)],
+          groups: [`{name: AUTO, type: url-test, proxies: [slow, fast], url: 'http://127.0.0.1:${echo.port}/generate_204'}`],
           rules: ['MATCH,AUTO'],
-          waitMs: 3200,
+          waitMs: 700,
           compareAll: true,
+        },
+        {
+          id: 'provider-health-check-default-lazy',
+          reason: 'an enabled provider health check probes once at startup with the default lazy/interval; the url-test group over `use` picks the fast member',
+          group: 'AUTO',
+          proxies: [],
+          files: {
+            'nodes.yaml': `proxies:\n  - {name: slow, type: http, server: 127.0.0.1, port: ${nodeSlow.port}}\n  - {name: fast, type: http, server: 127.0.0.1, port: ${nodeFast.port}}\n`,
+          },
+          proxyProviders: [
+            `  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: true\n      url: 'http://127.0.0.1:${echo.port}/generate_204'\n`,
+          ],
+          groups: ['{name: AUTO, type: url-test, use: [remote]}'],
+          rules: ['MATCH,AUTO'],
+          waitMs: 700,
+          compareAll: true,
+        },
+        {
+          id: 'nested-auto-driven-by-outer-traffic',
+          reason: 'a nested url-test group (default lazy) probes at startup and the outer selector dials its fast member',
+          group: 'OUTER',
+          proxies: [nodeLine('slow', nodeSlow.port), nodeLine('fast', nodeFast.port)],
+          groups: [
+            `{name: INNER, type: url-test, proxies: [slow, fast], url: 'http://127.0.0.1:${echo.port}/generate_204'}`,
+            '{name: OUTER, type: select, proxies: [INNER]}',
+          ],
+          rules: ['MATCH,OUTER'],
+          traffic: true,
+          waitMs: 700,
+          requests: 1,
+          nodeNames: ['fast'],
+          nodeServers: [nodeFast],
+        },
+        {
+          id: 'tolerance-keeps-previous-fast',
+          reason: 'the first resolution sets the 100 ms member; the other member then becomes 90 ms, inside tolerance 50, so the previous fastNode stays (two attempts: startup and after the pinned 10 s fastSingle cache)',
+          group: 'AUTO',
+          proxies: [nodeLine('changing', nodeChanging.port), nodeLine('steady', nodeMid.port)],
+          groups: [`{name: AUTO, type: url-test, proxies: [changing, steady], url: 'http://127.0.0.1:${echo.port}/generate_204', interval: 4, lazy: false, timeout: 1000, tolerance: 50}`],
+          rules: ['MATCH,AUTO'],
+          traffic: true,
+          attemptAtMs: [300, 10500],
+          nodeNames: ['changing', 'steady'],
+          nodeServers: [nodeChanging, nodeMid],
+        },
+        {
+          id: 'tolerance-zero-switches',
+          reason: 'same changing delays with tolerance 0: the second resolution switches the previous 100 ms fastNode to the 90 ms member',
+          group: 'AUTO',
+          proxies: [nodeLine('changing', nodeChanging.port), nodeLine('steady', nodeMid.port)],
+          groups: [`{name: AUTO, type: url-test, proxies: [changing, steady], url: 'http://127.0.0.1:${echo.port}/generate_204', interval: 4, lazy: false, timeout: 1000}`],
+          rules: ['MATCH,AUTO'],
+          traffic: true,
+          attemptAtMs: [300, 10500],
+          nodeNames: ['changing', 'steady'],
+          nodeServers: [nodeChanging, nodeMid],
         },
         {
           id: 'nested-group-inner-selection',
@@ -503,6 +575,40 @@ async function main() {
           rules: ['MATCH,G'],
           waitMs: 300,
           compareAll: true,
+        },
+        {
+          id: 'include-all-proxies-empty-fallback-reject',
+          reason: 'with `proxies: []`, include-all-proxies falls back to the configured empty-fallback name (REJECT), not hard-coded COMPATIBLE',
+          group: 'G',
+          proxies: [],
+          groups: ['{name: G, type: select, include-all-proxies: true, empty-fallback: REJECT}'],
+          rules: ['MATCH,G'],
+          waitMs: 300,
+          compareAll: true,
+        },
+        {
+          id: 'include-all-proxies-empty-fallback-direct',
+          reason: 'the configured `empty-fallback: DIRECT` keeps the DIRECT member name (the default is COMPATIBLE)',
+          group: 'G',
+          proxies: [],
+          groups: ['{name: G, type: select, include-all-proxies: true, empty-fallback: DIRECT}'],
+          rules: ['MATCH,G'],
+          waitMs: 300,
+          compareAll: true,
+        },
+        {
+          id: 'include-all-proxies-empty-fallback-reject-blocked',
+          reason: 'empty-fallback: REJECT blocks the traffic instead of dialing DIRECT',
+          group: 'G',
+          proxies: [],
+          groups: ['{name: G, type: select, include-all-proxies: true, empty-fallback: REJECT}'],
+          rules: ['MATCH,G'],
+          traffic: true,
+          waitMs: 300,
+          requests: 1,
+          nodeNames: [],
+          nodeServers: [],
+          expectBlocked: true,
         },
         {
           id: 'include-all-expands-everything',
@@ -587,7 +693,15 @@ async function main() {
           entry.engines = { mihomo, rust }
           const sequence = (observation) => observation.attempts?.map((attempt) => attempt.served.join('+') || attempt.category).join(',')
           entry.observed = { mihomo: sequence(mihomo), rust: sequence(rust) }
-          if (item.id === 'load-balance-round-robin') {
+          if (item.expectBlocked) {
+            // A rejected CONNECT can surface as a 403 (`blocked`), a close
+            // before the head (`closed`) or no answer at all (`timeout`); the
+            // engines race differently, but no echo means the CONNECT was not
+            // tunnelled. Compare that outcome class, not the exact category.
+            const blocked = (observation) => observation.attempts?.length > 0
+              && observation.attempts.every((attempt) => ['blocked', 'closed', 'timeout'].includes(attempt.category))
+            entry.status = blocked(mihomo) && blocked(rust) ? 'pass' : 'differ'
+          } else if (item.id === 'load-balance-round-robin' || item.attemptAtMs) {
             entry.status = entry.observed.mihomo === entry.observed.rust
               && rust.attempts?.every((attempt) => attempt.category === 'echoed')
               ? 'pass'
@@ -724,6 +838,9 @@ async function main() {
         normalizationNote: [
           'Mihomo type names are normalized (Selector->select, URLTest->url-test, Fallback->fallback, LoadBalance->load-balance).',
           'Group `now` and `all` are compared; latency values are not compared byte-wise because scheduler ticks and probe ports differ. url-test/fallback liveness is asserted through the selected member and the observed echo.',
+          'Default-lazy cases omit `lazy`/`interval` to exercise the pinned startup check (`go hc.check()` before the first tick); provider and nested-group cases use the same default configuration.',
+          'The two tolerance cases serve traffic at 300 ms and 10.5 s: pinned `URLTest.fastSingle` caches the first computation for 10 s, so the second attempt is the first recomputation that can apply `tolerance`. Their served-node sequence is compared.',
+          'The `empty-fallback: REJECT` traffic case compares the blocked outcome class: a rejected CONNECT surfaces as 403, a close before the head or a timeout depending on the race, and no echo is accepted.',
           'Pinned load-balance consistent-hashing uses a per-process random maphash seed, so only the round-robin strategy is compared as an ordered sequence; consistent-hashing/sticky-sessions are covered by unit semantics (stable pin per key, dead-member retry).',
           'The Rust selection cache is `<cache-dir>/cache.yaml` (the selected map); pinned stores the same map in bbolt `cache.db`. Only the persistence effect is compared.',
           'Relay is rejected by both engines: pinned v1.19.34 removed the type ("please using dialer-proxy instead") and the Rust kernel reproduces that named rejection.',

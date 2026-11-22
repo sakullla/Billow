@@ -296,6 +296,13 @@ struct HealthTask {
     /// Next scheduled probe (pinned uses one ticker per interval).
     next_due: Mutex<Instant>,
     running: AtomicBool,
+    /// Pinned `HealthCheck.process` starts with `go hc.check()` and
+    /// `baseProvider.setProxies` checks again on every snapshot swap, both
+    /// regardless of `lazy`. This flag marks such a forced run.
+    initial: AtomicBool,
+    /// Provider generation already probed by a `HealthTarget::Provider` task;
+    /// a newer snapshot forces an immediate check.
+    generation: AtomicU64,
 }
 
 enum HealthTarget {
@@ -316,6 +323,9 @@ pub struct GroupRegistry {
     groups: Vec<GroupRuntime>,
     index: BTreeMap<String, usize>,
     health: Mutex<BTreeMap<(MemberSource, String, String), HealthState>>,
+    /// Pinned provider `Touch()` timestamps (one `lastTouch` per provider
+    /// health check). Only provider-targeted lazy tasks consult them.
+    provider_touched: Mutex<BTreeMap<String, Instant>>,
     tasks: Vec<HealthTask>,
     cache: Option<SelectionCache>,
     dials: AtomicU64,
@@ -396,6 +406,7 @@ impl GroupRegistry {
             groups,
             index,
             health: Mutex::new(BTreeMap::new()),
+            provider_touched: Mutex::new(BTreeMap::new()),
             tasks: Vec::new(),
             cache,
             dials: AtomicU64::new(0),
@@ -469,6 +480,22 @@ impl GroupRegistry {
         cache.versions = versions;
         cache.members = members.clone();
         members
+    }
+
+    /// The group's inline (compatible-provider) members only. Pinned creates
+    /// a group `HealthCheck` with the `proxies` list, never with the expanded
+    /// `use` provider members.
+    fn inline_members(&self, position: usize) -> Vec<Member> {
+        self.groups[position]
+            .def
+            .proxies
+            .iter()
+            .map(|name| Member {
+                name: name.clone(),
+                source: MemberSource::Inline,
+                reference: self.resolve_inline_name(name),
+            })
+            .collect()
     }
 
     fn member_versions(&self, def: &ProxyGroup) -> Vec<u64> {
@@ -613,8 +640,13 @@ impl GroupRegistry {
 
     fn empty_fallback(&self, fallback: &EmptyFallback) -> Member {
         match fallback {
-            EmptyFallback::Direct => Member {
+            EmptyFallback::Compatible => Member {
                 name: "COMPATIBLE".to_string(),
+                source: MemberSource::EmptyFallback,
+                reference: MemberRef::Builtin(Builtin::Direct),
+            },
+            EmptyFallback::Direct => Member {
+                name: "DIRECT".to_string(),
                 source: MemberSource::EmptyFallback,
                 reference: MemberRef::Builtin(Builtin::Direct),
             },
@@ -931,9 +963,9 @@ impl GroupRegistry {
                 }),
             Action::Group(index) => {
                 if touch {
-                    self.touch(index);
+                    self.dials.fetch_add(1, Ordering::Relaxed);
                 }
-                self.resolve_group(index, target, &mut Vec::new())
+                self.resolve_group(index, target, &mut Vec::new(), touch)
             }
         }
     }
@@ -943,12 +975,19 @@ impl GroupRegistry {
         position: usize,
         target: &crate::rules::Target,
         visiting: &mut Vec<usize>,
+        touch: bool,
     ) -> Result<Selected, GroupError> {
         if visiting.contains(&position) {
             return Err(GroupError::UnknownGroup(format!(
                 "circular proxy group reference at '{}'",
                 self.groups[position].def.name
             )));
+        }
+        // Pinned `GetProxies(true)` touches every provider of the group on a
+        // real dial; a nested group is reached through its own `DialContext`,
+        // which touches the nested group's providers as well.
+        if touch {
+            self.touch_group(position);
         }
         visiting.push(position);
         let def = &self.groups[position];
@@ -967,7 +1006,7 @@ impl GroupRegistry {
             MemberRef::Builtin(Builtin::Reject) => Ok(Selected::Reject),
             MemberRef::Builtin(Builtin::RejectDrop) => Ok(Selected::RejectDrop),
             MemberRef::Group(inner) => {
-                let mut selected = self.resolve_group(*inner, target, visiting)?;
+                let mut selected = self.resolve_group(*inner, target, visiting, touch)?;
                 if let Selected::Proxy { path, .. } = &mut selected {
                     path.insert(0, def.def.name.clone());
                 }
@@ -980,13 +1019,41 @@ impl GroupRegistry {
         }
     }
 
-    fn touch(&self, position: usize) {
+    /// Pinned `GroupBase.Touch()`: touch every provider attached to the group.
+    /// The inline block is the group's own compatible provider, so its
+    /// `lastTouch` is the group timestamp; every `use` provider gets its own.
+    fn touch_group(&self, position: usize) {
         let now = Instant::now();
         *self.groups[position]
             .touched
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
-        self.dials.fetch_add(1, Ordering::Relaxed);
+        let mut touched = self
+            .provider_touched
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for provider in &self.groups[position].def.use_providers {
+            touched.insert(provider.clone(), now);
+        }
+    }
+
+    /// The `dialer-proxy` chain of `proxy`, starting with the proxy itself.
+    /// The loader accepts only inline proxy names as a dialer target, so the
+    /// inline index is the complete graph (the engine's `chain_for` walks the
+    /// same list).
+    fn proxy_chain(&self, proxy: &Arc<Proxy>) -> Vec<Arc<Proxy>> {
+        let mut hops = vec![proxy.clone()];
+        let mut current = proxy.dialer_proxy().map(str::to_string);
+        while let Some(name) = current {
+            let Some(index) = self.inline_index.get(&name).copied() else {
+                break;
+            };
+            let next = self.inline[index].clone();
+            let following = next.dialer_proxy().map(str::to_string);
+            hops.push(next);
+            current = following;
+        }
+        hops
     }
 
     /// Group status list for hosts (T25 builds `/proxies` from this).
@@ -1031,7 +1098,8 @@ impl GroupRegistry {
             hidden: runtime.def.hidden,
             icon: runtime.def.icon.clone(),
             empty_fallback: match runtime.def.empty_fallback {
-                EmptyFallback::Direct => "COMPATIBLE".to_string(),
+                EmptyFallback::Compatible => "COMPATIBLE".to_string(),
+                EmptyFallback::Direct => "DIRECT".to_string(),
                 EmptyFallback::Reject => "REJECT".to_string(),
                 EmptyFallback::RejectDrop => "REJECT-DROP".to_string(),
                 EmptyFallback::Proxy(index) => self.inline[index].name.clone(),
@@ -1333,8 +1401,11 @@ impl GroupRegistry {
             let selected = match &member.reference {
                 MemberRef::Builtin(Builtin::Direct) => Selected::Direct,
                 MemberRef::Builtin(_) => return Err("reject member".to_string()),
+                // Pinned `URLTest`/`GroupBase.URLTest` walks nested members
+                // with `GetProxies(false)`: a probe must not refresh the lazy
+                // touch state of the nested group.
                 MemberRef::Group(position) => self
-                    .resolve_group(*position, &target, &mut Vec::new())
+                    .resolve_group(*position, &target, &mut Vec::new(), false)
                     .map_err(|error| error.to_string())?,
                 MemberRef::Proxy(proxy) => Selected::Proxy {
                     proxy: proxy.clone(),
@@ -1352,9 +1423,14 @@ impl GroupRegistry {
                     Box::new(stream)
                 }
                 Selected::Proxy { proxy, .. } => {
-                    let chain = [proxy.as_ref()];
+                    // Pinned `Proxy.URLTest` dials through the same adapter,
+                    // whose `DialContext` applies the full `dialer-proxy`
+                    // chain. Use the engine's chain resolution rather than a
+                    // single hop so a probe is not bypassed around the hop.
+                    let chain = self.proxy_chain(&proxy);
+                    let hops = chain.iter().map(|hop| hop.as_ref()).collect::<Vec<_>>();
                     let dialed = outbound::dial_chain(
-                        &chain,
+                        &hops,
                         &dial_target,
                         self.dial_timeout,
                         &self.tls,
@@ -1423,8 +1499,12 @@ impl GroupRegistry {
                     lazy: def.lazy,
                     filter: Vec::new(),
                     targets: HealthTarget::Inline(position),
-                    next_due: Mutex::new(Instant::now() + Duration::from_secs(def.interval.max(1))),
+                    // Pinned `HealthCheck.process` starts with
+                    // `go hc.check()` before its first interval tick.
+                    next_due: Mutex::new(Instant::now()),
                     running: AtomicBool::new(false),
+                    initial: AtomicBool::new(true),
+                    generation: AtomicU64::new(0),
                 });
             }
             // An explicit group URL registers an extra probe on `use` providers.
@@ -1434,11 +1514,14 @@ impl GroupRegistry {
                     // Pinned `registerHealthCheckTask`: an enabled provider
                     // health check keeps its own interval and ticker; only a
                     // provider without one borrows the group interval.
-                    let provider_interval = self
+                    let provider_config = self
                         .providers
                         .proxy_provider(provider)
-                        .filter(|slot| slot.config.health_check.enable)
-                        .map(|slot| slot.config.health_check.interval)
+                        .map(|slot| slot.config.health_check.clone());
+                    let provider_interval = provider_config
+                        .as_ref()
+                        .filter(|config| config.enable)
+                        .map(|config| config.interval)
                         .unwrap_or(0);
                     let interval = if provider_interval > 0 {
                         provider_interval
@@ -1448,6 +1531,18 @@ impl GroupRegistry {
                     if interval == 0 {
                         continue;
                     }
+                    // The extra URL lives inside the provider's own
+                    // `HealthCheck`, so its `lazy` flag and `lastTouch` are the
+                    // provider's, never the group's.
+                    let lazy = provider_config
+                        .as_ref()
+                        .map(|config| config.lazy)
+                        .unwrap_or(true);
+                    let generation = self
+                        .providers
+                        .proxy_provider(provider)
+                        .map(|slot| slot.snapshot().generation)
+                        .unwrap_or(0);
                     tasks.push(HealthTask {
                         label: format!("group:{}->provider:{provider}", def.name),
                         url: def.url.clone(),
@@ -1458,26 +1553,28 @@ impl GroupRegistry {
                             def.timeout
                         }),
                         interval: Duration::from_secs(interval),
-                        lazy: def.lazy,
+                        lazy,
                         filter: runtime.filter.clone(),
                         targets: HealthTarget::Provider(provider.clone()),
-                        next_due: Mutex::new(Instant::now() + Duration::from_secs(interval)),
+                        next_due: Mutex::new(Instant::now()),
                         running: AtomicBool::new(false),
+                        initial: AtomicBool::new(true),
+                        generation: AtomicU64::new(generation),
                     });
                 }
             }
         }
         for provider in &self.providers.proxy_provider_names() {
-            let config = self
-                .providers
-                .proxy_provider(provider)
-                .map(|slot| slot.config.health_check.clone())
-                .unwrap_or_default();
+            let Some(slot) = self.providers.proxy_provider(provider) else {
+                continue;
+            };
+            let config = slot.config.health_check.clone();
             if !config.enable || config.url.as_deref().unwrap_or("").trim().is_empty() {
                 continue;
             }
             let expected = ExpectedStatus::parse(&config.expected_status)
                 .map_err(|e| ConfigError::InvalidValue(format!("proxy-provider '{provider}': {e}")))?;
+            let interval = if config.interval == 0 { 300 } else { config.interval };
             tasks.push(HealthTask {
                 label: format!("provider:{provider}"),
                 url: config.url.clone().unwrap_or_default(),
@@ -1487,18 +1584,38 @@ impl GroupRegistry {
                 } else {
                     config.timeout
                 }),
-                interval: Duration::from_secs(if config.interval == 0 { 300 } else { config.interval }),
+                interval: Duration::from_secs(interval),
                 lazy: config.lazy,
                 filter: Vec::new(),
                 targets: HealthTarget::Provider(provider.to_string()),
-                next_due: Mutex::new(
-                    Instant::now()
-                        + Duration::from_secs(if config.interval == 0 { 300 } else { config.interval }),
-                ),
+                next_due: Mutex::new(Instant::now()),
                 running: AtomicBool::new(false),
+                initial: AtomicBool::new(true),
+                generation: AtomicU64::new(slot.snapshot().generation),
             });
         }
         Ok(tasks)
+    }
+
+    /// Pinned `baseProvider.setProxies`: a snapshot swap triggers one check
+    /// immediately, regardless of `lazy`. The scheduler wakes on its next tick
+    /// (at most one second, and the initial probes are already spawned).
+    pub fn note_provider_update(&self, provider: &str) {
+        let generation = self
+            .providers
+            .proxy_provider(provider)
+            .map(|slot| slot.snapshot().generation)
+            .unwrap_or(0);
+        for task in &self.tasks {
+            if matches!(&task.targets, HealthTarget::Provider(name) if name == provider) {
+                task.generation.store(generation, Ordering::Relaxed);
+                task.initial.store(true, Ordering::SeqCst);
+                *task
+                    .next_due
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+            }
+        }
     }
 
     /// Start the interval-driven health loop on the current Tokio runtime. It
@@ -1521,79 +1638,120 @@ impl GroupRegistry {
     }
 
     async fn scheduler_tick(self: &Arc<Self>) {
-        for task in &self.tasks {
+        let mut due = Vec::new();
+        for (index, task) in self.tasks.iter().enumerate() {
             let now = Instant::now();
-            {
-                let due = {
-                    let mut next = task
-                        .next_due
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if now < *next {
-                        false
-                    } else {
-                        // Pinned creates one ticker per interval; a skipped
-                        // lazy tick waits for the next interval boundary.
-                        *next = now + task.interval;
-                        true
-                    }
-                };
-                if !due {
-                    continue;
+            // Pinned `setProxies` checks again on every provider snapshot
+            // swap; a generation change is a forced (lazy-independent) run.
+            if let HealthTarget::Provider(name) = &task.targets {
+                let current = self
+                    .providers
+                    .proxy_provider(name)
+                    .map(|slot| slot.snapshot().generation)
+                    .unwrap_or(0);
+                if current != task.generation.load(Ordering::Relaxed) {
+                    task.generation.store(current, Ordering::Relaxed);
+                    task.initial.store(true, Ordering::SeqCst);
                 }
             }
-            // Pinned `HealthCheck.process`: a lazy check skips while the group
-            // has not been touched for at least one interval.
-            if task.lazy {
+            let forced = task.initial.load(Ordering::SeqCst);
+            let ready = {
+                let mut next = task
+                    .next_due
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !forced && now < *next {
+                    false
+                } else {
+                    // Pinned creates one ticker per interval; a skipped lazy
+                    // tick waits for the next interval boundary.
+                    *next = now + task.interval;
+                    true
+                }
+            };
+            if !ready {
+                continue;
+            }
+            if task.running.swap(true, Ordering::SeqCst) {
+                // A forced snapshot check arriving while the task runs stays
+                // pending for the next tick (pinned `singleDo` shares the run
+                // but the new snapshot is picked up by the next check).
+                continue;
+            }
+            if forced {
+                task.initial.store(false, Ordering::SeqCst);
+            } else if task.lazy {
+                // Pinned `HealthCheck.process` reads the task's own
+                // `lastTouch`: the group timestamp for a compatible provider,
+                // the provider timestamp for a provider health check.
                 let touched = match &task.targets {
                     HealthTarget::Inline(position) => *self.groups[*position]
                         .touched
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                    HealthTarget::Provider(_) => None,
+                    HealthTarget::Provider(name) => self
+                        .provider_touched
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get(name)
+                        .copied(),
                 };
-                match touched {
-                    None => continue,
-                    Some(at) if now.duration_since(at) >= task.interval => continue,
-                    _ => {}
+                let skip = match touched {
+                    None => true,
+                    Some(at) => now.duration_since(at) >= task.interval,
+                };
+                if skip {
+                    task.running.store(false, Ordering::SeqCst);
+                    continue;
                 }
             }
-            if task.running.swap(true, Ordering::SeqCst) {
-                continue;
-            }
-            let members = match &task.targets {
-                HealthTarget::Inline(position) => self.members(*position),
-                HealthTarget::Provider(name) => match self.providers.proxy_provider(name) {
-                    Some(slot) => slot
-                        .snapshot()
-                        .proxies
-                        .iter()
-                        .map(|proxy| Member {
-                            name: proxy.name.clone(),
-                            source: MemberSource::Provider(name.clone()),
-                            reference: MemberRef::Proxy(Arc::new(proxy.clone())),
-                        })
-                        .collect(),
-                    None => Vec::new(),
-                },
-            };
-            tracing::debug!(
-                task = %task.label,
-                url = %task.url,
-                members = members.len(),
-                "group health check"
-            );
-            let _ = self
-                .probe_members(
-                    members,
-                    task.url.clone(),
-                    task.expected.clone(),
-                    task.timeout,
-                    task.filter.clone(),
-                )
-                .await;
-            task.running.store(false, Ordering::SeqCst);
+            due.push(index);
         }
+        // Pinned runs each `HealthCheck.check()` as its own goroutine and
+        // `setProxies` starts one per swap; do not serialise slow probes or
+        // stall the one-second scheduler tick on a distant timeout.
+        for index in due {
+            let registry = self.clone();
+            tokio::spawn(async move {
+                registry.run_task(index).await;
+            });
+        }
+    }
+
+    async fn run_task(self: &Arc<Self>, index: usize) {
+        let task = &self.tasks[index];
+        let members = match &task.targets {
+            HealthTarget::Inline(position) => self.inline_members(*position),
+            HealthTarget::Provider(name) => match self.providers.proxy_provider(name) {
+                Some(slot) => slot
+                    .snapshot()
+                    .proxies
+                    .iter()
+                    .map(|proxy| Member {
+                        name: proxy.name.clone(),
+                        source: MemberSource::Provider(name.clone()),
+                        reference: MemberRef::Proxy(Arc::new(proxy.clone())),
+                    })
+                    .collect(),
+                None => Vec::new(),
+            },
+        };
+        tracing::debug!(
+            task = %task.label,
+            url = %task.url,
+            members = members.len(),
+            "group health check"
+        );
+        let _ = self
+            .probe_members(
+                members,
+                task.url.clone(),
+                task.expected.clone(),
+                task.timeout,
+                task.filter.clone(),
+            )
+            .await;
+        task.running.store(false, Ordering::SeqCst);
     }
 
     /// Whether any group on `path` sets `disable-udp` (pinned `SupportUDP()`

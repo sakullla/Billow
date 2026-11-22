@@ -115,10 +115,12 @@
     },
     "proxy-providers": {
       "status": "partial",
-      "reason": "file/http/inline vehicles; filter/exclude-filter split on a backtick; exclude-type split on |; override (udp, skip-cert-verify, dialer-proxy, additional-prefix/suffix, proxy-name) applied; other pinned override fields, age-secret-key, and group use/providers are named/rejected. Latency probing is T23.",
+      "reason": "file/http/inline vehicles; filter/exclude-filter split on a backtick; exclude-type split on |; override (udp, skip-cert-verify, dialer-proxy, additional-prefix/suffix, proxy-name) applied; other pinned override fields, age-secret-key, and group use/providers are named/rejected. T23 health-check: an enabled provider probes once at startup and after every snapshot swap even with the default lazy flag; lazy ticks use the provider's own lastTouch.",
       "evidence": [
         "tests/config.rs",
-        "tests/resources.rs"
+        "tests/resources.rs",
+        "tests/groups.rs::provider_health_check_probes_at_startup_with_default_lazy",
+        "tests/groups.rs::provider_snapshot_update_triggers_a_health_check"
       ]
     },
     "sub-rules": {
@@ -203,7 +205,7 @@
     },
     "proxy-groups": {
       "status": "implemented",
-      "reason": "T23: select/url-test/fallback/load-balance with nested groups, `proxies` (inline/DIRECT/REJECT/REJECT-DROP/COMPATIBLE), `use` providers, include-all/include-all-proxies/include-all-providers, backtick-separated filter/exclude-filter, `|`-separated exclude-type compared against the pinned adapter name, interval/timeout/lazy/max-failed-times/expected-status/tolerance, default-selected, disable-udp/hidden/icon and empty-fallback. `relay` is rejected with the pinned v1.19.34 removal message. load-balance strategies: consistent-hashing (deterministic FNV-1a key; pinned maphash uses a per-process random seed), round-robin, sticky-sessions. hash-key `in-user` is named as unimplemented. Rule targets may name a group.",
+      "reason": "T23: select/url-test/fallback/load-balance with nested groups, `proxies` (inline/DIRECT/REJECT/REJECT-DROP/COMPATIBLE), `use` providers, include-all/include-all-proxies/include-all-providers (an empty include-all-proxies expansion uses the configured empty-fallback name (REJECT blocks instead of dialing COMPATIBLE, and DIRECT keeps the DIRECT member name; the default is COMPATIBLE)), backtick-separated filter/exclude-filter, `|`-separated exclude-type compared against the pinned adapter name, interval/timeout/lazy/max-failed-times/expected-status/tolerance, default-selected, disable-udp/hidden/icon and empty-fallback. Health checks probe once at startup and again after a provider snapshot swap regardless of lazy; group tasks use the group lastTouch, provider tasks use the provider's own lazy/lastTouch, real dials touch every group on the path (including nested groups) and their use providers. `relay` is rejected with the pinned v1.19.34 removal message. load-balance strategies: consistent-hashing (deterministic FNV-1a key; pinned maphash uses a per-process random seed), round-robin, sticky-sessions. hash-key `in-user` is named as unimplemented. Rule targets may name a group.",
       "evidence": [
         "tests/groups.rs",
         "evidence/t23-differential.json",
@@ -1406,9 +1408,12 @@
     },
     "url-test": {
       "status": "implemented",
-      "reason": "pinned fast()-algorithm: first member until probes exist, then lowest LastDelayForTestUrl among alive members, `tolerance` keeps the current node, fixed selection wins while alive, on-dial-failure thresholds trigger a health check.",
+      "reason": "pinned fast()-algorithm: first member until probes exist, then lowest LastDelayForTestUrl among alive members, `tolerance` keeps the current node (on a later resolution; the pinned `fastNotExist` first-member quirk is reproduced), fixed selection wins while alive, on-dial-failure thresholds trigger a health check. The startup check runs immediately even with the default lazy/interval config, and probes dial through the member's full dialer-proxy chain.",
       "evidence": [
         "tests/groups.rs::url_test_picks_the_lowest_delay_and_falls_back",
+        "tests/groups.rs::url_test_probes_at_startup_with_default_lazy",
+        "tests/groups.rs::tolerance_keeps_or_switches_the_previous_fast_node",
+        "tests/groups.rs::health_probe_uses_the_dialer_proxy_chain",
         "evidence/t23-differential.json"
       ]
     },
@@ -1417,6 +1422,7 @@
       "reason": "first member AliveForTestUrl; a fixed selection that died is cleared and scanning continues; members with no probe record yet are alive (pinned initial alive=true).",
       "evidence": [
         "tests/groups.rs::fallback_moves_off_a_dead_node",
+        "tests/groups.rs::nested_auto_group_probes_at_startup_and_serves_outer_traffic",
         "evidence/t23-differential.json"
       ]
     },

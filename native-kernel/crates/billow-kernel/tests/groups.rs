@@ -222,6 +222,27 @@ rules: ['MATCH,DIRECT']
 }
 
 #[test]
+fn include_all_proxies_empty_expansion_uses_the_configured_fallback() {
+    // Pinned `parser.go` appends `groupOption.EmptyFallback`, not a hard-coded
+    // COMPATIBLE. With `empty-fallback: REJECT` the group must block instead
+    // of falling back to a direct route.
+    let yaml = r#"mixed-port: 1
+proxy-groups:
+  - {name: blocked, type: select, include-all-proxies: true, empty-fallback: REJECT}
+  - {name: plain, type: select, include-all-proxies: true}
+  - {name: direct, type: select, include-all-proxies: true, empty-fallback: DIRECT}
+rules: ['MATCH,DIRECT']
+"#;
+    let loaded = billow_kernel::load_config(yaml, "g.yaml").expect("empty expansion loads");
+    assert_eq!(loaded.config.proxy_groups[0].proxies, ["REJECT"]);
+    assert_eq!(loaded.config.proxy_groups[0].empty_fallback, EmptyFallback::Reject);
+    assert_eq!(loaded.config.proxy_groups[1].proxies, ["COMPATIBLE"]);
+    assert_eq!(loaded.config.proxy_groups[1].empty_fallback, EmptyFallback::Compatible);
+    assert_eq!(loaded.config.proxy_groups[2].proxies, ["DIRECT"]);
+    assert_eq!(loaded.config.proxy_groups[2].empty_fallback, EmptyFallback::Direct);
+}
+
+#[test]
 fn empty_fallback_and_profile_are_parsed() {
     let yaml = r#"mixed-port: 1
 proxies:
@@ -237,7 +258,7 @@ rules: ['MATCH,g']
     let loaded = billow_kernel::load_config(yaml, "g.yaml").expect("profile loads");
     assert!(loaded.config.profile.store_selected);
     assert!(loaded.config.profile.store_fake_ip);
-    assert_eq!(loaded.config.proxy_groups[0].empty_fallback, EmptyFallback::Direct);
+    assert_eq!(loaded.config.proxy_groups[0].empty_fallback, EmptyFallback::Compatible);
     assert_eq!(loaded.config.proxy_groups[1].empty_fallback, EmptyFallback::Proxy(0));
     assert!(
         loaded
@@ -248,6 +269,36 @@ rules: ['MATCH,g']
         loaded.warnings
     );
     assert_eq!(loaded.config.rules[0].action, Action::Group(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn filtered_empty_members_use_the_configured_fallback_name() {
+    // Pinned `GroupBase.GetProxies` returns `gb.EmptyFallback()`, whose name
+    // follows the configured builtin: COMPATIBLE by default, DIRECT when the
+    // configuration names it.
+    let port = free_port();
+    let yaml = config_with(
+        port,
+        &http_proxy_line("a", 9),
+        "  - {name: compat, type: select, proxies: [a], exclude-filter: '^a'}\n  - {name: direct, type: select, proxies: [a], exclude-filter: '^a', empty-fallback: DIRECT}\n",
+        "  - MATCH,compat\n",
+    );
+    let dir = temp_dir("empty-fallback-name");
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    assert_eq!(
+        kernel.groups().group_status("compat").expect("compat").all,
+        ["COMPATIBLE"]
+    );
+    assert_eq!(
+        kernel.groups().group_status("direct").expect("direct").all,
+        ["DIRECT"]
+    );
+    assert_eq!(
+        kernel.groups().group_status("direct").expect("direct").empty_fallback,
+        "DIRECT"
+    );
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -411,6 +462,348 @@ async fn url_test_picks_the_lowest_delay_and_falls_back() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn url_test_probes_at_startup_with_default_lazy() {
+    // Pinned `NewHealthCheck`/`HealthCheck.process` runs `go hc.check()`
+    // before the first interval tick even when `lazy` defaults to true (the
+    // differential's default configuration omits both `lazy` and `interval`).
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let slow = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(300),
+        status: 204,
+    });
+    let fast = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(10),
+        status: 204,
+    });
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+    let yaml = config_with(
+        port,
+        &format!(
+            "{}{}",
+            http_proxy_line("slow", slow.port),
+            http_proxy_line("fast", fast.port)
+        ),
+        &format!("  - {{name: AUTO, type: url-test, proxies: [slow, fast], url: '{url}'}}\n"),
+        "  - MATCH,AUTO\n",
+    );
+    let dir = temp_dir("urltest-default-lazy");
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    let picked = wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("AUTO")
+            .map(|status| {
+                status.now == "fast"
+                    && status
+                        .members
+                        .iter()
+                        .any(|member| member.name == "fast" && member.delay.is_some())
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    let status = groups.group_status("AUTO").expect("status");
+    assert!(
+        picked,
+        "the startup probe must run despite the default lazy flag: {status:?}"
+    );
+    assert!(
+        status
+            .members
+            .iter()
+            .find(|member| member.name == "slow")
+            .and_then(|member| member.delay)
+            .is_none_or(|delay| delay > 100),
+        "the 300 ms member must not win: {status:?}"
+    );
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn nested_auto_group_probes_at_startup_and_serves_outer_traffic() {
+    // A nested url-test group has its own `HealthCheck`; its startup probe
+    // runs independently of the outer selector, and outer dials follow the
+    // nested selection.
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let slow = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(250),
+        status: 204,
+    });
+    let fast = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(10),
+        status: 204,
+    });
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+    let yaml = config_with(
+        port,
+        &format!(
+            "{}{}",
+            http_proxy_line("slow", slow.port),
+            http_proxy_line("fast", fast.port)
+        ),
+        &format!(
+            "  - {{name: INNER, type: url-test, proxies: [slow, fast], url: '{url}'}}\n  - {{name: OUTER, type: select, proxies: [INNER]}}\n"
+        ),
+        "  - MATCH,OUTER\n",
+    );
+    let dir = temp_dir("nested-default-lazy");
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    assert!(wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("INNER")
+            .map(|status| status.now == "fast")
+            .unwrap_or(false)
+    })
+    .await);
+    let before_fast = fast.connections.load(Ordering::Relaxed);
+    let before_slow = slow.connections.load(Ordering::Relaxed);
+    assert_eq!(
+        connect_through(&kernel, format!("127.0.0.1:{}", echo.port).parse().unwrap()).await,
+        "ping"
+    );
+    assert_eq!(fast.connections.load(Ordering::Relaxed), before_fast + 1);
+    assert_eq!(slow.connections.load(Ordering::Relaxed), before_slow);
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tolerance_keeps_or_switches_the_previous_fast_node() {
+    // Pinned `URLTest.fast`: the first computation sets the fastest member;
+    // a later computation keeps it while `previous.delay <= fast.delay +
+    // tolerance` (and switches to it when it is the first member, which the
+    // pinned `fastNotExist` quirk deliberately treats as "not seen").
+    async fn observe(tolerance: u16) -> String {
+        let echo = spawn_endpoint(EchoMode::Echo).await;
+        // First member: slow on its first probe, then within tolerance of the
+        // second member. Second member is constant at 100 ms.
+        let changing = spawn_http_proxy_node(ProxyNodeMode::HealthSequence {
+            delays: vec![Duration::from_millis(200), Duration::from_millis(90)],
+            status: 204,
+        });
+        let steady = spawn_http_proxy_node(ProxyNodeMode::Health {
+            delay: Duration::from_millis(100),
+            status: 204,
+        });
+        let port = free_port();
+        let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+        let yaml = config_with(
+            port,
+            &format!(
+                "{}{}",
+                http_proxy_line("changing", changing.port),
+                http_proxy_line("steady", steady.port)
+            ),
+            &format!(
+                "  - {{name: AUTO, type: url-test, proxies: [changing, steady], url: '{url}', interval: 3, lazy: false, timeout: 1000, tolerance: {tolerance}}}\n"
+            ),
+            "  - MATCH,AUTO\n",
+        );
+        let dir = temp_dir(&format!("tolerance-{tolerance}"));
+        let (mut kernel, _) = start(&yaml, &dir, None);
+        let groups = kernel.groups().clone();
+        assert!(wait_until(Duration::from_secs(5), || {
+            groups
+                .group_status("AUTO")
+                .map(|status| {
+                    status.now == "steady"
+                        && status
+                            .members
+                            .iter()
+                            .all(|member| member.delay.is_some())
+                })
+                .unwrap_or(false)
+        })
+        .await, "the first resolution must pick the 100 ms member");
+        // The second health round changes the first member to 90 ms.
+        tokio::time::sleep(Duration::from_millis(3400)).await;
+        let now = groups
+            .group_status("AUTO")
+            .map(|status| status.now)
+            .unwrap_or_default();
+        kernel.stop().expect("stop");
+        let _ = std::fs::remove_dir_all(&dir);
+        now
+    }
+    assert_eq!(observe(50).await, "steady", "tolerance 50 keeps the previous node");
+    assert_eq!(observe(0).await, "changing", "tolerance 0 switches to the faster node");
+}
+
+// ---------------------------------------------------------------------------
+// Runtime: provider health checks and dialer-proxy chains
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_health_check_probes_at_startup_with_default_lazy() {
+    let dir = temp_dir("provider-default-lazy");
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let slow = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(300),
+        status: 204,
+    });
+    let fast = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(10),
+        status: 204,
+    });
+    // A file provider with an enabled health check: pinned `baseProvider.Initial`
+    // starts `process()`, which checks once immediately even with the default
+    // `lazy: true`.
+    std::fs::write(
+        dir.join("nodes.yaml"),
+        format!(
+            "proxies:\n  - {{name: slow, type: http, server: 127.0.0.1, port: {}}}\n  - {{name: fast, type: http, server: 127.0.0.1, port: {}}}\n",
+            slow.port, fast.port
+        ),
+    )
+    .expect("provider file");
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+    let yaml = format!(
+        "mixed-port: {port}\nlog-level: silent\nproxy-providers:\n  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: true\n      url: '{url}'\nproxy-groups:\n  - {{name: AUTO, type: url-test, use: [remote]}}\nrules:\n  - MATCH,AUTO\n"
+    );
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    let picked = wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("AUTO")
+            .map(|status| {
+                status.now == "fast"
+                    && status
+                        .members
+                        .iter()
+                        .any(|member| member.name == "fast" && member.delay.is_some())
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        picked,
+        "the provider startup check must populate the group's health: {:?}",
+        groups.group_status("AUTO")
+    );
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_snapshot_update_triggers_a_health_check() {
+    let dir = temp_dir("provider-update-health");
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let slow = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(200),
+        status: 204,
+    });
+    let fast = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(10),
+        status: 204,
+    });
+    std::fs::write(
+        dir.join("nodes.yaml"),
+        format!(
+            "proxies:\n  - {{name: slow, type: http, server: 127.0.0.1, port: {}}}\n",
+            slow.port
+        ),
+    )
+    .expect("provider file");
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+    let yaml = format!(
+        "mixed-port: {port}\nlog-level: silent\nproxy-providers:\n  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: true\n      url: '{url}'\nproxy-groups:\n  - {{name: AUTO, type: url-test, use: [remote]}}\nrules:\n  - MATCH,AUTO\n"
+    );
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    assert!(wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("AUTO")
+            .map(|status| status.now == "slow")
+            .unwrap_or(false)
+    })
+    .await);
+    std::fs::write(
+        dir.join("nodes.yaml"),
+        format!(
+            "proxies:\n  - {{name: slow, type: http, server: 127.0.0.1, port: {}}}\n  - {{name: fast, type: http, server: 127.0.0.1, port: {}}}\n",
+            slow.port, fast.port
+        ),
+    )
+    .expect("provider file update");
+    kernel
+        .update_proxy_provider("remote")
+        .expect("provider update");
+    let picked = wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("AUTO")
+            .map(|status| status.now == "fast")
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(
+        picked,
+        "a provider snapshot swap must probe the new member before url-test ranks it: {:?}",
+        groups.group_status("AUTO")
+    );
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn health_probe_uses_the_dialer_proxy_chain() {
+    // A probe must dial through the member's full chain; a single-hop dial
+    // would bypass the SOCKS5 hop and never connect it.
+    let health = spawn_endpoint(EchoMode::Health {
+        delay: Duration::ZERO,
+        status: 204,
+    })
+    .await;
+    let exit = spawn_socks5_node();
+    let hop = spawn_socks5_node();
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", health.port);
+    let yaml = config_with(
+        port,
+        &format!(
+            "  - {{name: exit, type: socks5, server: 127.0.0.1, port: {}, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {}}}\n",
+            exit.port, hop.port
+        ),
+        &format!(
+            "  - {{name: AUTO, type: url-test, proxies: [exit], url: '{url}', interval: 1, lazy: false, timeout: 1000}}\n"
+        ),
+        "  - MATCH,AUTO\n",
+    );
+    let dir = temp_dir("probe-chain");
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    let probed = wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("AUTO")
+            .and_then(|status| {
+                status
+                    .members
+                    .iter()
+                    .find(|member| member.name == "exit")
+                    .and_then(|member| member.delay)
+            })
+            .is_some()
+    })
+    .await;
+    assert!(probed, "the chained probe must succeed");
+    assert!(
+        hop.connections.load(Ordering::Relaxed) > 0,
+        "the probe must enter the dialer-proxy hop"
+    );
+    assert!(
+        exit.connections.load(Ordering::Relaxed) > 0,
+        "the exit is reached through the hop"
+    );
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fallback_moves_off_a_dead_node() {
     let echo = spawn_endpoint(EchoMode::Echo).await;
     let dead_port = free_port();
@@ -505,9 +898,18 @@ async fn nested_group_resolves_to_the_inner_selection() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn load_balance_round_robin_cycles_the_alive_members() {
     let echo = spawn_endpoint(EchoMode::Echo).await;
-    let node_a = spawn_http_proxy_node(ProxyNodeMode::Forward);
-    let node_b = spawn_http_proxy_node(ProxyNodeMode::Forward);
+    // Automatic group types get the pinned default 300 s startup probe; the
+    // nodes must answer its HEAD (and still forward ordinary tunnels).
+    let node_a = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::ZERO,
+        status: 204,
+    });
+    let node_b = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::ZERO,
+        status: 204,
+    });
     let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
     let yaml = config_with(
         port,
         &format!(
@@ -515,11 +917,21 @@ async fn load_balance_round_robin_cycles_the_alive_members() {
             http_proxy_line("node-a", node_a.port),
             http_proxy_line("node-b", node_b.port)
         ),
-        "  - {name: LB, type: load-balance, proxies: [node-a, node-b], strategy: round-robin}\n",
+        &format!(
+            "  - {{name: LB, type: load-balance, proxies: [node-a, node-b], strategy: round-robin, url: '{url}'}}\n"
+        ),
         "  - MATCH,LB\n",
     );
     let dir = temp_dir("lb");
     let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    assert!(wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("LB")
+            .map(|status| status.members.iter().all(|member| member.delay.is_some()))
+            .unwrap_or(false)
+    })
+    .await);
     let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
     for expected in ["a", "b", "a", "b"] {
         let before_a = node_a.connections.load(Ordering::Relaxed);
@@ -545,9 +957,16 @@ async fn load_balance_round_robin_cycles_the_alive_members() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn load_balance_consistent_hashing_pins_one_destination() {
     let echo = spawn_endpoint(EchoMode::Echo).await;
-    let node_a = spawn_http_proxy_node(ProxyNodeMode::Forward);
-    let node_b = spawn_http_proxy_node(ProxyNodeMode::Forward);
+    let node_a = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::ZERO,
+        status: 204,
+    });
+    let node_b = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::ZERO,
+        status: 204,
+    });
     let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
     let yaml = config_with(
         port,
         &format!(
@@ -555,11 +974,19 @@ async fn load_balance_consistent_hashing_pins_one_destination() {
             http_proxy_line("node-a", node_a.port),
             http_proxy_line("node-b", node_b.port)
         ),
-        "  - {name: LB, type: load-balance, proxies: [node-a, node-b]}\n",
+        &format!("  - {{name: LB, type: load-balance, proxies: [node-a, node-b], url: '{url}'}}\n"),
         "  - MATCH,LB\n",
     );
     let dir = temp_dir("lb-hash");
     let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    assert!(wait_until(Duration::from_secs(5), || {
+        groups
+            .group_status("LB")
+            .map(|status| status.members.iter().all(|member| member.delay.is_some()))
+            .unwrap_or(false)
+    })
+    .await);
     let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
     let mut served = Vec::new();
     for _ in 0..4 {

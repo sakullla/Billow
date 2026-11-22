@@ -412,7 +412,13 @@ impl Kernel {
         &self,
         name: &str,
     ) -> Result<crate::provider::ProviderUpdate, ConfigError> {
-        self.providers.update_proxy_provider(name)
+        let update = self.providers.update_proxy_provider(name)?;
+        // Pinned `baseProvider.setProxies` starts a health check immediately
+        // when the snapshot is swapped. The scheduler forces the provider's
+        // tasks on its next tick (and the generation watch covers providers
+        // updated through `providers()` directly).
+        self.groups.note_provider_update(name);
+        Ok(update)
     }
 
     pub fn stats(&self) -> Stats {

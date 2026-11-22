@@ -62,6 +62,8 @@ pub enum EchoMode {
     },
     /// Never answers and keeps the connection open (stall).
     Silent,
+    /// Answers a health-check `HEAD` as soon as the request head is complete.
+    Health { delay: Duration, status: u16 },
 }
 
 pub struct Endpoint {
@@ -85,6 +87,10 @@ pub async fn spawn_endpoint(mode: EchoMode) -> Endpoint {
             _ => None,
         },
         silent: matches!(mode, EchoMode::Silent),
+        health: match mode {
+            EchoMode::Health { delay, status } => Some((delay, status)),
+            _ => None,
+        },
         connections: connections.clone(),
         bytes_received: bytes_received.clone(),
     };
@@ -102,6 +108,7 @@ pub async fn spawn_endpoint(mode: EchoMode) -> Endpoint {
 struct EndpointConfig {
     reply: Option<(Vec<u8>, Duration)>,
     silent: bool,
+    health: Option<(Duration, u16)>,
     connections: std::sync::Arc<AtomicU64>,
     bytes_received: std::sync::Arc<AtomicU64>,
 }
@@ -128,6 +135,33 @@ async fn handle_connection(mut stream: TcpStream, config: EndpointConfig) {
         tokio::time::sleep(Duration::from_secs(3600)).await;
         return;
     }
+    if let Some((delay, status)) = config.health {
+        // Health-check node: answer as soon as a full request head arrived
+        // (the kernel's probe sends `HEAD ... Connection: close` without
+        // half-closing its write side).
+        let mut head = Vec::new();
+        loop {
+            match stream.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    received += n as u64;
+                    head.extend_from_slice(&buffer[..n]);
+                    if head.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        config.bytes_received.fetch_add(received, Ordering::Relaxed);
+        tokio::time::sleep(delay).await;
+        let reason = if status == 204 { "No Content" } else { "OK" };
+        let _ = stream
+            .write_all(format!("HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\n\r\n").as_bytes())
+            .await;
+        let _ = stream.shutdown().await;
+        return;
+    }
     let mut request = Vec::new();
     loop {
         match stream.read(&mut buffer).await {
@@ -151,6 +185,94 @@ async fn handle_connection(mut stream: TcpStream, config: EndpointConfig) {
         let _ = stream.write_all(&body).await;
     }
     let _ = stream.shutdown().await;
+}
+
+/// A minimal SOCKS5 CONNECT server (no-auth). Used as a `dialer-proxy` hop or
+/// exit in chain tests; it counts accepted connections.
+pub struct Socks5Node {
+    pub port: u16,
+    pub connections: std::sync::Arc<AtomicU64>,
+}
+
+pub fn spawn_socks5_node() -> Socks5Node {
+    let std_listener = bind_loopback();
+    let port = std_listener.local_addr().unwrap().port();
+    std_listener
+        .set_nonblocking(true)
+        .expect("nonblocking socks5 node");
+    let listener =
+        tokio::net::TcpListener::from_std(std_listener).expect("adopt socks5 listener");
+    let connections = std::sync::Arc::new(AtomicU64::new(0));
+    let counter = connections.clone();
+    std::mem::forget(tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn(async move {
+                let _ = serve_socks5_node(stream).await;
+            });
+        }
+    }));
+    Socks5Node { port, connections }
+}
+
+async fn serve_socks5_node(mut client: TcpStream) -> std::io::Result<()> {
+    let mut greeting = [0u8; 2];
+    client.read_exact(&mut greeting).await?;
+    if greeting[0] != 0x05 {
+        return Ok(());
+    }
+    let mut methods = vec![0u8; usize::from(greeting[1])];
+    client.read_exact(&mut methods).await?;
+    client.write_all(&[0x05, 0x00]).await?;
+    let mut head = [0u8; 4];
+    client.read_exact(&mut head).await?;
+    if head[0] != 0x05 || head[1] != 0x01 {
+        client.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+        return Ok(());
+    }
+    let host = match head[3] {
+        0x01 => {
+            let mut addr = [0u8; 4];
+            client.read_exact(&mut addr).await?;
+            std::net::Ipv4Addr::from(addr).to_string()
+        }
+        0x03 => {
+            let mut length = [0u8; 1];
+            client.read_exact(&mut length).await?;
+            let mut name = vec![0u8; usize::from(length[0])];
+            client.read_exact(&mut name).await?;
+            String::from_utf8_lossy(&name).to_string()
+        }
+        0x04 => {
+            let mut addr = [0u8; 16];
+            client.read_exact(&mut addr).await?;
+            std::net::Ipv6Addr::from(addr).to_string()
+        }
+        _ => {
+            client.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            return Ok(());
+        }
+    };
+    let mut port = [0u8; 2];
+    client.read_exact(&mut port).await?;
+    let port = u16::from_be_bytes(port);
+    match TcpStream::connect((host.as_str(), port)).await {
+        Ok(mut upstream) => {
+            client
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
+            let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        }
+        Err(_) => {
+            client
+                .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Minimal SOCKS5 CONNECT client (no-auth). Returns the stream after the success reply.
@@ -261,9 +383,11 @@ pub async fn wait_until<F: Fn() -> bool>(timeout: Duration, predicate: F) -> boo
 /// A local HTTP CONNECT proxy used as a group member. `Health` answers the
 /// health-check `HEAD` itself (with a controllable delay/status); `Forward`
 /// tunnels to the requested target.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum ProxyNodeMode {
     Health { delay: Duration, status: u16 },
+    /// Successive health answers use the next delay (the last one repeats).
+    HealthSequence { delays: Vec<Duration>, status: u16 },
     Forward,
 }
 
@@ -284,16 +408,19 @@ pub fn spawn_http_proxy_node(mode: ProxyNodeMode) -> ProxyNode {
         .expect("adopt proxy listener");
     let connections = std::sync::Arc::new(AtomicU64::new(0));
     let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let state = (connections.clone(), heads.clone());
+    let health_requests = std::sync::Arc::new(AtomicU64::new(0));
+    let state = (connections.clone(), heads.clone(), health_requests);
+    let mode = std::sync::Arc::new(mode);
     std::mem::forget(tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
-            let (connections, heads) = state.clone();
+            let (connections, heads, health_requests) = state.clone();
+            let mode = mode.clone();
             tokio::spawn(async move {
                 connections.fetch_add(1, Ordering::Relaxed);
-                let _ = serve_proxy_node(stream, mode, heads).await;
+                let _ = serve_proxy_node(stream, mode, heads, health_requests).await;
             });
         }
     }));
@@ -306,8 +433,9 @@ pub fn spawn_http_proxy_node(mode: ProxyNodeMode) -> ProxyNode {
 
 async fn serve_proxy_node(
     mut stream: TcpStream,
-    mode: ProxyNodeMode,
+    mode: std::sync::Arc<ProxyNodeMode>,
     heads: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    health_requests: std::sync::Arc<AtomicU64>,
 ) -> std::io::Result<()> {
     let mut buffer = vec![0u8; 4096];
     let mut head = Vec::new();
@@ -359,7 +487,20 @@ async fn serve_proxy_node(
     let mut leftover = head[head_end..].to_vec();
 
     let mut first_request = Vec::new();
-    if let ProxyNodeMode::Health { delay, status } = mode {
+    let health = match mode.as_ref() {
+        ProxyNodeMode::Health { delay, status } => Some((*delay, *status)),
+        ProxyNodeMode::HealthSequence { delays, status } => {
+            let index = health_requests.fetch_add(1, Ordering::Relaxed) as usize;
+            let delay = delays
+                .get(index)
+                .copied()
+                .or_else(|| delays.last().copied())
+                .unwrap_or_default();
+            Some((delay, *status))
+        }
+        ProxyNodeMode::Forward => None,
+    };
+    if let Some((delay, status)) = health {
         // Serve the health-check HEAD here; tunnel anything else.
         if leftover.is_empty() {
             let read = stream.read(&mut buffer).await?;

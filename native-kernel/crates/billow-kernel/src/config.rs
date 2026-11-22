@@ -626,6 +626,10 @@ fn parse_status(text: &str) -> Result<u16, String> {
 /// routing decision; a configured proxy name is resolved at load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmptyFallback {
+    /// The pinned default: the `COMPATIBLE` builtin (routes like DIRECT but
+    /// keeps its own member name).
+    Compatible,
+    /// An explicit `empty-fallback: DIRECT`.
     Direct,
     Reject,
     RejectDrop,
@@ -2284,6 +2288,10 @@ fn parse_proxy_groups(
         }
         let mut proxies_list = optional_string_list(mapping, "proxies")?;
         let mut use_providers = optional_string_list(mapping, "use")?;
+        let empty_fallback_name = optional_string(mapping, "empty-fallback")?
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "COMPATIBLE".to_string());
         let include_all = optional_bool(mapping, "include-all")?.unwrap_or(false);
         let mut include_all_proxies = optional_bool(mapping, "include-all-proxies")?.unwrap_or(false);
         let mut include_all_providers =
@@ -2318,7 +2326,11 @@ fn parse_proxy_groups(
                 }
             }
             if proxies_list.is_empty() && use_providers.is_empty() {
-                proxies_list.push("COMPATIBLE".to_string());
+                // Pinned `parser.go`: the empty expansion falls back to the
+                // configured `empty-fallback` name, not a hard-coded
+                // COMPATIBLE. `empty-fallback: REJECT` therefore blocks the
+                // group instead of turning it into a direct route.
+                proxies_list.push(empty_fallback_name.clone());
             }
         }
         if proxies_list.is_empty() && use_providers.is_empty() {
@@ -2431,12 +2443,9 @@ fn parse_proxy_groups(
             )));
         }
         let default_selected = optional_string(mapping, "default-selected")?;
-        let empty_fallback_name = optional_string(mapping, "empty-fallback")?
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "COMPATIBLE".to_string());
         let empty_fallback = match empty_fallback_name.as_str() {
-            "COMPATIBLE" | "DIRECT" => EmptyFallback::Direct,
+            "COMPATIBLE" => EmptyFallback::Compatible,
+            "DIRECT" => EmptyFallback::Direct,
             "REJECT" => EmptyFallback::Reject,
             "REJECT-DROP" => EmptyFallback::RejectDrop,
             other => match proxies.iter().position(|proxy| proxy.name == other) {

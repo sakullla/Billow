@@ -298,18 +298,27 @@ Health checks: `interval`, `timeout` (milliseconds, default 5000),
 `https://www.gstatic.com/generate_204` or the first `use` provider's
 health-check URL) and `expected-status` (pinned `/`/`,` range syntax) are
 honoured. A `select` group has no automatic probe; other types default to a
-300 s interval. Each task probes on its own interval boundary; `lazy` skips a
-boundary when the group was not touched since the previous one. Probes dial
-through the member (including nested groups) and issue `HEAD`, then record the
-per-URL alive flag and delay. The initial state matches pinned: a member with
-no probe record yet is alive and its delay is `65535`, so an untested group
-selects its first member. A failed dial triggers the pinned `onDialFailed`
-thresholds (a connection-refused error triggers immediately, otherwise
-`max-failed-times` within `timeout` trigger a health check; success resets the
-count). Provider `health-check` drives `use` provider members; an explicit
-group `url` additionally probes those members at the group URL with the group
-`filter`/`expected-status`. UDP datagrams through a group with `disable-udp`
-are dropped and logged.
+300 s interval. Pinned `HealthCheck.process` checks once immediately
+(`go hc.check()`) and `baseProvider.setProxies` checks again after every
+provider snapshot swap, both regardless of `lazy`; the Rust scheduler runs the
+same forced probe at startup and after `Kernel::update_proxy_provider` (or an
+observed generation change), for every group (nested groups have their own
+tasks), its inline members and every enabled provider. Afterwards each task
+probes on its own interval boundary, and `lazy` skips a boundary when that
+task was not touched since the previous one. A group task uses the group
+timestamp; a provider task uses the provider's own `lazy`/`lastTouch`. A real
+dial touches every group on the resolved path (outer and nested) and every
+`use` provider of those groups, while `now`/status reads and probes use the
+non-touching path. Probes dial through the member's full `dialer-proxy` chain
+(including nested groups) and issue `HEAD`, then record the per-URL alive flag
+and delay. The initial state matches pinned: a member with no probe record yet
+is alive and its delay is `65535`. A failed dial triggers the pinned
+`onDialFailed` thresholds (a connection-refused error triggers immediately,
+otherwise `max-failed-times` within `timeout` trigger a health check; success
+resets the count). Provider `health-check` drives `use` provider members; an
+explicit group `url` additionally probes those members at the group URL with
+the group `filter`/`expected-status` under the provider's lazy/touch state.
+UDP datagrams through a group with `disable-udp` are dropped and logged.
 
 Selection persistence: `profile.store-selected` (default true) writes fixed
 selections to `<cache-dir>/cache.yaml` and restores them before traffic, like
@@ -334,10 +343,13 @@ buckets are not byte-identical to pinned (pinned `maphash` is seeded per
 process; the Rust key is deterministic FNV-1a over the effective domain), the
 public-suffix approximation for the hash key is the last two labels (no PSL
 table in the kernel), and `load-balance.Now()` is empty exactly as pinned.
-Evidence: `tests/groups.rs` (parsing, filters/include-all, nesting, selection,
-failover, round-robin/consistent-hashing, provider `use`, persistence) and
-`tool/kernel-compat/evidence/t23-differential.json` (17 pinned-Mihomo cases +
-persistence, all matching).
+Evidence: `tests/groups.rs` (parsing, filters/include-all and the configured
+empty fallback, nesting, selection, startup probes under the default lazy
+config, provider snapshot re-checks, tolerance state changes, dialer-proxy
+probe chains, round-robin/consistent-hashing, provider `use`, persistence) and
+`tool/kernel-compat/evidence/t23-differential.json` (24 pinned-Mihomo cases +
+persistence, all matching; the tolerance cases sample twice because pinned
+caches `fastSingle` for 10 s).
 
 ## Protocol outbounds
 
@@ -847,14 +859,16 @@ Mihomo binary and a loopback provider server:
 group differential runs the same pinned binary with loopback CONNECT nodes:
 `node tool/kernel-compat/t23-differential.mjs --mihomo <binary> --rust
 <billow-kernel> --out tool/kernel-compat/evidence/t23-differential.json`
-(17 cases plus persistence; see `evidence/t23-groups.md`).
+(24 cases plus persistence; see `evidence/t23-groups.md`).
 
 - `tests/config.rs` — parsing, strict option tables, error tags.
 - `tests/groups.rs` — T23: every group type/field, relay rejection, cycles,
-  filter/exclude/include-all expansion, `use` provider members, rule targets
-  naming a group, url-test/fallback failover with controlled delays, nested
-  groups, load-balance round-robin/consistent-hashing and selection
-  persistence across a restart.
+  filter/exclude/include-all expansion and the configured empty fallback,
+  `use` provider members, rule targets naming a group, url-test/fallback
+  failover with controlled delays, startup probing with the default lazy
+  config, provider snapshot re-checks, tolerance keep/switch, nested groups,
+  probe through a dialer-proxy SOCKS5 chain, load-balance
+  round-robin/consistent-hashing and selection persistence across a restart.
 - `tests/resources.rs` — T24: every implemented rule type against the
   connection metadata, `SUB-RULE` action selection, all rule-provider
   vehicles/formats (including MRS), proxy-provider filters, generated
@@ -1037,7 +1051,7 @@ node tool/kernel-compat/runner.mjs \
 # the harness's own acceptance command
 node --test tool/kernel-compat/runner.test.mjs
 
-# T23 group/selection/health differential (17 cases + persistence)
+# T23 group/selection/health differential (24 cases + persistence)
 node tool/kernel-compat/t23-differential.mjs \
   --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 \
   --rust native-kernel/target/release/billow-kernel \
