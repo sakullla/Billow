@@ -2611,105 +2611,61 @@ pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeRevoked(
 }
 
 #[cfg(target_os = "android")]
-static ANDROID_RECOVERY_BUSY: AtomicBool = AtomicBool::new(false);
+static ANDROID_RECOVERY: Mutex<()> = Mutex::new(());
 
 #[cfg(target_os = "android")]
 static ANDROID_SCREEN_INTERACTIVE: AtomicBool = AtomicBool::new(true);
 
-/// Recovers Android VPN connectivity after underlying network roaming, Doze exit,
-/// or returning to foreground:
-/// - When the kernel is alive and `flush_sockets` is set, closes stale half-open
-///   sockets and flushes the DNS cache so traffic resumes cleanly on the new network.
-/// - When the kernel died or became unresponsive while Billow still believes it is
-///   connected, restarts the kernel automatically (or cleanly disconnects if recovery
-///   fails) so the app never displays a fake "已连接" state.
+/// Serialize wake checks and handovers so a concurrent read-only probe cannot drop a roam.
 #[cfg(target_os = "android")]
-fn recover_android_connection(app: AppHandle, flush_sockets: bool) {
-    if ANDROID_RECOVERY_BUSY
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return;
-    }
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            ANDROID_RECOVERY_BUSY.store(false, Ordering::SeqCst);
-        }
-    }
-    let _guard = Guard;
-
-    let (connected, endpoint) = with_profile(&app, |session| {
-        let connected = session.book.is_connected();
-        let endpoint = if connected {
-            profile::ProfileBook::controller_of(&mut session.runtime)
-        } else {
-            None
-        };
-        (connected, endpoint)
+fn recover_android_connection(app: AppHandle, change: diagnostics::AndroidRecovery) {
+    let _guard = ANDROID_RECOVERY.lock().unwrap_or_else(|err| err.into_inner());
+    let endpoint = with_profile(&app, |session| {
+        session.book.is_connected().then(|| ProfileBook::controller_of(&mut session.runtime))
     });
-    if !connected {
+    let Some(endpoint) = endpoint else { return };
+    if endpoint.as_ref().is_some_and(|ep| diagnostics::android_controller_ready(ep, change)) {
         return;
     }
 
-    let mut needs_restart = endpoint.is_none();
-    if let Some(ep) = endpoint {
-        if flush_sockets {
-            let close_ok = diagnostics::close_connections(&ep, None).is_ok();
-            let dns_ok = diagnostics::flush_cache(&ep, "dns").is_ok();
-            if !close_ok && !dns_ok {
-                needs_restart = true;
-            }
-        } else if diagnostics::flush_cache(&ep, "dns").is_err() {
-            needs_restart = true;
+    let snapshot = with_session_raw(&app, |session| {
+        let ProfileSession { book, runtime, proxy, tun, vpn } = session;
+        if !book.is_connected() || ProfileBook::controller_of(runtime) != endpoint {
+            return None;
         }
-    }
-
-    if !needs_restart {
-        return;
-    }
-
-    let recovered = with_session_raw(&app, |session| {
-        let ProfileSession {
-            book,
-            runtime,
-            proxy,
-            tun,
-            vpn,
-        } = session;
-        if !book.is_connected() {
-            return Ok(None);
+        if !runtime.running() {
+            return book.recover_crashed_kernel(runtime, proxy, tun, vpn);
         }
-        book.restart_kernel(runtime, proxy, tun, vpn).map(Some)
+        // Recheck before replacing a live tunnel after a slow or interrupted request.
+        if endpoint.as_ref().is_some_and(diagnostics::controller_responds) {
+            return None;
+        }
+        book.restart_kernel(runtime, proxy, tun, vpn).ok()
     });
-    match recovered {
-        Ok(Some(snapshot)) => {
-            publish_android(&app);
-            refresh_tray(&app, &snapshot);
-            let _ = app.emit("profile-changed", snapshot);
-        }
-        Ok(None) => {}
-        Err(_) => {
-            let snapshot = disconnect_session(app.clone());
-            publish_android(&app);
-            refresh_tray(&app, &snapshot);
-            let _ = app.emit("profile-changed", snapshot);
-        }
+    if let Some(snapshot) = snapshot {
+        publish_android(&app);
+        refresh_tray(&app, &snapshot);
+        let _ = app.emit("profile-changed", snapshot);
     }
 }
 
-/// Underlying network changed or device exited Doze mode.
+/// The default route or its DNS configuration changed.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeNetworkChanged(
     _env: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,
-    _reason: *mut std::ffi::c_void,
+    route_changed: i32,
 ) {
     let Some(app) = android_app() else {
         return;
     };
-    tauri::async_runtime::spawn_blocking(move || recover_android_connection(app, true));
+    let change = if route_changed != 0 {
+        diagnostics::AndroidRecovery::Route
+    } else {
+        diagnostics::AndroidRecovery::Dns
+    };
+    tauri::async_runtime::spawn_blocking(move || recover_android_connection(app, change));
 }
 
 /// App resumed to foreground: verify the kernel is still alive if marked connected.
@@ -2722,7 +2678,7 @@ pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeResumeCheck(
     let Some(app) = android_app() else {
         return;
     };
-    tauri::async_runtime::spawn_blocking(move || recover_android_connection(app, false));
+    tauri::async_runtime::spawn_blocking(move || recover_android_connection(app, diagnostics::AndroidRecovery::Check));
 }
 
 /// Screen interactive state changed: refresh widget immediately on wake, back off when off.

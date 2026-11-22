@@ -11,13 +11,13 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.os.SystemClock
 
 /**
  * System VpnService. Rust calls prepare, then start with an app filter: either
@@ -29,16 +29,8 @@ import android.os.PowerManager
 class BillowVpnService : VpnService() {
     private var tunnel: ParcelFileDescriptor? = null
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val networkLock = Any()
-    private val underlyingCandidates = LinkedHashMap<Network, NetworkCapabilities>()
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var networkCallback: DefaultNetworkCallback? = null
     private var idleReceiver: BroadcastReceiver? = null
-    private var lastNetworkSignature: String? = null
-    private var pendingNetworkReason: String = "network_change"
-    private val notifyNetworkChanged = Runnable {
-        val reason = synchronized(networkLock) { pendingNetworkReason }
-        Thread { BillowVpnBridge.reportNetworkChanged(reason) }.start()
-    }
 
     override fun onCreate() {
         super.onCreate()
@@ -140,14 +132,19 @@ class BillowVpnService : VpnService() {
         // The core shares our UID; its upstream sockets must not re-enter its own VPN.
         if (!only) builder.addDisallowedApplication(packageName)
         // Allowed and disallowed lists cannot be mixed on one Builder.
+        var hasAllowedApp = false
         for (packageName in packages.filter { it != this.packageName }) {
             try {
-                if (only) builder.addAllowedApplication(packageName)
-                else builder.addDisallowedApplication(packageName)
+                if (only) {
+                    builder.addAllowedApplication(packageName)
+                    hasAllowedApp = true
+                } else builder.addDisallowedApplication(packageName)
             } catch (_: android.content.pm.PackageManager.NameNotFoundException) {
                 // Rust still owns the list when a package is not installed (yet).
             }
         }
+        // An empty Builder allowlist would tunnel every UID, including the core.
+        if (only && !hasAllowedApp) return null
         val opened = builder.establish() ?: return null
         android.system.Os.fcntlInt(opened.fileDescriptor, android.system.OsConstants.F_SETFD, android.system.OsConstants.FD_CLOEXEC)
         tunnel?.close()
@@ -159,45 +156,14 @@ class BillowVpnService : VpnService() {
     private fun registerNetworkMonitors() {
         unregisterNetworkMonitors()
         val cm = getSystemService(ConnectivityManager::class.java) ?: return
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-            .build()
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                val caps = cm.getNetworkCapabilities(network)
-                synchronized(networkLock) {
-                    if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                        underlyingCandidates[network] = caps
-                    }
-                }
-                applyUnderlyingNetworks(cm, "available", cm.getLinkProperties(network))
-            }
-
-            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                if (networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
-                synchronized(networkLock) {
-                    underlyingCandidates[network] = networkCapabilities
-                }
-                applyUnderlyingNetworks(cm, "capabilities", cm.getLinkProperties(network))
-            }
-
-            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-                applyUnderlyingNetworks(cm, "link_properties", linkProperties)
-            }
-
-            override fun onLost(network: Network) {
-                synchronized(networkLock) {
-                    underlyingCandidates.remove(network)
-                }
-                applyUnderlyingNetworks(cm, "lost", null)
-            }
-        }
+        // Our UID bypasses the tunnel, so our default network carries the upstream sockets.
+        // Seed before registration to distinguish an offline start from the initial replay.
         try {
-            cm.registerNetworkCallback(request, callback)
+            val callback = DefaultNetworkCallback(cm.activeNetwork?.networkHandle)
+            cm.registerDefaultNetworkCallback(callback)
             networkCallback = callback
-        } catch (_: Throwable) {
-            // Some OEM ROMs may throw if network callback quota is exceeded; keep VPN alive.
+        } catch (_: RuntimeException) {
+            // Keep the tunnel usable if the system refuses the callback.
         }
 
         val pm = getSystemService(PowerManager::class.java)
@@ -213,12 +179,7 @@ class BillowVpnService : VpnService() {
                         if (Build.VERSION.SDK_INT < 23) return
                         val power = context.getSystemService(PowerManager::class.java) ?: return
                         if (!power.isDeviceIdleMode) {
-                            val connectivity = context.getSystemService(ConnectivityManager::class.java)
-                            if (connectivity != null) {
-                                applyUnderlyingNetworks(connectivity, "doze_exit", null, forceNotify = true)
-                            } else {
-                                scheduleNetworkNotify("doze_exit")
-                            }
+                            BillowVpnBridge.checkHealthOnResume()
                         }
                     }
                 }
@@ -244,10 +205,10 @@ class BillowVpnService : VpnService() {
     }
 
     private fun unregisterNetworkMonitors() {
-        mainHandler.removeCallbacks(notifyNetworkChanged)
         val callback = networkCallback
         networkCallback = null
         if (callback != null) {
+            mainHandler.removeCallbacks(callback)
             try {
                 getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback)
             } catch (_: Throwable) {
@@ -261,54 +222,47 @@ class BillowVpnService : VpnService() {
             } catch (_: Throwable) {
             }
         }
-        synchronized(networkLock) {
-            underlyingCandidates.clear()
-            lastNetworkSignature = null
-        }
     }
 
-    private fun pickBestUnderlyingNetwork(): Network? = synchronized(networkLock) {
-        underlyingCandidates.entries.maxByOrNull { (_, caps) ->
-            var score = 0
-            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) score += 100
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) score += 40
-            else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) score += 30
-            else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) score += 20
-            score
-        }?.key
-    }
+    private inner class DefaultNetworkCallback(initialNetwork: Long?) :
+        ConnectivityManager.NetworkCallback(), Runnable {
+        private val changes = UpstreamChanges(initialNetwork)
 
-    private fun applyUnderlyingNetworks(
-        cm: ConnectivityManager,
-        reason: String,
-        latestProps: LinkProperties?,
-        forceNotify: Boolean = false,
-    ) {
-        val best = pickBestUnderlyingNetwork()
-        try {
-            setUnderlyingNetworks(if (best != null) arrayOf(best) else null)
-        } catch (_: Throwable) {
-        }
-        val props = if (best != null) (latestProps ?: cm.getLinkProperties(best)) else null
-        val addrs = props?.linkAddresses?.map { it.toString() }?.sorted()?.joinToString(",") ?: ""
-        val dns = props?.dnsServers?.mapNotNull { it.hostAddress }?.sorted()?.joinToString(",") ?: ""
-        val signature = "${best?.toString() ?: "none"}|$addrs|$dns"
-        val changed = synchronized(networkLock) {
-            val prev = lastNetworkSignature
-            lastNetworkSignature = signature
-            prev != null && prev != signature
-        }
-        if (forceNotify || changed) {
-            scheduleNetworkNotify(reason)
-        }
-    }
+        override fun onAvailable(network: Network) = update { available(network.networkHandle) }
 
-    private fun scheduleNetworkNotify(reason: String) {
-        synchronized(networkLock) {
-            pendingNetworkReason = reason
+        override fun onLost(network: Network) = update { lost(network.networkHandle) }
+
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = update {
+            validationChanged(
+                network.networkHandle,
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                SystemClock.elapsedRealtime(),
+            )
         }
-        mainHandler.removeCallbacks(notifyNetworkChanged)
-        mainHandler.postDelayed(notifyNetworkChanged, NETWORK_CHANGE_DEBOUNCE_MS)
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) = update {
+            linkChanged(
+                network.networkHandle,
+                linkProperties.linkAddresses.map { it.toString() }.toSet(),
+                linkProperties.dnsServers.mapNotNull { it.hostAddress },
+            )
+        }
+
+        private fun update(event: UpstreamChanges.() -> Boolean) {
+            synchronized(this@BillowVpnService) {
+                if (networkCallback !== this || !changes.event()) return
+                mainHandler.removeCallbacks(this)
+                if (changes.pending != null) mainHandler.postDelayed(this, NETWORK_CHANGE_DEBOUNCE_MS)
+            }
+        }
+
+        override fun run() {
+            synchronized(this@BillowVpnService) {
+                if (networkCallback !== this) return
+                val change = changes.takePending() ?: return
+                BillowVpnBridge.reportNetworkChanged(change == UpstreamChange.ROUTE)
+            }
+        }
     }
 
     companion object {
@@ -398,11 +352,11 @@ class BillowVpnBridge {
             nativeRevoked()
         }
 
-        /** Underlying network changed or device woke from Doze: flush stale sockets/DNS or recover kernel. */
+        /** A route change invalidates upstream sockets. A DNS-only change preserves them. */
         @JvmStatic
-        fun reportNetworkChanged(reason: String) {
+        fun reportNetworkChanged(routeChanged: Boolean) {
             try {
-                nativeNetworkChanged(reason)
+                nativeNetworkChanged(if (routeChanged) 1 else 0)
             } catch (_: Throwable) {
             }
         }
@@ -438,7 +392,7 @@ class BillowVpnBridge {
         private external fun nativeRevoked()
 
         @JvmStatic
-        private external fun nativeNetworkChanged(reason: String)
+        private external fun nativeNetworkChanged(routeChanged: Int)
 
         @JvmStatic
         private external fun nativeResumeCheck()

@@ -1349,6 +1349,26 @@ pub(crate) fn encode_path(value: &str) -> String {
     out
 }
 
+#[cfg(any(target_os = "android", test))]
+pub enum AndroidRecovery { Check, Dns, Route }
+
+#[cfg(any(target_os = "android", test))]
+pub fn controller_responds(endpoint: &ControllerEndpoint) -> bool {
+    if !loopback(&endpoint.host) || endpoint.port == 0 { return false; }
+    let url = format!("http://{}:{}/version", endpoint.host, endpoint.port);
+    let agent = controller_agent(Duration::from_millis(1500));
+    authorize(agent.get(&url), endpoint).call().is_ok()
+}
+
+#[cfg(any(target_os = "android", test))]
+pub fn android_controller_ready(endpoint: &ControllerEndpoint, change: AndroidRecovery) -> bool {
+    if matches!(change, AndroidRecovery::Check) {
+        return controller_responds(endpoint);
+    }
+    let closed = matches!(change, AndroidRecovery::Route) && close_connections(endpoint, None).is_ok();
+    flush_cache(endpoint, "dns").is_ok() || closed || controller_responds(endpoint)
+}
+
 pub fn flush_cache(endpoint: &ControllerEndpoint, which: &str) -> Result<(), String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return Err("内核没有运行".to_string());
@@ -2592,6 +2612,28 @@ rules:
         let (endpoint, server) = scripted_controller(1, |_| Some((204, String::new())));
         close_connections(&endpoint, None).unwrap();
         assert!(server.join().unwrap()[0].starts_with("DELETE /connections HTTP"));
+    }
+
+    #[test]
+    fn android_recovery_preserves_connections_on_wake_and_dns_changes() {
+        for (change, expected) in [
+            (AndroidRecovery::Check, vec!["GET /version"]),
+            (AndroidRecovery::Dns, vec!["POST /cache/dns/flush"]),
+            (AndroidRecovery::Route, vec!["DELETE /connections", "POST /cache/dns/flush"]),
+        ] {
+            let (endpoint, server) = scripted_controller(expected.len(), |_| Some((200, String::new())));
+            assert!(android_controller_ready(&endpoint, change));
+            let requests = server.join().unwrap();
+            for (request, path) in requests.iter().zip(expected) {
+                assert!(request.starts_with(&format!("{path} HTTP")), "{request}");
+            }
+        }
+
+        let (endpoint, server) = scripted_controller(2, |line| {
+            Some((if line.starts_with("GET /version ") { 200 } else { 500 }, String::new()))
+        });
+        assert!(android_controller_ready(&endpoint, AndroidRecovery::Dns));
+        server.join().unwrap();
     }
 
     #[test]

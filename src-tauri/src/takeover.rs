@@ -3725,8 +3725,7 @@ mod tests {
         assert!(source.contains("prepare"));
         assert!(source.contains("start"));
         assert!(source.contains("BillowVpnBridge"));
-        assert!(source.contains("registerNetworkCallback"));
-        assert!(source.contains("setUnderlyingNetworks"));
+        assert!(source.contains("registerDefaultNetworkCallback"));
         assert!(source.contains("ACTION_DEVICE_IDLE_MODE_CHANGED"));
         assert!(source.contains("nativeNetworkChanged"));
         assert!(source.contains("nativeResumeCheck"));
