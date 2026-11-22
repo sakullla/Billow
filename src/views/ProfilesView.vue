@@ -59,6 +59,33 @@ const customImportInitial = ref('')
 const customEditOpen = ref(false)
 const editingCustomNode = ref<CustomNode | null>(null)
 const landingRulesOpen = ref(false)
+const activeTab = ref<'profiles' | 'custom'>(store.customProfileActive.value ? 'custom' : 'profiles')
+const showCustomTabs = computed(
+  () => store.customNodesVisible.value && (store.hasCustomNodes.value || store.customProfileActive.value),
+)
+
+watch(
+  () => store.hasCustomNodes.value,
+  (has, prev) => {
+    if (has && !prev && store.customNodesVisible.value) {
+      activeTab.value = 'custom'
+    } else if (!has && !store.customProfileActive.value) {
+      activeTab.value = 'profiles'
+    }
+  },
+)
+watch(
+  () => store.customProfileActive.value,
+  (active) => {
+    if (active) activeTab.value = 'custom'
+  },
+)
+watch(
+  () => store.customNodesVisible.value,
+  (visible) => {
+    if (!visible) activeTab.value = 'profiles'
+  },
+)
 
 const NODE_SCHEME_RE = /^(vless|vmess|trojan|ss|hysteria2|hy2|tuic|anytls|socks5|socks):\/\//i
 const HTTP_PROXY_CRED_RE = /^https?:\/\/[^/\s@]+@[^/\s]+$/i
@@ -922,11 +949,22 @@ const failedSubscriptionIds = computed(() =>
       <span>{{ tr('释放即可导入 YAML 配置文件') }}</span>
     </div>
     <header class="page-head">
-      <div>
+      <div class="min0">
         <h1>{{ tr('配置') }}</h1>
-        <p class="muted small meta-line"><span>{{ snap.profiles.length }} {{ tr('份配置') }}</span><span>{{ tr('同一时间启用一份') }}</span></p>
+        <p v-if="activeTab === 'custom'" class="muted small meta-line">
+          <span>{{ t('customNodes.count', { count: store.customNodes.value.nodes.length, enabled: store.enabledCustomNodes.value.length }) }}</span>
+          <span v-if="store.customProfileActive.value">{{ t('customNodes.standaloneActive') }}</span>
+          <span v-else-if="store.customNodes.value.overlay_enabled">{{ tr('已叠加到当前订阅') }}</span>
+          <span v-else>{{ tr('已暂停叠加') }}</span>
+        </p>
+        <p v-else class="muted small meta-line">
+          <span>{{ snap.profiles.length }} {{ tr('份配置') }}</span>
+          <span v-if="store.current.value" class="ellipsis">{{ tr('使用中') }} · {{ store.current.value.name }}</span>
+          <span v-else-if="store.customProfileActive.value">{{ t('customNodes.standaloneActive') }}</span>
+          <span v-else>{{ tr('同一时间启用一份') }}</span>
+        </p>
       </div>
-      <div class="head-actions">
+      <div v-if="activeTab === 'profiles'" class="head-actions">
         <button
           v-if="failedSubscriptionIds.length && !store.busy.refreshAll"
           type="button"
@@ -953,6 +991,87 @@ const failedSubscriptionIds = computed(() =>
           <Icon name="plus" :size="15" /> {{ tr('添加') }} </button>
       </div>
     </header>
+
+    <div
+      v-if="showCustomTabs || (activeTab === 'profiles' && (snap.profiles.length > 1 || profileQuery))"
+      class="profiles-nav-row"
+      data-testid="profiles-toolbar"
+    >
+      <div
+        v-if="showCustomTabs"
+        class="profiles-tabs"
+        role="tablist"
+        :aria-label="tr('配置视图切换')"
+        data-testid="profiles-tabs"
+      >
+        <button
+          type="button"
+          role="tab"
+          class="profiles-tab"
+          :class="{ active: activeTab === 'profiles' }"
+          :aria-selected="activeTab === 'profiles'"
+          data-testid="profiles-tab-subscriptions"
+          @click="activeTab = 'profiles'"
+        >
+          <span>{{ tr('订阅配置') }}</span>
+          <span class="profiles-tab-count mono">{{ snap.profiles.length }}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="profiles-tab"
+          :class="{ active: activeTab === 'custom' }"
+          :aria-selected="activeTab === 'custom'"
+          data-testid="profiles-tab-custom"
+          @click="activeTab = 'custom'"
+        >
+          <span>{{ tr('自建节点') }}</span>
+          <span class="profiles-tab-count mono">{{ store.customNodes.value.nodes.length }}</span>
+          <span
+            v-if="store.customProfileActive.value || overlayActiveCount > 0"
+            class="profiles-tab-dot active"
+            aria-hidden="true"
+          />
+          <span
+            v-else-if="store.hasCustomNodes.value && !store.customNodes.value.overlay_enabled"
+            class="profiles-tab-dot paused"
+            aria-hidden="true"
+          />
+        </button>
+      </div>
+
+      <div
+        v-if="activeTab === 'profiles' && (snap.profiles.length > 1 || profileQuery)"
+        class="profiles-search-wrap"
+      >
+        <div class="search profiles-search">
+          <Icon name="search" :size="15" />
+          <input
+            v-model="profileQuery"
+            type="search"
+            :placeholder="tr('筛选配置名称或域名')"
+            data-testid="profile-search"
+            data-page-search
+          />
+          <kbd v-if="!compact && !profileQuery" class="search-kbd" aria-hidden="true">/</kbd>
+          <button
+            v-if="profileQuery"
+            type="button"
+            class="icon-btn sm"
+            :aria-label="tr('清空筛选')"
+            data-testid="clear-profile-search"
+            @click="profileQuery = ''"
+          >
+            <Icon name="x" :size="14" />
+          </button>
+        </div>
+        <span v-if="profileNeedle && filteredProfiles.length > 0" class="toolbar-count small" data-testid="profile-match-count" aria-live="polite">
+          {{ tr('匹配 {0} / {1}', { 0: filteredProfiles.length, 1: ordered.length }) }}
+        </span>
+      </div>
+    </div>
+
+    <template v-if="activeTab === 'profiles'">
 
     <form class="quick-import" :class="{ 'is-node-input': quickLooksLikeNode }" novalidate @submit.prevent="quickImport">
       <Icon :name="quickLooksLikeNode ? 'layers' : 'link'" :size="16" :class="quickLooksLikeNode ? 'text-accent' : 'muted'" />
@@ -1003,37 +1122,6 @@ const failedSubscriptionIds = computed(() =>
     </form>
     <p v-if="quickError" id="quick-import-error" class="field-error small" role="alert">{{ quickError }}</p>
 
-    <div v-if="snap.profiles.length > 1 || profileQuery" class="toolbar profiles-toolbar" data-testid="profiles-toolbar">
-      <div v-if="!compact" class="profiles-section-label">
-        <span>{{ tr('订阅与配置') }}</span>
-        <span class="profiles-section-count mono">{{ snap.profiles.length }}</span>
-      </div>
-      <div class="search profiles-search">
-        <Icon name="search" :size="15" />
-        <input
-          v-model="profileQuery"
-          type="search"
-          :placeholder="tr('筛选配置名称或域名')"
-          data-testid="profile-search"
-          data-page-search
-        />
-        <kbd v-if="!compact && !profileQuery" class="search-kbd" aria-hidden="true">/</kbd>
-        <button
-          v-if="profileQuery"
-          type="button"
-          class="icon-btn sm"
-          :aria-label="tr('清空筛选')"
-          data-testid="clear-profile-search"
-          @click="profileQuery = ''"
-        >
-          <Icon name="x" :size="14" />
-        </button>
-      </div>
-      <span v-if="profileNeedle && filteredProfiles.length > 0" class="toolbar-count small" data-testid="profile-match-count" aria-live="polite">
-        {{ tr('匹配 {0} / {1}', { 0: filteredProfiles.length, 1: ordered.length }) }}
-      </span>
-    </div>
-
     <EmptyState
       v-if="!snap.profiles.length && !store.hasCustomNodes.value"
       variant="no-data"
@@ -1076,7 +1164,9 @@ const failedSubscriptionIds = computed(() =>
           <div class="grow min0">
             <div class="profile-name">
               <strong :title="profile.name">{{ profile.name }}</strong>
-              <span v-if="profile.current" class="tag accent">{{ tr('使用中') }}</span>
+              <span v-if="profile.current" class="tag accent profile-active-tag">
+                <span class="profile-live-dot" aria-hidden="true" />{{ tr('使用中') }}
+              </span>
               <span v-else-if="compact" class="tag profile-touch-cue" aria-hidden="true">{{ tr('启用') }}</span>
               <span v-else class="profile-switch-hint" aria-hidden="true">{{ tr('点击启用') }}</span>
             </div>
@@ -1227,53 +1317,62 @@ const failedSubscriptionIds = computed(() =>
       </article>
     </div>
 
+      <section
+        v-if="store.customNodesVisible.value && !store.hasCustomNodes.value && !store.customProfileActive.value"
+        class="card custom-nodes-entry"
+        data-testid="custom-nodes-entry"
+      >
+        <div class="custom-entry-main grow min0">
+          <div class="custom-entry-icon" aria-hidden="true">
+            <Icon name="layers" :size="16" />
+          </div>
+          <div class="custom-entry-body grow min0">
+            <div class="custom-panel-title-row">
+              <h2>{{ t('customNodes.title') }}</h2>
+              <span class="custom-stat-pill accent">{{ tr('链式落地 · 独立保存') }}</span>
+            </div>
+            <p class="muted small ellipsis">{{ t('customNodes.subtitle') }}</p>
+          </div>
+        </div>
+        <div class="custom-entry-actions">
+          <button
+            type="button"
+            class="btn ghost sm"
+            data-testid="add-custom-node-manual"
+            @click="openCustomAdd"
+          >
+            <Icon name="plus" :size="14" /> {{ tr('手动添加') }}
+          </button>
+          <button
+            type="button"
+            class="btn tonal sm"
+            data-testid="add-custom-node-entry"
+            @click="openCustomImport()"
+          >
+            <Icon name="link" :size="14" /> {{ t('customNodes.import') }}
+          </button>
+          <button
+            type="button"
+            class="icon-btn sm"
+            :title="tr('关闭自建节点')"
+            :aria-label="tr('关闭自建节点')"
+            data-testid="dismiss-custom-nodes"
+            @click="store.setCustomNodesFeatureEnabled(false)"
+          >
+            <Icon name="x" :size="14" />
+          </button>
+        </div>
+      </section>
+    </template>
+
     <CustomNodesPanel
-      v-if="store.hasCustomNodes.value || store.customProfileActive.value"
+      v-else
       :compact="compact"
       @open-import="openCustomImport"
       @open-add="openCustomAdd"
       @open-edit="openCustomEdit"
       @open-rules="landingRulesOpen = true"
     />
-    <section v-else class="card custom-nodes-entry" data-testid="custom-nodes-entry">
-      <div class="custom-entry-main grow min0">
-        <div class="custom-entry-icon" aria-hidden="true">
-          <Icon name="layers" :size="19" />
-        </div>
-        <div class="custom-entry-body grow min0">
-          <div class="custom-panel-title-row">
-            <h2>{{ t('customNodes.title') }}</h2>
-            <span class="custom-stat-pill accent">{{ tr('链式落地 · 纯自建') }}</span>
-          </div>
-          <p class="muted small">{{ t('customNodes.subtitle') }}</p>
-          <div class="custom-proto-strip" aria-hidden="true">
-            <span class="custom-proto-mini">AnyTLS</span>
-            <span class="custom-proto-mini">VLESS</span>
-            <span class="custom-proto-mini">Hysteria2</span>
-            <span class="custom-proto-mini">SOCKS5</span>
-            <span class="custom-proto-mini">Trojan / SS</span>
-          </div>
-        </div>
-      </div>
-      <div class="custom-entry-actions">
-        <button
-          type="button"
-          class="btn ghost sm"
-          data-testid="add-custom-node-manual"
-          @click="openCustomAdd"
-        >
-          <Icon name="plus" :size="14" /> {{ tr('手动添加') }}
-        </button>
-        <button
-          type="button"
-          class="btn tonal sm"
-          data-testid="add-custom-node-entry"
-          @click="openCustomImport()"
-        >
-          <Icon name="link" :size="14" /> {{ t('customNodes.import') }}
-        </button>
-      </div>
-    </section>
 
     <Modal
       :open="Boolean(editing)"

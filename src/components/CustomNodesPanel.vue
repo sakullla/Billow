@@ -4,6 +4,7 @@ import { t, tr } from '../lib/i18n'
 import { useStore } from '../lib/store'
 import type { CustomNode, DialerTarget, LandingRule } from '../lib/types'
 import Icon from './Icon.vue'
+import Menu, { type MenuItem } from './Menu.vue'
 import Modal from './Modal.vue'
 import Toggle from './Toggle.vue'
 
@@ -20,13 +21,51 @@ const store = useStore()
 const customNodes = computed(() => store.customNodes.value)
 const nodes = computed(() => customNodes.value.nodes)
 const enabledCount = computed(() => store.enabledCustomNodes.value.length)
+const disabledCount = computed(() => nodes.value.length - enabledCount.value)
 const chainedCount = computed(() => nodes.value.filter((n) => n.enabled && n.dialer.kind !== 'direct').length)
+const totalChainedCount = computed(() => nodes.value.filter((n) => n.dialer.kind !== 'direct').length)
+const totalDirectCount = computed(() => nodes.value.length - totalChainedCount.value)
 const warnings = computed(() => store.customNodesWarnings.value)
 const activeRuleCount = computed(() =>
   customNodes.value.rules_enabled ? customNodes.value.rules.filter((rule) => rule.enabled).length : 0,
 )
 const hasSubscription = computed(() => store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value)
 const overlayPaused = computed(() => hasSubscription.value && !customNodes.value.overlay_enabled)
+
+const deleting = ref<CustomNode | null>(null)
+const disabling = ref<CustomNode | null>(null)
+const moreOpen = ref(false)
+const query = ref('')
+type RouteFilter = 'all' | 'chain' | 'direct' | 'disabled'
+const routeFilter = ref<RouteFilter>('all')
+
+const moreItems = computed<MenuItem[]>(() => {
+  const items: MenuItem[] = []
+  if (store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value) {
+    items.push({
+      id: 'standalone',
+      label: tr('切换纯自建配置'),
+      icon: 'zap',
+      disabled: enabledCount.value === 0 || Boolean(store.busy['customNodes:useProfile']),
+    })
+  }
+  items.push({
+    id: 'disable-feature',
+    label: tr('关闭自建节点'),
+    icon: 'eye-off',
+    danger: true,
+  })
+  return items
+})
+
+function onMoreSelect(item: MenuItem) {
+  moreOpen.value = false
+  if (item.id === 'standalone') {
+    void activateCustomProfile()
+  } else if (item.id === 'disable-feature') {
+    void store.setCustomNodesFeatureEnabled(false)
+  }
+}
 
 function rulesForNode(nodeId: string): string[] {
   if (!customNodes.value.rules_enabled) return []
@@ -35,14 +74,13 @@ function rulesForNode(nodeId: string): string[] {
     .map(describeRule)
 }
 
-const deleting = ref<CustomNode | null>(null)
-const disabling = ref<CustomNode | null>(null)
-const query = ref('')
-
 const filteredNodes = computed(() => {
   const needle = query.value.trim().toLowerCase()
-  if (!needle) return nodes.value
   return nodes.value.filter((node) => {
+    if (routeFilter.value === 'chain' && node.dialer.kind === 'direct') return false
+    if (routeFilter.value === 'direct' && node.dialer.kind !== 'direct') return false
+    if (routeFilter.value === 'disabled' && node.enabled) return false
+    if (!needle) return true
     const endpoint = extractEndpoint(node.raw_yaml)
     return (
       node.name.toLowerCase().includes(needle) ||
@@ -207,36 +245,45 @@ async function confirmDelete() {
 
 <template>
   <section
-    class="card custom-nodes-panel"
+    class="custom-nodes-workspace"
     :class="{ 'standalone-active': store.customProfileActive.value }"
     data-testid="custom-nodes-panel"
   >
-    <header class="custom-panel-hero">
-      <div class="custom-panel-head-main grow min0">
-        <div class="custom-entry-icon" aria-hidden="true">
-          <Icon name="layers" :size="17" />
-        </div>
-        <div class="grow min0">
-          <div class="custom-panel-title-row">
-            <h2>{{ t('customNodes.title') }}</h2>
-            <span
-              v-if="store.customProfileActive.value"
-              class="tag accent sm"
-              data-testid="custom-profile-active-badge"
-            >
-              {{ t('customNodes.standaloneActive') }}
-            </span>
+    <div class="custom-workspace-bar">
+      <div class="custom-workspace-status grow min0">
+        <template v-if="store.customProfileActive.value">
+          <span class="tag accent sm" data-testid="custom-profile-active-badge">
+            {{ t('customNodes.standaloneActive') }}
+          </span>
+          <span class="muted small ellipsis">
+            {{
+              store.snapshot.value.profiles.length > 0
+                ? tr('切回「订阅配置」点击任意订阅即可恢复')
+                : t('customNodes.standaloneDetail')
+            }}
+          </span>
+        </template>
+        <template v-else-if="store.snapshot.value.profiles.length > 0">
+          <div class="custom-overlay-inline" :title="t('customNodes.overlayHint')">
+            <Toggle
+              :model-value="customNodes.overlay_enabled"
+              :busy="Boolean(store.busy['customNodes:overlay'])"
+              :label="t('customNodes.overlay')"
+              data-testid="custom-overlay-toggle"
+              @update:model-value="toggleOverlay"
+            />
+            <span class="custom-overlay-label">{{ t('customNodes.overlay') }}</span>
           </div>
-          <div class="custom-panel-meta-row">
-            <span class="custom-stat-pill">{{ t('customNodes.count', { count: nodes.length, enabled: enabledCount }) }}</span>
-            <span v-if="chainedCount > 0" class="custom-stat-pill accent">
-              <Icon name="globe" :size="11" /> {{ tr('{0} 链式', { 0: chainedCount }) }}
-            </span>
-            <span v-if="overlayPaused" class="custom-stat-pill warn" data-testid="custom-overlay-paused-badge">
-              {{ tr('已暂停叠加') }}
-            </span>
-          </div>
-        </div>
+          <span v-if="overlayPaused" class="custom-stat-pill warn" data-testid="custom-overlay-paused-badge">
+            {{ tr('已暂停叠加') }}
+          </span>
+          <span v-else class="custom-stat-pill">
+            {{ tr('{0}/{1} 启用', { 0: enabledCount, 1: nodes.length }) }}
+          </span>
+          <span v-if="chainedCount > 0 && !overlayPaused" class="custom-stat-pill accent">
+            <Icon name="globe" :size="11" /> {{ tr('{0} 链式', { 0: chainedCount }) }}
+          </span>
+        </template>
       </div>
 
       <div class="custom-hero-actions">
@@ -249,7 +296,7 @@ async function confirmDelete() {
           @click="emit('openRules')"
         >
           <Icon name="route" :size="14" />
-          <span>{{ t('customNodes.landingRules') }}</span>
+          <span>{{ tr('落地规则') }}</span>
           <span v-if="activeRuleCount > 0" class="custom-badge-dot">{{ activeRuleCount }}</span>
         </button>
         <button
@@ -258,73 +305,37 @@ async function confirmDelete() {
           data-testid="open-custom-add"
           @click="emit('openAdd')"
         >
-          <Icon name="plus" :size="14" /> {{ t('customNodes.add') }}
+          <Icon name="plus" :size="14" /> {{ tr('手动添加') }}
         </button>
         <button
           type="button"
-          class="btn tonal sm"
+          class="btn primary sm"
           data-testid="open-custom-import"
           @click="emit('openImport')"
         >
-          <Icon name="link" :size="14" /> {{ t('customNodes.import') }}
+          <Icon name="link" :size="14" /> {{ tr('导入链接') }}
         </button>
-      </div>
-    </header>
-
-    <!-- Sleek Mode Strip -->
-    <div
-      class="custom-mode-bar"
-      :class="{ 'single-col': store.snapshot.value.profiles.length === 0 || store.customProfileActive.value }"
-    >
-      <div
-        v-if="store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value"
-        class="custom-mode-item"
-        :class="{ inactive: !customNodes.overlay_enabled }"
-        :title="t('customNodes.overlayHint')"
-      >
-        <div class="custom-mode-copy grow min0">
-          <span class="custom-mode-label">{{ t('customNodes.overlay') }}</span>
-          <span class="muted small custom-mode-hint ellipsis">{{ t('customNodes.overlayHint') }}</span>
+        <div class="menu-anchor" @keydown.esc.stop.prevent="moreOpen = false">
+          <button
+            type="button"
+            class="icon-btn sm custom-secondary-btn"
+            :title="tr('更多操作')"
+            :aria-label="tr('更多操作')"
+            aria-haspopup="menu"
+            :aria-expanded="moreOpen"
+            data-testid="custom-nodes-more"
+            @click="moreOpen = !moreOpen"
+          >
+            <Icon name="more" :size="15" />
+          </button>
+          <Menu
+            :open="moreOpen"
+            :items="moreItems"
+            :label="t('customNodes.title')"
+            @select="onMoreSelect"
+            @close="moreOpen = false"
+          />
         </div>
-        <Toggle
-          :model-value="customNodes.overlay_enabled"
-          :busy="Boolean(store.busy['customNodes:overlay'])"
-          :label="t('customNodes.overlay')"
-          data-testid="custom-overlay-toggle"
-          @update:model-value="toggleOverlay"
-        />
-      </div>
-
-      <div
-        v-if="store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value"
-        class="custom-mode-divider"
-        aria-hidden="true"
-      />
-
-      <div class="custom-mode-item custom-mode-standalone" :title="t('customNodes.standaloneDetail')">
-        <div class="custom-mode-copy grow min0">
-          <span class="custom-mode-label">
-            {{ store.customProfileActive.value ? t('customNodes.standaloneActive') : t('customNodes.useStandalone') }}
-          </span>
-          <span class="muted small custom-mode-hint ellipsis">
-            {{
-              store.customProfileActive.value && store.snapshot.value.profiles.length > 0
-                ? tr('点击上方任意订阅卡片可切回订阅模式')
-                : t('customNodes.standaloneDetail')
-            }}
-          </span>
-        </div>
-        <span v-if="store.customProfileActive.value" class="tag ok sm">{{ tr('使用中') }}</span>
-        <button
-          v-else
-          type="button"
-          class="btn sm custom-secondary-btn"
-          :disabled="enabledCount === 0 || Boolean(store.busy['customNodes:useProfile'])"
-          data-testid="use-custom-profile"
-          @click="activateCustomProfile"
-        >
-          <Icon name="zap" :size="13" /> {{ tr('切换纯自建') }}
-        </button>
       </div>
     </div>
 
@@ -335,30 +346,65 @@ async function confirmDelete() {
       </ul>
     </div>
 
-    <div v-if="nodes.length >= 5" class="search custom-node-search">
-      <Icon name="search" :size="15" />
-      <input
-        v-model="query"
-        type="search"
-        :placeholder="tr('筛选自建节点名称、协议或地址')"
-        data-testid="custom-node-search"
-      />
-      <button
-        v-if="query"
-        type="button"
-        class="icon-btn sm"
-        :aria-label="tr('清空筛选')"
-        @click="query = ''"
-      >
-        <Icon name="x" :size="14" />
-      </button>
+    <div v-if="nodes.length >= 3 || query || routeFilter !== 'all'" class="custom-filter-bar" data-testid="custom-filter-bar">
+      <div class="search custom-node-search grow">
+        <Icon name="search" :size="15" />
+        <input
+          v-model="query"
+          type="search"
+          :placeholder="tr('筛选自建节点名称、协议或地址')"
+          data-testid="custom-node-search"
+        />
+        <button
+          v-if="query"
+          type="button"
+          class="icon-btn sm"
+          :aria-label="tr('清空筛选')"
+          @click="query = ''"
+        >
+          <Icon name="x" :size="14" />
+        </button>
+      </div>
+      <div class="custom-filter-chips" role="group" :aria-label="tr('按状态筛选')">
+        <button
+          type="button"
+          class="custom-filter-chip"
+          :class="{ active: routeFilter === 'all' }"
+          data-testid="custom-filter-all"
+          @click="routeFilter = 'all'"
+        >{{ tr('全部') }} <span class="mono">{{ nodes.length }}</span></button>
+        <button
+          v-if="totalChainedCount > 0"
+          type="button"
+          class="custom-filter-chip"
+          :class="{ active: routeFilter === 'chain' }"
+          data-testid="custom-filter-chain"
+          @click="routeFilter = 'chain'"
+        >{{ tr('链式') }} <span class="mono">{{ totalChainedCount }}</span></button>
+        <button
+          v-if="totalDirectCount > 0"
+          type="button"
+          class="custom-filter-chip"
+          :class="{ active: routeFilter === 'direct' }"
+          data-testid="custom-filter-direct"
+          @click="routeFilter = 'direct'"
+        >{{ tr('直连') }} <span class="mono">{{ totalDirectCount }}</span></button>
+        <button
+          v-if="disabledCount > 0"
+          type="button"
+          class="custom-filter-chip"
+          :class="{ active: routeFilter === 'disabled' }"
+          data-testid="custom-filter-disabled"
+          @click="routeFilter = 'disabled'"
+        >{{ tr('已停用') }} <span class="mono">{{ disabledCount }}</span></button>
+      </div>
     </div>
 
     <!-- Clean Node Cards -->
     <ul
       v-if="filteredNodes.length > 0"
       class="custom-node-grid"
-      :class="{ single: filteredNodes.length === 1, 'overlay-paused': overlayPaused }"
+      :class="{ 'overlay-paused': overlayPaused }"
     >
       <li
         v-for="node in filteredNodes"

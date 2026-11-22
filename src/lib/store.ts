@@ -47,6 +47,7 @@ export type SettingsTab =
 export type ConfigViewTab = 'overview' | 'yaml'
 
 const CONFIG_TAB_KEY = 'billow.configTab'
+const CUSTOM_NODES_ENABLED_KEY = 'billow.customNodesEnabled'
 export function readConfigTab(): ConfigViewTab {
   try {
     return localStorage.getItem(CONFIG_TAB_KEY) === 'yaml' ? 'yaml' : 'overview'
@@ -57,6 +58,20 @@ export function readConfigTab(): ConfigViewTab {
 export function rememberConfigTab(tab: ConfigViewTab) {
   try {
     localStorage.setItem(CONFIG_TAB_KEY, tab)
+  } catch {
+    /* storage unavailable */
+  }
+}
+export function readCustomNodesEnabled(): boolean {
+  try {
+    return localStorage.getItem(CUSTOM_NODES_ENABLED_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+export function rememberCustomNodesEnabled(enabled: boolean) {
+  try {
+    localStorage.setItem(CUSTOM_NODES_ENABLED_KEY, enabled ? 'true' : 'false')
   } catch {
     /* storage unavailable */
   }
@@ -251,6 +266,8 @@ export function createStore(backend: Backend) {
   const enabledCustomNodes = computed(() => snapshot.value.custom_nodes.nodes.filter((item) => item.enabled))
   const customNodesWarnings = computed(() => snapshot.value.custom_nodes_warnings)
   const customProfileActive = computed(() => snapshot.value.custom_profile_active)
+  const customNodesFeatureEnabled = ref<boolean>(readCustomNodesEnabled())
+  const customNodesVisible = computed(() => customNodesFeatureEnabled.value || customProfileActive.value)
   const landingPresets = computed(() => snapshot.value.landing_presets)
   const isAndroid = computed(() => snapshot.value.platform === 'android')
   /** Desktop OS from `AppInfo.platform` (Rust `std::env::consts::OS`); gates Linux / macOS-only options. */
@@ -1300,6 +1317,8 @@ export function createStore(backend: Backend) {
     enabledCustomNodes,
     customNodesWarnings,
     customProfileActive,
+    customNodesFeatureEnabled,
+    customNodesVisible,
     landingPresets,
     isAndroid,
     isLinux,
@@ -1394,6 +1413,10 @@ export function createStore(backend: Backend) {
         return res
       })
       if (!result) return undefined
+      if (result.imported.length > 0) {
+        customNodesFeatureEnabled.value = true
+        rememberCustomNodesEnabled(true)
+      }
       if (result.errors.length > 0) {
         toast(
           tr('已导入 {0} 个自建节点，{1} 条未识别', {
@@ -1424,6 +1447,24 @@ export function createStore(backend: Backend) {
       act('customNodes:rules', () => backend.saveLandingRules(rulesEnabled, rules), tr('已保存落地分流规则')),
     useCustomProfile: () =>
       act('customNodes:useProfile', () => backend.useCustomProfile(), tr('已切换到纯自建节点')),
+    async setCustomNodesFeatureEnabled(enabled: boolean, options?: { silent?: boolean }) {
+      customNodesFeatureEnabled.value = enabled
+      rememberCustomNodesEnabled(enabled)
+      if (!enabled) {
+        if (snapshot.value.custom_profile_active && snapshot.value.profiles.length > 0) {
+          const fallback = snapshot.value.profiles[0]!
+          await act(`enable:${fallback.id}`, () => backend.enable(fallback.id))
+        }
+        if (snapshot.value.custom_nodes.overlay_enabled) {
+          await act('customNodes:overlay', () => backend.setCustomNodesOverlay(false))
+        }
+        if (!options?.silent) {
+          toast(tr('已关闭自建节点，可在「设置 → 通用」重新开启'), 'info')
+        }
+      } else if (!options?.silent) {
+        toast(tr('已开启自建节点与落地'), 'success')
+      }
+    },
 
     selectNode: (group: string, node: string) => act(`select:${group}`, () => backend.selectNode(group, node)),
     /** 恢复自动: a fixed url-test / fallback group picks by its own strategy again (R28). */

@@ -140,6 +140,23 @@ const desktopWindow = computed(() => Boolean(app.value && app.value.autostart !=
     </SettingsRow>
   </SettingsSection>
 
+  <SettingsSection :title="tr('功能')" data-testid="settings-features">
+    <SettingsRow
+      :title="t('customNodes.title')"
+      :description="tr('在配置页管理独立自建节点、链式代理与落地分流规则；关闭后隐藏入口并停止注入')"
+      setting="custom-nodes"
+      data-testid="custom-nodes-feature-setting"
+    >
+      <Toggle
+        :model-value="store.customNodesFeatureEnabled.value"
+        :busy="Boolean(store.busy['customNodes:overlay'])"
+        :label="t('customNodes.title')"
+        data-testid="custom-nodes-feature-toggle"
+        @update:model-value="(on) => store.setCustomNodesFeatureEnabled(on)"
+      />
+    </SettingsRow>
+  </SettingsSection>
+
   <SettingsSection v-if="openShortcuts && !compact" :title="tr('键盘')">
     <SettingsRow
       nav

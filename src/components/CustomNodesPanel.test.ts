@@ -12,6 +12,7 @@ const cleanups: (() => void)[] = []
 afterEach(() => {
   cleanups.splice(0).forEach((stop) => stop())
   document.body.innerHTML = ''
+  localStorage.clear()
 })
 
 async function waitDemo(ms = 90) {
@@ -248,7 +249,7 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     expect(find('[data-testid="custom-node-dialer"]').textContent).toContain('直连')
     await click('.modal-head .icon-btn')
 
-    // Switching from subscription mode to standalone mode via button works too
+    // Switching from subscription mode to standalone mode via overflow menu works too
     cleanups.splice(0).forEach((stop) => stop())
     document.body.innerHTML = ''
     const sub = await setupProfiles()
@@ -256,7 +257,8 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     await waitDemo()
     expect(sub.store.customProfileActive.value).toBe(false)
 
-    await click('[data-testid="use-custom-profile"]')
+    await click('[data-testid="custom-nodes-more"]')
+    await click('[data-menu-item="standalone"]')
     await waitDemo()
     expect(sub.store.customProfileActive.value).toBe(true)
     expect(sub.store.snapshot.value.active_id).toBe(CUSTOM_PROFILE_ID)
@@ -472,7 +474,7 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     expect(find<HTMLButtonElement>('[data-testid="custom-node-import-confirm"]').disabled).toBe(true)
   })
 
-  it('shows quick-import node detection tag, active profile overlay badge, overlay-paused cue, and clickable route strip', async () => {
+  it('switches cleanly between Subscriptions and Custom Nodes tabs, supports route filters, and allows turning off Custom Nodes', async () => {
     const { store } = await setupProfiles()
 
     // Quick-import detects share links inline before submit
@@ -482,20 +484,51 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     await flushPromises()
     expect(find('[data-testid="quick-detect-node"]').textContent).toContain('节点链接')
 
-    // Import one custom node -> active profile card displays overlay badge
-    await store.importCustomNodes('socks5://1.2.3.4:1080#US-Exit', { kind: 'profile_group', group: null })
+    // Import 3 custom nodes (2 chained, 1 direct) -> auto-switches to Custom Nodes tab with filter bar
+    await store.importCustomNodes(
+      [
+        'socks5://1.2.3.4:1080#US-Exit',
+        'socks5://2.3.4.5:1080#JP-Exit',
+      ].join('\n'),
+      { kind: 'profile_group', group: null },
+    )
+    await store.importCustomNodes('socks5://3.4.5.6:1080#SG-Direct', { kind: 'direct' })
     await waitDemo()
-    expect(find('[data-testid="profile-overlay-badge"]').textContent).toContain('+1')
-    expect(document.querySelector('[data-testid="custom-overlay-paused-badge"]')).toBeNull()
 
-    // Toggle overlay off -> active profile badge hides and paused cue appears
+    // Filter chips work for many nodes
+    expect(find('[data-testid="custom-filter-bar"]')).toBeTruthy()
+    await click('[data-testid="custom-filter-direct"]')
+    expect(document.querySelectorAll('[data-custom-node]')).toHaveLength(1)
+    await click('[data-testid="custom-filter-chain"]')
+    expect(document.querySelectorAll('[data-custom-node]')).toHaveLength(2)
+    await click('[data-testid="custom-filter-all"]')
+    expect(document.querySelectorAll('[data-custom-node]')).toHaveLength(3)
+
+    // Switch to Subscriptions tab -> active profile card displays overlay badge
+    await click('[data-testid="profiles-tab-subscriptions"]')
+    expect(find('[data-testid="profile-overlay-badge"]').textContent).toContain('+3')
+
+    // Switch back to Custom Nodes tab, toggle overlay off -> paused badge appears & clicking route strip opens edit modal
+    await click('[data-testid="profiles-tab-custom"]')
     await click('[data-testid="custom-overlay-toggle"]')
     await waitDemo()
-    expect(document.querySelector('[data-testid="profile-overlay-badge"]')).toBeNull()
     expect(find('[data-testid="custom-overlay-paused-badge"]').textContent).toContain('已暂停叠加')
-
-    // Clicking the route strip opens the edit modal directly
     await click('.custom-route-trigger')
     expect(document.querySelector('[data-testid="custom-node-save"]')).not.toBeNull()
+    await click('.modal-head .icon-btn')
+
+    // Turn off Custom Nodes via overflow menu -> hides tabs/panel, turns off overlay, returns to Subscriptions
+    await click('[data-testid="custom-nodes-more"]')
+    await click('[data-menu-item="disable-feature"]')
+    await waitDemo()
+    expect(store.customNodesFeatureEnabled.value).toBe(false)
+    expect(store.customNodes.value.overlay_enabled).toBe(false)
+    expect(document.querySelector('[data-testid="profiles-tabs"]')).toBeNull()
+    expect(document.querySelector('[data-testid="custom-nodes-panel"]')).toBeNull()
+
+    // Re-enabling restores tabs immediately
+    await store.setCustomNodesFeatureEnabled(true)
+    await flushPromises()
+    expect(document.querySelector('[data-testid="profiles-tabs"]')).not.toBeNull()
   })
 })

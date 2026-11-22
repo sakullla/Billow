@@ -110,6 +110,7 @@ export const SETTINGS_INDEX: readonly SettingsEntry[] = [
   { id: 'silent-start', tab: 'general', title: () => tr('静默启动'), keywords: 'silent tray 托盘', when: desktop },
   { id: 'close-to-tray', tab: 'general', title: () => tr('关闭时最小化到托盘'), keywords: 'tray close minimize 托盘', when: desktop },
   { id: 'release-ui', tab: 'general', title: () => tr('关闭窗口时释放界面'), keywords: 'lightweight memory 轻量 内存', when: desktop },
+  { id: 'custom-nodes', tab: 'general', title: () => tr('自建节点与落地'), description: () => tr('在配置页管理独立自建节点、链式代理与落地分流规则；关闭后隐藏入口并停止注入'), keywords: 'custom node chain landing 自建 节点 链式 落地 分流' },
   // 系统代理
   { id: 'system-proxy', tab: 'proxy', title: () => tr('启用系统代理'), keywords: 'system proxy 系统代理', when: desktop },
   { id: 'proxy-mode', tab: 'proxy', title: () => tr('代理模式'), description: () => tr('手动或 PAC'), keywords: 'pac manual mode', when: desktop },
