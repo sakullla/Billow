@@ -94,6 +94,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/github-script@v9
         id: release
@@ -103,6 +104,8 @@ jobs:
           script: |
             const fs = require('node:fs');
             const cp = require('node:child_process');
+            const {pathToFileURL} = require('node:url');
+            const {buildReleaseNotes} = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/.github/scripts/release-notes.mjs`));
             const version = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json')).version;
             const tag = `v${version}`;
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Only stable SemVer releases are supported');
@@ -113,12 +116,21 @@ jobs:
             const all = await github.paginate(github.rest.repos.listReleases, {...context.repo, per_page: 100});
             let release = all.find((item) => item.tag_name === tag);
             if (release && (!release.draft || release.target_commitish !== sha)) throw new Error('Release already published or draft belongs to another commit');
+            const body = buildReleaseNotes({
+              repoDir: process.env.GITHUB_WORKSPACE,
+              repo: `${context.repo.owner}/${context.repo.repo}`,
+              tag,
+              sha,
+            });
             if (!release) {
-              const notes = await github.rest.repos.generateReleaseNotes({...context.repo, tag_name: tag, target_commitish: sha});
               release = (await github.rest.repos.createRelease({
                 ...context.repo, tag_name: tag, target_commitish: sha, name: `Billow ${tag}`,
                 draft: true, prerelease: false,
-                body: `${notes.data.body}\n\nWindows x64: NSIS · macOS Apple Silicon: DMG · Linux x64: deb/AppImage · Android ARM64: APK。\n\nmacOS 使用 ad-hoc 签名，未经过 Apple 公证。`,
+                body,
+              })).data;
+            } else if ((release.body ?? '') !== body) {
+              release = (await github.rest.repos.updateRelease({
+                ...context.repo, release_id: release.id, body,
               })).data;
             }
             for (const [key, value] of Object.entries({id: release.id, tag, version, sha})) core.setOutput(key, value);
