@@ -783,7 +783,8 @@
         "the module files carry `SPDX-License-Identifier: GPL-3.0-only` and the upstream version/commit; distribution must follow GPL-3.0 (native-kernel/COPYING.GPL-3.0)",
         "multiplex is the translated client side of `transport/sudoku/multiplex/session.go` (frames open/data/close/reset/ping/pong, one shared session per configuration, recreated after failure); frames are queued whole so streams do not interleave",
         "the HTTP tunnel modes are a mihomo extension (`transport/sudoku/obfs/httpmask/tunnel_*`, ~1.8k lines) and stay rejected by name; the legacy header mask is implemented",
-        "tables are built once per configuration (288-grid shuffle, 1820 puzzle candidates per byte) and cached in-process"
+        "tables are built once per configuration (288-grid shuffle, 1820 puzzle candidates per byte) and cached in-process",
+        "`multiplex: auto` behaves like `off`: the pinned mode only reuses an HTTP tunnel connection, and the HTTP tunnel layer is rejected"
       ],
       "evidence": [
         "tests/mihomo_peers.rs (11 sudoku cases: entropy/ascii/directional/custom/rotation tables, packed downlink, three AEAD methods, with/without the HTTP mask, private/public key material, wrong key, mismatched table type)",
@@ -1296,7 +1297,7 @@
         "owner": "T5",
         "reason": "rule-engine adapter"
       },
-        "easytier": {
+      "easytier": {
         "owner": "T19 (rejected)",
         "reason": "the pinned core's cleartext network_secret_digest derivation is not public/offline; both cleartext and encrypted forms are rejected by name. Device/TUN remains T6/T7."
       }

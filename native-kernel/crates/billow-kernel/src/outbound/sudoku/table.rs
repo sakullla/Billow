@@ -620,7 +620,8 @@ impl WyRand {
 pub fn padding_threshold(rng: &mut WyRand, min: u8, max: u8) -> u64 {
     let low = u64::from(min.min(100)) * (1 << 32) / 100;
     let high = u64::from(max.min(100)) * (1 << 32) / 100;
-    let (low, high) = if high < low { (high, high) } else { (low, high) };
+    // `pickPaddingThreshold`: pMax is pulled up to pMin, never the reverse.
+    let (low, high) = if high < low { (low, low) } else { (low, high) };
     if high <= low {
         return low;
     }

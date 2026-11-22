@@ -118,8 +118,9 @@ unregistered the waker and left a delivered record unread (the mux unit test
 hung forever). `Wakers` now keeps the registered wakers across `Pending` for
 the stream, the mux streams and the write queue's capacity waiters.
 
-The exact counts of each run are in the sibling logs (`protocol-peers-run.log`,
-`family-peers-run.log`, `option-matrix.txt`) and in the task run record.
+The exact counts of each run are in the sibling logs
+(`t17-tests.log`, `protocol-peers-run.log`, `family-peers-run.log`,
+`option-matrix.txt`) and in the task run record.
 
 Platform: `macos-aarch64`. The peer harness binds loopback ports only and
 terminates both Mihomo processes in a `finally` block; the Go vector generator

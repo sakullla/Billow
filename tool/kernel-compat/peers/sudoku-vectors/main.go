@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
 // Sudoku table and codec differential vectors from the locked Mihomo source.
+// Derived from Mihomo `transport/sudoku` (GPL-3.0).
+// Upstream: https://github.com/MetaCubeX/mihomo
+// Version: v1.19.34
+// Commit: 0455d0d28c4526937380505153e65a843d8612e8
+// Source paths: transport/sudoku/obfs/sudoku/* (table/codec API and
+// `NewTableWithCustom`), transport/sudoku/init.go (`GenKeyPair`,
+// `ClientAEADSeed`, `ServerAEADSeed`).
 //
 // The obfuscation table is a shuffle of the 288 4x4 grids derived from the key
 // with Go's math/rand, so a Rust port is only wire-compatible when its table
