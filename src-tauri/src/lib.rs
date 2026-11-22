@@ -2,6 +2,7 @@ mod age_key;
 mod app_update;
 mod backup;
 mod bundled_geo;
+mod custom_nodes;
 mod diagnostics;
 #[cfg(target_os = "windows")]
 mod elevation;
