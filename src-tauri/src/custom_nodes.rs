@@ -765,6 +765,14 @@ fn parse_vless(rest: &str) -> Result<ParsedCustomNode, String> {
     if let Some(flow) = query_get(&parts.query, &["flow"]) {
         set_str(&mut map, "flow", flow);
     }
+    if let Some(encryption) = query_get(&parts.query, &["encryption"]) {
+        if !encryption.eq_ignore_ascii_case("none") {
+            set_str(&mut map, "encryption", encryption);
+        }
+    }
+    if let Some(packet_encoding) = query_get(&parts.query, &["packetEncoding", "packet-encoding"]) {
+        set_str(&mut map, "packet-encoding", packet_encoding);
+    }
 
     let security = query_get(&parts.query, &["security"])
         .unwrap_or("")
@@ -777,6 +785,9 @@ fn parse_vless(rest: &str) -> Result<ParsedCustomNode, String> {
     }
     if let Some(fp) = query_get(&parts.query, &["fp", "client-fingerprint"]) {
         set_str(&mut map, "client-fingerprint", fp);
+    }
+    if let Some(pin) = query_get(&parts.query, &["fingerprint", "pinSHA256"]) {
+        set_str(&mut map, "fingerprint", pin);
     }
     if query_bool(&parts.query, &["allowInsecure", "insecure", "skip-cert-verify"]) == Some(true) {
         set_bool(&mut map, "skip-cert-verify", true);
@@ -907,6 +918,9 @@ fn parse_trojan(rest: &str) -> Result<ParsedCustomNode, String> {
     if let Some(fp) = query_get(&parts.query, &["fp", "client-fingerprint"]) {
         set_str(&mut map, "client-fingerprint", fp);
     }
+    if let Some(pin) = query_get(&parts.query, &["fingerprint", "pinSHA256"]) {
+        set_str(&mut map, "fingerprint", pin);
+    }
     if query_bool(&parts.query, &["allowInsecure", "insecure", "skip-cert-verify"]) == Some(true) {
         set_bool(&mut map, "skip-cert-verify", true);
     }
@@ -995,13 +1009,34 @@ fn parse_ss(rest: &str) -> Result<ParsedCustomNode, String> {
                 set_str(&mut map, "plugin", normalized);
                 let mut opts = Mapping::new();
                 for kv in parts {
+                    let kv = kv.trim();
+                    if kv.is_empty() {
+                        continue;
+                    }
                     if let Some((k, v)) = kv.split_once('=') {
                         let key = match k.trim() {
                             "obfs" => "mode",
                             "obfs-host" => "host",
                             other => other,
                         };
-                        set_str(&mut opts, key, v.trim());
+                        let val = v.trim();
+                        if matches!(key, "tls" | "mux" | "skip-cert-verify" | "v2ray-http-upgrade") {
+                            match val.to_ascii_lowercase().as_str() {
+                                "1" | "true" | "yes" => set_bool(&mut opts, key, true),
+                                "0" | "false" | "no" => set_bool(&mut opts, key, false),
+                                _ => set_str(&mut opts, key, val),
+                            }
+                        } else if key == "version" {
+                            if let Ok(num) = val.parse::<u64>() {
+                                set_u64(&mut opts, key, num);
+                            } else {
+                                set_str(&mut opts, key, val);
+                            }
+                        } else {
+                            set_str(&mut opts, key, val);
+                        }
+                    } else if matches!(kv, "tls" | "mux" | "skip-cert-verify") {
+                        set_bool(&mut opts, kv, true);
                     }
                 }
                 if !opts.is_empty() {
@@ -1056,14 +1091,23 @@ fn parse_hysteria2(rest: &str) -> Result<ParsedCustomNode, String> {
     if let Some(mport) = query_get(&parts.query, &["mport", "ports"]) {
         set_str(&mut map, "ports", mport);
     }
+    if let Some(hop) = query_get(&parts.query, &["hop-interval", "hop_interval"]) {
+        if let Ok(secs) = hop.parse::<u64>() {
+            set_u64(&mut map, "hop-interval", secs);
+        } else {
+            set_str(&mut map, "hop-interval", hop);
+        }
+    }
     if let Some(pin) = query_get(&parts.query, &["pinSHA256", "fingerprint"]) {
         set_str(&mut map, "fingerprint", pin);
     }
     if let Some(up) = query_get(&parts.query, &["up"]) {
-        set_str(&mut map, "up", up);
+        let normalized = normalize_hy2_bandwidth(up);
+        set_str(&mut map, "up", &normalized);
     }
     if let Some(down) = query_get(&parts.query, &["down"]) {
-        set_str(&mut map, "down", down);
+        let normalized = normalize_hy2_bandwidth(down);
+        set_str(&mut map, "down", &normalized);
     }
 
     finalize_proxy_mapping(map, String::new())
@@ -1144,6 +1188,9 @@ fn parse_anytls(rest: &str) -> Result<ParsedCustomNode, String> {
     }
     if let Some(fp) = query_get(&parts.query, &["fp", "client-fingerprint"]) {
         set_str(&mut map, "client-fingerprint", fp);
+    }
+    if let Some(pin) = query_get(&parts.query, &["fingerprint", "pinSHA256"]) {
+        set_str(&mut map, "fingerprint", pin);
     }
     if query_bool(&parts.query, &["insecure", "allowInsecure", "skip-cert-verify"]) == Some(true) {
         set_bool(&mut map, "skip-cert-verify", true);
@@ -1245,16 +1292,69 @@ fn split_user_pass(userinfo: &str) -> (String, String) {
     }
 }
 
+fn normalize_hy2_bandwidth(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+        format!("{trimmed} Mbps")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn split_ws_early_data(raw_path: &str) -> (String, Option<u64>) {
+    let Some((base, query)) = raw_path.split_once('?') else {
+        return (raw_path.to_string(), None);
+    };
+    let mut ed: Option<u64> = None;
+    let mut kept = Vec::new();
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = pair.split_once('=') {
+            if k.eq_ignore_ascii_case("ed") {
+                if let Ok(parsed) = v.trim().parse::<u64>() {
+                    if parsed > 0 {
+                        ed = Some(parsed);
+                        continue;
+                    }
+                }
+            }
+        }
+        kept.push(pair);
+    }
+    if ed.is_none() {
+        return (raw_path.to_string(), None);
+    }
+    let clean = if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", kept.join("&"))
+    };
+    (clean, ed)
+}
+
 fn apply_transport_opts(map: &mut Mapping, query: &BTreeMap<String, String>) {
     let network = query_get(query, &["type", "net"])
         .unwrap_or("")
         .to_ascii_lowercase();
     match network.as_str() {
-        "ws" => {
+        "ws" | "httpupgrade" => {
             set_str(map, "network", "ws");
             let mut ws = Mapping::new();
-            if let Some(path) = query_get(query, &["path"]) {
-                set_str(&mut ws, "path", path);
+            let mut early_data: Option<u64> = query_get(query, &["max-early-data", "ed"])
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&v| v > 0);
+            if let Some(raw_path) = query_get(query, &["path"]) {
+                if network == "ws" {
+                    let (clean_path, path_ed) = split_ws_early_data(raw_path);
+                    if early_data.is_none() {
+                        early_data = path_ed;
+                    }
+                    set_str(&mut ws, "path", &clean_path);
+                } else {
+                    set_str(&mut ws, "path", raw_path);
+                }
             }
             if let Some(host) = query_get(query, &["host"]) {
                 let mut headers = Mapping::new();
@@ -1264,8 +1364,42 @@ fn apply_transport_opts(map: &mut Mapping, query: &BTreeMap<String, String>) {
                     Value::Mapping(headers),
                 );
             }
+            if network == "httpupgrade" {
+                set_bool(&mut ws, "v2ray-http-upgrade", true);
+            } else if let Some(ed) = early_data {
+                set_u64(&mut ws, "max-early-data", ed);
+                let header_name = query_get(query, &["early-data-header-name"])
+                    .unwrap_or("Sec-WebSocket-Protocol");
+                set_str(&mut ws, "early-data-header-name", header_name);
+            }
             if !ws.is_empty() {
                 map.insert(Value::String("ws-opts".to_string()), Value::Mapping(ws));
+            }
+        }
+        "xhttp" | "splithttp" => {
+            set_str(map, "network", "xhttp");
+            let mut xhttp = Mapping::new();
+            if let Some(path) = query_get(query, &["path"]) {
+                set_str(&mut xhttp, "path", path);
+            }
+            if let Some(host) = query_get(query, &["host"]) {
+                set_str(&mut xhttp, "host", host);
+            }
+            if let Some(mode) = query_get(query, &["mode"]) {
+                set_str(&mut xhttp, "mode", mode);
+            }
+            if let Some(extra_raw) = query_get(query, &["extra"]) {
+                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(extra_raw) {
+                    if let Ok(yaml_val) = serde_yaml::to_value(json_val) {
+                        xhttp.insert(Value::String("extra".to_string()), yaml_val);
+                    }
+                }
+            }
+            if !xhttp.is_empty() {
+                map.insert(
+                    Value::String("xhttp-opts".to_string()),
+                    Value::Mapping(xhttp),
+                );
             }
         }
         "grpc" => {
@@ -2508,6 +2642,84 @@ https://u2:p2@proxy.example.com:8443?sni=proxy.example.com#HTTPS%20Proxy
                 .and_then(Value::as_u64),
             Some(2)
         );
+    }
+
+    #[test]
+    fn parses_substore_parity_params_ws_ed_xhttp_httpupgrade_vless_enc_hy2_and_ss_plugin() {
+        let ss_cred = base64::engine::general_purpose::STANDARD.encode("aes-256-gcm:sspass");
+        let input = format!(
+            "\
+vless://11111111-1111-1111-1111-111111111111@ws.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fws%3Fed%3D2048&packetEncoding=xudp&encryption=mlkem768x25519plus.native.0rtt.abc#VLESS-WS-ED
+vless://22222222-2222-2222-2222-222222222222@xhttp.example.com:443?security=reality&sni=www.apple.com&pbk=PUB&sid=01&type=xhttp&path=%2Fxh&host=xh.example.com&mode=packet-up&encryption=none#VLESS-XHTTP
+trojan://trpw@hu.example.com:443?sni=hu.example.com&type=httpupgrade&path=%2Fup&host=hu.example.com#Trojan-HTTPUpgrade
+hysteria2://hy2pw@hy2.example.com:443?mport=20000-30000&hop-interval=30&up=100&down=500Mbps#Hy2-Hop
+ss://{ss_cred}@ss.example.com:443?plugin=v2ray-plugin%3Btls%3Bmux%3Dfalse%3Bmode%3Dwebsocket%3Bhost%3Dss.example.com%3Bpath%3D%2Fss#SS-V2Ray
+anytls://anypw@any.example.com:443?sni=any.example.com&fingerprint=sha256pin#AnyTLS-Pin
+"
+        );
+
+        let res = parse_nodes_input(&input, &[]);
+        assert!(res.errors.is_empty(), "unexpected errors: {:?}", res.errors);
+        assert_eq!(res.parsed.len(), 6);
+
+        // 1. VLESS WS ?ed=2048 + encryption + packet-encoding
+        let vless_ws: Value = serde_yaml::from_str(&res.parsed[0].raw_yaml).unwrap();
+        let m0 = vless_ws.as_mapping().unwrap();
+        assert_eq!(map_str(m0, "encryption"), Some("mlkem768x25519plus.native.0rtt.abc"));
+        assert_eq!(map_str(m0, "packet-encoding"), Some("xudp"));
+        let ws_opts = m0.get(Value::String("ws-opts".into())).unwrap().as_mapping().unwrap();
+        assert_eq!(map_str(ws_opts, "path"), Some("/ws"));
+        assert_eq!(
+            ws_opts.get(Value::String("max-early-data".into())).and_then(Value::as_u64),
+            Some(2048)
+        );
+        assert_eq!(
+            map_str(ws_opts, "early-data-header-name"),
+            Some("Sec-WebSocket-Protocol")
+        );
+
+        // 2. VLESS XHTTP + encryption=none omitted
+        let vless_xh: Value = serde_yaml::from_str(&res.parsed[1].raw_yaml).unwrap();
+        let m1 = vless_xh.as_mapping().unwrap();
+        assert!(m1.get(Value::String("encryption".into())).is_none());
+        assert_eq!(map_str(m1, "network"), Some("xhttp"));
+        let xh_opts = m1.get(Value::String("xhttp-opts".into())).unwrap().as_mapping().unwrap();
+        assert_eq!(map_str(xh_opts, "path"), Some("/xh"));
+        assert_eq!(map_str(xh_opts, "host"), Some("xh.example.com"));
+        assert_eq!(map_str(xh_opts, "mode"), Some("packet-up"));
+
+        // 3. Trojan httpupgrade -> network: ws + v2ray-http-upgrade: true
+        let tr_hu: Value = serde_yaml::from_str(&res.parsed[2].raw_yaml).unwrap();
+        let m2 = tr_hu.as_mapping().unwrap();
+        assert_eq!(map_str(m2, "network"), Some("ws"));
+        let hu_opts = m2.get(Value::String("ws-opts".into())).unwrap().as_mapping().unwrap();
+        assert_eq!(map_bool(hu_opts, "v2ray-http-upgrade"), Some(true));
+        assert_eq!(map_str(hu_opts, "path"), Some("/up"));
+
+        // 4. Hysteria2 hop-interval + bandwidth unit normalization
+        let hy2: Value = serde_yaml::from_str(&res.parsed[3].raw_yaml).unwrap();
+        let m3 = hy2.as_mapping().unwrap();
+        assert_eq!(map_str(m3, "ports"), Some("20000-30000"));
+        assert_eq!(
+            m3.get(Value::String("hop-interval".into())).and_then(Value::as_u64),
+            Some(30)
+        );
+        assert_eq!(map_str(m3, "up"), Some("100 Mbps"));
+        assert_eq!(map_str(m3, "down"), Some("500Mbps"));
+
+        // 5. SS v2ray-plugin bare `tls` and boolean `mux=false`
+        let ss: Value = serde_yaml::from_str(&res.parsed[4].raw_yaml).unwrap();
+        let m4 = ss.as_mapping().unwrap();
+        assert_eq!(map_str(m4, "plugin"), Some("v2ray-plugin"));
+        let popts = m4.get(Value::String("plugin-opts".into())).unwrap().as_mapping().unwrap();
+        assert_eq!(map_bool(popts, "tls"), Some(true));
+        assert_eq!(map_bool(popts, "mux"), Some(false));
+        assert_eq!(map_str(popts, "mode"), Some("websocket"));
+
+        // 6. AnyTLS certificate fingerprint
+        let any: Value = serde_yaml::from_str(&res.parsed[5].raw_yaml).unwrap();
+        let m5 = any.as_mapping().unwrap();
+        assert_eq!(map_str(m5, "fingerprint"), Some("sha256pin"));
     }
 
     #[test]
