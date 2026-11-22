@@ -428,4 +428,36 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
       expect(find('[data-testid="home-failure"]').textContent).toContain('还没有启用的自建节点')
     }, { timeout: 3000 })
   })
+
+  it('supports 1-click inline chain toggle on node cards and 2-card route mode picker in import modal', async () => {
+    const { store } = await setupProfiles()
+
+    await click('[data-testid="add-custom-node-entry"]')
+    // Default in subscription mode is chained landing
+    expect(find('[data-testid="import-mode-chain"]').getAttribute('aria-checked')).toBe('true')
+    // Switch to direct via card click
+    await click('[data-testid="import-mode-direct"]')
+    expect(find('[data-testid="import-mode-direct"]').getAttribute('aria-checked')).toBe('true')
+
+    await setInput(
+      '[data-testid="custom-node-import-input"]',
+      'anytls://example-password@192.0.2.10:24443?security=tls&sni=relay.example.invalid&insecure=1&type=tcp#🇭🇰香港-Example',
+    )
+    await waitDemo(160)
+    await click('[data-testid="custom-node-import-confirm"]')
+    await waitDemo()
+
+    const node = store.customNodes.value.nodes[0]!
+    expect(node.name).toBe('🇭🇰香港-Example')
+    expect(node.dialer.kind).toBe('direct')
+
+    // 1-click quick chain toggle flips direct -> profile_group and back
+    await click(`[data-testid="quick-chain-toggle-${node.id}"]`)
+    await waitDemo()
+    expect(store.customNodes.value.nodes[0]?.dialer).toEqual({ kind: 'profile_group', group: null })
+
+    await click(`[data-testid="quick-chain-toggle-${node.id}"]`)
+    await waitDemo()
+    expect(store.customNodes.value.nodes[0]?.dialer).toEqual({ kind: 'direct' })
+  })
 })

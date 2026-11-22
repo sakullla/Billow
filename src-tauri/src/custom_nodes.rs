@@ -248,6 +248,7 @@ pub struct DialerContext {
     pub primary_group: Option<String>,
     pub available_targets: HashSet<String>,
     pub is_standalone: bool,
+    pub has_proxy_providers: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1615,10 +1616,9 @@ fn resolve_enabled_nodes_dialers(
             }
             DialerTarget::FixedProxy { name } => {
                 let target = name.trim();
-                if target.is_empty()
-                    || context.is_standalone
-                    || !context.available_targets.contains(target)
-                {
+                let available = context.available_targets.contains(target)
+                    || (!context.is_standalone && context.has_proxy_providers);
+                if target.is_empty() || context.is_standalone || !available {
                     invalid_reason.insert(
                         node.id.clone(),
                         format!(
@@ -1876,11 +1876,13 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
         .as_mapping_mut()
         .ok_or_else(|| "订阅配置根节点必须是 YAML 映射对象".to_string())?;
 
-    let (existing_names, primary_group) = inspect_subscription_targets(root_map);
+    let (existing_names, primary_group, has_proxy_providers) =
+        inspect_subscription_targets(root_map);
     let context = DialerContext {
         primary_group: primary_group.clone(),
         available_targets: existing_names.clone(),
         is_standalone: false,
+        has_proxy_providers,
     };
 
     let (valid_ids, mut warnings) = resolve_enabled_nodes_dialers(&state.nodes, &context);
@@ -1915,25 +1917,72 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
     let landing_group_name = resolve_collision_name(LANDING_GROUP_NAME, &reserved_names);
     reserved_names.insert(landing_group_name.clone());
 
-    // If any custom node uses the subscription's primary group as its dialer-proxy,
-    // synthesize a dedicated cycle-free `链式前置` select group cloned from the
-    // primary group's original members (excluding `自建落地`) so selecting `自建落地`
-    // inside the primary group never forms a Mihomo runtime dialer-proxy loop.
-    let needs_relay_group = primary_group.as_deref().is_some_and(|primary| {
-        ordered_valid_nodes.iter().any(|node| match &node.dialer {
-            DialerTarget::ProfileGroup { group: None } => true,
-            DialerTarget::ProfileGroup { group: Some(g) } => g.trim() == primary,
-            DialerTarget::FixedProxy { name } => name.trim() == primary,
-            _ => false,
-        })
-    });
-    let relay_group_name = if needs_relay_group {
+    // Build an exact-match RE2 exclusion regex for all injected custom node names so
+    // subscription groups using `include-all` or `include-all-proxies` (e.g. 自动选择,
+    // 香港节点, or 链式前置 itself) never pull our injected nodes into themselves and
+    // create Mihomo dialer-proxy loops.
+    let all_compiled_names: Vec<String> = ordered_valid_nodes
+        .iter()
+        .map(|node| node_name_map[&node.id].clone())
+        .collect();
+    let custom_exclude_regex = build_exclude_filter_regex(&all_compiled_names);
+
+    // Find all subscription groups that can transitively reach `primary_group` (including
+    // `primary_group` itself). Since `primary_group` will expose `自建落地`, any custom
+    // node whose `dialer-proxy` targets such a group would form a runtime loop unless
+    // routed through a cycle-free relay group.
+    let groups_reaching_primary = primary_group
+        .as_deref()
+        .map(|primary| find_groups_reaching_target(root_map, primary))
+        .unwrap_or_default();
+
+    let mut targeted_cycle_groups: Vec<String> = Vec::new();
+    for node in &ordered_valid_nodes {
+        let target_group = match &node.dialer {
+            DialerTarget::ProfileGroup { group: None } => primary_group.as_deref(),
+            DialerTarget::ProfileGroup { group: Some(g) } => {
+                let trimmed = g.trim();
+                if trimmed.is_empty() {
+                    primary_group.as_deref()
+                } else {
+                    Some(trimmed)
+                }
+            }
+            DialerTarget::FixedProxy { name } => Some(name.trim()),
+            DialerTarget::Direct | DialerTarget::CustomNode { .. } => None,
+        };
+        if let Some(target) = target_group {
+            if groups_reaching_primary.contains(target)
+                && !targeted_cycle_groups.iter().any(|item| item == target)
+            {
+                targeted_cycle_groups.push(target.to_string());
+            }
+        }
+    }
+
+    let needs_primary_relay = !targeted_cycle_groups.is_empty();
+    let relay_group_name = if needs_primary_relay {
         let name = resolve_collision_name(CHAIN_RELAY_GROUP_NAME, &reserved_names);
         reserved_names.insert(name.clone());
         Some(name)
     } else {
         None
     };
+
+    // Map any targeted group that reaches `primary_group` to its cycle-free relay clone.
+    let mut dialer_group_rewrites: HashMap<String, String> = HashMap::new();
+    if let (Some(primary), Some(relay_name)) = (primary_group.as_deref(), relay_group_name.as_deref())
+    {
+        dialer_group_rewrites.insert(primary.to_string(), relay_name.to_string());
+        for group_name in &targeted_cycle_groups {
+            if group_name != primary {
+                let clone_base = format!("{group_name} · 前置");
+                let clone_name = resolve_collision_name(&clone_base, &reserved_names);
+                reserved_names.insert(clone_name.clone());
+                dialer_group_rewrites.insert(group_name.clone(), clone_name);
+            }
+        }
+    }
 
     // Compile custom node mappings with resolved dialer-proxy.
     let mut compiled_proxies: Vec<Value> = Vec::new();
@@ -1944,7 +1993,7 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
             node,
             &final_name,
             primary_group.as_deref(),
-            relay_group_name.as_deref(),
+            &dialer_group_rewrites,
             &node_name_map,
         )?;
         compiled_proxies.push(proxy_val);
@@ -1963,7 +2012,7 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
         seq.extend(compiled_proxies);
     }
 
-    // Inject landing `select` group (and optional cycle-free relay group) and expose
+    // Inject landing `select` group (and optional cycle-free relay groups) and expose
     // landing group in the primary select group.
     let mut landing_group = Mapping::new();
     set_str(&mut landing_group, "name", &landing_group_name);
@@ -1986,33 +2035,50 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
         *groups_entry = Value::Sequence(Vec::new());
     }
     if let Some(groups_seq) = groups_entry.as_sequence_mut() {
-        let mut relay_group: Option<Mapping> = None;
-        if let Some(ref primary) = primary_group {
-            for group_val in groups_seq.iter_mut() {
-                if let Some(gmap) = group_val.as_mapping_mut() {
-                    if map_str(gmap, "name") == Some(primary.as_str()) {
-                        if let Some(ref relay_name) = relay_group_name {
-                            relay_group =
-                                Some(build_chain_relay_group(gmap, relay_name, &landing_group_name));
-                        }
-                        let members_entry = gmap
-                            .entry(Value::String("proxies".to_string()))
-                            .or_insert_with(|| Value::Sequence(Vec::new()));
-                        if let Some(members) = members_entry.as_sequence_mut() {
-                            let already = members
-                                .iter()
-                                .any(|v| v.as_str() == Some(landing_group_name.as_str()));
-                            if !already {
-                                members.push(Value::String(landing_group_name.clone()));
-                            }
-                        }
-                        break;
+        let mut extra_relay_groups: Vec<Mapping> = Vec::new();
+        let primary_name = primary_group.as_deref();
+        let primary_relay_name = relay_group_name.as_deref();
+
+        // First, build cycle-free relay clones BEFORE mutating `primary_group` and
+        // guard every existing `include-all` / `include-all-proxies` group against
+        // accidentally pulling in our injected custom nodes.
+        for group_val in groups_seq.iter_mut() {
+            let Some(gmap) = group_val.as_mapping_mut() else {
+                continue;
+            };
+            let Some(gname) = map_str(gmap, "name").map(str::to_string) else {
+                continue;
+            };
+            if let Some(ref exclude_re) = custom_exclude_regex {
+                append_exclude_filter_if_include_all(gmap, exclude_re);
+            }
+            if let Some(relay_name) = dialer_group_rewrites.get(&gname) {
+                let relay_clone = build_chain_relay_group(
+                    gmap,
+                    relay_name,
+                    &landing_group_name,
+                    primary_name,
+                    primary_relay_name,
+                    custom_exclude_regex.as_deref(),
+                );
+                extra_relay_groups.push(relay_clone);
+            }
+            if primary_name == Some(gname.as_str()) {
+                let members_entry = gmap
+                    .entry(Value::String("proxies".to_string()))
+                    .or_insert_with(|| Value::Sequence(Vec::new()));
+                if let Some(members) = members_entry.as_sequence_mut() {
+                    let already = members
+                        .iter()
+                        .any(|v| v.as_str() == Some(landing_group_name.as_str()));
+                    if !already {
+                        members.push(Value::String(landing_group_name.clone()));
                     }
                 }
             }
         }
         groups_seq.push(Value::Mapping(landing_group));
-        if let Some(relay) = relay_group {
+        for relay in extra_relay_groups {
             groups_seq.push(Value::Mapping(relay));
         }
     }
@@ -2062,7 +2128,7 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
     })
 }
 
-fn inspect_subscription_targets(root_map: &Mapping) -> (HashSet<String>, Option<String>) {
+fn inspect_subscription_targets(root_map: &Mapping) -> (HashSet<String>, Option<String>, bool) {
     let mut names = HashSet::new();
     if let Some(Value::Sequence(proxies)) = root_map.get(Value::String("proxies".to_string())) {
         for item in proxies {
@@ -2071,6 +2137,11 @@ fn inspect_subscription_targets(root_map: &Mapping) -> (HashSet<String>, Option<
             }
         }
     }
+
+    let has_proxy_providers = root_map
+        .get(Value::String("proxy-providers".to_string()))
+        .and_then(Value::as_mapping)
+        .is_some_and(|m| !m.is_empty());
 
     let mut first_visible_select: Option<String> = None;
     let mut first_select: Option<String> = None;
@@ -2105,7 +2176,86 @@ fn inspect_subscription_targets(root_map: &Mapping) -> (HashSet<String>, Option<
     }
 
     let primary = first_visible_select.or(first_select).or(first_any);
-    (names, primary)
+    (names, primary, has_proxy_providers)
+}
+
+fn escape_re2_literal(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 8);
+    for ch in raw.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn build_exclude_filter_regex(names: &[String]) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = names.iter().map(|n| escape_re2_literal(n)).collect();
+    Some(format!("^(?:{})$", parts.join("|")))
+}
+
+fn group_includes_all_proxies(group_map: &Mapping) -> bool {
+    map_bool(group_map, "include-all") == Some(true)
+        || map_bool(group_map, "include-all-proxies") == Some(true)
+}
+
+fn append_exclude_filter_if_include_all(group_map: &mut Mapping, extra: &str) {
+    if !group_includes_all_proxies(group_map) || extra.is_empty() {
+        return;
+    }
+    let merged = match map_str(group_map, "exclude-filter").map(str::trim) {
+        Some(existing) if !existing.is_empty() => format!("({existing})|({extra})"),
+        _ => extra.to_string(),
+    };
+    set_str(group_map, "exclude-filter", &merged);
+}
+
+fn find_groups_reaching_target(root_map: &Mapping, target: &str) -> HashSet<String> {
+    let mut reverse_edges: HashMap<String, Vec<String>> = HashMap::new();
+    if let Some(Value::Sequence(groups)) = root_map.get(Value::String("proxy-groups".to_string())) {
+        for item in groups {
+            let Some(gmap) = item.as_mapping() else {
+                continue;
+            };
+            let Some(gname) = map_str(gmap, "name") else {
+                continue;
+            };
+            if let Some(Value::Sequence(members)) =
+                gmap.get(Value::String("proxies".to_string()))
+            {
+                for member in members {
+                    if let Some(mname) = member.as_str() {
+                        reverse_edges
+                            .entry(mname.to_string())
+                            .or_default()
+                            .push(gname.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut stack: Vec<String> = vec![target.to_string()];
+    while let Some(curr) = stack.pop() {
+        if !visited.insert(curr.clone()) {
+            continue;
+        }
+        if let Some(parents) = reverse_edges.get(&curr) {
+            for parent in parents {
+                if !visited.contains(parent) {
+                    stack.push(parent.clone());
+                }
+            }
+        }
+    }
+    visited
 }
 
 fn resolve_collision_name(base: &str, reserved: &HashSet<String>) -> String {
@@ -2127,21 +2277,41 @@ fn resolve_collision_name(base: &str, reserved: &HashSet<String>) -> String {
 }
 
 fn build_chain_relay_group(
-    primary_map: &Mapping,
+    source_map: &Mapping,
     relay_name: &str,
     landing_group_name: &str,
+    primary_group: Option<&str>,
+    primary_relay_name: Option<&str>,
+    custom_exclude_regex: Option<&str>,
 ) -> Mapping {
     let mut relay = Mapping::new();
     set_str(&mut relay, "name", relay_name);
-    set_str(&mut relay, "type", "select");
+    let source_type = map_str(source_map, "type").unwrap_or("select");
+    set_str(&mut relay, "type", source_type);
 
-    if let Some(Value::Sequence(members)) = primary_map.get(Value::String("proxies".to_string())) {
-        let filtered: Vec<Value> = members
-            .iter()
-            .filter(|v| v.as_str() != Some(landing_group_name))
-            .cloned()
-            .collect();
+    let mut has_proxies = false;
+    if let Some(Value::Sequence(members)) = source_map.get(Value::String("proxies".to_string())) {
+        let mut filtered: Vec<Value> = Vec::with_capacity(members.len());
+        for v in members {
+            let Some(member_name) = v.as_str() else {
+                filtered.push(v.clone());
+                continue;
+            };
+            if member_name == landing_group_name {
+                continue;
+            }
+            if primary_group == Some(member_name) {
+                if let Some(replacement) = primary_relay_name {
+                    if replacement != relay_name {
+                        filtered.push(Value::String(replacement.to_string()));
+                    }
+                    continue;
+                }
+            }
+            filtered.push(v.clone());
+        }
         if !filtered.is_empty() {
+            has_proxies = true;
             relay.insert(
                 Value::String("proxies".to_string()),
                 Value::Sequence(filtered),
@@ -2149,6 +2319,7 @@ fn build_chain_relay_group(
         }
     }
 
+    let mut has_dynamic_source = false;
     for key in [
         "use",
         "include-all",
@@ -2157,12 +2328,34 @@ fn build_chain_relay_group(
         "filter",
         "exclude-filter",
         "exclude-type",
+        "url",
+        "interval",
+        "tolerance",
+        "lazy",
+        "strategy",
         "icon",
     ] {
         let k = Value::String(key.to_string());
-        if let Some(val) = primary_map.get(&k) {
+        if let Some(val) = source_map.get(&k) {
+            if matches!(
+                key,
+                "use" | "include-all" | "include-all-proxies" | "include-all-providers"
+            ) {
+                has_dynamic_source = true;
+            }
             relay.insert(k, val.clone());
         }
+    }
+
+    if let Some(exclude_re) = custom_exclude_regex {
+        append_exclude_filter_if_include_all(&mut relay, exclude_re);
+    }
+
+    if !has_proxies && !has_dynamic_source {
+        relay.insert(
+            Value::String("proxies".to_string()),
+            Value::Sequence(vec![Value::String("DIRECT".to_string())]),
+        );
     }
 
     relay
@@ -2172,7 +2365,7 @@ fn compile_custom_node_value(
     node: &CustomNode,
     final_name: &str,
     primary_group: Option<&str>,
-    relay_group: Option<&str>,
+    dialer_group_rewrites: &HashMap<String, String>,
     node_name_map: &HashMap<String, String>,
 ) -> Result<Value, String> {
     let value: Value = serde_yaml::from_str(&node.raw_yaml)
@@ -2193,20 +2386,18 @@ fn compile_custom_node_value(
                 .filter(|s| !s.is_empty())
                 .or(primary_group)
                 .ok_or_else(|| format!("节点「{}」无法解析订阅策略组", node.name))?;
-            let target = if primary_group == Some(resolved) {
-                relay_group.unwrap_or(resolved)
-            } else {
-                resolved
-            };
+            let target = dialer_group_rewrites
+                .get(resolved)
+                .map(String::as_str)
+                .unwrap_or(resolved);
             set_str(&mut map, "dialer-proxy", target);
         }
         DialerTarget::FixedProxy { name } => {
             let resolved = name.trim();
-            let target = if primary_group == Some(resolved) {
-                relay_group.unwrap_or(resolved)
-            } else {
-                resolved
-            };
+            let target = dialer_group_rewrites
+                .get(resolved)
+                .map(String::as_str)
+                .unwrap_or(resolved);
             set_str(&mut map, "dialer-proxy", target);
         }
         DialerTarget::CustomNode { id } => {
@@ -2235,6 +2426,7 @@ pub fn generate_standalone_yaml(state: &CustomNodesState) -> Result<StandaloneRe
         primary_group: None,
         available_targets: HashSet::new(),
         is_standalone: true,
+        has_proxy_providers: false,
     };
 
     let (valid_ids, mut warnings) = resolve_enabled_nodes_dialers(&state.nodes, &context);
@@ -2273,9 +2465,10 @@ pub fn generate_standalone_yaml(state: &CustomNodesState) -> Result<StandaloneRe
 
     let mut proxies_seq = Vec::new();
     let mut proxy_names = Vec::new();
+    let empty_rewrites = HashMap::new();
     for node in ordered_nodes {
         let final_name = node_name_map[&node.id].clone();
-        let val = compile_custom_node_value(node, &final_name, None, None, &node_name_map)?;
+        let val = compile_custom_node_value(node, &final_name, None, &empty_rewrites, &node_name_map)?;
         proxies_seq.push(val);
         proxy_names.push(final_name);
     }
@@ -2844,6 +3037,7 @@ private-key: abc
                 .into_iter()
                 .collect(),
             is_standalone: false,
+            has_proxy_providers: false,
         };
         let report = validate_dialer_graph(&nodes, &ctx);
         assert!(!report.valid);
@@ -3256,5 +3450,139 @@ private-key: abc
         let extracted = extract_simple_proxy(&parsed.raw_yaml).unwrap();
         assert_eq!(extracted, form);
         assert!(!extracted.udp);
+    }
+
+    #[test]
+    fn anytls_chain_overlay_excludes_custom_nodes_from_include_all_and_prevents_transitive_loops() {
+        let uri = "anytls://example-password@192.0.2.10:24443?security=tls&sni=relay.example.invalid&insecure=1&type=tcp#🇭🇰香港-Example";
+        let parsed = parse_nodes_input(uri, &[]);
+        assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
+        assert_eq!(parsed.parsed.len(), 1);
+        let item = &parsed.parsed[0];
+        assert_eq!(item.name, "🇭🇰香港-Example");
+        assert_eq!(item.protocol, "anytls");
+        assert_eq!(item.server, "192.0.2.10");
+        assert_eq!(item.port, 24443);
+
+        let base = r#"
+mixed-port: 7890
+mode: rule
+proxies:
+  - { name: 机场香港 01, type: ss, server: 1.1.1.1, port: 443, cipher: aes-128-gcm, password: pw }
+proxy-groups:
+  - name: 节点选择
+    type: select
+    include-all: true
+    proxies: [自动选择, 香港节点]
+  - name: 自动选择
+    type: url-test
+    include-all: true
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 香港节点
+    type: url-test
+    include-all-proxies: true
+    filter: 香港|HK
+    exclude-filter: 剩余流量
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+  - name: 兜底分流
+    type: select
+    proxies: [节点选择, DIRECT]
+rules:
+  - MATCH,节点选择
+"#;
+
+        let mut state = CustomNodesState::default();
+        state.nodes.push(CustomNode {
+            id: "cn1".to_string(),
+            name: item.name.clone(),
+            enabled: true,
+            note: String::new(),
+            protocol: item.protocol.clone(),
+            raw_yaml: item.raw_yaml.clone(),
+            dialer: DialerTarget::ProfileGroup { group: None },
+        });
+        state.nodes.push(CustomNode {
+            id: "cn2".to_string(),
+            name: "二次链式".to_string(),
+            enabled: true,
+            note: String::new(),
+            protocol: item.protocol.clone(),
+            raw_yaml: item.raw_yaml.clone(),
+            dialer: DialerTarget::ProfileGroup {
+                group: Some("兜底分流".to_string()),
+            },
+        });
+
+        let res = inject_overlay(base, &state).unwrap();
+        assert!(res.warnings.is_empty(), "warnings: {:?}", res.warnings);
+        assert_eq!(res.injected_count, 2);
+
+        let doc: Value = serde_yaml::from_str(&res.yaml).unwrap();
+        let root = doc.as_mapping().unwrap();
+        let proxies = root
+            .get(Value::String("proxies".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        let anytls_proxy = proxies
+            .iter()
+            .find(|p| p.as_mapping().and_then(|m| map_str(m, "name")) == Some("🇭🇰香港-Example"))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(map_str(anytls_proxy, "type"), Some("anytls"));
+        assert_eq!(map_str(anytls_proxy, "sni"), Some("relay.example.invalid"));
+        assert_eq!(map_bool(anytls_proxy, "skip-cert-verify"), Some(true));
+        assert_eq!(map_str(anytls_proxy, "dialer-proxy"), Some(CHAIN_RELAY_GROUP_NAME));
+
+        let groups = root
+            .get(Value::String("proxy-groups".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        for gname in ["节点选择", "自动选择", "香港节点", CHAIN_RELAY_GROUP_NAME] {
+            let gmap = groups
+                .iter()
+                .find(|g| g.as_mapping().and_then(|m| map_str(m, "name")) == Some(gname))
+                .unwrap_or_else(|| panic!("missing group {gname}"))
+                .as_mapping()
+                .unwrap();
+            let ef = map_str(gmap, "exclude-filter").unwrap_or("");
+            assert!(
+                ef.contains("🇭🇰香港-Example"),
+                "group {gname} should exclude injected custom node, got exclude-filter={ef:?}"
+            );
+            if gname == "香港节点" {
+                assert!(ef.contains("剩余流量"), "must preserve existing exclude-filter");
+            }
+        }
+
+        // Transitive cycle group `兜底分流` must be cloned with `节点选择` rewritten to `链式前置`.
+        let cn2_proxy = proxies
+            .iter()
+            .find(|p| p.as_mapping().and_then(|m| map_str(m, "name")) == Some("二次链式"))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let cn2_dialer = map_str(cn2_proxy, "dialer-proxy").unwrap();
+        assert_ne!(cn2_dialer, "兜底分流");
+        let fallback_relay = groups
+            .iter()
+            .find(|g| g.as_mapping().and_then(|m| map_str(m, "name")) == Some(cn2_dialer))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let members: Vec<&str> = fallback_relay
+            .get(Value::String("proxies".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(members.contains(&CHAIN_RELAY_GROUP_NAME));
+        assert!(!members.contains(&"节点选择"));
     }
 }

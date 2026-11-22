@@ -28,9 +28,19 @@ const submitError = ref<string | null>(null)
 let previewSeq = 0
 let previewTimer: ReturnType<typeof setTimeout> | null = null
 
+const hasSubscription = computed(() => store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value)
+const isChainedMode = computed(() => dialerChoice.value !== 'direct')
+
+function selectRouteMode(mode: 'chain' | 'direct') {
+  if (mode === 'direct') {
+    dialerChoice.value = 'direct'
+  } else if (dialerChoice.value === 'direct') {
+    dialerChoice.value = 'profile_group:'
+  }
+}
+
 const dialerOptions = computed<SelectOption[]>(() => {
-  const hasSubscription = store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value
-  const options: SelectOption[] = hasSubscription
+  const options: SelectOption[] = hasSubscription.value
     ? [
         { value: 'profile_group:', label: t('customNodes.dialer.profileGroup'), icon: 'globe', hint: tr('推荐') },
         { value: 'direct', label: t('customNodes.dialer.direct'), icon: 'zap' },
@@ -61,6 +71,14 @@ const dialerOptions = computed<SelectOption[]>(() => {
   }
   return options
 })
+
+function protocolTone(protocol: string): string {
+  const p = protocol.toLowerCase()
+  if (p === 'anytls' || p === 'vless') return 'proto-teal'
+  if (p === 'hysteria2' || p === 'tuic') return 'proto-indigo'
+  if (p === 'socks5' || p === 'http') return 'proto-amber'
+  return 'proto-slate'
+}
 
 function resolveDialer(choice: string): DialerTarget {
   if (choice === 'direct') return { kind: 'direct' }
@@ -125,7 +143,7 @@ watch(
     }
     if (!open) return
     submitError.value = null
-    dialerChoice.value = store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value ? 'profile_group:' : 'direct'
+    dialerChoice.value = hasSubscription.value ? 'profile_group:' : 'direct'
     raw.value = props.initialText?.trim() ?? ''
     if (raw.value) void runPreview(raw.value)
     else preview.value = { parsed: [], errors: [] }
@@ -197,7 +215,7 @@ async function submit() {
         <textarea
           v-model="raw"
           class="mono custom-import-textarea"
-          rows="6"
+          rows="5"
           spellcheck="false"
           :placeholder="t('customNodes.import.placeholder')"
           data-testid="custom-node-import-input"
@@ -205,17 +223,66 @@ async function submit() {
         />
       </div>
 
-      <div class="field">
-        <span class="field-label-row">{{ t('customNodes.dialer.label') }}</span>
-        <SelectField
-          :model-value="dialerChoice"
-          :options="dialerOptions"
-          :sheet="compact"
-          :label="t('customNodes.dialer.label')"
-          class="field-select"
-          data-testid="custom-import-dialer"
-          @update:model-value="(value) => { dialerChoice = String(value) }"
-        />
+      <!-- Visual 2-Card Route Mode Picker -->
+      <div class="custom-form-section">
+        <p class="custom-section-title">{{ t('customNodes.dialer.label') }}</p>
+        <div class="custom-route-cards" role="radiogroup" :aria-label="t('customNodes.dialer.label')">
+          <button
+            type="button"
+            class="custom-route-card"
+            :class="{ active: isChainedMode }"
+            role="radio"
+            :aria-checked="isChainedMode"
+            data-testid="import-mode-chain"
+            @click="selectRouteMode('chain')"
+          >
+            <div class="custom-route-card-head">
+              <span class="custom-route-card-icon chain"><Icon name="globe" :size="15" /></span>
+              <strong>{{ tr('链式落地') }}</strong>
+              <span v-if="hasSubscription" class="tag accent sm">{{ tr('推荐') }}</span>
+            </div>
+            <p class="custom-route-card-flow">
+              <span>{{ tr('订阅中转') }}</span>
+              <span aria-hidden="true">→</span>
+              <span>{{ tr('自建节点') }}</span>
+            </p>
+            <p class="muted small">{{ tr('隐藏真实 IP，适合 AI、住宅与纯净落地') }}</p>
+          </button>
+
+          <button
+            type="button"
+            class="custom-route-card"
+            :class="{ active: !isChainedMode }"
+            role="radio"
+            :aria-checked="!isChainedMode"
+            data-testid="import-mode-direct"
+            @click="selectRouteMode('direct')"
+          >
+            <div class="custom-route-card-head">
+              <span class="custom-route-card-icon direct"><Icon name="zap" :size="15" /></span>
+              <strong>{{ tr('直连出口') }}</strong>
+              <span v-if="!hasSubscription" class="tag accent sm">{{ tr('推荐') }}</span>
+            </div>
+            <p class="custom-route-card-flow">
+              <span>{{ tr('本机') }}</span>
+              <span aria-hidden="true">→</span>
+              <span>{{ tr('自建节点') }}</span>
+            </p>
+            <p class="muted small">{{ tr('不经中转直连，适合高速自建或纯自建') }}</p>
+          </button>
+        </div>
+
+        <div class="custom-dialer-select-wrap">
+          <SelectField
+            :model-value="dialerChoice"
+            :options="dialerOptions"
+            :sheet="compact"
+            :label="t('customNodes.dialer.label')"
+            class="field-select"
+            data-testid="custom-import-dialer"
+            @update:model-value="(value) => { dialerChoice = String(value) }"
+          />
+        </div>
       </div>
 
       <div v-if="previewing" class="muted small custom-preview-status">
@@ -232,8 +299,8 @@ async function submit() {
         </header>
         <ul class="custom-preview-list">
           <li v-for="(item, idx) in preview.parsed" :key="`${item.name}-${idx}`" class="custom-preview-item">
-            <span class="custom-preview-name ellipsis">{{ item.name }}</span>
-            <span class="tag sm">{{ item.protocol.toUpperCase() }}</span>
+            <span class="custom-proto-chip mono" :class="protocolTone(item.protocol)">{{ item.protocol.toUpperCase() }}</span>
+            <span class="custom-preview-name ellipsis grow">{{ item.name }}</span>
             <span class="muted small mono ellipsis">{{ item.server }}:{{ item.port }}</span>
           </li>
         </ul>

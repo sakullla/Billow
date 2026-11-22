@@ -1202,19 +1202,29 @@ const failedSubscriptionIds = computed(() =>
       @open-rules="landingRulesOpen = true"
     />
     <section v-else class="card custom-nodes-entry" data-testid="custom-nodes-entry">
-      <div class="custom-entry-icon" aria-hidden="true">
-        <Icon name="layers" :size="18" />
-      </div>
-      <div class="custom-entry-body grow min0">
-        <div class="custom-panel-title-row">
-          <h2>{{ t('customNodes.title') }}</h2>
+      <div class="custom-entry-main grow min0">
+        <div class="custom-entry-icon" aria-hidden="true">
+          <Icon name="layers" :size="19" />
         </div>
-        <p class="muted small">{{ t('customNodes.subtitle') }}</p>
+        <div class="custom-entry-body grow min0">
+          <div class="custom-panel-title-row">
+            <h2>{{ t('customNodes.title') }}</h2>
+            <span class="custom-stat-pill accent">{{ tr('链式落地 · 纯自建') }}</span>
+          </div>
+          <p class="muted small">{{ t('customNodes.subtitle') }}</p>
+          <div class="custom-proto-strip" aria-hidden="true">
+            <span class="custom-proto-mini">AnyTLS</span>
+            <span class="custom-proto-mini">VLESS</span>
+            <span class="custom-proto-mini">Hysteria2</span>
+            <span class="custom-proto-mini">SOCKS5</span>
+            <span class="custom-proto-mini">Trojan / SS</span>
+          </div>
+        </div>
       </div>
       <div class="custom-entry-actions">
         <button
           type="button"
-          class="btn sm"
+          class="btn primary sm"
           data-testid="add-custom-node-entry"
           @click="openCustomImport()"
         >

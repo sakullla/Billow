@@ -36,6 +36,12 @@ const editPattern = ref('')
 const editTarget = ref('custom_group')
 const error = ref<string | null>(null)
 
+const enabledSummaryCount = computed(() => {
+  const presets = Object.values(presetDrafts.value).filter((item) => item.enabled).length
+  const domains = domainRules.value.filter((item) => item.enabled).length
+  return presets + domains
+})
+
 const baseTargetOptions = computed(() => {
   const options: { value: string; label: string }[] = [
     { value: 'custom_group', label: t('customNodes.rules.targetGroup') },
@@ -48,6 +54,12 @@ const baseTargetOptions = computed(() => {
   }
   return options
 })
+
+function presetIcon(id: string): string {
+  if (id === 'ai') return 'zap'
+  if (id === 'streaming') return 'play'
+  return 'globe'
+}
 
 function encodeTarget(target: LandingRuleTarget): string {
   return target.kind === 'custom_node' ? `custom_node:${target.id}` : 'custom_group'
@@ -252,8 +264,13 @@ async function submit() {
   >
     <div class="stack">
       <div class="custom-switch-row custom-rules-master">
-        <div>
-          <strong>{{ t('customNodes.rules.masterToggle') }}</strong>
+        <div class="grow min0">
+          <div class="custom-panel-title-row">
+            <strong>{{ t('customNodes.rules.masterToggle') }}</strong>
+            <span v-if="enabledSummaryCount > 0" class="custom-stat-pill accent">
+              {{ tr('已选 {0} 项', { 0: enabledSummaryCount }) }}
+            </span>
+          </div>
           <p class="muted small">{{ t('customNodes.landingRulesHint') }}</p>
         </div>
         <Toggle
@@ -265,17 +282,32 @@ async function submit() {
 
       <section class="stack-sm">
         <h3 class="custom-section-title">{{ t('customNodes.rules.presets') }}</h3>
-        <div
-          v-for="preset in store.landingPresets.value"
-          :key="preset.id"
-          class="custom-preset-row"
-          :class="{ 'has-warning': Boolean(presetDrafts[preset.id]?.enabled && targetStatus(presetDrafts[preset.id]!.target).issue) }"
-        >
-          <div class="grow min0">
-            <div class="custom-preset-head">
-              <strong>{{ preset.label }}</strong>
-              <span class="muted small">{{ tr('{0} 个域名', { 0: preset.domains.length }) }}</span>
+        <div class="custom-preset-grid">
+          <div
+            v-for="preset in store.landingPresets.value"
+            :key="preset.id"
+            class="custom-preset-row"
+            :class="{
+              active: Boolean(presetDrafts[preset.id]?.enabled),
+              'has-warning': Boolean(presetDrafts[preset.id]?.enabled && targetStatus(presetDrafts[preset.id]!.target).issue),
+            }"
+          >
+            <div class="custom-preset-top">
+              <span class="custom-preset-icon" aria-hidden="true">
+                <Icon :name="presetIcon(preset.id)" :size="15" />
+              </span>
+              <div class="grow min0">
+                <strong class="custom-preset-title">{{ preset.label }}</strong>
+                <span class="muted small">{{ tr('{0} 个内置域名', { 0: preset.domains.length }) }}</span>
+              </div>
+              <Toggle
+                :model-value="Boolean(presetDrafts[preset.id]?.enabled)"
+                :label="preset.label"
+                :data-testid="`landing-preset-${preset.id}`"
+                @update:model-value="(value) => { if (presetDrafts[preset.id]) presetDrafts[preset.id]!.enabled = value }"
+              />
             </div>
+
             <div v-if="presetDrafts[preset.id]?.enabled" class="custom-preset-target" :data-testid="`landing-preset-target-${preset.id}`">
               <SelectField
                 :model-value="presetDrafts[preset.id]!.target"
@@ -296,12 +328,6 @@ async function submit() {
               <span>{{ targetStatus(presetDrafts[preset.id]!.target).notice }}</span>
             </p>
           </div>
-          <Toggle
-            :model-value="Boolean(presetDrafts[preset.id]?.enabled)"
-            :label="preset.label"
-            :data-testid="`landing-preset-${preset.id}`"
-            @update:model-value="(value) => { if (presetDrafts[preset.id]) presetDrafts[preset.id]!.enabled = value }"
-          />
         </div>
       </section>
 
@@ -328,7 +354,7 @@ async function submit() {
           </div>
           <button
             type="submit"
-            class="btn ghost sm"
+            class="btn primary sm"
             :disabled="!newDomain.trim()"
             data-testid="landing-domain-add"
           >

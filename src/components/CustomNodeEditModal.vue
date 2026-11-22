@@ -50,6 +50,18 @@ const simple = ref<SimpleProxyForm>({
 const yamlName = ref('')
 const yamlText = ref('')
 
+const hasSubscription = computed(() => store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value)
+const isChainedMode = computed(() => dialerChoice.value !== 'direct')
+
+function selectRouteMode(routeMode: 'chain' | 'direct') {
+  error.value = null
+  if (routeMode === 'direct') {
+    dialerChoice.value = 'direct'
+  } else if (dialerChoice.value === 'direct') {
+    dialerChoice.value = 'profile_group:'
+  }
+}
+
 const modeOptions = computed((): readonly { id: 'simple' | 'yaml'; label: string }[] => [
   { id: 'simple', label: t('customNodes.quickForm') },
   { id: 'yaml', label: t('customNodes.yamlEdit') },
@@ -61,8 +73,7 @@ const protocolOptions = [
 ]
 
 const dialerOptions = computed<SelectOption[]>(() => {
-  const hasSubscription = store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value
-  const options: SelectOption[] = hasSubscription
+  const options: SelectOption[] = hasSubscription.value
     ? [
         { value: 'profile_group:', label: t('customNodes.dialer.profileGroup'), icon: 'globe', hint: tr('推荐') },
         { value: 'direct', label: t('customNodes.dialer.direct'), icon: 'zap' },
@@ -213,7 +224,7 @@ watch(
       mode.value = 'simple'
       enabled.value = true
       note.value = ''
-      dialerChoice.value = store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value ? 'profile_group:' : 'direct'
+      dialerChoice.value = hasSubscription.value ? 'profile_group:' : 'direct'
       fixedProxyName.value = ''
       simple.value = {
         name: '',
@@ -490,6 +501,49 @@ async function submit() {
 
       <div class="custom-form-section">
         <p class="custom-section-title">{{ tr('链式与状态') }}</p>
+
+        <div class="custom-route-cards" role="radiogroup" :aria-label="t('customNodes.dialer.label')">
+          <button
+            type="button"
+            class="custom-route-card"
+            :class="{ active: isChainedMode }"
+            role="radio"
+            :aria-checked="isChainedMode"
+            data-testid="edit-mode-chain"
+            @click="selectRouteMode('chain')"
+          >
+            <div class="custom-route-card-head">
+              <span class="custom-route-card-icon chain"><Icon name="globe" :size="15" /></span>
+              <strong>{{ tr('链式落地') }}</strong>
+            </div>
+            <p class="custom-route-card-flow">
+              <span>{{ tr('前置中转') }}</span>
+              <span aria-hidden="true">→</span>
+              <span>{{ tr('此节点') }}</span>
+            </p>
+          </button>
+
+          <button
+            type="button"
+            class="custom-route-card"
+            :class="{ active: !isChainedMode }"
+            role="radio"
+            :aria-checked="!isChainedMode"
+            data-testid="edit-mode-direct"
+            @click="selectRouteMode('direct')"
+          >
+            <div class="custom-route-card-head">
+              <span class="custom-route-card-icon direct"><Icon name="zap" :size="15" /></span>
+              <strong>{{ tr('直连出口') }}</strong>
+            </div>
+            <p class="custom-route-card-flow">
+              <span>{{ tr('本机') }}</span>
+              <span aria-hidden="true">→</span>
+              <span>{{ tr('此节点') }}</span>
+            </p>
+          </button>
+        </div>
+
         <div class="custom-form-card stack-sm">
           <div class="field" data-testid="custom-node-dialer">
             <span>{{ t('customNodes.dialer.label') }}</span>
