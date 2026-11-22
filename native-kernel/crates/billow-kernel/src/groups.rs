@@ -296,15 +296,24 @@ impl GroupRuntime {
     }
 }
 
-/// A health task: one URL checked for one set of members.
-struct HealthTask {
-    label: String,
+/// One URL check inside a [`HealthTask`]. A group task has exactly one; a
+/// pinned provider `HealthCheck` runs its own URL plus every registered group
+/// URL under one ticker, so its task carries several probes.
+#[derive(Debug, Clone)]
+struct HealthProbe {
     url: String,
     expected: ExpectedStatus,
+    filter: Vec<Regex>,
+}
+
+/// A health task: the probes of one pinned `HealthCheck` (a group's compatible
+/// provider or one provider's own health check).
+struct HealthTask {
+    label: String,
+    probes: Vec<HealthProbe>,
     timeout: Duration,
     interval: Duration,
     lazy: bool,
-    filter: Vec<Regex>,
     targets: HealthTarget,
     /// Next scheduled probe (pinned uses one ticker per interval).
     next_due: Mutex<Instant>,
@@ -323,6 +332,13 @@ enum HealthTarget {
     Inline(usize),
     /// Every current snapshot proxy of one provider.
     Provider(String),
+}
+
+/// Provider interval/probe list while `build_tasks` replays the pinned
+/// registration order (groups in configuration order).
+struct ProviderTaskDraft {
+    interval: u64,
+    probes: Vec<HealthProbe>,
 }
 
 /// The group runtime of one kernel instance.
@@ -1209,8 +1225,9 @@ impl GroupRegistry {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.selected = Some(member.to_string());
-            // Pinned `URLTest.ForceSet` resets `fastNode` and `fastSingle`.
-            state.fast_node = None;
+            // Pinned `URLTest.ForceSet` only resets `fastSingle`; `fastNode`
+            // (the tolerance baseline, `urltest.go` fast()) survives, so a
+            // selection that stays unavailable still compares against it.
             state.fast_cache = None;
         }
         self.persist(group, Some(member));
@@ -1360,19 +1377,16 @@ impl GroupRegistry {
     }
 
     async fn probe_provider_task(self: &Arc<Self>, provider: &str) -> Vec<MemberHealth> {
+        // Reuse the built provider task so this diagnostic sees the same URL
+        // set as the scheduler (own URL plus registered group URLs).
+        let Some(task) = self.tasks.iter().find(
+            |task| matches!(&task.targets, HealthTarget::Provider(name) if name == provider),
+        ) else {
+            return Vec::new();
+        };
         let Some(slot) = self.providers.proxy_provider(provider) else {
             return Vec::new();
         };
-        let config = slot.config.health_check.clone();
-        if !config.enable || config.url.as_deref().unwrap_or("").trim().is_empty() {
-            return Vec::new();
-        }
-        let expected = ExpectedStatus::parse(&config.expected_status).unwrap_or_default();
-        let timeout = Duration::from_millis(if config.timeout == 0 {
-            DEFAULT_TIMEOUT_MS
-        } else {
-            config.timeout
-        });
         let members = slot
             .snapshot()
             .proxies
@@ -1383,8 +1397,26 @@ impl GroupRegistry {
                 reference: MemberRef::Proxy(Arc::new(proxy.clone())),
             })
             .collect::<Vec<_>>();
-        self.probe_members(members, config.url.clone().unwrap_or_default(), expected, timeout, Vec::new())
-            .await
+        let mut results = Vec::new();
+        for probe in &task.probes {
+            results.extend(
+                self.probe_members(
+                    members.clone(),
+                    probe.url.clone(),
+                    probe.expected.clone(),
+                    task.timeout,
+                    probe.filter.clone(),
+                )
+                .await,
+            );
+        }
+        // One row per member: the last probe's record wins, like a member read
+        // after the whole pinned `check()` finished.
+        let mut deduped: BTreeMap<String, MemberHealth> = BTreeMap::new();
+        for member in results {
+            deduped.insert(member.name.clone(), member);
+        }
+        deduped.into_values().collect()
     }
 
     async fn probe_members(
@@ -1562,14 +1594,21 @@ impl GroupRegistry {
 
     fn build_tasks(&self) -> Result<Vec<HealthTask>, ConfigError> {
         let mut tasks = Vec::new();
+        // Pinned registers a group's explicit URL on each `use` provider's own
+        // `HealthCheck`, so every provider gets one ticker and one probe list
+        // no matter how many groups register it.
+        let mut drafts: BTreeMap<String, ProviderTaskDraft> = BTreeMap::new();
         for (position, runtime) in self.groups.iter().enumerate() {
             let def = &runtime.def;
             // The group's own health check covers its inline members only.
             if !def.proxies.is_empty() && def.interval > 0 {
                 tasks.push(HealthTask {
                     label: format!("group:{}", def.name),
-                    url: def.url.clone(),
-                    expected: def.expected_status.clone(),
+                    probes: vec![HealthProbe {
+                        url: def.url.clone(),
+                        expected: def.expected_status.clone(),
+                        filter: Vec::new(),
+                    }],
                     timeout: Duration::from_millis(if def.timeout == 0 {
                         DEFAULT_TIMEOUT_MS
                     } else {
@@ -1577,7 +1616,6 @@ impl GroupRegistry {
                     }),
                     interval: Duration::from_secs(def.interval),
                     lazy: def.lazy,
-                    filter: Vec::new(),
                     targets: HealthTarget::Inline(position),
                     // Pinned `HealthCheck.process` starts with
                     // `go hc.check()` before its first interval tick.
@@ -1587,96 +1625,128 @@ impl GroupRegistry {
                     generation: AtomicU64::new(0),
                 });
             }
-            // An explicit group URL registers an extra probe on `use` providers.
-            let explicit_url = def.url_explicit && !def.use_providers.is_empty();
-            if explicit_url {
-                for provider in &def.use_providers {
-                    // Pinned `registerHealthCheckTask`: an enabled provider
-                    // health check keeps its own interval and ticker; only a
-                    // provider without one borrows the group interval.
-                    let provider_config = self
-                        .providers
-                        .proxy_provider(provider)
-                        .map(|slot| slot.config.health_check.clone());
-                    let provider_interval = provider_config
-                        .as_ref()
-                        .filter(|config| config.enable)
-                        .map(|config| config.interval)
-                        .unwrap_or(0);
-                    let interval = if provider_interval > 0 {
-                        provider_interval
-                    } else {
-                        def.interval
-                    };
-                    if interval == 0 {
-                        continue;
-                    }
-                    // Pinned `registerHealthCheckTask` trims the URL and
-                    // ignores it when it equals the provider's own
-                    // `health-check.url`; that default URL is already probed by
-                    // the provider task below.
-                    let provider_url = provider_config
-                        .as_ref()
-                        .and_then(|config| config.url.clone())
-                        .unwrap_or_default();
-                    if def.url.trim().is_empty() || def.url.trim() == provider_url {
-                        continue;
-                    }
-                    // The extra URL lives inside the provider's own
-                    // `HealthCheck`, so its `lazy` flag, `lastTouch` and
-                    // `timeout` are the provider's, never the group's.
-                    let lazy = provider_config
-                        .as_ref()
-                        .map(|config| config.lazy)
-                        .unwrap_or(true);
-                    let timeout = provider_config
-                        .as_ref()
-                        .map(|config| config.timeout)
-                        .unwrap_or(0);
-                    let generation = self
-                        .providers
-                        .proxy_provider(provider)
-                        .map(|slot| slot.snapshot().generation)
-                        .unwrap_or(0);
-                    tasks.push(HealthTask {
-                        label: format!("group:{}->provider:{provider}", def.name),
-                        url: def.url.clone(),
-                        expected: def.expected_status.clone(),
-                        // `HealthCheck.execute` reads `hc.timeout`, which is
-                        // the provider's `health-check.timeout` (5000 default),
-                        // not the group's `timeout`.
-                        timeout: Duration::from_millis(if timeout == 0 {
-                            DEFAULT_TIMEOUT_MS
+            // An explicit group URL registers an extra probe on `use`
+            // providers (`addTestUrlToProviders` -> `registerHealthCheckTask`).
+            if !def.url_explicit || def.use_providers.is_empty() {
+                continue;
+            }
+            let group_url = def.url.trim();
+            if group_url.is_empty() {
+                continue;
+            }
+            for provider in &def.use_providers {
+                let Some(slot) = self.providers.proxy_provider(provider) else {
+                    continue;
+                };
+                let config = slot.config.health_check.clone();
+                // Pinned returns before touching `hc.interval` when the URL is
+                // empty or equals the provider's own `health-check.url`; the
+                // provider task below already probes that default URL.
+                let provider_url = config.url.clone().unwrap_or_default();
+                if group_url == provider_url.trim() {
+                    continue;
+                }
+                let draft = drafts
+                    .entry(provider.clone())
+                    .or_insert_with(|| ProviderTaskDraft {
+                        // Pinned `provider/parser.go`: `enable: true` keeps
+                        // its interval (300 when zero); `enable: false` starts
+                        // at 0 and the first registration borrows the group
+                        // interval. `NewHealthCheck` also zeroes it when `url`
+                        // is empty (the loader rejects that for `enable`).
+                        interval: if config.enable {
+                            if config.interval == 0 {
+                                300
+                            } else {
+                                config.interval
+                            }
                         } else {
-                            timeout
-                        }),
-                        interval: Duration::from_secs(interval),
-                        lazy,
-                        filter: runtime.filter.clone(),
-                        targets: HealthTarget::Provider(provider.clone()),
-                        next_due: Mutex::new(Instant::now()),
-                        running: AtomicBool::new(false),
-                        initial: AtomicBool::new(true),
-                        generation: AtomicU64::new(generation),
+                            0
+                        },
+                        probes: Vec::new(),
                     });
+                // Pinned `if hc.interval == 0 { hc.interval = interval }`: the
+                // first registration on that provider wins.
+                if draft.interval == 0 {
+                    // `addTestUrlToProviders` runs before the parser applies
+                    // the 300 s default to groups with inline members, so use
+                    // the interval as written.
+                    draft.interval = def.registration_interval;
+                }
+                match draft
+                    .probes
+                    .iter_mut()
+                    .find(|probe| probe.url == group_url)
+                {
+                    Some(existing) => {
+                        // Pinned dedupes by URL: the first expected-status is
+                        // kept and later filters merge into the same probe.
+                        for regex in &runtime.filter {
+                            if existing
+                                .filter
+                                .iter()
+                                .all(|kept| kept.as_str() != regex.as_str())
+                            {
+                                existing.filter.push(regex.clone());
+                            }
+                        }
+                    }
+                    None => draft.probes.push(HealthProbe {
+                        url: group_url.to_string(),
+                        expected: def.expected_status.clone(),
+                        filter: runtime.filter.clone(),
+                    }),
                 }
             }
         }
-        for provider in &self.providers.proxy_provider_names() {
+        for provider in self.providers.proxy_provider_names() {
             let Some(slot) = self.providers.proxy_provider(provider) else {
                 continue;
             };
             let config = slot.config.health_check.clone();
-            if !config.enable || config.url.as_deref().unwrap_or("").trim().is_empty() {
+            let default_url = config.url.clone().unwrap_or_default();
+            let mut interval = if config.enable {
+                if config.interval == 0 {
+                    300
+                } else {
+                    config.interval
+                }
+            } else {
+                0
+            };
+            let mut probes = Vec::new();
+            if let Some(draft) = drafts.remove(provider) {
+                if interval == 0 {
+                    interval = draft.interval;
+                }
+                probes = draft.probes;
+            }
+            if !default_url.trim().is_empty() {
+                // Pinned `HealthCheck.check` executes the provider's own URL
+                // first, with the provider's expected-status and no filter.
+                let expected = ExpectedStatus::parse(&config.expected_status).map_err(|e| {
+                    ConfigError::InvalidValue(format!("proxy-provider '{provider}': {e}"))
+                })?;
+                probes.insert(
+                    0,
+                    HealthProbe {
+                        url: default_url,
+                        expected,
+                        filter: Vec::new(),
+                    },
+                );
+            }
+            // Pinned `Initial()` starts `process()` only when `auto()`
+            // (interval != 0); `execute` skips an empty URL, so a registration
+            // can still schedule a provider whose own URL is empty.
+            if interval == 0 || probes.is_empty() {
                 continue;
             }
-            let expected = ExpectedStatus::parse(&config.expected_status)
-                .map_err(|e| ConfigError::InvalidValue(format!("proxy-provider '{provider}': {e}")))?;
-            let interval = if config.interval == 0 { 300 } else { config.interval };
             tasks.push(HealthTask {
                 label: format!("provider:{provider}"),
-                url: config.url.clone().unwrap_or_default(),
-                expected,
+                probes,
+                // `HealthCheck.execute` reads the provider's
+                // `health-check.timeout` (5000 default), never the group's.
                 timeout: Duration::from_millis(if config.timeout == 0 {
                     DEFAULT_TIMEOUT_MS
                 } else {
@@ -1684,7 +1754,6 @@ impl GroupRegistry {
                 }),
                 interval: Duration::from_secs(interval),
                 lazy: config.lazy,
-                filter: Vec::new(),
                 targets: HealthTarget::Provider(provider.to_string()),
                 next_due: Mutex::new(Instant::now()),
                 running: AtomicBool::new(false),
@@ -1836,19 +1905,32 @@ impl GroupRegistry {
         };
         tracing::debug!(
             task = %task.label,
-            url = %task.url,
+            probes = task.probes.len(),
             members = members.len(),
             "group health check"
         );
-        let _ = self
-            .probe_members(
-                members,
-                task.url.clone(),
-                task.expected.clone(),
-                task.timeout,
-                task.filter.clone(),
-            )
-            .await;
+        // Pinned `check()` runs the default URL and every extra URL through one
+        // `errgroup`; run them concurrently so one slow URL does not delay the
+        // others.
+        let mut running = tokio::task::JoinSet::new();
+        for probe in &task.probes {
+            let registry = self.clone();
+            let members = members.clone();
+            let probe = probe.clone();
+            let timeout = task.timeout;
+            running.spawn(async move {
+                registry
+                    .probe_members(
+                        members,
+                        probe.url,
+                        probe.expected,
+                        timeout,
+                        probe.filter,
+                    )
+                    .await;
+            });
+        }
+        while running.join_next().await.is_some() {}
         task.running.store(false, Ordering::SeqCst);
     }
 

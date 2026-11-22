@@ -283,8 +283,10 @@ Types: `select` (first member, `default-selected`, or a fixed selection),
 `url-test` (the pinned `fast()` algorithm: lowest `LastDelayForTestUrl` among
 alive members, `tolerance` keeps the current node, a fixed selection wins while
 alive; a `now`/dial resolution reuses the previous computation for ten seconds,
-pinned `URLTest.fastSingle` — `select` and a dial-failure-triggered health
-check reset it, the periodic probe does not), `fallback` (first alive member; a
+pinned `URLTest.fastSingle` — `select` (pinned `ForceSet`, which resets only
+the computation cache and keeps `fastNode` as the tolerance baseline) and a
+dial-failure-triggered health check reset it, the periodic probe does not),
+`fallback` (first alive member; a
 fixed member that died is cleared and scanning continues) and `load-balance`
 (`consistent-hashing` default, `round-robin`, `sticky-sessions`, all using the
 pinned `jumpHash`; a dead bucket is retried up to five times and then the list
@@ -321,10 +323,18 @@ is alive and its delay is `65535`. A failed dial triggers the pinned
 `onDialFailed` thresholds (a connection-refused error triggers immediately,
 otherwise `max-failed-times` within `timeout` trigger a health check; success
 resets the count). Provider `health-check` drives `use` provider members; an
-explicit group `url` additionally probes those members at the group URL with
-the group `filter`/`expected-status` under the provider's lazy/touch state and
-the provider's `health-check.timeout` (pinned `HealthCheck.execute`), while a
-URL equal to the provider's `health-check.url` registers nothing.
+explicit group `url` registers on each provider's single `HealthCheck`
+(`registerHealthCheckTask`): one interval/ticker and one deduped-by-URL extra
+list per provider (the first `expected-status` wins, later filters merge), with
+the provider's `lazy`/`lastTouch` and `health-check.timeout`
+(`HealthCheck.execute`), while a URL equal to the provider's
+`health-check.url` registers nothing. A registration activates a provider whose
+`health-check.enable` is false (pinned `Initial()` starts `process()` once
+`hc.interval` becomes the group interval), and that provider's `check()` probes
+its own `hc.url` as well as the registered URLs in the same tick. The
+registration interval is the group interval as written (pinned
+`addTestUrlToProviders` runs before the parser defaults a group with inline
+members to 300 s), and a provider that already has an interval keeps it.
 UDP datagrams through a group with `disable-udp` are dropped and logged.
 
 Selection persistence: `profile.store-selected` (default true) writes fixed
@@ -870,7 +880,7 @@ Mihomo binary and a loopback provider server:
 group differential runs the same pinned binary with loopback CONNECT nodes:
 `node tool/kernel-compat/t23-differential.mjs --mihomo <binary> --rust
 <billow-kernel> --out tool/kernel-compat/evidence/t23-differential.json`
-(26 cases plus persistence; see `evidence/t23-groups.md`).
+(27 cases plus persistence; see `evidence/t23-groups.md`).
 
 - `tests/config.rs` — parsing, strict option tables, error tags.
 - `tests/groups.rs` — T23: every group type/field, relay rejection, cycles,
@@ -1062,7 +1072,7 @@ node tool/kernel-compat/runner.mjs \
 # the harness's own acceptance command
 node --test tool/kernel-compat/runner.test.mjs
 
-# T23 group/selection/health differential (26 cases + persistence)
+# T23 group/selection/health differential (27 cases + persistence)
 node tool/kernel-compat/t23-differential.mjs \
   --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 \
   --rust native-kernel/target/release/billow-kernel \

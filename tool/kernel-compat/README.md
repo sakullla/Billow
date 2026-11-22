@@ -63,11 +63,12 @@ node tool/kernel-compat/t24-differential.mjs \
 # T23 group/selection/health differential: every member is a loopback HTTP
 # CONNECT node (a health node answers the probe HEAD with a fixed or sequenced
 # delay/status); Mihomo is driven through its external-controller and the Rust
-# kernel through --select/--probe-groups/--print-groups. 26 cases plus the
+# kernel through --select/--probe-groups/--print-groups. 27 cases plus the
 # selection cache across a restart; the cases include startup/lazy probing for
 # groups, providers and nested groups, the ten-second url-test computation
 # cache, lazy re-probing of a nested group after its parent was probed,
-# empty-fallback/REJECT blocking, and a two-sample tolerance comparison.
+# disabled-provider registration probing its own URL, empty-fallback/REJECT
+# blocking, and a two-sample tolerance comparison.
 node tool/kernel-compat/t23-differential.mjs \
   --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
   --out tool/kernel-compat/evidence/t23-differential.json
@@ -207,10 +208,11 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
 T23 fills `groups` and `configFields.proxy-groups`/`profile` in the mapping:
 `select`/`url-test`/`fallback`/`load-balance` are implemented (load-balance
 partial), `relay` is a named rejection because pinned v1.19.34 removed it, and
-`evidence/t23-groups.md` records the 26-case differential plus the persistence
+`evidence/t23-groups.md` records the 27-case differential plus the persistence
 case (including startup probes under the default lazy config, provider snapshot
 re-checks, the url-test computation-cache window, nested lazy re-probing,
-empty-fallback blocking and probe-through-dialer-proxy) and the unit suite.
+disabled-provider URL registration, empty-fallback blocking and
+probe-through-dialer-proxy) and the unit suite.
 
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo

@@ -31,7 +31,7 @@ sequence) and forwards ordinary tunnels; a dead member is an unbound loopback
 port. Mihomo is driven through `GET /proxies/<group>` and
 `PUT /proxies/<group>`; the Rust kernel through `--select GROUP=MEMBER`,
 `--probe-groups`, `--wait-ms N` and `--print-groups` (one `GROUPS {json}`
-line). Result: **27/27 pass, 0 differ** (`summary` in the JSON; 26 cases +
+line). Result: **28/28 pass, 0 differ** (`summary` in the JSON; 27 cases +
 persistence).
 
 ## Startup and lazy semantics (pinned `healthcheck.go` / `provider.go`)
@@ -93,9 +93,13 @@ starts `changing` at 5 ms and `steady` at 100 ms, resolves `changing`, probes
 again (400 ms), and asserts `now` still reports `changing`; after the injected
 11 s jump it reports `steady`, and that result is cached too. The differential
 case `url-test-cache-window` pins the same window against the binary: the 90 ms
-member appears during the second health round, the 5 s dial still serves the
+member appears during the second health round, the 9 s dial still serves the
 cached 100 ms member, and the 12.5 s dial switches (`steady,steady,changing`
-on both).
+on both). `select` mirrors pinned `ForceSet`, which resets only `fastSingle`:
+`tests/groups.rs::force_set_keeps_the_url_test_tolerance_baseline` first
+resolves `steady` (100 ms), lets `changing` become 90 ms (inside tolerance 50),
+then fixes the dead member as the selection; the next resolution must keep the
+old 100 ms `fastNode`, because pinned `fast()` still compares against it.
 
 ## Extra group-URL probe (pinned `registerHealthCheckTask`)
 
@@ -103,17 +107,32 @@ An explicit group `url` with `use` providers registers that URL on each
 provider's own `HealthCheck`:
 
 - the URL is trimmed and ignored when empty or equal to the provider's
-  `health-check.url` (the provider's own task already probes it);
+  `health-check.url` (the provider's own task already probes it); the equality
+  check happens before the interval is touched, exactly like pinned;
 - the probe executes with the provider's `hc.timeout`
   (`health-check.timeout`, 5000 default), never the group's `timeout`;
 - an enabled provider keeps its own interval/ticker; a provider without one
-  borrows the group interval (pinned sets `hc.interval` before `Initial`);
-  `lazy` and `lastTouch` are the provider's.
+  borrows the group interval (pinned sets `hc.interval` before `Initial`;
+  `addTestUrlToProviders` runs before the parser defaults a group with inline
+  members to 300 s, so the interval as written is used);
+- `lazy` and `lastTouch` are the provider's;
+- registration is one `HealthCheck` per provider, not one task per (group,
+  provider): the provider has a single interval/ticker, and extra URLs are
+  deduped by URL (the first `expected-status` wins, later filters merge);
+- a registration also activates a provider whose `health-check.enable` is
+  false (`hc.interval` goes from 0 to the group interval, so pinned
+  `Initial()` starts `process()`); its `check()` then probes the provider's
+  own `hc.url` **and** every registered URL in the same tick.
 
 `tests/groups.rs::explicit_group_url_uses_the_provider_health_check_timeout`
-(150 ms node, provider timeout 500 ms, group timeout 40 ms) and
+(150 ms node, provider timeout 500 ms, group timeout 40 ms),
 `::explicit_group_url_equal_to_the_provider_url_registers_no_probe`
-(`enable: false` + equal URL probes nothing) pin both rules.
+(`enable: false` + equal URL probes nothing),
+`::disabled_provider_registration_probes_its_own_url_too` (provider
+`enable: false` + `/provider`; a second url-test group without a `url` ranks
+the fast member, and both `/provider` and `/groupA` are probed) and
+`::provider_registration_dedupes_urls_across_groups` (two groups on one
+provider get one ticker and three probe URLs) pin the rules.
 
 ## Empty-fallback naming (pinned `parser.go` / `GroupBase.GetProxies`)
 
@@ -144,7 +163,8 @@ reported `all`/`emptyFallback` names match pinned.
 | nested-group-inner-selection | `now` of a selector reports the nested group name | `INNER` / `INNER` |
 | nested-group-dials-inner-selection | a dial follows the inner fallback choice | `backup` / `backup` |
 | nested-auto-driven-by-outer-traffic | nested url-test startup + outer dial | `fast` / `fast` |
-| nested-lazy-tick-runs-after-outer-touch | parent probe touches the nested group; its lazy tick re-probes and `now` flips to n2 after the 10 s cache | `leaf\|now=n2` / `leaf\|now=n2` |
+| nested-lazy-tick-runs-after-outer-touch | parent probe touches the nested group; its lazy tick re-probes n1 (10→10→500 ms) while n2 starts at 300 ms, so `now` flips to n2 after the 10 s cache; without the touch n1 stays 10 ms and wins | `leaf\|now=n2` / `leaf\|now=n2` |
+| provider-registration-probes-own-url | a group URL activates a provider with `health-check.enable: false`; the same check probes its `hc.url`, so the url-test group whose test URL defaults to that provider URL ranks the fast member over the dead first member | `fast` / `fast` |
 | include-all-proxies-filter | sorted proxy names through `filter` | `[Alpha]` / `[Alpha]` |
 | include-all-proxies-empty-fallback-reject | `proxies: []` + include-all-proxies uses the configured `empty-fallback`, not COMPATIBLE | `now=REJECT`, all `[REJECT]` on both |
 | include-all-proxies-empty-fallback-direct | `empty-fallback: DIRECT` keeps the DIRECT member name (default is COMPATIBLE) | `now=DIRECT`, all `[DIRECT]` on both |
@@ -185,15 +205,29 @@ starts a SOCKS5 hop and a SOCKS5 exit, probes a group member with
 `dialer-proxy: hop`, and asserts both the hop and the exit accepted a
 connection (a single-hop probe would leave the hop at zero).
 
+## Discriminative controls
+
+Two cases that previously could pass for the wrong reason were re-checked with
+a negative control (temporary source reversal, then restored):
+
+- `nested-lazy-tick-runs-after-outer-touch`: with the probe's nested dial
+  forced back to `touch = false`, the Rust engine reports `now=n1` while Mihomo
+  keeps `n2` (the n1 delay never reaches 500 ms), so the differential fails.
+  n2 therefore starts at 300 ms (was 0 ms): only with the touch does n1 become
+  slower than n2 and the final `now` flip.
+- `force_set_keeps_the_url_test_tolerance_baseline`: re-adding
+  `state.fast_node = None` to `select` fails the unit test with `changing`
+  instead of the pinned `steady`, so the test pins the `ForceSet` baseline.
+
 ## Regression runs (this attempt)
 
-- `node tool/kernel-compat/t23-differential.mjs ...` — 27/27 pass (26 cases +
+- `node tool/kernel-compat/t23-differential.mjs ...` — 28/28 pass (27 cases +
   persistence), 0 differ (`evidence/t23-differential.json`); the new
-  `nested-lazy-tick-runs-after-outer-touch` and `url-test-cache-window` cases
-  are included.
+  `provider-registration-probes-own-url` case and the reworked
+  `nested-lazy-tick-runs-after-outer-touch` (n2 = 300 ms) are included.
 - `cargo test --manifest-path native-kernel/Cargo.toml --locked` — exit 0
-  (17 suites; group suite 28 tests, 0 failed, including the four new cases).
-- `node tool/kernel-compat/t24-differential.mjs ... --out /tmp/t24-a3.json`
+  (17 suites; group suite 31 tests, 0 failed, including the three new cases).
+- `node tool/kernel-compat/t24-differential.mjs ... --out /tmp/t24-a4.json`
   — 37 cases, 35 pass + 2 skipped (`--mmdb-dir` not given), 0 differ.
 - `tool/kernel-compat/peer-tests.sh dialer_proxy_chain` — 2/2 pinned-peer spot
   check (the full 66-case peer run was not repeated in this attempt).
@@ -215,13 +249,16 @@ connection (a single-hop probe would leave the hop at zero).
 - rule target naming a group (`Action::Group`) and group dial routing;
 - url-test failover by measured delay, startup probes with default lazy (group,
   provider and nested), provider snapshot update forcing a check, tolerance
-  keeping/switching the previous fastNode, the ten-second computation cache
+  keeping/switching the previous fastNode (and keeping the baseline across a
+  `select`/`ForceSet`), the ten-second computation cache
   (with an injectable clock), a nested probe touching its lazy group, fallback
   off a dead node, nested group dialing, round-robin cycling and
   consistent-hashing pinning, `use` provider members with a group filter,
   exclude-type adapter names;
 - the extra group-URL probe on a `use` provider using the provider's timeout,
-  and an equal provider URL registering no probe;
+  an equal provider URL registering no probe, a registration activating a
+  provider with `health-check.enable: false` (its own URL is probed too), and
+  two groups sharing one provider ticker with deduped URLs;
 - probe through a `dialer-proxy` SOCKS5 hop/exit chain;
 - selection persistence across a kernel restart (`cache.yaml`);
 - CLI: `--select`/`--print-groups`/`--cache-dir` round trip

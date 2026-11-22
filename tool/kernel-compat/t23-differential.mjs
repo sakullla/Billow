@@ -421,11 +421,12 @@ async function main() {
     // First HEAD 200 ms, every later HEAD 90 ms: used to establish a previous
     // `fastNode` and then place a faster node inside/outside `tolerance`.
     const nodeChanging = await startNode({ headDelays: [200, 90], status: 204 })
-    // Nested-group touch case: a zero-delay leaf, and a member whose first two
-    // HEADs are 10 ms and every later one 500 ms.
+    // Nested-group touch case: a zero-delay leaf, a member whose first two
+    // HEADs are 10 ms and every later one 500 ms, and a 300 ms member that
+    // only wins once the touch-driven lazy tick re-probes n1.
     const nodeLeaf = await startNode({ delayMs: 0, status: 204 })
     const nodeN1 = await startNode({ headDelays: [10, 10, 500], status: 204 })
-    const nodeN2 = await startNode({ delayMs: 0, status: 204 })
+    const nodeN2 = await startNode({ delayMs: 300, status: 204 })
     const deadPort = await reservePort()
     const nodes = [nodeSlow, nodeFast, nodeHttpError, nodeMid, nodeChanging, nodeLeaf, nodeN1, nodeN2]
     try {
@@ -545,8 +546,27 @@ async function main() {
           nodeServers: [nodeFast],
         },
         {
+          id: 'provider-registration-probes-own-url',
+          reason: 'a group URL registered on a provider whose health-check.enable is false still activates its check; pinned check() probes the provider\'s own hc.url as well, so the url-test group without an explicit url (test URL = the provider health URL) ranks the fast member',
+          group: 'B',
+          proxies: [],
+          files: {
+            'nodes.yaml': `proxies:\n  - {name: dead, type: http, server: 127.0.0.1, port: ${deadPort}}\n  - {name: fast, type: http, server: 127.0.0.1, port: ${nodeFast.port}}\n`,
+          },
+          proxyProviders: [
+            `  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: false\n      url: 'http://127.0.0.1:${echo.port}/provider'\n`,
+          ],
+          groups: [
+            `{name: A, type: url-test, use: [remote], url: 'http://127.0.0.1:${echo.port}/groupA', interval: 1, lazy: false}`,
+            '{name: B, type: url-test, use: [remote], interval: 1, lazy: false}',
+          ],
+          rules: ['MATCH,B'],
+          waitMs: 3200,
+          compareAll: true,
+        },
+        {
           id: 'nested-lazy-tick-runs-after-outer-touch',
-          reason: 'a probe of a nested group dials it (pinned Proxy.URLTest -> URLTest.DialContext -> GetProxies(true)), so the parent\'s probe touches the nested group and its lazy interval keeps probing; one dial through the parent at t≈1 s is enough for the nesting to re-rank the 500 ms member',
+          reason: 'a probe of a nested group dials it (pinned Proxy.URLTest -> URLTest.DialContext -> GetProxies(true)), so the parent\'s probe touches the nested group and its lazy interval keeps probing; without that touch n1 stays at 10 ms and wins over n2\'s initial 300 ms, with it the second n1 probe (500 ms) makes the nested 300 ms member win by the 11.5 s observation',
           group: 'B',
           proxies: [nodeLine('leaf', nodeLeaf.port), nodeLine('n1', nodeN1.port), nodeLine('n2', nodeN2.port)],
           groups: [

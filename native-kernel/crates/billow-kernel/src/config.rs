@@ -652,6 +652,10 @@ pub struct ProxyGroup {
     /// Auto health-check interval in seconds; 0 means no scheduled check
     /// (`select` and `relay` keep their declared value, others default to 300).
     pub interval: u64,
+    /// The `interval` exactly as written (0 when omitted). Pinned
+    /// `addTestUrlToProviders` runs before the 300 s default is applied to a
+    /// group with inline members, so provider registration keeps this value.
+    pub registration_interval: u64,
     /// `timeout` in milliseconds (0 becomes 5000).
     pub timeout: u64,
     pub lazy: bool,
@@ -2382,6 +2386,7 @@ fn parse_proxy_groups(
             }
         };
         let mut interval = optional_positive_int(mapping, "interval")?.unwrap_or(0);
+        let registration_interval = interval;
         let timeout = optional_positive_int(mapping, "timeout")?.unwrap_or(0);
         let max_failed_times = optional_positive_int(mapping, "max-failed-times")?.unwrap_or(0)
             as usize;
@@ -2465,6 +2470,7 @@ fn parse_proxy_groups(
             url,
             url_explicit: explicit_url.is_some(),
             interval,
+            registration_interval,
             timeout,
             lazy,
             max_failed_times,

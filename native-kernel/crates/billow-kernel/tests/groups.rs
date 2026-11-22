@@ -111,6 +111,9 @@ rules:
     assert_eq!(groups[0].proxies, ["a", "b"]);
     assert_eq!(groups[0].default_selected.as_deref(), Some("b"));
     assert_eq!(groups[0].interval, 5);
+    // Pinned `addTestUrlToProviders` reads the interval before the 300 s
+    // default is applied, so registration keeps the written value (0 here).
+    assert_eq!(groups[0].registration_interval, 5);
     assert_eq!(groups[0].timeout, 100);
     assert!(!groups[0].lazy);
     assert_eq!(groups[0].max_failed_times, 3);
@@ -124,6 +127,7 @@ rules:
     assert_eq!(groups[1].tolerance, 50);
     // Pinned default interval for automatic groups with inline members.
     assert_eq!(groups[1].interval, 300);
+    assert_eq!(groups[1].registration_interval, 0);
     assert_eq!(groups[2].kind, GroupKind::Fallback);
     assert_eq!(groups[2].expected_status.as_spec(), "204");
     assert_eq!(groups[3].strategy, LoadBalanceStrategy::RoundRobin);
@@ -1025,6 +1029,198 @@ async fn explicit_group_url_equal_to_the_provider_url_registers_no_probe() {
         "the equal provider URL must not register a second probe: {status:?}"
     );
     assert_eq!(probes, 0, "pinned checks nothing here (got {probes} HEADs)");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disabled_provider_registration_probes_its_own_url_too() {
+    // Pinned `registerHealthCheckTask` sets `hc.interval` on a provider whose
+    // `health-check.enable` is false; `Initial()` then starts `process()`,
+    // whose `check()` runs the provider's own `hc.url` *and* every extra URL.
+    // A url-test group without its own `url` tests the provider URL, so it must
+    // see the fast member even though only the other group registered a URL.
+    let dir = temp_dir("provider-registration-own-url");
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let dead = free_port();
+    let fast = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(10),
+        status: 204,
+    });
+    std::fs::write(
+        dir.join("nodes.yaml"),
+        format!(
+            "proxies:\n  - {{name: dead, type: http, server: 127.0.0.1, port: {dead}}}\n  - {{name: fast, type: http, server: 127.0.0.1, port: {}}}\n",
+            fast.port
+        ),
+    )
+    .expect("provider file");
+    let port = free_port();
+    let provider_url = format!("http://127.0.0.1:{}/provider", echo.port);
+    let group_url = format!("http://127.0.0.1:{}/groupA", echo.port);
+    let yaml = format!(
+        "mixed-port: {port}\nlog-level: silent\nproxy-providers:\n  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: false\n      url: '{provider_url}'\nproxy-groups:\n  - {{name: A, type: url-test, use: [remote], url: '{group_url}', interval: 1, lazy: false}}\n  - {{name: B, type: url-test, use: [remote], interval: 1, lazy: false}}\nrules:\n  - MATCH,B\n"
+    );
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    let picked = wait_until(Duration::from_secs(3), || {
+        groups
+            .group_status("B")
+            .map(|status| status.now == "fast")
+            .unwrap_or(false)
+    })
+    .await;
+    let status = groups.group_status("B").expect("B status");
+    let probes = fast.connections.load(Ordering::Relaxed);
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        picked,
+        "the provider's own URL must be probed once a group registers: {status:?}"
+    );
+    assert!(
+        status
+            .members
+            .iter()
+            .find(|member| member.name == "fast")
+            .is_some_and(|member| member.alive && member.delay.is_some()),
+        "the fast member needs a delay record at the provider URL: {status:?}"
+    );
+    assert!(
+        probes >= 2,
+        "the initial provider check must probe /provider and /groupA (got {probes} CONNECTs)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_registration_dedupes_urls_across_groups() {
+    // Both groups register on the same provider `HealthCheck`: pinned keeps one
+    // interval/ticker and one `extra` entry per URL, so the initial check runs
+    // the provider URL plus each distinct group URL exactly once.
+    let dir = temp_dir("provider-registration-dedupe");
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let fast = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(5),
+        status: 204,
+    });
+    std::fs::write(
+        dir.join("nodes.yaml"),
+        format!(
+            "proxies:\n  - {{name: only, type: http, server: 127.0.0.1, port: {}}}\n",
+            fast.port
+        ),
+    )
+    .expect("provider file");
+    let port = free_port();
+    let provider_url = format!("http://127.0.0.1:{}/provider", echo.port);
+    let first_url = format!("http://127.0.0.1:{}/first", echo.port);
+    let second_url = format!("http://127.0.0.1:{}/second", echo.port);
+    let yaml = format!(
+        "mixed-port: {port}\nlog-level: silent\nproxy-providers:\n  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: false\n      url: '{provider_url}'\nproxy-groups:\n  - {{name: A, type: url-test, use: [remote], url: '{first_url}', interval: 1}}\n  - {{name: C, type: url-test, use: [remote], url: '{second_url}', interval: 1}}\nrules:\n  - MATCH,A\n"
+    );
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    let probed = wait_until(Duration::from_secs(3), || {
+        fast.connections.load(Ordering::Relaxed) >= 3
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let probes = fast.connections.load(Ordering::Relaxed);
+    let status = groups.group_status("A").expect("A status");
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(probed, "the provider check must probe all three URLs (got {probes})");
+    assert_eq!(
+        probes, 3,
+        "one provider ticker probes /provider, /first and /second once; the lazy provider check does not re-run: {status:?}"
+    );
+    assert!(
+        status
+            .members
+            .iter()
+            .find(|member| member.name == "only")
+            .is_some_and(|member| member.alive && member.delay.is_some()),
+        "the registered URL must record a delay: {status:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn force_set_keeps_the_url_test_tolerance_baseline() {
+    // Pinned `URLTest.ForceSet` resets `fastSingle` but leaves `fastNode`
+    // (`urltest.go`): when the new selection is alive, `fast()` returns it
+    // without recomputing, so the old baseline still applies once that
+    // selection is unavailable. A reset baseline would switch to the 90 ms
+    // member; the pinned baseline (100 ms, tolerance 50) keeps it.
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let changing = spawn_http_proxy_node(ProxyNodeMode::HealthSequence {
+        delays: vec![Duration::from_millis(200), Duration::from_millis(90)],
+        status: 204,
+    });
+    let steady = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(100),
+        status: 204,
+    });
+    let dead = free_port();
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{}/generate_204", echo.port);
+    let yaml = config_with(
+        port,
+        &format!(
+            "{}{}{}",
+            http_proxy_line("changing", changing.port),
+            http_proxy_line("steady", steady.port),
+            http_proxy_line("dead", dead)
+        ),
+        &format!(
+            "  - {{name: AUTO, type: url-test, proxies: [changing, steady, dead], url: '{url}', interval: 1, lazy: false, timeout: 500, tolerance: 50}}\n"
+        ),
+        "  - MATCH,AUTO\n",
+    );
+    let dir = temp_dir("force-set-baseline");
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    // First round: 200 ms / 100 ms / dead; the status read establishes the
+    // `fastNode = steady` baseline before `changing` becomes faster.
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            groups
+                .group_status("AUTO")
+                .map(|status| {
+                    status.now == "steady"
+                        && status.members.iter().all(|member| member.delay.is_some() || member.name == "dead")
+                })
+                .unwrap_or(false)
+        })
+        .await,
+        "the first resolution must pick the 100 ms member"
+    );
+    // Second round: `changing` is now 90 ms, inside tolerance 50.
+    assert!(
+        wait_until(Duration::from_secs(4), || {
+            groups
+                .group_status("AUTO")
+                .map(|status| {
+                    status
+                        .members
+                        .iter()
+                        .find(|member| member.name == "changing")
+                        .and_then(|member| member.delay)
+                        .is_some_and(|delay| delay < 150)
+                })
+                .unwrap_or(false)
+        })
+        .await,
+        "the second health round must record 90 ms"
+    );
+    groups.select("AUTO", "dead").expect("dead is a member");
+    let now = groups
+        .group_status("AUTO")
+        .map(|status| status.now)
+        .unwrap_or_default();
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        now, "steady",
+        "pinned ForceSet keeps fastNode as the tolerance baseline"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
