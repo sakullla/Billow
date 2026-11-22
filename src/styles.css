@@ -3606,14 +3606,14 @@ button.delay:hover:not(:disabled) {
 .profile-update .field-error {
   margin: 0;
 }
-.compact .profile-name strong {
-  white-space: normal;
-  overflow-wrap: anywhere;
+.profile-name .tag {
+  flex: none;
 }
-.compact .profile-head .ellipsis {
-  overflow: visible;
-  white-space: normal;
-  overflow-wrap: anywhere;
+.compact .profile-name strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Context Menu */
@@ -5604,19 +5604,22 @@ textarea.input {
 .compact .page-head {
   align-items: center;
   column-gap: var(--space-3);
+  row-gap: var(--space-2);
 }
 .compact .page-head > div:first-child {
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 110px;
 }
 .compact .page-head h1 {
   font-size: var(--text-2xl);
   line-height: var(--leading-tight);
   letter-spacing: -0.025em;
+  white-space: nowrap;
 }
 .compact .head-actions {
   margin-left: auto;
-  flex: none;
+  flex: 0 1 auto;
+  justify-content: flex-end;
 }
 .compact .page.settings .head-actions {
   width: 100%;
