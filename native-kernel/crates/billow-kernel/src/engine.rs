@@ -1219,6 +1219,7 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
         crate::proxies::Protocol::Hysteria(_) => "hysteria (udp: false)",
         crate::proxies::Protocol::Hysteria2(_) => "hysteria2 (udp: false)",
         crate::proxies::Protocol::Mieru(_) => "mieru (udp: false)",
+        crate::proxies::Protocol::Sudoku(_) => "sudoku (udp: false)",
         crate::proxies::Protocol::Masque(_) => "masque (udp: false)",
         crate::proxies::Protocol::ShadowQuic(_) => "shadowquic",
         crate::proxies::Protocol::Wireguard(_) => "wireguard (no UDP association)",

@@ -469,22 +469,19 @@ fn process_loads_t9_outbounds() {
     assert!(stdout.contains("sr=ssr"), "{stdout}");
 }
 
-/// T13 family in the shipped process: the clean-room mieru outbound loads from
-/// the same configuration surface as the library, appears in the identity
-/// line, and a tunnel routed to it fails with the inbound reply when the
-/// server port is closed (it never falls back to DIRECT). The successful path
-/// runs against the pinned Mihomo listener in `mihomo_peers.rs`. `sudoku` is
-/// rejected by name because the earlier port was a GPL-3.0 derivative and has
-/// been removed, and T17's clean-room attempt found the protocol's keyed
-/// table, handshake and record layers are not publicly specified
-/// (`tool/kernel-compat/evidence/t17-cleanroom.md`).
+/// T13 families in the shipped process: mieru and sudoku load from the same
+/// configuration surface as the library, appear in the identity line, and a
+/// tunnel routed to them fails with the inbound reply when the server port is
+/// closed (they never fall back to DIRECT). The successful paths run against
+/// the pinned Mihomo listeners in `mihomo_peers.rs`.
 #[test]
-fn process_loads_mieru_and_rejects_sudoku() {
+fn process_loads_t13_outbounds() {
     let mieru_port = free_port();
+    let sudoku_port = free_port();
     let port = free_port();
     let kernel = KernelProcess::start_body(
         &format!(
-            "proxies:\n  - {{name: mi, type: mieru, server: 127.0.0.1, port: {mieru_port}, transport: TCP, username: u, password: p}}\nrules:\n  - 'MATCH,mi'\n"
+            "proxies:\n  - {{name: mi, type: mieru, server: 127.0.0.1, port: {mieru_port}, transport: TCP, username: u, password: p}}\n  - {{name: su, type: sudoku, server: 127.0.0.1, port: {sudoku_port}, key: \"cli-key\"}}\nrules:\n  - 'MATCH,mi'\n"
         ),
         port,
     );
@@ -498,30 +495,7 @@ fn process_loads_mieru_and_rejects_sudoku() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("mi=mieru"), "{stdout}");
-
-    // The removed family is refused before the listener binds, with the
-    // removal reason in the error.
-    let dir = std::env::temp_dir().join(format!("billow-cli-sudoku-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config = dir.join("sudoku.yaml");
-    std::fs::write(
-        &config,
-        "mixed-port: 1\nproxies:\n  - {name: su, type: sudoku, server: 127.0.0.1, port: 1, key: k}\nrules:\n  - 'MATCH,su'\n",
-    )
-    .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
-        .arg(&config)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("type 'sudoku' is not implemented"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("GPL-3.0 derivative"), "{stderr}");
-    assert!(stderr.contains("T17"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(stdout.contains("su=sudoku"), "{stdout}");
 }
 
 /// T14 family in the shipped process: a masque CONNECT-UDP outbound loads from

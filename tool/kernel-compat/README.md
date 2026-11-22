@@ -30,8 +30,10 @@ cargo build --release --manifest-path native-kernel/Cargo.toml --locked -p billo
 # needs `go`
 tool/kernel-compat/family-peers.sh
 
-# Black-box observation of the pinned Sudoku peer (no Sudoku client exists; the
-# harness spawns the release binary as both ends and records the wire)
+# Black-box observation harness kept as the T17-A1 record (no Sudoku client
+# existed then; T17-A2 translated the pinned module instead, see
+# evidence/t17-translation.md). The harness spawns the release binary as both
+# ends and records the wire through a loopback relay.
 # needs `python3`, `curl`, `node`
 python3 tool/kernel-compat/sudoku-observe.py probe
 python3 tool/kernel-compat/sudoku-observe.py reject
@@ -143,14 +145,14 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   `t10-feasibility.json` records shadowquic as implemented by T15; the
   remaining follow-up owners are the device families.
 
-  T13 kept the clean-room `mieru` client and removed its earlier `sudoku` port:
-  the port was a GPL-3.0 derivative of the pinned `transport/sudoku` (the
-  locked tree's LICENSE is GPL-3.0), so the type is rejected by name. No sudoku
-  code, test, fixture, peer, option row or capability claim remains;
+  T13 removed the first `sudoku` port, an unlabelled GPL-3.0 derivative of the
+  pinned `transport/sudoku`, and kept the clean-room `mieru` client.
   `evidence/t13-a3-sudoku-removal.md` records the deletion inventory, the grep
-  audit and the license reasoning. The mieru option rows stay (5 no-op / 8
-  enabled) and its five pinned-Mihomo peer cases are part of `peer-tests.sh`
-  (50 cases).
+  audit and the license reasoning. T17-A2 later translated the pinned module
+  under the Owner authorization recorded in the T17 recipe (see below), so the
+  type is implemented again, now with GPL-3.0 headers and notices. The mieru
+  option rows stay (5 no-op / 8 enabled) and its five pinned-Mihomo peer cases
+  are part of `peer-tests.sh` (63 cases, including the T17 sudoku cases).
 
   T19 added the mesh adapters. `peers/tailscale-peer` uses the locked
   BSD-3-Clause `controlbase.Server` for the Noise transport and an HTTP/2
@@ -163,15 +165,18 @@ Two checked-in files describe what the Rust kernel does with the pinned version:
   peer or compatibility test. The offline dependency/licence/decision record
   is `evidence/t19-mesh.md`.
 
-  T17 tried the clean-room `sudoku` rewrite and produced no client: the
-  protocol is not specified at byte level anywhere public, the encoding
-  randomizes every byte per connection, and the pinned listener rejects a
-  foreign handshake with `INVALID_SUDOKU_MAP_MISS`. `sudoku-observe.py` (a
-  black-box harness that spawns the pinned binary as both ends and records the
-  wire through a loopback relay) and `evidence/t17-cleanroom.md`+`t17-observe.log`
-  record the measurements, the blocked fields and the decision the Owner has to
-  make. `type: sudoku` stays rejected; no sudoku peer case exists because no
-  client exists.
+  T17-A1 tried a clean-room `sudoku` client and produced none: the protocol is
+  not specified at byte level anywhere public and the pinned listener rejects a
+  foreign handshake with `INVALID_SUDOKU_MAP_MISS`. `sudoku-observe.py` and
+  `evidence/t17-cleanroom.md`+`t17-observe.log` record those measurements and
+  remain the history. T17-A2 then translated the pinned GPL-3.0
+  `transport/sudoku` under the Owner authorization recorded in the T17 recipe
+  (`docs/sakullla-workflow/2026-11-20-native-rust-kernel/02-technical-solution.md`);
+  `type: sudoku` now loads (TCP, legacy HTTP mask, pure/packed downlink, mux)
+  and the HTTP tunnel modes and UoT are rejected by name. The licence and
+  verification record is `evidence/t17-translation.md`, the differential vectors
+  are in `peers/sudoku-vectors/`, and the 13 pinned-peer cases are part of
+  `peer-tests.sh`.
 
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo

@@ -155,17 +155,21 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   assert.equal(mapping.proxies.masque?.status, 'partial')
   assert.match(mapping.proxies.masque?.reason ?? '', /CONNECT-IP/)
   // T13 delivered the clean-room mieru TCP slice; its rejected pieces are named
-  // in `reason`/`notImplemented`. `sudoku` was removed in T13-A3 (the earlier
-  // port was GPL-derived) and must stay unclaimed until the clean-room rewrite
-  // (T17).
+  // in `reason`/`notImplemented`. T17 translated the pinned GPL-3.0
+  // `transport/sudoku`: it is partial (HTTP tunnel modes and UoT rejected) and
+  // its licence entry must say so, never claiming plain MIT.
   for (const type of ['mieru']) {
     assert.equal(mapping.proxies[type]?.status, 'partial', `${type} is implemented for TCP with its gaps named`)
     assert.match(mapping.proxies[type]?.reason ?? '', /rejected at load/, `${type} names the rejected pieces`)
   }
-  assert.equal(mapping.proxies.sudoku?.status, 'unimplemented', 'sudoku is rejected until the clean-room rewrite (T17)')
+  assert.equal(mapping.proxies.sudoku?.status, 'partial', 'sudoku is a GPL-3.0-derived translation with named gaps')
+  assert.match(mapping.proxies.sudoku?.reason ?? '', /UoT/, 'sudoku names the rejected UoT association')
+  assert.match(mapping.proxies.sudoku?.reason ?? '', /HTTP tunnel/, 'sudoku names the rejected HTTP tunnel modes')
+  assert.match(mapping.proxies.sudoku?.license ?? '', /GPL-3\.0/, 'sudoku records its GPL-3.0 provenance')
   // T15 delivered shadowquic as a partial family (TCP/UDP + JLS, named
   // zero-rtt/QUIC-v2/Brutal rejections); it must not be claimed as fully
-  // implemented. masque is partial and the device families are unimplemented.
+  // implemented. masque and sudoku are partial, the device families are
+  // unimplemented.
   for (const type of ['sudoku', 'masque', 'shadowquic', 'wireguard', 'tailscale', 'zerotier', 'easytier', 'openvpn']) {
     assert.notEqual(mapping.proxies[type]?.status, 'implemented', `${type} must not be claimed`)
   }

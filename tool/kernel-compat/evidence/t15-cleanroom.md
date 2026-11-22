@@ -88,4 +88,6 @@ time or runtime.
   `native-kernel/THIRD_PARTY_NOTICES.md`; the vectors are test fixtures only.
 - ShadowQUIC framing: no GPL-3.0 source is copied; the residual process caveat
   above is recorded rather than hidden.
-- The kernel workspace remains MIT.
+- At T15 the kernel workspace remained MIT; T17-A2 later relicensed the
+  workspace to GPL-3.0-only because of the translated `transport/sudoku`
+  (see `t17-translation.md` and `native-kernel/THIRD_PARTY_NOTICES.md`).

@@ -1,9 +1,40 @@
 # Third-party notices
 
 This file records the provenance and license of material used to implement and
-verify the MASQUE (T14), ShadowQUIC (T15) and WireGuard/OpenVPN (T16)
-outbounds. The kernel itself is MIT; the notices below apply to the referenced
-upstream packages and test peers, not to the whole workspace.
+verify the kernel's outbounds. **The kernel workspace is GPL-3.0-only** because
+the `sudoku` outbound is a translation of Mihomo's GPL-3.0 `transport/sudoku`;
+the full license text is in [`COPYING.GPL-3.0`](COPYING.GPL-3.0) (identical to
+the repository root `LICENSE`). A binary that links `billow-kernel` therefore
+carries the GPL-3.0 obligations for the whole combined work. The notices below
+list every upstream source and its license.
+
+## Mihomo `transport/sudoku` (GPL-3.0, translated into the kernel)
+
+Upstream: <https://github.com/MetaCubeX/mihomo>, version `v1.19.34`, commit
+`0455d0d28c4526937380505153e65a843d8612e8`, tree
+`tool/kernel-compat/.cache/source/tree-v1.19.34` (gitignored; used as the
+translation source and as the controlled peer).
+
+The following files are translations of that GPL-3.0 code and carry the
+`SPDX-License-Identifier: GPL-3.0-only` header with the same provenance note:
+
+| file | upstream source |
+| --- | --- |
+| `crates/billow-kernel/src/outbound/sudoku/mod.rs` | `transport/sudoku/{handshake,handshake_kip,table_probe,session_keys,tables,address,init}.go`, `multiplex_dialer.go`, `adapter/outbound/sudoku.go` |
+| `crates/billow-kernel/src/outbound/sudoku/table.rs` | `transport/sudoku/obfs/sudoku/{table,layout,ascii_mode,grid,encode,conn,packed,downlink,padding_prob,rand,write_buffer,read_buffer}.go` |
+| `crates/billow-kernel/src/outbound/sudoku/record.rs` | `transport/sudoku/crypto/record_conn.go` |
+| `crates/billow-kernel/src/outbound/sudoku/kip.rs` | `transport/sudoku/kip.go`, `session_keys.go` |
+| `crates/billow-kernel/src/outbound/sudoku/mux.rs` | `transport/sudoku/multiplex/session.go`, `multiplex_dialer.go` (client side) |
+| `crates/billow-kernel/src/outbound/sudoku/codec.rs` | `transport/sudoku/obfs/httpmask/{masker,pathroot}.go`, `obfs/sudoku/{conn,packed}.go` wrappers |
+| `crates/billow-kernel/src/outbound/sudoku/go_rand.rs` | Go standard library `math/rand/rng.go` + `rand.go` (`rngSource`, `rngCooked`, `Shuffle`), BSD-3-Clause |
+| `tool/kernel-compat/peers/sudoku-vectors/main.go` | test-only generator built against the pinned tree (GPL-3.0); never linked into the kernel |
+
+`go_rand.rs` keeps the Go BSD-3-Clause notice on top of the GPL-3.0 header: the
+`rngCooked` seed table is Go standard-library data, reproduced under its own
+BSD-3-Clause license (compatible with, and additional to, the GPL-3.0 module
+license). The pinned Mihomo tree used as the differential peer is GPL-3.0 and
+is not vendored; it is fetched into the gitignored cache by the T1 baseline
+tooling.
 
 ## `github.com/metacubex/jls-tls`
 

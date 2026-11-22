@@ -8,9 +8,11 @@ This is not a formal clean-room record. The pinned Mihomo v1.19.34 tree is
 GPL-3.0 and parts of it were **read** for functional wire facts before the Rust
 modules were written. No Mihomo/Go/OpenVPN source is vendored, linked, or
 line-by-line translated into `native-kernel/`; the audit below records what
-was checked and, just as importantly, what the check cannot prove. The kernel
-is MIT; that licence covers the Rust expression, not the upstream material
-that was consulted.
+was checked and, just as importantly, what the check cannot prove. The T16
+code is original; the workspace is distributed as GPL-3.0-only because the T17
+sudoku translation is a GPL-3.0 derivative
+(`native-kernel/THIRD_PARTY_NOTICES.md`). The licence covers the Rust
+expression, not the upstream material that was consulted.
 
 ## WireGuard
 
@@ -110,4 +112,4 @@ $ grep -rnE 'MessageInitiation|DataChannelTagSize|reliable_ack|openVPNPingPacket
 | `golang.org/x/crypto` | BSD-3-Clause | transitivity of the WireGuard peer |
 | OpenVPN 2.7.9 binary | GPL-2.0 | controlled test server, not linked |
 | pinned Mihomo v1.19.34 | GPL-3.0 | read for functional facts only; not linked or distributed |
-| Rust kernel | MIT | the implementation |
+| Rust kernel | GPL-3.0-only | the implementation; the workspace is GPL-3.0-only because of the T17 sudoku translation, while the T16 wireguard/openvpn code itself is original (see native-kernel/THIRD_PARTY_NOTICES.md) |

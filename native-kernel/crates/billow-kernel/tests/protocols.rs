@@ -4687,3 +4687,141 @@ async fn ssr_outbound_wrong_password_never_reaches_the_target() {
     );
     kernel.stop().unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Sudoku (T17) differential vectors against the pinned Go codec.
+//
+// `tool/kernel-compat/peers/sudoku-vectors` builds the table from the locked
+// `transport/sudoku` and exposes both directions: the pinned pure/packed
+// encoders (so the Rust decoder can be checked) and the pinned decoders (so
+// the Rust encoder can be checked). The test is `#[ignore]`d because it needs
+// the `go` toolchain and the locked source tree; `family-peers.sh` runs it.
+// ---------------------------------------------------------------------------
+
+fn sudoku_vectors_dir() -> std::path::PathBuf {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .join("../../..")
+        .join("tool/kernel-compat/peers/sudoku-vectors")
+}
+
+fn go_run(args: &[&str]) -> String {
+    let dir = sudoku_vectors_dir();
+    let output = std::process::Command::new("go")
+        .arg("run")
+        .arg(".")
+        .args(args)
+        .current_dir(&dir)
+        .output()
+        .unwrap_or_else(|e| panic!("run go in {}: {e}", dir.display()));
+    assert!(
+        output.status.success(),
+        "go {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn json_field<'a>(json: &'a str, name: &str) -> &'a str {
+    let key = format!("\"{name}\":");
+    let start = json.find(&key).unwrap_or_else(|| panic!("missing {name} in {json}")) + key.len();
+    let rest = json[start..].trim_start();
+    let end = rest.find([',', '\n', '}']).unwrap_or(rest.len());
+    rest[..end].trim().trim_matches('"')
+}
+
+fn unhex(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() / 2);
+    for pair in text.as_bytes().chunks_exact(2) {
+        let at = |b: u8| (b as char).to_digit(16).unwrap() as u8;
+        out.push(at(pair[0]) * 16 + at(pair[1]));
+    }
+    out
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[ignore = "needs the Go toolchain and the locked source tree: run tool/kernel-compat/family-peers.sh"]
+#[test]
+fn sudoku_codec_matches_the_pinned_implementation() {
+    use billow_kernel::outbound::sudoku::codec::Downlink;
+    use billow_kernel::outbound::sudoku::table::{
+        build_tables, padding_threshold, Encoder, WyRand,
+    };
+
+    let plain: Vec<u8> = (0..=255u8).chain([0u8, 255]).collect();
+    let plain_hex = hex(&plain);
+    let cases = [
+        ("test-key-123", "prefer_entropy", ""),
+        ("test-key-123", "prefer_ascii", ""),
+        ("test-key-123", "up_ascii_down_entropy", ""),
+        ("test-key-123", "prefer_entropy", "xpxvvpvv"),
+        ("hex-0123456789abcdef", "prefer_entropy", ""),
+    ];
+    for (key, mode, custom) in cases {
+        let mut args = vec![
+            "-op", "vectors", "-key", key, "-mode", mode, "-plaintext", &plain_hex,
+        ];
+        if !custom.is_empty() {
+            args.extend(["-custom", custom]);
+        }
+        let json = go_run(&args);
+        let hint: u32 = json_field(&json, "hint").parse().expect("hint");
+        let tables = build_tables(key, mode, Some(custom).filter(|c| !c.is_empty()))
+            .unwrap_or_else(|e| panic!("{key}/{mode}/{custom}: {e}"));
+        assert_eq!(tables.uplink.hint, hint, "{key}/{mode}/{custom}: table hint");
+
+        // The pinned pure encoder is the uplink codec (client -> server), so
+        // it decodes with the uplink table; the packed encoder writes the
+        // downlink direction and decodes with the downlink table.
+        let pure_wire = unhex(json_field(&json, "pureWire"));
+        let mut decoder = billow_kernel::outbound::sudoku::codec::PureDownlink::new(
+            tables.uplink.clone(),
+        );
+        let mut decoded = Vec::new();
+        assert!(
+            decoder.push(&pure_wire, &mut decoded),
+            "{key}/{mode}/{custom}: pure wire rejected"
+        );
+        assert_eq!(decoded, plain, "{key}/{mode}/{custom}: pinned pure encode");
+
+        let packed_wire = unhex(json_field(&json, "packedWire"));
+        let mut decoder = billow_kernel::outbound::sudoku::codec::PackedDownlink::new(
+            tables.downlink.clone(),
+        );
+        let mut decoded = Vec::new();
+        assert!(
+            decoder.push(&packed_wire, &mut decoded),
+            "{key}/{mode}/{custom}: packed wire rejected"
+        );
+        assert_eq!(decoded, plain, "{key}/{mode}/{custom}: pinned packed encode");
+
+        // Our encoder, with and without padding, must decode with the pinned
+        // codec (which also proves the table is identical in both directions).
+        for (min, max) in [(0u8, 0u8), (10, 30)] {
+            let mut rng = WyRand::new(0x5eed);
+            let threshold = padding_threshold(&mut rng, min, max);
+            let mut encoder = Encoder::new(tables.uplink.clone(), WyRand::new(7), threshold);
+            let wire = encoder.encode(&plain);
+            let out = go_run(&[
+                "-op",
+                "decode",
+                "-key",
+                key,
+                "-mode",
+                mode,
+                "-custom",
+                custom,
+                "-wire",
+                &hex(&wire),
+            ]);
+            assert_eq!(
+                json_field(&out, "plaintext"),
+                plain_hex,
+                "{key}/{mode}/{custom}: our pure encode with padding {min}-{max}"
+            );
+        }
+    }
+}

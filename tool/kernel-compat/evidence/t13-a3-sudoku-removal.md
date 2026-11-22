@@ -1,5 +1,12 @@
 # T13-A3: removal of the GPL-derived Sudoku port
 
+> Historical record. T17-A2 later re-added Sudoku deliberately: the Owner
+> authorised translating the pinned GPL-3.0 source, and the module now carries
+> the licence obligations recorded in
+> [`t17-translation.md`](t17-translation.md) and
+> `native-kernel/THIRD_PARTY_NOTICES.md`. This removal record explains why the
+> unlabelled first port could not stay.
+
 Attempt: `T13-A3` (message `T13-A3-M1`).
 Date: 2026-11-22.
 Scope: `native-kernel/`, `tool/kernel-compat/`.

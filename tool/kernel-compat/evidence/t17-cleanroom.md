@@ -1,5 +1,11 @@
 # T17: clean-room Sudoku client attempt (blocked)
 
+> Superseded by [`t17-translation.md`](t17-translation.md): after this
+> clean-room attempt failed, the Owner authorised translating the pinned
+> GPL-3.0 `transport/sudoku`, and attempt `T17-A2` delivered it under the
+> GPL-3.0 obligations recorded there. This file is kept as the history of why
+> the clean-room route could not produce a client.
+
 Attempt: `T17-A1` (message `T17-A1-M1`).
 Date: 2026-11-22.
 Scope: `native-kernel/`, `tool/kernel-compat/`.

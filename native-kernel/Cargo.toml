@@ -10,7 +10,11 @@ edition = "2021"
 # already declares 1.89. The rest of the workspace compiles on 1.85, but a
 # single declared MSRV must cover every dependency.
 rust-version = "1.89"
-license = "MIT"
+# The sudoku outbound is a translation of Mihomo's GPL-3.0 `transport/sudoku`,
+# so the workspace as distributed is GPL-3.0 (the repository root LICENSE is
+# the same GPL-3.0 text, copied here as COPYING.GPL-3.0). See
+# THIRD_PARTY_NOTICES.md for the file list and the upstream commit.
+license = "GPL-3.0-only"
 publish = false
 
 [workspace.dependencies]
@@ -22,6 +26,9 @@ blake2 = "0.10"
 bytes = "1"
 chacha20 = "0.9"
 chacha20poly1305 = "0.10"
+# Sudoku (GPL-3.0-derived translation, T17): the Edwards point/scalar
+# operations `ClientAEADSeed` uses to canonicalise hex key material.
+curve25519-dalek = { version = "4.1", default-features = false, features = ["alloc"] }
 # ZeroTier protocol-13 extended HELLO armor is AES-256-CTR with a 16-byte
 # counter block (the `ctr` crate is already in the lockfile via aes-gcm).
 ctr = "0.9"

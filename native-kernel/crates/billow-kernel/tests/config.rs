@@ -1038,18 +1038,6 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
 
 #[test]
 fn deferred_families_name_their_decision() {
-    // T13-A3 removed the GPL-3.0-derived Sudoku port; T17's clean-room
-    // attempt found the protocol's keyed table, handshake and record layers
-    // are not publicly specified, and the rejection points at that record.
-    let sudoku = proxy_err("proxies:\n  - {name: p, type: sudoku, server: x, port: 1}\nrules: ['MATCH,p']\n");
-    assert!(sudoku.contains("type=sudoku"), "{sudoku}");
-    assert!(sudoku.contains("is not implemented"), "{sudoku}");
-    assert!(sudoku.contains("t17-cleanroom.md"), "{sudoku}");
-    assert!(sudoku.contains("GPL-3.0 derivative"), "{sudoku}");
-    assert!(sudoku.contains("not publicly specified"), "{sudoku}");
-    assert!(sudoku.contains("multiplex"), "{sudoku}");
-    assert!(sudoku.contains("UoT"), "{sudoku}");
-
     let easytier = proxy_err(
         "proxies:\n  - {name: p, type: easytier, network-name: n, network-secret: s, peers: ['udp://127.0.0.1:1']}\nrules: ['MATCH,p']\n",
     );
@@ -1468,3 +1456,42 @@ fn mieru_options_are_strict() {
     assert!(e.contains("missing required option 'username'"), "{e}");
 }
 
+#[test]
+fn sudoku_options_are_strict() {
+    for body in [
+        "key: k".to_string(),
+        "key: k, table-type: prefer_ascii, enable-pure-downlink: false".to_string(),
+        "key: k, table-type: up_ascii_down_entropy".to_string(),
+        "key: k, custom-table: xpxvvpvv".to_string(),
+        "key: k, custom-tables: [\"xpxvvpvv\", \"vxpvxvvp\"]".to_string(),
+        "key: k, aead-method: none, padding-min: 0, padding-max: 0".to_string(),
+        "key: k, httpmask: {disable: true}, multiplex: off".to_string(),
+        "key: k, httpmask: {disable: false, mode: legacy, path-root: aabbcc}".to_string(),
+        "key: k, http-mask: false, multiplex: auto".to_string(),
+        // `multiplex: on` is the implemented Sudoku session mux, not a gap.
+        "key: k, multiplex: on".to_string(),
+        // TLS/host only shape the HTTP tunnel modes, which the legacy mask
+        // does not use (Mihomo ignores them there as well).
+        "key: k, http-mask-tls: true, http-mask-host: example.org".to_string(),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: s, type: sudoku, server: x, port: 1, {body}}}\nrules: ['MATCH,s']\n");
+        load_config(&yaml, "t").unwrap_or_else(|e| panic!("{body}: {e}"));
+    }
+    for (body, needle) in [
+        ("key: k, http-mask-mode: stream", "http-mask-mode' value 'stream'"),
+        ("key: k, httpmask: {mode: ws}", "http-mask-mode' value 'ws'"),
+        ("key: k, multiplex: always", "multiplex' value 'always'"),
+        ("key: k, udp: true", "option 'udp' is not implemented"),
+        ("key: k, table-type: prefer_magic", "table-type' value 'prefer_magic'"),
+        ("key: k, custom-table: xxxvvvpp", "custom table pattern"),
+        ("key: k, aead-method: rc4", "aead-method' value 'rc4'"),
+        ("key: k, padding-min: 30, padding-max: 20", "padding-max' must be >="),
+        ("key: k, path-root: a/b", "path-root' must be a single path segment"),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: s, type: sudoku, server: x, port: 1, {body}}}\nrules: ['MATCH,s']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.contains(needle), "{body}: {e}");
+    }
+    let e = proxy_err("proxies:\n  - {name: s, type: sudoku, server: x, port: 1}\nrules: ['MATCH,s']\n");
+    assert!(e.contains("missing required option 'key'"), "{e}");
+}

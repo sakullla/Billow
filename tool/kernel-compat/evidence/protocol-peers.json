@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 58,
-    "passed": 58,
+    "cases": 63,
+    "passed": 63,
     "failed": 0
   },
   "families": {
@@ -350,6 +350,31 @@
       "command": "native-kernel/crates/billow-kernel/tests/quic_peers.rs",
       "peer": "two controlled HTTP/3 peers in tests/quic_peers.rs (quinn servers, ALPN h3, their own QPACK/capsule codecs): a CONNECT-UDP peer with SETTINGS_ENABLE_CONNECT_PROTOCOL, and a CONNECT-IP peer that requires the WARP client certificate, advertises SETTINGS_H3_DATAGRAM 0x33 and draft-00 0x276, answers `cf-connect-ip`, reads ROUTE_ADVERTISEMENT, assigns 172.16.0.2/32 and fd00::2/128, and echoes tunnelled IPv4/IPv6 UDP packets with its own independent IP/UDP codec; no pinned listener",
       "notes": "T18 implements the pinned Cloudflare WARP CONNECT-IP shape (RFC 9484) and keeps T14's RFC 9298 CONNECT-UDP subset. The pinned `adapter/outbound/masque.go` has no `listeners:` mode and a WARP registration endpoint is not reachable offline, so no pinned-binary interop is claimed: the CONNECT-IP peer is a controlled HTTP/3 server. The positive cases check the request (:method CONNECT, :protocol cf-connect-ip, authority/path from the default uri, capsule-protocol ?1), the ROUTE_ADVERTISEMENT capsule, ADDRESS_ASSIGN, a self-signed client certificate carrying the configured P-256 key (the peer verifies it is required and records its SPKI), endpoint-key pinning (a wrong pin fails), IPv4 and IPv6 UDP echo paths (the peer validates both checksums), and DNS resolution through the tunnel (a hostname target becomes an A query carried as a tunnelled IP/UDP packet). The negative cases cover a peer without HTTP Datagrams, ADDRESS_REQUEST, a 403, a peer without extended CONNECT, a 200 without the capsule protocol, an untrusted certificate, and the named refusal of TCP (no TCP state machine). The CLI paths are cli.rs::process_loads_t18_masque_connect_ip and family_cli.rs::cli_process_tunnels_udp_through_masque_connect_ip."
+    },
+    "sudoku": {
+      "status": "pass",
+      "cases": {
+        "positive": [
+          "sudoku_tcp_session_reaches_the_receiving_side_through_mihomo",
+          "sudoku_without_the_http_mask_reaches_the_receiving_side",
+          "sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side",
+          "sudoku_directional_table_reaches_the_receiving_side",
+          "sudoku_custom_table_pattern_reaches_the_receiving_side",
+          "sudoku_rotating_custom_tables_reach_the_receiving_side",
+          "sudoku_aes_128_gcm_record_layer_reaches_the_receiving_side",
+          "sudoku_unencrypted_record_layer_reaches_the_receiving_side",
+          "sudoku_private_key_material_matches_the_public_key_peer",
+          "sudoku_multiplex_carries_two_streams_over_one_session",
+          "sudoku_multiplex_handles_concurrent_streams"
+        ],
+        "negative": [
+          "sudoku_wrong_key_never_reaches_the_sink",
+          "sudoku_mismatched_table_type_never_reaches_the_sink"
+        ]
+      },
+      "command": "native-kernel/crates/billow-kernel/tests/mihomo_peers.rs",
+      "peer": "listeners: type: sudoku with the default (entropy table, pure downlink, legacy HTTP mask) and the configured variants (prefer_ascii, up_ascii_down_entropy, custom-table(s), enable-pure-downlink: false, disable-http-mask, aead-method)",
+      "notes": "GPL-3.0-derived translation of the pinned `transport/sudoku` (T17; see t17 below). Table construction uses Go's math/rand shuffle, so the 288-grid order matches; both pure and packed downlink codecs, the record layer (chacha20-poly1305/aes-128-gcm/none), the KIP X25519/HKDF handshake and the session mux (two streams, sequential and concurrent) are covered. `tool/kernel-compat/peers/sudoku-vectors` is the locked Go codec used by `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` (pinned encode -> Rust decode, Rust encode -> pinned decode, with and without padding) for entropy/ascii/directional/custom tables. HTTP tunnel modes and UoT are rejected at load with the reason recorded."
     }
   },
   "loopbackOnlyEvidence": {
@@ -369,7 +394,7 @@
     "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
     "families still unimplemented after T15 (the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case. shadowquic is partial: TCP/UDP and JLS are covered above; zero-rtt and the Brutal congestion options are rejected by name.",
     "WireGuard/OpenVPN positive data-path cases stop at the IP packet (WireGuard ICMP echo through the locked device; OpenVPN AEAD keepalive decrypt): TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device.",
-    "sudoku: the family stays rejected. T17 observed the pinned peer only (tool/kernel-compat/sudoku-observe.py, evidence/t17-observe.log) and could not derive the keyed puzzle table, the KIP handshake or the record layers from public material; there is no sudoku peer case because no client exists (evidence/t17-cleanroom.md)."
+    "sudoku: the T17-A1 clean-room attempt stayed blocked (the keyed table, KIP handshake and record layers are not publicly specified; evidence/t17-cleanroom.md, evidence/t17-observe.log). T17-A2 translated the pinned GPL-3.0 module (see t17): TCP sessions with the legacy HTTP mask, pure/packed downlink, three record AEAD methods and the session mux are covered by 13 pinned-peer cases; `udp: true` (UoT) and the HTTP tunnel modes are rejected at load and have no peer case."
   ],
   "t9": {
     "date": "2026-11-21",
@@ -384,7 +409,7 @@
       "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
     },
     "stillUnimplemented": [],
-    "statusAfterT16": "resolved except sudoku: mieru is implemented (T13, clean-room TCP), masque is partial (T14, CONNECT-UDP), sudoku was removed in T13-A3 (GPL-derived) and is rejected until the clean-room rewrite (T17)"
+    "statusAfterT16": "all families resolved: mieru (T13 clean-room), sudoku (T17 GPL-3.0 translation), masque (T14 CONNECT-UDP partial), shadowquic (T15 partial), wireguard/openvpn (T16 transport partial); mesh families rejected by name"
   },
   "controlledPeers": {
     "command": "tool/kernel-compat/family-peers.sh",
@@ -392,14 +417,15 @@
     "families": [
       "gost-relay",
       "ssh",
-      "ssr"
+      "ssr",
+      "sudoku"
     ],
     "result": {
-      "cases": 14,
-      "passed": 14,
+      "cases": 15,
+      "passed": 15,
       "failed": 0
     },
-    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server. `result` counts the test functions of that group (gost 5, ssh 4, ssr Rust 3 + independent Go 2). The T13 sudoku codec differential was removed with the GPL-derived implementation (T13-A3); T16's WireGuard/OpenVPN peers are recorded under `t16` and run by the same script.",
+    "note": "These peers are local controlled servers, not Mihomo listeners. gost-relay and ssr have independent server-side implementations of the pinned wire formats (the SSR cipher bytes and framing are pinned by the Go server and vectors); ssh uses a real SSH server; the Sudoku section builds the locked Go codec (`peers/sudoku-vectors`, GPL-3.0 test-only) and runs the Rust-vs-Go differential. `result` counts the 15 test functions of that group (gost 5, ssh 4, ssr Rust 3 + independent Go 2, sudoku codec 1); T16's WireGuard/OpenVPN peers are recorded under `t16` and run by the same script.",
     "cli": "native-kernel/crates/billow-kernel-cli/tests/family_cli.rs drives one success tunnel through the real CLI process for gost-relay, ssh and ssr."
   },
   "t11": {
@@ -417,14 +443,14 @@
     "deferred": {
       "mieru": "external enfein/mieru v3.39.0 module; decision needed: vendor/port or explicit deferral",
       "masque": "HTTP/3 + IP stack; align the QUIC dependency profile with T10/T7 before implementing",
-      "sudoku": "~13.6k lines of custom crypto/KIP/multiplexing; split into its own task or explicitly defer"
+      "sudoku": "~13.6k lines of custom crypto/KIP/multiplexing; split into its own task or explicitly defer (resolved by T17-A2: the pinned GPL-3.0 module was translated under the Owner authorization; see t17)"
     },
     "platform": "macos-aarch64 for the recorded runs. The Rust peers are in-process loopback servers, so the default suite runs them on every platform the crate builds on; family-peers.sh additionally needs `go` for the pinned SSR cipher vectors (first run downloads the locked module's dependencies).",
     "limitations": [
       "gost-relay: UDP and smux are rejected at load time; only the TCP relay (plain/TLS) is implemented.",
       "ssh: private-key file paths are rejected (inline PEM only) and each dial opens its own SSH client; Mihomo reuses one client per proxy.",
       "ssr: only `protocol: origin` and `obfs: plain`; the auth_*/tls1.2_ticket_*/http_simple plugin layers are rejected by name.",
-      "mieru was delivered by T13 as a clean-room TCP slice; T13's earlier sudoku port was removed in T13-A3 (GPL-derived) and T17's clean-room attempt stayed rejected because the keyed table, KIP handshake and record layers are not publicly specified (evidence/t17-cleanroom.md, evidence/t17-observe.log). masque and the device families have their own tasks."
+      "mieru was delivered by T13 as a clean-room TCP slice; T13's earlier sudoku port was removed in T13-A3 (GPL-derived), and T17-A1's clean-room attempt stayed rejected because the keyed table, KIP handshake and record layers are not publicly specified (evidence/t17-cleanroom.md, evidence/t17-observe.log). T17-A2 then translated the pinned module under the Owner authorization recorded in the T17 recipe (see t17). masque and the device families have their own tasks."
     ]
   },
   "t13": {
@@ -439,12 +465,12 @@
     },
     "splitDecisions": {
       "mieru": "transport UDP, `udp: true`, multiplexing levels and traffic-pattern are rejected at load; TCP single session only (handshake-mode values load, NO_WAIT merely defers the same handshake)",
-      "sudoku": "removed in T13-A3: the earlier port was a GPL-3.0 derivative of the pinned `transport/sudoku` (table/record/KIP/HTTP mask translated from the GPL tree). The type is now rejected by name. No sudoku code, vectors or peer remains in the repository (audit: evidence/t13-a3-sudoku-removal.md). T17's clean-room attempt produced no client: the protocol is not publicly specified (evidence/t17-cleanroom.md)."
+      "sudoku": "the earlier T13 port was removed in T13-A3 (GPL-3.0 derivative without the required license handling); T17 restored it as an explicitly GPL-3.0-derived translation with file headers, COPYING and notices (see t17)"
     },
     "license": {
       "mieru": "the enfein/mieru v3.39.0 module is GPL-3.0; no mieru source is vendored or linked, the client follows the published docs/protocol.md and is verified only against the pinned binary",
-      "sudoku": "no sudoku material remains: the GPL-derived port, its Go codec peer and the Go math/rand rngCooked copy were deleted in T13-A3",
-      "crates": "x25519-dalek (used by the T15 JLS and T16 WireGuard outbounds) remains BSD-3-Clause and MIT-compatible with the workspace MIT license; the T13 curve25519-dalek dependency was removed with the sudoku port"
+      "sudoku": "T13 removed the first port, which was a GPL-3.0 derivative without the required license handling; T17-A2 restored the family as an explicitly GPL-3.0-derived translation with file headers, COPYING and notices (see t17)",
+      "crates": "x25519-dalek (T15 JLS and T16 WireGuard) remains BSD-3-Clause; curve25519-dalek was removed with the T13 sudoku port and re-added by T17-A2 (BSD-3-Clause, compatible with the now GPL-3.0-only workspace); T17-A2 changed the workspace licence to GPL-3.0-only"
     },
     "platform": "macos-aarch64 for the recorded peer runs; the code paths are platform-neutral Rust and compile for the other targets.",
     "removal": {
@@ -456,6 +482,38 @@
         "the sudoku mihomo-peer cases, the pinned-codec differential test and the sudoku option-matrix rows"
       ]
     }
+  },
+  "t17": {
+    "date": "2026-11-22",
+    "implemented": [
+      "sudoku"
+    ],
+    "rejected": [
+      "sudoku http-mask-mode: stream/poll/auto/ws",
+      "sudoku udp: true (the UoT association)"
+    ],
+    "translation": {
+      "authorization": "Owner authorization recorded in docs/sakullla-workflow/2026-11-20-native-rust-kernel/02-technical-solution.md and the T17 recipe outcomes: translate the locked GPL-3.0 transport/sudoku; the derivative is distributed under GPL-3.0 with the obligations recorded in native-kernel/THIRD_PARTY_NOTICES.md (the docs/coordination/t17-handoff.md interface file still states the earlier T17-A1 clean-room rule and was not updated)",
+      "source": "pinned Mihomo v1.19.34 transport/sudoku (GPL-3.0), commit 0455d0d28c4526937380505153e65a843d8612e8, tree tool/kernel-compat/.cache/source/tree-v1.19.34",
+      "files": [
+        "native-kernel/crates/billow-kernel/src/outbound/sudoku/mod.rs (handshake, session keys, table probe, dial)",
+        "native-kernel/crates/billow-kernel/src/outbound/sudoku/table.rs (obfs/sudoku table, layout, grid, encode/decode, padding)",
+        "native-kernel/crates/billow-kernel/src/outbound/sudoku/record.rs (crypto/record_conn.go)",
+        "native-kernel/crates/billow-kernel/src/outbound/sudoku/kip.rs (kip.go, session_keys.go)",
+        "native-kernel/crates/billow-kernel/src/outbound/sudoku/mux.rs (multiplex/session.go, client side)",
+        "native-kernel/crates/billow-kernel/src/outbound/sudoku/codec.rs (obfs/httpmask legacy masker/pathroot, obfs/sudoku conn wrappers)",
+        "native-kernel/crates/billow-kernel/src/outbound/sudoku/go_rand.rs (Go math/rand rngSource, BSD-3-Clause)",
+        "native-kernel/COPYING.GPL-3.0, native-kernel/THIRD_PARTY_NOTICES.md"
+      ],
+      "scope": "TCP sessions; legacy HTTP/1.1 header mask; pure and packed downlink; entropy/ascii/directional/custom tables with rotation and table hints; record layer chacha20-poly1305/aes-128-gcm/none with epoch-derived keys, sequence checks and replay rejection; KIP X25519+HKDF handshake with timestamp/user-hash/nonce/table hint and rekey; session mux (multiplex: on) with open/data/close/reset/ping/pong frames"
+    },
+    "verification": {
+      "peerCases": "13 cases under families.sudoku in this file (11 positive, 2 negative), run through tool/kernel-compat/peer-tests.sh",
+      "codecDifferential": "tool/kernel-compat/peers/sudoku-vectors (locked Go codec, GPL-3.0 test-only) against tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation: pinned encode -> Rust decode and Rust encode -> pinned decode, pure and packed, with and without padding, for the entropy/ascii/directional/custom layouts",
+      "defaultSuite": "cargo test --manifest-path native-kernel/Cargo.toml --locked runs the sudoku table/record/kip/mux unit tests and tests/config.rs::sudoku_options_are_strict"
+    },
+    "license": "the module files carry SPDX-License-Identifier: GPL-3.0-only and the upstream version/commit; native-kernel/Cargo.toml declares GPL-3.0-only, native-kernel/COPYING.GPL-3.0 holds the full text and THIRD_PARTY_NOTICES.md lists the translated files. The pinned Go tree is a test-only peer and is not vendored.",
+    "platform": "macos-aarch64 for the recorded peer runs; the mihomo_peers harness binds loopback ports only and terminates both processes in a finally block"
   },
   "t10": {
     "status": "partial",
@@ -522,7 +580,7 @@
     "license": {
       "jls_tls": "BSD-3-Clause (Copyright 2009 The Go Authors); complete copyright/conditions/disclaimer in native-kernel/THIRD_PARTY_NOTICES.md. Used only to generate committed test vectors; the Rust implementation does not link or copy it.",
       "shadowquic_transport": "No GPL-3.0 source vendored, linked, or copied. Provenance, black-box observation matrix and no-copy audit (with the residual source-consultation caveat) in tool/kernel-compat/evidence/t15-cleanroom.md.",
-      "kernel": "MIT (workspace); the notices above apply only to the referenced package and vector material."
+      "kernel": "GPL-3.0-only (workspace, because of the T17 sudoku translation); the notices above apply only to the referenced package and vector material."
     },
     "cases": {
       "positive": [
@@ -569,7 +627,7 @@
     "license": {
       "wireguard_peer": "metacubex/wireguard-go MIT, golang.org/x/crypto BSD-3-Clause; test program only.",
       "openvpn_peer": "OpenVPN 2.7.9 binary GPL-2.0; test process only, not linked.",
-      "kernel": "MIT; no GPL source is vendored or linked. The pinned GPL-3.0 adapters were read for functional wire facts; provenance and the no-copy audit limits are in tool/kernel-compat/evidence/t16-provenance.md."
+      "kernel": "GPL-3.0-only (workspace, because of the T17 sudoku translation); for T16 itself no GPL source is vendored, linked or translated. The pinned GPL-3.0 adapters were read for functional wire facts; provenance and the no-copy audit limits are in tool/kernel-compat/evidence/t16-provenance.md."
     },
     "outOfScope": {
       "families": [
@@ -579,36 +637,6 @@
       ],
       "note": "Moved to T19 (evidence/t19-mesh.md); T16 only covers wireguard/openvpn."
     }
-  },
-  "t17": {
-    "date": "2026-11-22",
-    "implemented": [],
-    "rejected": [
-      "sudoku"
-    ],
-    "observation": {
-      "command": "python3 tool/kernel-compat/sudoku-observe.py {probe,repeat,reject,sweep-paths,sweep-bodies}",
-      "log": "tool/kernel-compat/evidence/t17-observe.log",
-      "peer": "the pinned Mihomo v1.19.34 release binary as `listeners: type: sudoku` (and as the client) with a loopback relay as the observer; no Sudoku source is read, ported or linked",
-      "measured": [
-        "uplink and downlink are exactly 4 wire bytes per plaintext byte (676 bytes for an 82-byte request, slope 4 over path lengths 6..70; downlink slope 4 over response bodies 12..1000)",
-        "each direction uses 64 distinct symbols: 0x0a plus 0x40..0x7e, 98-99.7% printable (table-type prefer_ascii, padding 0/0)",
-        "the same plaintext under the same key differs in ~640 of 676 positions between two connections while keeping the length: the encoding is randomized",
-        "a different key keeps the lengths and the alphabet but changes every byte: the codebook is key-derived",
-        "chacha20-poly1305 adds 360 uplink / 240 downlink bytes for the same payload (record layer framing)",
-        "httpmask mode legacy prepends a plaintext, per-connection randomized browser request of ~518 bytes",
-        "the listener rejects foreign handshakes: plain HTTP closes with no reply; 64 zero bytes give `INVALID_SUDOKU_MAP_MISS`"
-      ]
-    },
-    "blocked": [
-      "table construction from `key` (grid enumeration, byte->grid codebook, clue-set pool, 64-symbol style order)",
-      "KIP handshake (X25519 + HKDF labels, message layout, table hint, timestamp/nonce/replay handling)",
-      "record layer (framing, epoch counters, HMAC derivation, sequence validation, rotation cadence)",
-      "legacy HTTP mask template pool, packed downlink framing, multiplex, stream/poll/auto/ws tunnels and UoT all inherit the above"
-    ],
-    "license": "the pinned Mihomo tree and the upstream Sudoku project are both GPL-3.0 (the upstream adds a name clause); no GPL code, table, vector or attribute data is vendored or linked, and the T13-A3 removed module was not restored. The pinned release binary runs only as a test peer.",
-    "decision": "Owner decision needed: keep `sudoku` rejected (current), authorise a documented specification-consultation process against the GPL-3.0 implementation, or wait for a public byte-level specification (evidence/t17-cleanroom.md#decision-needed)",
-    "platform": "macos-aarch64 for the recorded observations; the harness binds loopback ports only"
   },
   "t18": {
     "date": "2026-11-22",

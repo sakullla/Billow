@@ -10,9 +10,9 @@
 //! `IP-CIDR`, `IP-CIDR6`, `MATCH` with `DIRECT`/`REJECT`, and protocol
 //! outbounds `socks5`, `http`, `ss` (AEAD 2017), `trojan`, `vless`,
 //! `anytls`, `vmess`, `snell`, `trusttunnel`, `gost-relay`, `ssh`, `ssr`,
-//! `tuic` (v5), `hysteria` (v1), `hysteria2` and `mieru` (TCP sessions) with
-//! the transports they need (TLS, WebSocket, QUIC, HTTP/3 auth,
-//! `dialer-proxy` through a socks5 hop). A
+//! `tuic` (v5), `hysteria` (v1), `hysteria2`, `mieru` (TCP sessions) and
+//! `sudoku` (GPL-3.0-derived translation, TCP) with the transports they need
+//! (TLS, WebSocket, QUIC, HTTP/3 auth, `dialer-proxy` through a socks5 hop). A
 //! rule or protocol option the kernel does not
 //! implement fails configuration loading when its value asks for something; a
 //! key the pinned type does not declare is ignored exactly as Mihomo ignores

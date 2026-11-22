@@ -15,11 +15,12 @@ protocol plugin and obfs plugin, plus the UDP association). T12 completed the
 SSR plugin layers and the gost-relay UDP association and smux session. T10
 added the QUIC families `tuic` (v5 `uuid`/`password`), `hysteria` (v1) and
 `hysteria2` (HTTP/3 auth + TCP), all over `quinn` 0.11. T13 added `mieru`
-(single-session TCP, an independent implementation of the published protocol);
-its earlier `sudoku` port was removed because it was a GPL-3.0 derivative of
-the pinned `transport/sudoku`; T17's clean-room attempt found the protocol's
-keyed table, handshake and record layers are not publicly specified, so the
-type stays rejected (see [Not implemented](#not-implemented)). T14 added
+(single-session TCP, an independent implementation of the published protocol).
+T17 added `sudoku` as a translation of the pinned GPL-3.0 `transport/sudoku`
+(TCP with the legacy HTTP mask, the pure and packed downlink codecs, the three
+record AEAD methods and the session mux; the HTTP tunnel modes and UoT are
+rejected by name), so the kernel workspace is now GPL-3.0-only (see
+[License](#license) and `THIRD_PARTY_NOTICES.md`). T14 added
 `masque` as an RFC 9298 CONNECT-UDP client over HTTP/3, reusing the T10
 `quinn` profile for the UDP association. T18 added the pinned Cloudflare WARP
 shape: RFC 9484 CONNECT-IP with the key-derived client certificate, endpoint-key
@@ -55,6 +56,19 @@ listed types), `tun`/`redir`/`tproxy`, the families listed under
 and the protocol options listed in [Not implemented](#not-implemented). T5 owns
 DNS, groups, providers, rules and the control interface.
 
+## License
+
+The kernel workspace is **GPL-3.0-only**. The `sudoku` outbound is a
+translation of Mihomo's GPL-3.0 `transport/sudoku`; no permissive licence can
+cover that derivative, so `native-kernel/Cargo.toml` declares
+`license = "GPL-3.0-only"`, `COPYING.GPL-3.0` carries the full text (identical
+to the repository root `LICENSE`), and `THIRD_PARTY_NOTICES.md` lists every
+translated file and its upstream source. A binary that links `billow-kernel`
+must therefore be distributed under the GPL-3.0, including source availability
+for the combined work. The other vendored or derived material and its licences
+(Go standard library `math/rand` data under BSD-3-Clause, `jls-tls`, the Rust
+crate licences) are recorded in the same notices file.
+
 ## Layout
 
 ```
@@ -65,7 +79,8 @@ native-kernel/
     │   ├── src/config.rs           # strict YAML/geosite parsing
     │   ├── src/proxies.rs          # strict `proxies:` option tables
     │   ├── src/outbound/           # socks5, http, ss, trojan, vless, anytls, vmess, snell,
-    │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, masque
+    │   │                           # trusttunnel, gost-relay, ssh, ssr, mieru, sudoku,
+    │   │                           # masque
     │   │                           # (CONNECT-UDP; CONNECT-IP in masque_ip with
     │   │                           # ipstack and the WARP key/certificate in warp),
     │   │                           # shadowquic + jls (recorded-random TLS hook),
@@ -181,22 +196,26 @@ identities of the servers are logged as the session exit.
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
 | `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
+| `sudoku` | table-driven obfuscation: key-derived 4x4 Sudoku table, KIP X25519 + HKDF handshake, record layer (chacha20-poly1305 / aes-128-gcm / none with epoch keys and sequence validation), legacy HTTP mask, pure and packed downlink, `table-type` (entropy/ascii/directional), `custom-table(s)` rotation, `padding-min/max`, `path-root`, `multiplex: on` session mux (**GPL-3.0-derived translation**) | no: `udp: true` (UoT) rejected at load | `listeners: type: sudoku` (default, no mask, ascii + packed downlink, directional, custom table, table rotation, aes-128-gcm, none, private/public key material, two-stream and concurrent session mux, wrong key, mismatched table type); pinned Go codec differential in `tool/kernel-compat/peers/sudoku-vectors` |
 | `masque` | two shapes over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): (1) RFC 9484 CONNECT-IP for the pinned Cloudflare WARP configuration — base64 SEC1 P-256 client key → the pinned adapter's self-signed client certificate, `public-key` (DER SPKI) pinning the endpoint, `:protocol cf-connect-ip`, `uri` (default `https://cloudflareaccess.com`), `capsule-protocol: ?1`, a `ROUTE_ADVERTISEMENT` for every IPv4/IPv6 destination, `ADDRESS_ASSIGN`/`ROUTE_ADVERTISEMENT` parsing, whole IP packets in HTTP Datagrams (quarter stream ID + context ID 0), a minimal IPv4/IPv6/UDP stack with header/UDP checksums and a per-destination UDP flow table (32 flows, LRU eviction), `mtu` (default 1280), `ip-stack` mode selection and tunnel DNS (`remote-dns-resolve`/`dns`); (2) the RFC 9298 CONNECT-UDP subset (`:protocol connect-udp`, one request stream per destination, `DATAGRAM` capsules) | `udp: true` for both shapes (UDP only; a TCP dial is refused by name) | controlled HTTP/3 peers in `tests/quic_peers.rs` (CONNECT-IP: request shape, client certificate and SPKI, endpoint pin, route advertisement, ADDRESS_ASSIGN, IPv4/IPv6 UDP echo with an independent IP codec, tunnel DNS, missing datagram settings, ADDRESS_REQUEST, 403, TCP refusal; CONNECT-UDP: request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate, peer-FIN reopen, 32 closed flows then a new destination) plus the shipped CLI's SOCKS5 UDP ASSOCIATE in `family_cli.rs`; no Mihomo listener exists and a WARP registration endpoint is not reachable offline |
 
 The mieru module the pinned outbound wraps is GPL-3.0: this repository contains
 no mieru source, links no mieru code and derives nothing from its
 implementation beyond the published protocol description (`docs/protocol.md`
 in that module) and wire observations against the pinned binary, which is used
-only as the controlled peer. The earlier `sudoku` port and its Go codec peer
-were removed in T13-A3: they were translated from the pinned `transport/sudoku`,
-which is part of the GPL-3.0 Mihomo tree, so they were GPL derivatives. No
-sudoku code, vectors or attribution data remain. T17 observed the pinned peer
-from the outside only (`tool/kernel-compat/sudoku-observe.py`, record in
-`tool/kernel-compat/evidence/t17-cleanroom.md`) and produced no client: the
-key-derived puzzle table, the KIP handshake and the record layers are not
-publicly specified, the encoding randomizes each byte per connection, and a
-foreign handshake is rejected with `INVALID_SUDOKU_MAP_MISS`. `type: sudoku`
-therefore stays rejected; the audit of the removal is
+only as the controlled peer.
+
+`sudoku` is different: under the Owner authorization recorded in
+`docs/sakullla-workflow/2026-11-20-native-rust-kernel/02-technical-solution.md`
+(T17 recipe), T17 translated the pinned GPL-3.0
+`transport/sudoku` (Mihomo v1.19.34, commit
+`0455d0d28c4526937380505153e65a843d8612e8`) into
+`src/outbound/sudoku/`. Every file carries `SPDX-License-Identifier:
+GPL-3.0-only` with the upstream path, the workspace `license` field is
+`GPL-3.0-only`, and `COPYING.GPL-3.0` plus `THIRD_PARTY_NOTICES.md` record the
+file list and the GPL-3.0 obligations of distributing a binary that links this
+crate. The translation and its verification are in
+`tool/kernel-compat/evidence/t17-translation.md`; the earlier removal audit is
 `tool/kernel-compat/evidence/t13-a3-sudoku-removal.md`.
 
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
@@ -245,8 +264,11 @@ The pinned parser lists 28 outbound types, matching the status recorded in
 
 - **implemented (11)**: `ss`, `socks5`, `http`, `trojan`, `vless`, `anytls`,
   `vmess`, `snell`, `trusttunnel`, `gost-relay`, `ssr`;
-- **partial (9)**: `ssh` (one client per dial, no private-key file paths),
-  `mieru` (TCP slice) and `masque` (CONNECT-UDP and CONNECT-IP for UDP; no TCP over the tunnel),
+- **partial (10)**: `ssh` (one client per dial, no private-key file paths),
+  `mieru` (TCP slice), `sudoku` (TCP, legacy HTTP mask, pure/packed downlink and
+  the session mux; the HTTP tunnel modes and UoT are rejected, and the module
+  is a GPL-3.0-derived translation) and `masque` (CONNECT-UDP and CONNECT-IP
+  for UDP; no TCP over the tunnel),
   `tuic`, `hysteria` and
   `hysteria2` (their T10 gaps), `shadowquic` (TCP/UDP and JLS, but `zero-rtt`,
   QUIC `v2` and the private Brutal congestion options are rejected), and
@@ -256,9 +278,9 @@ The pinned parser lists 28 outbound types, matching the status recorded in
   still needs T6/T7 and registration-only options are rejected) and `zerotier`
   (identity/planet/VL1/VL2 protocol halves; the controller membership exchange
   is T5, the TCP fallback transport is rejected and the tunnel needs T6/T7);
-- **unimplemented (2)**: `sudoku` (the clean-room port is blocked; rejected by
-  name) and `easytier` (the pinned core's `network_secret_digest` is not
-  reproducible offline; both cleartext and encrypted forms are rejected);
+- **unimplemented (1)**: `easytier` (the pinned core's
+  `network_secret_digest` is not reproducible offline; both cleartext and
+  encrypted forms are rejected);
 - **built-ins (4)**: `direct`, `dns`, `reject` and `rematch` as `proxies`
   entries (T5).
 
@@ -274,12 +296,13 @@ is silently reduced:
 
 T13 delivered `mieru` in the single-session TCP slice: an independent
 implementation of the published protocol (the module is GPL-3.0, so no mieru
-code is vendored or linked; only the pinned binary runs it as a peer). The
-earlier `sudoku` port was removed in T13-A3 because it was translated from the
-GPL-3.0 pinned `transport/sudoku`; `type: sudoku` is rejected by name, and
-T17's clean-room attempt recorded why it stays that way: the table, handshake
-and record layers are not publicly specified (see
-[Not implemented](#not-implemented)). mieru's rejected pieces are named in
+code is vendored or linked; only the pinned binary runs it as a peer). T17
+delivered `sudoku` as an explicitly GPL-3.0-derived translation of the pinned
+`transport/sudoku` (Owner authorization recorded in the T17 recipe,
+`docs/sakullla-workflow/2026-11-20-native-rust-kernel/02-technical-solution.md`);
+its
+HTTP tunnel modes and UoT are rejected by name, and the licence obligations are
+in [License](#license). Both families' rejected pieces are named in
 [Not implemented](#not-implemented).
 
 T14's `masque` is the RFC 9298 CONNECT-UDP subset and T18's is the pinned
@@ -411,11 +434,13 @@ quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, congestion/window tuning;
 `up` (the pinned Brutal TX-rate cap; quinn has no Brutal controller),
 `udp-mtu`, congestion/window tuning. `mieru` rejects `transport: UDP`,
 `udp: true`, the multiplexing levels (one session per underlay) and
-`traffic-pattern` (padding/nonce/low-entropy shaping); `sudoku` is rejected as
-a whole type because its earlier port was a GPL-3.0 derivative and was removed
-in T13-A3, and T17's clean-room attempt found the keyed table, the KIP
-handshake and the record layers are not publicly specified
-(`tool/kernel-compat/evidence/t17-cleanroom.md`). `masque` rejects
+`traffic-pattern` (padding/nonce/low-entropy shaping). `sudoku` rejects
+`udp: true` (the UDP-over-TCP/UoT association) and the HTTP tunnel modes
+`http-mask-mode: stream|poll|auto|ws` (a mihomo extension over the protocol,
+`transport/sudoku/obfs/httpmask/tunnel_*`); the legacy header mask, pure and
+packed downlink, table rotation and `multiplex: on` are implemented, and the
+module is a GPL-3.0-derived translation (`evidence/t17-translation.md`).
+`masque` rejects
 TCP over the tunnel (CONNECT-IP carries IP packets and serving TCP needs a TCP
 state machine the kernel does not have), both non-HTTP/3 networks (`h2`,
 `h3-l4proxy`), `ip-stack.mode: gvisor` (the pinned build-tagged dependency),
@@ -665,11 +690,18 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
 
   T13 added 5 mieru cases against `listeners: type: mieru`: the TCP session,
   `port-range`, an idle session across the five-second heartbeat, a wrong
-  password and a closed peer port. The sudoku cases and their locked-codec
-  differential were removed with the GPL-derived implementation in T13-A3;
-  T17 recorded what the pinned Sudoku peer does with foreign traffic
-  (`tool/kernel-compat/sudoku-observe.py`, `evidence/t17-observe.log`) but has
-  no peer case because no Sudoku client exists.
+  password and a closed peer port. T17 added 13 sudoku cases against
+  `listeners: type: sudoku`: the default session, no HTTP mask, ascii + packed
+  downlink, directional tables, a custom table, table rotation, aes-128-gcm,
+  `none`, private/public key material, two sequential and two concurrent
+  session-mux streams, a wrong key and a mismatched table type (the last two
+  must never reach the sink). The locked Go codec
+  (`tool/kernel-compat/peers/sudoku-vectors`, GPL-3.0, test-only) is run by
+  `tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation` in both
+  directions (pinned encode -> Rust decode, Rust encode -> pinned decode,
+  pure and packed, with and without padding) for the entropy, ascii,
+  directional and custom table layouts. `peer-tests.sh` runs 63 cases in
+  total.
   T15 added 4 shadowquic cases: TCP, UDP over QUIC datagrams, UDP over
   `udp-over-stream`, and a wrong-password case that is forwarded to the
   camouflage upstream and never reaches the sink. The JLS seal is also
@@ -681,7 +713,8 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   `tests/shadowquic_stream.rs` is a default-suite controlled quinn peer that
   stops a client uni stream and closes the control send half; it proves the
   client reopens the uni stream and rebuilds the control association with the
-  live ids. `tool/kernel-compat/peer-tests.sh` runs 50 cases in total. `masque` has
+  live ids. `tool/kernel-compat/peer-tests.sh` runs 63 cases in total (the T17 sudoku
+  additions included). `masque` has
   no Mihomo listener (the pinned adapter is a Cloudflare WARP client) and no
   reachable WARP endpoint offline, so its fifteen default-suite cases run against
   two controlled HTTP/3 peers in `tests/quic_peers.rs` (RFC 9298 CONNECT-UDP and
@@ -712,13 +745,17 @@ missing marker.
 
 The immutable coordination inputs are in `docs/coordination/`: `t11-handoff.md`
 (this subset), `t12-handoff.md` (SSR plugin layers and gost UDP/smux),
-`t13-handoff.md` (mieru and sudoku), `t14-handoff.md` (CONNECT-UDP) and
+`t13-handoff.md` (mieru), `t17-handoff.md` (the sudoku family interface; it
+still carries the `T17-A1` clean-room rule and does not record the later
+source-translation authorization),
+`t14-handoff.md` (CONNECT-UDP) and
 `t18-handoff.md` (CONNECT-IP, IP stack and WARP shape). They are
 Owner material and are not modified by the kernel tasks. The concrete blockers
 and next steps for the families still deferred by T10 are in
-`tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers mieru
-(sudoku was removed in T13-A3; T17's clean-room attempt recorded the protocol
-as not publicly specified, `evidence/t17-cleanroom.md`), T14's and T18's cover
+`tool/kernel-compat/evidence/t10-feasibility.json`; T13's handoff covers mieru,
+T17's translation authorization is recorded in the T17 recipe
+(`02-technical-solution.md`; the handoff file predates it) and
+`evidence/t17-translation.md`, T14's and T18's cover
 `masque` (the CONNECT-UDP subset in `evidence/t14-feasibility.json` and the
 CONNECT-IP/WARP UDP path with its TCP/`h2`/`h3-l4proxy` gaps in
 `evidence/t18-feasibility.json`), and T15's covers

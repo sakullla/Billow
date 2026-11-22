@@ -168,6 +168,7 @@ dependencies = [
  "chacha20 0.9.1",
  "chacha20poly1305",
  "ctr",
+ "curve25519-dalek",
  "ed25519-dalek",
  "h2",
  "hex",

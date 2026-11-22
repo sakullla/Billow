@@ -3,7 +3,7 @@
   "version": 1,
   "generatedAt": "2026-11-21",
   "task": "T11",
-  "summary": "T11 delivered and verified the gost-relay/ssh/ssr subset. mieru, masque and sudoku were investigated against the locked v1.19.34 tree and the local module/crate caches; the concrete blockers and executable next steps are recorded here. They are not claimed as implemented. T13 later delivered mieru (clean-room TCP) and removed its GPL-derived sudoku port (T13-A3; clean-room rewrite is T17).",
+  "summary": "T11 delivered and verified the gost-relay/ssh/ssr subset. mieru, masque and sudoku were investigated against the locked v1.19.34 tree and the local module/crate caches; the concrete blockers and executable next steps are recorded here. They are not claimed as implemented. T13 later delivered mieru (clean-room TCP) and removed its GPL-derived sudoku port (T13-A3); T17-A2 later translated the pinned GPL-3.0 transport/sudoku under the Owner authorization (see the sudoku statusBelow).",
   "completed": {
     "gost-relay": "TCP/TLS/auth/forward; controlled Rust peer + CLI success tunnel; option matrix rows",
     "ssh": "password/inline PEM/host-key/direct-tcpip; controlled russh peer + CLI success tunnel; MSRV raised to 1.89",
@@ -17,7 +17,7 @@
         "protocol_doc": "docs/protocol.md (segment/metadata/low-entropy/UDP-associate specification)",
         "protocol_source": "pkg/protocol (34 Go files, 10,717 lines including tests): session.go 1511, underlay_stream.go 910, mux.go 881, underlay_packet.go 859, metadata.go 362, segment.go 368, low_entropy.go 242, padding.go 214; pkg/cipher 1,843 lines"
       },
-      "license": "GPL-3.0 (module LICENSE); Billow native-kernel is MIT",
+      "license": "GPL-3.0 (module LICENSE); Billow native-kernel was MIT at T11 (T17-A2 later relicensed the workspace to GPL-3.0-only because of the translated transport/sudoku)",
       "blockers": [
         "No Rust port or wire-compatible crate exists in the tree; the protocol needs PBKDF2-SHA256 time-salt keys, XChaCha20-Poly1305 with nonce patching, 32-byte metadata, segment padding, optional low-entropy modes, session open/data/ack/close, flow-control windows and optional mux/handshake modes.",
         "Vendoring the GPL-3.0 Go module into the MIT Rust crate is a licensing conflict. A Go test server can be built from the locked module as a separate process, but the client must be a clean-room implementation from docs/protocol.md plus Go vectors.",
@@ -65,7 +65,8 @@
         "T13 split: (a) build a controlled server from the locked transport/sudoku and capture handshake/KIP vectors, (b) port the handshake + KIP + table layout for a single TCP session, (c) add HTTP mask and multiplexing, (d) verify success/auth-failure/boundary cases.",
         "If the split is not approved, keep the explicit rejection and record sudoku as deferred rather than partially compatible."
       ],
-      "outcome": "T13-A3 (2026-11-22): the first T13 port was translated from the GPL-3.0 `transport/sudoku` and was removed; `type: sudoku` is rejected by name again. Any implementation of the steps above must be clean-room (wire observations and the public protocol shape only, never the pinned Go source); the task is T17. Audit: evidence/t13-a3-sudoku-removal.md"
+      "outcome": "T13-A3 (2026-11-22): the first T13 port was translated from the GPL-3.0 `transport/sudoku` and was removed; `type: sudoku` is rejected by name again. Any implementation of the steps above must be clean-room (wire observations and the public protocol shape only, never the pinned Go source); the task is T17. Audit: evidence/t13-a3-sudoku-removal.md",
+      "statusAfterT17": "T17-A2 (2026-11-22): T17-A1's clean-room attempt found the keyed table, KIP handshake and record layer are not publicly specified; the Owner then authorized translating the pinned GPL-3.0 `transport/sudoku`, delivered under GPL-3.0 obligations (files, COPYING, notices). `type: sudoku` now loads for TCP with the legacy HTTP mask, pure/packed downlink and mux; the HTTP tunnel modes and UoT are rejected by name. See evidence/t17-translation.md."
     }
   },
   "plan_conflict": {
