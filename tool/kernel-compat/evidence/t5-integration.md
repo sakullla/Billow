@@ -19,7 +19,9 @@ node tool/kernel-compat/t5-differential.mjs \
 Raw report: `t5-integration.json`; run output: `t5-run.log`, generated
 artifacts: `t5-effective/`. The Rust binary was built with an independent
 `CARGO_TARGET_DIR`; the SSR peer (`tool/kernel-compat/.cache/peers/ssr-server`)
-is built on first use from `peers/ssr-server` against the locked source.
+is built on first use from `peers/ssr-server` against the locked source. The
+ShadowQUIC peer is the pinned binary's own `listeners: type shadowquic` with a
+loopback UDP camouflage upstream; no extra Go build is needed for it.
 
 ## Result
 
@@ -31,10 +33,10 @@ engine.
 | --- | --- |
 | `startup-mihomo`, `startup-rust` | both accept the combined config and start mixed + controller |
 | `dns-fake-ip-hosts-alias` | equal answers (below) |
-| `groups-initial` | same members/selection for `PROXY`, `AUTO`, `FALLBACK`, `SUB` |
+| `groups-initial` | equal member-name sets for `PROXY`, `AUTO`, `FALLBACK`, `SUB`; `now` is only checked to be a member |
 | `proxy-provider-registered` | `pp-sub` resolves to `sub-a` in `/providers/proxies` |
 | `group-select`, `group-select-switch` | `PUT /proxies/PROXY` 204 / unknown 400 / `now` follows |
-| `combined-egress-and-rules` | equal reachability through every rule/outbound path (below) |
+| `combined-egress-and-rules` | equal reachability through every rule/outbound path, and the Rust `rule=`/`outbound=` line matches the expected path for every probe (below) |
 | `provider-update-failure-keeps-old` | update 204 then 503; the updated provider snapshot stays |
 | `reload-success-and-failure` | reload 204 / invalid 400; new rules stay live after failure, DNS/controller alive |
 | `reject-out-of-range-provider-path` | both config testers reject `../escape.yaml` |
@@ -45,32 +47,72 @@ engine.
 | Query | both engines |
 | --- | --- |
 | `fake.test` | `A 198.18.0.4` TTL 1 (fake-ip allocation) |
-| `host-only.test` | `A 127.0.0.1` TTL 10 (hosts) |
+| `host-only.test` | `A 10.9.8.7` TTL 10 (hosts) |
 | `alias.test` | `CNAME alias-target.test` TTL 10 + `A 9.9.9.9` TTL 60 (domain hosts) |
 | `real.test` | `A 5.5.5.5` TTL 60 (`fake-ip-filter` forwards to the upstream) |
 | `absent.test` | NXDOMAIN |
 
+`host-only.test` deliberately points at a non-loopback address: a hosts answer
+also seeds the 10 s `DNSMapping` cache, and a loopback value would rewrite the
+`127.0.0.1` CONNECT probes to the name before they reach the intended rule
+(both engines do this; it is why the address is separated from the outbound
+probes).
+
 ### Rules and real outbounds
 
 Peers are controlled local servers: pinned Mihomo `listeners:` for
-`shadowsocks` (aes-256-gcm) and `trojan` (self-signed cert + `skip-cert-verify`),
-and `peers/ssr-server` (origin/plain, aes-256-cfb). Each path used its own
-destination port so the rules could be ordered deterministically:
+`shadowsocks` (aes-256-gcm), `trojan` (self-signed cert + `skip-cert-verify`)
+and `shadowquic` (JLS user/password plus a loopback UDP `jls-upstream`
+camouflage socket), and `peers/ssr-server` (origin/plain, aes-256-cfb). The
+`ss`/`trojan` peers also carry `hosts` entries for `bad.localhost` and
+`bad-ok.localhost`, so a name reaching them is resolvable and a negative can
+only come from the credentials/transport.
 
-| Request | Matched path | Result |
+Rule order is part of the coverage: `DOMAIN,bad.localhost` is placed before the
+`+.localhost` rule-set, and each non-first-match probe uses its own destination
+port through a `DST-PORT` rule ahead of `GEOIP,zz` (127.0.0.1/32). The Rust log
+line (`rule=... outbound=...`) for the exact probe target is parsed and asserted
+for every row, so a shadowing earlier rule fails the scenario instead of
+passing on reachability alone. (In the T5-A1 record the `ssr` probe was caught
+by `GEOIP,zz` and `bad.localhost` by `RULE-SET,rp-yaml`, so neither outbound ran;
+this table replaces that claim with the executed rule/outbound pair.)
+
+| Request | Rust-observed rule → outbound | Result |
 | --- | --- | --- |
-| `localhost` (rule-set yaml) | `PROXY` selector = `trojan-node` | marker echoed through the Trojan peer |
+| `localhost` | `RULE-SET,rp-yaml` → `PROXY[trojan-node]` | marker echoed through the Trojan peer |
 | `127.0.0.1:echoA` | `GEOIP,zz` → `ss-node` | marker echoed through the Shadowsocks peer |
-| `127.0.0.1:echoB` | `DST-PORT` → `trojan-node` | marker echoed through the Trojan peer |
-| `127.0.0.1:echoC` | `MATCH` → `ssr-node` | marker echoed through the Go SSR peer |
-| `bad.localhost` | `BAD` selector = `bad-ss` (wrong password) | never echoed |
-| `text-probe.test` | file/text rule-set | blocked |
-| `www.google.com` | MRS rule-set (`src-tauri/testdata/domain.mrs`) | blocked |
-| `geo.test` | `GEOSITE,t5site` (generated `GeoSite.dat`) | blocked |
-| `http-probe.test` | HTTP rule-set | blocked |
+| `127.0.0.1:echoB` | `DST-PORT,<echoB>` → `trojan-node` | marker echoed through the Trojan peer |
+| `127.0.0.1:echoC` | `DST-PORT,<echoC>` → `ssr-node` | marker echoed through the Go SSR peer (`MATCH` is the untested fallthrough; T24 covers a reached `MATCH`) |
+| `127.0.0.1:echoD` | `DST-PORT,<echoD>` → `squic-node` | marker echoed through the pinned ShadowQUIC/JLS peer (T15) |
+| `bad.localhost` | `DOMAIN,bad.localhost` → `BAD[bad-ss]` | tunnel established, no echo (wrong password) |
+| `bad-ok.localhost` | `DOMAIN,bad-ok.localhost` → `ss-node` | marker echoed: the same peer/port/name resolves and the right password works, so the `bad-ss` negative is attributable to the credentials |
+| `text-probe.test` | `RULE-SET,rp-text` → `REJECT` | blocked |
+| `www.google.com` | `RULE-SET,rp-mrs` → `REJECT` | blocked |
+| `geo.test` | `GEOSITE,t5site` → `REJECT` | blocked |
+| `http-probe.test` | `RULE-SET,rp-http` → `REJECT` | blocked |
+| `and-probe.test:echoA` | `AND,((DOMAIN,and-probe.test),(DST-PORT,<echoA>))` → `REJECT` | blocked |
 
 Switching `PROXY` to `ss-node` and repeating `localhost` still echoed
 (`t5-proxy-ss`), and selecting a missing member answered 400 on both sides.
+
+### T15/T16 protocol families in this candidate
+
+- **T15 shadowquic — in combination.** `squic-node` (JLS user/password,
+  `sni: localhost`) is a proxy in the same YAML, selected by
+  `DST-PORT,<echoD>`; the probe reaches the pinned ShadowQUIC listener and the
+  marker comes back. Per-family TCP/UDP/datagram/uni-stream cases are in
+  `tests/mihomo_peers.rs` and `t15-cleanroom.md`; `protocol-peers.json` lists
+  the four shadowquic cases that `peer-tests.sh` runs.
+- **T16 wireguard/openvpn — checked individually, not combinable here.** Both
+  carry IP packets (`send_packet`/`recv_packet`) and their `dial()` returns the
+  explicit T6/T7 device-layer error because the userspace IP stack/TUN is not
+  part of this outbound. They cannot be a mixed-port CONNECT egress in this
+  differential; results are in `t16-feasibility.json` and
+  `family-peers.sh wireguard_peer`/`openvpn` peers.
+- **tailscale/zerotier/easytier — owned by T19** after the T16 split; the same
+  device-layer constraint applies (`t19-mesh.md`, `t19-mesh.log`).
+
+`engines.rust.logs.stderr` and `report.families` record this split.
 
 ### Provider update and reload
 
@@ -170,10 +212,16 @@ cross-task gaps.
 ## Boundaries
 
 - Platform: macOS arm64. Android/iOS/Windows watchers are not part of this run.
-- `AUTO`/`FALLBACK` `now` was identical here, but url-test ranks measured
-  delays; the differential compares membership, not a winner guarantee.
+- `AUTO`/`FALLBACK` `now` is url-test ranked; the differential compares the
+  member-name set and that the winner is a member. Liveness is **not** asserted:
+  the pinned `all` list and the Rust group payload do not expose the same stable
+  health array, so no liveness claim is made.
 - Failure framing differs by inbound design (pinned 200-then-close vs Rust
-  403/502); the combined scenario compares whether the receiver was reached.
+  403/502); the combined scenario compares whether the receiver was reached,
+  plus the Rust rule/outbound decision line for each probe.
+- `MATCH` is this config's fallthrough but no probe reaches it (every reachable
+  target is a loopback address covered by `GEOIP,zz`); T24 exercises a reached
+  `MATCH` separately. The combined assertion therefore does not claim it.
 - TUN/sniffer/process lookup/LAN-auth injection, UDP beyond the configured
   associations, and the T10/T14–T21 family gaps stay registered elsewhere; this
   report does not promote them.

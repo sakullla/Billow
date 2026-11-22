@@ -1,19 +1,24 @@
 #!/usr/bin/env node
 // T5 combined differential: one configuration that uses DNS (fake-ip), hosts,
 // rule-providers (yaml/text/mrs/http), a proxy-provider, rule types
-// (RULE-SET/GEOSITE/GEOIP/AND), select/url-test/fallback groups, the control
-// API and three real outbounds (ss, trojan, ssr) at once.
+// (RULE-SET/GEOSITE/GEOIP/DST-PORT/AND), select/url-test/fallback groups, the
+// control API and four real outbounds (ss, trojan, ssr, shadowquic) at once.
 //
 // Peers are controlled local servers:
-//   - ss/trojan: the pinned Mihomo binary itself as a `listeners:` server with a
-//     fixed password (one process per protocol so a stop test is possible);
+//   - ss/trojan/shadowquic: the pinned Mihomo binary itself as a `listeners:`
+//     server with a fixed password (one process per protocol so a stop test is
+//     possible); the shadowquic listener uses a loopback UDP `jls-upstream`
+//     camouflage socket and a `users:` account;
 //   - ssr: the independent Go server in `peers/ssr-server` built from the locked
 //     `transport/shadowsocks` packages (origin/plain, aes-256-cfb).
 // Both engines run the same YAML (only their own listener ports differ), answer
 // DNS on `dns.listen`, take controller calls with the same secret, and send the
 // same CONNECT sequence; the report compares DNS answers, matched-rule outcome,
 // group selection, provider update/reload semantics and the bytes the echo
-// receiver got back.
+// receiver got back. Every probe destination is chosen so the intended rule is
+// the first one that matches: the Rust kernel log line (`rule=... outbound=...`)
+// is parsed and asserted so a probe cannot silently pass through a shadowing
+// GEOIP/rule-set entry.
 //
 // Effective Billow YAML: `t5-effective.mjs` mirrors
 // `src-tauri/src/profile.rs::kernel_yaml_for(Engine::Rust, false)` and the four
@@ -280,6 +285,19 @@ function startProviderServer(routes) {
   })
 }
 
+// Loopback UDP camouflage upstream for the shadowquic listener: JLS forwards
+// unauthenticated packets here instead of answering, so it only has to exist.
+function startCamouflageUpstream() {
+  const socket = dgram.createSocket('udp4')
+  socket.on('message', () => {})
+  socket.on('error', () => {})
+  return new Promise((done) => {
+    socket.bind(0, '127.0.0.1', () => {
+      done({ port: socket.address().port, close: () => socket.close() })
+    })
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Child processes
 // ---------------------------------------------------------------------------
@@ -352,6 +370,12 @@ async function startMihomoListenerPeer(mihomo, dir, kind) {
     `mixed-port: ${reservedPort}`,
     'mode: rule',
     'log-level: warning',
+    // The probe names that reach this peer must be resolvable *by the peer*, so
+    // a negative result can only come from the transport/credentials and not
+    // from an unresolvable target.
+    'hosts:',
+    "  bad.localhost: '127.0.0.1'",
+    "  bad-ok.localhost: '127.0.0.1'",
     'listeners:',
     `  - name: ${kind}-in`,
     `    type: ${kind === 'ss' ? 'shadowsocks' : 'trojan'}`,
@@ -373,6 +397,41 @@ async function startMihomoListenerPeer(mihomo, dir, kind) {
   const handle = startProcess(mihomo, ['-d', dir, '-f', join(dir, 'peer.yaml')], dir)
   const ready = await waitPort(port)
   return { kind, port, ready, handle, dir }
+}
+
+async function startShadowQuicPeer(mihomo, dir, upstreamPort) {
+  const port = await reservePort()
+  const reservedPort = await reservePort()
+  const lines = [
+    `mixed-port: ${reservedPort}`,
+    'mode: rule',
+    'log-level: warning',
+    // The probe names that reach this peer must be resolvable *by the peer*, so
+    // a negative result can only come from the transport/credentials and not
+    // from an unresolvable target.
+    'hosts:',
+    "  bad.localhost: '127.0.0.1'",
+    "  bad-ok.localhost: '127.0.0.1'",
+    'listeners:',
+    '  - name: shadowquic-in',
+    '    type: shadowquic',
+    '    listen: 127.0.0.1',
+    `    port: ${port}`,
+    '    users:',
+    '      - username: alice',
+    '        password: t5-squic-pass',
+    '    jls-upstream:',
+    `      addr: 127.0.0.1:${upstreamPort}`,
+    'rules:',
+    '  - MATCH,DIRECT',
+  ]
+  await writeFile(join(dir, 'peer-shadowquic.yaml'), lines.join('\n') + '\n')
+  const handle = startProcess(mihomo, ['-d', dir, '-f', join(dir, 'peer-shadowquic.yaml')], dir)
+  // The shadowquic listener is QUIC (UDP); the reserved mixed port is the TCP
+  // readiness signal that the peer process finished loading its config.
+  const ready = await waitPort(reservedPort)
+  if (ready) await new Promise((done) => setTimeout(done, 300))
+  return { kind: 'shadowquic', port, ready, handle, dir }
 }
 
 async function buildSsrPeer(sandbox) {
@@ -494,17 +553,28 @@ function domainPattern(type, value) {
 // Combined configuration
 // ---------------------------------------------------------------------------
 
-function combinedConfig({ mixed, dns, controller, providerPort, healthPort, ports, ssPeer, trojanPeer, ssrPeer, rules }) {
+function combinedConfig({ mixed, dns, controller, providerPort, healthPort, ports, ssPeer, trojanPeer, ssrPeer, squicPeer, rules }) {
+  // The order is part of the coverage: `DOMAIN,bad.localhost` sits before the
+  // `+.localhost` rule-set so the wrong-password group is really selected, and
+  // every non-first-match probe uses its own destination port through a
+  // `DST-PORT` rule placed before `GEOIP,zz` (127.0.0.1/32). Otherwise GEOIP
+  // shadows the later rules and the probe would never reach the intended
+  // outbound. `MATCH,DIRECT` stays as the fallthrough; T24 covers a reached
+  // `MATCH` case.
   const rulesBlock = rules ?? [
     'RULE-SET,rp-http,REJECT',
+    'DOMAIN,bad.localhost,BAD',
+    'DOMAIN,bad-ok.localhost,ss-node',
     'RULE-SET,rp-yaml,PROXY',
     'GEOSITE,t5site,REJECT',
     'RULE-SET,rp-text,REJECT',
     'RULE-SET,rp-mrs,REJECT',
-    'DOMAIN,bad.localhost,BAD',
+    `AND,((DOMAIN,and-probe.test),(DST-PORT,${ports?.echoA ?? '{{echoA}}'})),REJECT`,
     `DST-PORT,${ports?.trojan ?? '{{trojanEcho}}'},trojan-node`,
+    `DST-PORT,${ports?.ssr ?? '{{ssrEcho}}'},ssr-node`,
+    `DST-PORT,${ports?.squic ?? '{{squicEcho}}'},squic-node`,
     'GEOIP,zz,ss-node',
-    'MATCH,ssr-node',
+    'MATCH,DIRECT',
   ]
   return [
     `mixed-port: ${mixed}`,
@@ -517,8 +587,15 @@ function combinedConfig({ mixed, dns, controller, providerPort, healthPort, port
     '  store-fake-ip: false',
     'geodata-mode: true',
     'hosts:',
-    "  host-only.test: '127.0.0.1'",
+    // A non-loopback value keeps the DNS/hosts test (and its 10s DNS mapping)
+    // away from the 127.0.0.1 used by the outbound probes: otherwise a fresh
+    // hosts mapping rewrites an IP-literal CONNECT to this domain name.
+    "  host-only.test: '10.9.8.7'",
     "  alias.test: 'alias-target.test'",
+    // Resolvable targets for the wrong-password negative and its positive
+    // control (the peers carry the same two entries).
+    "  bad.localhost: '127.0.0.1'",
+    "  bad-ok.localhost: '127.0.0.1'",
     'dns:',
     '  enable: true',
     `  listen: 127.0.0.1:${dns}`,
@@ -561,6 +638,7 @@ function combinedConfig({ mixed, dns, controller, providerPort, healthPort, port
     `  - {name: ss-node, type: ss, server: 127.0.0.1, port: ${ssPeer}, cipher: aes-256-gcm, password: t5-ss-pass, udp: true}`,
     `  - {name: trojan-node, type: trojan, server: 127.0.0.1, port: ${trojanPeer}, password: t5-trojan-pass, sni: 'localhost', skip-cert-verify: true}`,
     `  - {name: ssr-node, type: ssr, server: 127.0.0.1, port: ${ssrPeer}, cipher: aes-256-cfb, password: t5-ssr-pass, protocol: origin, obfs: plain}`,
+    `  - {name: squic-node, type: shadowquic, server: 127.0.0.1, port: ${squicPeer}, username: alice, password: t5-squic-pass, sni: localhost}`,
     `  - {name: bad-ss, type: ss, server: 127.0.0.1, port: ${ssPeer}, cipher: aes-256-gcm, password: wrong-pass}`,
     'proxy-groups:',
     '  - {name: PROXY, type: select, proxies: [ss-node, trojan-node, ssr-node]}',
@@ -652,37 +730,46 @@ function jsonOf(response) {
   try { return JSON.parse(response.body) } catch { return null }
 }
 
-function groupShapeOf(body) {
-  if (!body) return null
-  const members = (body.all ?? []).map((member) => (typeof member === 'string' ? member : member.name))
-  const health = body.members ?? []
-  return {
-    now: body.now ?? null,
-    members,
-    // Rust exposes health on `members`; pinned embeds it in `all` entries.
-    alive: health.length
-      ? health.filter((member) => member.alive).map((member) => member.name)
-      : (body.all ?? []).filter((member) => typeof member === 'object' && member.alive).map((member) => member.name),
-  }
+// The kernel logs the winning rule and outbound at tunnel/REJECT time:
+//   PROXY tunnel established ... rule=GEOIP,zz -> PROXY outbound=proxy=ss-node
+//   REJECT session=... rule=RULE-SET,rp-mrs -> REJECT
+// Parsing the last line for this exact target asserts the probe really took the
+// intended path instead of a shadowing earlier rule.
+function ruleTrace(stderr, host, port) {
+  const needle = `target=${host}:${port}`
+  // Skip the `session closed` line for the same target: only the decision line
+  // carries `rule=`/`outbound=`.
+  const line = stderr.split('\n').filter((entry) => entry.includes(needle) && entry.includes('rule=')).at(-1)
+  if (!line) return null
+  const rule = /rule=(.+?)(?: ->| outbound=)/.exec(line)?.[1]?.trim() ?? null
+  const outbound = /outbound=(?:proxy=)?(\S+)/.exec(line)?.[1]
+    ?? (/ -> REJECT\b/.test(line) ? 'REJECT' : null)
+  return { rule, outbound }
 }
 
-async function waitGroupShape(controller, group, timeoutMs = 10000) {
+function groupShapeOf(body) {
+  if (!body) return null
+  // Compare member identity, not only the count. Pinned and Rust both list the
+  // member names here; health/liveness is embedded differently (pinned `all`
+  // objects vs Rust `history`) and is not asserted.
+  const members = (body.all ?? [])
+    .map((member) => (typeof member === 'string' ? member : member.name))
+    .sort()
+  const now = body.now ?? null
+  return { now, members, nowIsMember: now !== null && members.includes(now) }
+}
+
+async function waitGroupShape(controller, group, timeoutMs = 3000) {
+  // Auto groups may assign `now` just after startup; wait for that field only.
+  // There is no liveness comparison: neither payload exposes a stable per-engine
+  // health array, so claiming one would overstate the check.
   const deadline = performance.now() + timeoutMs
   let shape = null
   while (performance.now() < deadline) {
-    const body = jsonOf(await api(controller, 'GET', `/proxies/${group}`))
-    shape = groupShapeOf(body)
+    shape = groupShapeOf(jsonOf(await api(controller, 'GET', `/proxies/${group}`)))
     if (!shape) return null
-    // Auto groups probe every member; wait until the health rows are visible so
-    // the two engines are compared after the same startup work.
-    if (group === 'AUTO' || group === 'FALLBACK') {
-      const expected = shape.members.length
-      if (shape.alive.length < expected) {
-        await new Promise((done) => setTimeout(done, 100))
-        continue
-      }
-    }
-    return shape
+    if (shape.now !== null) return shape
+    await new Promise((done) => setTimeout(done, 100))
   }
   return shape
 }
@@ -700,6 +787,22 @@ async function waitController(port, timeoutMs = 15000) {
 // ---------------------------------------------------------------------------
 // One engine run
 // ---------------------------------------------------------------------------
+
+async function attachTraces(logs, egress, targets, timeoutMs = 3000) {
+  const deadline = performance.now() + timeoutMs
+  while (true) {
+    let attached = 0
+    for (const [key, [host, port]] of Object.entries(targets)) {
+      const trace = ruleTrace(logs.stderr, host, port)
+      if (trace) {
+        egress[key].trace = trace
+        attached += 1
+      }
+    }
+    if (attached === Object.keys(targets).length || performance.now() > deadline) return
+    await new Promise((done) => setTimeout(done, 100))
+  }
+}
 
 async function runEngine(engine, binary, sandbox, fixtures) {
   // Every engine starts from the initial HTTP provider payload; the update
@@ -720,7 +823,8 @@ async function runEngine(engine, binary, sandbox, fixtures) {
     ssPeer: fixtures.ss.port,
     trojanPeer: fixtures.trojan.port,
     ssrPeer: fixtures.ssr.port,
-    ports: { trojan: fixtures.echoB.port },
+    squicPeer: fixtures.squic.port,
+    ports: { trojan: fixtures.echoB.port, ssr: fixtures.echoC.port, squic: fixtures.echoD.port, echoA: fixtures.echoA.port },
   }).replace('{{dnsUpstream}}', String(fixtures.dns.port))
   await writeFile(join(dir, 'config.yaml'), config)
   const args = engine === 'mihomo'
@@ -733,7 +837,7 @@ async function runEngine(engine, binary, sandbox, fixtures) {
     await stopProcess(handle)
     return result
   }
-  const run = async (host, marker, echo = fixtures.echoA.port) => attempt(mixed, host, echo, marker)
+  const probe = async (host, marker, echo = fixtures.echoA.port) => attempt(mixed, host, echo, marker)
   try {
     result.dnsAnswers = {}
     for (const name of ['fake.test', 'host-only.test', 'alias.test', 'real.test', 'absent.test']) {
@@ -749,21 +853,42 @@ async function runEngine(engine, binary, sandbox, fixtures) {
       now: jsonOf(await api(controller, 'GET', '/proxies/PROXY'))?.now ?? null,
       missing: (await api(controller, 'PUT', '/proxies/PROXY', JSON.stringify({ name: 'no-such-node' }))).status,
     }
-    result.egress = {
-      'localhost': await run('localhost', 't5-proxy-trojan'),
-      '127.0.0.1': await run('127.0.0.1', 't5-ss'),
-      'trojan-port': await run('127.0.0.1', 't5-trojan', fixtures.echoB.port),
-      'ssr-port': await run('127.0.0.1', 't5-ssr', fixtures.echoC.port),
-      'bad.localhost': await run('bad.localhost', 't5-bad'),
-      'text-probe.test': await run('text-probe.test', 't5-text'),
-      'www.google.com': await run('www.google.com', 't5-mrs'),
-      'geo.test': await run('geo.test', 't5-geosite'),
-      'http-probe.test': await run('http-probe.test', 't5-http'),
+    const egressTargets = {
+      'localhost': ['localhost', fixtures.echoA.port],
+      '127.0.0.1': ['127.0.0.1', fixtures.echoA.port],
+      'trojan-port': ['127.0.0.1', fixtures.echoB.port],
+      'ssr-port': ['127.0.0.1', fixtures.echoC.port],
+      'squic-port': ['127.0.0.1', fixtures.echoD.port],
+      'bad.localhost': ['bad.localhost', fixtures.echoA.port],
+      'bad-ok.localhost': ['bad-ok.localhost', fixtures.echoA.port],
+      'text-probe.test': ['text-probe.test', fixtures.echoA.port],
+      'www.google.com': ['www.google.com', fixtures.echoA.port],
+      'geo.test': ['geo.test', fixtures.echoA.port],
+      'http-probe.test': ['http-probe.test', fixtures.echoA.port],
+      'and-probe.test': ['and-probe.test', fixtures.echoA.port],
     }
+    result.egress = {
+      'localhost': await probe('localhost', 't5-proxy-trojan'),
+      '127.0.0.1': await probe('127.0.0.1', 't5-ss'),
+      'trojan-port': await probe('127.0.0.1', 't5-trojan', fixtures.echoB.port),
+      'ssr-port': await probe('127.0.0.1', 't5-ssr', fixtures.echoC.port),
+      'squic-port': await probe('127.0.0.1', 't5-squic', fixtures.echoD.port),
+      'bad.localhost': await probe('bad.localhost', 't5-bad'),
+      'bad-ok.localhost': await probe('bad-ok.localhost', 't5-bad-ok'),
+      'text-probe.test': await probe('text-probe.test', 't5-text'),
+      'www.google.com': await probe('www.google.com', 't5-mrs'),
+      'geo.test': await probe('geo.test', 't5-geosite'),
+      'http-probe.test': await probe('http-probe.test', 't5-http'),
+      'and-probe.test': await probe('and-probe.test', 't5-and'),
+    }
+    // The Rust log is written by the kernel process and reaches the parent
+    // asynchronously, so the trace is attached after the whole batch (with a
+    // short retry) instead of right after each attempt.
+    if (engine === 'rust') await attachTraces(handle.logs, result.egress, egressTargets)
     result.selectionSwitch = {
       set: (await api(controller, 'PUT', '/proxies/PROXY', JSON.stringify({ name: 'ss-node' }))).status,
       now: jsonOf(await api(controller, 'GET', '/proxies/PROXY'))?.now ?? null,
-      localhost: await run('localhost', 't5-proxy-ss'),
+      localhost: await probe('localhost', 't5-proxy-ss'),
     }
 
     // Rule-provider update: the HTTP payload starts matching only
@@ -773,21 +898,21 @@ async function runEngine(engine, binary, sandbox, fixtures) {
     result.providerUpdate = { steps: [] }
     result.providerUpdate.steps.push({
       phase: 'initial',
-      localhost: normalize(engine, await run('localhost', 't5-before-update')),
-      httpProbe: normalize(engine, await run('http-probe.test', 't5-http-before')),
+      localhost: normalize(engine, await probe('localhost', 't5-before-update')),
+      httpProbe: normalize(engine, await probe('http-probe.test', 't5-http-before')),
     })
     fixtures.provider.set('/rules.yaml', { status: 200, body: "payload:\n  - '+.localhost'\n" })
     result.providerUpdate.steps.push({
       phase: 'update-ok',
       status: (await api(controller, 'PUT', '/providers/rules/rp-http')).status,
-      localhost: normalize(engine, await run('localhost', 't5-after-update')),
+      localhost: normalize(engine, await probe('localhost', 't5-after-update')),
     })
     fixtures.provider.set('/rules.yaml', { status: 500, body: '' })
     const failure = (await api(controller, 'PUT', '/providers/rules/rp-http')).status
     result.providerUpdate.steps.push({
       phase: 'update-failure',
       status: failure,
-      localhost: normalize(engine, await run('localhost', 't5-after-failure')),
+      localhost: normalize(engine, await probe('localhost', 't5-after-failure')),
     })
 
     // Reload: a new rule set is accepted and takes effect; invalid YAML is
@@ -802,14 +927,15 @@ async function runEngine(engine, binary, sandbox, fixtures) {
       ssPeer: fixtures.ss.port,
       trojanPeer: fixtures.trojan.port,
       ssrPeer: fixtures.ssr.port,
-      ports: { trojan: fixtures.echoB.port },
+      squicPeer: fixtures.squic.port,
+      ports: { trojan: fixtures.echoB.port, ssr: fixtures.echoC.port, squic: fixtures.echoD.port, echoA: fixtures.echoA.port },
       rules: ['DOMAIN,localhost,REJECT', 'MATCH,DIRECT'],
     }).replace('{{dnsUpstream}}', String(fixtures.dns.port))
     result.reload = {
       successStatus: (await api(controller, 'PUT', '/configs?force=true', JSON.stringify({ path: '', payload: reloadYaml }))).status,
-      localhostAfter: normalize(engine, await run('localhost', 't5-reloaded')),
+      localhostAfter: normalize(engine, await probe('localhost', 't5-reloaded')),
       failureStatus: (await api(controller, 'PUT', '/configs?force=true', JSON.stringify({ path: '', payload: 'mixed-port: 1\nmode: nope\n' }))).status,
-      localhostAfterFailure: normalize(engine, await run('localhost', 't5-reload-failed')),
+      localhostAfterFailure: normalize(engine, await probe('localhost', 't5-reload-failed')),
       mixedPort: jsonOf(await api(controller, 'GET', '/configs'))?.['mixed-port'] ?? null,
       groups: jsonOf(await api(controller, 'GET', '/proxies/PROXY'))?.now ?? null,
       dnsAfter: await queryDns(dns, 'fake.test'),
@@ -971,6 +1097,8 @@ async function main() {
     fixtures.echoA = await startEchoServer()
     fixtures.echoB = await startEchoServer()
     fixtures.echoC = await startEchoServer()
+    fixtures.echoD = await startEchoServer()
+    fixtures.camouflage = await startCamouflageUpstream()
     fixtures.health = await startHealthServer()
     fixtures.dns = await startDnsFixture({
       'fake.test/A': { ip: '127.0.0.1', ttl: 60 },
@@ -996,20 +1124,25 @@ async function main() {
     await copyFile(join(peerDir, 'cert.pem'), join(trojanDir, 'cert.pem'))
     await copyFile(join(peerDir, 'key.pem'), join(trojanDir, 'key.pem'))
     fixtures.trojan = await startMihomoListenerPeer(args.mihomo, trojanDir, 'trojan')
+    const squicDir = join(sandbox, 'peers-squic')
+    await mkdir(squicDir, { recursive: true })
+    fixtures.squic = await startShadowQuicPeer(args.mihomo, squicDir, fixtures.camouflage.port)
     const ssrBinary = await buildSsrPeer(sandbox)
     fixtures.ssr = await startSsrPeer(ssrBinary)
     report.peers = {
       ss: { port: fixtures.ss.port, ready: fixtures.ss.ready },
       trojan: { port: fixtures.trojan.port, ready: fixtures.trojan.ready },
       ssr: { binary: ssrBinary, port: fixtures.ssr.port, ready: fixtures.ssr.ready },
+      shadowquic: { port: fixtures.squic.port, ready: fixtures.squic.ready, jlsUpstream: fixtures.camouflage.port },
       dns: fixtures.dns.port,
       provider: fixtures.provider.port,
       echoA: fixtures.echoA.port,
       echoB: fixtures.echoB.port,
       echoC: fixtures.echoC.port,
+      echoD: fixtures.echoD.port,
       health: fixtures.health.port,
     }
-    if (![fixtures.ss.ready, fixtures.trojan.ready, fixtures.ssr.ready].every(Boolean)) {
+    if (![fixtures.ss.ready, fixtures.trojan.ready, fixtures.ssr.ready, fixtures.squic.ready].every(Boolean)) {
       throw new Error(`a peer did not start: ${JSON.stringify(report.peers)}`)
     }
 
@@ -1042,11 +1175,13 @@ async function main() {
       rust: dnsShape(rust.dnsAnswers),
     }))
 
-    // Groups: selection/status shape. url-test picks by measured delay, which
-    // is not compared for equality; membership and liveness are.
+    // Groups: member identity and selection shape. url-test picks by measured
+    // delay, which is not compared for equality; the winning member is only
+    // checked to be one of the members. Liveness is not asserted (see
+    // groupShapeOf).
     const groupShape = (groups) => Object.fromEntries(Object.entries(groups ?? {}).map(([name, group]) => [
       name,
-      group ? { nowMember: group.members.includes(group.now), members: group.members.length, alive: group.alive?.length ?? null } : null,
+      group ? { nowIsMember: group.nowIsMember, members: group.members } : null,
     ]))
     scenarios.push(mark({ id: 'groups-initial' }, JSON.stringify(groupShape(mihomo.groupsInitial)) === JSON.stringify(groupShape(rust.groupsInitial)), {
       mihomo: groupShape(mihomo.groupsInitial),
@@ -1078,11 +1213,32 @@ async function main() {
       '127.0.0.1': 'echoed',
       'trojan-port': 'echoed',
       'ssr-port': 'echoed',
+      'squic-port': 'echoed',
       'bad.localhost': 'blocked',
+      'bad-ok.localhost': 'echoed',
       'text-probe.test': 'blocked',
       'www.google.com': 'blocked',
       'geo.test': 'blocked',
       'http-probe.test': 'blocked',
+      'and-probe.test': 'blocked',
+    }
+    // The Rust log must show the intended rule/outbound for every probe; the
+    // reachability check alone would pass even if an earlier rule shadowed the
+    // probe. Prefix matching keeps `AND,(...)` readable while still pinning the
+    // rule family.
+    const expectedTraces = {
+      'localhost': { rule: 'RULE-SET,rp-yaml', outbound: 'trojan-node' },
+      '127.0.0.1': { rule: 'GEOIP,zz', outbound: 'ss-node' },
+      'trojan-port': { rule: `DST-PORT,${fixtures.echoB.port}`, outbound: 'trojan-node' },
+      'ssr-port': { rule: `DST-PORT,${fixtures.echoC.port}`, outbound: 'ssr-node' },
+      'squic-port': { rule: `DST-PORT,${fixtures.echoD.port}`, outbound: 'squic-node' },
+      'bad.localhost': { rule: 'DOMAIN,bad.localhost', outbound: 'bad-ss' },
+      'bad-ok.localhost': { rule: 'DOMAIN,bad-ok.localhost', outbound: 'ss-node' },
+      'text-probe.test': { rule: 'RULE-SET,rp-text', outbound: 'REJECT' },
+      'www.google.com': { rule: 'RULE-SET,rp-mrs', outbound: 'REJECT' },
+      'geo.test': { rule: 'GEOSITE,t5site', outbound: 'REJECT' },
+      'http-probe.test': { rule: 'RULE-SET,rp-http', outbound: 'REJECT' },
+      'and-probe.test': { rule: 'AND', outbound: 'REJECT' },
     }
     // Compare "did the echo receiver answer" instead of the exact failure
     // framing: Mihomo answers 200-then-close, the Rust inbound answers 403/502
@@ -1090,6 +1246,7 @@ async function main() {
     const egressShape = (state) => Object.fromEntries(Object.entries(state).map(([host, observation]) => [host, {
       reached: observation?.category === 'echoed',
       category: observation?.category ?? null,
+      ...(observation?.trace ? { trace: observation.trace } : {}),
     }]))
     const left = egressShape(mihomo.egress)
     const right = egressShape(rust.egress)
@@ -1097,11 +1254,17 @@ async function main() {
       const expected = expectations[host] === 'echoed'
       return left[host].reached === expected && right[host].reached === expected
     })
+    const traceOk = Object.entries(expectedTraces).every(([host, expected]) => {
+      const trace = right[host]?.trace
+      return Boolean(trace) && trace.rule?.startsWith(expected.rule) && trace.outbound === expected.outbound
+    })
     const reachedOnly = (state) => Object.fromEntries(Object.entries(state).map(([host, entry]) => [host, entry.reached]))
-    scenarios.push(mark({ id: 'combined-egress-and-rules' }, JSON.stringify(reachedOnly(left)) === JSON.stringify(reachedOnly(right)) && egressOk, {
+    scenarios.push(mark({ id: 'combined-egress-and-rules' }, JSON.stringify(reachedOnly(left)) === JSON.stringify(reachedOnly(right)) && egressOk && traceOk, {
       mihomo: left,
       rust: right,
       expectations,
+      expectedTraces,
+      traceOk,
     }))
 
     const updateShape = (engine, update) => update.steps.map((step) => ({
@@ -1167,6 +1330,32 @@ async function main() {
     await runEffective(args, sandbox, report)
 
     report.peers.dnsQueries = fixtures.dns.queries
+    report.families = {
+      shadowquic: {
+        combination: 'in-combination',
+        detail: 'squic-node (type shadowquic, JLS user/password, sni localhost) is an outbound in the same YAML and its probe is selected by DST-PORT; the peer is a pinned Mihomo shadowquic listener with a loopback UDP jls-upstream camouflage socket.',
+      },
+      wireguard: {
+        combination: 'not-combined',
+        detail: 'checked individually (t16-feasibility.json, family-peers.sh wireguard_peer); dial() needs the userspace IP stack/TUN owned by T6/T7, so it cannot serve as a mixed-port CONNECT outbound in this differential.',
+      },
+      openvpn: {
+        combination: 'not-combined',
+        detail: 'checked individually (t16-feasibility.json); the same T6/T7 device-layer split prevents a CONNECT egress probe.',
+      },
+      tailscale: {
+        combination: 'not-combined',
+        detail: 'owned by T19 after the T16 split (t19-mesh.md); the mesh adapter needs the T6/T7 IP stack and is not a CONNECT outbound.',
+      },
+      zerotier: {
+        combination: 'not-combined',
+        detail: 'owned by T19 (t19-mesh.md); device layer is T6/T7.',
+      },
+      easytier: {
+        combination: 'not-combined',
+        detail: 'owned by T19 (t19-mesh.md); device layer is T6/T7.',
+      },
+    }
     report.scenarios = scenarios
     const summary = {
       scenarios: scenarios.length,
@@ -1177,11 +1366,13 @@ async function main() {
     report.summary = summary
     report.notes = [
       'Both engines run the same combined YAML (only mixed/dns/controller ports differ); DNS answers are compared as rcode + type/address/TTL.',
-      'Peers: pinned Mihomo `listeners:` processes for ss (aes-256-gcm) and trojan (self-signed cert, skip-cert-verify), plus peers/ssr-server (origin/plain, aes-256-cfb) built from the locked source.',
+      'Peers: pinned Mihomo `listeners:` processes for ss (aes-256-gcm), trojan (self-signed cert, skip-cert-verify) and shadowquic (JLS user/password, loopback UDP jls-upstream), plus peers/ssr-server (origin/plain, aes-256-cfb) built from the locked source.',
+      'Every probe target is ordered so the intended rule is the first match; the Rust log line (`rule=... outbound=...`) for that exact target is parsed and compared with the expected rule/outbound, so a shadowing earlier rule fails the scenario instead of passing on reachability alone.',
       'Rule outcome is compared after normalizing `closed` to `blocked` for both and Mihomo 200-then-close (`timeout`) to `blocked`; the Rust inbound answers 403/502 itself (T24 framing note).',
-      'Group AUTO/FALLBACK `now` is compared by membership/liveness, not by the winning member: url-test ranks measured delays, which differ per run.',
+      'Group comparison uses the member name set and whether `now` is a member; AUTO/FALLBACK `now` itself is url-test ranked, and liveness is not asserted because neither payload exposes a stable health array.',
       'The effective desktop/Android YAML is generated by t5-effective.mjs (a mirror of profile.rs::kernel_yaml_for for Engine::Rust) and loaded with --check/-t; the remaining named rejection is the enabled sniffer (T7).',
       'Old provider generations are reclaimed by Arc drop; unique generation stamping under the write lock is covered by tests/resources.rs::concurrent_provider_updates_stamp_unique_generations and the reload/provider-update scenarios here.',
+      'T15 shadowquic is part of this combined config. T16 wireguard/openvpn and the T19 mesh families are not CONNECT-capable without the T6/T7 device layer; their per-family results and that boundary are recorded under `families` and in t5-integration.md.',
       'R2 compatibility is determined by T8/Delivery on the complete candidate; this report only records the combined differential.',
     ]
     report.exitOk = summary.differ === 0 && summary.startupFailed === 0
