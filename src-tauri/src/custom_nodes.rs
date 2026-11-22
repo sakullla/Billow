@@ -1931,56 +1931,24 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
     // `primary_group` itself). Since `primary_group` will expose `自建落地`, any custom
     // node whose `dialer-proxy` targets such a group would form a runtime loop unless
     // routed through a cycle-free relay group.
-    let groups_reaching_primary = primary_group
-        .as_deref()
-        .map(|primary| find_groups_reaching_target(root_map, primary))
-        .unwrap_or_default();
-
-    let mut targeted_cycle_groups: Vec<String> = Vec::new();
-    for node in &ordered_valid_nodes {
-        let target_group = match &node.dialer {
-            DialerTarget::ProfileGroup { group: None } => primary_group.as_deref(),
-            DialerTarget::ProfileGroup { group: Some(g) } => {
-                let trimmed = g.trim();
-                if trimmed.is_empty() {
-                    primary_group.as_deref()
-                } else {
-                    Some(trimmed)
-                }
-            }
+    let mut dialer_group_rewrites = HashMap::new();
+    if let Some(primary) = primary_group.as_deref() {
+        let targets = ordered_valid_nodes.iter().filter_map(|node| match &node.dialer {
+            DialerTarget::ProfileGroup { group } => Some(
+                group.as_deref().map(str::trim).filter(|g| !g.is_empty()).unwrap_or(primary),
+            ),
             DialerTarget::FixedProxy { name } => Some(name.trim()),
-            DialerTarget::Direct | DialerTarget::CustomNode { .. } => None,
-        };
-        if let Some(target) = target_group {
-            if groups_reaching_primary.contains(target)
-                && !targeted_cycle_groups.iter().any(|item| item == target)
-            {
-                targeted_cycle_groups.push(target.to_string());
-            }
-        }
-    }
-
-    let needs_primary_relay = !targeted_cycle_groups.is_empty();
-    let relay_group_name = if needs_primary_relay {
-        let name = resolve_collision_name(CHAIN_RELAY_GROUP_NAME, &reserved_names);
-        reserved_names.insert(name.clone());
-        Some(name)
-    } else {
-        None
-    };
-
-    // Map any targeted group that reaches `primary_group` to its cycle-free relay clone.
-    let mut dialer_group_rewrites: HashMap<String, String> = HashMap::new();
-    if let (Some(primary), Some(relay_name)) = (primary_group.as_deref(), relay_group_name.as_deref())
-    {
-        dialer_group_rewrites.insert(primary.to_string(), relay_name.to_string());
-        for group_name in &targeted_cycle_groups {
-            if group_name != primary {
-                let clone_base = format!("{group_name} · 前置");
-                let clone_name = resolve_collision_name(&clone_base, &reserved_names);
-                reserved_names.insert(clone_name.clone());
-                dialer_group_rewrites.insert(group_name.clone(), clone_name);
-            }
+            _ => None,
+        });
+        for group in relay_path_groups(root_map, primary, targets) {
+            let base = if group == primary {
+                CHAIN_RELAY_GROUP_NAME.to_string()
+            } else {
+                format!("{group} · 前置")
+            };
+            let name = resolve_collision_name(&base, &reserved_names);
+            reserved_names.insert(name.clone());
+            dialer_group_rewrites.insert(group, name);
         }
     }
 
@@ -2037,7 +2005,6 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
     if let Some(groups_seq) = groups_entry.as_sequence_mut() {
         let mut extra_relay_groups: Vec<Mapping> = Vec::new();
         let primary_name = primary_group.as_deref();
-        let primary_relay_name = relay_group_name.as_deref();
 
         // First, build cycle-free relay clones BEFORE mutating `primary_group` and
         // guard every existing `include-all` / `include-all-proxies` group against
@@ -2056,10 +2023,7 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
                 let relay_clone = build_chain_relay_group(
                     gmap,
                     relay_name,
-                    &landing_group_name,
-                    primary_name,
-                    primary_relay_name,
-                    custom_exclude_regex.as_deref(),
+                    &dialer_group_rewrites,
                 );
                 extra_relay_groups.push(relay_clone);
             }
@@ -2217,45 +2181,42 @@ fn append_exclude_filter_if_include_all(group_map: &mut Mapping, extra: &str) {
     set_str(group_map, "exclude-filter", &merged);
 }
 
-fn find_groups_reaching_target(root_map: &Mapping, target: &str) -> HashSet<String> {
-    let mut reverse_edges: HashMap<String, Vec<String>> = HashMap::new();
-    if let Some(Value::Sequence(groups)) = root_map.get(Value::String("proxy-groups".to_string())) {
-        for item in groups {
-            let Some(gmap) = item.as_mapping() else {
-                continue;
-            };
-            let Some(gname) = map_str(gmap, "name") else {
-                continue;
-            };
-            if let Some(Value::Sequence(members)) =
-                gmap.get(Value::String("proxies".to_string()))
-            {
-                for member in members {
-                    if let Some(mname) = member.as_str() {
-                        reverse_edges
-                            .entry(mname.to_string())
-                            .or_default()
-                            .push(gname.to_string());
-                    }
-                }
+/// Clone only groups on a path from a chosen dialer to the primary group.
+fn relay_path_groups<'a>(
+    root: &'a Mapping,
+    primary: &'a str,
+    targets: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut parents: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+    let Some(groups) = root.get("proxy-groups").and_then(Value::as_sequence) else {
+        return Vec::new();
+    };
+    for group in groups {
+        let Some(name) = group.get("name").and_then(Value::as_str) else { continue };
+        if let Some(members) = group.get("proxies").and_then(Value::as_sequence) {
+            for member in members.iter().filter_map(Value::as_str) {
+                parents.entry(member).or_default().push(name);
+                children.entry(name).or_default().push(member);
             }
         }
     }
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut stack: Vec<String> = vec![target.to_string()];
-    while let Some(curr) = stack.pop() {
-        if !visited.insert(curr.clone()) {
-            continue;
-        }
-        if let Some(parents) = reverse_edges.get(&curr) {
-            for parent in parents {
-                if !visited.contains(parent) {
-                    stack.push(parent.clone());
-                }
-            }
+    let mut upstream = HashSet::new();
+    let mut pending = vec![primary];
+    while let Some(name) = pending.pop() {
+        if upstream.insert(name) {
+            pending.extend(parents.get(name).into_iter().flatten().copied());
         }
     }
-    visited
+    let mut needed = HashSet::new();
+    pending.extend(targets);
+    while let Some(name) = pending.pop() {
+        if upstream.contains(name) && needed.insert(name) && name != primary {
+            pending.extend(children.get(name).into_iter().flatten().copied());
+        }
+    }
+    groups.iter().filter_map(|g| g.get("name")?.as_str())
+        .filter(|name| needed.contains(name)).map(str::to_owned).collect()
 }
 
 fn resolve_collision_name(base: &str, reserved: &HashSet<String>) -> String {
@@ -2277,87 +2238,20 @@ fn resolve_collision_name(base: &str, reserved: &HashSet<String>) -> String {
 }
 
 fn build_chain_relay_group(
-    source_map: &Mapping,
-    relay_name: &str,
-    landing_group_name: &str,
-    primary_group: Option<&str>,
-    primary_relay_name: Option<&str>,
-    custom_exclude_regex: Option<&str>,
+    source: &Mapping,
+    name: &str,
+    rewrites: &HashMap<String, String>,
 ) -> Mapping {
-    let mut relay = Mapping::new();
-    set_str(&mut relay, "name", relay_name);
-    let source_type = map_str(source_map, "type").unwrap_or("select");
-    set_str(&mut relay, "type", source_type);
-
-    let mut has_proxies = false;
-    if let Some(Value::Sequence(members)) = source_map.get(Value::String("proxies".to_string())) {
-        let mut filtered: Vec<Value> = Vec::with_capacity(members.len());
-        for v in members {
-            let Some(member_name) = v.as_str() else {
-                filtered.push(v.clone());
-                continue;
-            };
-            if member_name == landing_group_name {
-                continue;
+    // The source already excludes injected exits and has not gained the landing group yet.
+    let mut relay = source.clone();
+    set_str(&mut relay, "name", name);
+    if let Some(members) = relay.get_mut("proxies").and_then(Value::as_sequence_mut) {
+        for member in members {
+            if let Some(replacement) = member.as_str().and_then(|n| rewrites.get(n)) {
+                *member = Value::String(replacement.clone());
             }
-            if primary_group == Some(member_name) {
-                if let Some(replacement) = primary_relay_name {
-                    if replacement != relay_name {
-                        filtered.push(Value::String(replacement.to_string()));
-                    }
-                    continue;
-                }
-            }
-            filtered.push(v.clone());
-        }
-        if !filtered.is_empty() {
-            has_proxies = true;
-            relay.insert(
-                Value::String("proxies".to_string()),
-                Value::Sequence(filtered),
-            );
         }
     }
-
-    let mut has_dynamic_source = false;
-    for key in [
-        "use",
-        "include-all",
-        "include-all-proxies",
-        "include-all-providers",
-        "filter",
-        "exclude-filter",
-        "exclude-type",
-        "url",
-        "interval",
-        "tolerance",
-        "lazy",
-        "strategy",
-        "icon",
-    ] {
-        let k = Value::String(key.to_string());
-        if let Some(val) = source_map.get(&k) {
-            if matches!(
-                key,
-                "use" | "include-all" | "include-all-proxies" | "include-all-providers"
-            ) {
-                has_dynamic_source = true;
-            }
-            relay.insert(k, val.clone());
-        }
-    }
-
-    if let Some(exclude_re) = custom_exclude_regex {
-        append_exclude_filter_if_include_all(&mut relay, exclude_re);
-    }
-
-    if !has_proxies && !has_dynamic_source {
-        relay.insert(
-            Value::String("proxies".to_string()),
-            Value::Sequence(vec![Value::String("DIRECT".to_string())]),
-        );
-    }
-
     relay
 }
 
@@ -3486,9 +3380,12 @@ proxy-groups:
     exclude-filter: 剩余流量
     url: http://www.gstatic.com/generate_204
     interval: 300
-  - name: 兜底分流
+  - name: 中间分流
     type: select
     proxies: [节点选择, DIRECT]
+  - name: 兜底分流
+    type: select
+    proxies: [中间分流, DIRECT]
 rules:
   - MATCH,节点选择
 "#;
@@ -3582,7 +3479,9 @@ rules:
             .iter()
             .filter_map(Value::as_str)
             .collect();
-        assert!(members.contains(&CHAIN_RELAY_GROUP_NAME));
-        assert!(!members.contains(&"节点选择"));
+        assert_eq!(members, ["中间分流 · 前置", "DIRECT"]);
+        let middle = groups.iter().find(|g| g["name"].as_str() == Some("中间分流 · 前置")).unwrap();
+        assert_eq!(middle["proxies"][0].as_str(), Some(CHAIN_RELAY_GROUP_NAME));
+        assert_eq!(middle["proxies"][1].as_str(), Some("DIRECT"));
     }
 }
