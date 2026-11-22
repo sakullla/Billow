@@ -9,6 +9,7 @@ use serde_yaml::{Mapping, Value};
 pub const CUSTOM_PROFILE_ID: &str = "__custom__";
 pub const CUSTOM_PROFILE_NAME: &str = "纯自建节点";
 pub const LANDING_GROUP_NAME: &str = "自建落地";
+pub const CHAIN_RELAY_GROUP_NAME: &str = "链式前置";
 pub const STANDALONE_SELECT_GROUP: &str = "节点选择";
 pub const STANDALONE_AUTO_GROUP: &str = "自动选择";
 pub const COLLISION_SUFFIX: &str = " · 自建";
@@ -316,8 +317,8 @@ pub fn build_simple_proxy_yaml(form: &SimpleProxyForm) -> Result<ParsedCustomNod
             set_bool(&mut map, "skip-cert-verify", true);
         }
     }
-    if protocol == "socks5" && form.udp {
-        set_bool(&mut map, "udp", true);
+    if protocol == "socks5" {
+        set_bool(&mut map, "udp", form.udp);
     }
 
     finalize_proxy_mapping(map, String::new())
@@ -428,9 +429,21 @@ pub fn parse_nodes_input(raw: &str, existing_names: &[String]) -> ParseNodesResu
 fn parse_nodes_input_inner(trimmed: &str) -> ParseNodesResult {
     // 1. Try YAML mapping / `proxies:` / sequence of mappings.
     if looks_like_yaml_nodes(trimmed) {
-        if let Ok(value) = serde_yaml::from_str::<Value>(trimmed) {
-            if let Some(yaml_result) = parse_yaml_nodes_value(value) {
-                return yaml_result;
+        match serde_yaml::from_str::<Value>(trimmed) {
+            Ok(value) => {
+                if let Some(yaml_result) = parse_yaml_nodes_value(value) {
+                    return yaml_result;
+                }
+            }
+            Err(err) => {
+                return ParseNodesResult {
+                    parsed: Vec::new(),
+                    errors: vec![ParseItemError {
+                        index: 1,
+                        source: truncate_source(trimmed),
+                        reason: format!("YAML 语法错误：{err}"),
+                    }],
+                };
             }
         }
     }
@@ -917,13 +930,13 @@ fn parse_ss(rest: &str) -> Result<ParsedCustomNode, String> {
         Some((left, q)) => (left, Some(q)),
         None => (before_frag, None),
     };
-    let main_part = main_part
-        .split_once('/')
-        .map(|(auth, _)| auth)
-        .unwrap_or(main_part);
-
-    let (method, password, host, port) = if let Some((userinfo, hostport)) = main_part.rsplit_once('@')
+    let (method, password, host, port) = if let Some((userinfo, hostport_and_path)) =
+        main_part.rsplit_once('@')
     {
+        let hostport = hostport_and_path
+            .split_once('/')
+            .map(|(hp, _)| hp)
+            .unwrap_or(hostport_and_path);
         let decoded_userinfo = if userinfo.contains(':') {
             percent_decode(userinfo)
         } else {
@@ -937,6 +950,14 @@ fn parse_ss(rest: &str) -> Result<ParsedCustomNode, String> {
         (method.to_string(), password.to_string(), host, port)
     } else {
         let decoded = try_decode_base64_text(main_part)
+            .or_else(|| {
+                let stripped = main_part.trim_end_matches('/');
+                if stripped.len() < main_part.len() {
+                    try_decode_base64_text(stripped)
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| "Shadowsocks 链接 Base64 解码失败".to_string())?;
         let (cred, hostport) = decoded
             .rsplit_once('@')
@@ -1460,13 +1481,14 @@ fn resolve_enabled_nodes_dialers(
             }
             DialerTarget::FixedProxy { name } => {
                 let target = name.trim();
-                let exists_in_sub = context.available_targets.contains(target);
-                let exists_in_custom = nodes.iter().any(|n| n.enabled && n.name == target && n.id != node.id);
-                if target.is_empty() || (!exists_in_sub && !exists_in_custom) {
+                if target.is_empty()
+                    || context.is_standalone
+                    || !context.available_targets.contains(target)
+                {
                     invalid_reason.insert(
                         node.id.clone(),
                         format!(
-                            "节点「{}」指定的中转节点「{}」不存在，已跳过（未降级为直连）",
+                            "节点「{}」指定的订阅中转节点「{}」不存在，已跳过（未降级为直连）",
                             node.name, target
                         ),
                     );
@@ -1756,6 +1778,29 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
         ordered_valid_nodes.push(node);
     }
 
+    let landing_group_name = resolve_collision_name(LANDING_GROUP_NAME, &reserved_names);
+    reserved_names.insert(landing_group_name.clone());
+
+    // If any custom node uses the subscription's primary group as its dialer-proxy,
+    // synthesize a dedicated cycle-free `链式前置` select group cloned from the
+    // primary group's original members (excluding `自建落地`) so selecting `自建落地`
+    // inside the primary group never forms a Mihomo runtime dialer-proxy loop.
+    let needs_relay_group = primary_group.as_deref().is_some_and(|primary| {
+        ordered_valid_nodes.iter().any(|node| match &node.dialer {
+            DialerTarget::ProfileGroup { group: None } => true,
+            DialerTarget::ProfileGroup { group: Some(g) } => g.trim() == primary,
+            DialerTarget::FixedProxy { name } => name.trim() == primary,
+            _ => false,
+        })
+    });
+    let relay_group_name = if needs_relay_group {
+        let name = resolve_collision_name(CHAIN_RELAY_GROUP_NAME, &reserved_names);
+        reserved_names.insert(name.clone());
+        Some(name)
+    } else {
+        None
+    };
+
     // Compile custom node mappings with resolved dialer-proxy.
     let mut compiled_proxies: Vec<Value> = Vec::new();
     let mut compiled_names: Vec<String> = Vec::new();
@@ -1765,6 +1810,7 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
             node,
             &final_name,
             primary_group.as_deref(),
+            relay_group_name.as_deref(),
             &node_name_map,
         )?;
         compiled_proxies.push(proxy_val);
@@ -1783,8 +1829,8 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
         seq.extend(compiled_proxies);
     }
 
-    // Inject landing `select` group and expose it in primary select group.
-    let landing_group_name = resolve_collision_name(LANDING_GROUP_NAME, &reserved_names);
+    // Inject landing `select` group (and optional cycle-free relay group) and expose
+    // landing group in the primary select group.
     let mut landing_group = Mapping::new();
     set_str(&mut landing_group, "name", &landing_group_name);
     set_str(&mut landing_group, "type", "select");
@@ -1806,10 +1852,15 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
         *groups_entry = Value::Sequence(Vec::new());
     }
     if let Some(groups_seq) = groups_entry.as_sequence_mut() {
+        let mut relay_group: Option<Mapping> = None;
         if let Some(ref primary) = primary_group {
             for group_val in groups_seq.iter_mut() {
                 if let Some(gmap) = group_val.as_mapping_mut() {
                     if map_str(gmap, "name") == Some(primary.as_str()) {
+                        if let Some(ref relay_name) = relay_group_name {
+                            relay_group =
+                                Some(build_chain_relay_group(gmap, relay_name, &landing_group_name));
+                        }
                         let members_entry = gmap
                             .entry(Value::String("proxies".to_string()))
                             .or_insert_with(|| Value::Sequence(Vec::new()));
@@ -1827,6 +1878,9 @@ pub fn inject_overlay(base_yaml: &str, state: &CustomNodesState) -> Result<Overl
             }
         }
         groups_seq.push(Value::Mapping(landing_group));
+        if let Some(relay) = relay_group {
+            groups_seq.push(Value::Mapping(relay));
+        }
     }
 
     // Insert lightweight landing rules right after leading private/LAN rules.
@@ -1938,10 +1992,53 @@ fn resolve_collision_name(base: &str, reserved: &HashSet<String>) -> String {
     }
 }
 
+fn build_chain_relay_group(
+    primary_map: &Mapping,
+    relay_name: &str,
+    landing_group_name: &str,
+) -> Mapping {
+    let mut relay = Mapping::new();
+    set_str(&mut relay, "name", relay_name);
+    set_str(&mut relay, "type", "select");
+
+    if let Some(Value::Sequence(members)) = primary_map.get(Value::String("proxies".to_string())) {
+        let filtered: Vec<Value> = members
+            .iter()
+            .filter(|v| v.as_str() != Some(landing_group_name))
+            .cloned()
+            .collect();
+        if !filtered.is_empty() {
+            relay.insert(
+                Value::String("proxies".to_string()),
+                Value::Sequence(filtered),
+            );
+        }
+    }
+
+    for key in [
+        "use",
+        "include-all",
+        "include-all-proxies",
+        "include-all-providers",
+        "filter",
+        "exclude-filter",
+        "exclude-type",
+        "icon",
+    ] {
+        let k = Value::String(key.to_string());
+        if let Some(val) = primary_map.get(&k) {
+            relay.insert(k, val.clone());
+        }
+    }
+
+    relay
+}
+
 fn compile_custom_node_value(
     node: &CustomNode,
     final_name: &str,
     primary_group: Option<&str>,
+    relay_group: Option<&str>,
     node_name_map: &HashMap<String, String>,
 ) -> Result<Value, String> {
     let value: Value = serde_yaml::from_str(&node.raw_yaml)
@@ -1956,16 +2053,27 @@ fn compile_custom_node_value(
     match &node.dialer {
         DialerTarget::Direct => {}
         DialerTarget::ProfileGroup { group } => {
-            let target = group
+            let resolved = group
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .or(primary_group)
                 .ok_or_else(|| format!("节点「{}」无法解析订阅策略组", node.name))?;
+            let target = if primary_group == Some(resolved) {
+                relay_group.unwrap_or(resolved)
+            } else {
+                resolved
+            };
             set_str(&mut map, "dialer-proxy", target);
         }
         DialerTarget::FixedProxy { name } => {
-            set_str(&mut map, "dialer-proxy", name.trim());
+            let resolved = name.trim();
+            let target = if primary_group == Some(resolved) {
+                relay_group.unwrap_or(resolved)
+            } else {
+                resolved
+            };
+            set_str(&mut map, "dialer-proxy", target);
         }
         DialerTarget::CustomNode { id } => {
             let target = node_name_map
@@ -2033,7 +2141,7 @@ pub fn generate_standalone_yaml(state: &CustomNodesState) -> Result<StandaloneRe
     let mut proxy_names = Vec::new();
     for node in ordered_nodes {
         let final_name = node_name_map[&node.id].clone();
-        let val = compile_custom_node_value(node, &final_name, None, &node_name_map)?;
+        let val = compile_custom_node_value(node, &final_name, None, None, &node_name_map)?;
         proxies_seq.push(val);
         proxy_names.push(final_name);
     }
@@ -2618,7 +2726,7 @@ private-key: abc
             .unwrap()
             .as_mapping()
             .unwrap();
-        assert_eq!(map_str(cn1, "dialer-proxy"), Some("节点选择"));
+        assert_eq!(map_str(cn1, "dialer-proxy"), Some(CHAIN_RELAY_GROUP_NAME));
 
         let cn2 = proxies
             .iter()
@@ -2628,7 +2736,8 @@ private-key: abc
             .unwrap();
         assert_eq!(map_str(cn2, "dialer-proxy"), Some("美国落地 · 自建"));
 
-        // Check landing group is created and exposed in primary select group.
+        // Check landing group is created and exposed in primary select group, while
+        // dedicated `链式前置` group clones original members WITHOUT `自建落地` (cycle-free).
         let groups = root
             .get(Value::String("proxy-groups".to_string()))
             .unwrap()
@@ -2649,6 +2758,23 @@ private-key: abc
             .filter_map(Value::as_str)
             .collect();
         assert!(primary_members.contains(&LANDING_GROUP_NAME));
+
+        let relay = groups
+            .iter()
+            .find(|g| g.as_mapping().and_then(|m| map_str(m, "name")) == Some(CHAIN_RELAY_GROUP_NAME))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let relay_members: Vec<&str> = relay
+            .get(Value::String("proxies".to_string()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(relay_members, vec!["自动选择", "香港 01", "美国落地"]);
+        assert!(!relay_members.contains(&LANDING_GROUP_NAME));
 
         // Check rule priority ordering: private/LAN first -> landing rules -> CN -> MATCH.
         let rules: Vec<&str> = root
@@ -2839,5 +2965,84 @@ private-key: abc
         assert_eq!(st.alloc_node_id(), "cn1");
         assert_eq!(st.alloc_rule_id(), "lr1");
         assert_eq!(CUSTOM_PROFILE_ID, "__custom__");
+    }
+
+    #[test]
+    fn invalid_yaml_snippet_returns_yaml_syntax_error_instead_of_uri_fallback() {
+        let broken_yaml = "name: broken\ntype: anytls\nserver: [unclosed\nport: 443";
+        let res = parse_nodes_input(broken_yaml, &[]);
+        assert!(res.parsed.is_empty());
+        assert_eq!(res.errors.len(), 1);
+        assert!(
+            res.errors[0].reason.contains("YAML 语法错误"),
+            "unexpected reason: {}",
+            res.errors[0].reason
+        );
+    }
+
+    #[test]
+    fn ss_parser_preserves_slash_in_standard_base64_credentials() {
+        // Choose a password whose standard Base64 encoding contains '/'.
+        // "aes-256-gcm:???" -> "YWVzLTI1Ni1nY206Pz8/" (contains '/')
+        let sip002_cred = base64::engine::general_purpose::STANDARD.encode("aes-256-gcm:???");
+        assert!(sip002_cred.contains('/'));
+        let sip002_uri = format!("ss://{sip002_cred}@ss-slash.example.com:8388/#Slash%20SIP002");
+
+        let legacy_payload =
+            base64::engine::general_purpose::STANDARD.encode("aes-256-gcm:???@ss-legacy.example.com:8389");
+        assert!(legacy_payload.contains('/'));
+        let legacy_uri = format!("ss://{legacy_payload}#Slash%20Legacy");
+
+        let res = parse_nodes_input(&format!("{sip002_uri}\n{legacy_uri}"), &[]);
+        assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+        assert_eq!(res.parsed.len(), 2);
+        assert_eq!(res.parsed[0].name, "Slash SIP002");
+        assert_eq!(res.parsed[0].server, "ss-slash.example.com");
+        assert_eq!(res.parsed[0].port, 8388);
+        assert_eq!(res.parsed[1].name, "Slash Legacy");
+        assert_eq!(res.parsed[1].server, "ss-legacy.example.com");
+        assert_eq!(res.parsed[1].port, 8389);
+    }
+
+    #[test]
+    fn fixed_proxy_does_not_match_skipped_custom_node_in_standalone() {
+        let mut state = CustomNodesState::default();
+        // Node A is skipped in standalone mode because it uses ProfileGroup.
+        state.nodes.push(make_node(
+            "cn1",
+            "节点A",
+            "1.1.1.1",
+            DialerTarget::ProfileGroup { group: None },
+        ));
+        // Node B tries to reference "节点A" via FixedProxy — must also be flagged, never emitted dangling.
+        state.nodes.push(make_node(
+            "cn2",
+            "节点B",
+            "2.2.2.2",
+            DialerTarget::FixedProxy {
+                name: "节点A".to_string(),
+            },
+        ));
+        let err = generate_standalone_yaml(&state).unwrap_err();
+        assert!(err.contains("无法生成纯自建配置"));
+    }
+
+    #[test]
+    fn socks5_simple_form_preserves_udp_false_on_roundtrip() {
+        let form = SimpleProxyForm {
+            name: "无UDP住宅".to_string(),
+            protocol: "socks5".to_string(),
+            server: "198.51.100.20".to_string(),
+            port: 1080,
+            username: "u".to_string(),
+            password: "p".to_string(),
+            tls: false,
+            skip_cert_verify: false,
+            udp: false,
+        };
+        let parsed = build_simple_proxy_yaml(&form).unwrap();
+        let extracted = extract_simple_proxy(&parsed.raw_yaml).unwrap();
+        assert_eq!(extracted, form);
+        assert!(!extracted.udp);
     }
 }
