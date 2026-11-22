@@ -1020,8 +1020,8 @@ tasks:
     history_count: 1
 blocker: null
 delivery:
-  status: active
-plan_input_digest: sha256:cebfc2273565b86f81415262f08f66b31de8e4b01d086c3d69de42894b7bce61
+  status: pending
+plan_input_digest: sha256:ce1eb368fc3a937d2257382791fabc4c9e46fc9665acd9cc759abfa1ba264883
 scheduling:
   capacities: {}
   capabilities: {}
