@@ -1704,5 +1704,14 @@ export const UI_EN: Record<string, string> = {
   '切换为直连出口': 'Switch to direct exit',
   '已选 {0} 项': '{0} active',
   '{0} 个内置域名': '{0} built-in domains',
+  '出站与中转': 'Outbound & relay',
+  '备注与状态': 'Note & status',
+  '导入 {0} 个节点': 'Import {0} nodes',
+  '支持主流协议分享链接、Base64 列表或单节点 YAML': 'Supports share links, Base64 lists, or single-node YAML',
+  '填写节点参数或直接粘贴单节点 YAML': 'Enter connection details or paste a single-node YAML snippet',
+  '筛选自建节点名称、协议或地址': 'Filter custom nodes by name, protocol or host',
+  '没有匹配的自建节点': 'No matching custom nodes',
+  '粘贴订阅或节点链接': 'Paste a subscription or node link',
+  '粘贴订阅或节点链接回车导入，或直接拖入 YAML 文件': 'Paste a subscription or node link and press Enter, or drop a YAML file',
 }
 

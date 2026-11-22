@@ -444,6 +444,8 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
       'anytls://example-password@192.0.2.10:24443?security=tls&sni=relay.example.invalid&insecure=1&type=tcp#🇭🇰香港-Example',
     )
     await waitDemo(160)
+    expect(find('[data-testid="custom-node-import-confirm"]').textContent).toContain('导入 1 个节点')
+    expect(document.querySelector('[data-testid="custom-import-clear"]')).not.toBeNull()
     await click('[data-testid="custom-node-import-confirm"]')
     await waitDemo()
 
@@ -459,5 +461,14 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     await click(`[data-testid="quick-chain-toggle-${node.id}"]`)
     await waitDemo()
     expect(store.customNodes.value.nodes[0]?.dialer).toEqual({ kind: 'direct' })
+
+    // Clear button in import modal resets text and preview cleanly
+    await click('[data-testid="open-custom-import"]')
+    await setInput('[data-testid="custom-node-import-input"]', 'socks5://1.1.1.1:1080#Temp')
+    await waitDemo(160)
+    expect(find('[data-testid="custom-node-import-confirm"]').textContent).toContain('导入 1 个节点')
+    await click('[data-testid="custom-import-clear"]')
+    expect(find<HTMLTextAreaElement>('[data-testid="custom-node-import-input"]').value).toBe('')
+    expect(find<HTMLButtonElement>('[data-testid="custom-node-import-confirm"]').disabled).toBe(true)
   })
 })

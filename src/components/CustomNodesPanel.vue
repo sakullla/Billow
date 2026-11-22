@@ -29,6 +29,39 @@ const hasSubscription = computed(() => store.snapshot.value.profiles.length > 0 
 
 const deleting = ref<CustomNode | null>(null)
 const disabling = ref<CustomNode | null>(null)
+const query = ref('')
+
+const filteredNodes = computed(() => {
+  const needle = query.value.trim().toLowerCase()
+  if (!needle) return nodes.value
+  return nodes.value.filter((node) => {
+    const endpoint = extractEndpoint(node.raw_yaml)
+    return (
+      node.name.toLowerCase().includes(needle) ||
+      node.protocol.toLowerCase().includes(needle) ||
+      node.note.toLowerCase().includes(needle) ||
+      (endpoint && endpoint.toLowerCase().includes(needle))
+    )
+  })
+})
+
+function extractEndpoint(rawYaml: string): string | null {
+  let server = ''
+  let port = ''
+  for (const line of rawYaml.split(/\r?\n/)) {
+    const trimmed = line.trim().replace(/^-\s+/, '')
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const idx = trimmed.indexOf(':')
+    if (idx <= 0) continue
+    const key = trimmed.slice(0, idx).trim()
+    const val = trimmed.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '')
+    if (key === 'server' && !server) server = val
+    else if (key === 'port' && !port) port = val
+    if (server && port) break
+  }
+  if (!server) return null
+  return port ? `${server}:${port}` : server
+}
 
 function describeRule(rule: LandingRule): string {
   if (rule.rule.kind === 'preset') {
@@ -193,7 +226,8 @@ async function confirmDelete() {
       <div class="custom-hero-actions">
         <button
           type="button"
-          class="btn ghost sm custom-rules-btn"
+          class="btn sm custom-secondary-btn custom-rules-btn"
+          :class="{ 'has-rules': activeRuleCount > 0 }"
           data-testid="open-landing-rules"
           @click="emit('openRules')"
         >
@@ -203,7 +237,7 @@ async function confirmDelete() {
         </button>
         <button
           type="button"
-          class="btn ghost sm"
+          class="btn sm custom-secondary-btn"
           data-testid="open-custom-add"
           @click="emit('openAdd')"
         >
@@ -220,12 +254,16 @@ async function confirmDelete() {
       </div>
     </header>
 
-    <!-- Simplified Mode Bar -->
-    <div class="custom-mode-bar">
-      <div v-if="store.snapshot.value.profiles.length > 0" class="custom-mode-item grow min0">
+    <!-- Sleek Mode Bar -->
+    <div class="custom-mode-bar" :class="{ 'single-col': store.snapshot.value.profiles.length === 0 }">
+      <div
+        v-if="store.snapshot.value.profiles.length > 0"
+        class="custom-mode-item"
+        :class="{ inactive: !customNodes.overlay_enabled }"
+      >
         <div class="custom-mode-copy grow min0">
           <span class="custom-mode-label">{{ t('customNodes.overlay') }}</span>
-          <span class="muted small ellipsis">{{ t('customNodes.overlayHint') }}</span>
+          <span class="muted small custom-mode-hint">{{ t('customNodes.overlayHint') }}</span>
         </div>
         <Toggle
           :model-value="customNodes.overlay_enabled"
@@ -239,17 +277,17 @@ async function confirmDelete() {
       <div class="custom-mode-divider" v-if="store.snapshot.value.profiles.length > 0" aria-hidden="true" />
 
       <div class="custom-mode-item custom-mode-standalone">
-        <div class="custom-mode-copy min0">
+        <div class="custom-mode-copy grow min0">
           <span class="custom-mode-label">
             {{ store.customProfileActive.value ? t('customNodes.standaloneActive') : t('customNodes.useStandalone') }}
           </span>
-          <span class="muted small ellipsis">{{ t('customNodes.standaloneDetail') }}</span>
+          <span class="muted small custom-mode-hint">{{ t('customNodes.standaloneDetail') }}</span>
         </div>
         <span v-if="store.customProfileActive.value" class="tag ok sm">{{ tr('使用中') }}</span>
         <button
           v-else
           type="button"
-          class="btn sm"
+          class="btn sm custom-secondary-btn"
           :disabled="enabledCount === 0 || Boolean(store.busy['customNodes:useProfile'])"
           data-testid="use-custom-profile"
           @click="activateCustomProfile"
@@ -266,10 +304,29 @@ async function confirmDelete() {
       </ul>
     </div>
 
-    <!-- Visual Chain Flow Node Cards -->
-    <ul v-if="nodes.length > 0" class="custom-node-grid">
+    <div v-if="nodes.length >= 5" class="search custom-node-search">
+      <Icon name="search" :size="15" />
+      <input
+        v-model="query"
+        type="search"
+        :placeholder="tr('筛选自建节点名称、协议或地址')"
+        data-testid="custom-node-search"
+      />
+      <button
+        v-if="query"
+        type="button"
+        class="icon-btn sm"
+        :aria-label="tr('清空筛选')"
+        @click="query = ''"
+      >
+        <Icon name="x" :size="14" />
+      </button>
+    </div>
+
+    <!-- Clean Node Cards -->
+    <ul v-if="filteredNodes.length > 0" class="custom-node-grid" :class="{ single: filteredNodes.length === 1 }">
       <li
-        v-for="node in nodes"
+        v-for="node in filteredNodes"
         :key="node.id"
         class="custom-node-card"
         :class="{
@@ -280,11 +337,21 @@ async function confirmDelete() {
         :data-custom-node="node.id"
       >
         <div class="custom-node-card-top">
-          <div class="custom-node-title-wrap grow min0">
-            <span class="custom-proto-chip mono" :class="protocolTone(node.protocol)">
-              {{ node.protocol.toUpperCase() }}
+          <div class="custom-node-identity grow min0">
+            <div class="custom-node-title-wrap min0">
+              <span class="custom-proto-chip mono" :class="protocolTone(node.protocol)">
+                {{ node.protocol.toUpperCase() }}
+              </span>
+              <strong class="custom-node-name ellipsis" :title="node.name">{{ node.name }}</strong>
+              <span v-if="node.note" class="custom-node-note-tag ellipsis" :title="node.note">{{ node.note }}</span>
+            </div>
+            <span
+              v-if="extractEndpoint(node.raw_yaml)"
+              class="custom-node-endpoint mono muted ellipsis"
+              :title="extractEndpoint(node.raw_yaml) ?? undefined"
+            >
+              {{ extractEndpoint(node.raw_yaml) }}
             </span>
-            <strong class="custom-node-name ellipsis" :title="node.name">{{ node.name }}</strong>
           </div>
           <div class="custom-node-actions">
             <Toggle
@@ -296,7 +363,7 @@ async function confirmDelete() {
             />
             <button
               type="button"
-              class="icon-btn sm"
+              class="icon-btn sm custom-node-tool"
               :title="tr('编辑')"
               :aria-label="tr('编辑')"
               :data-testid="`edit-custom-node-${node.id}`"
@@ -306,7 +373,7 @@ async function confirmDelete() {
             </button>
             <button
               type="button"
-              class="icon-btn sm"
+              class="icon-btn sm danger custom-node-tool"
               :title="tr('删除')"
               :aria-label="tr('删除')"
               :data-testid="`delete-custom-node-${node.id}`"
@@ -327,7 +394,6 @@ async function confirmDelete() {
               <span class="custom-route-arrow" aria-hidden="true">→</span>
               <span class="custom-hop-exit ellipsis">{{ tr('此节点落地') }}</span>
             </template>
-            <span v-if="node.note" class="custom-node-note ellipsis" :title="node.note">· {{ node.note }}</span>
           </div>
 
           <button
@@ -340,11 +406,15 @@ async function confirmDelete() {
             :data-testid="`quick-chain-toggle-${node.id}`"
             @click="quickToggleChain(node)"
           >
-            {{ node.dialer.kind === 'direct' ? tr('改链式') : tr('改直连') }}
+            <Icon :name="node.dialer.kind === 'direct' ? 'globe' : 'zap'" :size="11" />
+            <span>{{ node.dialer.kind === 'direct' ? tr('改链式') : tr('改直连') }}</span>
           </button>
         </div>
       </li>
     </ul>
+    <p v-else-if="nodes.length > 0 && query" class="muted small custom-node-empty-filter">
+      {{ tr('没有匹配的自建节点') }}
+    </p>
 
     <Modal
       :open="Boolean(deleting)"

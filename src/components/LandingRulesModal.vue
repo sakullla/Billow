@@ -263,7 +263,7 @@ async function submit() {
     @close="emit('close')"
   >
     <div class="stack">
-      <div class="custom-switch-row custom-rules-master">
+      <div class="custom-switch-row custom-rules-master" :class="{ active: rulesEnabled }">
         <div class="grow min0">
           <div class="custom-panel-title-row">
             <strong>{{ t('customNodes.rules.masterToggle') }}</strong>
@@ -306,6 +306,11 @@ async function submit() {
                 :data-testid="`landing-preset-${preset.id}`"
                 @update:model-value="(value) => { if (presetDrafts[preset.id]) presetDrafts[preset.id]!.enabled = value }"
               />
+            </div>
+
+            <div class="custom-preset-domains" aria-hidden="true">
+              <span v-for="domain in preset.domains.slice(0, 3)" :key="domain" class="custom-proto-mini mono">{{ domain }}</span>
+              <span v-if="preset.domains.length > 3" class="custom-proto-mini">+{{ preset.domains.length - 3 }}</span>
             </div>
 
             <div v-if="presetDrafts[preset.id]?.enabled" class="custom-preset-target" :data-testid="`landing-preset-target-${preset.id}`">
@@ -454,7 +459,7 @@ async function submit() {
                 </button>
                 <button
                   type="button"
-                  class="icon-btn sm"
+                  class="icon-btn sm danger"
                   :title="tr('删除')"
                   :aria-label="tr('删除')"
                   :data-testid="`landing-rule-remove-${index}`"

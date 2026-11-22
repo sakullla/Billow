@@ -191,7 +191,7 @@ async function submit() {
     :open="open"
     wide
     :title="t('customNodes.import.title')"
-    :subtitle="t('customNodes.subtitle')"
+    :subtitle="tr('支持主流协议分享链接、Base64 列表或单节点 YAML')"
     @close="emit('close')"
   >
     <div class="stack custom-import-body">
@@ -199,6 +199,15 @@ async function submit() {
         <div class="field-label-row">
           <span>{{ t('customNodes.import') }}</span>
           <div class="custom-inline-actions">
+            <button
+              v-if="raw.trim()"
+              type="button"
+              class="btn ghost sm"
+              data-testid="custom-import-clear"
+              @click="raw = ''; schedulePreview('')"
+            >
+              <Icon name="x" :size="14" /> {{ tr('清空') }}
+            </button>
             <button type="button" class="btn ghost sm" data-testid="custom-import-paste" @click="pasteClipboard">
               <Icon name="clipboard" :size="14" /> {{ tr('粘贴') }}
             </button>
@@ -215,76 +224,24 @@ async function submit() {
         <textarea
           v-model="raw"
           class="mono custom-import-textarea"
-          rows="5"
+          rows="4"
           spellcheck="false"
           :placeholder="t('customNodes.import.placeholder')"
           data-testid="custom-node-import-input"
           @input="schedulePreview(raw)"
         />
-      </div>
-
-      <!-- Visual 2-Card Route Mode Picker -->
-      <div class="custom-form-section">
-        <p class="custom-section-title">{{ t('customNodes.dialer.label') }}</p>
-        <div class="custom-route-cards" role="radiogroup" :aria-label="t('customNodes.dialer.label')">
-          <button
-            type="button"
-            class="custom-route-card"
-            :class="{ active: isChainedMode }"
-            role="radio"
-            :aria-checked="isChainedMode"
-            data-testid="import-mode-chain"
-            @click="selectRouteMode('chain')"
-          >
-            <div class="custom-route-card-head">
-              <span class="custom-route-card-icon chain"><Icon name="globe" :size="15" /></span>
-              <strong>{{ tr('链式落地') }}</strong>
-              <span v-if="hasSubscription" class="tag accent sm">{{ tr('推荐') }}</span>
-            </div>
-            <p class="custom-route-card-flow">
-              <span>{{ tr('订阅中转') }}</span>
-              <span aria-hidden="true">→</span>
-              <span>{{ tr('自建节点') }}</span>
-            </p>
-            <p class="muted small">{{ tr('隐藏真实 IP，适合 AI、住宅与纯净落地') }}</p>
-          </button>
-
-          <button
-            type="button"
-            class="custom-route-card"
-            :class="{ active: !isChainedMode }"
-            role="radio"
-            :aria-checked="!isChainedMode"
-            data-testid="import-mode-direct"
-            @click="selectRouteMode('direct')"
-          >
-            <div class="custom-route-card-head">
-              <span class="custom-route-card-icon direct"><Icon name="zap" :size="15" /></span>
-              <strong>{{ tr('直连出口') }}</strong>
-              <span v-if="!hasSubscription" class="tag accent sm">{{ tr('推荐') }}</span>
-            </div>
-            <p class="custom-route-card-flow">
-              <span>{{ tr('本机') }}</span>
-              <span aria-hidden="true">→</span>
-              <span>{{ tr('自建节点') }}</span>
-            </p>
-            <p class="muted small">{{ tr('不经中转直连，适合高速自建或纯自建') }}</p>
-          </button>
-        </div>
-
-        <div class="custom-dialer-select-wrap">
-          <SelectField
-            :model-value="dialerChoice"
-            :options="dialerOptions"
-            :sheet="compact"
-            :label="t('customNodes.dialer.label')"
-            class="field-select"
-            data-testid="custom-import-dialer"
-            @update:model-value="(value) => { dialerChoice = String(value) }"
-          />
+        <div v-if="!raw.trim()" class="custom-proto-strip" aria-hidden="true">
+          <span class="custom-proto-mini">VLESS</span>
+          <span class="custom-proto-mini">AnyTLS</span>
+          <span class="custom-proto-mini">Hysteria2</span>
+          <span class="custom-proto-mini">Trojan</span>
+          <span class="custom-proto-mini">SS</span>
+          <span class="custom-proto-mini">SOCKS5 / HTTP</span>
+          <span class="custom-proto-mini">YAML</span>
         </div>
       </div>
 
+      <!-- Instant Live Preview directly beneath input -->
       <div v-if="previewing" class="muted small custom-preview-status">
         <span class="spinner xs" aria-hidden="true" />
         <span>{{ tr('正在识别节点…') }}</span>
@@ -318,6 +275,83 @@ async function submit() {
         </div>
       </section>
 
+      <!-- Unified Route Mode Picker -->
+      <div class="custom-form-section">
+        <p class="custom-section-title">{{ tr('出站与中转') }}</p>
+        <div class="custom-form-card custom-route-panel">
+          <div class="custom-route-cards" role="radiogroup" :aria-label="t('customNodes.dialer.label')">
+            <button
+              type="button"
+              class="custom-route-card"
+              :class="{ active: isChainedMode }"
+              role="radio"
+              :aria-checked="isChainedMode"
+              data-testid="import-mode-chain"
+              @click="selectRouteMode('chain')"
+            >
+              <div class="custom-route-card-head">
+                <span class="custom-route-card-icon chain"><Icon name="globe" :size="14" /></span>
+                <strong>{{ tr('链式落地') }}</strong>
+                <span v-if="hasSubscription" class="tag accent sm">{{ tr('推荐') }}</span>
+                <span class="custom-route-card-check" aria-hidden="true">
+                  <Icon v-if="isChainedMode" name="check" :size="11" />
+                </span>
+              </div>
+              <p class="custom-route-card-flow">
+                <span>{{ tr('订阅中转') }}</span>
+                <span aria-hidden="true">→</span>
+                <span>{{ tr('自建节点') }}</span>
+              </p>
+              <p class="muted small">{{ tr('隐藏真实 IP，适合 AI、住宅与纯净落地') }}</p>
+            </button>
+
+            <button
+              type="button"
+              class="custom-route-card"
+              :class="{ active: !isChainedMode }"
+              role="radio"
+              :aria-checked="!isChainedMode"
+              data-testid="import-mode-direct"
+              @click="selectRouteMode('direct')"
+            >
+              <div class="custom-route-card-head">
+                <span class="custom-route-card-icon direct"><Icon name="zap" :size="14" /></span>
+                <strong>{{ tr('直连出口') }}</strong>
+                <span v-if="!hasSubscription" class="tag accent sm">{{ tr('推荐') }}</span>
+                <span class="custom-route-card-check" aria-hidden="true">
+                  <Icon v-if="!isChainedMode" name="check" :size="11" />
+                </span>
+              </div>
+              <p class="custom-route-card-flow">
+                <span>{{ tr('本机') }}</span>
+                <span aria-hidden="true">→</span>
+                <span>{{ tr('自建节点') }}</span>
+              </p>
+              <p class="muted small">{{ tr('不经中转直连，适合高速自建或纯自建') }}</p>
+            </button>
+          </div>
+
+          <div class="custom-route-panel-divider" aria-hidden="true" />
+
+          <div class="custom-dialer-select-wrap" :class="{ muted: !isChainedMode }">
+            <div class="custom-inline-field">
+              <span class="custom-inline-field-label">{{ isChainedMode ? tr('前置中转') : t('customNodes.dialer.label') }}</span>
+              <div class="grow min0">
+                <SelectField
+                  :model-value="dialerChoice"
+                  :options="dialerOptions"
+                  :sheet="compact"
+                  :label="t('customNodes.dialer.label')"
+                  class="field-select"
+                  data-testid="custom-import-dialer"
+                  @update:model-value="(value) => { dialerChoice = String(value) }"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <p v-if="submitError" class="field-error small" role="alert" data-testid="custom-import-submit-error">
         <Icon name="alert" :size="13" />
         <span>{{ submitError }}</span>
@@ -334,7 +368,7 @@ async function submit() {
         @click="submit"
       >
         <span v-if="store.busy['customNodes:import']" class="spinner xs" aria-hidden="true" />
-        {{ t('customNodes.import.confirm') }}
+        {{ preview.parsed.length > 0 ? tr('导入 {0} 个节点', { 0: preview.parsed.length }) : t('customNodes.import.confirm') }}
       </button>
     </template>
   </Modal>

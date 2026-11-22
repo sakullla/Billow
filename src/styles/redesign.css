@@ -394,11 +394,16 @@ body {
   padding: 0 13px;
 }
 .btn.primary {
+  background: var(--primary-fill);
   border-color: transparent;
+  color: var(--on-accent);
 }
 .btn.primary:hover:not(:disabled) {
+  background: var(--primary-fill);
+  color: var(--on-accent);
   filter: brightness(1.06);
   border-color: transparent;
+  box-shadow: var(--primary-shadow), 0 8px 20px -6px rgba(13, 148, 136, 0.48);
 }
 .btn.ghost:hover:not(:disabled) {
   background: var(--hover);

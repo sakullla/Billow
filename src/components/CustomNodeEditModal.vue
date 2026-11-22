@@ -53,6 +53,25 @@ const yamlText = ref('')
 const hasSubscription = computed(() => store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value)
 const isChainedMode = computed(() => dialerChoice.value !== 'direct')
 
+const modalSubtitle = computed(() => {
+  if (!props.node) return tr('填写节点参数或直接粘贴单节点 YAML')
+  const proto = props.node.protocol.toUpperCase()
+  let server = ''
+  let port = ''
+  for (const line of props.node.raw_yaml.split(/\r?\n/)) {
+    const trimmed = line.trim().replace(/^-\s+/, '')
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const idx = trimmed.indexOf(':')
+    if (idx <= 0) continue
+    const key = trimmed.slice(0, idx).trim()
+    const val = trimmed.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '')
+    if (key === 'server' && !server) server = val
+    else if (key === 'port' && !port) port = val
+    if (server && port) break
+  }
+  return server ? `${proto} · ${port ? `${server}:${port}` : server}` : proto
+})
+
 function selectRouteMode(routeMode: 'chain' | 'direct') {
   error.value = null
   if (routeMode === 'direct') {
@@ -340,7 +359,7 @@ async function submit() {
     :open="open"
     wide
     :title="node ? t('customNodes.edit.titleEdit') : t('customNodes.edit.titleAdd')"
-    :subtitle="t('customNodes.subtitle')"
+    :subtitle="modalSubtitle"
     @close="emit('close')"
   >
     <form class="stack custom-edit-form" novalidate @submit.prevent="submit">
@@ -356,7 +375,6 @@ async function submit() {
 
       <template v-if="mode === 'simple'">
         <div class="custom-form-section" data-testid="custom-node-simple-form">
-          <p class="custom-section-title">{{ tr('连接信息') }}</p>
           <div class="custom-form-card stack-sm">
             <label class="field">
               <span>{{ t('customNodes.edit.name') }}</span>
@@ -439,33 +457,24 @@ async function submit() {
                 </div>
               </label>
             </div>
-          </div>
 
-          <div class="custom-settings-group">
-            <div class="custom-setting-row">
-              <div class="grow min0">
-                <span class="custom-setting-title">{{ t('customNodes.edit.tls') }}</span>
-                <span class="muted small">{{ tr('服务端启用 TLS/HTTPS 时开启') }}</span>
+            <div class="custom-inline-toggles">
+              <div class="custom-inline-toggle" :title="tr('服务端启用 TLS/HTTPS 时开启')">
+                <span class="custom-inline-toggle-label">{{ t('customNodes.edit.tls') }}</span>
+                <Toggle v-model="simple.tls" :label="t('customNodes.edit.tls')" data-testid="custom-node-tls" />
               </div>
-              <Toggle v-model="simple.tls" :label="t('customNodes.edit.tls')" data-testid="custom-node-tls" />
-            </div>
-            <div v-if="simple.tls" class="custom-setting-row">
-              <div class="grow min0">
-                <span class="custom-setting-title">{{ t('customNodes.edit.skipCert') }}</span>
-                <span class="muted small">{{ tr('仅自签证书时开启') }}</span>
+              <div v-if="simple.tls" class="custom-inline-toggle" :title="tr('仅自签证书时开启')">
+                <span class="custom-inline-toggle-label">{{ t('customNodes.edit.skipCert') }}</span>
+                <Toggle
+                  v-model="simple.skip_cert_verify"
+                  :label="t('customNodes.edit.skipCert')"
+                  data-testid="custom-node-skip-cert"
+                />
               </div>
-              <Toggle
-                v-model="simple.skip_cert_verify"
-                :label="t('customNodes.edit.skipCert')"
-                data-testid="custom-node-skip-cert"
-              />
-            </div>
-            <div v-if="simple.protocol === 'socks5'" class="custom-setting-row">
-              <div class="grow min0">
-                <span class="custom-setting-title">{{ t('customNodes.edit.udp') }}</span>
-                <span class="muted small">{{ tr('允许 DNS 与 QUIC/UDP 流量经此节点转发') }}</span>
+              <div v-if="simple.protocol === 'socks5'" class="custom-inline-toggle" :title="tr('允许 DNS 与 QUIC/UDP 流量经此节点转发')">
+                <span class="custom-inline-toggle-label">{{ t('customNodes.edit.udp') }}</span>
+                <Toggle v-model="simple.udp" :label="t('customNodes.edit.udp')" data-testid="custom-node-udp" />
               </div>
-              <Toggle v-model="simple.udp" :label="t('customNodes.edit.udp')" data-testid="custom-node-udp" />
             </div>
           </div>
         </div>
@@ -473,7 +482,6 @@ async function submit() {
 
       <template v-else>
         <div class="custom-form-section" data-testid="custom-node-yaml-form">
-          <p class="custom-section-title">{{ t('customNodes.yamlEdit') }}</p>
           <div class="custom-form-card stack-sm">
             <label class="field">
               <span>{{ t('customNodes.edit.name') }}</span>
@@ -489,7 +497,7 @@ async function submit() {
               <textarea
                 v-model="yamlText"
                 class="mono custom-yaml-textarea"
-                rows="7"
+                rows="6"
                 spellcheck="false"
                 :placeholder="tr('name: 我的节点\ntype: anytls\nserver: example.com\nport: 443\npassword: secret')"
                 data-testid="custom-node-yaml-input"
@@ -500,99 +508,101 @@ async function submit() {
       </template>
 
       <div class="custom-form-section">
-        <p class="custom-section-title">{{ tr('链式与状态') }}</p>
+        <p class="custom-section-title">{{ tr('出站与中转') }}</p>
 
-        <div class="custom-route-cards" role="radiogroup" :aria-label="t('customNodes.dialer.label')">
-          <button
-            type="button"
-            class="custom-route-card"
-            :class="{ active: isChainedMode }"
-            role="radio"
-            :aria-checked="isChainedMode"
-            data-testid="edit-mode-chain"
-            @click="selectRouteMode('chain')"
-          >
-            <div class="custom-route-card-head">
-              <span class="custom-route-card-icon chain"><Icon name="globe" :size="15" /></span>
-              <strong>{{ tr('链式落地') }}</strong>
+        <div class="custom-form-card custom-route-panel">
+          <div class="custom-route-cards" role="radiogroup" :aria-label="t('customNodes.dialer.label')">
+            <button
+              type="button"
+              class="custom-route-card"
+              :class="{ active: isChainedMode }"
+              role="radio"
+              :aria-checked="isChainedMode"
+              data-testid="edit-mode-chain"
+              @click="selectRouteMode('chain')"
+            >
+              <div class="custom-route-card-head">
+                <span class="custom-route-card-icon chain"><Icon name="globe" :size="14" /></span>
+                <strong>{{ tr('链式落地') }}</strong>
+                <span class="custom-route-card-check" aria-hidden="true">
+                  <Icon v-if="isChainedMode" name="check" :size="11" />
+                </span>
+              </div>
+              <p class="custom-route-card-flow">
+                <span>{{ tr('前置中转') }}</span>
+                <span aria-hidden="true">→</span>
+                <span>{{ tr('此节点') }}</span>
+              </p>
+            </button>
+
+            <button
+              type="button"
+              class="custom-route-card"
+              :class="{ active: !isChainedMode }"
+              role="radio"
+              :aria-checked="!isChainedMode"
+              data-testid="edit-mode-direct"
+              @click="selectRouteMode('direct')"
+            >
+              <div class="custom-route-card-head">
+                <span class="custom-route-card-icon direct"><Icon name="zap" :size="14" /></span>
+                <strong>{{ tr('直连出口') }}</strong>
+                <span class="custom-route-card-check" aria-hidden="true">
+                  <Icon v-if="!isChainedMode" name="check" :size="11" />
+                </span>
+              </div>
+              <p class="custom-route-card-flow">
+                <span>{{ tr('本机') }}</span>
+                <span aria-hidden="true">→</span>
+                <span>{{ tr('此节点') }}</span>
+              </p>
+            </button>
+          </div>
+
+          <div class="custom-route-panel-divider" aria-hidden="true" />
+
+          <div class="custom-dialer-select-wrap" :class="{ muted: !isChainedMode }">
+            <div class="custom-inline-field" data-testid="custom-node-dialer">
+              <span class="custom-inline-field-label">{{ isChainedMode ? tr('前置中转') : t('customNodes.dialer.label') }}</span>
+              <div class="grow min0">
+                <SelectField
+                  :model-value="dialerChoice"
+                  :options="dialerOptions"
+                  :sheet="compact"
+                  :label="t('customNodes.dialer.label')"
+                  class="field-select"
+                  @update:model-value="(value) => { dialerChoice = String(value); error = null }"
+                />
+              </div>
             </div>
-            <p class="custom-route-card-flow">
-              <span>{{ tr('前置中转') }}</span>
-              <span aria-hidden="true">→</span>
-              <span>{{ tr('此节点') }}</span>
-            </p>
-          </button>
-
-          <button
-            type="button"
-            class="custom-route-card"
-            :class="{ active: !isChainedMode }"
-            role="radio"
-            :aria-checked="!isChainedMode"
-            data-testid="edit-mode-direct"
-            @click="selectRouteMode('direct')"
-          >
-            <div class="custom-route-card-head">
-              <span class="custom-route-card-icon direct"><Icon name="zap" :size="15" /></span>
-              <strong>{{ tr('直连出口') }}</strong>
-            </div>
-            <p class="custom-route-card-flow">
-              <span>{{ tr('本机') }}</span>
-              <span aria-hidden="true">→</span>
-              <span>{{ tr('此节点') }}</span>
-            </p>
-          </button>
-        </div>
-
-        <div class="custom-form-card stack-sm">
-          <div class="field" data-testid="custom-node-dialer">
-            <span>{{ t('customNodes.dialer.label') }}</span>
-            <SelectField
-              :model-value="dialerChoice"
-              :options="dialerOptions"
-              :sheet="compact"
-              :label="t('customNodes.dialer.label')"
-              class="field-select"
-              @update:model-value="(value) => { dialerChoice = String(value); error = null }"
-            />
             <p v-if="dialerWarning" class="field-error small custom-target-warning" role="status" data-testid="custom-node-dialer-warning">
               <Icon name="alert" :size="13" />
               <span>{{ dialerWarning }}</span>
             </p>
-          </div>
 
-          <label v-if="dialerChoice === 'fixed_proxy'" class="field">
-            <span>{{ tr('固定中转节点或组名') }}</span>
-            <input
-              v-model="fixedProxyName"
-              type="text"
-              spellcheck="false"
-              :placeholder="tr('例如：香港 01')"
-              data-testid="custom-node-fixed-proxy"
-            />
-          </label>
-
-          <label class="field">
-            <span>{{ t('customNodes.edit.note') }}</span>
-            <input
-              v-model="note"
-              type="text"
-              :placeholder="tr('可选备注，便于区分用途')"
-              data-testid="custom-node-note"
-            />
-          </label>
-        </div>
-
-        <div class="custom-settings-group">
-          <div class="custom-setting-row">
-            <div class="grow min0">
-              <span class="custom-setting-title">{{ tr('启用此节点') }}</span>
-              <span class="muted small">{{ tr('停用后保留配置，不注入运行配置') }}</span>
-            </div>
-            <Toggle v-model="enabled" :label="tr('启用此节点')" data-testid="custom-node-enabled" />
+            <label v-if="dialerChoice === 'fixed_proxy'" class="field">
+              <span>{{ tr('固定中转节点或组名') }}</span>
+              <input
+                v-model="fixedProxyName"
+                type="text"
+                spellcheck="false"
+                :placeholder="tr('例如：香港 01')"
+                data-testid="custom-node-fixed-proxy"
+              />
+            </label>
           </div>
         </div>
       </div>
+
+      <label class="field">
+        <span>{{ t('customNodes.edit.note') }}</span>
+        <input
+          v-model="note"
+          type="text"
+          :placeholder="tr('可选备注，便于区分用途')"
+          data-testid="custom-node-note"
+        />
+      </label>
 
       <p v-if="error" class="field-error small" role="alert" data-testid="custom-node-edit-error">
         <Icon name="alert" :size="13" />
@@ -601,6 +611,10 @@ async function submit() {
     </form>
 
     <template #footer>
+      <div class="custom-modal-foot-toggle grow" :title="tr('停用后保留配置，不注入运行配置')">
+        <Toggle v-model="enabled" :label="tr('启用此节点')" data-testid="custom-node-enabled" />
+        <span class="custom-modal-foot-label">{{ tr('启用此节点') }}</span>
+      </div>
       <button type="button" class="btn ghost" @click="emit('close')">{{ tr('取消') }}</button>
       <button
         type="button"

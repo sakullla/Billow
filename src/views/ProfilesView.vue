@@ -947,7 +947,7 @@ const failedSubscriptionIds = computed(() =>
         v-model="quickUrl"
         type="text"
         inputmode="url"
-        :placeholder="compact ? tr('粘贴订阅链接') : tr('粘贴订阅链接回车导入，或直接拖入 YAML 文件')"
+        :placeholder="compact ? tr('粘贴订阅链接') : tr('粘贴订阅或节点链接回车导入，或直接拖入 YAML 文件')"
         spellcheck="false"
         :aria-invalid="quickError ? 'true' : undefined"
         :aria-describedby="quickError ? 'quick-import-error' : undefined"
