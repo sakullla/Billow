@@ -95,14 +95,18 @@ function parseMessage(message) {
     const rtype = message.readUInt16BE(offset)
     const ttl = message.readUInt32BE(offset + 4)
     const rdlength = message.readUInt16BE(offset + 8)
-    const data = message.subarray(offset + 10, offset + 10 + rdlength)
-    offset += 10 + rdlength
+    const rdataStart = offset + 10
+    const data = message.subarray(rdataStart, rdataStart + rdlength)
+    offset = rdataStart + rdlength
     if (rtype === TYPE.A && rdlength === 4) {
       answers.push({ type: 'A', ip: `${data[0]}.${data[1]}.${data[2]}.${data[3]}`, ttl })
     } else if (rtype === TYPE.AAAA && rdlength === 16) {
       const groups = []
       for (let j = 0; j < 16; j += 2) groups.push(data.readUInt16BE(j).toString(16))
       answers.push({ type: 'AAAA', ip: groups.join(':'), ttl })
+    } else if (rtype === TYPE.CNAME) {
+      // `ip` carries the CNAME target so `normalizedDns` compares it too.
+      answers.push({ type: 'CNAME', ip: readName(message, rdataStart).name, ttl })
     }
   }
   return { rcode: flags & 0x000f, truncated: (flags & 0x0200) !== 0, answers }
@@ -519,6 +523,9 @@ const upstreamAnswers = {
   'v6.test/AAAA': { ips: ['2001:db8::1'], ttl: 60 },
   'rule.test/A': A('127.0.0.1'),
   'hosts-only.test/A': A('127.0.0.1'),
+  'alias-target.test/A': A('9.9.9.9'),
+  'geoip-zz.test/A': A('1.2.3.4'),
+  'geoip-other.test/A': A('8.8.8.8'),
 }
 
 const policyAnswers = {
@@ -529,6 +536,39 @@ const policyAnswers = {
 const fallbackAnswers = {
   'filtered.test/A': A('7.7.7.7'),
   'only.test/A': A('6.6.6.6'),
+  'geoip-zz.test/A': A('7.7.7.7'),
+  'geoip-other.test/A': A('6.6.6.6'),
+}
+
+// Minimal protobuf geodata fixture: `GeoIPList { entry: GeoIP { country_code,
+// cidr } }`, the same shapes T24 generates.
+function varint(value) {
+  const out = []
+  let current = value
+  do {
+    let byte = current & 0x7f
+    current >>>= 7
+    if (current) byte |= 0x80
+    out.push(byte)
+  } while (current)
+  return Buffer.from(out)
+}
+
+const fieldBytes = (field, bytes) => Buffer.concat([varint((field << 3) | 2), varint(bytes.length), bytes])
+const fieldVarint = (field, value) => Buffer.concat([varint(field << 3), varint(value)])
+const text = (value) => Buffer.from(value)
+
+function geoipDat(countries) {
+  return Buffer.concat(countries.map((country) => {
+    const entry = Buffer.concat([
+      fieldBytes(1, text(country.code)),
+      ...country.cidrs.map(({ bytes, prefix }) => fieldBytes(2, Buffer.concat([
+        fieldBytes(1, Buffer.from(bytes)),
+        fieldVarint(2, prefix),
+      ]))),
+    ])
+    return fieldBytes(1, entry)
+  }))
 }
 
 function formatDns(caseDef, fixtures) {
@@ -541,6 +581,7 @@ function formatDns(caseDef, fixtures) {
     '  store-selected: false',
     '  store-fake-ip: false',
   ]
+  if (caseDef.geodata) lines.push('geodata-mode: true')
   if (caseDef.hosts) {
     lines.push('hosts:')
     for (const [domain, ip] of Object.entries(caseDef.hosts)) lines.push(`  ${domain}: ${ip}`)
@@ -625,6 +666,29 @@ const cases = [
       && answers[2]?.answers?.[0]?.ip === '6.6.6.6',
   },
   {
+    // T22-A2: `!` in fallback-filter.geoip-code must not be dropped. The
+    // filter is inverted by the resolver, so `zz` falls back for a non-zz
+    // address and `!zz` for a zz one (pinned `LoadGeoIPMatcher` + `MatchIp`).
+    id: 'fallback-geoip-code',
+    geodata: true,
+    nameservers: udpNameserver,
+    fallback: (fixtures) => [`udp://127.0.0.1:${fixtures.fallback.port}`],
+    fallbackFilter: { geoip: true, 'geoip-code': 'zz' },
+    queries: ['geoip-zz.test', 'geoip-other.test'],
+    expect: (answers) => answers[0]?.answers?.[0]?.ip === '1.2.3.4'
+      && answers[1]?.answers?.[0]?.ip === '6.6.6.6',
+  },
+  {
+    id: 'fallback-geoip-code-negated',
+    geodata: true,
+    nameservers: udpNameserver,
+    fallback: (fixtures) => [`udp://127.0.0.1:${fixtures.fallback.port}`],
+    fallbackFilter: { geoip: true, 'geoip-code': '!zz' },
+    queries: ['geoip-zz.test', 'geoip-other.test'],
+    expect: (answers) => answers[0]?.answers?.[0]?.ip === '7.7.7.7'
+      && answers[1]?.answers?.[0]?.ip === '8.8.8.8',
+  },
+  {
     id: 'hosts-answer',
     hosts: { 'host-only.test': '1.2.3.4' },
     nameservers: udpNameserver,
@@ -638,6 +702,46 @@ const cases = [
     nameservers: udpNameserver,
     queries: ['host-only.test'],
     expect: (answers) => answers[0]?.answers?.[0]?.ip === '5.5.5.5',
+  },
+  {
+    // T22-A2: the enhancer mutex was locked twice on this path, so a hosts
+    // query in redir-host/fake-ip wedged the whole listener. All three queries
+    // must answer, the last proving the listener is still serving.
+    id: 'hosts-redir-host',
+    enhancedMode: 'redir-host',
+    hosts: { 'host-only.test': '1.2.3.4' },
+    nameservers: udpNameserver,
+    queries: ['localhost', 'host-only.test', 'a.test'],
+    expect: (answers) => answers[0]?.answers?.[0]?.ip === '127.0.0.1'
+      && answers[0]?.answers?.[0]?.ttl === 10
+      && answers[1]?.answers?.[0]?.ip === '1.2.3.4'
+      && answers[2]?.answers?.[0]?.ip === '1.2.3.4',
+  },
+  {
+    id: 'hosts-fake-ip',
+    enhancedMode: 'fake-ip',
+    hosts: { 'host-only.test': '1.2.3.4' },
+    fakeIpFilter: ['real.test'],
+    nameservers: udpNameserver,
+    queries: ['localhost', 'host-only.test', 'fake.test'],
+    expect: (answers) => answers[0]?.answers?.[0]?.ip === '127.0.0.1'
+      && answers[0]?.answers?.[0]?.ttl === 10
+      && answers[1]?.answers?.[0]?.ip === '1.2.3.4'
+      && answers[2]?.answers?.[0]?.ip === '198.18.0.4',
+  },
+  {
+    // Domain-valued hosts: pinned replaces the question name, resolves the
+    // target and prepends a CNAME (TTL 10), so the alias is not delegated.
+    id: 'hosts-domain-alias',
+    hosts: { 'alias.test': 'alias-target.test' },
+    nameservers: udpNameserver,
+    queries: ['alias.test'],
+    expect: (answers) => answers[0]?.rcode === 0
+      && answers[0]?.answers?.[0]?.type === 'CNAME'
+      && answers[0]?.answers?.[0]?.ip === 'alias-target.test'
+      && answers[0]?.answers?.[0]?.ttl === 10
+      && answers[0]?.answers?.[1]?.type === 'A'
+      && answers[0]?.answers?.[1]?.ip === '9.9.9.9',
   },
   {
     id: 'fake-ip',
@@ -740,9 +844,19 @@ async function runEngine(engine, binary, item, fixtures, dir, context) {
     .map((line) => fill(rewriteProxies(line, context), context))
     .join('\n')
   await writeFile(join(dir, 'config.yaml'), config)
+  if (item.geodata) {
+    // Pinned `geodata.InitGeoIP` sanity-loads CN from the file, so keep a CN
+    // entry next to the zz one the fallback filter selects.
+    await writeFile(join(dir, 'GeoIP.dat'), geoipDat([
+      { code: 'CN', cidrs: [{ bytes: [10, 0, 0, 0], prefix: 8 }] },
+      { code: 'zz', cidrs: [{ bytes: [1, 2, 3, 4], prefix: 32 }] },
+    ]))
+  }
   const args = engine === 'mihomo'
     ? ['-d', dir, '-f', join(dir, 'config.yaml')]
-    : [join(dir, 'config.yaml')]
+    : item.geodata
+      ? [join(dir, 'config.yaml'), '--geosite-dir', dir]
+      : [join(dir, 'config.yaml')]
   const handle = startProcess(binary, args, dir)
   // Readiness is a TCP/port check: a query-based probe would wait for the
   // 5s resolver timeout in the silent-upstream case.

@@ -990,6 +990,86 @@ fn first_answer_ip(message: &[u8]) -> Option<IpAddr> {
     }
 }
 
+/// Read a possibly-compressed name; returns the name and the next offset in
+/// the containing message.
+fn read_answer_name(message: &[u8], start: usize) -> (String, usize) {
+    let mut labels = Vec::new();
+    let mut cursor = start;
+    let mut end = start;
+    let mut jumped = false;
+    for _ in 0..64 {
+        let len = match message.get(cursor) {
+            Some(len) => *len as usize,
+            None => break,
+        };
+        if len == 0 {
+            if !jumped {
+                end = cursor + 1;
+            }
+            break;
+        }
+        if len & 0xc0 == 0xc0 {
+            if !jumped {
+                end = cursor + 2;
+            }
+            let pointer =
+                ((len & 0x3f) << 8) | message.get(cursor + 1).copied().unwrap_or(0) as usize;
+            cursor = pointer;
+            jumped = true;
+            continue;
+        }
+        let begin = cursor + 1;
+        let stop = begin + len;
+        if stop > message.len() {
+            break;
+        }
+        labels.push(String::from_utf8_lossy(&message[begin..stop]).to_ascii_lowercase());
+        cursor = stop;
+    }
+    (labels.join("."), end)
+}
+
+/// All answer records as `(owner, rtype, ttl, data)`: A/AAAA data is the
+/// address, CNAME data is the target.
+fn parse_answers(message: &[u8]) -> Vec<(String, u16, u32, String)> {
+    let Some((_name, _qtype, q_end)) = parse_question(message) else {
+        return Vec::new();
+    };
+    let ancount = u16::from_be_bytes([message[6], message[7]]) as usize;
+    let mut offset = q_end;
+    let mut out = Vec::new();
+    for _ in 0..ancount {
+        let (owner, next) = read_answer_name(message, offset);
+        offset = next;
+        let Some(header) = message.get(offset..offset + 10) else {
+            break;
+        };
+        let rtype = u16::from_be_bytes([header[0], header[1]]);
+        let ttl = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let rdlength = u16::from_be_bytes([header[8], header[9]]) as usize;
+        offset += 10;
+        let data_start = offset;
+        let data = match rtype {
+            TYPE_A if rdlength == 4 => {
+                let d = &message[data_start..data_start + 4];
+                format!("{}.{}.{}.{}", d[0], d[1], d[2], d[3])
+            }
+            TYPE_AAAA if rdlength == 16 => {
+                let mut bytes = [0u8; 16];
+                bytes.copy_from_slice(&message[data_start..data_start + 16]);
+                std::net::Ipv6Addr::from(bytes).to_string()
+            }
+            TYPE_CNAME => read_answer_name(message, data_start).0,
+            _ => String::new(),
+        };
+        offset = data_start + rdlength;
+        out.push((owner, rtype, ttl, data));
+    }
+    out
+}
+
+const TYPE_CNAME: u16 = 5;
+
 #[tokio::test]
 async fn fake_ip_pool_ttl_filter_and_dns_server() {
     let upstream = spawn_udp_dns(answer_map(&[
@@ -1155,4 +1235,235 @@ async fn fake_ip_destination_is_rebuilt_to_its_host() {
     stream.read_exact(&mut reply).await.unwrap();
     assert_eq!(&reply, b"fake");
     kernel.stop().ok();
+}
+
+// ---------------------------------------------------------------------------
+// dns.listen hosts middleware in every enhanced mode
+// ---------------------------------------------------------------------------
+
+/// Query the listener with a hard timeout: before T22-A2 the enhancer mutex was
+/// locked twice on the hosts path, so the first hosts query deadlocked the
+/// listener task and every later query hung too.
+async fn listener_query(addr: SocketAddr, name: &str, qtype: u16) -> Option<Vec<u8>> {
+    tokio::time::timeout(Duration::from_secs(3), dns_query_tcp(addr, name, qtype))
+        .await
+        .ok()
+}
+
+/// A wedged DNS listener also wedges `Kernel::stop` (its runtime thread is
+/// blocked on the mutex), so a regression leak is better than hanging the
+/// whole test binary in the panic-unwind `Drop`.
+async fn expect_listener(
+    addr: SocketAddr,
+    kernel: Kernel,
+    name: &str,
+    qtype: u16,
+) -> (Kernel, Vec<u8>) {
+    match listener_query(addr, name, qtype).await {
+        Some(answer) => (kernel, answer),
+        None => {
+            std::mem::forget(kernel);
+            panic!("query {name}/{qtype} timed out (DNS listener deadlock)")
+        }
+    }
+}
+
+#[tokio::test]
+async fn hosts_answers_on_the_listener_in_every_enhanced_mode() {
+    let upstream = spawn_udp_dns(answer_map(&[(
+        "upstream.test",
+        IpAddr::V4(Ipv4Addr::new(5, 5, 5, 5)),
+    )]));
+    for mode in ["normal", "redir-host", "fake-ip"] {
+        let listen = free_port();
+        let mut yaml = format!(
+            "mixed-port: {}\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  enhanced-mode: {mode}\n  listen: 127.0.0.1:{listen}\n  nameserver: ['udp://127.0.0.1:{}']\n",
+            free_port(),
+            upstream.port
+        );
+        if mode == "fake-ip" {
+            yaml.push_str("  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter: ['upstream.test']\n");
+        }
+        let mut kernel = start_kernel(&yaml);
+        let addr: SocketAddr = format!("127.0.0.1:{listen}").parse().unwrap();
+
+        // The built-in `localhost` entry hits the hosts middleware too.
+        let (next, answer) = expect_listener(addr, kernel, "localhost", TYPE_A).await;
+        kernel = next;
+        assert_eq!(
+            first_answer_ip(&answer),
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            "{mode}: built-in localhost is answered from hosts with TTL 10"
+        );
+        assert_eq!(parse_answers(&answer)[0].2, 10, "{mode}");
+        // The configured entry.
+        let (next, answer) = expect_listener(addr, kernel, "host-only.test", TYPE_A).await;
+        kernel = next;
+        assert_eq!(
+            first_answer_ip(&answer),
+            Some(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))),
+            "{mode}: a configured hosts entry is answered from hosts"
+        );
+        // The listener still serves other names after a hosts answer.
+        let (next, answer) = expect_listener(addr, kernel, "upstream.test", TYPE_A).await;
+        kernel = next;
+        assert_eq!(
+            first_answer_ip(&answer),
+            Some(IpAddr::V4(Ipv4Addr::new(5, 5, 5, 5))),
+            "{mode}: the listener is not wedged after a hosts answer"
+        );
+        kernel.stop().ok();
+    }
+}
+
+#[tokio::test]
+async fn listener_follows_a_domain_valued_hosts_entry() {
+    let upstream = spawn_udp_dns(answer_map(&[(
+        "alias-target.test",
+        IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+    )]));
+    let listen = free_port();
+    let yaml = format!(
+        "mixed-port: {}\nhosts:\n  alias.test: alias-target.test\ndns:\n  enable: true\n  listen: 127.0.0.1:{listen}\n  nameserver: ['udp://127.0.0.1:{}']\n",
+        free_port(),
+        upstream.port
+    );
+    let kernel = start_kernel(&yaml);
+    let addr: SocketAddr = format!("127.0.0.1:{listen}").parse().unwrap();
+    let (mut kernel, answer) = expect_listener(addr, kernel, "alias.test", TYPE_A).await;
+    let answers = parse_answers(&answer);
+    assert_eq!(
+        answers,
+        vec![
+            (
+                "alias.test".to_string(),
+                TYPE_CNAME,
+                10,
+                "alias-target.test".to_string()
+            ),
+            (
+                "alias-target.test".to_string(),
+                TYPE_A,
+                60,
+                "9.9.9.9".to_string()
+            ),
+        ],
+        "pinned withHosts replaces the question name, resolves it and prepends a CNAME"
+    );
+    // The upstream saw the hosts target, not the alias.
+    assert_eq!(upstream.queries.load(Ordering::Relaxed), 1);
+    // Rule-time handling rewrites the host through the same hosts chain, so
+    // the listener and the engine agree on which name is resolved.
+    let dns = kernel.dns().expect("dns");
+    assert_eq!(
+        dns.pre_handle("alias.test", None),
+        Ok(("alias-target.test".to_string(), None))
+    );
+    assert_eq!(
+        dns.resolve_one("alias-target.test").await,
+        Some(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)))
+    );
+    kernel.stop().ok();
+}
+
+// ---------------------------------------------------------------------------
+// fallback-filter.geoip-code negation
+// ---------------------------------------------------------------------------
+
+fn varint(mut value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return out;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn field_bytes(field: u64, bytes: &[u8]) -> Vec<u8> {
+    let mut out = varint((field << 3) | 2);
+    out.extend(varint(bytes.len() as u64));
+    out.extend(bytes);
+    out
+}
+
+fn field_varint(field: u64, value: u64) -> Vec<u8> {
+    let mut out = varint(field << 3);
+    out.extend(varint(value));
+    out
+}
+
+/// `GeoIPList { entry: GeoIP { country_code: "zz", cidr: 1.2.3.4/32 } }`.
+fn geoip_dat_zz() -> Vec<u8> {
+    let mut cidr = field_bytes(1, &[1, 2, 3, 4]);
+    cidr.extend(field_varint(2, 32));
+    let mut entry = field_bytes(1, b"zz");
+    entry.extend(field_bytes(2, &cidr));
+    field_bytes(1, &entry)
+}
+
+#[tokio::test]
+async fn fallback_geoip_code_negation_matches_the_pinned_filter() {
+    let dir = std::env::temp_dir().join(format!(
+        "billow-dns-geoip-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("GeoIP.dat"), geoip_dat_zz()).unwrap();
+    let main = spawn_udp_dns(HashMap::from([
+        (
+            ("classified.test".to_string(), TYPE_A),
+            (vec![IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))], 0, 60),
+        ),
+        (
+            ("foreign.test".to_string(), TYPE_A),
+            (vec![IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))], 0, 60),
+        ),
+    ]));
+    let fallback = spawn_udp_dns(HashMap::from([
+        (
+            ("classified.test".to_string(), TYPE_A),
+            (vec![IpAddr::V4(Ipv4Addr::new(7, 7, 7, 7))], 0, 60),
+        ),
+        (
+            ("foreign.test".to_string(), TYPE_A),
+            (vec![IpAddr::V4(Ipv4Addr::new(6, 6, 6, 6))], 0, 60),
+        ),
+    ]));
+    // `zz` matches 1.2.3.4, so the filter keeps the main answer for it and
+    // falls back for any other address; `!zz` is the exact reverse.
+    for (code, classified, foreign) in [
+        ("zz", Ipv4Addr::new(1, 2, 3, 4), Ipv4Addr::new(6, 6, 6, 6)),
+        ("!zz", Ipv4Addr::new(7, 7, 7, 7), Ipv4Addr::new(8, 8, 8, 8)),
+    ] {
+        let yaml = format!(
+            "mixed-port: {}\ngeodata-mode: true\n{}  fallback: ['udp://127.0.0.1:{}']\n  fallback-filter:\n    geoip: true\n    geoip-code: '{code}'\n",
+            free_port(),
+            dns_block(&format!("udp://127.0.0.1:{}", main.port), ""),
+            fallback.port
+        );
+        let (mut kernel, _warnings) =
+            Kernel::start_from_yaml(&yaml, Some(dir.clone()), Limits::default())
+                .expect("kernel with GeoIP.dat starts");
+        let dns = kernel.dns().expect("dns");
+        assert_eq!(
+            dns.resolve_one("classified.test").await,
+            Some(IpAddr::V4(classified)),
+            "geoip-code {code}: the fallback filter direction for a zz address"
+        );
+        assert_eq!(
+            dns.resolve_one("foreign.test").await,
+            Some(IpAddr::V4(foreign)),
+            "geoip-code {code}: the fallback filter direction for a non-zz address"
+        );
+        kernel.stop().ok();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

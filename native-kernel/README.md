@@ -309,9 +309,12 @@ the file's mtime/size change). `hosts` is applied to rule matching even when
   domain-behavior `rule-set:` use their domain sets in declaration order), a
   matching `fallback-filter.domain`/`geosite` sends the query only to the
   fallback, and otherwise main and fallback race. A main answer that is LAN is
-  never replaced; an address inside `fallback-filter.ipcidr` or outside
-  `fallback-filter.geoip` falls back. All servers of one list race and the
-  first non-SERVFAIL/REFUSED answer wins.
+  never replaced; an address inside `fallback-filter.ipcidr`, or failing the
+  `fallback-filter.geoip` matcher, falls back. `geoip-code` keeps a leading
+  `!` (the pinned `LoadGeoIPMatcher` builds a *not* matcher and
+  `dnsFallbackFilter` inverts it again), so `!CN` falls back for a CN answer
+  and `CN` for a non-CN one. All servers of one list race and the first
+  non-SERVFAIL/REFUSED answer wins.
 - **Cache**: question-keyed, minimal TTL over the answer and authority
   sections (so an NXDOMAIN/NODATA SOA caches the negative answer), SERVFAIL
   cached for five seconds, bounded by `cache-max-size` (4096 default).
@@ -326,12 +329,16 @@ the file's mtime/size change). `hosts` is applied to rule matching even when
   that is a fake IP is mapped back to its host before rules
   (`preHandleMetadata`), then resolved through the direct/proxy resolver; an
   unknown fake IP fails with `fake DNS record <ip> missing`. `redir-host` maps
-  every answer IP back to its host for ten minutes (bounded at 4096 entries).
+  every answer IP back to its host for the answer TTL (ten seconds for a hosts
+  answer, as pinned `withHosts`), bounded at 4096 entries.
   `profile.store-fake-ip: true` is accepted with a warning: the pool is
   in-memory, so allocations do not survive a restart (the pinned cache.db
   persistence is a named gap).
 - **DNS server**: `dns.listen` binds UDP and TCP and applies the pinned
-  middleware order hosts → fake-ip → mapping → resolver. It answers
+  middleware order hosts → fake-ip → mapping → resolver in every enhanced mode.
+  A hosts entry answers directly (TTL 10); a domain-valued entry replaces the
+  question name with the target, resolves it through the remaining middleware
+  and prepends a CNAME (TTL 10), as pinned `withHosts` does. It answers
   A/AAAA/CNAME; other qtypes get NOTIMP (a named gap).
 - **respect-rules** routes TCP/TLS/HTTPS upstreams through the rule set and
   proxy groups (the same `DnsRoute` the engine uses for sessions). A UDP

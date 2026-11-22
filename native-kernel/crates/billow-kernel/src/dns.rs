@@ -1927,8 +1927,12 @@ impl DnsService {
         let fallback_geoip = if config.fallback.is_empty() || !config.fallback_filter.geoip {
             None
         } else {
-            let code = config.fallback_filter.geoip_code.trim_start_matches('!');
-            let matcher = geodata.geoip_matcher(code)?;
+            // Pinned passes the raw code to `NewGEOIP`, whose `LoadGeoIPMatcher`
+            // turns `!xx` into a *not* matcher, and `dnsFallbackFilter.MatchIp`
+            // then negates it again. Keeping the `!` here makes `ip_falls_back`
+            // (`!matcher.matches`) equal to the pinned filter: `!xx` falls back
+            // for an `xx` address, `xx` falls back for any other address.
+            let matcher = geodata.geoip_matcher(&config.fallback_filter.geoip_code)?;
             Some(matcher)
         };
         let mut fallback_domain = DomainSet::default();
@@ -2566,63 +2570,111 @@ impl DnsService {
         }
         let host = q.name.trim_end_matches('.').to_ascii_lowercase();
 
-        // hosts
+        // hosts (pinned `withHosts`): an IP-valued entry answers directly; a
+        // domain-valued entry re-resolves its target and prepends a CNAME.
+        // The enhancer guard is taken once and reused: `std::sync::Mutex` is
+        // not reentrant, so a second `self.enhancer.lock()` on this thread
+        // would deadlock the listener (the pinned handler holds its enhancer
+        // while writing the mapping too).
         let mut message: Option<Message> = None;
-        {
-            let enhancer = self
-                .enhancer
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if enhancer.use_hosts {
-                if let Some((value, matched)) = self.hosts.search(&host, q.qtype != TYPE_A && q.qtype != TYPE_AAAA) {
-                    if matched {
-                        let mut answers = Vec::new();
-                        for ip in value.ips() {
-                            match (ip, q.qtype) {
-                                (IpAddr::V4(v4), TYPE_A) => answers.push(Record {
-                                    name: q.name.clone(),
-                                    rtype: TYPE_A,
-                                    ttl: 10,
-                                    data: RrData::A(*v4),
-                                }),
-                                (IpAddr::V6(v6), TYPE_AAAA) => answers.push(Record {
-                                    name: q.name.clone(),
-                                    rtype: TYPE_AAAA,
-                                    ttl: 10,
-                                    data: RrData::Aaaa(*v6),
-                                }),
-                                _ => {}
-                            }
-                            if enhancer.mapping_enabled() {
-                                if let Ok(mut enhancer) = self.enhancer.lock() {
-                                    enhancer.insert_mapping(*ip, &host, Duration::from_secs(600));
-                                }
-                            }
+        let use_hosts = self
+            .enhancer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .use_hosts;
+        if use_hosts {
+            match self
+                .hosts
+                .search(&host, q.qtype != TYPE_A && q.qtype != TYPE_AAAA)
+            {
+                Some((value, true)) => {
+                    let mut answers = Vec::new();
+                    let mut enhancer = self
+                        .enhancer
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    for ip in value.ips() {
+                        match (ip, q.qtype) {
+                            (IpAddr::V4(v4), TYPE_A) => answers.push(Record {
+                                name: q.name.clone(),
+                                rtype: TYPE_A,
+                                ttl: 10,
+                                data: RrData::A(*v4),
+                            }),
+                            (IpAddr::V6(v6), TYPE_AAAA) => answers.push(Record {
+                                name: q.name.clone(),
+                                rtype: TYPE_AAAA,
+                                ttl: 10,
+                                data: RrData::Aaaa(*v6),
+                            }),
+                            _ => {}
                         }
-                        if q.qtype == TYPE_CNAME {
-                            if let Some(domain) = value.domain() {
-                                answers.push(Record {
-                                    name: q.name.clone(),
-                                    rtype: TYPE_CNAME,
-                                    ttl: 10,
-                                    data: RrData::Cname(domain.to_string()),
-                                });
-                            }
+                        // Pinned `withHosts`: `SetWithExpire(..., now+10s)`.
+                        if enhancer.mapping_enabled() {
+                            enhancer.insert_mapping(*ip, &host, Duration::from_secs(10));
                         }
-                        message = Some(Message {
-                            id: query.id,
-                            rcode: 0,
-                            truncated: false,
-                            question: Some(q.clone()),
-                            answers,
-                            authority: Vec::new(),
-                        });
                     }
+                    if q.qtype == TYPE_CNAME {
+                        if let Some(domain) = value.domain() {
+                            answers.push(Record {
+                                name: q.name.clone(),
+                                rtype: TYPE_CNAME,
+                                ttl: 10,
+                                data: RrData::Cname(domain.to_string()),
+                            });
+                        }
+                    }
+                    drop(enhancer);
+                    message = Some(Message {
+                        id: query.id,
+                        rcode: 0,
+                        truncated: false,
+                        question: Some(q.clone()),
+                        answers,
+                        authority: Vec::new(),
+                    });
                 }
+                Some((HostValue::Domain(domain), false)) => {
+                    // Pinned `withHosts` replaces `Question[0].Name` with the
+                    // hosts target, resolves it through the remaining
+                    // middleware and prepends a CNAME (TTL 10) for the name
+                    // that was asked, so the answer is not delegated upstream.
+                    let target = Question {
+                        name: domain.clone(),
+                        qtype: q.qtype,
+                    };
+                    let mut resolved = self.resolve_question_pipeline(&target, raw).await;
+                    resolved.id = query.id;
+                    resolved.question = Some(q.clone());
+                    resolved.answers.insert(
+                        0,
+                        Record {
+                            name: q.name.clone(),
+                            rtype: TYPE_CNAME,
+                            ttl: 10,
+                            data: RrData::Cname(domain),
+                        },
+                    );
+                    message = Some(resolved);
+                }
+                _ => {}
             }
         }
-        // fake-ip
-        if message.is_none() {
+        let mut message = match message {
+            Some(message) => message,
+            None => self.resolve_question_pipeline(&q, raw).await,
+        };
+        message.id = query.id;
+        encode_message(&message, &q)
+    }
+
+    /// Pinned `withFakeIP` + `withMapping` + `withResolver`: the middleware
+    /// after `withHosts`. It never consults hosts, so a domain replacement
+    /// does not recurse into another replacement.
+    async fn resolve_question_pipeline(&self, q: &Question, raw: &[u8]) -> Message {
+        let host = q.name.trim_end_matches('.').to_ascii_lowercase();
+        let mut message: Option<Message> = None;
+        {
             let mut enhancer = self
                 .enhancer
                 .lock()
@@ -2633,33 +2685,31 @@ impl DnsService {
                         message = Some(match enhancer.pool4.as_mut() {
                             Some(pool) => {
                                 let ip = pool.lookup(&host);
-                                fake_answer(query.id, &q, ip, enhancer.ttl)
+                                fake_answer(0, q, ip, enhancer.ttl)
                             }
-                            None => Message::empty_answer(query.id, &q),
+                            None => Message::empty_answer(0, q),
                         });
                     }
                     TYPE_AAAA => {
                         message = Some(match enhancer.pool6.as_mut() {
                             Some(pool) => {
                                 let ip = pool.lookup(&host);
-                                fake_answer(query.id, &q, ip, enhancer.ttl)
+                                fake_answer(0, q, ip, enhancer.ttl)
                             }
-                            None => Message::empty_answer(query.id, &q),
+                            None => Message::empty_answer(0, q),
                         });
                     }
                     TYPE_HTTPS | TYPE_SVCB => {
-                        message = Some(Message::empty_answer(query.id, &q))
+                        message = Some(Message::empty_answer(0, q))
                     }
                     _ => {}
                 }
             }
         }
-        let mut message = match message {
+        match message {
             Some(message) => message,
-            None => self.exchange_question_via_middleware(&q, raw).await,
-        };
-        message.id = query.id;
-        encode_message(&message, &q)
+            None => self.exchange_question_via_middleware(q, raw).await,
+        }
     }
 
     /// `servers` for a policy key; exposed for diagnostics/tests.
