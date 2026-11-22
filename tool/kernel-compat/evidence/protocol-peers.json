@@ -1,7 +1,7 @@
 {
   "format": "kernel-protocol-peers",
   "version": 2,
-  "generatedAt": "2026-11-22T00:00:00Z",
+  "generatedAt": "2026-11-22T07:40:00Z",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -24,8 +24,8 @@
   "wrapper": "tool/kernel-compat/peer-tests.sh (resolves the repository root, the cache and the pinned binary; cargo test runs from native-kernel/crates/billow-kernel, so a relative KC_MIHOMO_BIN does not resolve)",
   "log": "tool/kernel-compat/evidence/protocol-peers-run.log",
   "result": {
-    "cases": 62,
-    "passed": 62,
+    "cases": 66,
+    "passed": 66,
     "failed": 0
   },
   "families": {
@@ -410,17 +410,122 @@
     "masque_connect_udp": "tests/quic_peers.rs drives the kernel's SOCKS5 UDP association through a controlled HTTP/3 CONNECT-UDP peer (per-destination flows, refusal, missing extended CONNECT, missing capsule negotiation, untrusted certificate, TCP refusal, same-destination reopen after the peer FIN, and a 33rd destination after 32 closed flows). A Mihomo peer is impossible: the pinned masque adapter is a Cloudflare WARP CONNECT-IP client with no listener. The shipped CLI's SOCKS5 UDP ASSOCIATE is covered by family_cli.rs::cli_process_tunnels_udp_through_masque."
   },
   "notCovered": [
-    "UDP for socks5, vless (packet-addr/XUDP), anytls (UoT), gost-relay and ssr: `udp: true` is rejected at load time; no UDP association exists for those families",
+    "UDP for socks5, vless (packet-addr/XUDP) and anytls (UoT): `udp: true` is rejected at load time; no UDP association exists for those families. gost-relay and ssr UDP associations are implemented since T12.",
     "fragmented SOCKS5 UDP datagrams (FRAG != 0) are dropped instead of reassembled",
     "separate `listeners:` entries on the Rust side (T5); the peer side uses them because the peer is Mihomo",
     "platforms other than macOS arm64; DNS answers, rule families beyond the implemented list, TUN/system-proxy takeover (T6)",
     "a positive chained UDP case against the Mihomo peer on loopback (peer-side loopback detector); the positive path is covered by two controlled hops instead",
-    "families still unimplemented after T15 (the device families and the T5 adapters): see tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque is partial: CONNECT-UDP is covered above, CONNECT-IP/TCP is rejected by name and has no peer case. shadowquic is partial: TCP/UDP and JLS are covered above; zero-rtt and the Brutal congestion options are rejected by name.",
+    "no protocol family is wholly unimplemented after T21 (the built-in `direct`/`dns`/`reject`/`rematch` entries stay T5); each partial family and its gaps are recorded in tool/kernel-compat/evidence/rust-mapping.json#familiesNotImplemented. masque: CONNECT-UDP (UDP-only) and CONNECT-IP (UDP plus T21 TCP termination) are covered above; `h2`, `h3-l4proxy`, gVisor and the pinned TCP-stack behaviour are rejected by name. shadowquic: TCP/UDP and JLS are covered above; zero-rtt, QUIC v2 and the Brutal congestion options are rejected by name. T5's DNS/hosts/groups/providers/controller adapters are unimplemented and rejected by name.",
     "WireGuard/OpenVPN positive data-path cases stop at the IP packet (WireGuard ICMP echo through the locked device; OpenVPN AEAD keepalive decrypt): TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device.",
-    "sudoku: the T17-A1 clean-room attempt stayed blocked (the keyed table, KIP handshake and record layers are not publicly specified; evidence/t17-cleanroom.md, evidence/t17-observe.log). T17-A2 translated the pinned GPL-3.0 module (see t17): TCP sessions with the legacy HTTP mask, pure/packed downlink, three record AEAD methods, the session mux and a `dialer-proxy` chain are covered by 14 pinned-peer cases; `udp: true` (UoT) and the HTTP tunnel modes are rejected at load and have no peer case."
+    "sudoku: the T17-A1 clean-room attempt stayed blocked (the keyed table, KIP handshake and record layers are not publicly specified; evidence/t17-cleanroom.md, evidence/t17-observe.log). T17-A2 translated the pinned GPL-3.0 module (see t17): TCP sessions with the legacy HTTP mask, pure/packed downlink, three record AEAD methods, the session mux and a `dialer-proxy` chain are covered by 16 pinned-peer cases; `udp: true` (UoT) and the HTTP tunnel modes are rejected at load and have no peer case."
   ],
   "t9": {
     "date": "2026-11-22",
+    "attempt": "T9-A12",
+    "verdict": "integration-complete",
+    "verdictScope": "T9 judges integration completeness of the delivered subset: every delivered family is reachable through the library engine (`Protocol`, `parse_*`, `dial_inner`, UDP arms) and through the shipped CLI, unimplemented shapes are rejected by name and registered in `rust-mapping.json`/`native-kernel/README.md`, the complete candidate builds, and the evidence is reproducible. R2's “every valid configuration is usable” is judged by T8/Delivery on the complete candidate; registered partial gaps do not block T9 on their own.",
+    "outcome1": {
+      "status": "met",
+      "detail": "All task families have an engine entry and a CLI loading path; the device families' `dial()` names the T6/T7 gap instead of pretending a tunnel.",
+      "taskFamilies": {
+        "T4": [
+          "socks5",
+          "http",
+          "ss",
+          "trojan",
+          "vless",
+          "anytls"
+        ],
+        "T10": [
+          "tuic",
+          "hysteria",
+          "hysteria2"
+        ],
+        "T11": [
+          "vmess",
+          "snell",
+          "trusttunnel",
+          "gost-relay",
+          "ssh",
+          "ssr"
+        ],
+        "T12": [
+          "ssr protocol/obfs plugin layers",
+          "gost-relay UDP association and smux"
+        ],
+        "T13": [
+          "mieru TCP"
+        ],
+        "T14": [
+          "masque CONNECT-UDP"
+        ],
+        "T15": [
+          "shadowquic JLS"
+        ],
+        "T16": [
+          "wireguard transport half",
+          "openvpn transport half"
+        ],
+        "T17": [
+          "sudoku"
+        ],
+        "T18": [
+          "masque CONNECT-IP/WARP UDP"
+        ],
+        "T19": [
+          "tailscale control/DERP half",
+          "zerotier identity/VL1/VL2 half"
+        ],
+        "T20": [
+          "easytier cleartext + Noise XX/secure datagram"
+        ],
+        "T21": [
+          "masque TCP termination over CONNECT-IP"
+        ]
+      },
+      "reachability": {
+        "engine": "native-kernel/crates/billow-kernel/src/proxies.rs (Protocol variants + parse arms), src/outbound/mod.rs (dial_inner arms), src/engine.rs (UDP association arms)",
+        "cli": "crates/billow-kernel-cli/tests/cli.rs process_loads_t9_outbounds / t13_outbounds / t14_masque / t15_shadowquic / t18_masque_connect_ip / mesh_adapters; family_cli.rs drives real CLI tunnels for gost-relay, ssh, ssr, TUIC, Hysteria and Hysteria2",
+        "registry": "tool/kernel-compat/evidence/rust-mapping.json and native-kernel/README.md#protocol-families-outside-this-slice"
+      }
+    },
+    "outcome2": {
+      "status": "met",
+      "detail": "`cargo test --locked` builds every target (14 test binaries plus doctests) and exits 0: 306 passed, 0 failed, 91 ignored. The ignored cases are the real-peer cases, run separately below; they are never counted as silent passes. Cargo.lock is unchanged.",
+      "build": "complete candidate compiles with --locked"
+    },
+    "run": {
+      "defaultTests": {
+        "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
+        "result": "306 passed, 0 failed, 91 ignored (14 test binaries + doctests)",
+        "exit": 0,
+        "log": "tool/kernel-compat/evidence/t9-default-tests.log"
+      },
+      "peerTests": {
+        "command": "tool/kernel-compat/peer-tests.sh",
+        "result": "66 passed, 0 failed, 0 ignored",
+        "exit": 0,
+        "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
+      },
+      "familyPeers": {
+        "command": "tool/kernel-compat/family-peers.sh",
+        "result": "40 passed, 0 failed, 1 ignored across the filtered invocations",
+        "exit": 0,
+        "log": "tool/kernel-compat/evidence/family-peers-run.log"
+      },
+      "runner": {
+        "command": "node --test tool/kernel-compat/runner.test.mjs",
+        "result": "10 passed, 0 failed",
+        "exit": 0
+      },
+      "optionProbe": {
+        "command": "node tool/kernel-compat/option-probe.mjs --rust <CARGO_TARGET_DIR>/release/billow-kernel --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 --out tool/kernel-compat/evidence/option-matrix.txt",
+        "result": "287 no-op / 304 enabled, 0 problems",
+        "exit": 0,
+        "log": "tool/kernel-compat/evidence/option-matrix.txt"
+      },
+      "note": "This attempt ran with CARGO_TARGET_DIR=/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t9-a12-target to leave sibling build directories untouched; the logs and option-matrix header record that expanded path. The generic commands above reproduce the same results from the repository root."
+    },
     "implementedAndVerified": [
       "vmess",
       "snell",
@@ -428,14 +533,21 @@
       "sudoku (GPL-3.0 translation, T17)",
       "mieru (clean-room TCP, T13)"
     ],
-    "run": {
-      "command": "tool/kernel-compat/peer-tests.sh",
-      "result": "66 passed, 0 failed, 0 ignored",
-      "log": "tool/kernel-compat/evidence/protocol-peers-run.log"
-    },
     "stillUnimplemented": [],
-    "statusAfterT21": "Every protocol family has an entry with its gaps named by rejection: mieru (T13 clean-room TCP), sudoku (T17 GPL-3.0 translation, mux + dialer-proxy), masque (T14 CONNECT-UDP; T21 TCP over CONNECT-IP; CONNECT-IP/TCP remains UDP-only), shadowquic (T15 partial), wireguard/openvpn (T16 transport, device T6/T7), tailscale/zerotier (T19 control planes, device T6/T7), easytier (T20 cleartext + secure datagram, device T6/T7). No family is claimed fully compatible while a valid configuration is rejected.",
-    "t9A10": "Integration re-ran the full candidate: default cargo test (306 passed, 0 failed, 91 ignored), peer-tests (66 passed), family-peers (exit 0), runner (10 passed) and option-probe (287 no-op / 304 enabled, 0 problems). Fixed the T21 CONNECT-IP TCP MSS overhead (IP+TCP 40/60 instead of UDP 28/48, with SYN MSS and full-segment assertions), restored the EasyTier option-matrix rows (base + 26 no-op / 21 enabled), fixed T17's peer classification and padding comment, and added an explicit EasyTier secure receive-direction decrypt + replay test (which exposed and fixed the first-datagram seq-0 replay rejection). CLI now loads the T16/T19/T20 mesh adapters in `process_loads_mesh_adapters`."
+    "stillUnimplementedNote": "No protocol family is wholly unimplemented after T21 (the built-in `direct`/`dns`/`reject`/`rematch` entries stay T5). Every family has an entry, a controlled or pinned peer result, and its rejected shapes named at load and registered in rust-mapping.json.",
+    "statusAfterT21": "Every protocol family has a reachable entry or a named rejection: mieru (T13 clean-room TCP), sudoku (T17 GPL-3.0 translation; mux + dialer-proxy covered), masque (T14 CONNECT-UDP is UDP-only; T18 CONNECT-IP carries UDP; T21 adds TCP termination over CONNECT-IP), shadowquic (T15 partial), wireguard/openvpn (T16 transport halves, device gap is T6/T7), tailscale/zerotier (T19 protocol halves, device gap is T6/T7), easytier (T20 cleartext + secure datagram, device gap is T6/T7). No family is silently accepted or claimed fully compatible while a valid configuration is rejected; the R2 full-compatibility verdict is T8/Delivery.",
+    "remainingGaps": [
+      "masque: `h2`, `h3-l4proxy`, gVisor and the pinned TCP-stack behaviour are rejected by name; CONNECT-UDP (UDP only) and CONNECT-IP (UDP + T21 TCP) are delivered.",
+      "shadowquic: zero-rtt, QUIC v2 and the private Brutal congestion options are rejected by name.",
+      "wireguard/openvpn/tailscale/zerotier/easytier: protocol halves are delivered and peer-verified; `dial()` returns a named T6/T7 userspace IP stack/TUN rejection.",
+      "mieru rejects UDP/multiplexing; sudoku rejects the HTTP tunnel modes/UoT; ssh rejects private-key file paths and dials one client per connection; T10 families and implemented families reject their unlisted options by name.",
+      "T5 still owns DNS, hosts, proxy groups/providers, the controller and rule families beyond the implemented list; those are rejected with `[unsupported]` and registered.",
+      "Only macOS arm64 was run; the other platforms compile but are not covered by these runs."
+    ],
+    "r2Boundary": "The partial gaps above are valid configurations that are rejected by name. They are recorded, not counted as a T9 integration failure; T8/Delivery decides whether the complete candidate meets R2.",
+    "history": {
+      "t9A10": "Integration fixed the T21 CONNECT-IP TCP MSS overhead, restored the EasyTier option-matrix rows, fixed T17's peer classification and added an explicit EasyTier secure receive-direction decrypt/replay test; those code changes remain in this attempt."
+    }
   },
   "controlledPeers": {
     "command": "tool/kernel-compat/family-peers.sh",

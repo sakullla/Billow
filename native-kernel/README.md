@@ -765,7 +765,7 @@ cargo test --manifest-path native-kernel/Cargo.toml --locked
   live ids. `tool/kernel-compat/peer-tests.sh` runs 66 cases in total (the T17 sudoku
   additions included). `masque` has
   no Mihomo listener (the pinned adapter is a Cloudflare WARP client) and no
-  reachable WARP endpoint offline, so its nineteen default-suite cases run against
+  reachable WARP endpoint offline, so its twenty default-suite cases run against
   two controlled HTTP/3 peers in `tests/quic_peers.rs` (RFC 9298 CONNECT-UDP and
   RFC 9484 CONNECT-IP, the latter requiring the client certificate and echoing
   IP/UDP packets and terminating TCP with its own codec) and are recorded under
