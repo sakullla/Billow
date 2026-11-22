@@ -1,5 +1,12 @@
 export type Mode = 'rule' | 'global' | 'direct'
 export type ThemePreference = 'system' | 'light' | 'dark'
+export type PalettePreference = 'teal' | 'sapphire' | 'indigo' | 'terracotta' | 'berry' | 'graphite'
+export const PALETTES: readonly PalettePreference[] = ['teal', 'sapphire', 'indigo', 'terracotta', 'berry', 'graphite']
+export function normalizePalette(value: unknown): PalettePreference {
+  return typeof value === 'string' && (PALETTES as readonly string[]).includes(value)
+    ? (value as PalettePreference)
+    : 'teal'
+}
 /** Interface language: Simplified Chinese and English only (R42, R46). */
 export type Locale = 'zh-CN' | 'en'
 /** `system` follows the operating system language. */
@@ -734,6 +741,7 @@ export function normalizeTrafficHistory(raw: unknown): TrafficHistoryView {
 
 export interface ShellState {
   theme: ThemePreference
+  palette: PalettePreference
   last_entry: string
   /** Stored preference: `system`, `zh-CN` or `en` (R42). */
   language: LanguagePreference

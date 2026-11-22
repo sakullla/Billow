@@ -103,6 +103,7 @@ const windows = (ctx: PlatformContext) => ctx.windows
 export const SETTINGS_INDEX: readonly SettingsEntry[] = [
   // 通用
   { id: 'theme', tab: 'general', title: () => tr('主题'), description: () => tr('浅色、深色或跟随系统'), keywords: 'theme dark light 深色 浅色 外观' },
+  { id: 'palette', tab: 'general', title: () => tr('配色方案'), description: () => tr('碧潮、晴空蓝、星夜靛、暖砂陶、绯莓、墨韵'), keywords: 'palette color scheme accent 配色 颜色 外观 碧潮 晴空蓝 星夜靛 暖砂陶 绯莓 墨韵' },
   { id: 'language', tab: 'general', title: () => tr('界面语言'), keywords: 'language english 中文 语言' },
   { id: 'shortcuts', tab: 'general', title: () => tr('键盘快捷键'), keywords: 'shortcut hotkey keyboard 快捷键 热键 全局' },
   { id: 'auto-connect', tab: 'general', title: () => tr('打开时自动启动内核'), keywords: 'auto connect start 自动连接' },

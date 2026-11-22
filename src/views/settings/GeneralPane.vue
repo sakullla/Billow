@@ -7,7 +7,7 @@ import SettingsSection from '../../components/settings/SettingsSection.vue'
 import { t, tr } from '../../lib/i18n'
 import { useSettingsSave } from '../../lib/settings/save'
 import { useStore } from '../../lib/store'
-import type { LanguagePreference, ThemePreference } from '../../lib/types'
+import type { LanguagePreference, PalettePreference, ThemePreference } from '../../lib/types'
 
 defineProps<{ compact?: boolean }>()
 const store = useStore()
@@ -19,6 +19,14 @@ const THEMES = computed<{ id: ThemePreference; label: string; icon: string }[]>(
   { id: 'system', label: tr('自动'), icon: 'laptop' },
   { id: 'light', label: tr('浅色'), icon: 'sun' },
   { id: 'dark', label: tr('深色'), icon: 'moon' },
+])
+const PALETTE_OPTIONS = computed<{ id: PalettePreference; label: string; accent: string; surface: string }[]>(() => [
+  { id: 'teal', label: tr('碧潮'), accent: '#0d9488', surface: '#e9eff0' },
+  { id: 'sapphire', label: tr('晴空蓝'), accent: '#2563eb', surface: '#eaedf4' },
+  { id: 'indigo', label: tr('星夜靛'), accent: '#4f46e5', surface: '#ececf5' },
+  { id: 'terracotta', label: tr('暖砂陶'), accent: '#c25e2c', surface: '#f1ebe2' },
+  { id: 'berry', label: tr('绯莓'), accent: '#be185d', surface: '#f1e9ee' },
+  { id: 'graphite', label: tr('墨韵'), accent: '#27272a', surface: '#ececef' },
 ])
 const LANGUAGES = computed<{ id: LanguagePreference; label: string }[]>(() => [
   { id: 'system', label: t('language.system') },
@@ -34,6 +42,28 @@ const desktopWindow = computed(() => Boolean(app.value && app.value.autostart !=
   <SettingsSection :title="tr('外观')">
     <SettingsRow :title="tr('主题')" setting="theme" :stacked="compact">
       <Segmented :model-value="store.theme.value" :options="THEMES" size="sm" :label="tr('主题')" @update:model-value="store.setTheme" />
+    </SettingsRow>
+    <SettingsRow :title="tr('配色方案')" setting="palette" :stacked="compact" data-testid="palette-setting">
+      <div class="palette-picker" role="radiogroup" :aria-label="tr('配色方案')" data-testid="palette-picker">
+        <button
+          v-for="item in PALETTE_OPTIONS"
+          :key="item.id"
+          type="button"
+          role="radio"
+          class="palette-chip"
+          :class="{ active: store.palette.value === item.id }"
+          :aria-checked="store.palette.value === item.id"
+          :data-value="item.id"
+          @click="store.setPalette(item.id)"
+        >
+          <span
+            class="palette-swatch"
+            aria-hidden="true"
+            :style="{ '--swatch-accent': item.accent, '--swatch-surface': item.surface }"
+          />
+          <span>{{ item.label }}</span>
+        </button>
+      </div>
     </SettingsRow>
     <SettingsRow
       :title="t('settings.language.title')"

@@ -34,7 +34,10 @@ use profile::{
     HttpSubscriptionClient, KernelLaunch, KernelSettings, ProcessRuntime, ProfileBook,
     ProfileSnapshot, ProvidersSnapshot, RuleToggle, RulesSnapshot,
 };
-use shell::{ShellState, read_shell_state, resolve_entry, resolve_language, resolve_theme, write_shell_state};
+use shell::{
+    ShellState, read_shell_state, resolve_entry, resolve_language, resolve_palette, resolve_theme,
+    write_shell_state,
+};
 
 struct Store {
     state: Mutex<ShellState>,
@@ -480,6 +483,7 @@ fn prepare_kernel(app: &tauri::App) {
 #[derive(serde::Serialize)]
 struct ShellInfo {
     theme: String,
+    palette: String,
     last_entry: String,
     language: String,
     /// Effective locale after resolving "follow system" (R42).
@@ -490,6 +494,7 @@ impl ShellInfo {
     fn of(state: &ShellState) -> Self {
         Self {
             theme: state.theme.clone(),
+            palette: state.palette.clone(),
             last_entry: state.last_entry.clone(),
             language: state.language.clone(),
             locale: i18n::locale().tag(),
@@ -515,6 +520,19 @@ fn set_theme(app: AppHandle, theme: String) -> ShellInfo {
         state.clone()
     };
     apply_native_theme(&app, &resolved);
+    ShellInfo::of(&state)
+}
+
+#[tauri::command]
+fn set_palette(app: AppHandle, palette: String) -> ShellInfo {
+    let resolved = resolve_palette(&palette).to_string();
+    let store = app.state::<Store>();
+    let state = {
+        let mut state = lock(&store.state);
+        state.palette = resolved;
+        persist(&app, &state);
+        state.clone()
+    };
     ShellInfo::of(&state)
 }
 
@@ -2738,6 +2756,7 @@ pub fn run() {
             prepare_app_update,
             shell_state,
             set_theme,
+            set_palette,
             set_language,
             set_last_entry,
             kernel_state,

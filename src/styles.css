@@ -567,6 +567,7 @@ hr {
   border-radius: 9px;
   background: var(--brand-tile);
   box-shadow: var(--brand-tile-shadow);
+  transition: background var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease);
   flex: none;
   user-select: none;
 }
@@ -2411,7 +2412,7 @@ button.delay:hover:not(:disabled) {
   color: var(--on-accent);
   font-size: var(--text-lg);
   font-weight: 680;
-  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 30%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.25);
   transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), color var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease), transform var(--dur-fast) var(--ease);
 }
 @media (hover: hover) {
@@ -2772,7 +2773,7 @@ button.delay:hover:not(:disabled) {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
-  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .takeover-tile-body {
   min-width: 0;
@@ -4469,7 +4470,7 @@ button.log-level:hover {
 .setting-row.master-row.active .row-icon {
   background: var(--accent);
   color: var(--on-accent);
-  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .setting-row.master-row + .setting-row {
   border-top: 0;

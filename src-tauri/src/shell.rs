@@ -14,6 +14,8 @@ const MAX_EDGE: f64 = 10000.0;
 pub struct ShellState {
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_palette")]
+    pub palette: String,
     #[serde(default = "default_entry")]
     pub last_entry: String,
     #[serde(default = "default_width")]
@@ -63,6 +65,10 @@ fn default_theme() -> String {
     "system".to_string()
 }
 
+fn default_palette() -> String {
+    "teal".to_string()
+}
+
 fn default_language() -> String {
     "system".to_string()
 }
@@ -83,6 +89,7 @@ impl Default for ShellState {
     fn default() -> Self {
         Self {
             theme: default_theme(),
+            palette: default_palette(),
             last_entry: default_entry(),
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
@@ -109,6 +116,7 @@ impl Default for ShellState {
 #[serde(default)]
 pub struct ShellBackup {
     pub theme: String,
+    pub palette: String,
     pub close_to_tray: bool,
     pub silent_start: bool,
     /// Lightweight mode travels with "stay in tray" (R44).
@@ -129,6 +137,7 @@ impl Default for ShellBackup {
     fn default() -> Self {
         Self {
             theme: default_theme(),
+            palette: default_palette(),
             close_to_tray: true,
             silent_start: false,
             release_ui_on_close: false,
@@ -144,6 +153,7 @@ impl ShellBackup {
     pub fn of(state: &ShellState) -> Self {
         Self {
             theme: state.theme.clone(),
+            palette: state.palette.clone(),
             close_to_tray: state.close_to_tray,
             silent_start: state.silent_start,
             release_ui_on_close: state.release_ui_on_close,
@@ -160,6 +170,7 @@ impl ShellBackup {
     pub fn apply(&self, current: &ShellState) -> ShellState {
         ShellState {
             theme: resolve_theme(&self.theme).to_string(),
+            palette: resolve_palette(&self.palette).to_string(),
             close_to_tray: self.close_to_tray,
             silent_start: self.silent_start,
             release_ui_on_close: self.release_ui_on_close,
@@ -206,6 +217,18 @@ pub fn resolve_theme(value: &str) -> &'static str {
     }
 }
 
+pub fn resolve_palette(value: &str) -> &'static str {
+    match value {
+        "teal" => "teal",
+        "sapphire" => "sapphire",
+        "indigo" => "indigo",
+        "terracotta" => "terracotta",
+        "berry" => "berry",
+        "graphite" => "graphite",
+        _ => "teal",
+    }
+}
+
 /// Only two languages exist (R46): anything unknown follows the system again.
 pub fn resolve_language(value: &str) -> &'static str {
     match value {
@@ -227,6 +250,7 @@ pub fn usable_window_size(width: f64, height: f64) -> Option<(f64, f64)> {
 
 pub fn normalize(mut state: ShellState) -> ShellState {
     state.theme = resolve_theme(&state.theme).to_string();
+    state.palette = resolve_palette(&state.palette).to_string();
     state.last_entry = resolve_entry(&state.last_entry).to_string();
     state.language = resolve_language(&state.language).to_string();
     state.webdav_url = clean_field(&state.webdav_url, 500, true);
@@ -366,6 +390,7 @@ mod tests {
         let (dir, path) = temporary_file("round");
         let state = ShellState {
             theme: "dark".to_string(),
+            palette: "indigo".to_string(),
             last_entry: "proxies".to_string(),
             width: 1024.0,
             height: 700.0,
@@ -383,6 +408,7 @@ mod tests {
         write_shell_state(&path, &state).unwrap();
         let loaded = read_shell_state(&path);
         assert_eq!(loaded.theme, "dark");
+        assert_eq!(loaded.palette, "indigo");
         assert_eq!(loaded.last_entry, "proxies");
         assert_eq!(loaded.width, 1024.0);
         assert_eq!(loaded.close_to_tray, false);
@@ -519,6 +545,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(permissions.contains(&"allow-shell-state"));
         assert!(permissions.contains(&"allow-set-theme"));
+        assert!(permissions.contains(&"allow-set-palette"));
         assert!(permissions.contains(&"allow-set-language"));
         assert!(permissions.contains(&"allow-set-last-entry"));
         // Exit IP lookup and its opt-in (R40) must stay reachable from the window.
@@ -532,10 +559,41 @@ mod tests {
         // command silently drops out of the window.
         assert!(include_str!("../permissions/app.toml").contains("identifier = \"allow-exit-ip\""));
         assert!(
+            include_str!("../permissions/shell.toml").contains("identifier = \"allow-set-palette\"")
+        );
+        assert!(
             include_str!("../permissions/shell.toml").contains("identifier = \"allow-set-exit-ip-auto\"")
         );
         assert!(
             include_str!("../permissions/traffic.toml").contains("identifier = \"allow-traffic-history\"")
         );
+    }
+
+    #[test]
+    fn resolve_palette_accepts_known_palettes_and_falls_back_to_teal() {
+        for known in ["teal", "sapphire", "indigo", "terracotta", "berry", "graphite"] {
+            assert_eq!(resolve_palette(known), known);
+        }
+        assert_eq!(resolve_palette(""), "teal");
+        assert_eq!(resolve_palette("neon"), "teal");
+
+        // Older backups without `palette` default cleanly to `teal`.
+        let legacy: ShellBackup = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(legacy.palette, "teal");
+        assert_eq!(legacy.apply(&ShellState::default()).palette, "teal");
+
+        // Known palettes survive export/import; unknown values fall back to `teal`.
+        let state = ShellState {
+            palette: "indigo".to_string(),
+            ..ShellState::default()
+        };
+        let encoded = serde_json::to_string(&ShellBackup::of(&state)).unwrap();
+        let restored = serde_json::from_str::<ShellBackup>(&encoded)
+            .unwrap()
+            .apply(&ShellState::default());
+        assert_eq!(restored.palette, "indigo");
+
+        let invalid: ShellBackup = serde_json::from_str(r#"{"palette":"rainbow"}"#).unwrap();
+        assert_eq!(invalid.apply(&state).palette, "teal");
     }
 }

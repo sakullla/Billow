@@ -9,6 +9,7 @@
     "core:default",
     "allow-shell-state",
     "allow-set-theme",
+    "allow-set-palette",
     "allow-set-language",
     "allow-set-last-entry",
     "allow-set-exit-ip-auto",

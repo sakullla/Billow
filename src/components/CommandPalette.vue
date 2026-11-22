@@ -221,6 +221,7 @@ const defaultActions = computed<PaletteAction[]>(() => [
   // Opens even while the kernel is down: the dialog itself says why it cannot query (R31).
   { id: 'dns-query', get label() { return tr('DNS 查询') }, icon: 'search', hint: 'A / AAAA / MX' },
   { id: 'toggle-theme', get label() { return tr('切换主题') }, icon: 'moon' },
+  { id: 'cycle-palette', get label() { return tr('切换配色方案') }, icon: 'sparkles' },
   { id: 'open-logs', get label() { return tr('打开日志') }, icon: 'terminal' },
 ])
 

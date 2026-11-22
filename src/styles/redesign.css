@@ -403,7 +403,7 @@ body {
   color: var(--on-accent);
   filter: brightness(1.06);
   border-color: transparent;
-  box-shadow: var(--primary-shadow), 0 8px 20px -6px rgba(13, 148, 136, 0.48);
+  box-shadow: var(--primary-shadow), 0 8px 20px -6px color-mix(in srgb, var(--accent) 44%, transparent);
 }
 .btn.ghost:hover:not(:disabled) {
   background: var(--hover);

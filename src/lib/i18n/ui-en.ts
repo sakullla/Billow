@@ -1736,5 +1736,14 @@ export const UI_EN: Record<string, string> = {
   '按状态筛选': 'Filter by status',
   '功能': 'Features',
   '已叠加到当前订阅': 'Overlaid on active subscription',
+  '配色方案': 'Color scheme',
+  '切换配色方案': 'Switch color scheme',
+  '碧潮': 'Deep Teal',
+  '晴空蓝': 'Sapphire',
+  '星夜靛': 'Indigo',
+  '暖砂陶': 'Terracotta',
+  '绯莓': 'Rose Berry',
+  '墨韵': 'Graphite',
+  '碧潮、晴空蓝、星夜靛、暖砂陶、绯莓、墨韵': 'Deep Teal, Sapphire, Indigo, Terracotta, Rose Berry, Graphite',
 }
 

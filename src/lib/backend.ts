@@ -4,6 +4,7 @@ import {
   normalizeDnsQueryResult,
   normalizeExitIp,
   normalizeKernel,
+  normalizePalette,
   normalizeParseNodesResult,
   normalizeRuleRow,
   normalizeSnapshot,
@@ -21,6 +22,7 @@ import {
   type HotkeySettings,
   type LandingRule,
   type OverridePreview,
+  type PalettePreference,
   type ParseNodesResult,
   type KernelChannel,
   type KernelSettings,
@@ -65,6 +67,7 @@ export interface Backend {
   readonly live: boolean
   shell(): Promise<ShellState>
   setTheme(theme: ThemePreference): Promise<void>
+  setPalette(palette: PalettePreference): Promise<void>
   /** Store the language preference and return the effective locale (R42). */
   setLanguage(language: LanguagePreference): Promise<ShellState>
   setEntry(entry: string): Promise<void>
@@ -288,11 +291,13 @@ function createTauriBackend(): Backend {
   }
   const shellInfo = (raw: {
     theme?: unknown
+    palette?: unknown
     last_entry?: unknown
     language?: unknown
     locale?: unknown
   }): ShellState => ({
     theme: raw.theme === 'light' || raw.theme === 'dark' ? raw.theme : 'system',
+    palette: normalizePalette(raw.palette),
     last_entry: typeof raw.last_entry === 'string' ? raw.last_entry : 'home',
     language: normalizeLanguage(raw.language),
     locale: normalizeLocale(raw.locale),
@@ -305,6 +310,9 @@ function createTauriBackend(): Backend {
     },
     async setTheme(theme) {
       await call('set_theme', { theme })
+    },
+    async setPalette(palette) {
+      await call('set_palette', { palette })
     },
     async setLanguage(language) {
       return shellInfo(await call<Record<string, unknown>>('set_language', { language }))

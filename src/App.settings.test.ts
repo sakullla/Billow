@@ -30,6 +30,8 @@ const body = () => new DOMWrapper(document.body)
 afterEach(() => {
   mounted.splice(0).forEach((wrapper) => wrapper.unmount())
   localStorage.clear()
+  document.documentElement.removeAttribute('data-theme')
+  document.documentElement.removeAttribute('data-palette')
   document.body.innerHTML = ''
   vi.useRealTimers()
 })
@@ -50,6 +52,7 @@ describe('settings catalog', () => {
     expect(searchSettings('mtu', desktop).map((entry) => entry.id)).toContain('tun-mtu')
     expect(searchSettings('enhanced-mode', desktop).map((entry) => entry.id)).toEqual(['dns-mode'])
     expect(searchSettings('端口', desktop).map((entry) => entry.id)).toContain('mixed-port')
+    expect(searchSettings('配色', desktop).map((entry) => entry.id)).toContain('palette')
     expect(searchSettings('bypass', android)).toEqual([])
     expect(searchSettings('uwp', { ...desktop, windows: false })).toEqual([])
   })
@@ -161,5 +164,44 @@ describe('settings page', () => {
     await wrapper.find('[data-testid="open-network"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-pane="network"]').exists()).toBe(true)
+  })
+
+  it('switches color palettes immediately, persists them across restarts, and resets to default teal', async () => {
+    const { wrapper, backend } = await mountApp()
+    storeOf(wrapper).go('settings')
+    await flushPromises()
+
+    const picker = wrapper.find('[data-testid="palette-picker"]')
+    expect(picker.exists()).toBe(true)
+    expect(picker.findAll('.palette-chip').map((chip) => chip.attributes('data-value'))).toEqual([
+      'teal',
+      'sapphire',
+      'indigo',
+      'terracotta',
+      'berry',
+      'graphite',
+    ])
+    expect(document.documentElement.getAttribute('data-palette')).toBeNull()
+
+    await picker.find('[data-value="indigo"]').trigger('click')
+    await flushPromises()
+    expect(document.documentElement.getAttribute('data-palette')).toBe('indigo')
+    expect(picker.find('[data-value="indigo"]').attributes('aria-checked')).toBe('true')
+
+    // Persists through backend shell state on restart
+    wrapper.unmount()
+    mounted.splice(0, mounted.length)
+    document.documentElement.removeAttribute('data-palette')
+    const restarted = mount(App, { props: { backend, width: 1200 }, attachTo: document.body })
+    mounted.push(restarted)
+    await settle(50)
+    expect(document.documentElement.getAttribute('data-palette')).toBe('indigo')
+
+    // Cycling palettes via store helper advances through the list and back to default teal
+    const store = storeOf(restarted)
+    expect(store.cyclePalette()).toBe('terracotta')
+    expect(document.documentElement.getAttribute('data-palette')).toBe('terracotta')
+    store.setPalette('teal')
+    expect(document.documentElement.getAttribute('data-palette')).toBeNull()
   })
 })

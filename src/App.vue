@@ -147,10 +147,29 @@ function goBack() {
 }
 provide('connectionBack', goBack)
 
-// ── System bars follow the effective theme (Android edge-to-edge) ──
+// ── System bars & theme-color meta follow the effective theme & palette ──
+const PALETTE_BG: Record<string, { light: string; dark: string }> = {
+  teal: { light: '#f5f8f8', dark: '#0b1113' },
+  sapphire: { light: '#f5f7fb', dark: '#0c1017' },
+  indigo: { light: '#f6f6fb', dark: '#0d0d16' },
+  terracotta: { light: '#faf7f2', dark: '#13100d' },
+  berry: { light: '#faf6f8', dark: '#130d12' },
+  graphite: { light: '#f6f6f7', dark: '#0c0c0e' },
+}
 const prefersDark = ref(typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true)
 const darkTheme = computed(() => store.theme.value === 'dark' || (store.theme.value === 'system' && prefersDark.value))
 watch(darkTheme, (dark) => syncSystemBars(dark), { immediate: true })
+watch(
+  [darkTheme, store.palette],
+  ([dark, palette]) => {
+    const colors = PALETTE_BG[palette] ?? PALETTE_BG.teal!
+    const content = dark ? colors.dark : colors.light
+    document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
+      meta.setAttribute('content', content)
+    })
+  },
+  { immediate: true },
+)
 let darkQuery: MediaQueryList | null = null
 function onSchemeChange(event: MediaQueryListEvent) {
   prefersDark.value = event.matches
@@ -326,6 +345,9 @@ function onPaletteAction(id: string) {
       break
     case 'toggle-theme':
       store.cycleTheme()
+      break
+    case 'cycle-palette':
+      store.cyclePalette()
       break
     case 'open-logs':
       store.go('logs')

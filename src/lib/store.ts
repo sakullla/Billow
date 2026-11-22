@@ -6,6 +6,8 @@ import { applyLocale, normalizeLanguage, normalizeLocale, t, tr } from './i18n'
 import { runPool } from './pool'
 import {
   emptySnapshot,
+  normalizePalette,
+  PALETTES,
   type AppInfo,
   type ClosedConnectionRow,
   type ConnectionRow,
@@ -19,6 +21,7 @@ import {
   type LandingRule,
   type Mode,
   type NodeGroup,
+  type PalettePreference,
   type SaveCustomNodeInput,
   type Snapshot,
   type ThemePreference,
@@ -161,6 +164,13 @@ export function applyTheme(preference: ThemePreference) {
   else root.setAttribute('data-theme', preference)
 }
 
+export function applyPalette(preference: PalettePreference) {
+  const root = document.documentElement
+  const next = normalizePalette(preference)
+  if (next === 'teal') root.removeAttribute('data-palette')
+  else root.setAttribute('data-palette', next)
+}
+
 function reuseEqual<T>(previous: T, incoming: T): T {
   return previous === incoming || JSON.stringify(previous) === JSON.stringify(incoming) ? previous : incoming
 }
@@ -171,6 +181,7 @@ export function createStore(backend: Backend) {
   const kernel = ref<KernelStatus>({ channel: 'stable', failure: null, ready: false, version: null })
   const app = ref<AppInfo | null>(null)
   const theme = ref<ThemePreference>('system')
+  const palette = ref<PalettePreference>('teal')
   /** Stored language preference; the dictionary locale comes from the backend (R42). */
   const language = ref<LanguagePreference>('system')
   const page = ref<PageId>('home')
@@ -970,6 +981,7 @@ export function createStore(backend: Backend) {
       const shell = await backend.shell()
       if (!isCurrent(session)) return
       theme.value = shell.theme
+      palette.value = normalizePalette(shell.palette)
       language.value = normalizeLanguage(shell.language)
       applyLocale(normalizeLocale(shell.locale))
       page.value = resolvePage(shell.last_entry)
@@ -978,6 +990,7 @@ export function createStore(backend: Backend) {
     }
     if (!isCurrent(session)) return
     applyTheme(theme.value)
+    applyPalette(palette.value)
     try {
       const next = await backend.state()
       if (!isCurrent(session)) return
@@ -1107,6 +1120,13 @@ export function createStore(backend: Backend) {
     void backend.setTheme(next).catch(console.error)
   }
 
+  function setPalette(next: PalettePreference) {
+    const resolved = normalizePalette(next)
+    palette.value = resolved
+    applyPalette(resolved)
+    void backend.setPalette(resolved).catch(console.error)
+  }
+
   /** Switching takes effect at once; the backend answers with the effective locale (R42). */
   async function setLanguage(next: LanguagePreference) {
     const preference = normalizeLanguage(next)
@@ -1126,9 +1146,11 @@ export function createStore(backend: Backend) {
     try {
       const shell = await backend.shell()
       theme.value = shell.theme
+      palette.value = normalizePalette(shell.palette)
       language.value = normalizeLanguage(shell.language)
       applyLocale(normalizeLocale(shell.locale))
       applyTheme(theme.value)
+      applyPalette(palette.value)
     } catch (error) {
       console.error(error)
     }
@@ -1273,6 +1295,7 @@ export function createStore(backend: Backend) {
     kernel,
     app,
     theme,
+    palette,
     language,
     page,
     focusGroup,
@@ -1337,6 +1360,7 @@ export function createStore(backend: Backend) {
     stop,
     go,
     setTheme,
+    setPalette,
     setLanguage,
     refreshShell,
     exportBackup,
@@ -1350,6 +1374,11 @@ export function createStore(backend: Backend) {
       const order: ThemePreference[] = ['system', 'light', 'dark']
       const next = order[(order.indexOf(theme.value) + 1) % order.length] ?? 'system'
       setTheme(next)
+      return next
+    },
+    cyclePalette() {
+      const next = PALETTES[(PALETTES.indexOf(palette.value) + 1) % PALETTES.length] ?? 'teal'
+      setPalette(next)
       return next
     },
     refresh: () => run(null, () => backend.state()),

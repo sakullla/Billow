@@ -16,6 +16,7 @@ import {
   emptySnapshot,
   localDateKey,
   normalizeCustomNodesState,
+  normalizePalette,
   shiftDateKey,
   type AppInfo,
   type CustomNode,
@@ -34,6 +35,7 @@ import {
   type Locale,
   type LogLine,
   type NodeGroup,
+  type PalettePreference,
   type ParseItemError,
   type ParseNodesResult,
   type ParsedCustomNode,
@@ -278,6 +280,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   state.platform = options.platform ?? 'desktop'
   state.mode = 'rule'
   let theme: ThemePreference = 'system'
+  let palette: PalettePreference = 'teal'
   let entry = 'home'
   let language: LanguagePreference = 'system'
   /** WebDAV account, the last connection test and the backups in the cloud (R38). */
@@ -1079,6 +1082,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         },
         shell: {
           theme,
+          palette,
           close_to_tray: app.close_to_tray,
           silent_start: app.silent_start,
           language,
@@ -1175,6 +1179,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     // App settings travel too; platform-only ones (WebDAV credentials, window
     // size, the current page) are not in the file at all.
     if (shell.theme === 'light' || shell.theme === 'dark' || shell.theme === 'system') theme = shell.theme
+    if (shell.palette !== undefined) palette = normalizePalette(shell.palette)
     if (shell.language === 'en' || shell.language === 'zh-CN') language = shell.language
     if (typeof shell.close_to_tray === 'boolean' || typeof shell.silent_start === 'boolean') {
       app = {
@@ -1266,14 +1271,17 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   return {
     live: false,
     async shell() {
-      return { theme, last_entry: entry, language, locale: resolveLanguage(language, systemLocale) }
+      return { theme, palette, last_entry: entry, language, locale: resolveLanguage(language, systemLocale) }
     },
     async setTheme(next) {
       theme = next
     },
+    async setPalette(next) {
+      palette = normalizePalette(next)
+    },
     async setLanguage(next) {
       language = next
-      return { theme, last_entry: entry, language, locale: resolveLanguage(language, systemLocale) }
+      return { theme, palette, last_entry: entry, language, locale: resolveLanguage(language, systemLocale) }
     },
     async setEntry(next) {
       entry = next
