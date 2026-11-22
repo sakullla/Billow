@@ -2,14 +2,21 @@
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { registerLayer } from '../lib/ui/focus'
+import GroupIcon from './GroupIcon.vue'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 
 export interface SelectOption {
   value: string | number
   label: string
-  /** Secondary text, e.g. a count; shown as a subtle badge/right-aligned count. */
+  /** Secondary text, e.g. a count or active node; shown as a subtle right-aligned pill. */
   hint?: string
+  /** Built-in Icon name when the option has a semantic glyph. */
+  icon?: string
+  /** Optional proxy-group remote/data icon URL (rendered via GroupIcon). */
+  groupIcon?: string | null
+  /** Optional proxy-group type for GroupIcon fallback glyph. */
+  groupType?: string
 }
 
 defineOptions({ inheritAttrs: false })
@@ -49,6 +56,7 @@ const visibleOptions = computed(() => {
   return props.options.filter(
     (option) =>
       option.label.toLowerCase().includes(needle) ||
+      (option.hint?.toLowerCase().includes(needle) ?? false) ||
       String(option.value).toLowerCase().includes(needle),
   )
 })
@@ -61,24 +69,28 @@ function updatePosition() {
   const vh = window.innerHeight || 768
   const gap = 6
   const margin = 10
-  const spaceBelow = vh - rect.bottom - margin
-  const spaceAbove = rect.top - margin
-  const placeAbove = spaceBelow < 200 && spaceAbove > spaceBelow
+  const spaceBelow = Math.max(0, vh - rect.bottom - margin)
+  const spaceAbove = Math.max(0, rect.top - margin)
+  const placeAbove = spaceBelow < 280 && spaceAbove > spaceBelow
   flipAbove.value = placeAbove
 
   const minWidth = Math.max(Math.round(rect.width), 172)
-  const maxWidth = Math.min(340, vw - margin * 2)
+  const maxWidth = Math.min(Math.max(minWidth, 380), vw - margin * 2)
   const left = Math.max(margin, Math.min(Math.round(rect.left), vw - minWidth - margin))
-  const maxHeight = Math.max(140, Math.min(320, (placeAbove ? spaceAbove : spaceBelow) - gap))
+  const rawAvailable = Math.max(0, (placeAbove ? spaceAbove : spaceBelow) - gap)
+  const availableSpace = Math.min(340, Math.max(88, rawAvailable))
+  const chrome = searchable.value ? 48 : 12
+  const listMaxHeight = Math.max(56, Math.min(280, availableSpace - chrome))
 
   popoverStyle.value = {
     minWidth: `${minWidth}px`,
     maxWidth: `${maxWidth}px`,
+    maxHeight: `${Math.round(availableSpace)}px`,
     left: `${left}px`,
     ...(placeAbove
       ? { bottom: `${Math.round(vh - rect.top + gap)}px` }
       : { top: `${Math.round(rect.bottom + gap)}px` }),
-    '--select-max-h': `${Math.round(maxHeight)}px`,
+    '--select-max-h': `${Math.round(listMaxHeight)}px`,
   }
 }
 
@@ -230,6 +242,14 @@ onBeforeUnmount(detachDesktopListeners)
       v-bind="$attrs"
       @click="openPopover"
     >
+      <GroupIcon
+        v-if="current && (current.groupIcon !== undefined || current.groupType)"
+        :icon="current.groupIcon"
+        :type="current.groupType"
+        :size="18"
+        class="select-option-icon"
+      />
+      <Icon v-else-if="current?.icon" :name="current.icon" :size="15" class="select-option-glyph" />
       <span class="select-trigger-text">{{ current?.label ?? tr('未选择') }}</span>
       <span v-if="current?.hint" class="select-trigger-hint mono">{{ current.hint }}</span>
       <Icon name="chevron-down" :size="14" class="select-chevron" />
@@ -266,6 +286,14 @@ onBeforeUnmount(detachDesktopListeners)
           :data-option-value="String(option.value)"
           @click="choose(option)"
         >
+          <GroupIcon
+            v-if="option.groupIcon !== undefined || option.groupType"
+            :icon="option.groupIcon"
+            :type="option.groupType"
+            :size="20"
+            class="select-option-icon"
+          />
+          <Icon v-else-if="option.icon" :name="option.icon" :size="16" class="select-option-glyph" />
           <span class="option-label">{{ option.label }}</span>
           <span v-if="option.hint" class="option-hint">{{ option.hint }}</span>
           <Icon v-if="option.value === modelValue" name="check" :size="18" :stroke="2.4" class="option-check" />
@@ -288,6 +316,14 @@ onBeforeUnmount(detachDesktopListeners)
       @click="toggle"
       @keydown="onTriggerKeydown"
     >
+      <GroupIcon
+        v-if="current && (current.groupIcon !== undefined || current.groupType)"
+        :icon="current.groupIcon"
+        :type="current.groupType"
+        :size="18"
+        class="select-option-icon"
+      />
+      <Icon v-else-if="current?.icon" :name="current.icon" :size="15" class="select-option-glyph" />
       <span class="select-trigger-text">{{ current?.label ?? tr('未选择') }}</span>
       <span v-if="current?.hint" class="select-trigger-hint mono">{{ current.hint }}</span>
       <Icon name="chevron-down" :size="14" class="select-chevron" />
@@ -341,6 +377,14 @@ onBeforeUnmount(detachDesktopListeners)
           >
             <Icon v-if="option.value === modelValue" name="check" :size="14" :stroke="2.5" class="select-option-check" />
             <span v-else class="select-option-check-slot" aria-hidden="true" />
+            <GroupIcon
+              v-if="option.groupIcon !== undefined || option.groupType"
+              :icon="option.groupIcon"
+              :type="option.groupType"
+              :size="18"
+              class="select-option-icon"
+            />
+            <Icon v-else-if="option.icon" :name="option.icon" :size="15" class="select-option-glyph" />
             <span class="select-option-label">{{ option.label }}</span>
             <span v-if="option.hint" class="select-option-hint mono">{{ option.hint }}</span>
           </button>

@@ -12,7 +12,7 @@ import {
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import Segmented from './Segmented.vue'
-import SelectField from './SelectField.vue'
+import SelectField, { type SelectOption } from './SelectField.vue'
 import Toggle from './Toggle.vue'
 
 const props = defineProps<{
@@ -32,6 +32,7 @@ const enabled = ref(true)
 const note = ref('')
 const dialerChoice = ref('direct')
 const fixedProxyName = ref('')
+const showPassword = ref(false)
 const error = ref<string | null>(null)
 
 const simple = ref<SimpleProxyForm>({
@@ -59,16 +60,25 @@ const protocolOptions = [
   { value: 'http', label: 'HTTP / HTTPS' },
 ]
 
-const dialerOptions = computed(() => {
-  const options: { value: string; label: string }[] = [
-    { value: 'direct', label: t('customNodes.dialer.direct') },
-    { value: 'profile_group:', label: t('customNodes.dialer.profileGroup') },
-  ]
+const dialerOptions = computed<SelectOption[]>(() => {
+  const hasSubscription = store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value
+  const options: SelectOption[] = hasSubscription
+    ? [
+        { value: 'profile_group:', label: t('customNodes.dialer.profileGroup'), icon: 'globe', hint: tr('推荐') },
+        { value: 'direct', label: t('customNodes.dialer.direct'), icon: 'zap' },
+      ]
+    : [
+        { value: 'direct', label: t('customNodes.dialer.direct'), icon: 'zap', hint: tr('推荐') },
+        { value: 'profile_group:', label: t('customNodes.dialer.profileGroup'), icon: 'globe' },
+      ]
   for (const group of store.snapshot.value.node_catalog) {
     if (group.kind === 'manual' && !group.hidden && group.name !== LANDING_GROUP_NAME) {
       options.push({
         value: `profile_group:${group.name}`,
-        label: t('customNodes.dialer.profileGroupNamed', { group: group.name }),
+        label: group.name,
+        hint: group.now || undefined,
+        groupIcon: group.icon,
+        groupType: group.group_type || 'select',
       })
     }
   }
@@ -78,8 +88,10 @@ const dialerOptions = computed(() => {
     options.push({
       value: `custom_node:${candidate.id}`,
       label: candidate.enabled
-        ? t('customNodes.dialer.customNode', { name: candidate.name })
-        : `${t('customNodes.dialer.customNode', { name: candidate.name })}（${tr('已停用')}）`,
+        ? candidate.name
+        : `${candidate.name}（${tr('已停用')}）`,
+      hint: tr('自建'),
+      icon: 'layers',
     })
   }
   const current = dialerChoice.value
@@ -89,6 +101,7 @@ const dialerOptions = computed(() => {
       options.push({
         value: current,
         label: tr('经自建节点「{0}」中转（已删除）', { 0: missingId }),
+        icon: 'alert',
       })
     } else if (current.startsWith('profile_group:')) {
       const missingGroup = current.slice('profile_group:'.length).trim()
@@ -96,11 +109,12 @@ const dialerOptions = computed(() => {
         options.push({
           value: current,
           label: tr('通过订阅组「{0}」中转（当前订阅不存在）', { 0: missingGroup }),
+          icon: 'alert',
         })
       }
     }
   }
-  options.push({ value: 'fixed_proxy', label: tr('指定订阅节点名…') })
+  options.push({ value: 'fixed_proxy', label: tr('指定订阅节点名…'), icon: 'locate' })
   return options
 })
 
@@ -194,6 +208,7 @@ watch(
   ([open, node]) => {
     if (!open) return
     error.value = null
+    showPassword.value = false
     if (!node) {
       mode.value = 'simple'
       enabled.value = true
@@ -312,174 +327,217 @@ async function submit() {
 <template>
   <Modal
     :open="open"
+    wide
     :title="node ? t('customNodes.edit.titleEdit') : t('customNodes.edit.titleAdd')"
+    :subtitle="t('customNodes.subtitle')"
     @close="emit('close')"
   >
-    <form class="stack" novalidate @submit.prevent="submit">
+    <form class="stack custom-edit-form" novalidate @submit.prevent="submit">
       <Segmented
         :model-value="mode"
         :options="modeOptions"
         size="sm"
+        block
         :label="tr('编辑方式')"
         data-testid="custom-node-edit-mode"
         @update:model-value="(value) => { mode = value === 'yaml' ? 'yaml' : 'simple'; error = null }"
       />
 
       <template v-if="mode === 'simple'">
-        <div class="stack" data-testid="custom-node-simple-form">
-          <label class="field">
-            <span>{{ t('customNodes.edit.name') }}</span>
-            <input
-              v-model="simple.name"
-              type="text"
-              :placeholder="tr('例如：美国住宅落地')"
-              data-testid="custom-node-name"
-            />
-          </label>
-
-          <div class="custom-form-grid">
-            <div class="field">
-              <span>{{ t('customNodes.edit.protocol') }}</span>
-              <SelectField
-                :model-value="simple.protocol"
-                :options="protocolOptions"
-                :sheet="compact"
-                :label="t('customNodes.edit.protocol')"
-                class="field-select"
-                data-testid="custom-node-protocol"
-                @update:model-value="(value) => { simple.protocol = String(value) }"
+        <div class="custom-form-section" data-testid="custom-node-simple-form">
+          <p class="custom-section-title">{{ tr('连接信息') }}</p>
+          <div class="custom-form-card stack-sm">
+            <label class="field">
+              <span>{{ t('customNodes.edit.name') }}</span>
+              <input
+                v-model="simple.name"
+                type="text"
+                :placeholder="tr('例如：美国住宅落地')"
+                data-testid="custom-node-name"
               />
+            </label>
+
+            <div class="custom-form-grid custom-server-grid">
+              <div class="field">
+                <span>{{ t('customNodes.edit.protocol') }}</span>
+                <SelectField
+                  :model-value="simple.protocol"
+                  :options="protocolOptions"
+                  :sheet="compact"
+                  :label="t('customNodes.edit.protocol')"
+                  class="field-select"
+                  data-testid="custom-node-protocol"
+                  @update:model-value="(value) => { simple.protocol = String(value) }"
+                />
+              </div>
+
+              <label class="field">
+                <span>{{ t('customNodes.edit.server') }}</span>
+                <input
+                  v-model="simple.server"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="1.2.3.4"
+                  data-testid="custom-node-server"
+                />
+              </label>
+
+              <label class="field">
+                <span>{{ t('customNodes.edit.port') }}</span>
+                <input
+                  v-model.number="simple.port"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  data-testid="custom-node-port"
+                />
+              </label>
             </div>
 
-            <label class="field">
-              <span>{{ t('customNodes.edit.port') }}</span>
-              <input
-                v-model.number="simple.port"
-                type="number"
-                min="1"
-                max="65535"
-                data-testid="custom-node-port"
-              />
-            </label>
+            <div class="custom-form-grid">
+              <label class="field">
+                <span>{{ t('customNodes.edit.username') }}</span>
+                <input
+                  v-model="simple.username"
+                  type="text"
+                  spellcheck="false"
+                  autocomplete="off"
+                  data-testid="custom-node-username"
+                />
+              </label>
+              <label class="field">
+                <span>{{ t('customNodes.edit.password') }}</span>
+                <div class="input-with-action">
+                  <input
+                    v-model="simple.password"
+                    class="input"
+                    :type="showPassword ? 'text' : 'password'"
+                    autocomplete="off"
+                    data-testid="custom-node-password"
+                  />
+                  <button
+                    type="button"
+                    class="icon-btn xs"
+                    :title="showPassword ? tr('隐藏密码') : tr('显示密码')"
+                    :aria-label="showPassword ? tr('隐藏密码') : tr('显示密码')"
+                    :aria-pressed="showPassword"
+                    @click="showPassword = !showPassword"
+                  >
+                    <Icon :name="showPassword ? 'eye-off' : 'eye'" :size="15" />
+                  </button>
+                </div>
+              </label>
+            </div>
           </div>
 
-          <label class="field">
-            <span>{{ t('customNodes.edit.server') }}</span>
-            <input
-              v-model="simple.server"
-              type="text"
-              spellcheck="false"
-              placeholder="1.2.3.4"
-              data-testid="custom-node-server"
-            />
-          </label>
-
-          <div class="custom-form-grid">
-            <label class="field">
-              <span>{{ t('customNodes.edit.username') }}</span>
-              <input
-                v-model="simple.username"
-                type="text"
-                spellcheck="false"
-                autocomplete="off"
-                data-testid="custom-node-username"
+          <div class="custom-settings-group">
+            <div class="custom-setting-row">
+              <div class="grow min0">
+                <span class="custom-setting-title">{{ t('customNodes.edit.tls') }}</span>
+                <span class="muted small">{{ tr('服务端启用 TLS/HTTPS 时开启') }}</span>
+              </div>
+              <Toggle v-model="simple.tls" :label="t('customNodes.edit.tls')" data-testid="custom-node-tls" />
+            </div>
+            <div v-if="simple.tls" class="custom-setting-row">
+              <div class="grow min0">
+                <span class="custom-setting-title">{{ t('customNodes.edit.skipCert') }}</span>
+                <span class="muted small">{{ tr('仅自签证书时开启') }}</span>
+              </div>
+              <Toggle
+                v-model="simple.skip_cert_verify"
+                :label="t('customNodes.edit.skipCert')"
+                data-testid="custom-node-skip-cert"
               />
-            </label>
-            <label class="field">
-              <span>{{ t('customNodes.edit.password') }}</span>
-              <input
-                v-model="simple.password"
-                type="password"
-                autocomplete="off"
-                data-testid="custom-node-password"
-              />
-            </label>
-          </div>
-
-          <div class="custom-switch-row">
-            <span>{{ t('customNodes.edit.tls') }}</span>
-            <Toggle v-model="simple.tls" :label="t('customNodes.edit.tls')" data-testid="custom-node-tls" />
-          </div>
-          <div v-if="simple.tls" class="custom-switch-row">
-            <span>{{ t('customNodes.edit.skipCert') }}</span>
-            <Toggle
-              v-model="simple.skip_cert_verify"
-              :label="t('customNodes.edit.skipCert')"
-              data-testid="custom-node-skip-cert"
-            />
-          </div>
-          <div v-if="simple.protocol === 'socks5'" class="custom-switch-row">
-            <span>{{ t('customNodes.edit.udp') }}</span>
-            <Toggle v-model="simple.udp" :label="t('customNodes.edit.udp')" data-testid="custom-node-udp" />
+            </div>
+            <div v-if="simple.protocol === 'socks5'" class="custom-setting-row">
+              <div class="grow min0">
+                <span class="custom-setting-title">{{ t('customNodes.edit.udp') }}</span>
+                <span class="muted small">{{ tr('允许 DNS 与 QUIC/UDP 流量经此节点转发') }}</span>
+              </div>
+              <Toggle v-model="simple.udp" :label="t('customNodes.edit.udp')" data-testid="custom-node-udp" />
+            </div>
           </div>
         </div>
       </template>
 
       <template v-else>
-        <div class="stack" data-testid="custom-node-yaml-form">
-          <label class="field">
-            <span>{{ t('customNodes.edit.name') }}</span>
-            <input
-              v-model="yamlName"
-              type="text"
-              :placeholder="tr('留空使用 YAML 中的 name')"
-              data-testid="custom-node-yaml-name"
-            />
-          </label>
-          <label class="field">
-            <span>{{ t('customNodes.yamlEdit') }}</span>
-            <textarea
-              v-model="yamlText"
-              class="mono custom-yaml-textarea"
-              rows="7"
-              spellcheck="false"
-              :placeholder="tr('name: 我的节点\ntype: anytls\nserver: example.com\nport: 443\npassword: secret')"
-              data-testid="custom-node-yaml-input"
-            />
-          </label>
+        <div class="custom-form-section" data-testid="custom-node-yaml-form">
+          <p class="custom-section-title">{{ t('customNodes.yamlEdit') }}</p>
+          <div class="custom-form-card stack-sm">
+            <label class="field">
+              <span>{{ t('customNodes.edit.name') }}</span>
+              <input
+                v-model="yamlName"
+                type="text"
+                :placeholder="tr('留空使用 YAML 中的 name')"
+                data-testid="custom-node-yaml-name"
+              />
+            </label>
+            <label class="field">
+              <span>{{ t('customNodes.yamlEdit') }}</span>
+              <textarea
+                v-model="yamlText"
+                class="mono custom-yaml-textarea"
+                rows="7"
+                spellcheck="false"
+                :placeholder="tr('name: 我的节点\ntype: anytls\nserver: example.com\nport: 443\npassword: secret')"
+                data-testid="custom-node-yaml-input"
+              />
+            </label>
+          </div>
         </div>
       </template>
 
-      <div class="field" data-testid="custom-node-dialer">
-        <span>{{ t('customNodes.dialer.label') }}</span>
-        <SelectField
-          :model-value="dialerChoice"
-          :options="dialerOptions"
-          :sheet="compact"
-          :label="t('customNodes.dialer.label')"
-          class="field-select"
-          @update:model-value="(value) => { dialerChoice = String(value); error = null }"
-        />
-        <p v-if="dialerWarning" class="field-error small custom-target-warning" role="status" data-testid="custom-node-dialer-warning">
-          <Icon name="alert" :size="13" />
-          <span>{{ dialerWarning }}</span>
-        </p>
-      </div>
+      <div class="custom-form-section">
+        <p class="custom-section-title">{{ tr('链式与状态') }}</p>
+        <div class="custom-form-card stack-sm">
+          <div class="field" data-testid="custom-node-dialer">
+            <span>{{ t('customNodes.dialer.label') }}</span>
+            <SelectField
+              :model-value="dialerChoice"
+              :options="dialerOptions"
+              :sheet="compact"
+              :label="t('customNodes.dialer.label')"
+              class="field-select"
+              @update:model-value="(value) => { dialerChoice = String(value); error = null }"
+            />
+            <p v-if="dialerWarning" class="field-error small custom-target-warning" role="status" data-testid="custom-node-dialer-warning">
+              <Icon name="alert" :size="13" />
+              <span>{{ dialerWarning }}</span>
+            </p>
+          </div>
 
-      <label v-if="dialerChoice === 'fixed_proxy'" class="field">
-        <span>{{ tr('固定中转节点或组名') }}</span>
-        <input
-          v-model="fixedProxyName"
-          type="text"
-          spellcheck="false"
-          :placeholder="tr('例如：香港 01')"
-          data-testid="custom-node-fixed-proxy"
-        />
-      </label>
+          <label v-if="dialerChoice === 'fixed_proxy'" class="field">
+            <span>{{ tr('固定中转节点或组名') }}</span>
+            <input
+              v-model="fixedProxyName"
+              type="text"
+              spellcheck="false"
+              :placeholder="tr('例如：香港 01')"
+              data-testid="custom-node-fixed-proxy"
+            />
+          </label>
 
-      <label class="field">
-        <span>{{ t('customNodes.edit.note') }}</span>
-        <input
-          v-model="note"
-          type="text"
-          :placeholder="tr('可选备注，便于区分用途')"
-          data-testid="custom-node-note"
-        />
-      </label>
+          <label class="field">
+            <span>{{ t('customNodes.edit.note') }}</span>
+            <input
+              v-model="note"
+              type="text"
+              :placeholder="tr('可选备注，便于区分用途')"
+              data-testid="custom-node-note"
+            />
+          </label>
+        </div>
 
-      <div class="custom-switch-row">
-        <span>{{ tr('启用此节点') }}</span>
-        <Toggle v-model="enabled" :label="tr('启用此节点')" data-testid="custom-node-enabled" />
+        <div class="custom-settings-group">
+          <div class="custom-setting-row">
+            <div class="grow min0">
+              <span class="custom-setting-title">{{ tr('启用此节点') }}</span>
+              <span class="muted small">{{ tr('停用后保留配置，不注入运行配置') }}</span>
+            </div>
+            <Toggle v-model="enabled" :label="tr('启用此节点')" data-testid="custom-node-enabled" />
+          </div>
+        </div>
       </div>
 
       <p v-if="error" class="field-error small" role="alert" data-testid="custom-node-edit-error">

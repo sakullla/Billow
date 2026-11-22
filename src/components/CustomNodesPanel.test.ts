@@ -65,11 +65,51 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     expect(mobileTabs).toEqual(['home', 'proxies', 'profiles', 'settings'])
   })
 
-  it('hides custom-node card by default for pure subscription users (zero clutter)', async () => {
+  it('shows compact custom-nodes entry card while hiding full management panel for pure subscription users', async () => {
     const { store } = await setupProfiles()
     expect(store.hasProfiles.value).toBe(true)
     expect(store.hasCustomNodes.value).toBe(false)
     expect(document.querySelector('[data-testid="custom-nodes-panel"]')).toBeNull()
+    const entry = find('[data-testid="custom-nodes-entry"]')
+    expect(entry.textContent).toContain('自建节点与落地')
+    expect(entry.querySelector('[data-testid="add-custom-node-entry"]')).not.toBeNull()
+    expect(entry.querySelector('[data-testid="add-custom-node-manual"]')).not.toBeNull()
+  })
+
+  it('renders proxy group icons in dialer dropdown and clamps/flips popover height near viewport bottom', async () => {
+    const { store } = await setupProfiles()
+    // Ensure a manual group with an icon exists in node_catalog
+    const catalog = store.snapshot.value.node_catalog
+    const manualGroup = catalog.find((group) => group.kind === 'manual' && !group.hidden)
+    expect(manualGroup).toBeTruthy()
+
+    await click('[data-testid="add-custom-node-manual"]')
+    const dialerTrigger = find<HTMLButtonElement>('[data-testid="custom-node-dialer"] button')
+    // Simulate trigger sitting near the bottom of a 768px viewport
+    vi.spyOn(dialerTrigger, 'getBoundingClientRect').mockReturnValue({
+      top: 660,
+      bottom: 700,
+      left: 200,
+      right: 520,
+      width: 320,
+      height: 40,
+      x: 200,
+      y: 660,
+      toJSON: () => ({}),
+    })
+
+    dialerTrigger.click()
+    await flushPromises()
+
+    const popover = find<HTMLElement>('[data-testid="select-popover"]')
+    expect(popover.classList.contains('above')).toBe(true)
+    expect(popover.style.maxHeight).toMatch(/^\d+px$/)
+    expect(popover.style.getPropertyValue('--select-max-h')).toMatch(/^\d+px$/)
+
+    // Manual subscription group option renders GroupIcon (.select-option-icon)
+    const groupOption = find<HTMLElement>(`[role="option"][data-option-value="profile_group:${manualGroup!.name}"]`)
+    expect(groupOption.textContent).toContain(manualGroup!.name)
+    expect(groupOption.querySelector('.select-option-icon')).not.toBeNull()
   })
 
   it('auto-detects share links in quick-import and batch-imports with partial error isolation (including anytls://)', async () => {

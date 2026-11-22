@@ -5,7 +5,7 @@ import { useStore } from '../lib/store'
 import { LANDING_GROUP_NAME, type DialerTarget, type ParseNodesResult } from '../lib/types'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
-import SelectField from './SelectField.vue'
+import SelectField, { type SelectOption } from './SelectField.vue'
 
 const props = defineProps<{
   open: boolean
@@ -28,16 +28,25 @@ const submitError = ref<string | null>(null)
 let previewSeq = 0
 let previewTimer: ReturnType<typeof setTimeout> | null = null
 
-const dialerOptions = computed(() => {
-  const options: { value: string; label: string }[] = [
-    { value: 'direct', label: t('customNodes.dialer.direct') },
-    { value: 'profile_group:', label: t('customNodes.dialer.profileGroup') },
-  ]
+const dialerOptions = computed<SelectOption[]>(() => {
+  const hasSubscription = store.snapshot.value.profiles.length > 0 && !store.customProfileActive.value
+  const options: SelectOption[] = hasSubscription
+    ? [
+        { value: 'profile_group:', label: t('customNodes.dialer.profileGroup'), icon: 'globe', hint: tr('推荐') },
+        { value: 'direct', label: t('customNodes.dialer.direct'), icon: 'zap' },
+      ]
+    : [
+        { value: 'direct', label: t('customNodes.dialer.direct'), icon: 'zap', hint: tr('推荐') },
+        { value: 'profile_group:', label: t('customNodes.dialer.profileGroup'), icon: 'globe' },
+      ]
   for (const group of store.snapshot.value.node_catalog) {
     if (group.kind === 'manual' && !group.hidden && group.name !== LANDING_GROUP_NAME) {
       options.push({
         value: `profile_group:${group.name}`,
-        label: t('customNodes.dialer.profileGroupNamed', { group: group.name }),
+        label: group.name,
+        hint: group.now || undefined,
+        groupIcon: group.icon,
+        groupType: group.group_type || 'select',
       })
     }
   }
@@ -45,7 +54,9 @@ const dialerOptions = computed(() => {
     if (!node.enabled) continue
     options.push({
       value: `custom_node:${node.id}`,
-      label: t('customNodes.dialer.customNode', { name: node.name }),
+      label: node.name,
+      hint: tr('自建'),
+      icon: 'layers',
     })
   }
   return options

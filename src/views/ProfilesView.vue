@@ -935,9 +935,6 @@ const failedSubscriptionIds = computed(() =>
           <Icon v-else name="refresh" :size="15" />
           {{ updateAllLabel }}
         </button>
-        <button type="button" class="btn ghost sm" data-testid="add-custom-node-entry" @click="openCustomImport()">
-          <Icon name="globe" :size="15" /> {{ t('customNodes.add') }}
-        </button>
         <button type="button" class="btn primary sm" data-testid="add-profile" @click="store.adding.value = true">
           <Icon name="plus" :size="15" /> {{ tr('添加') }} </button>
       </div>
@@ -1204,6 +1201,35 @@ const failedSubscriptionIds = computed(() =>
       @open-edit="openCustomEdit"
       @open-rules="landingRulesOpen = true"
     />
+    <section v-else class="card custom-nodes-entry" data-testid="custom-nodes-entry">
+      <div class="custom-entry-icon" aria-hidden="true">
+        <Icon name="layers" :size="18" />
+      </div>
+      <div class="custom-entry-body grow min0">
+        <div class="custom-panel-title-row">
+          <h2>{{ t('customNodes.title') }}</h2>
+        </div>
+        <p class="muted small">{{ t('customNodes.subtitle') }}</p>
+      </div>
+      <div class="custom-entry-actions">
+        <button
+          type="button"
+          class="btn sm"
+          data-testid="add-custom-node-entry"
+          @click="openCustomImport()"
+        >
+          <Icon name="link" :size="14" /> {{ t('customNodes.import') }}
+        </button>
+        <button
+          type="button"
+          class="btn ghost sm"
+          data-testid="add-custom-node-manual"
+          @click="openCustomAdd"
+        >
+          <Icon name="plus" :size="14" /> {{ tr('手动添加') }}
+        </button>
+      </div>
+    </section>
 
     <Modal
       :open="Boolean(editing)"

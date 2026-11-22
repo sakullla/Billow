@@ -104,24 +104,29 @@ async function confirmDelete() {
 <template>
   <section class="card custom-nodes-panel" data-testid="custom-nodes-panel">
     <header class="card-head wrap-head">
-      <div class="grow min0">
-        <div class="custom-panel-title-row">
-          <h2>{{ t('customNodes.title') }}</h2>
-          <span class="tag sm">{{ t('customNodes.count', { count: nodes.length, enabled: enabledCount }) }}</span>
-          <span
-            v-if="store.customProfileActive.value"
-            class="tag accent sm"
-            data-testid="custom-profile-active-badge"
-          >
-            {{ t('customNodes.standaloneActive') }}
-          </span>
+      <div class="custom-panel-head-main grow min0">
+        <div class="custom-entry-icon" aria-hidden="true">
+          <Icon name="layers" :size="18" />
         </div>
-        <p class="muted small">{{ t('customNodes.subtitle') }}</p>
+        <div class="grow min0">
+          <div class="custom-panel-title-row">
+            <h2>{{ t('customNodes.title') }}</h2>
+            <span class="tag sm">{{ t('customNodes.count', { count: nodes.length, enabled: enabledCount }) }}</span>
+            <span
+              v-if="store.customProfileActive.value"
+              class="tag accent sm"
+              data-testid="custom-profile-active-badge"
+            >
+              {{ t('customNodes.standaloneActive') }}
+            </span>
+          </div>
+          <p class="muted small">{{ t('customNodes.subtitle') }}</p>
+        </div>
       </div>
       <div class="card-head-actions">
         <button
           type="button"
-          class="btn ghost sm"
+          class="btn sm"
           data-testid="open-landing-rules"
           @click="emit('openRules')"
         >
@@ -131,7 +136,7 @@ async function confirmDelete() {
         </button>
         <button
           type="button"
-          class="btn ghost sm"
+          class="btn sm"
           data-testid="open-custom-import"
           @click="emit('openImport')"
         >
@@ -139,7 +144,7 @@ async function confirmDelete() {
         </button>
         <button
           type="button"
-          class="btn ghost sm"
+          class="btn sm"
           data-testid="open-custom-add"
           @click="emit('openAdd')"
         >
@@ -148,11 +153,11 @@ async function confirmDelete() {
       </div>
     </header>
 
-    <div class="custom-nodes-controls">
-      <div v-if="store.snapshot.value.profiles.length > 0" class="custom-control-row">
+    <div class="custom-settings-group">
+      <div v-if="store.snapshot.value.profiles.length > 0" class="custom-setting-row">
         <div class="grow min0">
-          <strong>{{ t('customNodes.overlay') }}</strong>
-          <p class="muted small">{{ t('customNodes.overlayHint') }}</p>
+          <span class="custom-setting-title">{{ t('customNodes.overlay') }}</span>
+          <span class="muted small">{{ t('customNodes.overlayHint') }}</span>
         </div>
         <Toggle
           :model-value="customNodes.overlay_enabled"
@@ -163,16 +168,16 @@ async function confirmDelete() {
         />
       </div>
 
-      <div class="custom-control-row">
+      <div class="custom-setting-row">
         <div class="grow min0">
-          <strong>{{ store.customProfileActive.value ? t('customNodes.standaloneActive') : t('customNodes.useStandalone') }}</strong>
-          <p class="muted small">{{ t('customNodes.standaloneDetail') }}</p>
+          <span class="custom-setting-title">{{ store.customProfileActive.value ? t('customNodes.standaloneActive') : t('customNodes.useStandalone') }}</span>
+          <span class="muted small">{{ t('customNodes.standaloneDetail') }}</span>
         </div>
         <span v-if="store.customProfileActive.value" class="tag ok sm">{{ tr('使用中') }}</span>
         <button
           v-else
           type="button"
-          class="btn ghost sm"
+          class="btn sm"
           :disabled="enabledCount === 0 || Boolean(store.busy['customNodes:useProfile'])"
           data-testid="use-custom-profile"
           @click="activateCustomProfile"
@@ -197,13 +202,16 @@ async function confirmDelete() {
         :class="{ disabled: !node.enabled }"
         :data-custom-node="node.id"
       >
+        <div class="custom-node-icon" aria-hidden="true">
+          <Icon :name="node.dialer.kind === 'direct' ? 'zap' : 'globe'" :size="15" />
+        </div>
         <div class="grow min0">
           <div class="custom-node-name-row">
             <strong class="ellipsis" :title="node.name">{{ node.name }}</strong>
-            <span class="tag sm">{{ node.protocol.toUpperCase() }}</span>
+            <span class="tag sm mono">{{ node.protocol.toUpperCase() }}</span>
           </div>
           <p class="muted small custom-node-meta">
-            <span>{{ dialerLabel(node.dialer) }}</span>
+            <span class="ellipsis">{{ dialerLabel(node.dialer) }}</span>
             <span v-if="node.note" class="ellipsis">· {{ node.note }}</span>
           </p>
         </div>

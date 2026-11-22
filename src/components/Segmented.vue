@@ -7,6 +7,7 @@ const props = defineProps<{
   options: readonly { id: T; label: string; icon?: string }[]
   label?: string
   size?: 'sm' | 'md'
+  block?: boolean
   disabled?: boolean
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: T] }>()
@@ -38,7 +39,7 @@ function onKeydown(event: KeyboardEvent, index: number) {
 </script>
 
 <template>
-  <div ref="group" class="segmented" :class="size ?? 'md'" role="radiogroup" :aria-label="label">
+  <div ref="group" class="segmented" :class="[size ?? 'md', { block }]" role="radiogroup" :aria-label="label">
     <button
       v-for="(option, index) in options"
       :key="option.id"

@@ -1416,6 +1416,7 @@ select.input {
   flex-direction: column;
   gap: 4px;
   padding: 5px;
+  overflow: hidden;
   border-radius: 14px;
   background: color-mix(in srgb, var(--surface) 96%, transparent);
   backdrop-filter: saturate(1.6) blur(20px);
@@ -1432,6 +1433,7 @@ select.input {
   outline: none;
 }
 .select-search {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1460,14 +1462,18 @@ select.input {
   display: none;
 }
 .select-options {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 1px;
   max-height: var(--select-max-h, 280px);
   overflow-y: auto;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .select-option {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1495,6 +1501,17 @@ select.input {
   flex: none;
 }
 .select-option-check {
+  color: var(--accent-ink);
+}
+.select-option-icon {
+  flex: none;
+  border-radius: 5px;
+}
+.select-option-glyph {
+  flex: none;
+  color: var(--text-3);
+}
+.select-option.selected .select-option-glyph {
   color: var(--accent-ink);
 }
 .select-option-label {
@@ -8919,10 +8936,54 @@ details.cfg-section[open] .cfg-fold-icon {
 
 
 /* ───────────── Custom Nodes & Chain Proxy (R1–R7, R9) ───────────── */
+.custom-nodes-entry {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.custom-entry-icon {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.custom-entry-body h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 640;
+}
+
+.custom-entry-body p {
+  margin: 2px 0 0;
+}
+
+.custom-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
 .custom-nodes-panel {
   margin-top: 16px;
   display: flex;
   flex-direction: column;
+  gap: 12px;
+}
+
+.custom-panel-head-main {
+  display: flex;
+  align-items: center;
   gap: 12px;
 }
 
@@ -8933,26 +8994,58 @@ details.cfg-section[open] .cfg-fold-icon {
   gap: 8px;
 }
 
-.custom-nodes-controls {
+.custom-edit-form {
+  gap: 16px;
+}
+
+.segmented.block {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  width: 100%;
+}
+.segmented.block .segment {
+  justify-content: center;
+  width: 100%;
+}
+
+.custom-form-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 12px;
-  border-radius: 12px;
+}
+
+.custom-form-card {
+  padding: 14px;
+  border-radius: 14px;
   background: var(--sunken);
   border: 1px solid var(--border);
 }
 
-.custom-control-row {
+.custom-settings-group {
+  border-radius: 14px;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.custom-setting-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
+  padding: 11px 14px;
 }
 
-.custom-control-row + .custom-control-row {
-  padding-top: 8px;
+.custom-setting-row + .custom-setting-row {
   border-top: 1px solid var(--border);
+}
+
+.custom-setting-title {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: 560;
+  color: var(--text);
 }
 
 .custom-node-list {
@@ -8961,7 +9054,7 @@ details.cfg-section[open] .cfg-fold-icon {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .custom-node-row {
@@ -8969,14 +9062,32 @@ details.cfg-section[open] .cfg-fold-icon {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  border-radius: 12px;
+  padding: 11px 13px;
+  border-radius: 13px;
   background: var(--surface-2);
   border: 1px solid var(--border);
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.custom-node-row:hover {
+  border-color: var(--border-input);
 }
 
 .custom-node-row.disabled {
   opacity: 0.62;
+}
+
+.custom-node-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  color: var(--text-2);
 }
 
 .custom-node-name-row {
@@ -9074,6 +9185,24 @@ details.cfg-section[open] .cfg-fold-icon {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.custom-server-grid {
+  grid-template-columns: 126px minmax(0, 1fr) 92px;
+}
+
+@media (max-width: 560px) {
+  .custom-nodes-entry {
+    flex-wrap: wrap;
+  }
+  .custom-entry-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .custom-form-grid,
+  .custom-server-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .custom-switch-row {
