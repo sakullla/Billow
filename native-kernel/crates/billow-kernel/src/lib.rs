@@ -34,6 +34,7 @@
 //! ```
 
 pub mod config;
+pub(crate) mod controller;
 pub mod dns;
 pub mod engine;
 pub mod geodata;
@@ -44,13 +45,15 @@ pub mod provider;
 pub mod rules;
 
 pub use config::{
-    load_config, Action, Config, ConfigError, ExpectedStatus, GeoSiteDatabase, GroupKind,
-    LoadBalanceStrategy, LoadedConfig, Matcher, NetworkKind, InType, ProfileConfig, ProxyGroup,
+    load_config, Action, Config, ConfigError, ControllerConfig, CorsConfig, ExpectedStatus,
+    GeoSiteDatabase, GroupKind, LoadBalanceStrategy, LoadedConfig, Matcher, NetworkKind, InType,
+    ProfileConfig, ProxyGroup,
 };
 pub use dns::{
     DnsConfig, DnsError, DnsService, EnhancedMode, FakeIpFilterMode, HostValue, HostsConfig,
     HostsTable, NameServer, NameServerNet, NameServerPolicy,
 };
+pub use controller::LogBus;
 pub use engine::{Kernel, KernelOptions, Limits, StartError, Stats, VERSION};
 pub use groups::{
     GroupError, GroupRegistry, GroupStatus, MemberHealth, Selected, SelectionCache,

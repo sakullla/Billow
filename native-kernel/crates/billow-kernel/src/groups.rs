@@ -1368,6 +1368,14 @@ impl GroupRegistry {
         Some(self.probe_group(position).await)
     }
 
+    /// Probe one proxy provider's nodes once (`/providers/proxies/:name/healthcheck`).
+    pub async fn probe_provider_named(self: &Arc<Self>, name: &str) -> Option<Vec<MemberHealth>> {
+        if self.providers.proxy_provider(name).is_none() {
+            return None;
+        }
+        Some(self.probe_provider_task(name).await)
+    }
+
     /// Probe every group and every provider health task once.
     pub async fn probe_all(self: &Arc<Self>) -> usize {
         let mut probed = 0;

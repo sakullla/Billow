@@ -448,7 +448,7 @@ fn config_without_rules_goes_direct() {
     let (action, label) = kernel.evaluate("anything.example", None);
     assert_eq!(action, billow_kernel::Action::Direct);
     assert_eq!(label, "MATCH -> DIRECT");
-    let config: &std::sync::Arc<Config> = kernel.config();
+    let config: std::sync::Arc<Config> = kernel.config();
     assert!(config.empty_rules);
     let mut kernel = kernel;
     kernel.stop().unwrap();

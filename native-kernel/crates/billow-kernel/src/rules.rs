@@ -854,6 +854,8 @@ pub struct RuleProviderSnapshot {
     pub generation: u64,
     pub payload: ProviderPayload,
     pub compiled: Arc<CompiledRuleSet>,
+    /// When this generation was read (pinned `Provider.UpdatedAt`).
+    pub updated_at: std::time::SystemTime,
 }
 
 /// One rule provider slot addressed by `RULE-SET`.

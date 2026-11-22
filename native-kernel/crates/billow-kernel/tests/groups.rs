@@ -48,7 +48,7 @@ fn start_with_fast_cache(
         None,
         base.to_path_buf(),
         Limits::default(),
-        &KernelOptions { cache_dir: cache },
+        &KernelOptions { cache_dir: cache, ..Default::default() },
     )
     .expect("kernel starts");
     started.0.groups().set_fast_cache_window(window);

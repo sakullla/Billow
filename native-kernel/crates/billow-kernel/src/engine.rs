@@ -18,7 +18,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use crate::config::{Action, Config, ConfigError, InType, LoadedConfig, NetworkKind};
+use crate::config::{Action, Config, ConfigError, InType, LoadedConfig, Matcher, NetworkKind};
 use crate::dns::{DnsRoute, DnsService, HostValue, HostsTable, RouteStreamBox};
 use crate::groups::{GroupRegistry, Selected};
 use crate::identity::Identity;
@@ -31,13 +31,17 @@ use crate::rules::{MatchInput, MatchStep, RuleMatch, RuleSet, Target};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Options a host can set beyond [`Limits`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct KernelOptions {
     /// Directory that holds the selection cache (`cache.yaml`). `None`
     /// disables `profile.store-selected` persistence; the kernel warns when the
     /// configuration asks for it. The CLI and T25 pass the configuration
     /// directory (pinned uses `<homeDir>/cache.db`).
     pub cache_dir: Option<PathBuf>,
+    /// Host log bus shared with `/logs`. A host that installs its own tracing
+    /// logger can publish the same records to this bus (the CLI does), so the
+    /// control stream carries engine events and not only controller events.
+    pub log_bus: Option<crate::controller::LogBus>,
 }
 
 /// Tunables. Defaults keep memory bounded (R3/R4); T7 can shrink buffers for the extension.
@@ -100,13 +104,13 @@ pub struct Stats {
 
 #[derive(Default)]
 pub(crate) struct Counters {
-    accepted: AtomicU64,
+    pub(crate) accepted: AtomicU64,
     active: AtomicU64,
     completed: AtomicU64,
     rejected: AtomicU64,
     failed: AtomicU64,
-    bytes_up: AtomicU64,
-    bytes_down: AtomicU64,
+    pub(crate) bytes_up: Arc<AtomicU64>,
+    pub(crate) bytes_down: Arc<AtomicU64>,
 }
 
 impl Counters {
@@ -123,42 +127,298 @@ impl Counters {
     }
 }
 
-/// Shared, immutable session context.
-struct SessionContext {
-    rules: Arc<RuleSet>,
-    /// Proxy groups, health state and selection cache (T23).
-    groups: Arc<GroupRegistry>,
-    /// Trust anchors of this kernel: platform store plus the configuration's
-    /// `tls.custom-cert`/`tls.certificate` entries.
-    tls: Arc<ClientTls>,
-    /// DNS runtime (T22); `None` when `dns.enable` is false or absent, in
-    /// which case rule-time lookups use the OS resolver like the pinned
+/// One open, routed connection as the control API reports it. Pinned
+/// `statistic.TrackerInfo` equivalent for the fields Billow reads.
+pub(crate) struct OpenConnection {
+    pub id: String,
+    pub host: String,
+    pub destination_ip: Option<IpAddr>,
+    pub destination_port: u16,
+    pub source_ip: IpAddr,
+    pub source_port: u16,
+    /// Pinned metadata `type`: `HTTP` or `Socks5`.
+    pub kind: &'static str,
+    pub network: &'static str,
+    pub inbound_port: u16,
+    pub chains: Vec<String>,
+    pub rule: String,
+    pub rule_payload: String,
+    pub start: std::time::SystemTime,
+    pub upload: Arc<AtomicU64>,
+    pub download: Arc<AtomicU64>,
+    close: Arc<tokio::sync::Notify>,
+}
+
+impl OpenConnection {
+    pub fn request_close(&self) {
+        self.close.notify_waiters();
+    }
+}
+
+/// Live connection registry (`/connections`, `DELETE /connections/:id`).
+#[derive(Default)]
+pub(crate) struct ConnectionRegistry {
+    entries: Mutex<std::collections::BTreeMap<String, Arc<OpenConnection>>>,
+}
+
+impl ConnectionRegistry {
+    pub fn register(self: &Arc<Self>, entry: OpenConnection) -> ConnectionGuard {
+        let id = entry.id.clone();
+        let entry = Arc::new(entry);
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id.clone(), entry);
+        ConnectionGuard {
+            registry: self.clone(),
+            id,
+        }
+    }
+
+    pub fn snapshot(&self) -> Vec<Arc<OpenConnection>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn close(&self, id: &str) -> bool {
+        let entry = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(id)
+            .cloned();
+        match entry {
+            Some(entry) => {
+                entry.request_close();
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn close_all(&self) -> usize {
+        let entries = self.snapshot();
+        for entry in &entries {
+            entry.request_close();
+        }
+        entries.len()
+    }
+
+    fn remove(&self, id: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(id);
+    }
+}
+
+/// Removes the entry when the session task ends for any reason.
+pub(crate) struct ConnectionGuard {
+    registry: Arc<ConnectionRegistry>,
+    id: String,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.registry.remove(&self.id);
+    }
+}
+
+/// Shared, immutable session context for one configuration generation.
+///
+/// A reload builds a new [`RuntimeSnapshot`] and swaps the `Arc`; sessions that
+/// already started keep the generation they evaluated until they finish, so
+/// their rules, providers and DNS objects are reclaimed exactly then (R4).
+pub(crate) struct RuntimeSnapshot {
+    pub config: Arc<Config>,
+    pub rules: Arc<RuleSet>,
+    pub providers: Arc<crate::provider::RuleProviders>,
+    pub groups: Arc<GroupRegistry>,
+    /// Trust anchors of this generation: platform store plus the
+    /// configuration's `tls.custom-cert`/`tls.certificate` entries.
+    pub tls: Arc<ClientTls>,
+    /// DNS runtime (T22); `None` when `dns.enable` is false or absent,
+    /// in which case rule-time lookups use the OS resolver like the pinned
     /// engine's `SystemResolver` fallback.
-    dns: Option<Arc<DnsService>>,
+    pub dns: Option<Arc<DnsService>>,
     /// Configured `hosts` trie plus the built-in `localhost` entry; active
     /// even when DNS is disabled (pinned `updateHosts`).
-    hosts: Arc<HostsTable>,
+    pub hosts: Arc<HostsTable>,
     /// `authentication` users for the mixed inbound (SOCKS5 RFC 1929 / HTTP 407).
-    auth: InboundAuth,
-    /// Actual bound mixed-listener port (`IN-PORT` rules).
-    listen_port: u16,
+    pub auth: InboundAuth,
+}
+
+impl RuntimeSnapshot {
+    pub fn listen_port(&self) -> u16 {
+        self.config.listen.port()
+    }
+}
+
+/// Per-generation runtime plus the kernel-wide counters/limits.
+struct SessionContext {
+    runtime: Arc<RuntimeSnapshot>,
     limits: Limits,
     counters: Arc<Counters>,
+    connections: Arc<ConnectionRegistry>,
+}
+
+impl SessionContext {
+    fn listen_port(&self) -> u16 {
+        self.runtime.listen_port()
+    }
+}
+
+/// The current runtime generation. Reload swaps the inner `Arc` only after a
+/// replacement has been fully built and validated.
+pub(crate) struct SharedRuntime {
+    current: std::sync::RwLock<Arc<RuntimeSnapshot>>,
+    scheduler_stop: Mutex<Option<watch::Sender<bool>>>,
+}
+
+impl SharedRuntime {
+    pub fn snapshot(&self) -> Arc<RuntimeSnapshot> {
+        self.current
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Replace the generation; returns the previous one (dropped once its
+    /// last session finishes). The caller stops the old scheduler first.
+    pub fn replace(&self, next: Arc<RuntimeSnapshot>) -> Arc<RuntimeSnapshot> {
+        let mut current = self
+            .current
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::replace(&mut *current, next)
+    }
 }
 
 /// A running kernel. Dropping it without calling [`Kernel::stop`] stops it too.
 pub struct Kernel {
-    identity: Identity,
-    config: Arc<Config>,
-    rules: Arc<RuleSet>,
-    providers: Arc<crate::provider::RuleProviders>,
-    groups: Arc<GroupRegistry>,
-    dns: Option<Arc<DnsService>>,
-    hosts: Arc<HostsTable>,
-    limits: Limits,
-    counters: Arc<Counters>,
+    control: Arc<ControlCore>,
+    controller: Option<crate::controller::Controller>,
     stop_tx: watch::Sender<bool>,
     supervisor: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+/// Shared state of one kernel process: the live generation, identity, counter
+/// handles and the supervisor runtime handle. The control API and `Kernel`
+/// both use it, so a reload never needs exclusive access to the kernel object.
+pub(crate) struct ControlCore {
+    pub runtime: Arc<SharedRuntime>,
+    identity: std::sync::RwLock<Identity>,
+    pub base_dir: PathBuf,
+    pub geodata_dir: Option<PathBuf>,
+    pub options: KernelOptions,
+    pub limits: Limits,
+    pub counters: Arc<Counters>,
+    pub connections: Arc<ConnectionRegistry>,
+    runtime_handle: Mutex<Option<tokio::runtime::Handle>>,
+    pub log_bus: crate::controller::LogBus,
+}
+
+impl ControlCore {
+    pub fn identity(&self) -> Identity {
+        self.identity
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn set_identity(&self, identity: Identity) {
+        *self
+            .identity
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = identity;
+    }
+
+    /// Validate `yaml` against the live generation and build a replacement.
+    pub fn build_reload(&self, yaml: &str) -> Result<Arc<RuntimeSnapshot>, StartError> {
+        let loaded = crate::config::load_config(yaml, "<reload>")?;
+        let current = self.runtime.snapshot();
+        if loaded.config.listen != current.config.listen {
+            return Err(StartError::Config(ConfigError::Unsupported(format!(
+                "mixed-port/bind-address cannot change on reload (listener is {}); restart the kernel to move it",
+                current.config.listen
+            ))));
+        }
+        if loaded.config.dns.listen != current.config.dns.listen {
+            return Err(StartError::Config(ConfigError::Unsupported(
+                "dns.listen cannot change on reload; restart the kernel to move the DNS server"
+                    .to_string(),
+            )));
+        }
+        if !loaded.config.controller.same_listeners(&current.config.controller) {
+            return Err(StartError::Config(ConfigError::Unsupported(
+                "external-controller/external-controller-unix/external-controller-tls/secret/external-controller-cors cannot change on reload; restart the kernel"
+                    .to_string(),
+            )));
+        }
+        let (next, _) = build_runtime(
+            &loaded,
+            &self.geodata_dir,
+            &self.base_dir,
+            self.limits,
+            &self.options,
+        )?;
+        Ok(next)
+    }
+
+    /// Swap the live generation; the old one is released by its last session.
+    pub fn install_reload(&self, next: Arc<RuntimeSnapshot>) -> Result<(), StartError> {
+        if let Some(stop) = self
+            .runtime
+            .scheduler_stop
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = stop.send(true);
+        }
+        let old = self.runtime.replace(next.clone());
+        let (scheduler_stop, scheduler_rx) = watch::channel(false);
+        *self
+            .runtime
+            .scheduler_stop
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(scheduler_stop);
+        let handle = self
+            .runtime_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(handle) = handle {
+            let groups = next.groups.clone();
+            handle.spawn(async move {
+                groups.spawn_scheduler(scheduler_rx);
+            });
+        } else {
+            tracing::warn!("reload without a supervisor runtime; interval health checks are not scheduled");
+        }
+        self.set_identity({
+            let mut identity = self.identity();
+            identity.config_digest = next.config.digest.clone();
+            identity.rules = next.rules.rule_count();
+            identity.features = next.config.feature_summary();
+            identity
+        });
+        drop(old);
+        Ok(())
+    }
+
+    /// `PUT /configs` implementation: build first, then swap.
+    pub fn reload(&self, yaml: &str) -> Result<Vec<String>, StartError> {
+        let loaded = crate::config::load_config(yaml, "<reload>")?;
+        let warnings = loaded.warnings.clone();
+        let next = self.build_reload(yaml)?;
+        self.install_reload(next)?;
+        Ok(warnings)
+    }
 }
 
 impl Kernel {
@@ -221,104 +481,9 @@ impl Kernel {
         options: &KernelOptions,
     ) -> Result<(Kernel, Vec<String>), StartError> {
         validate_limits(&limits)?;
-        let config = Arc::new(loaded.config.clone());
-        let mut warnings = loaded.warnings.clone();
-        // The configuration's own anchors are part of the kernel instance:
-        // they are installed before the listener exists, so no dial can run
-        // without them, and a second kernel in this process cannot inherit
-        // the first one's private authorities.
-        let tls = Arc::new(ClientTls::new(&config.tls_roots));
-
-        // 1. Read every provider vehicle. The payloads decide which geodata
-        //    files are needed (a classical provider may use GEOSITE/GEOIP).
-        let prepared = crate::provider::prepare(&config, &base_dir, &tls)?;
-        warnings.extend(prepared.warnings.iter().cloned());
-        let requirements = prepared.requirements.clone();
-        // 2. Load only the referenced geodata. A missing file is a named error.
-        let geodata = if requirements.geosite_keys.is_empty()
-            && !requirements.geoip
-            && !requirements.asn
-        {
-            Arc::new(crate::geodata::Geodata::default())
-        } else {
-            let dir = geodata_dir.as_ref().ok_or_else(|| {
-                StartError::Config(ConfigError::Unsupported(
-                    "GEOSITE/GEOIP/IP-ASN rules require --geosite-dir (the directory with GeoSite.dat, GeoIP.dat/Country.mmdb and ASN.mmdb)"
-                        .to_string(),
-                ))
-            })?;
-            Arc::new(crate::geodata::Geodata::load(
-                dir,
-                crate::provider::geodata_source(&config),
-                !requirements.geosite_keys.is_empty(),
-                requirements.geoip,
-                requirements.asn,
-                &requirements.geosite_keys,
-            )?)
-        };
-        // 3. Compile provider snapshots, then the rule list that references them.
-        let providers = crate::provider::finish(
-            &config,
-            prepared,
-            geodata,
-            &base_dir,
-            tls.clone(),
-        )?;
-        // 4. `hosts` and the DNS runtime. Hosts are always active; the DNS
-        //    runtime exists only with `dns.enable: true`.
-        let hosts = Arc::new(HostsTable::build(
-            &config.hosts,
-            config.dns.enable && config.dns.use_system_hosts,
-        )?);
-        let dns = if config.dns.enable {
-            Some(Arc::new(DnsService::build(
-                &config.dns,
-                config.ipv6,
-                hosts.clone(),
-                tls.clone(),
-                &providers,
-                &mut warnings,
-            )?))
-        } else {
-            if config.dns.listen.is_some() {
-                warnings.push(
-                    "dns.listen is recorded but DNS is disabled; no DNS server is started (set dns.enable: true)"
-                        .to_string(),
-                );
-            }
-            None
-        };
-        // 5. Group runtime: member expansion, selection and health checks.
-        //    `profile.store-selected` without a cache directory is surfaced.
-        let cache_path = options.cache_dir.as_ref().map(|dir| dir.join("cache.yaml"));
-        if config.profile.store_selected && cache_path.is_none() && !config.proxy_groups.is_empty()
-        {
-            warnings.push(
-                "profile.store-selected is true but no cache directory was given: manual group selections last only for this process (pass a cache dir to persist them)"
-                    .to_string(),
-            );
-        }
-        let groups = GroupRegistry::new(
-            &config,
-            providers.clone(),
-            tls.clone(),
-            limits.dial_timeout,
-            base_dir.clone(),
-            cache_path,
-            dns.clone(),
-        )?;
-        let rules = RuleSet::compile(&config, providers.clone())?;
-        if let Some(dns) = &dns {
-            // `respect-rules`: DNS upstreams follow the rule set and proxy
-            // groups through the same engine path as client sessions.
-            dns.set_route(Arc::new(EngineRoute {
-                config: config.clone(),
-                rules: rules.clone(),
-                groups: groups.clone(),
-                tls: tls.clone(),
-                timeout: limits.dial_timeout,
-            }));
-        }
+        let (runtime, warnings) = build_runtime(loaded, &geodata_dir, &base_dir, limits, options)?;
+        let config = runtime.config.clone();
+        let dns = runtime.dns.clone();
 
         // Bind with a short-lived current-thread runtime on this thread; the
         // caller may itself be inside a tokio runtime (tests, hosts), so the
@@ -351,121 +516,172 @@ impl Kernel {
         };
 
         let counters = Arc::new(Counters::default());
+        let connections = Arc::new(ConnectionRegistry::default());
         let (stop_tx, stop_rx) = watch::channel(false);
+        let (scheduler_stop, scheduler_rx) = watch::channel(false);
         let context = Arc::new(SessionContext {
-            rules: rules.clone(),
-            groups: groups.clone(),
-            tls: tls.clone(),
-            dns: dns.clone(),
-            hosts: hosts.clone(),
-            auth: InboundAuth {
-                users: loaded.config.inbound_users.clone(),
-            },
-            listen_port: local.port(),
+            runtime: runtime.clone(),
             limits,
             counters: counters.clone(),
-        });        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
-        let config_for_thread = config.clone();
-        let groups_for_thread = groups.clone();
-        let dns_for_thread = dns.clone();
+            connections: connections.clone(),
+        });
+        let shared = Arc::new(SharedRuntime {
+            current: std::sync::RwLock::new(runtime.clone()),
+            scheduler_stop: Mutex::new(Some(scheduler_stop)),
+        });
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let shared_for_thread = shared.clone();
         let supervisor = std::thread::Builder::new()
             .name("billow-kernel-supervisor".to_string())
             .spawn(move || {
                 supervisor_thread(
                     listener,
                     context,
-                    config_for_thread,
-                    groups_for_thread,
-                    dns_for_thread,
+                    shared_for_thread,
                     dns_listeners,
+                    scheduler_rx,
                     stop_rx,
                     started_tx,
                 )
             })
             .map_err(|e| StartError::Limits(format!("spawn supervisor: {e}")))?;
-        if let Err(e) = started_rx.recv() {
-            let _ = supervisor;
-            return Err(StartError::Limits(format!(
-                "supervisor failed to start: {e}"
-            )));
-        }
+        let runtime_handle = match started_rx.recv() {
+            Ok(Some(handle)) => handle,
+            Ok(None) => {
+                let _ = supervisor;
+                return Err(StartError::Limits(
+                    "supervisor runtime could not be built".to_string(),
+                ));
+            }
+            Err(e) => {
+                let _ = supervisor;
+                return Err(StartError::Limits(format!(
+                    "supervisor failed to start: {e}"
+                )));
+            }
+        };
 
-        let identity = Identity::new(VERSION, local, &config, &geodata_dir, rules.rule_count());
+        let mut identity = Identity::new(VERSION, local, &config, &geodata_dir, runtime.rules.rule_count());
+        identity.listen = local;
+        let control = Arc::new(ControlCore {
+            runtime: shared,
+            identity: std::sync::RwLock::new(identity),
+            base_dir,
+            geodata_dir,
+            options: options.clone(),
+            limits,
+            counters,
+            connections,
+            runtime_handle: Mutex::new(Some(runtime_handle)),
+            log_bus: options
+                .log_bus
+                .clone()
+                .unwrap_or_else(crate::controller::LogBus::new),
+        });
+        let mut kernel = Kernel {
+            control,
+            controller: None,
+            stop_tx,
+            supervisor: Mutex::new(Some(supervisor)),
+        };
+        let controller = crate::controller::Controller::start(&kernel)?;
+        kernel.controller = controller;
+        let identity = kernel.identity();
         info!(
             instance = %identity.uuid, pid = identity.pid, version = VERSION, listen = %local,
             "billow-kernel started; {}", config.feature_summary()
         );
-        Ok((
-            Kernel {
-                identity,
-                config,
-                rules,
-                providers,
-                groups,
-                dns,
-                hosts,
-                limits,
-                counters,
-                stop_tx,
-                supervisor: Mutex::new(Some(supervisor)),
-            },
-            warnings,
-        ))
+        Ok((kernel, warnings))
     }
 
     /// Correlatable instance identity (uuid, pid, version, listener, config digest).
-    pub fn identity(&self) -> &Identity {
-        &self.identity
+    pub fn identity(&self) -> Identity {
+        self.control.identity()
     }
 
     /// Actually bound address.
     pub fn listen_addr(&self) -> SocketAddr {
-        self.identity.listen
+        self.control.identity().listen
     }
 
     /// Host-supplied metadata such as the actual port override used at start.
     pub fn set_identity(&mut self, identity: Identity) {
-        self.identity = identity;
+        self.control.set_identity(identity);
     }
 
-    pub fn config(&self) -> &Arc<Config> {
-        &self.config
+    pub fn config(&self) -> Arc<Config> {
+        self.control.runtime.snapshot().config.clone()
+    }
+
+    /// The live generation (T25 control API reads one snapshot per request).
+    #[allow(dead_code)]
+    pub(crate) fn runtime_snapshot(&self) -> Arc<RuntimeSnapshot> {
+        self.control.runtime.snapshot()
+    }
+
+    /// Actual control-API addresses for hosts and tests.
+    pub fn controller_addrs(
+        &self,
+    ) -> (Option<SocketAddr>, Option<SocketAddr>, Option<PathBuf>) {
+        match &self.controller {
+            Some(controller) => (
+                controller.tcp_addr(),
+                controller.tls_addr(),
+                controller.unix_path().map(std::path::Path::to_path_buf),
+            ),
+            None => (None, None, None),
+        }
+    }
+
+    pub(crate) fn control(&self) -> Arc<ControlCore> {
+        self.control.clone()
     }
 
     pub fn limits(&self) -> Limits {
-        self.limits
+        self.control.limits
+    }
+
+    /// The `/logs` broadcast bus (also usable by a host logger).
+    pub fn log_bus(&self) -> crate::controller::LogBus {
+        self.control.log_bus.clone()
     }
 
     /// Provider registry (rule + proxy snapshots) for hosts and the T25 API.
-    pub fn providers(&self) -> &Arc<crate::provider::RuleProviders> {
-        &self.providers
+    pub fn providers(&self) -> Arc<crate::provider::RuleProviders> {
+        self.control.runtime.snapshot().providers.clone()
     }
 
     /// Group runtime: status list, selection and health probes (T25 builds its
     /// API from this handle).
-    pub fn groups(&self) -> &Arc<GroupRegistry> {
-        &self.groups
+    pub fn groups(&self) -> Arc<GroupRegistry> {
+        self.control.runtime.snapshot().groups.clone()
     }
 
     /// DNS runtime (T22); `None` when the configuration disables DNS.
-    pub fn dns(&self) -> Option<&Arc<DnsService>> {
-        self.dns.as_ref()
+    pub fn dns(&self) -> Option<Arc<DnsService>> {
+        self.control.runtime.snapshot().dns.clone()
     }
 
     /// Effective `hosts` table (configured entries, `localhost`, and the
     /// platform hosts file when `use-system-hosts` is on).
-    pub fn hosts_table(&self) -> &Arc<HostsTable> {
-        &self.hosts
+    pub fn hosts_table(&self) -> Arc<HostsTable> {
+        self.control.runtime.snapshot().hosts.clone()
+    }
+
+    /// Apply a validated configuration payload to the live kernel (the
+    /// `PUT /configs` path). Returns the warnings of the new generation.
+    pub fn reload(&self, yaml: &str) -> Result<Vec<String>, StartError> {
+        self.control.reload(yaml)
     }
 
     /// Group statuses (`now`, `all`, per-member liveness/delay).
     pub fn group_statuses(&self) -> Vec<crate::groups::GroupStatus> {
-        self.groups.snapshot()
+        self.groups().snapshot()
     }
 
     /// Fix a group's selection; `Ok(false)` means the member does not exist.
     pub fn select_group(&self, group: &str, member: &str) -> Result<bool, crate::groups::GroupError> {
-        self.groups.select(group, member)
+        self.groups().select(group, member)
     }
 
     /// Re-read one rule provider. On failure the old snapshot stays in use.
@@ -473,48 +689,66 @@ impl Kernel {
         &self,
         name: &str,
     ) -> Result<crate::provider::ProviderUpdate, ConfigError> {
-        self.providers.update_rule_provider(name)
+        self.providers().update_rule_provider(name)
     }
 
     pub fn update_all_rule_providers(
         &self,
     ) -> (Vec<crate::provider::ProviderUpdate>, Vec<ConfigError>) {
-        self.providers.update_all_rule_providers()
+        self.providers().update_all_rule_providers()
     }
 
     pub fn update_proxy_provider(
         &self,
         name: &str,
     ) -> Result<crate::provider::ProviderUpdate, ConfigError> {
-        let update = self.providers.update_proxy_provider(name)?;
+        let groups = self.groups();
+        let update = self.providers().update_proxy_provider(name)?;
         // Pinned `baseProvider.setProxies` starts a health check immediately
         // when the snapshot is swapped. The scheduler forces the provider's
         // tasks on its next tick (and the generation watch covers providers
         // updated through `providers()` directly).
-        self.groups.note_provider_update(name);
+        groups.note_provider_update(name);
         Ok(update)
     }
 
     pub fn stats(&self) -> Stats {
-        self.counters.snapshot()
+        self.control.counters.snapshot()
     }
 
     /// Evaluate a destination without accepting a connection (diagnostics/tests).
     /// Returns the action and a human-readable `rule -> ACTION` label.
     pub fn evaluate(&self, host: &str, ip: Option<IpAddr>) -> (Action, String) {
-        let m = self.rules.evaluate(&Target::new(host, ip));
-        (m.action, m.label(&self.config))
+        let runtime = self.control.runtime.snapshot();
+        let m = runtime.rules.evaluate(&Target::new(host, ip));
+        (m.action, m.label(&runtime.config))
     }
 
     /// Evaluate a full [`Target`] (port, network, source address, listener type,
     /// process metadata). Used by diagnostics and provider/rule tests.
     pub fn evaluate_target(&self, target: &Target) -> (Action, String) {
-        let m = self.rules.evaluate(target);
-        (m.action, m.label(&self.config))
+        let runtime = self.control.runtime.snapshot();
+        let m = runtime.rules.evaluate(target);
+        (m.action, m.label(&runtime.config))
     }
 
     /// Stop accepting, wait for every session task and the listener to exit.
     pub fn stop(&mut self) -> io::Result<()> {
+        // The controller is joined first so no request can race the shutdown
+        // or start a reload while the supervisor is going away.
+        if let Some(mut controller) = self.controller.take() {
+            controller.stop();
+        }
+        if let Some(stop) = self
+            .control
+            .runtime
+            .scheduler_stop
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = stop.send(true);
+        }
         let _ = self.stop_tx.send(true);
         let handle = self
             .supervisor
@@ -532,7 +766,7 @@ impl Kernel {
         crate::outbound::sudoku::mux::close_all();
         let stats = self.stats();
         info!(
-            instance = %self.identity.uuid, sessions = stats.accepted, active = stats.active,
+            instance = %self.control.identity().uuid, sessions = stats.accepted, active = stats.active,
             finished = stats.completed + stats.rejected + stats.failed, "billow-kernel stopped"
         );
         match join_error {
@@ -550,10 +784,132 @@ impl Drop for Kernel {
             .map(|g| g.is_some())
             .unwrap_or(false)
         {
-            debug!(instance = %self.identity.uuid, "Kernel dropped without stop(); stopping now");
+            debug!(instance = %self.control.identity().uuid, "Kernel dropped without stop(); stopping now");
             let _ = self.stop();
         }
     }
+}
+
+/// Build one immutable runtime generation (providers, geodata, DNS, groups,
+/// rules) without binding a listener. The initial start and a reload share it,
+/// so a rejected reload cannot leave a half-built generation behind.
+fn build_runtime(
+    loaded: &LoadedConfig,
+    geodata_dir: &Option<PathBuf>,
+    base_dir: &PathBuf,
+    limits: Limits,
+    options: &KernelOptions,
+) -> Result<(Arc<RuntimeSnapshot>, Vec<String>), StartError> {
+    let config = Arc::new(loaded.config.clone());
+    let mut warnings = loaded.warnings.clone();
+    // The configuration's own anchors are part of the kernel instance: they
+    // are installed before the listener exists, so no dial can run without
+    // them, and a second kernel in this process cannot inherit the first one's
+    // private authorities.
+    let tls = Arc::new(ClientTls::new(&config.tls_roots));
+
+    // 1. Read every provider vehicle. The payloads decide which geodata files
+    //    are needed (a classical provider may use GEOSITE/GEOIP).
+    let prepared = crate::provider::prepare(&config, base_dir, &tls)?;
+    warnings.extend(prepared.warnings.iter().cloned());
+    let requirements = prepared.requirements.clone();
+    // 2. Load only the referenced geodata. A missing file is a named error.
+    let geodata = if requirements.geosite_keys.is_empty()
+        && !requirements.geoip
+        && !requirements.asn
+    {
+        Arc::new(crate::geodata::Geodata::default())
+    } else {
+        let dir = geodata_dir.as_ref().ok_or_else(|| {
+            StartError::Config(ConfigError::Unsupported(
+                "GEOSITE/GEOIP/IP-ASN rules require --geosite-dir (the directory with GeoSite.dat, GeoIP.dat/Country.mmdb and ASN.mmdb)"
+                    .to_string(),
+            ))
+        })?;
+        Arc::new(crate::geodata::Geodata::load(
+            dir,
+            crate::provider::geodata_source(&config),
+            !requirements.geosite_keys.is_empty(),
+            requirements.geoip,
+            requirements.asn,
+            &requirements.geosite_keys,
+        )?)
+    };
+    // 3. Compile provider snapshots, then the rule list that references them.
+    let providers = crate::provider::finish(
+        &config,
+        prepared,
+        geodata,
+        base_dir,
+        tls.clone(),
+    )?;
+    // 4. `hosts` and the DNS runtime. Hosts are always active; the DNS runtime
+    //    exists only with `dns.enable: true`.
+    let hosts = Arc::new(HostsTable::build(
+        &config.hosts,
+        config.dns.enable && config.dns.use_system_hosts,
+    )?);
+    let dns = if config.dns.enable {
+        Some(Arc::new(DnsService::build(
+            &config.dns,
+            config.ipv6,
+            hosts.clone(),
+            tls.clone(),
+            &providers,
+            &mut warnings,
+        )?))
+    } else {
+        if config.dns.listen.is_some() {
+            warnings.push(
+                "dns.listen is recorded but DNS is disabled; no DNS server is started (set dns.enable: true)"
+                    .to_string(),
+            );
+        }
+        None
+    };
+    // 5. Group runtime: member expansion, selection and health checks.
+    //    `profile.store-selected` without a cache directory is surfaced.
+    let cache_path = options.cache_dir.as_ref().map(|dir| dir.join("cache.yaml"));
+    if config.profile.store_selected && cache_path.is_none() && !config.proxy_groups.is_empty() {
+        warnings.push(
+            "profile.store-selected is true but no cache directory was given: manual group selections last only for this process (pass a cache dir to persist them)"
+                .to_string(),
+        );
+    }
+    let groups = GroupRegistry::new(
+        &config,
+        providers.clone(),
+        tls.clone(),
+        limits.dial_timeout,
+        base_dir.clone(),
+        cache_path,
+        dns.clone(),
+    )?;
+    let rules = RuleSet::compile(&config, providers.clone())?;
+    if let Some(dns) = &dns {
+        // `respect-rules`: DNS upstreams follow the rule set and proxy groups
+        // through the same engine path as client sessions.
+        dns.set_route(Arc::new(EngineRoute {
+            config: config.clone(),
+            rules: rules.clone(),
+            groups: groups.clone(),
+            tls: tls.clone(),
+            timeout: limits.dial_timeout,
+        }));
+    }
+    let snapshot = Arc::new(RuntimeSnapshot {
+        config,
+        rules,
+        providers,
+        groups,
+        tls,
+        dns,
+        hosts,
+        auth: InboundAuth {
+            users: loaded.config.inbound_users.clone(),
+        },
+    });
+    Ok((snapshot, warnings))
 }
 
 fn validate_limits(limits: &Limits) -> Result<(), StartError> {
@@ -577,12 +933,11 @@ fn validate_limits(limits: &Limits) -> Result<(), StartError> {
 fn supervisor_thread(
     listener: std::net::TcpListener,
     context: Arc<SessionContext>,
-    config: Arc<Config>,
-    groups: Arc<GroupRegistry>,
-    dns: Option<Arc<DnsService>>,
+    shared: Arc<SharedRuntime>,
     dns_listeners: Option<(std::net::UdpSocket, std::net::TcpListener)>,
+    scheduler_stop: watch::Receiver<bool>,
     mut stop: watch::Receiver<bool>,
-    started: std::sync::mpsc::SyncSender<()>,
+    started: std::sync::mpsc::SyncSender<Option<tokio::runtime::Handle>>,
 ) {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -592,25 +947,35 @@ fn supervisor_thread(
     {
         Ok(runtime) => runtime,
         Err(e) => {
-            let _ = started.send(());
+            let _ = started.send(None);
             warn!("runtime build failed: {e}");
             return;
         }
     };
+    let handle = runtime.handle().clone();
+    let _ = started.send(Some(handle));
     let result = runtime.block_on(async {
         let listener = match TcpListener::from_std(listener) {
             Ok(listener) => listener,
             Err(e) => return Err(io::Error::other(format!("adopt listener: {e}"))),
         };
-        // Interval health checks run on this runtime and stop with the kernel.
-        groups.spawn_scheduler(stop.clone());
-        // The optional DNS server (`dns.listen`) shares the same stop signal.
-        if let (Some(service), Some((udp, tcp))) = (dns.clone(), dns_listeners) {
-            tokio::spawn(crate::dns::serve_dns(service, udp, tcp, stop.clone()));
+        // Interval health checks run on this runtime and stop with their
+        // generation (a reload sends the old generation's stop signal).
+        {
+            let runtime = context.runtime.clone();
+            runtime.groups.clone().spawn_scheduler(scheduler_stop);
         }
-        let _ = started.send(());
-
-        let r = listen_loop(&listener, &mut stop, &context, &config).await;
+        // The optional DNS server (`dns.listen`) shares the same stop signal
+        // and reads the current generation on every query, so a reload
+        // replaces the answering config without rebinding the socket.
+        if let Some((udp, tcp)) = dns_listeners {
+            let provider: crate::dns::DnsProvider = {
+                let shared = shared.clone();
+                Arc::new(move || shared.snapshot().dns.clone())
+            };
+            tokio::spawn(crate::dns::serve_dns_with(provider, udp, tcp, stop.clone()));
+        }
+        let r = listen_loop(&listener, &mut stop, &context, &shared).await;
         r
     });
     if let Err(e) = &result {
@@ -630,7 +995,7 @@ async fn listen_loop(
     listener: &TcpListener,
     stop: &mut watch::Receiver<bool>,
     context: &Arc<SessionContext>,
-    config: &Arc<Config>,
+    shared: &Arc<SharedRuntime>,
 ) -> io::Result<()> {
     let mut set: JoinSet<()> = JoinSet::new();
     let mut session_id: u64 = 0;
@@ -654,7 +1019,15 @@ async fn listen_loop(
                 context.counters.accepted.fetch_add(1, Ordering::Relaxed);
                 context.counters.active.fetch_add(1, Ordering::Relaxed);
                 let _ = stream.set_nodelay(true);
-                set.spawn(serve(stream, peer, session_id, context.clone(), config.clone(), stop.clone()));
+                // Snapshot the generation at accept time: a concurrent reload
+                // affects the next connection, never one already in flight.
+                let session = Arc::new(SessionContext {
+                    runtime: shared.snapshot(),
+                    limits: context.limits,
+                    counters: context.counters.clone(),
+                    connections: context.connections.clone(),
+                });
+                set.spawn(serve(stream, peer, session_id, session, stop.clone()));
             }
         }
     }
@@ -677,7 +1050,6 @@ async fn serve(
     peer: SocketAddr,
     id: u64,
     context: Arc<SessionContext>,
-    config: Arc<Config>,
     mut stop: watch::Receiver<bool>,
 ) {
     // The inbound request is read before the stop-aware select: the bytes
@@ -685,17 +1057,24 @@ async fn serve(
     // the select below, where a stop request cuts live tunnels too.
     let request = tokio::time::timeout(
         context.limits.handshake_timeout,
-        inbound::accept_request_with_auth(&mut stream, &context.auth),
+        inbound::accept_request_with_auth(&mut stream, &context.runtime.auth),
     )
     .await
     .unwrap_or(Err(HandshakeError::TooLarge));
+    // `DELETE /connections/:id` notifies this future, which drops the client
+    // and upstream sockets exactly like a kernel stop does.
+    let closed = Arc::new(tokio::sync::Notify::new());
     let outcome = tokio::select! {
         biased;
         _ = stop.changed() => {
             debug!(session = id, "stopped with the kernel");
             None
         }
-        outcome = serve_request(stream, peer, id, request, &context, &config) => Some(outcome),
+        _ = closed.notified() => {
+            debug!(session = id, "closed by the control API");
+            None
+        }
+        outcome = serve_request(stream, peer, id, request, &context, &closed) => Some(outcome),
     };
     let Some(outcome) = outcome else {
         context.counters.active.fetch_sub(1, Ordering::Relaxed);
@@ -797,10 +1176,10 @@ async fn pre_handle_destination(
         Ok(literal) => (String::new(), Some(literal)),
         Err(_) => (host.to_string(), ip),
     };
-    match &context.dns {
+    match &context.runtime.dns {
         Some(dns) => dns.pre_handle(&host, ip),
         None => {
-            if let Some((HostValue::Domain(domain), _)) = context.hosts.search(&host, true) {
+            if let Some((HostValue::Domain(domain), _)) = context.runtime.hosts.search(&host, true) {
                 Ok((domain, ip))
             } else {
                 Ok((host, ip))
@@ -817,11 +1196,11 @@ async fn resolve_for_rules(context: &SessionContext, host: &str) -> Option<IpAdd
     }
     // Pinned `resolver.LookupIPWithResolver` consults the configured hosts
     // before any resolver, with or without `dns.enable`.
-    let hosted = context.hosts.lookup_ips(host);
+    let hosted = context.runtime.hosts.lookup_ips(host);
     if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
         return Some(*ip);
     }
-    if let Some(dns) = &context.dns {
+    if let Some(dns) = &context.runtime.dns {
         return dns.resolve_one(host).await;
     }
     match tokio::net::lookup_host((host, 0)).await {
@@ -848,14 +1227,14 @@ async fn rule_decision(context: &SessionContext, target: &mut Target) -> RuleMat
     // Pinned `resolveMetadata` applies a hosts entry to `DstIP` before the
     // first rule runs, independently of `no-resolve`.
     if target.ip.is_none() && !target.host.is_empty() {
-        let hosted = context.hosts.lookup_ips(&target.host);
+        let hosted = context.runtime.hosts.lookup_ips(&target.host);
         if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
             target.ip = Some(*ip);
         }
     }
     let mut input = MatchInput::default();
     loop {
-        match context.rules.evaluate_step(target, input, 0) {
+        match context.runtime.rules.evaluate_step(target, input, 0) {
             MatchStep::Matched(found) => return found,
             MatchStep::Fallthrough => return RuleSet::fallthrough_match(),
             MatchStep::NeedResolve => {
@@ -888,13 +1267,13 @@ async fn direct_stream(
             .await
             .map_err(|e| format!("connect {ip}:{port}: {e}"));
     }
-    let hosted = context.hosts.lookup_ips(host);
+    let hosted = context.runtime.hosts.lookup_ips(host);
     if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
         return TcpStream::connect((*ip, port))
             .await
             .map_err(|e| format!("connect {ip}:{port}: {e}"));
     }
-    if let Some(dns) = &context.dns {
+    if let Some(dns) = &context.runtime.dns {
         let mut ips = dns
             .resolve_direct(host)
             .await
@@ -927,11 +1306,11 @@ async fn direct_udp_destination(
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(SocketAddr::new(ip, port));
     }
-    let hosted = context.hosts.lookup_ips(host);
+    let hosted = context.runtime.hosts.lookup_ips(host);
     if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
         return Ok(SocketAddr::new(*ip, port));
     }
-    if let Some(dns) = &context.dns {
+    if let Some(dns) = &context.runtime.dns {
         let mut ips = dns
             .resolve_direct(host)
             .await
@@ -950,7 +1329,66 @@ async fn direct_udp_destination(
 
 /// The `dialer-proxy` chain of `proxy`, starting with the proxy itself. The
 /// loader has already rejected unknown references and cycles.
-fn chain_for<'a>(
+/// Pinned `RuleType().String()` for one matcher (`/rules` `type`).
+pub(crate) fn rule_type_name(matcher: &Matcher) -> String {
+    let text = matcher.to_string();
+    let kind = text.split(',').next().unwrap_or_default();
+    match kind {
+        "DOMAIN" => "Domain",
+        "DOMAIN-SUFFIX" => "DomainSuffix",
+        "DOMAIN-KEYWORD" => "DomainKeyword",
+        "DOMAIN-REGEX" => "DomainRegex",
+        "DOMAIN-WILDCARD" => "DomainWildcard",
+        "GEOSITE" => "GeoSite",
+        "GEOIP" => "GeoIP",
+        "SRC-GEOIP" => "SrcGeoIP",
+        "IP-ASN" => "IPASN",
+        "SRC-IP-ASN" => "SrcIPASN",
+        "IP-CIDR" => "IPCIDR",
+        "SRC-IP-CIDR" => "SrcIPCIDR",
+        "IP-SUFFIX" => "IPSuffix",
+        "SRC-IP-SUFFIX" => "SrcIPSuffix",
+        "SRC-PORT" => "SrcPort",
+        "DST-PORT" => "DstPort",
+        "IN-PORT" => "InPort",
+        "IN-TYPE" => "InType",
+        "PROCESS-NAME" => "ProcessName",
+        "PROCESS-PATH" => "ProcessPath",
+        "PROCESS-NAME-REGEX" => "ProcessNameRegex",
+        "PROCESS-PATH-REGEX" => "ProcessPathRegex",
+        "PROCESS-NAME-WILDCARD" => "ProcessNameWildcard",
+        "PROCESS-PATH-WILDCARD" => "ProcessPathWildcard",
+        "NETWORK" => "Network",
+        "MATCH" => "Match",
+        "RULE-SET" => "RuleSet",
+        "SUB-RULE" => "SubRules",
+        "AND" => "AND",
+        "OR" => "OR",
+        "NOT" => "NOT",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Pinned `Rule.Payload()`: the matcher text without its type and trailing
+/// `no-resolve`/`src` options.
+pub(crate) fn rule_payload_text(matcher: &Matcher) -> String {
+    let text = matcher.to_string();
+    let Some((_, rest)) = text.split_once(',') else {
+        return String::new();
+    };
+    let options = ["no-resolve", "src", "no-resolve,src", "src,no-resolve"];
+    let mut payload = rest;
+    for option in options {
+        if let Some(stripped) = payload.strip_suffix(&format!(",{option}")) {
+            payload = stripped;
+            break;
+        }
+    }
+    payload.to_string()
+}
+
+pub(crate) fn chain_for<'a>(
     config: &'a Config,
     proxy: &'a crate::proxies::Proxy,
 ) -> Vec<&'a crate::proxies::Proxy> {
@@ -974,10 +1412,11 @@ async fn serve_request(
     id: u64,
     request: Result<inbound::Request, HandshakeError>,
     context: &SessionContext,
-    config: &Config,
+    closed: &Arc<tokio::sync::Notify>,
 ) -> Result<(), SessionOutcome> {
     let limits = context.limits;
     let counters = &context.counters;
+    let config: &Config = &context.runtime.config;
 
     let request = match request {
         Ok(request) => request,
@@ -987,7 +1426,7 @@ async fn serve_request(
         }
     };
     let protocol = request.protocol;
-    if protocol == inbound::Protocol::HttpConnect && !inbound::http_authorized(&request, &context.auth) {
+    if protocol == inbound::Protocol::HttpConnect && !inbound::http_authorized(&request, &context.runtime.auth) {
         info!(session = id, peer = %peer, "HTTP CONNECT without a valid Proxy-Authorization");
         inbound::reply_http_auth_required(&mut client).await;
         return Err(SessionOutcome::Failed);
@@ -1011,7 +1450,7 @@ async fn serve_request(
         .with_network(NetworkKind::Tcp)
         .with_source(peer.ip(), peer.port())
         .with_inbound(
-            context.listen_port,
+            context.listen_port(),
             match protocol {
                 inbound::Protocol::Socks5 => InType::Socks5,
                 inbound::Protocol::HttpConnect => InType::Https,
@@ -1049,6 +1488,7 @@ async fn serve_request(
     // Group selection decides the leaf outbound (T23). REJECT was handled
     // above; a group may still choose REJECT/REJECT-DROP/DIRECT.
     let selected = match context
+        .runtime
         .groups
         .resolve_action(decision.rule.action, &target, true)
     {
@@ -1072,6 +1512,18 @@ async fn serve_request(
         _ => {}
     }
     let group_path: Vec<String> = selected.path().to_vec();
+    // Pinned `chains`: the leaf outbound first, then every group outward.
+    let chains: Vec<String> = match &selected {
+        Selected::Direct => vec!["DIRECT".to_string()],
+        Selected::Proxy { proxy, path } => {
+            let mut names = vec![proxy.name.clone()];
+            names.extend(path.iter().rev().cloned());
+            names
+        }
+        Selected::Reject | Selected::RejectDrop => vec!["REJECT".to_string()],
+    };
+    let rule_kind = rule_type_name(&decision.rule.matcher);
+    let rule_payload = rule_payload_text(&decision.rule.matcher);
     let (upstream, outbound, outbound_kind): (Box<dyn outbound::Stream>, String, &str) = match selected {
         Selected::Direct => {
             let stream = match tokio::time::timeout(
@@ -1113,16 +1565,16 @@ async fn serve_request(
             // Proxy server names resolve through `proxy-server-nameserver`
             // when DNS is on (pinned `ProxyServerHostResolver`).
             let dial = async {
-                match &context.dns {
+                match &context.runtime.dns {
                     Some(dns) => {
                         outbound::with_proxy_dns(
                             dns.clone(),
-                            outbound::dial_chain(&hops, &dial_target, limits.dial_timeout, &context.tls),
+                            outbound::dial_chain(&hops, &dial_target, limits.dial_timeout, &context.runtime.tls),
                         )
                         .await
                     }
                     None => {
-                        outbound::dial_chain(&hops, &dial_target, limits.dial_timeout, &context.tls)
+                        outbound::dial_chain(&hops, &dial_target, limits.dial_timeout, &context.runtime.tls)
                             .await
                     }
                 }
@@ -1131,18 +1583,18 @@ async fn serve_request(
             {
                 Err(_) => {
                     warn!(session = id, target = %authority, rule = %decision, proxy = %proxy.name, "outbound dial timed out after {:?}", limits.dial_timeout);
-                    context.groups.note_dial_failure(&group_path, "timeout");
+                    context.runtime.groups.note_dial_failure(&group_path, "timeout");
                     inbound::reply_failure(&mut client, protocol, 0x01).await;
                     return Err(SessionOutcome::Failed);
                 }
                 Ok(Err(e)) => {
                     warn!(session = id, target = %authority, rule = %decision, proxy = %proxy.name, "outbound dial failed: {e}");
-                    context.groups.note_dial_failure(&group_path, &e.to_string());
+                    context.runtime.groups.note_dial_failure(&group_path, &e.to_string());
                     inbound::reply_failure(&mut client, protocol, 0x01).await;
                     return Err(SessionOutcome::Failed);
                 }
                 Ok(Ok(dialed)) => {
-                    context.groups.note_dial_success(&group_path);
+                    context.runtime.groups.note_dial_success(&group_path);
                     let label = hops
                         .iter()
                         .map(|hop| hop.name.as_str())
@@ -1167,14 +1619,41 @@ async fn serve_request(
         return Err(SessionOutcome::Failed);
     }
 
-    let relayed =
-        relay(client, upstream, limits.buffer_size, limits.half_close_timeout).await;
-    counters
-        .bytes_up
-        .fetch_add(relayed.bytes_up, Ordering::Relaxed);
-    counters
-        .bytes_down
-        .fetch_add(relayed.bytes_down, Ordering::Relaxed);
+    let upload = Arc::new(AtomicU64::new(0));
+    let download = Arc::new(AtomicU64::new(0));
+    let _connection = context.connections.register(OpenConnection {
+        id: uuid::Uuid::new_v4().to_string(),
+        host: host.clone(),
+        destination_ip: ip,
+        destination_port: request.port,
+        source_ip: peer.ip(),
+        source_port: peer.port(),
+        kind: match protocol {
+            inbound::Protocol::Socks5 => "Socks5",
+            inbound::Protocol::HttpConnect => "HTTPS",
+        },
+        network: "tcp",
+        inbound_port: context.listen_port(),
+        chains,
+        rule: rule_kind,
+        rule_payload,
+        start: std::time::SystemTime::now(),
+        upload: upload.clone(),
+        download: download.clone(),
+        close: closed.clone(),
+    });
+
+    let relayed = relay(
+        client,
+        upstream,
+        limits.buffer_size,
+        limits.half_close_timeout,
+        upload,
+        download,
+        counters.bytes_up.clone(),
+        counters.bytes_down.clone(),
+    )
+    .await;
     let mut failed = relayed.up_error || relayed.down_error;
     if relayed.lingering {
         // The second direction exceeded `half_close_timeout` and was dropped.
@@ -1369,14 +1848,14 @@ async fn serve_udp_associate(
                     .with_port(datagram.target.port)
                     .with_network(NetworkKind::Udp)
                     .with_source(peer.ip(), peer.port())
-                    .with_inbound(context.listen_port, InType::Socks5);
+                    .with_inbound(context.listen_port(), InType::Socks5);
                 let decision = rule_decision(context, &mut udp_target).await;
                 let action = decision.action;
                 if matches!(action, Action::Reject | Action::RejectDrop) {
                     debug!(session = id, target = %datagram.target.host, rule = %decision, "UDP REJECT");
                     continue;
                 }
-                let selected = match context.groups.resolve_action(action, &udp_target, true) {
+                let selected = match context.runtime.groups.resolve_action(action, &udp_target, true) {
                     Ok(selected) => selected,
                     Err(error) => {
                         debug!(session = id, target = %datagram.target.host, "UDP group resolution failed: {error}");
@@ -1391,7 +1870,7 @@ async fn serve_udp_associate(
                         continue;
                     }
                     Selected::Proxy { proxy, path } => {
-                        if context.groups.path_disables_udp(&path) {
+                        if context.runtime.groups.path_disables_udp(&path) {
                             debug!(
                                 session = id, target = %datagram.target.host, group = %path.join("->"),
                                 "UDP datagram dropped: the group sets disable-udp"
@@ -1456,7 +1935,7 @@ async fn serve_udp_associate(
                                 option,
                                 &hops,
                                 limits.dial_timeout,
-                                &context.tls,
+                                &context.runtime.tls,
                             )
                             .await
                             {
@@ -1480,7 +1959,7 @@ async fn serve_udp_associate(
                                     option,
                                     &hops,
                                     limits.dial_timeout,
-                                    &context.tls,
+                                    &context.runtime.tls,
                                 )
                                 .await
                                 {
@@ -1504,7 +1983,7 @@ async fn serve_udp_associate(
                                     option,
                                     &hops,
                                     limits.dial_timeout,
-                                    &context.tls,
+                                    &context.runtime.tls,
                                 )
                                 .await
                                 {
@@ -1535,7 +2014,7 @@ async fn serve_udp_associate(
                                 match outbound::gost_relay::GostRelayUdp::connect(
                                     option,
                                     &outgoing,
-                                    &context.tls,
+                                    &context.runtime.tls,
                                 )
                                 .await
                                 {
@@ -1557,7 +2036,7 @@ async fn serve_udp_associate(
                             if masque.is_none() {
                                 match outbound::masque::MasqueUdpAssociation::connect(
                                     option,
-                                    &context.tls,
+                                    &context.runtime.tls,
                                     limits.dial_timeout,
                                 )
                                 .await
@@ -1583,7 +2062,7 @@ async fn serve_udp_associate(
                             if shadowquic.is_none() {
                                 match outbound::shadowquic::ShadowQuicUdp::connect(
                                     option,
-                                    &context.tls,
+                                    &context.runtime.tls,
                                     limits.dial_timeout,
                                 )
                                 .await
@@ -1857,13 +2336,15 @@ async fn relay(
     upstream: Box<dyn outbound::Stream>,
     buffer_size: usize,
     linger: Duration,
+    up_bytes: Arc<AtomicU64>,
+    down_bytes: Arc<AtomicU64>,
+    total_up: Arc<AtomicU64>,
+    total_down: Arc<AtomicU64>,
 ) -> Relayed {
     let (client_r, client_w) = client.into_split();
     let (upstream_r, upstream_w) = tokio::io::split(upstream);
-    let up_bytes = Arc::new(AtomicU64::new(0));
-    let down_bytes = Arc::new(AtomicU64::new(0));
-    let upload = copy_half(client_r, upstream_w, buffer_size, up_bytes.clone());
-    let download = copy_half(upstream_r, client_w, buffer_size, down_bytes.clone());
+    let upload = copy_half(client_r, upstream_w, buffer_size, up_bytes.clone(), total_up);
+    let download = copy_half(upstream_r, client_w, buffer_size, down_bytes.clone(), total_down);
     tokio::pin!(upload);
     tokio::pin!(download);
 
@@ -1936,6 +2417,7 @@ async fn copy_half<R, W>(
     mut writer: W,
     buffer_size: usize,
     bytes: Arc<AtomicU64>,
+    total: Arc<AtomicU64>,
 ) -> bool
 where
     R: AsyncRead + Unpin,
@@ -1960,6 +2442,7 @@ where
             return true;
         }
         bytes.fetch_add(n as u64, Ordering::Relaxed);
+        total.fetch_add(n as u64, Ordering::Relaxed);
     }
     // Shuts the write side only; the peer observes a FIN (half-close).
     let _ = writer.shutdown().await;

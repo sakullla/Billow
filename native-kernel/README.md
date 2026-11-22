@@ -58,19 +58,23 @@ families are partial: their gaps are named in
 T22 added DNS and `hosts`: the pinned domain trie, UDP/TCP/DoT/DoH upstreams,
 nameserver policies, fallback filters, `respect-rules`, the three enhanced
 modes, fake-ip allocation and destination rebuild, and the optional DNS server
-on `dns.listen` (see [DNS and hosts](#dns-and-hosts-t22)). **Not implemented
+on `dns.listen` (see [DNS and hosts](#dns-and-hosts-t22)). T25 implements the
+Billow-consumed RESTful control interface (see [Control API](#control-api-t25)):
+`/version`, `/configs` (GET/PATCH/PUT reload), `/proxies` (list/detail/select/
+delay), `/rules`, `/connections` (list + close), `/providers/proxies` and
+`/providers/rules` (list/update), `/logs`, `/traffic`, `/memory`, `secret`
+auth, CORS, and the TCP/Unix/TLS controller listeners. **Not implemented
 yet** (rejected with
-`[unsupported]`, never ignored): the control API (T25),
-`tun`/`redir`/`tproxy`, the
+`[unsupported]`, never ignored): `tun`/`redir`/`tproxy`, the
 families listed under
 [Protocol families outside this slice](#protocol-families-outside-this-slice),
 and the protocol options listed in [Not implemented](#not-implemented). T24
 implements the rule types, rule/proxy providers, GEO/MRS reads and Billow's
-effective override configuration, and T23 implements proxy groups, selection
-and health checks (`select`/`url-test`/`fallback`/`load-balance`, nested
-groups, provider `use`, filters, latency probes and a selection cache); the
-remaining configuration-plane ownership is split across T22/T25 and is named
-at each boundary.
+effective override configuration, T23 implements proxy groups, selection and
+health checks (`select`/`url-test`/`fallback`/`load-balance`, nested groups,
+provider `use`, filters, latency probes and a selection cache), and T25 exposes
+the control API. The remaining configuration-plane ownership is split across
+T22/T25 and is named at each boundary.
 
 ## License
 
@@ -137,7 +141,10 @@ native-kernel/
 Top-level keys: `mixed-port`, `port` (recorded, does not bind a separate
 listener), `socks-port` (legacy alias for `mixed-port`), `allow-lan`,
 `bind-address`, `mode: rule`, `log-level`, `authentication`, `tls` (extra
-roots only), `proxies`, `proxy-groups`, `profile` (`store-selected`), `rules`, `sub-rules`,
+trust roots, plus `certificate`/`private-key` for the controller TLS listener),
+`external-controller`, `external-controller-unix`, `external-controller-tls`,
+`external-controller-cors`, `secret`, `proxies`, `proxy-groups`, `profile`
+(`store-selected`), `rules`, `sub-rules`,
 `rule-providers`, `proxy-providers`, `geodata-mode`, `geodata-loader`,
 `geosite-matcher`, `geo-auto-update` (`false` only), `geo-update-interval`
 (parsed), `hosts` and `dns` (T22), and `ipv6` (general switch, default `true`).
@@ -149,9 +156,9 @@ Billow's `profile.rs` effective YAML (`prepare`/`apply_settings`/
 `finish_yaml_for`) is the input shape this loader is tested against, but it is
 **not** claimed to load directly. Its rule/provider/proxy subset loads; the
 launcher keys are handled explicitly: a disabled `tun`/`sniffer` block is
-inert with a warning, `geox-url` is recorded with a warning, and
-`external-controller` or an enabled `tun`/`sniffer` is rejected with the key
-named (T25/T6-T7); `hosts` and `dns` load through the T22 runtime (see
+inert with a warning, `geox-url` is recorded with a warning, the controller
+keys load (T25), and an enabled `tun`/`sniffer` is rejected with the key named
+(T6-T7); `hosts` and `dns` load through the T22 runtime (see
 [DNS and hosts](#dns-and-hosts-t22)). `proxy-groups` is implemented by T23
 (see [Proxy groups](#proxy-groups-t23)).
 
@@ -261,14 +268,14 @@ rules:
 ```
 
 A key the pinned version declares but this kernel does not implement (a
-top-level key such as `external-controller`, or a proxy option such as `tfo`)
+top-level key such as `external-controller-pipe`, or a proxy option such as `tfo`)
 fails when its value asks for something; a key the pinned version does not declare at all
 is ignored with a warning, exactly as Mihomo's decoder ignores it, so a valid
 upstream configuration is not rejected (R2). Errors are categorized by a stable tag: `invalid_yaml`,
 `invalid_value`, `unsupported`, plus `bind` and `limits` at start-up. Example:
 
 ```
-error: [unsupported] unsupported configuration: top-level key 'external-controller' is not implemented by the Rust kernel slice (the control API is T25)
+error: [unsupported] unsupported configuration: top-level key 'external-controller-pipe' is not implemented by the Rust kernel slice (the control API is T25; a Windows named pipe is not implemented, use external-controller, external-controller-unix or external-controller-tls)
 error: [unsupported] proxies[0] (name=s1, type=vless): option 'flow' value 'xtls-rprx-vision' is not implemented
 ```
 
@@ -467,6 +474,57 @@ persistence, all matching; the tolerance cases sample twice because pinned
 caches `fastSingle` for 10 s, `url-test-cache-window` samples at 0.9/9/12.5 s,
 and the nested-touch case dials once at 1 s and reads the nested group at
 11.5 s).
+
+## Control API (T25)
+
+`controller.rs` serves the pinned `hub/route` surface Billow consumes. A
+listener starts automatically when the configuration sets
+`external-controller` (TCP), `external-controller-unix` (Unix socket) or
+`external-controller-tls` (TLS, using top-level `tls.certificate` and
+`tls.private-key`). `external-controller-cors` defaults to the pinned
+`allow-origins: ["*"]`, `allow-private-network: true`.
+
+Implemented endpoints (statuses and JSON shapes follow pinned v1.19.34):
+
+| Endpoint | Methods | Notes |
+| --- | --- | --- |
+| `/` | GET | `{"hello":"mihomo"}` |
+| `/version` | GET | `{"meta":false,"version":"<crate version>"}` (the boolean shape is pinned; the string is this kernel's version, not an upstream claim) |
+| `/configs` | GET/PATCH/PUT | GET reports `mixed-port`, `tun.enable`, `mode`, `log-level`, `ipv6`, `authentication`, geodata fields; PATCH accepts `tun.enable:false` (and rejects real changes by name); PUT with `payload` reloads |
+| `/proxies` | GET | `proxies` map: `DIRECT`/`REJECT`/`REJECT-DROP`, inline proxies, groups; provider nodes stay under `/providers/proxies` |
+| `/proxies/:name` | GET/PUT/DELETE | detail, selector update, clear `url-test`/`fallback` fixed member (a Selector answers 400 like pinned) |
+| `/proxies/:name/delay` | GET | `timeout` required, `url`/`expected` parsed; 400/404/503/504 match pinned |
+| `/rules` | GET | index/type/payload/proxy/size; pinned `extra` hit counters are not tracked and omitted |
+| `/connections` | GET/DELETE | live routed tunnels with pinned metadata keys, byte counters, chains, rule; DELETE closes one/all; `connections: null` when empty |
+| `/providers/proxies` | GET | real proxy providers plus `Compatible` group/default providers |
+| `/providers/proxies/:name` | GET/PUT | detail and update; a failed update is 503 and keeps the old snapshot |
+| `/providers/proxies/:name/healthcheck` | GET | provider health check |
+| `/providers/proxies/:p/:name` | GET/healthcheck | provider node detail/latency |
+| `/providers/rules` | GET | behavior/format/ruleCount/vehicleType/updatedAt (inline providers report `format: ""` and `payload`) |
+| `/providers/rules/:name` | PUT | re-read one provider; 503 on failure with the old snapshot kept |
+| `/logs` | GET (stream/WS) | NDJSON `{"type","payload"}` (or `format=structured`), level filter; the CLI forwards tracing events to the bus |
+| `/traffic` | GET (stream/WS) | `{"up","down","upTotal","downTotal"}` each second |
+| `/memory` | GET (stream/WS) | `{"inuse","oslimit"}`; `inuse` is the process peak RSS (`getrusage`) |
+
+Auth: when `secret` is non-empty, TCP/TLS requests need
+`Authorization: Bearer <secret>`; a WebSocket upgrade may use `?token=`; the
+Unix socket is unauthenticated (pinned starts it with an empty secret and
+relies on the socket permission, here `0666`). Routing resolves before auth, so
+an unknown path is the pinned plain-text `404 page not found` even without
+credentials, and a wrong method is 405 with `Allow`. CORS headers are added to
+every response (`Vary: Origin`), and preflight `OPTIONS` answers 200 without
+auth.
+
+Reload (`PUT /configs`) builds a complete replacement generation (providers,
+GEO, DNS, hosts, groups, rules) and only then swaps it; a failure leaves the old
+generation live. In-flight sessions keep the generation they started with, so a
+reload frees the previous rules/providers/DNS objects when their last session
+ends (R4). Pinned recreates the mixed listener/DNS server on reload while this
+kernel refuses a changed `mixed-port`/`bind-address`/`dns.listen` or controller
+listener/secret with a named 400 (restart required). `/configs/geo`,
+`/upgrade/geo`, `/group`, `/cache`, `/storage` and `/dns/query` are not
+implemented and return an explicit 404, recorded in
+`tool/kernel-compat/evidence/t25-controller.md`.
 
 ## Protocol outbounds
 
@@ -727,9 +785,8 @@ workspace `rust-version` to 1.89 instead of shipping an inconsistent MSRV.
 `03-execution-plan.md`
 defines T9/T11 (non-QUIC), T10 (QUIC), T16 (device-family protocol halves;
 device/TUN and the IP stack remain T6/T7) and the configuration-plane tasks
-T22 (DNS/hosts), T24 (rules/providers/GEO) and T25 (control interface). T22
-and T23 are implemented; T25 is not, and the remaining boundaries are named
-below. The capability index
+T22 (DNS/hosts), T24 (rules/providers/GEO) and T25 (control interface). T22,
+T23 and T25 are implemented; the remaining boundaries are named below. The capability index
 records each family at the status the kernel actually reaches: `implemented`,
 `partial` (with the missing options named) or `unimplemented`; none can be
 reported as compatible.
@@ -737,7 +794,8 @@ reported as compatible.
 ### Not implemented
 
 Configuration-plane gaps not claimed by T24 (each is rejected with the key or
-value named): `find-process-mode` (T22/T6 process lookup), the control API (T25),
+value named): `find-process-mode` (T22/T6 process lookup),
+`external-controller-pipe`/`external-controller-routing-mark`, `external-ui*`,
 `geo-auto-update: true`,
 an HTTP provider fetched through a configured `proxy`, compressed provider
 responses, `path-in-bundle`, `age-secret-key`, unsupported `override.<field>`
@@ -925,9 +983,13 @@ Stable entry points:
   / `Kernel::start_with_yaml(&LoadedConfig, geosite_dir, limits)` — the last one
   lets a host adjust the listener before binding and keeps the warnings.
 - `Kernel::start_with_options(&LoadedConfig, geosite_dir, base_dir, limits, &KernelOptions)`
-  — `KernelOptions { cache_dir }` locates the T23 selection cache.
+  — `KernelOptions { cache_dir, log_bus }` locates the T23 selection cache and
+  optionally shares the host's `/logs` bus.
 - `Kernel::identity()`, `Kernel::listen_addr()`, `Kernel::stats()`,
   `Kernel::evaluate(host, ip)`, `Kernel::config()`, `Kernel::stop()`.
+- `Kernel::reload(yaml)`, `Kernel::controller_addrs()` and `Kernel::log_bus()`
+  expose the T25 reload path, the bound controller addresses and the log bus.
+  `KernelOptions::log_bus` lets a host logger publish engine events to `/logs`.
 - `Kernel::groups()` / `Kernel::group_statuses()` / `Kernel::select_group(group, member)`
   — group list, current selection, fixed selection and per-member health for
   T25; `GroupRegistry::probe_group(name).await` / `probe_all().await` run an
@@ -988,6 +1050,10 @@ group differential runs the same pinned binary with loopback CONNECT nodes:
 (27 cases plus persistence; see `evidence/t23-groups.md`).
 
 - `tests/config.rs` — parsing, strict option tables, error tags.
+- `tests/controller.rs` — the T25 control API over a real TCP (and Unix)
+  listener: auth forms, route/405/404 semantics, CORS preflight,
+  `/configs` GET/PATCH/PUT reload, selection/delay, provider update failure,
+  connection listing/close and `/traffic`/`/logs` frames.
 - `tests/groups.rs` — T23: every group type/field, relay rejection, cycles,
   filter/exclude/include-all expansion and the configured empty fallback,
   `use` provider members, rule targets naming a group, url-test/fallback
@@ -1181,6 +1247,13 @@ node tool/kernel-compat/runner.mjs \
 
 # the harness's own acceptance command
 node --test tool/kernel-compat/runner.test.mjs
+
+# T25 control API differential (auth, reload, providers, connections, streams,
+# Unix socket and TLS controller)
+node tool/kernel-compat/t25-differential.mjs \
+  --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 \
+  --rust native-kernel/target/release/billow-kernel \
+  --out tool/kernel-compat/evidence/t25-differential.json
 
 # T23 group/selection/health differential (27 cases + persistence)
 node tool/kernel-compat/t23-differential.mjs \

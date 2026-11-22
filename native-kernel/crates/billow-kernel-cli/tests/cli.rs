@@ -382,9 +382,11 @@ fn process_rejects_unimplemented_config_and_exits_non_zero() {
     let dir = std::env::temp_dir().join(format!("billow-cli-bad-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("bad.yaml");
+    // T25 implements `external-controller`, the Unix socket and TLS; the
+    // Windows named pipe remains an explicit named rejection.
     std::fs::write(
         &config,
-        "mixed-port: 1\nexternal-controller: 127.0.0.1:9090\nrules:\n  - 'MATCH,DIRECT'\n",
+        "mixed-port: 1\nexternal-controller-pipe: '\\\\\\.\\pipe\\billow'\nrules:\n  - 'MATCH,DIRECT'\n",
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
@@ -394,7 +396,7 @@ fn process_rejects_unimplemented_config_and_exits_non_zero() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[unsupported]"), "{stderr}");
-    assert!(stderr.contains("'external-controller'"), "{stderr}");
+    assert!(stderr.contains("'external-controller-pipe'"), "{stderr}");
 
     // An implemented block still rejects an unimplemented shape by name.
     std::fs::write(

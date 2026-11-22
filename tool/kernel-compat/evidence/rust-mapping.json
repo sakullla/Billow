@@ -3,7 +3,7 @@
   "version": 3,
   "engine": "rust",
   "kernel": "billow-kernel",
-  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,dns.rs,proxies.rs,inbound.rs,groups.rs,engine.rs,outbound/*.rs} and tests/{config,dns,groups,protocols,mihomo_peers,quic_peers,resources}.rs",
+  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,dns.rs,proxies.rs,inbound.rs,groups.rs,engine.rs,controller.rs,outbound/*.rs} and tests/{config,dns,groups,controller,protocols,mihomo_peers,quic_peers,resources}.rs",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -99,10 +99,10 @@
     },
     "tls": {
       "status": "implemented",
-      "reason": "custom-cert/certificate anchors are built into the kernel instance and used by every TLS dial; skip-cert-verify is the explicit override",
+      "reason": "tls.custom-cert/certificate directories build the client trust anchors; tls.certificate as a file or inline PEM and tls.private-key provide the controller TLS server key pair. Other pinned tls keys are rejected by name.",
       "evidence": [
         "tests/config.rs::tls_roots_are_loaded_and_unknown_tls_keys_fail",
-        "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls"
+        "tool/kernel-compat/t25-differential.mjs"
       ]
     },
     "rule-providers": {
@@ -194,10 +194,12 @@
       ]
     },
     "external-controller": {
-      "status": "unimplemented",
-      "reason": "control API is T25; rejected by name",
+      "status": "implemented",
+      "reason": "TCP RESTful controller on the configured host:port; starts automatically when set. Billow-consumed endpoints and pinned status/JSON shapes are implemented (see controller).",
       "evidence": [
-        "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly"
+        "tests/controller.rs::auth_routes_and_config_shapes_match_the_pinned_api",
+        "tests/controller.rs::connections_are_listed_with_metadata_and_can_be_closed",
+        "tool/kernel-compat/t25-differential.mjs"
       ]
     },
     "dns": {
@@ -251,6 +253,60 @@
       "reason": "General IPv6 switch (pinned default true), combined with dns.ipv6 as pinned (`ipv6 && dns.ipv6`). With IPv6 off, rule-time lookups ask A only and the DNS server answers an empty AAAA; with it on, A and AAAA are joined with the pinned 100ms ipv6-timeout.",
       "evidence": [
         "tests/dns.rs::ipv6_disabled_aaaa"
+      ]
+    },
+    "external-controller-unix": {
+      "status": "implemented",
+      "reason": "Unix socket listener; starts with the pinned empty secret semantics (socket permission 0666) and is removed before binding.",
+      "evidence": [
+        "tests/controller.rs::unix_socket_serves_without_bearer",
+        "tool/kernel-compat/t25-differential.mjs"
+      ]
+    },
+    "external-controller-tls": {
+      "status": "implemented",
+      "reason": "TLS listener using the pinned top-level tls.certificate/tls.private-key PEMs; ALPN h2/http1.1 advertised, HTTP/1.1 served.",
+      "evidence": [
+        "tool/kernel-compat/t25-differential.mjs"
+      ]
+    },
+    "external-controller-cors": {
+      "status": "implemented",
+      "reason": "allow-origins/allow-private-network; defaults match pinned (['*'], true). Preflight is unauthenticated and always adds Vary: Origin.",
+      "evidence": [
+        "tests/config.rs::controller_listeners_secret_and_cors_are_parsed",
+        "tests/controller.rs::cors_allow_origins_is_enforced_when_configured",
+        "tool/kernel-compat/t25-differential.mjs"
+      ]
+    },
+    "secret": {
+      "status": "implemented",
+      "reason": "Bearer authentication on TCP/TLS plus ?token= for WebSocket upgrades; 401 {\"message\":\"Unauthorized\"} before route handlers. Routing precedes auth, like pinned chi.",
+      "evidence": [
+        "tests/config.rs::controller_listeners_secret_and_cors_are_parsed",
+        "tests/controller.rs::auth_routes_and_config_shapes_match_the_pinned_api",
+        "tool/kernel-compat/t25-differential.mjs"
+      ]
+    },
+    "external-controller-pipe": {
+      "status": "unimplemented",
+      "reason": "Windows named pipe is not implemented; rejected by name (use TCP, Unix or TLS).",
+      "evidence": [
+        "crates/billow-kernel-cli/tests/cli.rs::process_rejects_unimplemented_config_and_exits_non_zero"
+      ]
+    },
+    "external-controller-routing-mark": {
+      "status": "unimplemented",
+      "reason": "socket routing mark is not applied; rejected by name",
+      "evidence": [
+        "tests/config.rs::rejects_every_unimplemented_top_level_key"
+      ]
+    },
+    "external-ui": {
+      "status": "unimplemented",
+      "reason": "no UI file server; rejected by name",
+      "evidence": [
+        "tests/config.rs::rejects_every_unimplemented_top_level_key"
       ]
     }
   },
@@ -830,7 +886,7 @@
         "bbr-profile",
         "dialer-proxy",
         "remote-dns-resolve with DNS over TCP/DoT/DoH or `#param` name servers",
-        "URI templates / IP flow forwarding (RFC 9484 §8.2)",
+        "URI templates / IP flow forwarding (RFC 9484 \u00a78.2)",
         "ADDRESS_REQUEST from the peer (no address-assignment policy)",
         "IPv6 extension headers and IPv4 fragments (reported and dropped, not reassembled)",
         "ICMP error generation",
@@ -1841,6 +1897,157 @@
       "tests/dns.rs::fallback_geoip_code_negation_matches_the_pinned_filter",
       "tool/kernel-compat/t22-differential.mjs",
       "tool/kernel-compat/evidence/t22-dns.json"
+    ]
+  },
+  "controller": {
+    "status": "implemented",
+    "listeners": [
+      "external-controller (TCP)",
+      "external-controller-unix",
+      "external-controller-tls"
+    ],
+    "endpoints": {
+      "/version": {
+        "status": "implemented",
+        "evidence": [
+          "tests/controller.rs"
+        ]
+      },
+      "/configs": {
+        "status": "implemented",
+        "reason": "GET/PATCH/PUT; PUT builds a replacement generation before swapping and keeps the old one on failure. Changed mixed-port/bind-address/dns.listen/controller listeners are named 400s (restart required).",
+        "evidence": [
+          "tests/controller.rs::reload_swaps_generation_and_keeps_the_old_one_on_failure",
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "/proxies": {
+        "status": "implemented",
+        "reason": "list/detail/select/clear/delay; provider nodes are only under /providers/proxies like pinned",
+        "evidence": [
+          "tests/controller.rs::auth_routes_and_config_shapes_match_the_pinned_api",
+          "tests/controller.rs::selection_delay_and_patch"
+        ]
+      },
+      "/rules": {
+        "status": "partial",
+        "reason": "index/type/payload/proxy/size match; pinned `extra` hit counters are not tracked and omitted",
+        "evidence": [
+          "tests/controller.rs::auth_routes_and_config_shapes_match_the_pinned_api"
+        ]
+      },
+      "/connections": {
+        "status": "implemented",
+        "reason": "live TCP tunnels with pinned metadata/byte/chain/rule fields; DELETE closes one or all; UDP associations are closed with the kernel/connection control stream but are not listed individually",
+        "evidence": [
+          "tests/controller.rs::connections_are_listed_with_metadata_and_can_be_closed",
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "/providers/proxies": {
+        "status": "implemented",
+        "reason": "real providers plus Compatible group/default entries; update failure keeps the old snapshot",
+        "evidence": [
+          "tests/controller.rs::provider_update_failure_keeps_the_old_snapshot"
+        ]
+      },
+      "/providers/rules": {
+        "status": "implemented",
+        "reason": "list/update; inline providers report format \"\" and payload like pinned",
+        "evidence": [
+          "tests/controller.rs::provider_update_failure_keeps_the_old_snapshot"
+        ]
+      },
+      "/logs": {
+        "status": "partial",
+        "reason": "NDJSON/WebSocket stream carries controller events plus host-forwarded tracing events (the CLI forwards all tracing); library hosts must wire KernelOptions::log_bus to their logger",
+        "evidence": [
+          "tests/controller.rs::traffic_and_logs_stream_frames"
+        ]
+      },
+      "/traffic": {
+        "status": "implemented",
+        "reason": "one-second up/down deltas from live byte counters",
+        "evidence": [
+          "tests/controller.rs::traffic_and_logs_stream_frames"
+        ]
+      },
+      "/memory": {
+        "status": "implemented",
+        "reason": "inuse is the process peak RSS from getrusage; oslimit 0",
+        "evidence": [
+          "tests/controller.rs::auth_routes_and_config_shapes_match_the_pinned_api"
+        ]
+      }
+    },
+    "notImplemented": {
+      "/configs/geo": {
+        "status": "unimplemented",
+        "reason": "geodata download is not started; explicit 404 lets Billow report the missing capability",
+        "evidence": [
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "/upgrade/geo": {
+        "status": "unimplemented",
+        "reason": "explicit 404 (same as /configs/geo)",
+        "evidence": [
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "/group": {
+        "status": "unimplemented",
+        "reason": "explicit 404; group data is available under /proxies",
+        "evidence": [
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "/cache": {
+        "status": "unimplemented",
+        "reason": "explicit 404",
+        "evidence": [
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "/storage": {
+        "status": "unimplemented",
+        "reason": "explicit 404",
+        "evidence": [
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "/dns/query": {
+        "status": "unimplemented",
+        "reason": "explicit 404; DNS resolution exists internally (T22) but the query endpoint is not exposed",
+        "evidence": [
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "/restart": {
+        "status": "unimplemented",
+        "reason": "process restart belongs to the host (T6)",
+        "evidence": [
+          "tool/kernel-compat/t25-differential.mjs"
+        ]
+      },
+      "websocket /connections/logs/traffic": {
+        "status": "implemented",
+        "reason": "minimal RFC 6455 text-frame server; client frames are not parsed",
+        "evidence": [
+          "crates/billow-kernel/src/controller.rs"
+        ]
+      }
+    },
+    "knownDivergences": [
+      "PUT /configs moving mixed-port/bind-address/dns.listen or the controller listener/secret: pinned recreates them; the Rust kernel answers 400 and requires a restart.",
+      "PATCH /configs {\"tun\":{\"enable\":true}}: pinned answers 204 and attempts a TUN device; the Rust kernel rejects it by name (no device layer before T6/T7).",
+      "GET /configs reports only fields this kernel honours; pinned General keys with no equivalent (unified-delay, routing-mark, geox-url, sniffing, find-process-mode, tcp-concurrent, keep-alive) are omitted rather than fabricated.",
+      "The /proxies map omits pinned's GLOBAL/PASS/COMPATIBLE builtins; the kernel's routing has no such adapters.",
+      "Rule hit statistics (`extra` in /rules) are not tracked."
+    ],
+    "evidence": [
+      "tool/kernel-compat/evidence/t25-differential.json",
+      "tool/kernel-compat/evidence/t25-controller.md"
     ]
   }
 }

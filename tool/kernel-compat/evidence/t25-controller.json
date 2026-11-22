@@ -1,0 +1,130 @@
+{
+  "format": "t25-controller",
+  "version": 1,
+  "generatedAt": "2026-11-23T01:45:00Z",
+  "upstream": {
+    "version": "v1.19.34",
+    "source": "tool/kernel-compat/.cache/source/tree-v1.19.34",
+    "binary": "tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
+    "routeSources": ["hub/route/server.go", "hub/route/configs.go", "hub/route/proxies.go", "hub/route/connections.go", "hub/route/rules.go", "hub/route/provider.go", "hub/route/groups.go"]
+  },
+  "implementation": {
+    "module": "native-kernel/crates/billow-kernel/src/controller.rs",
+    "engineHooks": [
+      "native-kernel/crates/billow-kernel/src/engine.rs: RuntimeSnapshot/SharedRuntime (per-generation swap), ConnectionRegistry (live rows + close), relay byte counters",
+      "native-kernel/crates/billow-kernel/src/config.rs: ControllerConfig/CorsConfig, external-controller*, secret, tls.certificate/private-key",
+      "native-kernel/crates/billow-kernel-cli/src/main.rs: Controller starts with the kernel; the tracing logger publishes to the /logs bus"
+    ],
+    "listeners": {
+      "external-controller": "implemented: TCP, started automatically when configured",
+      "external-controller-unix": "implemented: Unix socket, unlinked before bind, 0666, no Bearer secret (pinned empty-secret semantics)",
+      "external-controller-tls": "implemented: TLS from top-level tls.certificate/tls.private-key; HTTP/1.1 served, h2 advertised in ALPN",
+      "external-controller-pipe": "unimplemented: rejected by name (Windows named pipe)",
+      "external-controller-routing-mark": "unimplemented: rejected by name"
+    },
+    "auth": {
+      "tcp_tls": "Authorization: Bearer <secret>; exact case/one-space match like pinned",
+      "websocket": "?token=<secret> accepted only for Upgrade: websocket",
+      "unix": "no secret enforcement",
+      "unauthorizedResponse": "401 {\"message\":\"Unauthorized\"}",
+      "routingOrder": "route/method resolution precedes auth, so an unknown path is a plain-text 404 without credentials and a wrong method is 405 with Allow"
+    },
+    "cors": {
+      "config": "external-controller-cors.allow-origins / allow-private-network (defaults [\"*\"] / true)",
+      "behavior": "Vary: Origin on every response; preflight OPTIONS is 200 without auth; Access-Control-Max-Age 300; Access-Control-Allow-Private-Network mirrors the request"
+    },
+    "endpoints": {
+      "/": { "status": "implemented", "methods": ["GET"] },
+      "/version": { "status": "implemented", "methods": ["GET"], "note": "meta boolean matches the pinned shape; version is the Rust crate version" },
+      "/configs": { "status": "implemented", "methods": ["GET", "PATCH", "PUT"], "note": "PUT builds and validates a replacement generation before swapping; failures keep the old generation" },
+      "/proxies": { "status": "implemented", "methods": ["GET"] },
+      "/proxies/:name": { "status": "implemented", "methods": ["GET", "PUT", "DELETE"] },
+      "/proxies/:name/delay": { "status": "implemented", "methods": ["GET"] },
+      "/rules": { "status": "partial", "methods": ["GET"], "missing": ["pinned extra hit/miss counters (not tracked)"] },
+      "/connections": { "status": "implemented", "methods": ["GET", "DELETE"] },
+      "/connections/:id": { "status": "implemented", "methods": ["DELETE"] },
+      "/providers/proxies": { "status": "implemented", "methods": ["GET"] },
+      "/providers/proxies/:name": { "status": "implemented", "methods": ["GET", "PUT"] },
+      "/providers/proxies/:name/healthcheck": { "status": "implemented", "methods": ["GET"] },
+      "/providers/proxies/:provider/:name": { "status": "implemented", "methods": ["GET"] },
+      "/providers/proxies/:provider/:name/healthcheck": { "status": "implemented", "methods": ["GET"] },
+      "/providers/rules": { "status": "implemented", "methods": ["GET"] },
+      "/providers/rules/:name": { "status": "implemented", "methods": ["PUT"] },
+      "/logs": { "status": "partial", "methods": ["GET (NDJSON/WebSocket)"], "missing": ["a host that does not wire KernelOptions::log_bus only sees controller events; the CLI forwards all tracing"] },
+      "/traffic": { "status": "implemented", "methods": ["GET (NDJSON/WebSocket)"] },
+      "/memory": { "status": "implemented", "methods": ["GET (NDJSON/WebSocket)"], "note": "inuse is peak RSS via getrusage; oslimit 0" },
+      "/configs/geo": { "status": "unimplemented", "http": 404 },
+      "/upgrade/geo": { "status": "unimplemented", "http": 404 },
+      "/group": { "status": "unimplemented", "http": 404 },
+      "/cache": { "status": "unimplemented", "http": 404 },
+      "/storage": { "status": "unimplemented", "http": 404 },
+      "/dns/query": { "status": "unimplemented", "http": 404 },
+      "/restart": { "status": "unimplemented", "http": 404 }
+    },
+    "kernelLinkage": {
+      "selection": "PUT /proxies/:group persists through the same SelectionCache as the library/CLI (`profile.store-selected`)",
+      "delay": "GET /proxies/:name/delay and provider node healthcheck dial through the configured proxy chain, DIRECT/hosts resolver and DNS runtime, or the group's selected member",
+      "connections": "live routed TCP tunnels are registered with metadata/chains/rule and byte counters; DELETE notifies the session future and the registry row disappears when the task ends",
+      "providerUpdate": "PUT /providers/{proxies,rules}/:name reuses the T24 update path; a failed fetch/compile returns 503 and the old Arc snapshot stays",
+      "reload": "PUT /configs builds providers/geodata/DNS/hosts/groups/rules into a new RuntimeSnapshot and swaps it; new sessions use it, in-flight sessions keep the old generation until they finish (R4)"
+    },
+    "knownDivergences": [
+      "PUT /configs cannot move mixed-port/bind-address/dns.listen or change the controller listener/secret; pinned recreates them. The Rust kernel answers 400 naming the field (restart required).",
+      "PATCH /configs {\"tun\":{\"enable\":true}} is 204 in pinned (it attempts a device); the Rust kernel rejects it with 400 because there is no device layer before T6/T7.",
+      "GET /configs omits pinned General fields with no Rust equivalent (unified-delay, routing-mark, geox-url, sniffing, find-process-mode, tcp-concurrent, keep-alive*) instead of returning fabricated defaults.",
+      "/proxies omits the pinned GLOBAL/PASS/COMPATIBLE builtin adapters, which this routing engine does not have.",
+      "Rule hit/miss statistics are not tracked, so /rules has no `extra` object.",
+      "WebSocket server text frames are implemented; client frames (ping/close) are not parsed (the streams are server-to-client only)."
+    ]
+  },
+  "verification": {
+    "differential": {
+      "script": "tool/kernel-compat/t25-differential.mjs",
+      "evidence": "tool/kernel-compat/evidence/t25-differential.json",
+      "summary": { "cases": 49, "comparedEqual": 47, "recordedDivergences": 2, "unexpected": 0 },
+      "compared": [
+        "auth missing / query-token-on-non-WS / wrong Bearer case / authorized version",
+        "unknown path 404 body, wrong method 405 + Allow, CORS preflight and Vary",
+        "/configs GET keys, PATCH tun false, /proxies group/node shapes, /rules shape",
+        "selector PUT + now, missing member 400, Selector DELETE 400",
+        "DIRECT delay 200 + value presence, missing timeout 400, unknown proxy 404, dead node 503",
+        "/providers/proxies and /providers/rules shapes, update success, update failure 503 with the old snapshot",
+        "PUT /configs success + rule effect, invalid YAML 400 + old config kept",
+        "connection list metadata/chains/rule, DELETE 204 + row gone, DELETE unknown 204",
+        "/traffic first frame keys, /logs first frame keys after a routed connection",
+        "Unix socket /version and /configs, TLS /version with and without Bearer"
+      ]
+    },
+    "rustTests": {
+      "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
+      "result": "all default suites pass: lib+controller/config/groups/dns/resources/sessions/protocols/peers (ignored by default) and CLI 11/11",
+      "controllerTests": [
+        "tests/controller.rs::auth_routes_and_config_shapes_match_the_pinned_api",
+        "tests/controller.rs::selection_delay_and_patch",
+        "tests/controller.rs::reload_swaps_generation_and_keeps_the_old_one_on_failure",
+        "tests/controller.rs::provider_update_failure_keeps_the_old_snapshot",
+        "tests/controller.rs::connections_are_listed_with_metadata_and_can_be_closed",
+        "tests/controller.rs::traffic_and_logs_stream_frames",
+        "tests/controller.rs::unix_socket_serves_without_bearer",
+        "tests/controller.rs::cors_allow_origins_is_enforced_when_configured"
+      ],
+      "regressions": [
+        "tool/kernel-compat/peer-tests.sh: 66 passed, 0 failed",
+        "node tool/kernel-compat/runner.test.mjs: 10 passed, 0 failed"
+      ]
+    },
+    "platform": {
+      "verified": ["macos-aarch64"],
+      "compilesButNotRun": ["linux-x86_64", "linux-aarch64", "android", "ios-simulator"],
+      "note": "Unix socket and TLS evidence is macOS arm64 only; Android/iOS controller ownership is host work (T6/T7)."
+    }
+  },
+  "uncovered": [
+    "TLS client-certificate authentication (tls.client-auth-type/client-auth-cert) is rejected at load; only server certificates are implemented.",
+    "external-controller-pipe (Windows), external-controller-routing-mark and external-ui* are rejected by name.",
+    "UDP SOCKS5 associations are not listed individually in /connections; they are closed with the kernel and are not addressable by DELETE.",
+    "Pinned rule hit counters (`extra`) and per-URL delay histories are not tracked; /proxies history is only filled from group health results.",
+    "GET /configs does not mirror every pinned General key; only fields the kernel honours are reported.",
+    "WebSocket client frames and WebSocket /connections interval streams are implemented for server-to-client output but not exercised by the differential (plain streaming is)."
+  ]
+}

@@ -157,6 +157,7 @@ impl RuleProviders {
             generation,
             payload: payload.clone(),
             compiled: Arc::new(compiled),
+            updated_at: SystemTime::now(),
         });
         Ok(ProviderUpdate {
             name: name.to_string(),
@@ -317,6 +318,7 @@ pub fn finish(
                     generation: 1,
                     payload,
                     compiled: Arc::new(empty),
+                    updated_at: SystemTime::now(),
                 },
             ),
         );
@@ -339,6 +341,7 @@ pub fn finish(
             generation: 1,
             payload,
             compiled: Arc::new(compiled),
+            updated_at: SystemTime::now(),
         });
     }
     let mut proxy_slots = BTreeMap::new();

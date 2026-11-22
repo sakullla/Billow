@@ -3341,6 +3341,22 @@ pub async fn serve_dns(
     service: Arc<DnsService>,
     udp: std::net::UdpSocket,
     tcp: std::net::TcpListener,
+    stop: watch::Receiver<bool>,
+) {
+    let provider: DnsProvider = Arc::new(move || Some(service.clone()));
+    serve_dns_with(provider, udp, tcp, stop).await;
+}
+
+/// DNS configuration source for the `dns.listen` server. A reload swaps the
+/// kernel generation; the listener asks this provider for the current service
+/// on every query instead of keeping the initial resolver (pinned
+/// `dns.ReCreateServer` restarts the server with the new config).
+pub type DnsProvider = Arc<dyn Fn() -> Option<Arc<DnsService>> + Send + Sync>;
+
+pub async fn serve_dns_with(
+    provider: DnsProvider,
+    udp: std::net::UdpSocket,
+    tcp: std::net::TcpListener,
     mut stop: watch::Receiver<bool>,
 ) {
     let udp = match UdpSocket::from_std(udp) {
@@ -3357,8 +3373,8 @@ pub async fn serve_dns(
             return;
         }
     };
-    let udp_task = tokio::spawn(dns_udp_loop(service.clone(), udp, stop.clone()));
-    let tcp_task = tokio::spawn(dns_tcp_loop(service, tcp, stop.clone()));
+    let udp_task = tokio::spawn(dns_udp_loop(provider.clone(), udp, stop.clone()));
+    let tcp_task = tokio::spawn(dns_tcp_loop(provider, tcp, stop.clone()));
     let _ = stop.changed().await;
     udp_task.abort();
     tcp_task.abort();
@@ -3366,7 +3382,7 @@ pub async fn serve_dns(
     let _ = tcp_task.await;
 }
 
-async fn dns_udp_loop(service: Arc<DnsService>, socket: UdpSocket, mut stop: watch::Receiver<bool>) {
+async fn dns_udp_loop(provider: DnsProvider, socket: UdpSocket, mut stop: watch::Receiver<bool>) {
     let mut buf = vec![0u8; DNS_MAX_MESSAGE];
     loop {
         tokio::select! {
@@ -3379,6 +3395,7 @@ async fn dns_udp_loop(service: Arc<DnsService>, socket: UdpSocket, mut stop: wat
                         continue;
                     }
                 };
+                let Some(service) = provider() else { continue };
                 let answer = service.answer_query(&buf[..len]).await;
                 let _ = socket.send_to(&answer, peer).await;
             }
@@ -3386,16 +3403,17 @@ async fn dns_udp_loop(service: Arc<DnsService>, socket: UdpSocket, mut stop: wat
     }
 }
 
-async fn dns_tcp_loop(service: Arc<DnsService>, listener: tokio::net::TcpListener, mut stop: watch::Receiver<bool>) {
+async fn dns_tcp_loop(provider: DnsProvider, listener: tokio::net::TcpListener, mut stop: watch::Receiver<bool>) {
     loop {
         tokio::select! {
             _ = stop.changed() => return,
             accepted = listener.accept() => {
                 let Ok((mut stream, _)) = accepted else { continue };
-                let service = service.clone();
+                let provider = provider.clone();
                 tokio::spawn(async move {
                     loop {
                         let Ok(raw) = read_dns_stream(&mut stream).await else { return };
+                        let Some(service) = provider() else { return };
                         let answer = service.answer_query(&raw).await;
                         let Ok(len) = u16::try_from(answer.len()) else { return };
                         let _ = stream.write_all(&len.to_be_bytes()).await;

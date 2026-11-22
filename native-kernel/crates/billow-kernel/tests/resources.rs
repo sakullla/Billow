@@ -750,31 +750,28 @@ rules:
 fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
     let yaml = billow_effective_yaml(free_port());
 
-    // The full artifact is not claimed to load directly: the remaining
-    // behavior-changing cross-task blocks (`external-controller`, `sniffer`,
-    // `tun`) are named rejections; `dns`/`hosts` are T22 and are validated by
-    // the DNS runtime instead.
+    // T25 implements the control API, so the remaining named rejection in the
+    // full artifact is the enabled sniffer (`tun` is inert while disabled and
+    // DNS/hosts are T22).
     let error = billow_kernel::load_config(&yaml, "effective.yaml")
         .err()
-        .expect("cross-task blocks must be rejected");
-    let text = error.to_string();
-    assert!(
-        ["external-controller", "sniffer", "tun"]
-            .iter()
-            .any(|key| text.contains(key)),
-        "{text}"
-    );
+        .expect("the enabled sniffer must be rejected");
+    assert!(error.to_string().contains("sniffer"), "{error}");
 
-    // Each boundary is individually named. `proxy-groups` is implemented by
-    // T23 now: a group subset loads and a rule target resolves to it.
+    // The controller listener is accepted and recorded.
     let yaml = format!(
-        "mixed-port: {}\nexternal-controller: 127.0.0.1:49152\n",
+        "mixed-port: {}\nexternal-controller: 127.0.0.1:49152\nsecret: local\n",
         free_port()
     );
-    let error = billow_kernel::load_config(&yaml, "effective.yaml")
-        .err()
-        .expect("the control API must be rejected");
-    assert!(error.to_string().contains("external-controller"), "{error}");
+    let loaded = billow_kernel::load_config(&yaml, "effective.yaml")
+        .expect("the control API loads");
+    assert_eq!(
+        loaded.config.controller.external_controller.as_deref(),
+        Some("127.0.0.1:49152")
+    );
+    assert_eq!(loaded.config.controller.secret, "local");
+    // `proxy-groups` is implemented by T23: a group subset loads and a rule
+    // target resolves to it.
     // T22: a DNS block with a nameserver loads; only an unimplemented shape is
     // a named rejection.
     let yaml = format!(

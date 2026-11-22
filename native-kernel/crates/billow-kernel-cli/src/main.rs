@@ -76,7 +76,8 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
         Some("debug") => tracing::Level::DEBUG,
         _ => tracing::Level::INFO,
     };
-    install_line_logger(max_level);
+    let log_bus = billow_kernel::LogBus::new();
+    install_line_logger(max_level, log_bus.clone());
     for warning in &loaded.warnings {
         tracing::warn!("{warning}");
     }
@@ -99,6 +100,7 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
             .cache_dir
             .clone()
             .or_else(|| Some(base_dir.clone())),
+        log_bus: Some(log_bus.clone()),
     };
     if args.check {
         let (mut kernel, _) = start(
@@ -288,9 +290,10 @@ async fn wait_for_stop() -> &'static str {
 }
 
 /// Line logger: `HH:MM:SS.mmm LEVEL target: message field=value ...`.
-fn install_line_logger(max_level: tracing::Level) {
+fn install_line_logger(max_level: tracing::Level, log_bus: billow_kernel::LogBus) {
     struct LineLogger {
         max_level: tracing::Level,
+        log_bus: billow_kernel::LogBus,
     }
     struct Fields<'a>(&'a mut String);
     impl tracing::field::Visit for Fields<'_> {
@@ -327,9 +330,19 @@ fn install_line_logger(max_level: tracing::Level) {
                 metadata.target(),
                 fields
             );
+            let level = match *metadata.level() {
+                tracing::Level::ERROR => "error",
+                tracing::Level::WARN => "warning",
+                tracing::Level::INFO => "info",
+                tracing::Level::DEBUG | tracing::Level::TRACE => "debug",
+            };
+            let payload = fields.trim_start().to_string();
+            if !payload.is_empty() {
+                self.log_bus.publish(level, payload);
+            }
         }
     }
-    let _ = tracing::subscriber::set_global_default(LineLogger { max_level });
+    let _ = tracing::subscriber::set_global_default(LineLogger { max_level, log_bus });
 }
 
 fn now_stamp() -> String {

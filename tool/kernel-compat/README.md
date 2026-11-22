@@ -80,6 +80,16 @@ node tool/kernel-compat/t22-differential.mjs \
 node tool/kernel-compat/t23-differential.mjs \
   --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
   --out tool/kernel-compat/evidence/t23-differential.json
+
+# T25 control-API differential: the same YAML drives both external-controller
+# listeners through auth failures, routing/status mistakes, CORS preflight,
+# /configs GET/PATCH/PUT reload, selection/delay, providers (update success and
+# failure), connections (list + DELETE), /traffic and /logs first frames, the
+# Unix socket and the TLS listener. Both engines get a self-signed certificate
+# generated with openssl inside each engine's home directory.
+node tool/kernel-compat/t25-differential.mjs \
+  --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
+  --out tool/kernel-compat/evidence/t25-differential.json
 ```
 
 The Rust binary's path follows the cargo target directory: `native-kernel/target/release/billow-kernel`
@@ -217,6 +227,8 @@ T23 fills `groups` and `configFields.proxy-groups`/`profile` in the mapping:
 `select`/`url-test`/`fallback`/`load-balance` are implemented (load-balance
 partial), `relay` is a named rejection because pinned v1.19.34 removed it, and
 `evidence/t22-dns.md` records the DNS/hosts differential and its named gaps;
+`evidence/t25-controller.md` records the control API surface, the 49-case
+differential (47 equal, 2 named divergences) and the unimplemented endpoints;
 `evidence/t23-groups.md` records the 27-case differential plus the persistence
 case (including startup probes under the default lazy config, provider snapshot
 re-checks, the url-test computation-cache window, nested lazy re-probing,

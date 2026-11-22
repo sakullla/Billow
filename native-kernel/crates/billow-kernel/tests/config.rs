@@ -43,8 +43,7 @@ fn rejects_every_unimplemented_top_level_key() {
     for key in [
         "listeners",
         "tunnels",
-        "external-controller",
-        "secret",
+        "external-controller-pipe",
         "experimental",
         "unified-delay",
         "global-client-fingerprint",
@@ -56,6 +55,32 @@ fn rejects_every_unimplemented_top_level_key() {
             err_tag(&yaml)
         );
     }
+}
+
+#[test]
+fn controller_listeners_secret_and_cors_are_parsed() {
+    let yaml = "mixed-port: 1\nexternal-controller: 127.0.0.1:9090\nexternal-controller-unix: /tmp/billow.sock\nexternal-controller-tls: 127.0.0.1:9443\nsecret: s3cr3t\nexternal-controller-cors: {allow-origins: [http://localhost:1420], allow-private-network: false}\n";
+    let loaded = load_config(yaml, "test.yaml").expect("controller shape");
+    let controller = &loaded.config.controller;
+    assert_eq!(controller.external_controller.as_deref(), Some("127.0.0.1:9090"));
+    assert_eq!(
+        controller.external_controller_unix.as_deref(),
+        Some(std::path::Path::new("/tmp/billow.sock"))
+    );
+    assert_eq!(controller.external_controller_tls.as_deref(), Some("127.0.0.1:9443"));
+    assert_eq!(controller.secret, "s3cr3t");
+    assert_eq!(controller.cors.allow_origins, ["http://localhost:1420"]);
+    assert!(!controller.cors.allow_private_network);
+    // Pinned defaults: any origin, private-network preflights allowed.
+    let defaults = load_config("mixed-port: 1\nexternal-controller: 127.0.0.1:0\n", "test.yaml")
+        .unwrap()
+        .config
+        .controller
+        .clone();
+    assert_eq!(defaults.cors.allow_origins, ["*"]);
+    assert!(defaults.cors.allow_private_network);
+    // A malformed address names the key and fails at load time.
+    assert!(err_tag("mixed-port: 1\nexternal-controller: 9090\n").starts_with("invalid_value"));
 }
 
 #[test]
@@ -983,7 +1008,10 @@ fn tls_roots_are_loaded_and_unknown_tls_keys_fail() {
             .len(),
         1
     );
-    let e = err_tag("tls:\n  private-key: x\n");
+    // `tls.private-key` is parsed for the controller TLS listener; a missing
+    // file is an invalid value, and an unknown tls key is still named.
+    assert!(err_tag("tls:\n  private-key: /nonexistent/billow.key\n").starts_with("invalid_value"));
+    let e = err_tag("tls:\n  client-auth-type: require-and-verify\n");
     assert!(e.starts_with("unsupported"), "{e}");
     let _ = std::fs::remove_dir_all(&dir);
 }

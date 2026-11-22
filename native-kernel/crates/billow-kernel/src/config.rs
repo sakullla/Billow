@@ -38,6 +38,11 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "hosts",
     "dns",
     "ipv6",
+    "external-controller",
+    "external-controller-unix",
+    "external-controller-tls",
+    "external-controller-cors",
+    "secret",
 ];
 /// Top-level keys the pinned `RawConfig` declares but this kernel does not
 /// implement. They fail with `[unsupported]`; a key outside both lists is not a
@@ -46,9 +51,8 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
 pub const KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "redir-port", "tproxy-port", "ss-config", "vmess-config", "inbound-tfo", "inbound-mptcp",
     "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips", "unified-delay",
-    "external-controller", "external-controller-routing-mark", "external-controller-pipe",
-    "external-controller-unix", "external-controller-tls", "external-controller-cors",
-    "external-ui", "external-ui-url", "external-ui-name", "external-doh-server", "secret",
+    "external-controller-routing-mark", "external-controller-pipe",
+    "external-ui", "external-ui-url", "external-ui-name", "external-doh-server",
     "interface-name", "routing-mark", "tunnels", "tcp-concurrent", "find-process-mode",
     "global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
     "keep-alive-interval", "disable-keep-alive",
@@ -697,6 +701,64 @@ impl Default for ProfileConfig {
     }
 }
 
+/// `external-controller-cors` (pinned `RawCors`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorsConfig {
+    pub allow_origins: Vec<String>,
+    pub allow_private_network: bool,
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        // Pinned `DefaultRawConfig` defaults.
+        CorsConfig {
+            allow_origins: vec!["*".to_string()],
+            allow_private_network: true,
+        }
+    }
+}
+
+/// `external-controller`, `external-controller-unix`,
+/// `external-controller-tls`, `external-controller-cors` and `secret` (T25).
+///
+/// Addresses stay as written so a host name resolves at bind time exactly like
+/// the pinned `net.Listen` call. A controller listener is optional; when none
+/// is configured no server is started. `certificate`/`private_key` are the PEM
+/// bytes of the pinned top-level `tls.certificate`/`tls.private-key` and are
+/// only used by `external-controller-tls`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ControllerConfig {
+    pub external_controller: Option<String>,
+    pub external_controller_unix: Option<std::path::PathBuf>,
+    pub external_controller_tls: Option<String>,
+    pub secret: String,
+    pub cors: CorsConfig,
+    pub certificate: Option<Vec<u8>>,
+    pub private_key: Option<Vec<u8>>,
+}
+
+impl ControllerConfig {
+    /// `true` when any controller listener is configured.
+    pub fn enabled(&self) -> bool {
+        self.external_controller.is_some()
+            || self.external_controller_unix.is_some()
+            || self.external_controller_tls.is_some()
+    }
+
+    /// Fields that require the controller to be bound again. A reload that
+    /// changes them is rejected by name instead of silently keeping the old
+    /// listener (`Kernel::reload`).
+    pub fn same_listeners(&self, other: &Self) -> bool {
+        self.external_controller == other.external_controller
+            && self.external_controller_unix == other.external_controller_unix
+            && self.external_controller_tls == other.external_controller_tls
+            && self.secret == other.secret
+            && self.cors == other.cors
+            && self.certificate == other.certificate
+            && self.private_key == other.private_key
+    }
+}
+
 /// One `rule-providers` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleProviderConfig {
@@ -837,6 +899,8 @@ pub struct Config {
     pub hosts: crate::dns::HostsConfig,
     /// Top-level `ipv6` (pinned default `true`); combined with `dns.ipv6`.
     pub ipv6: bool,
+    /// Control-API listeners and auth (T25).
+    pub controller: ControllerConfig,
     /// Kept so the identity survives a reload that is rejected.
     pub digest: String,
 }
@@ -1041,6 +1105,7 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     let mut dns = crate::dns::DnsConfig::default();
     let mut hosts = crate::dns::HostsConfig::default();
     let mut general_ipv6 = true;
+    let mut controller = ControllerConfig::default();
 
     for (key, value) in mapping.iter() {
         let key = key.as_str().ok_or_else(|| {
@@ -1168,7 +1233,31 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
                 }
             }
             "authentication" => authentication = parse_authentication(value, path)?,
-            "tls" => tls_roots = parse_tls(value, path)?,
+            "tls" => {
+                let parsed = parse_tls(value, path)?;
+                tls_roots = parsed.roots;
+                controller.certificate = parsed.server_certificate;
+                controller.private_key = parsed.server_private_key;
+            }
+            "external-controller" => {
+                controller.external_controller = Some(parse_controller_addr(value, path, key)?)
+            }
+            "external-controller-unix" => {
+                let raw = parse_string(value, path, key)?;
+                if raw.trim().is_empty() {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "{path}: {key} must not be empty"
+                    )));
+                }
+                controller.external_controller_unix = Some(std::path::PathBuf::from(raw));
+            }
+            "external-controller-tls" => {
+                controller.external_controller_tls = Some(parse_controller_addr(value, path, key)?)
+            }
+            "external-controller-cors" => {
+                controller.cors = parse_cors(value, path, &mut warnings)?
+            }
+            "secret" => controller.secret = parse_string(value, path, key)?,
             "hosts" => hosts = crate::dns::HostsConfig::parse(value, path)?,
             "dns" => dns = crate::dns::DnsConfig::parse(value, path, &mut warnings)?,
             "ipv6" => general_ipv6 = parse_bool(value, path, key)?,
@@ -1205,9 +1294,8 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
                 if KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS.contains(&key) {
                     let boundary = match key {
                         "dns" | "hosts" => " (DNS/hosts are T22)",
-                        "external-controller" | "external-controller-unix"
-                        | "external-controller-tls" | "external-controller-pipe" => {
-                            " (the control API is T25)"
+                        "external-controller-pipe" => {
+                            " (the control API is T25; a Windows named pipe is not implemented, use external-controller, external-controller-unix or external-controller-tls)"
                         }
                         "find-process-mode" => " (process lookup is T22/T6)",
                         _ => "",
@@ -1345,6 +1433,7 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         dns,
         hosts,
         ipv6: general_ipv6,
+        controller,
         digest,
     };
     Ok(LoadedConfig { config, warnings })
@@ -2930,15 +3019,26 @@ fn optional_string_list(
         ))),
     }
 }
+struct ParsedTls {
+    roots: Vec<rustls_pki_types::CertificateDer<'static>>,
+    /// Top-level `tls.certificate` when it names a file (pinned uses it for
+    /// `external-controller-tls`); a directory is read as client trust roots.
+    server_certificate: Option<Vec<u8>>,
+    /// Top-level `tls.private-key` (controller TLS).
+    server_private_key: Option<Vec<u8>>,
+}
+
 fn parse_tls(
     value: &serde_yaml::Value,
     path: &str,
-) -> Result<Vec<rustls_pki_types::CertificateDer<'static>>, ConfigError> {
+) -> Result<ParsedTls, ConfigError> {
     let map = value
         .as_mapping()
         .ok_or_else(|| ConfigError::InvalidValue(format!("{path}: tls must be a mapping")))?;
     let base = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
     let mut pems = Vec::new();
+    let mut server_certificate = None;
+    let mut server_private_key = None;
     let resolve = |raw: &str| -> std::path::PathBuf {
         let candidate = std::path::PathBuf::from(raw);
         match (&base, candidate.is_absolute()) {
@@ -2968,17 +3068,26 @@ fn parse_tls(
             }
             Some("certificate") => {
                 let raw = item.as_str().ok_or_else(|| {
-                    ConfigError::InvalidValue(format!("{path}: tls.certificate must be a directory or PEM string"))
+                    ConfigError::InvalidValue(format!("{path}: tls.certificate must be a file, directory or PEM string"))
                 })?;
-                let dir = if raw.contains("-----BEGIN") {
-                    return Err(ConfigError::Unsupported(format!(
-                        "{path}: tls.certificate as an inline PEM is not implemented; list PEM files under tls.custom-cert"
-                    )));
-                } else {
-                    resolve(raw)
-                };
-                let entries = std::fs::read_dir(&dir).map_err(|e| {
-                    ConfigError::InvalidValue(format!("{path}: tls.certificate directory {}: {e}", dir.display()))
+                if raw.contains("-----BEGIN") {
+                    // Pinned expects a path; an inline certificate keeps the
+                    // controller listener usable without a file.
+                    server_certificate = Some(raw.as_bytes().to_vec());
+                    continue;
+                }
+                let candidate = resolve(raw);
+                if candidate.is_file() {
+                    server_certificate = Some(std::fs::read(&candidate).map_err(|e| {
+                        ConfigError::InvalidValue(format!(
+                            "{path}: tls.certificate {}: {e}",
+                            candidate.display()
+                        ))
+                    })?);
+                    continue;
+                }
+                let entries = std::fs::read_dir(&candidate).map_err(|e| {
+                    ConfigError::InvalidValue(format!("{path}: tls.certificate directory {}: {e}", candidate.display()))
                 })?;
                 for entry in entries.flatten() {
                     let file = entry.path();
@@ -2991,9 +3100,25 @@ fn parse_tls(
                     }
                 }
             }
+            Some("private-key") => {
+                let raw = item.as_str().ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("{path}: tls.private-key must be a file or PEM string"))
+                })?;
+                server_private_key = Some(if raw.contains("-----BEGIN") {
+                    raw.as_bytes().to_vec()
+                } else {
+                    let candidate = resolve(raw);
+                    std::fs::read(&candidate).map_err(|e| {
+                        ConfigError::InvalidValue(format!(
+                            "{path}: tls.private-key {}: {e}",
+                            candidate.display()
+                        ))
+                    })?
+                });
+            }
             Some(other) => {
                 return Err(ConfigError::Unsupported(format!(
-                    "{path}: tls.{other} is not implemented (only custom-cert and certificate are honoured)"
+                    "{path}: tls.{other} is not implemented (only custom-cert, certificate and private-key are honoured)"
                 )))
             }
             None => return Err(ConfigError::InvalidValue(format!("{path}: tls keys must be strings"))),
@@ -3003,7 +3128,83 @@ fn parse_tls(
     for pem in pems {
         roots.extend(crate::outbound::tls::parse_pem_certs(&pem)?);
     }
-    Ok(roots)
+    Ok(ParsedTls {
+        roots,
+        server_certificate,
+        server_private_key,
+    })
+}
+
+/// `external-controller: 127.0.0.1:9090` (pinned `net.Listen` address).
+fn parse_controller_addr(
+    value: &serde_yaml::Value,
+    path: &str,
+    key: &str,
+) -> Result<String, ConfigError> {
+    let raw = parse_string(value, path, key)?;
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err(ConfigError::InvalidValue(format!("{path}: {key} must not be empty")));
+    }
+    let (host, port) = text.rsplit_once(':').ok_or_else(|| {
+        ConfigError::InvalidValue(format!("{path}: {key} '{raw}' must be host:port"))
+    })?;
+    if host.trim().is_empty() {
+        return Err(ConfigError::InvalidValue(format!("{path}: {key} '{raw}' has no host")));
+    }
+    port.parse::<u16>().map_err(|_| {
+        ConfigError::InvalidValue(format!("{path}: {key} '{raw}' has an invalid port"))
+    })?;
+    Ok(text.to_string())
+}
+
+/// `external-controller-cors` (pinned `RawCors`).
+fn parse_cors(
+    value: &serde_yaml::Value,
+    path: &str,
+    warnings: &mut Vec<String>,
+) -> Result<CorsConfig, ConfigError> {
+    let mut cors = CorsConfig::default();
+    if value.is_null() {
+        return Ok(cors);
+    }
+    let mapping = value.as_mapping().ok_or_else(|| {
+        ConfigError::InvalidValue(format!("{path}: external-controller-cors must be a mapping"))
+    })?;
+    for (key, item) in mapping {
+        match key.as_str() {
+            Some("allow-origins") => {
+                let list = item.as_sequence().ok_or_else(|| {
+                    ConfigError::InvalidValue(format!(
+                        "{path}: external-controller-cors.allow-origins must be a list"
+                    ))
+                })?;
+                let mut origins = Vec::with_capacity(list.len());
+                for (index, entry) in list.iter().enumerate() {
+                    let origin = entry.as_str().ok_or_else(|| {
+                        ConfigError::InvalidValue(format!(
+                            "{path}: external-controller-cors.allow-origins[{index}] must be a string"
+                        ))
+                    })?;
+                    origins.push(origin.to_string());
+                }
+                cors.allow_origins = origins;
+            }
+            Some("allow-private-network") => {
+                cors.allow_private_network =
+                    yaml_bool(item, path, "external-controller-cors.allow-private-network")?;
+            }
+            Some(other) => warnings.push(format!(
+                "external-controller-cors.{other} is not a pinned key and is ignored"
+            )),
+            None => {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{path}: external-controller-cors keys must be strings"
+                )))
+            }
+        }
+    }
+    Ok(cors)
 }
 
 /// `authentication: ["user:pass", ...]` (Mihomo `authentication []string`).
