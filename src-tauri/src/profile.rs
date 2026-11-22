@@ -10097,22 +10097,12 @@ proxy-groups:
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = stop.clone();
+        // Routes by request path and serves every connection until stopped, so a
+        // request the client abandoned (its readiness probe times out after 150ms on
+        // a slow runner) is skipped instead of being mistaken for the traffic stream.
         let server = thread::spawn(move || {
-            fn accept_for(listener: &std::net::TcpListener) -> std::net::TcpStream {
-                let deadline = Instant::now() + Duration::from_secs(3);
-                loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => return stream,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            if Instant::now() >= deadline {
-                                panic!("controller client did not connect");
-                            }
-                            std::thread::sleep(Duration::from_millis(20));
-                        }
-                        Err(error) => panic!("{error}"),
-                    }
-                }
-            }
             fn read_headers(stream: &mut std::net::TcpStream) -> String {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
@@ -10142,30 +10132,46 @@ proxy-groups:
                 let _ = stream.flush();
             }
             listener.set_nonblocking(true).unwrap();
-            let (mut first_stream, first_seen) = loop {
-                let mut stream = accept_for(&listener);
+            let mut seen = Vec::new();
+            let mut traffic_served = 0;
+            let mut gated = None;
+            let mut gate_rx = Some(gate_rx);
+            while !server_stop.load(Ordering::SeqCst) {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(error) => panic!("{error}"),
+                };
                 stream.set_nonblocking(false).unwrap();
                 let headers = read_headers(&mut stream);
-                if headers.contains("GET /configs") {
+                if headers.starts_with("GET /configs") {
                     write_json(&mut stream, &format!(r#"{{"mixed-port":{mixed_port},"tun":{{"enable":false}}}}"#));
-                } else if headers.contains("GET /memory") {
+                } else if headers.starts_with("GET /memory") {
                     write_json(&mut stream, "{\"inuse\":12345}\n");
-                } else { break (stream, headers); }
-            };
-            write_json(&mut first_stream, "{\"up\":4,\"down\":5}");
-            drop(first_stream);
-            let (mut second_stream, second_seen) = loop {
-                let mut stream = accept_for(&listener);
-                stream.set_nonblocking(false).unwrap();
-                let headers = read_headers(&mut stream);
-                if headers.contains("GET /memory") {
-                    write_json(&mut stream, "{\"inuse\":12345}\n");
-                } else { break (stream, headers); }
-            };
-            let _ = gate_rx.recv_timeout(Duration::from_secs(3));
-            write_json(&mut second_stream, "{\"up\":8,\"down\":9}");
-            format!("{first_seen}\n{second_seen}")
+                } else if headers.starts_with("GET /traffic") {
+                    traffic_served += 1;
+                    seen.push(headers);
+                    match traffic_served {
+                        1 => write_json(&mut stream, "{\"up\":4,\"down\":5}"),
+                        2 => {
+                            let gate_rx = gate_rx.take().unwrap();
+                            gated = Some(thread::spawn(move || {
+                                let _ = gate_rx.recv_timeout(Duration::from_secs(10));
+                                write_json(&mut stream, "{\"up\":8,\"down\":9}");
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(gated) = gated { gated.join().unwrap(); }
+            seen.join("\n")
         });
+        // An abandoned request with no headers, as a timed-out readiness probe leaves behind.
+        drop(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap());
         let script = dir.0.join("stand-in.sh");
         fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
@@ -10183,6 +10189,7 @@ proxy-groups:
         assert_eq!(second, Some((8, 9)));
         runtime.stop();
         assert!(runtime.traffic().is_none());
+        stop.store(true, Ordering::SeqCst);
         let seen = server.join().unwrap();
         assert!(seen.contains("GET /traffic"), "{seen}");
         assert!(seen.contains("Bearer billow-local"), "{seen}");
@@ -10191,7 +10198,7 @@ proxy-groups:
 
     #[cfg(unix)]
     fn wait_traffic(runtime: &mut ProcessRuntime, want: Option<(u64, u64)>) -> Option<(u64, u64)> {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let mut last = None;
         while Instant::now() < deadline {
             last = runtime.traffic();
