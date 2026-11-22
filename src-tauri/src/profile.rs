@@ -6441,14 +6441,32 @@ impl ProfileBook {
         }
     }
 
+    fn live_reload_tun_params(
+        &self,
+        takeover: Takeover,
+        runtime_base: Option<&str>,
+    ) -> (bool, Option<i32>) {
+        if self.platform == ClientPlatform::Android && takeover.vpn {
+            let fd = runtime_base
+                .and_then(|yaml| serde_yaml::from_str::<Value>(yaml).ok())
+                .and_then(|doc| read_i64(&doc["tun"], "file-descriptor"))
+                .and_then(|val| i32::try_from(val).ok());
+            (true, fd)
+        } else {
+            (takeover.tun, None)
+        }
+    }
+
     fn rollback_custom_mutation(
         &mut self,
         point: BookRestorePoint,
         was_connected: bool,
+        was_live: bool,
         takeover_before: Takeover,
         endpoint_before: Option<ProxyEndpoint>,
         release_before: Option<PlatformRelease>,
         runtime_base_before: Option<String>,
+        disabled_rules_before: BTreeSet<String>,
         need_reload: bool,
         kernel: &mut dyn KernelLaunch,
     ) {
@@ -6460,12 +6478,16 @@ impl ProfileBook {
             was_connected,
         );
         self.runtime_base = runtime_base_before.clone();
+        self.disabled_rules = disabled_rules_before.clone();
         let _ = self.persist_checked();
-        if was_connected && (need_reload || !kernel.running()) {
-            let _ = self.reload(kernel, takeover_before.tun, None);
+        if was_live && (need_reload || !kernel.running()) {
+            let (tun_enable, fd) =
+                self.live_reload_tun_params(takeover_before, runtime_base_before.as_deref());
+            let _ = self.reload(kernel, tun_enable, fd);
             self.apply_restore_point(point);
             self.restore_session(takeover_before, endpoint_before, release_before, was_connected);
             self.runtime_base = runtime_base_before;
+            self.disabled_rules = disabled_rules_before;
             let _ = self.persist_checked();
         }
     }
@@ -6480,19 +6502,23 @@ impl ProfileBook {
     {
         let point = self.restore_point();
         let was_connected = point.connected;
+        let was_live = self.connected || self.kernel_running;
         let takeover_before = self.takeover;
         let endpoint_before = self.our_endpoint.clone();
         let release_before = self.pending_release.clone();
         let runtime_base_before = self.runtime_base.clone();
+        let disabled_rules_before = self.disabled_rules.clone();
 
         if let Err(reason) = mutate(self) {
             self.rollback_custom_mutation(
                 point,
                 was_connected,
+                was_live,
                 takeover_before,
                 endpoint_before,
                 release_before,
                 runtime_base_before,
+                disabled_rules_before,
                 false,
                 kernel,
             );
@@ -6503,29 +6529,34 @@ impl ProfileBook {
             self.rollback_custom_mutation(
                 point,
                 was_connected,
+                was_live,
                 takeover_before,
                 endpoint_before,
                 release_before,
                 runtime_base_before,
+                disabled_rules_before,
                 false,
                 kernel,
             );
             return Err(reason);
         }
 
-        let live = self.connected || self.kernel_running;
-        if live {
-            if let Err(err) = self.reload(kernel, self.takeover.tun, None) {
+        if was_live {
+            let (tun_enable, fd) =
+                self.live_reload_tun_params(self.takeover, self.runtime_base.as_deref());
+            if let Err(err) = self.reload(kernel, tun_enable, fd) {
                 let reason = match err {
                     StartError::Idle(message) | StartError::Failed(message) => message,
                 };
                 self.rollback_custom_mutation(
                     point,
                     was_connected,
+                    was_live,
                     takeover_before,
                     endpoint_before,
                     release_before,
                     runtime_base_before,
+                    disabled_rules_before,
                     false,
                     kernel,
                 );
@@ -6542,10 +6573,12 @@ impl ProfileBook {
                     self.rollback_custom_mutation(
                         point,
                         was_connected,
+                        was_live,
                         takeover_before,
                         endpoint_before,
                         release_before,
                         runtime_base_before,
+                        disabled_rules_before,
                         false,
                         kernel,
                     );
@@ -6558,11 +6591,13 @@ impl ProfileBook {
             self.rollback_custom_mutation(
                 point,
                 was_connected,
+                was_live,
                 takeover_before,
                 endpoint_before,
                 release_before,
                 runtime_base_before,
-                live,
+                disabled_rules_before,
+                was_live,
                 kernel,
             );
             return Err(reason);
@@ -6804,6 +6839,9 @@ impl ProfileBook {
             return Err("还没有启用的自建节点，请先导入或启用至少一个节点".to_string());
         }
         self.mutate_custom_nodes(kernel, |book| {
+            if book.active_id.as_deref() != Some(CUSTOM_PROFILE_ID) {
+                book.disabled_rules.clear();
+            }
             book.active_id = Some(CUSTOM_PROFILE_ID.to_string());
             Ok(())
         })
@@ -12275,5 +12313,124 @@ rules:
             book.snapshot().custom_nodes.nodes[0].enabled,
             "last enabled node must remain enabled after rollback"
         );
+    }
+
+    #[test]
+    fn android_live_custom_node_mutation_and_rollback_preserve_vpn_tun_fd() {
+        let dir = temp_dir("android_custom_nodes_tun_fd");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        let mut kernel = CustomTestKernel::default();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn {
+            grant: true,
+            ..MemoryVpn::default()
+        };
+
+        let sub_yaml = r#"
+mode: rule
+mixed-port: 7890
+proxies:
+  - { name: HK-01, type: ss, server: 1.1.1.1, port: 443 }
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [HK-01]
+rules:
+  - MATCH,Proxy
+"#;
+        let added = book.add_local("AndroidSub", sub_yaml);
+        let id = added.profiles[0].id.clone();
+        book.enable(&id, &RejectSource, &mut kernel);
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected);
+        assert!(connected.vpn);
+        assert!(!connected.tun);
+
+        let initial_doc: Value =
+            serde_yaml::from_str(kernel.loaded.last().expect("initial android yaml")).unwrap();
+        assert_eq!(initial_doc["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(read_i64(&initial_doc["tun"], "file-descriptor"), Some(1));
+
+        // Live import while connected on Android must preserve tun.enable=true and tun.file-descriptor=1.
+        book.import_custom_nodes(
+            "socks5://user:pass@1.2.3.4:1080#US-Android",
+            Some(DialerTarget::ProfileGroup { group: None }),
+            &mut kernel,
+        )
+        .expect("android live custom node import should succeed");
+        let after_import: Value =
+            serde_yaml::from_str(kernel.loaded.last().expect("reloaded android yaml")).unwrap();
+        assert_eq!(after_import["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(read_i64(&after_import["tun"], "file-descriptor"), Some(1));
+        assert!(kernel.loaded.last().unwrap().contains("US-Android"));
+
+        // Persist failure rollback on Android must also preserve tun.enable=true and tun.file-descriptor=1.
+        book.fail_next_save(1);
+        let err = book
+            .set_custom_nodes_overlay(false, &mut kernel)
+            .expect_err("persist failure should roll back");
+        assert!(!err.is_empty());
+        assert!(book.snapshot().custom_nodes.overlay_enabled);
+        let after_rollback: Value =
+            serde_yaml::from_str(kernel.loaded.last().expect("rollback android yaml")).unwrap();
+        assert_eq!(after_rollback["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(read_i64(&after_rollback["tun"], "file-descriptor"), Some(1));
+        assert!(kernel.loaded.last().unwrap().contains("自建落地"));
+    }
+
+    #[test]
+    fn disconnected_running_kernel_rolls_back_on_persist_failure_and_use_custom_profile_clears_disabled_rules() {
+        let dir = temp_dir("custom_nodes_disconnected_live_and_disabled_rules");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        let mut kernel = CustomTestKernel::default();
+        let sub_yaml = r#"
+mode: rule
+mixed-port: 7890
+proxies:
+  - { name: HK-01, type: ss, server: 1.1.1.1, port: 443 }
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [HK-01]
+rules:
+  - MATCH,Proxy
+"#;
+        let added = book.add_local("Sub", sub_yaml);
+        let id = added.profiles[0].id.clone();
+        book.enable(&id, &RejectSource, &mut kernel);
+        // Kernel is running while disconnected (connected == false, kernel_running == true).
+        assert!(!book.is_connected());
+        assert!(book.snapshot().kernel_running);
+
+        book.import_custom_nodes(
+            "socks5://user:pass@1.2.3.4:1080#US-Landing",
+            None,
+            &mut kernel,
+        )
+        .expect("import succeeds");
+        assert!(kernel.loaded.last().unwrap().contains("自建落地"));
+
+        // Persist failure while disconnected-but-running must reload previous config onto the kernel.
+        book.fail_next_save(1);
+        let err = book
+            .set_custom_nodes_overlay(false, &mut kernel)
+            .expect_err("persist failure must roll back");
+        assert!(!err.is_empty());
+        assert!(book.snapshot().custom_nodes.overlay_enabled);
+        assert!(
+            kernel.loaded.last().unwrap().contains("自建落地"),
+            "running kernel must be reloaded with rolled-back overlay config"
+        );
+
+        // Switching to pure custom profile must clear previously disabled subscription rule keys.
+        book.disabled_rules.insert("MATCH,Proxy#0".to_string());
+        let switched = book
+            .use_custom_profile(&mut kernel)
+            .expect("switch to pure custom profile should succeed");
+        assert!(switched.custom_profile_active);
+        assert!(book.disabled_rules.is_empty());
     }
 }
