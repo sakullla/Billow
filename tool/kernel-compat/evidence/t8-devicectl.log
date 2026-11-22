@@ -1,0 +1,13 @@
+$ xcrun devicectl list devices
+Name            Hostname   Identifier                                    State         Model                                            Reality  
+-------------   --------   -------------------------------------------   -----------   ----------------------------------------------   ---------
+iPhone 17                  4C5EEF8F-C6E8-4D8C-97D5-8D8D6C465BF3 (UDID)   shutdown      iPhone 17 (iPhone18,3)                           simulated
+iPhone 18 Pro              001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01 (UDID)   connected     iPhone 18 Pro (iPhone19,2)                       simulated
+??iPhone                   00008130-000E65482883401C (UDID)              unavailable   iPhone 15 Pro Max (iPhone16,2)                   physical 
+???iPad                    00008112-000959682203401E (UDID)              unavailable   iPad Pro (11-inch) (4th generation) (iPad14,3)   physical 
+
+$ xcrun simctl list devices booted
+== Devices ==
+-- iOS 27.0 --
+    iPhone 18 Pro (001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01) (Booted) 
+-- tvOS 27.0 --

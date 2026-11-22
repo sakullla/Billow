@@ -1,0 +1,18 @@
+✔ manifests agree and keep undeclared facts as notes (604.027167ms)
+✔ baseline is selected by manifest and refuses unpackaged targets (0.347416ms)
+✔ fixture keeps requests and expectations in one reviewable file (1.586875ms)
+✔ port and hosts rewriting touches only the runner-owned keys (0.321292ms)
+✔ source capability index covers config, protocols, rules and platforms (776.278333ms)
+✔ the Rust mapping names only pinned entries and backs every claim with a test (777.296583ms)
+✔ real Mihomo passes the tagged exit fixtures while the Rust side stays missing (1698.415917ms)
+✔ the Rust CLI is driven through its own command line and its exit is observed (0.790917ms)
+✔ missing or non-executable kernels fail explicitly (385.334792ms)
+✔ a kernel that never answers is reported as a timeout, not a pass (1532.53625ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 64821.132709

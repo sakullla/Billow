@@ -1,0 +1,15 @@
+npm notice run billow@0.1.33 test
+npm notice run vitest run
+
+ RUN  v5.1.0 /Users/yanggeng/github/Billow
+
+
+ Test Files  27 passed (27)
+      Tests  342 passed (342)
+   Start at  06:37:46
+   Duration  15.49s (tests 67%, environment 25%, import 6%, transform 2%)
+
+Environment  happy-dom was created 27 times · 13.12s total, 25% of tracked time
+             create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+             learn more: https://vitest.dev/guide/improving-performance#test-environments
+

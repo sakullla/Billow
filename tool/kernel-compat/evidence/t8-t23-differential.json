@@ -1,0 +1,1834 @@
+{
+  "format": "t23-differential",
+  "version": 1,
+  "startedAt": "2026-11-22T22:40:43.488Z",
+  "mihomo": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
+  "rust": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t8-target/release/billow-kernel",
+  "summary": {
+    "cases": 27,
+    "persistence": 1,
+    "pass": 28,
+    "differ": 0,
+    "unexpected": 0
+  },
+  "normalizationNote": [
+    "Mihomo type names are normalized (Selector->select, URLTest->url-test, Fallback->fallback, LoadBalance->load-balance).",
+    "Group `now` and `all` are compared; latency values are not compared byte-wise because scheduler ticks and probe ports differ. url-test/fallback liveness is asserted through the selected member and the observed echo.",
+    "Default-lazy cases omit `lazy`/`interval` to exercise the pinned startup check (`go hc.check()` before the first tick); provider and nested-group cases use the same default configuration.",
+    "The two tolerance cases serve traffic at 300 ms and 10.5 s: pinned `URLTest.fastSingle` caches the first computation for 10 s, so the second attempt is the first recomputation that can apply `tolerance`. Their served-node sequence is compared.",
+    "url-test-cache-window serves traffic at 0.9 s, 9 s and 12.5 s: the health data changes at the 7 s probe, so at 9 s both engines must still serve the cached member, and only the post-window 12.5 s attempt may switch (scheduled away from the 14 s probe boundary so a probe connection cannot pollute the served-node detection).",
+    "The `empty-fallback: REJECT` traffic case compares the blocked outcome class: a rejected CONNECT surfaces as 403, a close before the head or a timeout depending on the race, and no echo is accepted.",
+    "Pinned load-balance consistent-hashing uses a per-process random maphash seed, so only the round-robin strategy is compared as an ordered sequence; consistent-hashing/sticky-sessions are covered by unit semantics (stable pin per key, dead-member retry).",
+    "The Rust selection cache is `<cache-dir>/cache.yaml` (the selected map); pinned stores the same map in bbolt `cache.db`. Only the persistence effect is compared.",
+    "Relay is rejected by both engines: pinned v1.19.34 removed the type (\"please using dialer-proxy instead\") and the Rust kernel reproduces that named rejection."
+  ],
+  "results": [
+    {
+      "id": "select-default-first",
+      "reason": "selector defaults to the first member; rules may name the group",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "A",
+            "all": [
+              "A",
+              "B"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "A",
+            "all": [
+              "A",
+              "B"
+            ],
+            "members": [
+              {
+                "name": "A",
+                "alive": true,
+                "delay": null
+              },
+              {
+                "name": "B",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:38:18.368 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=bc73f7e3-25fd-42d9-a06c-a9052e47b17c pid=12710 version=\"0.1.0\" listen=127.0.0.1:60959\n[22:38:18.676 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:18.676 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:18.676 INFO  billow_kernel::engine] message=billow-kernel stopped instance=bc73f7e3-25fd-42d9-a06c-a9052e47b17c sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "A",
+          "all": [
+            "A",
+            "B"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "A",
+          "all": [
+            "A",
+            "B"
+          ],
+          "members": [
+            {
+              "name": "A",
+              "alive": true,
+              "delay": null
+            },
+            {
+              "name": "B",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "select-default-selected",
+      "reason": "`default-selected` fixes the selector until a cached/API choice overrides it",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "B",
+            "all": [
+              "A",
+              "B"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "B",
+            "all": [
+              "A",
+              "B"
+            ],
+            "members": [
+              {
+                "name": "A",
+                "alive": true,
+                "delay": null
+              },
+              {
+                "name": "B",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:38:18.833 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=26f4a9a2-285e-46f4-8123-bee43a6b4026 pid=12745 version=\"0.1.0\" listen=127.0.0.1:60966\n[22:38:19.135 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:19.135 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:19.136 INFO  billow_kernel::engine] message=billow-kernel stopped instance=26f4a9a2-285e-46f4-8123-bee43a6b4026 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "B",
+          "all": [
+            "A",
+            "B"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "B",
+          "all": [
+            "A",
+            "B"
+          ],
+          "members": [
+            {
+              "name": "A",
+              "alive": true,
+              "delay": null
+            },
+            {
+              "name": "B",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "select-after-put",
+      "reason": "PUT /proxies/{group} fixes the selector (Rust: --select)",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "B",
+            "all": [
+              "A",
+              "B"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "B",
+            "all": [
+              "A",
+              "B"
+            ],
+            "members": [
+              {
+                "name": "A",
+                "alive": true,
+                "delay": null
+              },
+              {
+                "name": "B",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:38:19.284 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=fa346f90-167f-437e-829c-1774cceebe5b pid=12766 version=\"0.1.0\" listen=127.0.0.1:60974\n[22:38:19.591 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:19.591 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:19.591 INFO  billow_kernel::engine] message=billow-kernel stopped instance=fa346f90-167f-437e-829c-1774cceebe5b sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "B",
+          "all": [
+            "A",
+            "B"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "B",
+          "all": [
+            "A",
+            "B"
+          ],
+          "members": [
+            {
+              "name": "A",
+              "alive": true,
+              "delay": null
+            },
+            {
+              "name": "B",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "url-test-picks-fastest",
+      "reason": "url-test selects the lowest probe delay",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "fast",
+            "all": [
+              "slow",
+              "fast"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "fast",
+            "all": [
+              "slow",
+              "fast"
+            ],
+            "members": [
+              {
+                "name": "slow",
+                "alive": true,
+                "delay": 303
+              },
+              {
+                "name": "fast",
+                "alive": true,
+                "delay": 13
+              }
+            ]
+          },
+          "stderr": "[22:38:19.744 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=89dcefe8-559f-4731-9cf9-6f1672c81634 pid=12768 version=\"0.1.0\" listen=127.0.0.1:60981\n[22:38:22.946 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:22.946 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:22.946 INFO  billow_kernel::engine] message=billow-kernel stopped instance=89dcefe8-559f-4731-9cf9-6f1672c81634 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "url-test",
+          "now": "fast",
+          "all": [
+            "slow",
+            "fast"
+          ]
+        },
+        "rust": {
+          "type": "url-test",
+          "now": "fast",
+          "all": [
+            "slow",
+            "fast"
+          ],
+          "members": [
+            {
+              "name": "slow",
+              "alive": true,
+              "delay": 303
+            },
+            {
+              "name": "fast",
+              "alive": true,
+              "delay": 13
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "fallback-moves-off-dead",
+      "reason": "fallback skips a member whose probe fails",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "fallback",
+            "now": "backup",
+            "all": [
+              "dead",
+              "backup"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "fallback",
+            "now": "backup",
+            "all": [
+              "dead",
+              "backup"
+            ],
+            "members": [
+              {
+                "name": "dead",
+                "alive": false,
+                "delay": null
+              },
+              {
+                "name": "backup",
+                "alive": true,
+                "delay": 13
+              }
+            ]
+          },
+          "stderr": "[22:38:23.098 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=7d3310c4-653d-45ce-beaa-31253dc6303d pid=12819 version=\"0.1.0\" listen=127.0.0.1:61003\n[22:38:26.303 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:26.303 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:26.303 INFO  billow_kernel::engine] message=billow-kernel stopped instance=7d3310c4-653d-45ce-beaa-31253dc6303d sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "fallback",
+          "now": "backup",
+          "all": [
+            "dead",
+            "backup"
+          ]
+        },
+        "rust": {
+          "type": "fallback",
+          "now": "backup",
+          "all": [
+            "dead",
+            "backup"
+          ],
+          "members": [
+            {
+              "name": "dead",
+              "alive": false,
+              "delay": null
+            },
+            {
+              "name": "backup",
+              "alive": true,
+              "delay": 13
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "expected-status-excludes-code",
+      "reason": "expected-status rejects a member whose probe answers another code",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "ok",
+            "all": [
+              "err",
+              "ok"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "ok",
+            "all": [
+              "err",
+              "ok"
+            ],
+            "members": [
+              {
+                "name": "err",
+                "alive": false,
+                "delay": null
+              },
+              {
+                "name": "ok",
+                "alive": true,
+                "delay": 102
+              }
+            ]
+          },
+          "stderr": "[22:38:26.415 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=err=http,ok=http; hosts=0; dns=off instance=b35e8e26-9b8e-4ee4-ab46-ce833590def8 pid=12846 version=\"0.1.0\" listen=127.0.0.1:61024\n[22:38:29.625 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:29.625 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:29.625 INFO  billow_kernel::engine] message=billow-kernel stopped instance=b35e8e26-9b8e-4ee4-ab46-ce833590def8 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "url-test",
+          "now": "ok",
+          "all": [
+            "err",
+            "ok"
+          ]
+        },
+        "rust": {
+          "type": "url-test",
+          "now": "ok",
+          "all": [
+            "err",
+            "ok"
+          ],
+          "members": [
+            {
+              "name": "err",
+              "alive": false,
+              "delay": null
+            },
+            {
+              "name": "ok",
+              "alive": true,
+              "delay": 102
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "expected-status-default-accepts-any-code",
+      "reason": "without expected-status any HTTP code is a live member (pinned expectedStatus == nil)",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "err",
+            "all": [
+              "err",
+              "ok"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "err",
+            "all": [
+              "err",
+              "ok"
+            ],
+            "members": [
+              {
+                "name": "err",
+                "alive": true,
+                "delay": 6
+              },
+              {
+                "name": "ok",
+                "alive": true,
+                "delay": 103
+              }
+            ]
+          },
+          "stderr": "[22:38:29.735 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=err=http,ok=http; hosts=0; dns=off instance=301cb98e-69ac-4ecf-8e8e-ae14da311723 pid=12869 version=\"0.1.0\" listen=127.0.0.1:61171\n[22:38:32.940 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:32.940 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:32.940 INFO  billow_kernel::engine] message=billow-kernel stopped instance=301cb98e-69ac-4ecf-8e8e-ae14da311723 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "url-test",
+          "now": "err",
+          "all": [
+            "err",
+            "ok"
+          ]
+        },
+        "rust": {
+          "type": "url-test",
+          "now": "err",
+          "all": [
+            "err",
+            "ok"
+          ],
+          "members": [
+            {
+              "name": "err",
+              "alive": true,
+              "delay": 6
+            },
+            {
+              "name": "ok",
+              "alive": true,
+              "delay": 103
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "url-test-probes-with-default-lazy",
+      "reason": "the default configuration (no lazy/interval keys) still probes once at startup, so the 10 ms member wins over the 300 ms one",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "fast",
+            "all": [
+              "slow",
+              "fast"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "fast",
+            "all": [
+              "slow",
+              "fast"
+            ],
+            "members": [
+              {
+                "name": "slow",
+                "alive": true,
+                "delay": 300
+              },
+              {
+                "name": "fast",
+                "alive": true,
+                "delay": 12
+              }
+            ]
+          },
+          "stderr": "[22:38:33.090 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=0db2a74c-bae1-4666-8a37-9aabe7488e78 pid=12912 version=\"0.1.0\" listen=127.0.0.1:61226\n[22:38:33.790 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:33.790 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:33.791 INFO  billow_kernel::engine] message=billow-kernel stopped instance=0db2a74c-bae1-4666-8a37-9aabe7488e78 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "url-test",
+          "now": "fast",
+          "all": [
+            "slow",
+            "fast"
+          ]
+        },
+        "rust": {
+          "type": "url-test",
+          "now": "fast",
+          "all": [
+            "slow",
+            "fast"
+          ],
+          "members": [
+            {
+              "name": "slow",
+              "alive": true,
+              "delay": 300
+            },
+            {
+              "name": "fast",
+              "alive": true,
+              "delay": 12
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "provider-health-check-default-lazy",
+      "reason": "an enabled provider health check probes once at startup with the default lazy/interval; the url-test group over `use` picks the fast member",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "fast",
+            "all": [
+              "slow",
+              "fast"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "fast",
+            "all": [
+              "slow",
+              "fast"
+            ],
+            "members": [
+              {
+                "name": "slow",
+                "alive": true,
+                "delay": 302
+              },
+              {
+                "name": "fast",
+                "alive": true,
+                "delay": 12
+              }
+            ]
+          },
+          "stderr": "[22:38:33.925 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=9a21ce29-881e-4510-9456-714663ea913b pid=12926 version=\"0.1.0\" listen=127.0.0.1:61263\n[22:38:34.635 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:34.635 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:34.636 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9a21ce29-881e-4510-9456-714663ea913b sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "url-test",
+          "now": "fast",
+          "all": [
+            "slow",
+            "fast"
+          ]
+        },
+        "rust": {
+          "type": "url-test",
+          "now": "fast",
+          "all": [
+            "slow",
+            "fast"
+          ],
+          "members": [
+            {
+              "name": "slow",
+              "alive": true,
+              "delay": 302
+            },
+            {
+              "name": "fast",
+              "alive": true,
+              "delay": 12
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "nested-auto-driven-by-outer-traffic",
+      "reason": "a nested url-test group (default lazy) probes at startup and the outer selector dials its fast member",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "fast"
+              ]
+            }
+          ],
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "fast"
+              ]
+            }
+          ],
+          "stderr": "[22:38:36.102 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=d9760e79-8e4e-438e-8b07-f193be582424 pid=12944 version=\"0.1.0\" listen=127.0.0.1:61274\n[22:38:36.198 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:61286 code=\"closed\"\n[22:38:36.899 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=fast type=http server=127.0.0.1:60948 chain=fast config=sha256:7511673ec46250f2196847c748ddb20073bf18be68e96b51fdcba97a880b4b54\n[22:38:36.919 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:38:37.421 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[22:38:37.421 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[22:38:37.421 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:37.422 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d9760e79-8e4e-438e-8b07-f193be582424 sessions=2 active=0 finished=2\n"
+        }
+      },
+      "observed": {
+        "mihomo": "fast",
+        "rust": "fast"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "provider-registration-probes-own-url",
+      "reason": "a group URL registered on a provider whose health-check.enable is false still activates its check; pinned check() probes the provider's own hc.url as well, so the url-test group without an explicit url (test URL = the provider health URL) ranks the fast member",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "fast",
+            "all": [
+              "dead",
+              "fast"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "url-test",
+            "now": "fast",
+            "all": [
+              "dead",
+              "fast"
+            ],
+            "members": [
+              {
+                "name": "dead",
+                "alive": false,
+                "delay": null
+              },
+              {
+                "name": "fast",
+                "alive": true,
+                "delay": 12
+              }
+            ]
+          },
+          "stderr": "[22:38:37.558 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=00c3b036-efea-467d-9ab6-d708e82f6f34 pid=12948 version=\"0.1.0\" listen=127.0.0.1:61293\n[22:38:40.760 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:38:40.760 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:38:40.760 INFO  billow_kernel::engine] message=billow-kernel stopped instance=00c3b036-efea-467d-9ab6-d708e82f6f34 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "url-test",
+          "now": "fast",
+          "all": [
+            "dead",
+            "fast"
+          ]
+        },
+        "rust": {
+          "type": "url-test",
+          "now": "fast",
+          "all": [
+            "dead",
+            "fast"
+          ],
+          "members": [
+            {
+              "name": "dead",
+              "alive": false,
+              "delay": null
+            },
+            {
+              "name": "fast",
+              "alive": true,
+              "delay": 12
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "nested-lazy-tick-runs-after-outer-touch",
+      "reason": "a probe of a nested group dials it (pinned Proxy.URLTest -> URLTest.DialContext -> GetProxies(true)), so the parent's probe touches the nested group and its lazy interval keeps probing; without that touch n1 stays at 10 ms and wins over n2's initial 300 ms, with it the second n1 probe (500 ms) makes the nested 300 ms member win by the 11.5 s observation",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "leaf"
+              ]
+            }
+          ],
+          "group": {
+            "type": "url-test",
+            "now": "n2",
+            "all": [
+              "n1",
+              "n2"
+            ]
+          },
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "leaf"
+              ]
+            }
+          ],
+          "group": {
+            "type": "url-test",
+            "now": "n2",
+            "all": [
+              "n1",
+              "n2"
+            ],
+            "members": [
+              {
+                "name": "n1",
+                "alive": true,
+                "delay": 504
+              },
+              {
+                "name": "n2",
+                "alive": true,
+                "delay": 302
+              }
+            ]
+          },
+          "stderr": "[22:38:52.624 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=leaf=http,n1=http,n2=http; hosts=0; dns=off instance=7eeafd88-59fd-4575-b702-96dbab78a353 pid=13544 version=\"0.1.0\" listen=127.0.0.1:61510\n[22:38:52.691 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:61839 code=\"closed\"\n[22:38:53.692 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=leaf type=http server=127.0.0.1:60952 chain=leaf config=sha256:a57f87b6bcb1aed7b1011637ff1cadf39bb27e1b0404684037952c033588a965\n[22:38:53.715 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:39:04.134 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[22:39:04.134 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:39:04.134 INFO  billow_kernel::engine] message=billow-kernel stopped instance=7eeafd88-59fd-4575-b702-96dbab78a353 sessions=2 active=0 finished=2\n"
+        }
+      },
+      "observed": {
+        "mihomo": "leaf|now=n2",
+        "rust": "leaf|now=n2"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "tolerance-keeps-previous-fast",
+      "reason": "the first resolution sets the 100 ms member; the other member then becomes 90 ms, inside tolerance 50, so the previous fastNode stays (two attempts: startup and after the pinned 10 s fastSingle cache)",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            }
+          ],
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            }
+          ],
+          "stderr": "55056-3e5f-4d23-a4f3-b3fbe7f8c4d6 pid=14486 version=\"0.1.0\" listen=127.0.0.1:61905\n[22:39:15.477 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:62418 code=\"closed\"\n[22:39:15.781 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:60950 chain=steady config=sha256:10642f8814b02a21d4c73c80f70b937fdd17a302d2e617b86e3a80522dab4bd9\n[22:39:15.803 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:39:25.979 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:60950 chain=steady config=sha256:10642f8814b02a21d4c73c80f70b937fdd17a302d2e617b86e3a80522dab4bd9\n[22:39:26.000 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:39:26.522 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[22:39:26.522 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[22:39:26.522 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:39:26.522 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d3b55056-3e5f-4d23-a4f3-b3fbe7f8c4d6 sessions=3 active=0 finished=3\n"
+        }
+      },
+      "observed": {
+        "mihomo": "steady,steady",
+        "rust": "steady,steady"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "tolerance-zero-switches",
+      "reason": "same changing delays with tolerance 0: the second resolution switches the previous 100 ms fastNode to the 90 ms member",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "changing"
+              ]
+            }
+          ],
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "changing"
+              ]
+            }
+          ],
+          "stderr": "5-2669-49c4-8af0-6b84aebd6dad pid=14728 version=\"0.1.0\" listen=127.0.0.1:62590\n[22:39:37.985 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:62637 code=\"closed\"\n[22:39:38.283 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:60950 chain=steady config=sha256:3f4546a35a5f7e370296181856da68d5bdac04f297f97bc176c1365c450d08be\n[22:39:38.304 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:39:48.485 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=changing type=http server=127.0.0.1:60951 chain=changing config=sha256:3f4546a35a5f7e370296181856da68d5bdac04f297f97bc176c1365c450d08be\n[22:39:48.507 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:39:49.028 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[22:39:49.028 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[22:39:49.028 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:39:49.028 INFO  billow_kernel::engine] message=billow-kernel stopped instance=a7112525-2669-49c4-8af0-6b84aebd6dad sessions=3 active=0 finished=3\n"
+        }
+      },
+      "observed": {
+        "mihomo": "steady,changing",
+        "rust": "steady,changing"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "url-test-cache-window",
+      "reason": "pinned URLTest.fastSingle caches the first computation for 10 s: the 90 ms member appears during the second health round (t≈7 s), but the 9 s dial still serves the cached 100 ms choice; the 12.5 s dial, after the window and away from the next probe boundary, switches to it",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "changing"
+              ]
+            }
+          ],
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "steady"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "changing"
+              ]
+            }
+          ],
+          "stderr": "1:60950 chain=steady config=sha256:2d47aed06406aeb8faf4a9ab78225c2604ee85bf9bb2eb96c009a014f2c6aabc\n[22:40:03.267 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:11.344 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:60950 chain=steady config=sha256:2d47aed06406aeb8faf4a9ab78225c2604ee85bf9bb2eb96c009a014f2c6aabc\n[22:40:11.366 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:14.844 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=changing type=http server=127.0.0.1:60951 chain=changing config=sha256:2d47aed06406aeb8faf4a9ab78225c2604ee85bf9bb2eb96c009a014f2c6aabc\n[22:40:14.865 INFO  billow_kernel::engine] message=session closed session=4 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:15.387 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[22:40:15.387 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=4\n[22:40:15.387 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:15.387 INFO  billow_kernel::engine] message=billow-kernel stopped instance=85b53120-80a3-4371-b252-db4194ab1058 sessions=4 active=0 finished=4\n"
+        }
+      },
+      "observed": {
+        "mihomo": "steady,steady,changing",
+        "rust": "steady,steady,changing"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "nested-group-inner-selection",
+      "reason": "a nested group reports the group name and dials its inner selection",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "INNER",
+            "all": [
+              "INNER"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "INNER",
+            "all": [
+              "INNER"
+            ],
+            "members": [
+              {
+                "name": "INNER",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:40:15.497 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=1ed9b20e-c316-4650-ac93-ca9d7dbdf076 pid=15262 version=\"0.1.0\" listen=127.0.0.1:63409\n[22:40:18.707 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:40:18.707 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:18.708 INFO  billow_kernel::engine] message=billow-kernel stopped instance=1ed9b20e-c316-4650-ac93-ca9d7dbdf076 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "INNER",
+          "all": [
+            "INNER"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "INNER",
+          "all": [
+            "INNER"
+          ],
+          "members": [
+            {
+              "name": "INNER",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "nested-group-dials-inner-selection",
+      "reason": "a dial through the outer selector follows the inner fallback choice",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "backup"
+              ]
+            }
+          ],
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "backup"
+              ]
+            }
+          ],
+          "stderr": "[22:40:22.698 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=def5b806-02dc-4e09-b2dc-24c0fd245689 pid=15330 version=\"0.1.0\" listen=127.0.0.1:63429\n[22:40:22.773 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:63450 code=\"closed\"\n[22:40:25.974 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=backup type=http server=127.0.0.1:60948 chain=backup config=sha256:dda9ee0b707a7eb55c5f7551d4241fec41ca3eb50d8e9f707947253f1103e809\n[22:40:25.996 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:26.517 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[22:40:26.517 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[22:40:26.517 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:26.517 INFO  billow_kernel::engine] message=billow-kernel stopped instance=def5b806-02dc-4e09-b2dc-24c0fd245689 sessions=2 active=0 finished=2\n"
+        }
+      },
+      "observed": {
+        "mihomo": "backup",
+        "rust": "backup"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "include-all-proxies-filter",
+      "reason": "include-all-proxies expands sorted proxy names through filter",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "Alpha",
+            "all": [
+              "Alpha"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "Alpha",
+            "all": [
+              "Alpha"
+            ],
+            "members": [
+              {
+                "name": "Alpha",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:40:26.630 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=Zebra=http,Alpha=http; hosts=0; dns=off instance=108f5563-f3a2-4aa3-b7b7-327f60125f99 pid=15566 version=\"0.1.0\" listen=127.0.0.1:63509\n[22:40:26.930 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:40:26.930 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:26.930 INFO  billow_kernel::engine] message=billow-kernel stopped instance=108f5563-f3a2-4aa3-b7b7-327f60125f99 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "Alpha",
+          "all": [
+            "Alpha"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "Alpha",
+          "all": [
+            "Alpha"
+          ],
+          "members": [
+            {
+              "name": "Alpha",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "include-all-proxies-empty-fallback-reject",
+      "reason": "with `proxies: []`, include-all-proxies falls back to the configured empty-fallback name (REJECT), not hard-coded COMPATIBLE",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "REJECT",
+            "all": [
+              "REJECT"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "REJECT",
+            "all": [
+              "REJECT"
+            ],
+            "members": [
+              {
+                "name": "REJECT",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:40:27.047 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=3ff0874f-402c-4c1a-9156-e23afb866568 pid=15575 version=\"0.1.0\" listen=127.0.0.1:63519\n[22:40:27.357 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:40:27.357 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:27.357 INFO  billow_kernel::engine] message=billow-kernel stopped instance=3ff0874f-402c-4c1a-9156-e23afb866568 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "REJECT",
+          "all": [
+            "REJECT"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "REJECT",
+          "all": [
+            "REJECT"
+          ],
+          "members": [
+            {
+              "name": "REJECT",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "include-all-proxies-empty-fallback-direct",
+      "reason": "the configured `empty-fallback: DIRECT` keeps the DIRECT member name (the default is COMPATIBLE)",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "DIRECT",
+            "all": [
+              "DIRECT"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "DIRECT",
+            "all": [
+              "DIRECT"
+            ],
+            "members": [
+              {
+                "name": "DIRECT",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:40:27.489 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=b3efc5a0-44d6-4fca-950e-887fdbba54c8 pid=15576 version=\"0.1.0\" listen=127.0.0.1:63526\n[22:40:27.799 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:40:27.799 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:27.800 INFO  billow_kernel::engine] message=billow-kernel stopped instance=b3efc5a0-44d6-4fca-950e-887fdbba54c8 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "DIRECT",
+          "all": [
+            "DIRECT"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "DIRECT",
+          "all": [
+            "DIRECT"
+          ],
+          "members": [
+            {
+              "name": "DIRECT",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "include-all-proxies-empty-fallback-reject-blocked",
+      "reason": "empty-fallback: REJECT blocks the traffic instead of dialing DIRECT",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "timeout",
+              "connectStatus": 200,
+              "error": "no response within 4000 ms",
+              "served": []
+            }
+          ],
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "closed",
+              "connectStatus": 0,
+              "error": "connection closed before the response head",
+              "served": []
+            }
+          ],
+          "stderr": "[22:40:32.925 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=3ea25295-b6d5-4f53-a073-603b607439ba pid=15945 version=\"0.1.0\" listen=127.0.0.1:63533\n[22:40:33.025 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:63647 code=\"closed\"\n[22:40:33.326 INFO  billow_kernel::engine] message=REJECT (group member) session=2 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP\n[22:40:33.327 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[22:40:33.327 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[22:40:33.327 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:33.327 INFO  billow_kernel::engine] message=billow-kernel stopped instance=3ea25295-b6d5-4f53-a073-603b607439ba sessions=2 active=0 finished=2\n"
+        }
+      },
+      "observed": {
+        "mihomo": "timeout",
+        "rust": "closed"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "include-all-expands-everything",
+      "reason": "include-all turns on proxies and providers",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "Alpha",
+            "all": [
+              "Alpha",
+              "Zebra"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "Alpha",
+            "all": [
+              "Alpha",
+              "Zebra"
+            ],
+            "members": [
+              {
+                "name": "Alpha",
+                "alive": true,
+                "delay": null
+              },
+              {
+                "name": "Zebra",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:40:33.517 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=Zebra=http,Alpha=http; hosts=0; dns=off instance=f66904f7-c60c-4b08-bf36-abb409d4a23b pid=16017 version=\"0.1.0\" listen=127.0.0.1:63656\n[22:40:33.819 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:40:33.819 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:33.820 INFO  billow_kernel::engine] message=billow-kernel stopped instance=f66904f7-c60c-4b08-bf36-abb409d4a23b sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "Alpha",
+          "all": [
+            "Alpha",
+            "Zebra"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "Alpha",
+          "all": [
+            "Alpha",
+            "Zebra"
+          ],
+          "members": [
+            {
+              "name": "Alpha",
+              "alive": true,
+              "delay": null
+            },
+            {
+              "name": "Zebra",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "exclude-type-uses-adapter-name",
+      "reason": "exclude-type compares the pinned adapter name (Http), not the YAML type",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "S",
+            "all": [
+              "S"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "S",
+            "all": [
+              "S"
+            ],
+            "members": [
+              {
+                "name": "S",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:40:34.026 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,S=socks5; hosts=0; dns=off instance=397f46eb-afba-4d67-af82-c559462dfc23 pid=16059 version=\"0.1.0\" listen=127.0.0.1:63667\n[22:40:34.338 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:40:34.338 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:34.342 INFO  billow_kernel::engine] message=billow-kernel stopped instance=397f46eb-afba-4d67-af82-c559462dfc23 sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "S",
+          "all": [
+            "S"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "S",
+          "all": [
+            "S"
+          ],
+          "members": [
+            {
+              "name": "S",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "provider-use-filter",
+      "reason": "use providers contribute their proxies through the group filter",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "Node-B",
+            "all": [
+              "Node-B"
+            ]
+          },
+          "httpStatus": 200,
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "group": {
+            "type": "select",
+            "now": "Node-B",
+            "all": [
+              "Node-B"
+            ],
+            "members": [
+              {
+                "name": "Node-B",
+                "alive": true,
+                "delay": null
+              }
+            ]
+          },
+          "stderr": "[22:40:34.559 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=2b457990-0e1d-41db-9cde-e36e21c93d7d pid=16090 version=\"0.1.0\" listen=127.0.0.1:63674\n[22:40:34.874 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[22:40:34.874 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:34.878 INFO  billow_kernel::engine] message=billow-kernel stopped instance=2b457990-0e1d-41db-9cde-e36e21c93d7d sessions=0 active=0 finished=0\n"
+        }
+      },
+      "observed": {
+        "mihomo": {
+          "type": "select",
+          "now": "Node-B",
+          "all": [
+            "Node-B"
+          ]
+        },
+        "rust": {
+          "type": "select",
+          "now": "Node-B",
+          "all": [
+            "Node-B"
+          ],
+          "members": [
+            {
+              "name": "Node-B",
+              "alive": true,
+              "delay": null
+            }
+          ]
+        },
+        "sameNow": true,
+        "sameAll": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "load-balance-round-robin",
+      "reason": "round-robin cycles members in order",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "A"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "B"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "A"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "B"
+              ]
+            }
+          ],
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "A"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "B"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "A"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "B"
+              ]
+            }
+          ],
+          "stderr": "y=B type=http server=127.0.0.1:60947 chain=B config=sha256:4f5114be9aa8ecb82d32499dbcf484d77e41dc1545009ada85bd2b7da4277b7c\n[22:40:37.879 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:38.394 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:60948 chain=A config=sha256:4f5114be9aa8ecb82d32499dbcf484d77e41dc1545009ada85bd2b7da4277b7c\n[22:40:38.396 INFO  billow_kernel::engine] message=session closed session=4 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:38.902 INFO  billow_kernel::engine] message=PROXY tunnel established session=5 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=B type=http server=127.0.0.1:60947 chain=B config=sha256:4f5114be9aa8ecb82d32499dbcf484d77e41dc1545009ada85bd2b7da4277b7c\n[22:40:38.920 INFO  billow_kernel::engine] message=session closed session=5 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:39.441 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[22:40:39.441 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=5\n[22:40:39.441 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:39.441 INFO  billow_kernel::engine] message=billow-kernel stopped instance=a1e1138e-7602-416e-a75c-a08f4f139410 sessions=5 active=0 finished=5\n"
+        }
+      },
+      "observed": {
+        "mihomo": "A,B,A,B",
+        "rust": "A,B,A,B"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "select-rule-target-traffic",
+      "reason": "a rule naming a group dials the selected member",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "A"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "A"
+              ]
+            }
+          ],
+          "stderr": ""
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "attempts": [
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "A"
+              ]
+            },
+            {
+              "category": "echoed",
+              "connectStatus": 200,
+              "replyBytes": 127,
+              "served": [
+                "A"
+              ]
+            }
+          ],
+          "stderr": "dns=off instance=14e86a05-3aa2-4e50-9475-7adc5719053a pid=16434 version=\"0.1.0\" listen=127.0.0.1:63726\n[22:40:40.861 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:63738 code=\"closed\"\n[22:40:40.862 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:60948 chain=A config=sha256:a27adcee655f03c3bddc357e74fc233dcf562561f0634e2302ecab06d895f55e\n[22:40:40.864 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:41.377 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:60946 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:60948 chain=A config=sha256:a27adcee655f03c3bddc357e74fc233dcf562561f0634e2302ecab06d895f55e\n[22:40:41.393 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:60946 bytes_up=94 bytes_down=127\n[22:40:41.917 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[22:40:41.917 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[22:40:41.917 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[22:40:41.917 INFO  billow_kernel::engine] message=billow-kernel stopped instance=14e86a05-3aa2-4e50-9475-7adc5719053a sessions=3 active=0 finished=3\n"
+        }
+      },
+      "observed": {
+        "mihomo": "A,A",
+        "rust": "A,A"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "relay-rejected",
+      "reason": "pinned v1.19.34 removed the relay group type; the Rust kernel rejects it with the same reason",
+      "engines": {
+        "mihomo": {
+          "exit": {
+            "code": 1,
+            "signal": null
+          },
+          "stderr": "time=\"2026-11-23T06:40:41.938941000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-23T06:40:41.939023000+08:00\" level=fatal msg=\"Parse config error: proxy group[0]: unsupported type: The group [G] with relay type was removed, please using dialer-proxy instead\"\n"
+        },
+        "rust": {
+          "exit": 1,
+          "stderr": "error: [unsupported] unsupported configuration: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t23-diff-RYR1ge/relay-rejected-rust/config.yaml: proxy group[0] (G): unsupported type: The group [G] with relay type was removed, please using dialer-proxy instead\n"
+        }
+      },
+      "observed": {
+        "mihomoRejected": true,
+        "rustRejected": true
+      },
+      "status": "pass"
+    },
+    {
+      "id": "selection-persisted-across-restart",
+      "reason": "profile.store-selected keeps the choice across restarts",
+      "engines": {
+        "mihomo": {
+          "put": 204,
+          "before": "B",
+          "after": "B"
+        },
+        "rust": {
+          "afterSelect": "B",
+          "afterRestart": "B",
+          "cache": "selected:\n  G: B\n"
+        }
+      },
+      "observed": {
+        "mihomo": "B->B",
+        "rust": "B->B"
+      },
+      "status": "pass"
+    }
+  ],
+  "exitOk": true
+}

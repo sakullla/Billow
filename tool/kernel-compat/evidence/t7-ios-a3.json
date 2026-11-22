@@ -46,7 +46,7 @@
     "hostTypecheck": "pass: tool/ios/verify-host-sources.sh (host + BillowMihomo + BillowRust + host main.mm)",
     "xcodebuildHost": "blocked by Tauri pre-build (cli-options-server.json), not by Swift sources",
     "xcodebuildExtensions": "BillowRust and BillowMihomo debug iPhoneSimulator unsigned builds both succeeded",
-    "cargoTestIosVpn": "pass: 192 lib (new staging sniffer test) + integration suites; 1 ignored",
+    "cargoTestIosVpn": "pass: 417 passed, 0 failed, 91 ignored across 17 test binaries (192 lib incl. the new staging sniffer test + integration suites); re-counted in T8",
     "cargoTestDefault": "pass: all suites",
     "cargoTestSrcTauri": "pass: 7 ios_vpn tests",
     "appGroupManifestSmoke": "pass",

@@ -1,0 +1,24 @@
+npm notice run billow@0.1.33 build
+npm notice run node tool/prepare_runtime.mjs && vue-tsc --noEmit && vite build
+vite v8.3.8 building client environment for production...
+transforming...
+✓ 133 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                    0.68 kB │ gzip:   0.38 kB
+dist/assets/index-Pp4uTKDx.css   150.10 kB │ gzip:  26.87 kB
+dist/assets/dist-js-DVW7h6xD.js    0.11 kB │ gzip:   0.12 kB
+dist/assets/dist-js-D0HS6Xzu.js    0.13 kB │ gzip:   0.13 kB
+dist/assets/dist-js-CZj1K67Z.js    1.22 kB │ gzip:   0.56 kB
+dist/assets/event-3G2j11oG.js      1.42 kB │ gzip:   0.67 kB
+dist/assets/core-CnP0-wGC.js       2.09 kB │ gzip:   0.90 kB
+dist/assets/window-DD1hHGq6.js    13.39 kB │ gzip:   3.23 kB
+dist/assets/editor-a0awjUpT.js   526.48 kB │ gzip: 178.83 kB
+dist/assets/index-CKDT9nDJ.js    589.65 kB │ gzip: 190.59 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 368ms

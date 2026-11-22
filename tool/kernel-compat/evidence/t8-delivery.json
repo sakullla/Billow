@@ -1,0 +1,281 @@
+{
+  "format": "kernel-t8-delivery",
+  "version": 1,
+  "workflow": "2026-11-20-native-rust-kernel",
+  "task": "T8",
+  "attempt": "T8-A1",
+  "generatedAt": "2026-11-23T06:47:00+08:00",
+  "candidate": {
+    "baselineRef": "2b89bf36658ba1bbb3666e78d1eae7fb9719c292",
+    "state": "working tree at 2026-11-23 06:47 (T7-A3 changes included)",
+    "host": "macOS arm64, Xcode 27.2, iOS 27.2 SDK, rustc 1.98.1, Node 26.13.0, Go 1.26.2",
+    "rustKernel": {
+      "path": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t8-target/release/billow-kernel",
+      "sha256": "6e7083457d5b9fee6134169e0e71ea7439a1c9172efd23a1ab5ddc7fe29ea392",
+      "version": "billow-kernel 0.1.0"
+    },
+    "baseline": {
+      "version": "Mihomo Meta v1.19.34 darwin arm64 with go1.26.11",
+      "binary": "tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
+      "sha256": "a55a9073f9b7b1fa596a82c034d2dae3407ec34732102b6e42c5513ce3033f34",
+      "desktopPin": "src-tauri/desktop-kernel.json (darwin-aarch64 mihomo-darwin-arm64-v1.19.34.gz)",
+      "androidPin": "src-tauri/android-kernel.json (commit 0455d0d28c4526937380505153e65a843d8612e8, tags with_gvisor,cmfa)"
+    }
+  },
+  "requirements": {
+    "R1": {
+      "status": "not_passed",
+      "verdict": "五平台双向切换未完成验证：仅 macOS 有历史实跑；当前候选的 macOS 打包切换测试在正向 mihomo→rust→mihomo 断言之后，因负例仍使用 Rust 现在已支持的 proxy-groups 而失败（测试待修）；Windows/Linux/Android 未实跑，iOS 无真机。",
+      "platforms": {
+        "macOS": "partial: T6 历史实跑通过；当前候选复跑 test FAILED at src-tauri/src/profile.rs:6381（负例过时），前三条标记断言已执行",
+        "Windows": "not_verified: 未实跑；cargo check 被 MSVC C 工具链缺失阻塞",
+        "Linux": "not_verified: 未实跑；cargo check 被 x86_64-linux-gnu-gcc 缺失阻塞",
+        "Android": "not_verified: 未实跑；无 NDK/SDK；Rust 内核未接入 VpnService TUN 数据面（T6 当时切换被具名拒绝并恢复 Mihomo，当前候选在 T5 控制接口后是否仍拒绝/能否承载 VPN 流量未复验）",
+        "iOS": "not_verified: 无物理 iPhone；只有模拟器 C ABI smoke 与双扩展构建"
+      },
+      "evidenceRefs": [
+        "docs/sakullla-workflow/2026-11-20-native-rust-kernel/task-runs/T6-run.md",
+        "tool/engine-switch.md",
+        "tool/kernel-compat/evidence/t8-macos-switch.log",
+        "tool/kernel-compat/evidence/t8-cross-windows.log",
+        "tool/kernel-compat/evidence/t8-cross-linux.log",
+        "tool/kernel-compat/evidence/t8-cross-android.log",
+        "tool/kernel-compat/evidence/t8-ios-simulator-smoke.log"
+      ]
+    },
+    "R2": {
+      "status": "not_passed",
+      "verdict": "已覆盖的 macOS 配置/协议子集在当前候选上全部通过，但“所有有效配置可用”未达成：仍有具名拒绝或降级的有效配置（TUN/sniffer、设备族 dial、masque/shadowquic/mieru/sudoku/QUIC/SS 选项等），且 Windows/Linux/Android/iOS 行为未运行验证。",
+      "coveredSubset": {
+        "T22": "23 cases: 22 pass + 1 known difference, 0 unexpected",
+        "T23": "28/28 pass (27 cases + persistence), 0 differ",
+        "T24": "38/38 pass, 0 differ, 0 skipped (4 framing differences)",
+        "T25": "49 cases: 47 equal + 2 recorded divergences, 0 unexpected",
+        "T5": "12/12 scenarios pass, 0 differ",
+        "optionMatrix": "287 no-op / 304 enabled cases, 0 problems",
+        "peerMatrix": "66/66 pinned-Mihomo peer cases pass",
+        "runnerSelfTest": "10/10 pass",
+        "defaultCargoTest": "400 passed, 0 failed, 92 ignored (19 binaries)",
+        "iosFeatureCargoTest": "417 passed, 0 failed, 91 ignored (17 binaries)",
+        "frontend": "342 vitest tests (27 files) pass; npm run build passes"
+      },
+      "knownGaps": [
+        "enabled tun and sniffer are rejected on desktop (iOS staging strips them with a warning, changing domain-rule semantics)",
+        "device families wireguard/openvpn/tailscale/zerotier/easytier dial() still requires the T6/T7 userspace TUN/IP stack",
+        "masque h2/h3-l4proxy/gVisor, shadowquic zero-rtt/QUIC v2/Brutal, mieru UDP/mux/traffic-pattern, sudoku HTTP tunnel/UoT",
+        "vless/anytls/snell udp:true, vmess alterId>0/grpc/xhttp, ss plugin, trusttunnel quic, hysteria2 up/ports, hysteria v1 port hopping/XPlus/faketcp/wechat/UDP, tuic v4/UDP",
+        "DNS named gaps (DoQ/system/dhcp/overlay DNS, #proxy, respect-rules UDP, h3, ECS), process lookup, LAN auth injection, UDP SOCKS5 association rows",
+        "controller: /configs/geo, /upgrade/geo, /group, /cache, /storage, /dns/query, /restart are explicit 404; /rules has no pinned extra counters; listener move on reload and PATCH tun.enable:true diverge; TLS ALPN is http/1.1 only",
+        "Windows external-controller-pipe/routing-mark are named rejections; platform-specific runtime behavior is unverified"
+      ],
+      "evidenceRefs": [
+        "tool/kernel-compat/evidence/t8-t22-dns.json",
+        "tool/kernel-compat/evidence/t8-t23-differential.json",
+        "tool/kernel-compat/evidence/t8-t24-differential.json",
+        "tool/kernel-compat/evidence/t8-t25-differential.json",
+        "tool/kernel-compat/evidence/t8-t5-integration.json",
+        "tool/kernel-compat/evidence/t8-option-matrix.txt",
+        "tool/kernel-compat/evidence/t8-peer-tests.log",
+        "tool/kernel-compat/evidence/t8-default-tests.log",
+        "tool/kernel-compat/evidence/t8-ios-tests.log",
+        "tool/kernel-compat/evidence/rust-mapping.json"
+      ]
+    },
+    "R3": {
+      "status": "not_verified",
+      "verdict": "无物理 iPhone（devicectl 显示 iPhone 15 Pro Max unavailable），没有任何扩展 phys_footprint/peakRss 真机峰值；模拟器 smoke 的 28,475,392 字节是本机 smoke 进程读数，不能作为 R3 依据。",
+      "evidenceRefs": [
+        "docs/testing/2026-11-23-ios-rust-extension-memory.md",
+        "tool/kernel-compat/evidence/t8-ios-simulator-smoke.log",
+        "tool/kernel-compat/evidence/t8-devicectl.log"
+      ]
+    },
+    "R4": {
+      "status": "not_verified",
+      "verdict": "无真机逐轮建连/重载/断网重连基线与失效对象检查；只有单元/模拟器层面的 reload/stop/restart 行为。",
+      "evidenceRefs": [
+        "docs/testing/2026-11-23-ios-rust-extension-memory.md",
+        "tool/kernel-compat/evidence/t8-ios-simulator-smoke.log",
+        "tool/kernel-compat/evidence/t7-ios-ffi.md"
+      ]
+    }
+  },
+  "platformBuilds": {
+    "macOS": {
+      "rustKernelRelease": "pass",
+      "frontendBuild": "pass",
+      "packagedSwitchTest": "FAILED (stale negative expectation at src-tauri/src/profile.rs:6381)",
+      "srcTauriDefaultTests": "234 passed, 0 failed, 10 ignored",
+      "fullAppBundle": "not built in T8"
+    },
+    "Windows": {
+      "targetInstalled": "x86_64-pc-windows-msvc",
+      "cargoCheck": "failed: ring C build cannot find MSVC headers (assert.h); no cl.exe/Windows SDK",
+      "runtime": "not_verified"
+    },
+    "Linux": {
+      "targetInstalled": "x86_64-unknown-linux-gnu",
+      "cargoCheck": "failed: x86_64-linux-gnu-gcc not found",
+      "runtime": "not_verified"
+    },
+    "Android": {
+      "targetInstalled": "aarch64-linux-android",
+      "cargoCheck": "failed: aarch64-linux-android-clang not found (no ANDROID_HOME/NDK)",
+      "runtime": "not_verified; VpnService TUN not wired for the Rust engine"
+    },
+    "iOS": {
+      "simulatorSmoke": "PASS 20/20",
+      "hostSourceTypecheck": "pass (host + BillowMihomo + BillowRust + main.mm)",
+      "hostBridgeTests": "7/7 ios_vpn tests pass",
+      "appGroupManifest": "pass",
+      "billowRustSimulatorBuild": "BUILD SUCCEEDED",
+      "billowMihomoSimulatorBuild": "BUILD SUCCEEDED",
+      "billowRustDeviceBuild": "BUILD SUCCEEDED after the Resolve Rust kernel phase refreshed linked.xcconfig",
+      "billowMihomoDeviceBuild": "BUILD SUCCEEDED",
+      "fullHostXcodebuild": "blocked in Tauri pre-build (missing .tauri/cli-options-server.json)",
+      "deviceInstallAndTraffic": "not_verified (no physical iPhone, no signing team)"
+    }
+  },
+  "reproducibleRuns": [
+    {
+      "id": "default-cargo-test",
+      "command": "CARGO_TARGET_DIR=<t8-target> cargo test --manifest-path native-kernel/Cargo.toml --locked",
+      "result": "400 passed, 0 failed, 92 ignored, 19 test binaries",
+      "log": "tool/kernel-compat/evidence/t8-default-tests.log"
+    },
+    {
+      "id": "ios-feature-cargo-test",
+      "command": "CARGO_TARGET_DIR=<t8-target> cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel --features ios-vpn",
+      "result": "417 passed, 0 failed, 91 ignored, 17 test binaries",
+      "log": "tool/kernel-compat/evidence/t8-ios-tests.log"
+    },
+    {
+      "id": "t22",
+      "command": "node tool/kernel-compat/t22-differential.mjs --mihomo <pinned> --rust <candidate> --out tool/kernel-compat/evidence/t8-t22-dns.json --mmdb-dir <decompressed Country/ASN>",
+      "result": "23 cases, 22 pass, 1 known difference, 0 unexpected, exit 0",
+      "log": "tool/kernel-compat/evidence/t8-t22.log"
+    },
+    {
+      "id": "t23",
+      "command": "node tool/kernel-compat/t23-differential.mjs --mihomo <pinned> --rust <candidate> --out tool/kernel-compat/evidence/t8-t23-differential.json",
+      "result": "28/28 pass (27 cases + persistence), 0 differ, exit 0",
+      "log": "tool/kernel-compat/evidence/t8-t23.log"
+    },
+    {
+      "id": "t24",
+      "command": "node tool/kernel-compat/t24-differential.mjs --mihomo <pinned> --rust <candidate> --out tool/kernel-compat/evidence/t8-t24-differential.json --mmdb-dir <decompressed Country/ASN>",
+      "result": "38/38 pass, 0 differ, 0 skipped, exit 0",
+      "log": "tool/kernel-compat/evidence/t8-t24.log"
+    },
+    {
+      "id": "t25",
+      "command": "node tool/kernel-compat/t25-differential.mjs --mihomo <pinned> --rust <candidate> --out tool/kernel-compat/evidence/t8-t25-differential.json",
+      "result": "49 cases, 47 equal, 2 recorded divergences, 0 unexpected, exit 0",
+      "log": "tool/kernel-compat/evidence/t8-t25.log"
+    },
+    {
+      "id": "t5",
+      "command": "node tool/kernel-compat/t5-differential.mjs --mihomo <pinned> --rust <candidate> --out tool/kernel-compat/evidence/t8-t5-integration.json --effective-dir tool/kernel-compat/evidence/t8-t5-effective",
+      "result": "12/12 scenarios pass, 0 differ, exit 0; reduced Billow desktop/Android artifacts load, only enabled sniffer is rejected by name",
+      "log": "tool/kernel-compat/evidence/t8-t5.log"
+    },
+    {
+      "id": "option-matrix",
+      "command": "node tool/kernel-compat/option-probe.mjs --rust <candidate> --mihomo <pinned> --out tool/kernel-compat/evidence/t8-option-matrix.txt",
+      "result": "287 no-op / 304 enabled, problems 0, exit 0",
+      "log": "tool/kernel-compat/evidence/t8-option-probe.log"
+    },
+    {
+      "id": "peer-tests",
+      "command": "CARGO_TARGET_DIR=<t8-target> KC_MIHOMO_BIN=<pinned> tool/kernel-compat/peer-tests.sh",
+      "result": "66/66 pass, exit 0",
+      "log": "tool/kernel-compat/evidence/t8-peer-tests.log"
+    },
+    {
+      "id": "runner-self-test",
+      "command": "node --test tool/kernel-compat/runner.test.mjs",
+      "result": "10/10 pass, exit 0",
+      "log": "tool/kernel-compat/evidence/t8-runner.log"
+    },
+    {
+      "id": "frontend",
+      "command": "npm test; npm run build",
+      "result": "342 tests / 27 files pass; type-check + Vite build pass",
+      "log": [
+        "tool/kernel-compat/evidence/t8-npm-test.log",
+        "tool/kernel-compat/evidence/t8-npm-build.log"
+      ]
+    },
+    {
+      "id": "macos-switch",
+      "command": "BILLOW_TEST_RESOURCES=<temp runtime with current billow-kernel> CARGO_TARGET_DIR=<t8-tauri-target> cargo test --manifest-path src-tauri/Cargo.toml --locked packaged_engines_switch_both_ways_with_a_marked_request -- --ignored --nocapture",
+      "result": "FAILED: 0 passed, 1 failed; panic at src-tauri/src/profile.rs:6381 (proxy-groups config now accepted by the Rust kernel); positive mihomo-1/rust-1/mihomo-2 assertions executed before that point",
+      "log": "tool/kernel-compat/evidence/t8-macos-switch.log"
+    },
+    {
+      "id": "ios-host-typecheck",
+      "command": "tool/ios/verify-host-sources.sh",
+      "result": "pass (host, BillowMihomo, BillowRust, main.mm)",
+      "log": "tool/kernel-compat/evidence/t8-ios-host-typecheck.log"
+    },
+    {
+      "id": "ios-app-group",
+      "command": "tool/ios/verify-app-group.sh",
+      "result": "pass",
+      "log": "tool/kernel-compat/evidence/t8-ios-app-group.log"
+    },
+    {
+      "id": "ios-simulator-smoke",
+      "command": "tool/ios/verify-rust-kernel.sh",
+      "result": "PASS 20/20; peakRssBytes 28475392 on the simulator smoke process (not R3)",
+      "log": "tool/kernel-compat/evidence/t8-ios-simulator-smoke.log"
+    },
+    {
+      "id": "ios-extension-builds",
+      "command": "xcodebuild BillowRust/BillowMihomo, simulator debug and device release, CODE_SIGNING_ALLOWED=NO",
+      "result": "all BUILD SUCCEEDED (the first device attempt used a stale simulator linked.xcconfig; the Resolve phase then wrote the device archive and the rerun succeeded)",
+      "logs": [
+        "tool/kernel-compat/evidence/t8-ios-xcodebuild-rust.log",
+        "tool/kernel-compat/evidence/t8-ios-xcodebuild-mihomo.log",
+        "tool/kernel-compat/evidence/t8-ios-xcodebuild-rust-device.log",
+        "tool/kernel-compat/evidence/t8-ios-xcodebuild-mihomo-device.log"
+      ]
+    },
+    {
+      "id": "cross-target-checks",
+      "command": "cargo check --target <windows/linux/android> -p billow-kernel-cli",
+      "result": "all failed on missing platform C toolchain/NDK (see platformBuilds)",
+      "logs": [
+        "tool/kernel-compat/evidence/t8-cross-windows.log",
+        "tool/kernel-compat/evidence/t8-cross-linux.log",
+        "tool/kernel-compat/evidence/t8-cross-android.log"
+      ]
+    }
+  ],
+  "iosDevice": {
+    "devicectl": "iPhone 15 Pro Max 00008130-000E65482883401C physical unavailable; iPhone 18 Pro simulator connected",
+    "signedInstall": "not executed (no Team)",
+    "r3R4": "no measurements"
+  },
+  "fixes": [
+    {
+      "id": "P3-ignored-count",
+      "files": [
+        "tool/kernel-compat/evidence/t7-ios-ffi.md",
+        "tool/kernel-compat/evidence/t7-ios-a3.json"
+      ],
+      "change": "package-level cargo test -p billow-kernel --features ios-vpn ignored count corrected from 1 to 91 (417 passed / 91 ignored, re-counted by T8); the --lib-only 1 ignored reference is left as the accurate lib-suite count"
+    }
+  ],
+  "conclusion": {
+    "status": "not_passed",
+    "statement": "当前候选不得出具通过结论：R1 仅 macOS 有历史实跑且当前切换测试为红（负例过时）；R2 已覆盖 macOS 子集通过但完整兼容仍有具名有效配置缺口，且其他平台未运行；R3/R4 没有任何真机峰值或逐轮回收数字。Windows/Linux/Android/iOS 真机验证缺失。",
+    "blockingForDelivery": true,
+    "nextOwners": [
+      "T6/后续任务：更新 packaged_engines_switch_both_ways_with_a_marked_request 的负例为当前仍拒绝的配置（如 enabled sniffer），并重跑 macOS 双向切换",
+      "T8/T6/后续：在 Windows、Linux、Android 宿主上实跑打包后的双向切换与标记流量",
+      "T7/后续：物理 iPhone 上完成 R1 iOS 双向切换、R3 峰值场景与 R4 逐轮回收，附原始 trace/status JSON",
+      "Delivery：在真实平台证据补齐前保持 delivery 未通过"
+    ]
+  }
+}

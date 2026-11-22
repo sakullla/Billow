@@ -1,0 +1,616 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.5
+   Compiling libc v0.2.191
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling find-msvc-tools v0.1.15
+   Compiling shlex v2.0.1
+   Compiling cc v1.11.2
+   Compiling typenum v1.20.1
+   Compiling serde v1.0.229
+   Compiling version_check v0.9.5
+   Compiling stable_deref_trait v1.2.1
+   Compiling itoa v1.0.19
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling utf_types v1.0.0
+   Compiling log v0.4.35
+   Compiling utf8_iter v1.1.0
+   Compiling thiserror v2.0.21
+   Compiling syn v3.0.10
+   Compiling syn v2.0.119
+   Compiling siphasher v1.0.4
+   Compiling icu_properties_data v2.4.0
+   Compiling icu_normalizer_data v2.4.0
+   Compiling phf_shared v0.13.1
+   Compiling getrandom v0.2.17
+   Compiling smallvec v1.16.5
+   Compiling bitflags v2.13.2
+   Compiling fastrand v2.5.0
+   Compiling zmij v1.0.23
+   Compiling bytes v1.12.1
+   Compiling parking_lot_core v0.9.12
+   Compiling phf_generator v0.13.1
+   Compiling same-file v1.0.6
+   Compiling rustc-hash v2.1.3
+   Compiling walkdir v2.5.0
+   Compiling equivalent v1.0.3
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling strsim v0.11.1
+   Compiling http v1.5.0
+   Compiling rand_core v0.6.4
+   Compiling semver v1.0.28
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling phf_codegen v0.13.1
+   Compiling generic-array v0.14.7
+   Compiling autocfg v1.5.1
+   Compiling powerfmt v0.2.1
+   Compiling winnow v1.0.5
+   Compiling subtle v2.6.1
+   Compiling serde_json v1.0.154
+   Compiling typeid v1.0.3
+   Compiling deranged v0.5.9
+   Compiling ident_case v1.0.1
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling parking_lot v0.12.5
+   Compiling objc2-encode v4.1.0
+   Compiling getrandom v0.4.3
+   Compiling toml_writer v1.2.0+spec-1.1.0
+   Compiling synstructure v0.14.0
+   Compiling darling_core v0.24.1
+   Compiling erased-serde v0.4.11
+   Compiling base64 v0.23.1
+   Compiling alloc-no-stdlib v3.0.0
+   Compiling alloc-stdlib v0.3.0
+   Compiling objc2-exception-helper v0.1.1
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling web-time v1.1.0
+   Compiling fnv v1.0.7
+   Compiling new_debug_unreachable v1.0.6
+   Compiling string_cache_codegen v0.6.1
+   Compiling precomputed-hash v0.1.1
+   Compiling web_atoms v0.2.6
+   Compiling quick-xml v0.42.0
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.7
+   Compiling serde_derive v1.0.229
+   Compiling displaydoc v0.2.7
+   Compiling zeroize_derive v1.5.0
+   Compiling thiserror-impl v2.0.21
+   Compiling phf_macros v0.13.1
+   Compiling zerofrom v0.1.8
+   Compiling darling_macro v0.24.1
+   Compiling zeroize v1.9.1
+   Compiling darling v0.24.1
+   Compiling regex-automata v0.4.18
+   Compiling yoke v0.8.4
+   Compiling phf v0.13.1
+   Compiling serde_with_macros v3.24.0
+   Compiling zerovec v0.11.9
+   Compiling zerotrie v0.2.5
+   Compiling objc2 v0.6.5
+   Compiling anyhow v1.0.104
+   Compiling regex v1.13.1
+   Compiling string_cache v0.9.0
+   Compiling tinystr v0.8.5
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.4.0
+   Compiling icu_locale_core v2.4.0
+   Compiling serde_spanned v1.1.3
+   Compiling toml_datetime v1.1.3+spec-1.1.0
+   Compiling dtoa v1.0.11
+   Compiling dunce v1.0.5
+   Compiling percent-encoding v2.3.2
+   Compiling dtoa-short v0.3.5
+   Compiling form_urlencoded v1.2.2
+   Compiling toml v1.2.1+spec-1.1.0
+   Compiling uuid v1.29.2
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling icu_provider v2.4.0
+   Compiling tendril v0.5.1
+   Compiling icu_normalizer v2.4.0
+   Compiling icu_properties v2.4.0
+   Compiling indexmap v1.9.3
+   Compiling selectors v0.38.0
+   Compiling glob v0.3.4
+   Compiling camino v1.2.6
+   Compiling ctor v1.0.14
+   Compiling derive_more v2.1.1
+   Compiling markup5ever v0.39.0
+   Compiling idna_adapter v1.2.2
+   Compiling cssparser v0.37.0
+   Compiling idna v1.1.0
+   Compiling swift-rs v1.0.9
+   Compiling crypto-common v0.1.7
+   Compiling serde_derive_internals v0.29.1
+   Compiling servo_arc v0.4.3
+   Compiling hashbrown v0.17.1
+   Compiling url v2.5.8
+   Compiling hashbrown v0.12.3
+   Compiling bit-vec v0.8.0
+   Compiling schemars v0.8.22
+   Compiling indexmap v2.14.2
+   Compiling bit-set v0.8.0
+   Compiling schemars_derive v0.8.22
+   Compiling html5ever v0.39.0
+   Compiling cfb v0.14.0
+   Compiling cargo-platform v0.1.9
+   Compiling jsonptr v0.7.1
+   Compiling brotli-decompressor v6.3.1
+   Compiling time v0.3.55
+   Compiling base64 v0.21.7
+   Compiling tauri-utils v2.10.2
+   Compiling dyn-clone v1.0.20
+   Compiling foldhash v0.2.0
+   Compiling serde-untagged v0.1.9
+   Compiling dom_query v0.28.0
+   Compiling infer v0.22.0
+   Compiling json-patch v4.2.0
+   Compiling brotli v9.1.1
+   Compiling cargo_metadata v0.19.2
+   Compiling urlpattern v0.6.0
+   Compiling objc2-core-foundation v0.3.2
+   Compiling serde_with v3.24.0
+   Compiling block2 v0.6.2
+   Compiling option-ext v0.2.0
+   Compiling rustc_version v0.4.1
+   Compiling pin-project-lite v0.2.17
+   Compiling plist v1.10.3
+   Compiling simd-adler32 v0.3.10
+   Compiling objc2-foundation v0.3.2
+   Compiling crc32fast v1.5.5
+   Compiling core-foundation-sys v0.8.7
+   Compiling adler2 v2.0.1
+   Compiling once_cell v1.21.4
+   Compiling miniz_oxide v0.9.1
+   Compiling embed-resource v3.0.12
+   Compiling dirs-sys v0.5.0
+   Compiling futures-core v0.3.34
+   Compiling heck v0.5.0
+   Compiling dirs v7.0.0
+   Compiling tauri-winres v0.3.7
+   Compiling cargo_toml v1.0.1
+   Compiling allocator-api2 v0.2.21
+   Compiling static_vcruntime v3.0.0
+   Compiling block-buffer v0.10.4
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.5
+   Compiling flate2 v1.1.11
+   Compiling tokio v1.54.1
+   Compiling digest v0.10.7
+   Compiling miniz_oxide v0.8.9
+   Compiling fdeflate v0.3.7
+   Compiling hybrid-array v0.4.15
+   Compiling futures-sink v0.3.34
+   Compiling mime v0.3.18
+   Compiling core-foundation v0.10.1
+   Compiling time-macros v0.2.32
+   Compiling crossbeam-utils v0.8.23
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling futures-channel v0.3.34
+   Compiling dpi v0.1.2
+   Compiling unic-langid-impl v0.9.6
+   Compiling futures-macro v0.3.34
+   Compiling cpufeatures v0.2.17
+   Compiling futures-io v0.3.34
+   Compiling slab v0.4.12
+   Compiling const-oid v0.10.3
+   Compiling futures-task v0.3.34
+   Compiling digest v0.11.3
+   Compiling unic-langid v0.9.6
+   Compiling futures-util v0.3.34
+   Compiling inout v0.1.4
+   Compiling ring v0.17.14
+   Compiling cookie v0.18.2
+   Compiling raw-window-handle v0.6.2
+   Compiling crossbeam-channel v0.5.17
+   Compiling cipher v0.4.4
+   Compiling rustls-pki-types v1.16.0
+   Compiling foreign-types-macros v0.2.4
+   Compiling num-traits v0.2.19
+   Compiling type-map v0.5.1
+   Compiling unicase v2.10.0
+   Compiling foreign-types-shared v0.3.1
+   Compiling foreign-types v0.5.0
+   Compiling mime_guess v2.0.5
+   Compiling wry v0.57.2
+   Compiling core-graphics-types v0.2.0
+   Compiling png v0.18.1
+   Compiling hmac v0.12.1
+   Compiling cpufeatures v0.3.1
+   Compiling untrusted v0.9.0
+   Compiling byteorder v1.5.0
+   Compiling tauri-runtime v2.12.2
+   Compiling muda v0.20.0
+   Compiling ico v0.6.0
+   Compiling sha2 v0.11.1
+   Compiling sha2 v0.10.9
+   Compiling core-graphics v0.25.0
+   Compiling dispatch2 v0.3.1
+   Compiling keyboard-types v0.8.3
+   Compiling universal-hash v0.5.1
+   Compiling fluent-syntax v0.12.0
+   Compiling self_cell v1.3.0
+   Compiling thiserror v1.0.69
+   Compiling pxfm v0.1.30
+   Compiling getrandom v0.3.4
+   Compiling opaque-debug v0.3.1
+   Compiling rustls v0.23.46
+   Compiling const-oid v0.9.6
+   Compiling tray-icon v0.25.1
+   Compiling tauri-runtime-wry v2.12.3
+   Compiling der v0.7.10
+   Compiling rustls-webpki v0.103.17
+   Compiling tauri-plugin v2.7.2
+   Compiling tauri-build v2.7.4
+   Compiling tauri-codegen v2.7.4
+   Compiling rust-embed-utils v8.14.0
+   Compiling objc2-core-graphics v0.3.2
+   Compiling serialize-to-javascript-impl v0.1.2
+   Compiling thiserror-impl v1.0.69
+   Compiling http-body v1.1.0
+   Compiling ff v0.13.1
+   Compiling byteorder-lite v0.1.0
+   Compiling base16ct v0.2.0
+   Compiling system-configuration-sys v0.6.0
+   Compiling httparse v1.10.1
+   Compiling bytemuck v1.25.2
+   Compiling rustversion v1.0.23
+   Compiling zerocopy v0.8.63
+   Compiling moxcms v0.8.1
+   Compiling sec1 v0.7.3
+   Compiling group v0.13.0
+   Compiling serialize-to-javascript v0.1.2
+   Compiling rust-embed-impl v8.14.0
+   Compiling hkdf v0.12.4
+   Compiling tracing-core v0.1.36
+   Compiling toml v0.5.11
+   Compiling basic-toml v0.1.10
+   Compiling crypto-bigint v0.5.5
+   Compiling tracing-attributes v0.1.31
+   Compiling serde_repr v0.1.21
+   Compiling tower-service v0.3.3
+   Compiling embed_plist v1.2.2
+   Compiling try-lock v0.2.5
+   Compiling rustix v1.1.6
+   Compiling cfg_aliases v0.2.2
+   Compiling nix v0.31.3
+   Compiling elliptic-curve v0.13.8
+   Compiling want v0.3.2
+   Compiling tracing v0.1.44
+   Compiling find-crate v0.6.3
+   Compiling i18n-config v0.4.8
+   Compiling polyval v0.6.2
+   Compiling intl-memoizer v0.5.3
+   Compiling intl_pluralrules v7.0.2
+   Compiling fluent-langneg v0.13.1
+   Compiling core-foundation v0.9.4
+   Compiling aead v0.5.2
+   Compiling errno v0.3.15
+   Compiling atomic-waker v1.1.2
+   Compiling hyper v1.12.0
+   Compiling objc2-quartz-core v0.3.2
+   Compiling tauri v2.12.5
+   Compiling objc2-app-kit v0.3.2
+   Compiling tauri-macros v2.7.4
+   Compiling image v0.25.10
+   Compiling system-configuration v0.7.0
+   Compiling fluent-bundle v0.16.0
+   Compiling ghash v0.5.1
+   Compiling arc-swap v1.9.5
+   Compiling i18n-embed-impl v0.8.4
+   Compiling primeorder v0.13.6
+   Compiling ppv-lite86 v0.2.21
+   Compiling poly1305 v0.8.0
+   Compiling futures-executor v0.3.34
+   Compiling aes v0.8.4
+   Compiling ctr v0.9.2
+   Compiling chacha20 v0.9.1
+   Compiling sync_wrapper v1.0.2
+   Compiling security-framework-sys v2.17.0
+   Compiling objc2-security v0.3.2
+   Compiling curve25519-dalek v4.1.3
+   Compiling rquickjs-sys v0.14.0
+   Compiling tower-layer v0.3.3
+   Compiling ipnet v2.12.2
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.21
+   Compiling objc2-service-management v0.3.2
+   Compiling security-framework v3.7.0
+   Compiling chacha20poly1305 v0.10.1
+   Compiling aes-gcm v0.10.3
+   Compiling futures v0.3.34
+   Compiling rand_chacha v0.3.1
+   Compiling p256 v0.13.2
+   Compiling fluent v0.17.0
+   Compiling tauri-plugin-autostart v2.7.0
+   Compiling tauri-plugin-updater v2.14.1
+   Compiling tauri-plugin-opener v2.7.3
+   Compiling tauri-plugin-deep-link v2.6.3
+   Compiling tauri-plugin-process v2.4.0
+   Compiling tokio-rustls v0.26.6
+   Compiling rust-embed v8.14.0
+   Compiling keccak v0.1.6
+   Compiling proc-macro-error-attr3 v3.1.1
+   Compiling base64 v0.22.1
+   Compiling i18n-embed v0.16.0
+   Compiling proc-macro-error3 v3.1.1
+   Compiling sha3 v0.10.9
+   Compiling hyper-rustls v0.27.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hpke v0.12.0
+   Compiling os_info v3.15.0
+   Compiling rand v0.8.8
+   Compiling cookie-factory v0.3.3
+   Compiling smappservice-rs v0.1.3
+   Compiling tower-http v0.6.11
+   Compiling xattr v1.7.0
+   Compiling http-body-util v0.1.5
+   Compiling pbkdf2 v0.12.2
+   Compiling tokio-util v0.7.20
+   Compiling webpki-roots v1.0.12
+   Compiling salsa20 v0.10.2
+   Compiling dirs v6.0.0
+   Compiling secrecy v0.10.3
+   Compiling kem v0.3.0-pre.0
+   Compiling pin-project-internal v1.1.13
+   Compiling filetime v0.2.29
+   Compiling hybrid-array v0.2.3
+   Compiling nom v8.0.0
+   Compiling bumpalo v3.20.4
+   Compiling io_tee v0.1.1
+   Compiling zip v2.6.1
+   Compiling bech32 v0.11.1
+   Compiling tempfile v3.27.0
+   Compiling x25519-dalek v2.0.1
+   Compiling zopfli v0.8.4
+   Compiling reqwest v0.13.5
+   Compiling tar v0.4.46
+   Compiling rquickjs-core v0.14.0
+   Compiling pin-project v1.1.13
+   Compiling ml-kem v0.2.3
+   Compiling scrypt v0.11.0
+   Compiling auto-launch v0.6.0
+   Compiling webpki-roots v0.26.11
+   Compiling i18n-embed-fl v0.10.1
+   Compiling billow v0.1.33 (/Users/yanggeng/github/Billow/src-tauri)
+   Compiling open v5.4.5
+   Compiling unsafe-libyaml v0.2.11
+   Compiling ryu v1.0.23
+   Compiling minisign-verify v0.3.0
+   Compiling lazy_static v1.5.1
+   Compiling ureq v2.12.1
+   Compiling rquickjs v0.14.0
+   Compiling serde_yaml v0.9.34+deprecated (/Users/yanggeng/github/Billow/src-tauri/vendor/serde_yaml)
+   Compiling md-5 v0.10.6
+   Compiling ruzstd v0.8.3
+   Compiling objc2-web-kit v0.3.2
+   Compiling tao v0.37.2
+   Compiling window-vibrancy v0.8.1
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> vendor/serde_yaml/src/mapping.rs:81:18
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry {
+   |                  ^^^^^^^^^               ^^^^^ the same lifetime is hidden here
+   |                  |
+   |                  the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry<'_> {
+   |                                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:188:17
+    |
+188 |     pub fn iter(&self) -> Iter {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+188 |     pub fn iter(&self) -> Iter<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:197:21
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut {
+    |                     ^^^^^^^^^     ^^^^^^^ the same lifetime is hidden here
+    |                     |
+    |                     the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut<'_> {
+    |                                          ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:204:17
+    |
+204 |     pub fn keys(&self) -> Keys {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+204 |     pub fn keys(&self) -> Keys<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:218:19
+    |
+218 |     pub fn values(&self) -> Values {
+    |                   ^^^^^     ^^^^^^ the same lifetime is hidden here
+    |                   |
+    |                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+218 |     pub fn values(&self) -> Values<'_> {
+    |                                   ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:225:23
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut {
+    |                       ^^^^^^^^^     ^^^^^^^^^ the same lifetime is hidden here
+    |                       |
+    |                       the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut<'_> {
+    |                                              ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/number.rs:555:34
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected {
+    |                                  ^^^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+    |                                  |
+    |                                  the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected<'_> {
+    |                                                        ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> vendor/serde_yaml/src/value/de.rs:1231:30
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected {
+     |                              ^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+     |                              |
+     |                              the lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected<'_> {
+     |                                                  ++++
+
+   Compiling objc2-osa-kit v0.3.2
+   Compiling age-core v0.12.0
+   Compiling osakit v0.3.1
+   Compiling age v0.12.1
+warning: `serde_yaml` (lib) generated 8 warnings (run `cargo fix --lib -p serde_yaml` to apply 8 suggestions)
+warning: function `seed` is never used
+  --> src/bundled_geo.rs:99:8
+   |
+99 | pub fn seed(apk: &Path, home: &Path) -> Result<(), String> {
+   |        ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fetch_delays` is never used
+   --> src/nodes.rs:666:8
+    |
+666 | pub fn fetch_delays(
+    |        ^^^^^^^^^^^^
+
+warning: function `fetch_delays_with_progress` is never used
+   --> src/nodes.rs:675:8
+    |
+675 | pub fn fetch_delays_with_progress(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `set_installed`, `matching_installed`, and `test_group` are never used
+    --> src/profile.rs:2505:12
+     |
+2352 | impl ProfileBook {
+     | ---------------- methods in this implementation
+...
+2505 |     pub fn set_installed(&mut self, apps: Vec<crate::takeover::InstalledApp>) {
+     |            ^^^^^^^^^^^^^
+...
+2527 |     pub fn matching_installed(&self, query: &str) -> Vec<&crate::takeover::InstalledApp> {
+     |            ^^^^^^^^^^^^^^^^^^
+...
+4246 |     pub fn test_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+     |            ^^^^^^^^^^
+
+warning: function `filter_installed` is never used
+   --> src/takeover.rs:228:8
+    |
+228 | pub fn filter_installed<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<&'a InstalledApp> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+
+warning: methods `calls` and `last_excluded` are never used
+    --> src/takeover.rs:1079:12
+     |
+1065 | impl HostVpn {
+     | ------------ methods in this implementation
+...
+1079 |     pub fn calls(&self) -> &[String] {
+     |            ^^^^^
+...
+1083 |     pub fn last_excluded(&self) -> &[String] {
+     |            ^^^^^^^^^^^^^
+
+warning: struct `RecordingVpn` is never constructed
+    --> src/takeover.rs:1113:12
+     |
+1113 | pub struct RecordingVpn {
+     |            ^^^^^^^^^^^^
+
+warning: associated function `granted` is never used
+    --> src/takeover.rs:1122:12
+     |
+1121 | impl RecordingVpn {
+     | ----------------- associated function in this implementation
+1122 |     pub fn granted() -> Self {
+     |            ^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `billow` (lib test) generated 1 warning
+warning: `billow` (lib) generated 9 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 16s
+     Running unittests src/lib.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t8-tauri-target/debug/deps/billow_lib-a348cec30b23a6a2)
+
+running 1 test
+
+thread 'profile::tests::packaged_engines_switch_both_ways_with_a_marked_request' (27510618) panicked at src/profile.rs:6381:14:
+called `Result::unwrap_err()` on an `Ok` value: ProfileSnapshot { profiles: [ProfileView { id: "p1", name: "direct.yaml", kind: "local", source: "", user_agent: "", current: true, failure: None, override_text: "", override_error: None, used: None, total: None, expire: None, last_success_ms: Some(1795387518897), interval_hours: 0, updated_ms: Some(1795387519676), proxy_count: 0, age_recipients: [] }], active_id: Some("p1"), mixed_port: Some(49928), mode: Some("rule"), system_proxy: true, tun: false, vpn: false, pending_url: None, failure: None, input_error: None, connected: true, platform: "desktop", tun_wanted: false, excluded: [], included: [], app_mode: "exclude", installed: [], node_catalog: [NodeGroupView { name: "G", kind: "manual", now: "DIRECT", sort: "default", nodes: [NodeItemView { name: "DIRECT", delay_ms: None, failed: false, selected: true, node_type: "direct", tags: [], dialer_proxy: None }], group_type: "select", icon: None, pinnable: false, fixed: None, hidden: false }], node_query: "", nodes_notice: None, nodes_error: None, nodes_profile_id: Some("p1"), kernel_running: true, engine: "rust", running_engine: Some("rust"), engine_version: Some("\"0.1.0\""), engine_identity: Some("5bef047e-4f4e-4ee6-b709-6b8b541fa00c"), kernel_memory: None, kernel_uptime_secs: Some(0), connections: [], connection_total: 0, connections_error: None, connection_query: "", logs: [LogView { level: "info", message: "Start initial configuration in progress", time_ms: 1795387518871 }, LogView { level: "info", message: "Geodata Loader mode: memconservative", time_ms: 1795387518871 }, LogView { level: "info", message: "Geosite Matcher implementation: succinct", time_ms: 1795387518871 }, LogView { level: "info", message: "Initial configuration complete, total time: 0ms", time_ms: 1795387518871 }, LogView { level: "info", message: "RESTful API listening at: 127.0.0.1:17690", time_ms: 1795387518872 }, LogView { level: "info", message: "Sniffer is closed", time_ms: 1795387518873 }, LogView { level: "info", message: "Mixed(http+socks) proxy listening at: 127.0.0.1:49928", time_ms: 1795387518873 }, LogView { level: "info", message: "Start initial compatible provider default", time_ms: 1795387518873 }, LogView { level: "info", message: "message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=0307da50-49be-4c7c-9de3-00f685e15d22 pid=23164 version=\"0.1.0\" listen=127.0.0.1:49928", time_ms: 1795387519612 }, LogView { level: "info", message: "instance=0307da50-49be-4c7c-9de3-00f685e15d22 pid=23164 version=0.1.0 listen=127.0.0.1:49928 overridden_port=- config=sha256:602d2d6a656dbcce1e610273f59bed458c831d5729372ed91d763f577e5a00e7 rules=1 geosite_dir=- state_dir=-", time_ms: 1795387519612 }, LogView { level: "info", message: "features: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off", time_ms: 1795387519612 }, LogView { level: "warning", message: "message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:49968 code=\"closed\"", time_ms: 1795387519633 }, LogView { level: "info", message: "Start initial configuration in progress", time_ms: 1795387519660 }, LogView { level: "info", message: "Geodata Loader mode: memconservative", time_ms: 1795387519660 }, LogView { level: "info", message: "Geosite Matcher implementation: succinct", time_ms: 1795387519660 }, LogView { level: "info", message: "Initial configuration complete, total time: 0ms", time_ms: 1795387519660 }, LogView { level: "info", message: "RESTful API listening at: 127.0.0.1:17690", time_ms: 1795387519660 }, LogView { level: "info", message: "Sniffer is closed", time_ms: 1795387519661 }, LogView { level: "info", message: "Mixed(http+socks) proxy listening at: 127.0.0.1:49928", time_ms: 1795387519661 }, LogView { level: "info", message: "Start initial compatible provider default", time_ms: 1795387519661 }, LogView { level: "info", message: "[TCP] 127.0.0.1:49981 --> 127.0.0.1:49929 match Match using DIRECT", time_ms: 1795387519676 }, LogView { level: "info", message: "Start initial configuration in progress", time_ms: 1795387519681 }, LogView { level: "info", message: "Geodata Loader mode: memconservative", time_ms: 1795387519682 }, LogView { level: "info", message: "Geosite Matcher implementation: succinct", time_ms: 1795387519682 }, LogView { level: "info", message: "Initial configuration complete, total time: 0ms", time_ms: 1795387519682 }, LogView { level: "info", message: "Sniffer is closed", time_ms: 1795387519683 }, LogView { level: "info", message: "Start initial compatible provider default", time_ms: 1795387519683 }, LogView { level: "info", message: "Start initial compatible provider G", time_ms: 1795387519683 }, LogView { level: "info", message: "message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=5bef047e-4f4e-4ee6-b709-6b8b541fa00c pid=23220 version=\"0.1.0\" listen=127.0.0.1:49928", time_ms: 1795387519907 }, LogView { level: "info", message: "instance=5bef047e-4f4e-4ee6-b709-6b8b541fa00c pid=23220 version=0.1.0 listen=127.0.0.1:49928 overridden_port=- config=sha256:4d5644d9073bddb57f355d7051895d93fc50c4288f4520f9269c3cf8c1565e24 rules=1 geosite_dir=- state_dir=-", time_ms: 1795387519907 }, LogView { level: "info", message: "features: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off", time_ms: 1795387519907 }, LogView { level: "warning", message: "message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:49990 code=\"closed\"", time_ms: 1795387519919 }], log_filter: "all", upload: None, download: None, upload_total: Some(9), download_total: Some(14), settings: KernelSettings { auto_connect: false, close_connections_on_switch: None, subscription_user_agent: "", mixed_port: None, allow_lan: None, ipv6: None, log_level: None, unified_delay: None, tcp_concurrent: None, find_process_mode: None, test_url: "", test_timeout_ms: 0, sniffer: None, keep_alive_interval: None, lan_auth: [], lan_allowed_ips: [], system_proxy: SystemProxySettings { host: "", mode: "manual", pac_script: "function FindProxyForURL(url, host) {\n  if (isPlainHostName(host) || shExpMatch(host, '*.local') || host === 'localhost' || host === '127.0.0.1' || host === '::1') {\n    return 'DIRECT';\n  }\n  return 'PROXY %proxy-host%:%mixed-port%; SOCKS5 %proxy-host%:%mixed-port%; DIRECT';\n}\n", bypass: ["localhost", "127.*", "192.168.*", "10.*", "172.16.*", "172.17.*", "172.18.*", "172.19.*", "172.20.*", "172.21.*", "172.22.*", "172.23.*", "172.24.*", "172.25.*", "172.26.*", "172.27.*", "172.28.*", "172.29.*", "172.30.*", "172.31.*", "*.local", "<local>"] }, dns_override: false, dns: DnsSettings { listen: "", enhanced_mode: "fake-ip", fake_ip_range: "198.18.0.1/16", fake_ip_filter_mode: "blacklist", fake_ip_filter: ["*.lan", "*.local", "*.localdomain", "localhost.ptlogin2.qq.com", "+.msftconnecttest.com", "+.msftncsi.com", "+.stun.*.*", "+.stun.*.*.*", "time.*.com", "ntp.*.com", "+.market.xiaomi.com"], ipv6: false, prefer_h3: false, cache_algorithm: "lru", use_hosts: true, use_system_hosts: true, respect_rules: false, direct_nameserver_follow_policy: false, default_nameserver: ["223.5.5.5", "119.29.29.29"], nameserver: ["https://doh.pub/dns-query", "https://dns.alidns.com/dns-query"], fallback: [], proxy_server_nameserver: ["https://doh.pub/dns-query"], direct_nameserver: [], nameserver_policy: {}, hosts: {} }, tun: TunSettings { stack: "", auto_route: true, auto_detect_interface: true, strict_route: false, dns_hijack: ["any:53", "tcp://any:53"], mtu: 1500, device: "", route_address: None, route_exclude_address: None }, geodata_mode: None, geodata_loader: None, geo_auto_update: None, geo_update_interval: None, geo_source: "", geo_urls: GeoUrls { geoip: "", mmdb: "", geosite: "", asn: "" }, sniff_ports: SniffPorts { http: None, tls: None, quic: None }, sniff_force_domain: None, sniff_skip_domain: None, sniff_override_destination: None, socks_port: None, http_port: None, redir_port: None, tproxy_port: None, interface_name: None, routing_mark: None }, config_values: ConfigValues { mixed_port: Some(49928), allow_lan: None, ipv6: None, log_level: None, unified_delay: None, tcp_concurrent: None, find_process_mode: None, keep_alive_interval: None, disable_keep_alive: None, socks_port: None, http_port: None, redir_port: None, tproxy_port: None, interface_name: None, routing_mark: None, sniffer: None, sniff_http_ports: None, sniff_tls_ports: None, sniff_quic_ports: None, sniff_force_domain: None, sniff_skip_domain: None, sniff_override_destination: None, tun_route_address: None, tun_route_exclude_address: None }, notice: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test profile::tests::packaged_engines_switch_both_ways_with_a_marked_request ... FAILED
+
+failures:
+
+failures:
+    profile::tests::packaged_engines_switch_both_ways_with_a_marked_request
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 243 filtered out; finished in 7.49s
+
+error: test failed, to rerun pass `--lib`
