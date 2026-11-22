@@ -17,6 +17,18 @@ summary: "Rust 转发库与 Mihomo 复用有效配置。桌面和 Android 使用
 - 实现 Rust 配置解析、监听和会话、策略组选择、DNS、规则匹配、协议入站与出站、提供方和资源更新，并联通从接收连接到实际出站的完整路径。控制层保持 Billow 实际消费的配置操作、节点与策略组、测速、规则、连接、日志和流量语义。
 - 对照环境固定有效 YAML、节点、DNS 应答、资源内容、可达性及请求序列。两个内核依次运行，比较配置接受与拒绝、协议握手、实际选组、DNS、命中规则、接收端观察到的出口及返回数据。自动选组等时序相关行为用可控的延时和故障输入比较。覆盖组合配置和更新失败。每个协议族用实际对端验证；缺对端、未实现选项、测量失败分别记入未通过项。
 
+### 协议族交付顺序与拆分（R2）
+
+首版验收范围仍是 v1.19.34 在对应平台支持的全部协议族，不因分批实现而缩小。实现按可独立复验的族推进：已交付 `socks5`/`http`/`ss`/`trojan`/`vless`/`anytls`，`vmess`/`snell`/`trusttunnel`，以及 `gost-relay`/`ssh`/`ssr` 的可验证子集；`ssr` 插件层与 `gost` UDP/smux 继续补齐，`mieru` 以 clean-room TCP 子集交付，`sudoku` 由单独的 clean-room 任务重做，`masque` 交付 RFC 9298 CONNECT-UDP 与 RFC 9484 CONNECT-IP 的 UDP/WARP 形状；masque 的 TCP 终结需要 TCP 状态机或 T6/T7 设备栈，由单独的后续任务承接。用户已明确授权 `sudoku`（T17）与 `easytier`（T20）直接依据锁定源码翻译实现；这两部分属于 GPL-3.0 派生作品，必须在文件与 THIRD_PARTY_NOTICES 中标注 GPL-3.0，并在分发说明中保留 GPL-3.0 合规义务；其余协议族仍按 clean-room/兼容许可实现。任何未实现族或选项必须在加载时显式拒绝并登记能力差异，不能以“加载通过”冒充兼容；最终候选由交付验证统一核对全量族。
+
+设备型协议按层交付：`wireguard`/`openvpn` 的传输与认证由协议任务完成，设备/TUN 归属仍由平台接管任务负责；`tailscale`/`zerotier` 的 mesh 协议层由协议任务交付，设备/TUN 与完整控制面仍由平台任务承接；`easytier` 的 pinned wasm core 在内部派生 `network_secret_digest`，离线无法复现，因此整族显式拒绝并由单独任务记录该材料缺口，不能当作可用出站。
+
+T9 的职责是把已交付的协议子集与显式拒绝集成到同一候选，保证可构建、证据可复现、CLI 与嵌入库入口一致；R2 的“所有有效配置可用”由最终交付验证（T8/Delivery）在完整候选上判定，T9 不因仍有已登记的 partial 缺口而单独阻断。
+
+配置平面同样按可独立复验的能力拆分，避免单个任务同时承担 DNS、策略组、规则/provider 与控制接口：DNS 与 hosts（含 fake-ip、nameserver-policy、DoH/DoT）、策略组与选择/测速（select/url-test/fallback/load-balance/relay 与嵌套组）、规则与 provider/GEO-MRS/覆写/资源更新、控制接口分别作为独立任务交付，T5 只负责把这些能力与 T15/T16 协议适配集成到同一候选并做逐项与组合差分。每项仍须显式拒绝未实现形状并登记，最终完整兼容由 T8/Delivery 判定。
+
+许可边界：`native-kernel` 工作区自 T17 起为 GPL-3.0-only；`sudoku`（T17）为 GPL-3.0 派生，`easytier`（T20）为 LGPL-3.0-or-later 派生，两者均在文件头与 `THIRD_PARTY_NOTICES.md` 标注，分发需同时满足 GPL-3.0 与 LGPL-3.0 的源码提供/重链接义务。其余协议族为 clean-room 或与 GPL-3.0 兼容的许可实现；上游对照基线仍为 pinned Mihomo v1.19.34。
+
 ## 选择、启动与系统接管（R1）
 
 - 后端和设置 UI 区分选定引擎、实际运行引擎、版本及连接错误。Mihomo 发布频道仍只管理其版本。旧安装缺少引擎选择时沿用 Mihomo，保留配置和下载。设置、连接、托盘及重连共用一个后端生命周期入口。

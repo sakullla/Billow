@@ -1,24 +1,35 @@
 format_version: 2
 workflow_id: 2026-11-20-native-rust-kernel
-requirement_ref: C:\Users\12976\project\Billow-Billow-2\docs\requirements\2026-11-20-native-rust-kernel.md
+requirement_ref: docs/requirements/2026-11-20-native-rust-kernel.md
 requirement_version: sha256:aa0f5410f9097c8b8cb30a481039c5e1b8cde2d2646c354fd27a99cf981b038b
 requirement_ids: [R1, R2, R3, R4]
-requirement_revision: 1
-revision_fence: null
+requirement_revision: 11
+revision_fence:
+  from_revision: 10
+  to_revision: 11
+  status: reconciled
+  preserved_active_task_ids: []
+  preserved_result_task_ids: []
+  preserved_review_task_ids: []
+  preserved_drafts: []
+  reused_task_ids: [T1, T2, T3, T4, T6, T10, T9, T11, T12, T15, T13, T17, T14, T16, T19, T20, T18, T21]
+  stale_task_ids: [T7, T8, T5]
+  revision_attempt_task_ids: []
+  rebuilt_task_ids: [T7, T8, T5, T22, T23, T24, T25]
 status: active
 stages:
   exploration: completed
   solution: completed
   plan: completed
-  execution: active
-  delivery: locked
+  execution: completed
+  delivery: active
 gates:
   solution: confirmed
 schedule_pending: false
-implementation_base_ref: 9a4481df02519a0a586337716ed20318f56670b5
+implementation_base_ref: 9d4ba4b48f20bd52cf9b6681787406f79fbcf7ef
 tasks:
   - id: T1
-    status: active
+    status: completed
     task_run_ref: task-runs/T1-run.md
     recipe_digest: sha256:1ae83bc8fee0e600b4cf2108b365e355f46cfc051babbcd25e5e4cbb94d8d6c3
     recipe_snapshot:
@@ -32,27 +43,29 @@ tasks:
       test: new
       scope: [tool/kernel-compat]
     requirement_revision: 1
-    review_base_ref: 9a4481df02519a0a586337716ed20318f56670b5
+    review_base_ref: e4b30739cbca7cf767f266487f07157bd50a83cc
     attempts:
       - attempt_id: T1-A1
         message_id: T1-A1-M1
         recipe_digest: sha256:1ae83bc8fee0e600b4cf2108b365e355f46cfc051babbcd25e5e4cbb94d8d6c3
         owner_mode: worker
-        baseline_ref: 9a4481df02519a0a586337716ed20318f56670b5
-        checkpoint_ref: ""
-        scope_delta: null
-        pending_delta: []
-        scope_decisions: []
-        local_shard_count: null
-        closure_required: null
-        review_progress: null
-        review_findings: []
-        review_error: ""
-        review_evidence_refs: []
-        review_result: null
-        execution: null
+        baseline_ref: e4b30739cbca7cf767f266487f07157bd50a83cc
+        checkpoint_ref: a591440475cc07ead03dcc8a7ed5a1a7b8503ee4
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 25
+        review_evidence_refs: [evidence/reviews/10.json]
+        scope_ref: evidence/history/5.json#Attempt-History/T1-A1/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/5.json#Attempt-History/T1-A1/execution
+        execution_digest: sha256:9d519395bda697245ffd27474d214d656f8d559b3173eb8ac90da33648198376
+        review_ref: evidence/history/5.json#Attempt-History/T1-A1/review
+        review_digest: sha256:b84ee6175810259403e939b95aa295afb20443885df1299fe598d61e4e759de7
+    history_head_ref: evidence/history/5.json
+    history_count: 1
   - id: T2
-    status: active
+    status: completed
     task_run_ref: task-runs/T2-run.md
     recipe_digest: sha256:f78d4e71bd2db280091e552b198740a178b15363cdaaca2657a7f4ea1019a52a
     recipe_snapshot:
@@ -66,27 +79,29 @@ tasks:
       test: new
       scope: [native-kernel]
     requirement_revision: 1
-    review_base_ref: 9a4481df02519a0a586337716ed20318f56670b5
+    review_base_ref: 83757cd0cf2a22a562b258aa0ff6c8549b26d797
     attempts:
       - attempt_id: T2-A1
         message_id: T2-A1-M1
         recipe_digest: sha256:f78d4e71bd2db280091e552b198740a178b15363cdaaca2657a7f4ea1019a52a
         owner_mode: worker
-        baseline_ref: 9a4481df02519a0a586337716ed20318f56670b5
-        checkpoint_ref: ""
-        scope_delta: null
-        pending_delta: []
-        scope_decisions: []
-        local_shard_count: null
-        closure_required: null
-        review_progress: null
-        review_findings: []
-        review_error: ""
-        review_evidence_refs: []
-        review_result: null
-        execution: null
+        baseline_ref: 83757cd0cf2a22a562b258aa0ff6c8549b26d797
+        checkpoint_ref: d959e071aea8f5eba1ca91e1d573a97b3a71e69f
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 18
+        review_evidence_refs: [evidence/reviews/6.json]
+        scope_ref: evidence/history/3.json#Attempt-History/T2-A1/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/3.json#Attempt-History/T2-A1/execution
+        execution_digest: sha256:fe2d92c5608ad662dbf6576dd8aaecd43d3684f565d5733e1eba41db2ca858cc
+        review_ref: evidence/history/3.json#Attempt-History/T2-A1/review
+        review_digest: sha256:f49836e7da9918c705a626c64b249aa778c52cf6184833699bb04f1337a802da
+    history_head_ref: evidence/history/3.json
+    history_count: 1
   - id: T3
-    status: active
+    status: completed
     task_run_ref: task-runs/T3-run.md
     recipe_digest: sha256:2e19149d40769085db180be5be4ab19763aac6a43c69646ade9adadf29268b6a
     recipe_snapshot:
@@ -100,27 +115,29 @@ tasks:
       test: new
       scope: [src-tauri/gen/apple, tool/ios, src-tauri/tauri.ios.conf.json]
     requirement_revision: 1
-    review_base_ref: 9a4481df02519a0a586337716ed20318f56670b5
+    review_base_ref: 9d4ba4b48f20bd52cf9b6681787406f79fbcf7ef
     attempts:
-      - attempt_id: T3-A1
-        message_id: T3-A1-M1
+      - attempt_id: T3-A3
+        message_id: T3-A3-M1
         recipe_digest: sha256:2e19149d40769085db180be5be4ab19763aac6a43c69646ade9adadf29268b6a
         owner_mode: worker
-        baseline_ref: 9a4481df02519a0a586337716ed20318f56670b5
-        checkpoint_ref: ""
-        scope_delta: null
-        pending_delta: []
-        scope_decisions: []
-        local_shard_count: null
-        closure_required: null
-        review_progress: null
-        review_findings: []
-        review_error: ""
-        review_evidence_refs: []
-        review_result: null
-        execution: null
+        baseline_ref: d959e071aea8f5eba1ca91e1d573a97b3a71e69f
+        checkpoint_ref: e4b30739cbca7cf767f266487f07157bd50a83cc
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 3
+        path_count: 13
+        review_evidence_refs: [evidence/reviews/8.json]
+        scope_ref: evidence/history/4.json#Attempt-History/T3-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/4.json#Attempt-History/T3-A3/execution
+        execution_digest: sha256:82b5b33d1e1ab714a9b25a1a201c62eec35e5926f821b78c28e1f5a3a325965f
+        review_ref: evidence/history/4.json#Attempt-History/T3-A3/review
+        review_digest: sha256:a154d6e1348209f635562c7d728c791026e22300033fc29f3f2133a6733fd556
+    history_head_ref: evidence/history/4.json
+    history_count: 3
   - id: T4
-    status: pending
+    status: completed
     task_run_ref: task-runs/T4-run.md
     recipe_digest: sha256:bcbf729de3461c418462b3cf839f5aefac47ba3fafa16068be84e392f245c250
     recipe_snapshot:
@@ -134,25 +151,29 @@ tasks:
       test: extend
       scope: [native-kernel, tool/kernel-compat]
     requirement_revision: 1
-    review_base_ref: ""
-  - id: T5
-    status: pending
-    task_run_ref: task-runs/T5-run.md
-    recipe_digest: sha256:9b6dfb6acc1774999311fb1082b6ded9127bf8b21c186bde632a6b498815c718
-    recipe_snapshot:
-      id: T5
-      goal: 完成 DNS、策略组、规则与控制接口并核对完整配置一致性
-      depends_on: [T4]
-      covers: [R1, R2, R4]
-      outcomes:
-        - 完成适用 DNS、hosts、策略组、链、资源、规则、GEO/MRS、提供方更新、覆写生效、控制器和剩余有效配置能力，通过逐项及组合差分，结果包括实际解析、命中规则和接收端出口。
-        - 重载失败保留旧资源，旧代次可回收；消费方状态与操作反映实际内核，输出完整能力及差异记录，尚有有效配置不支持则任务不通过。
-      test: extend
-      scope: [native-kernel, tool/kernel-compat, src-tauri/src/mrs.rs]
-    requirement_revision: 1
-    review_base_ref: ""
+    review_base_ref: a591440475cc07ead03dcc8a7ed5a1a7b8503ee4
+    attempts:
+      - attempt_id: T4-A5
+        message_id: T4-A5-M1
+        recipe_digest: sha256:bcbf729de3461c418462b3cf839f5aefac47ba3fafa16068be84e392f245c250
+        owner_mode: worker
+        baseline_ref: 9185cc7414f9df1efa37264fa867b709797da7a9
+        checkpoint_ref: 026f3762cec5b49ce94b3e9dcbfdee7a7fc68cfe
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 11
+        review_evidence_refs: [evidence/reviews/20.json]
+        scope_ref: evidence/history/10.json#Attempt-History/T4-A5/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/10.json#Attempt-History/T4-A5/execution
+        execution_digest: sha256:2bfb5ccf3717c3217da65381dbb44a729a5d20d6d698b00cfea616b76b21e498
+        review_ref: evidence/history/10.json#Attempt-History/T4-A5/review
+        review_digest: sha256:74dcc2324970a238154f898105201f71da0c44108fa7475a5026b4b00e2f3e84
+    history_head_ref: evidence/history/10.json
+    history_count: 5
   - id: T6
-    status: pending
+    status: completed
     task_run_ref: task-runs/T6-run.md
     recipe_digest: sha256:816b98023380aed00599bbed83409cc34ffe57224b3aa928ab84744295d0ad39
     recipe_snapshot:
@@ -178,9 +199,29 @@ tasks:
         - package.json
         - .github
     requirement_revision: 1
-    review_base_ref: ""
+    review_base_ref: c148f4069714e298b45c558e64f65dd270c1415e
+    attempts:
+      - attempt_id: T6-A1
+        message_id: T6-A1-M1
+        recipe_digest: sha256:816b98023380aed00599bbed83409cc34ffe57224b3aa928ab84744295d0ad39
+        owner_mode: worker
+        baseline_ref: c148f4069714e298b45c558e64f65dd270c1415e
+        checkpoint_ref: ca3b457f7c33408ef6c5f3444ddd1980422c4fb2
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 6
+        path_count: 21
+        review_evidence_refs: [evidence/reviews/26.json]
+        scope_ref: evidence/history/14.json#Attempt-History/T6-A1/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/14.json#Attempt-History/T6-A1/execution
+        execution_digest: sha256:221aec16023725ccf25f04028d551ad98ab95630211ffc24d90a4bd3dc597a9c
+        review_ref: evidence/history/14.json#Attempt-History/T6-A1/review
+        review_digest: sha256:a65013625fa3150dc67460b4d363455ab88bd76d3fd5105600585570a20a43fa
+    history_head_ref: evidence/history/14.json
+    history_count: 1
   - id: T7
-    status: pending
+    status: completed
     task_run_ref: task-runs/T7-run.md
     recipe_digest: sha256:afff276f830c870a8789f559ff181501d4569e830762b806783c4148dd7defb0
     recipe_snapshot:
@@ -193,10 +234,30 @@ tasks:
         - 离线准备和校验资源、限制缓冲及队列、重载切换后释放旧索引；记录带有版本/设备/PID 的进程高水位、生命期、系统终止和代次证据，R3 全场景不超过 40,000,000 字节，R4 无失效对象逐轮累积；外部环境缺失则明确待验。
       test: extend
       scope: [native-kernel, src-tauri, src, tool, package.json, .github, docs/testing]
-    requirement_revision: 1
-    review_base_ref: ""
+    requirement_revision: 11
+    review_base_ref: 040af2b05cac54074c56bad4fcfc6540cb565e38
+    attempts:
+      - attempt_id: T7-A3
+        message_id: T7-A3-M1
+        recipe_digest: sha256:afff276f830c870a8789f559ff181501d4569e830762b806783c4148dd7defb0
+        owner_mode: worker
+        baseline_ref: 1ffad3e057988870adbf4145c4bdcfc9ef396d9b
+        checkpoint_ref: 2b89bf36658ba1bbb3666e78d1eae7fb9719c292
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 19
+        review_evidence_refs: [evidence/reviews/108.json]
+        scope_ref: evidence/history/55.json#Attempt-History/T7-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/55.json#Attempt-History/T7-A3/execution
+        execution_digest: sha256:c4fc95c94cfff18cdf111171277927f8ac240155ebf457babaef4979694dabd6
+        review_ref: evidence/history/55.json#Attempt-History/T7-A3/review
+        review_digest: sha256:caabdf855ce1ad02d672e790a5acd315ee6c2877e76326bd06a241e89283aa85
+    history_head_ref: evidence/history/55.json
+    history_count: 3
   - id: T8
-    status: pending
+    status: completed
     task_run_ref: task-runs/T8-run.md
     recipe_digest: sha256:cd03868d55e6b09b517d7fb0672828df60be7d3853307cbedb50b9c2cb1bb94a
     recipe_snapshot:
@@ -207,14 +268,1177 @@ tasks:
       outcomes: [按同一候选版本汇总五平台两方向出口和错误场景、完整配置差分覆盖及真机峰值/恢复证据。记录各自复现命令、原始证据位置及结果，缺基准、设备或关键记录不得出具通过结论。]
       test: extend
       scope: [docs/testing, tool/kernel-compat]
-    requirement_revision: 1
-    review_base_ref: ""
+    requirement_revision: 11
+    review_base_ref: 040af2b05cac54074c56bad4fcfc6540cb565e38
+    attempts:
+      - attempt_id: T8-A1
+        message_id: T8-A1-M1
+        recipe_digest: sha256:cd03868d55e6b09b517d7fb0672828df60be7d3853307cbedb50b9c2cb1bb94a
+        owner_mode: worker
+        baseline_ref: 2b89bf36658ba1bbb3666e78d1eae7fb9719c292
+        checkpoint_ref: ff9e1e11d817e00c2d3914a8560a6f42ad7abee0
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 4
+        path_count: 48
+        review_evidence_refs: [evidence/reviews/110.json]
+        scope_ref: evidence/history/56.json#Attempt-History/T8-A1/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/56.json#Attempt-History/T8-A1/execution
+        execution_digest: sha256:877e159f36ab385da1e7c9010e984a9fbc498128b52a6b112bc884a504bfd12f
+        review_ref: evidence/history/56.json#Attempt-History/T8-A1/review
+        review_digest: sha256:e4b69995c3d34e28bcff6917abcec0d72da01c7caa436cd36277896c2b3508fd
+    history_head_ref: evidence/history/56.json
+    history_count: 1
+  - id: T10
+    status: completed
+    task_run_ref: task-runs/T10-run.md
+    recipe_digest: sha256:39e450cc3892985515d23b5014dd87583a7ebe395353d369f36409adf4d5795e
+    recipe_snapshot:
+      id: T10
+      goal: 实现 QUIC 与设备型协议族并对齐随附 Mihomo 行为
+      depends_on: [T4]
+      covers: [R2]
+      outcomes:
+        - 实现 hysteria、hysteria2、tuic、shadowquic 的 QUIC 传输及 wireguard、tailscale、zerotier、easytier、openvpn 的协议适配；设备/TUN 归属与切换由 T6/T7 接入，未实现项显式拒绝。
+        - 以锁定 Mihomo 对端核对各族成功与失败路径，记录 QUIC 内存代价供 T7 预算核验；平台条件与未覆盖项如实登记。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 4
+    review_base_ref: 3b047a69e776ef99a85844da79c785115a041f28
+    attempts:
+      - attempt_id: T10-A3
+        message_id: T10-A3-M1
+        recipe_digest: sha256:39e450cc3892985515d23b5014dd87583a7ebe395353d369f36409adf4d5795e
+        owner_mode: worker
+        baseline_ref: a6f1c2f341c6d86c3475663e17a9eddbaa9eccfd
+        checkpoint_ref: fd1a858f10046b26b138ab38bfad2a073cb51731
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 14
+        review_evidence_refs: [evidence/reviews/30.json]
+        scope_ref: evidence/history/16.json#Attempt-History/T10-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/16.json#Attempt-History/T10-A3/execution
+        execution_digest: sha256:221440256ec5bbf1a37c8ced400ae0da93f4759c509771becf057d059e70e5c8
+        review_ref: evidence/history/16.json#Attempt-History/T10-A3/review
+        review_digest: sha256:00955074cf58659aa242971c085ee9fb8591f150920e60cfcb1636a2049e0162
+    history_head_ref: evidence/history/16.json
+    history_count: 3
+  - id: T9
+    status: completed
+    task_run_ref: task-runs/T9-run.md
+    recipe_digest: sha256:96aa2d462a062bcbfca9966b7671149f1e0389f4e732934084fff082c38ffd36
+    recipe_snapshot:
+      id: T9
+      goal: 完成协议核心并集成剩余协议族
+      depends_on: [T4, T11, T12, T13, T14, T17, T18, T19, T20, T21]
+      covers: [R2]
+      outcomes:
+        - 集成 T11 交付的 vmess/snell/trusttunnel 与 gost-relay/ssh/ssr 子集，以及 T12/T13/T14/T17/T18/T19/T20/T21 补齐的 ssr 插件层、gost UDP/smux、mieru、CONNECT-UDP、sudoku、CONNECT-IP、Tailscale/ZeroTier、EasyTier、masque TCP，核对逐族行为并贯穿 CLI 与嵌入库入口。
+        - 完整候选可构建、证据可复现；未实现项显式拒绝并登记，不以加载通过冒充兼容。T9 判定集成完整性（已交付子集逐族可用、拒绝具名、CLI 与嵌入库入口一致）；R2 的“所有有效配置可用”由 T8/Delivery 在完整候选上判定，已登记的 partial 缺口不单独阻断 T9。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 10
+    review_base_ref: 3d2ee571020b08a228635f23c787d57876dfb719
+    attempts:
+      - attempt_id: T9-A12
+        message_id: T9-A12-M1
+        recipe_digest: sha256:96aa2d462a062bcbfca9966b7671149f1e0389f4e732934084fff082c38ffd36
+        owner_mode: worker
+        baseline_ref: 3d2ee571020b08a228635f23c787d57876dfb719
+        checkpoint_ref: 040af2b05cac54074c56bad4fcfc6540cb565e38
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 6
+        review_evidence_refs: [evidence/reviews/78.json]
+        scope_ref: evidence/history/40.json#Attempt-History/T9-A12/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/40.json#Attempt-History/T9-A12/execution
+        execution_digest: sha256:f35ba8caacf13e963ab583ce1c7a8df4fdc56cba09726a09fbb129ba9e9fa253
+        review_ref: evidence/history/40.json#Attempt-History/T9-A12/review
+        review_digest: sha256:9539201cc592e03eaad10987a3775b79c84c01963d87e9cd4621659207c2f7a7
+    history_head_ref: evidence/history/40.json
+    history_count: 3
+  - id: T11
+    status: completed
+    task_run_ref: task-runs/T11-run.md
+    recipe_digest: sha256:5adc32ac280dac15051834d06223682473069ae9005af42590aa04fab87d8d79
+    recipe_snapshot:
+      id: T11
+      goal: 交付 gost-relay/ssh/ssr 可验证子集
+      depends_on: [T4]
+      covers: [R2]
+      outcomes:
+        - 交付 gost-relay（TCP/TLS/auth/forward）、ssh（password/内联 PEM/主机密钥固定/direct-tcpip）、ssr（origin/plain 与全部固定流密码）的库与 CLI 入口，并保留受控对端证据。
+        - 未实现的 ssr 插件层、gost UDP/smux 与 mieru/masque/sudoku 显式拒绝并登记，交由 T12/T13/T14；不得以加载通过冒充兼容。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 3
+    review_base_ref: fd1a858f10046b26b138ab38bfad2a073cb51731
+    attempts:
+      - attempt_id: T11-A3
+        message_id: T11-A3-M1
+        recipe_digest: sha256:5adc32ac280dac15051834d06223682473069ae9005af42590aa04fab87d8d79
+        owner_mode: worker
+        baseline_ref: fd1a858f10046b26b138ab38bfad2a073cb51731
+        checkpoint_ref: fd1a858f10046b26b138ab38bfad2a073cb51731
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 0
+        review_evidence_refs: [evidence/reviews/32.json]
+        scope_ref: evidence/history/17.json#Attempt-History/T11-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/17.json#Attempt-History/T11-A3/execution
+        execution_digest: sha256:b8732f133796012e05260e6e8919ced4fc8383c73b324a2bb3b5e9c14c3f639e
+        review_ref: evidence/history/17.json#Attempt-History/T11-A3/review
+        review_digest: sha256:49bd34fa80139894fad20a93162f921259d0fb2c6913681f92ca0ce1e8b831b3
+    history_head_ref: evidence/history/17.json
+    history_count: 3
+  - id: T12
+    status: completed
+    task_run_ref: task-runs/T12-run.md
+    recipe_digest: sha256:d152544681433ffcf2c8c07830a50964baa61503760c13b46f8100034b494906
+    recipe_snapshot:
+      id: T12
+      goal: 补齐 ssr 插件层与 gost-relay UDP/smux
+      depends_on: [T4]
+      covers: [R2]
+      outcomes:
+        - 实现 ssr 的 auth_sha1_v4/auth_aes128_md5/auth_aes128_sha1/auth_chain_a/auth_chain_b 与 obfs http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth，并支持 ssr UDP（若 Mihomo 支持）。
+        - 实现 gost-relay 的 UDP association 与 smux 多路复用；每项以自建受控对端（锁定源码）验证成功与失败，更新 rust-mapping/README。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T9
+        owner: sakullla-worker
+        integration_task_id: T9
+        interface_refs: [docs/coordination/t12-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [对端构建方式与依赖来源需在 evidence 中记录]
+    requirement_revision: 3
+    review_base_ref: fd1a858f10046b26b138ab38bfad2a073cb51731
+    attempts:
+      - attempt_id: T12-A2
+        message_id: T12-A2-M1
+        recipe_digest: sha256:d152544681433ffcf2c8c07830a50964baa61503760c13b46f8100034b494906
+        owner_mode: worker
+        handoff_digest: sha256:e3406e1094eb92c809178976bc055dac40143d125db202f8818599be23aa95f3
+        baseline_ref: ad518275c4cbc7b8a7d3e2ccbbc4cda5d101bb7f
+        checkpoint_ref: eed9c8e110fb0502c41769fa7fa6e32f1c3c669d
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 0
+        path_count: 14
+        review_evidence_refs: [evidence/reviews/36.json]
+        scope_ref: evidence/history/19.json#Attempt-History/T12-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/19.json#Attempt-History/T12-A2/execution
+        execution_digest: sha256:efee5ad190036e470f24d52614540073b51e7a780c951a0eaa5bc21ff51637f4
+        review_ref: evidence/history/19.json#Attempt-History/T12-A2/review
+        review_digest: sha256:35ec8eb9a338fb2940f5b615e25df50c61d188abfd8f761e641140f83421742f
+    history_head_ref: evidence/history/19.json
+    history_count: 2
+  - id: T5
+    status: completed
+    task_run_ref: task-runs/T5-run.md
+    recipe_digest: sha256:27054c51effc19c5ac3ba243d0555726e2807120798bbec883e2aac144bf3aed
+    recipe_snapshot:
+      id: T5
+      goal: 集成配置平面与剩余协议族，核对完整配置一致性
+      depends_on: [T4, T9, T10, T15, T16, T22, T23, T24, T25]
+      covers: [R1, R2, R4]
+      outcomes:
+        - 把 T22–T25 交付的 DNS/hosts、策略组、规则/provider/GEO-MRS、控制接口与 T15（shadowquic）、T16（wireguard/tailscale/zerotier/easytier/openvpn）协议适配集成到同一候选，核对逐项及组合差分，结果包括实际解析、命中规则、选组、DNS 处理和接收端出口。
+        - 完整候选可构建、证据可复现；未实现项显式拒绝并登记，不以加载通过冒充兼容；重载失败保留旧资源、旧代次可回收。R2 的完整兼容由 T8/Delivery 判定，已登记的 partial 缺口不单独阻断 T5。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat, src-tauri/src/mrs.rs]
+    requirement_revision: 11
+    review_base_ref: 040af2b05cac54074c56bad4fcfc6540cb565e38
+    attempts:
+      - attempt_id: T5-A2
+        message_id: T5-A2-M1
+        recipe_digest: sha256:27054c51effc19c5ac3ba243d0555726e2807120798bbec883e2aac144bf3aed
+        owner_mode: worker
+        baseline_ref: cde99b9b213682d1d0d6e876567de8a2c598a5c7
+        checkpoint_ref: 49ee3141bd60e719cd87a3f22f5580b689059a85
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 0
+        path_count: 8
+        review_evidence_refs: [evidence/reviews/102.json]
+        scope_ref: evidence/history/52.json#Attempt-History/T5-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/52.json#Attempt-History/T5-A2/execution
+        execution_digest: sha256:a2859c2754a1241157bc5d6c7ac0169ecf30664b47efac5a817ac30f9eb44a17
+        review_ref: evidence/history/52.json#Attempt-History/T5-A2/review
+        review_digest: sha256:5bf89a5c7cc9cb45c6422eae47f0aaf076434778a86d205d2b5304ff8bc4bc8a
+    history_head_ref: evidence/history/52.json
+    history_count: 2
+  - id: T22
+    status: completed
+    task_run_ref: task-runs/T22-run.md
+    recipe_digest: sha256:a79a48765655cdf9711a1b6da65b584d5a5b26d51f054d8b45a14c06f3f93ac5
+    recipe_snapshot:
+      id: T22
+      goal: 实现 DNS 与 hosts 并通过差分核验
+      depends_on: [T4]
+      covers: [R2]
+      outcomes:
+        - 实现 v1.19.34 有效配置的 DNS 能力：hosts、nameserver/default-nameserver/fallback/fallback-filter/nameserver-policy/proxy-server-nameserver/direct-nameserver、enhanced-mode（normal/redir-host/fake-ip）、fake-ip-range/fake-ip-filter、use-hosts/use-system-hosts、respect-rules、ipv6，以及 UDP/TCP/DoH/DoT 传输；解析结果与策略命中语义与 pinned Mihomo 逐项一致。
+        - 以固定应答的受控 DNS 环境对照 pinned Mihomo，覆盖成功、NXDOMAIN、超时与 fallback、fake-ip、按策略选择服务器等用例；未实现形状显式拒绝并登记。
+      test: new
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 11
+    review_base_ref: 101e29a61e7f5342b69f0512c34fb4745905aec7
+    attempts:
+      - attempt_id: T22-A2
+        message_id: T22-A2-M1
+        recipe_digest: sha256:a79a48765655cdf9711a1b6da65b584d5a5b26d51f054d8b45a14c06f3f93ac5
+        owner_mode: worker
+        baseline_ref: a9c2b477a5cd4115aac7a5f5b2dfa88937a97605
+        checkpoint_ref: 982f915b6095b31922c2b4a10e4b195282a8343a
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 8
+        review_evidence_refs: [evidence/reviews/94.json]
+        scope_ref: evidence/history/48.json#Attempt-History/T22-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/48.json#Attempt-History/T22-A2/execution
+        execution_digest: sha256:5242fd806fbce055f9dc0080f61fb250a6930d3f6b4060bf7592e24b016bd40e
+        review_ref: evidence/history/48.json#Attempt-History/T22-A2/review
+        review_digest: sha256:defe2c36264ee1862e557e9f7ac6d8e280f0f79f63fb8557a67f9112188887cc
+    history_head_ref: evidence/history/48.json
+    history_count: 2
+  - id: T23
+    status: completed
+    task_run_ref: task-runs/T23-run.md
+    recipe_digest: sha256:948dd1a65eb407438b7324c540fce51af97052042b02903bc149dddfebfb0c1f
+    recipe_snapshot:
+      id: T23
+      goal: 实现策略组、选择与健康检查
+      depends_on: [T4]
+      covers: [R2]
+      outcomes:
+        - 实现 select/url-test/fallback/load-balance/relay、嵌套组、include-all/include-all-proxies/include-all-providers 与 filter/exclude-filter/exclude-type、interval/tolerance/lazy/url/timeout/max-failed-times/expected-status 和选择持久化；选组结果、失败转移与测速与 pinned Mihomo 一致。
+        - 以受控延时与故障输入对照自动组行为；库与控制入口暴露组列表与选择；未实现形状显式拒绝并登记。
+      test: new
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 11
+    review_base_ref: e32d8856f125f2565179fa1e198d7a6f18da74c3
+    attempts:
+      - attempt_id: T23-A4
+        message_id: T23-A4-M1
+        recipe_digest: sha256:948dd1a65eb407438b7324c540fce51af97052042b02903bc149dddfebfb0c1f
+        owner_mode: worker
+        baseline_ref: dfefd57623eb0b535f48d13aa33be8d65ffe1b42
+        checkpoint_ref: 101e29a61e7f5342b69f0512c34fb4745905aec7
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 9
+        review_evidence_refs: [evidence/reviews/90.json]
+        scope_ref: evidence/history/46.json#Attempt-History/T23-A4/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/46.json#Attempt-History/T23-A4/execution
+        execution_digest: sha256:e72a00be6920231f6f498d3a2a0096c37b42dd09278cd41a08ba1864731bee19
+        review_ref: evidence/history/46.json#Attempt-History/T23-A4/review
+        review_digest: sha256:fef7aeccc170180af04914b3edb01e74b4b4aaee80ca81b2fcd91e79966037b9
+    history_head_ref: evidence/history/46.json
+    history_count: 4
+  - id: T24
+    status: completed
+    task_run_ref: task-runs/T24-run.md
+    recipe_digest: sha256:31558ae8098df1ca8cd43e892b1f344fa50ecae203d298dcd43af4a513c5bb89
+    recipe_snapshot:
+      id: T24
+      goal: 实现完整规则、规则/代理提供方、GEO/MRS 与覆写资源更新
+      depends_on: [T4]
+      covers: [R2, R4]
+      outcomes:
+        - 实现 v1.19.34 的规则类型（domain-keyword/dst-port/src-*/process*/rule-set/sub-rule/逻辑组合/network/in-type/geoip/geosite/ip-asn 等）、rule-providers（http/file/inline 与 yaml/text/mrs）、proxy-providers（http/file、filter、健康检查）、GEOIP/GEOSITE 编译库与 MRS、geodata-mode/loader，以及 Billow 覆写后的有效配置加载；规则顺序、命中与出口一致。
+        - 以受控更新源对照 pinned Mihomo；更新失败保留旧资源、旧代次可回收；未实现形状显式拒绝并登记。
+      test: new
+      scope: [native-kernel, tool/kernel-compat, src-tauri/src/mrs.rs]
+    requirement_revision: 11
+    review_base_ref: 040af2b05cac54074c56bad4fcfc6540cb565e38
+    attempts:
+      - attempt_id: T24-A2
+        message_id: T24-A2-M1
+        recipe_digest: sha256:31558ae8098df1ca8cd43e892b1f344fa50ecae203d298dcd43af4a513c5bb89
+        owner_mode: worker
+        baseline_ref: afee13779f14dffc3eb06e1461ef0df862e36009
+        checkpoint_ref: e32d8856f125f2565179fa1e198d7a6f18da74c3
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 14
+        review_evidence_refs: [evidence/reviews/82.json]
+        scope_ref: evidence/history/42.json#Attempt-History/T24-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/42.json#Attempt-History/T24-A2/execution
+        execution_digest: sha256:7dabf1f27422c597dfe2482db514fa8dfdaa337ddb3b6e3c5ac7a0f2ddfc2e7e
+        review_ref: evidence/history/42.json#Attempt-History/T24-A2/review
+        review_digest: sha256:7694fbdc4d89cd2d2dbe5ca861012dce115b3c719d6bc94e4e6e046d5cc64870
+    history_head_ref: evidence/history/42.json
+    history_count: 2
+  - id: T25
+    status: completed
+    task_run_ref: task-runs/T25-run.md
+    recipe_digest: sha256:d3efb5a60f200dfbb11aecb059f5407aed22a4e96132ab6ea77e590439e8109f
+    recipe_snapshot:
+      id: T25
+      goal: 实现 Billow 消费的控制接口
+      depends_on: [T4, T23]
+      covers: [R1, R4]
+      outcomes:
+        - 实现 Billow 实际消费的 RESTful 控制语义：version、configs（GET/PATCH/PUT）、proxies 与组选择/延迟测速、rules、connections（含关闭）、providers/proxies 与 providers/rules（更新）、logs/traffic 流、secret 鉴权，以及 external-controller/external-controller-unix/external-controller-tls/CORS 形状；TCP 与 Unix socket 均可服务。
+        - 以固定请求序列对照 pinned Mihomo 的响应结构、状态码与副作用；未实现端点显式拒绝并登记；重载后连接与规则代次可回收。
+      test: new
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 11
+    review_base_ref: 982f915b6095b31922c2b4a10e4b195282a8343a
+    attempts:
+      - attempt_id: T25-A2
+        message_id: T25-A2-M1
+        recipe_digest: sha256:d3efb5a60f200dfbb11aecb059f5407aed22a4e96132ab6ea77e590439e8109f
+        owner_mode: worker
+        baseline_ref: 244e9e28604d48494d233db90c7b94f894619dc7
+        checkpoint_ref: cf821843c9a12167ede74c457615988a1f6ea83f
+        execution_status: completed
+        review_decision: passed
+        finding_count: 2
+        path_count: 9
+        review_evidence_refs: [evidence/reviews/98.json]
+        scope_ref: evidence/history/50.json#Attempt-History/T25-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/50.json#Attempt-History/T25-A2/execution
+        execution_digest: sha256:381f8febdcd80e43b0f950d9b69bd585d048e4872894dceaacf6243d2efbd6ce
+        review_ref: evidence/history/50.json#Attempt-History/T25-A2/review
+        review_digest: sha256:aee837b9c4ed0107453eddbd43bf1c81add28fbae658992ccdef599c99b06d6b
+    history_head_ref: evidence/history/50.json
+    history_count: 2
+  - id: T15
+    status: completed
+    task_run_ref: task-runs/T15-run.md
+    recipe_digest: sha256:ecc7807681a4ed593536716751248c1ecbb56648da916ff1f1fddd242d016547
+    recipe_snapshot:
+      id: T15
+      goal: 实现 ShadowQUIC 并对齐随附 Mihomo 行为
+      depends_on: [T4]
+      covers: [R2]
+      outcomes:
+        - 实现 shadowquic 的 JLS 自定义 TLS 扩展与改版 QUIC 传输、认证与 TCP/UDP 承载；无法获得的依赖必须记录决策并显式拒绝，不得伪造线协议兼容。
+        - 以锁定 Mihomo 或锁定源码构建的受控对端完成成功、认证失败与边界用例，登记平台条件与依赖来源。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T5
+        owner: sakullla-worker
+        integration_task_id: T5
+        interface_refs: [docs/coordination/t15-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [依赖与对端构建方式需在 evidence 中记录]
+    requirement_revision: 4
+    review_base_ref: f3a3f4c1820fdc4de26248ab5c5afe742338336f
+    attempts:
+      - attempt_id: T15-A2
+        message_id: T15-A2-M1
+        recipe_digest: sha256:ecc7807681a4ed593536716751248c1ecbb56648da916ff1f1fddd242d016547
+        owner_mode: worker
+        handoff_digest: sha256:e7f8120f7559f790eae37185faa2e3b64ca846d1e63f8df651f6e21f1781466d
+        baseline_ref: 2d4ebaf3ef391ff6863f72f5f9da620c12640db9
+        checkpoint_ref: 571c55a53167255315cff1f40801283bc7973105
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 3
+        path_count: 20
+        review_evidence_refs: [evidence/reviews/44.json]
+        scope_ref: evidence/history/23.json#Attempt-History/T15-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/23.json#Attempt-History/T15-A2/execution
+        execution_digest: sha256:2c0ad1e2b61b157b8e43573227506f5d39f217f49b05f03076496f4bc4a52719
+        review_ref: evidence/history/23.json#Attempt-History/T15-A2/review
+        review_digest: sha256:10003a3bbf6fe1b95a44fe5eb87604bfd2719c4f4d2c9d3ce7ac1b8c966fad3d
+    history_head_ref: evidence/history/23.json
+    history_count: 2
+  - id: T13
+    status: completed
+    task_run_ref: task-runs/T13-run.md
+    recipe_digest: sha256:92a28db29e4b47a4e69b9289566de989d26244d0a2f4df66c4187d126ce44d6d
+    recipe_snapshot:
+      id: T13
+      goal: 以 clean-room 方式交付 mieru 并移除 GPL 派生的 sudoku 实现
+      depends_on: [T4]
+      covers: [R2]
+      outcomes:
+        - 以 clean-room 方式交付 mieru TCP 单会话（PBKDF2/时间盐、XChaCha20-Poly1305、metadata、open/data/close、SOCKS5、心跳），以锁定 Mihomo mieru listener 验证成功/认证失败/边界；未覆盖的 UDP/mux/traffic-pattern 显式拒绝并登记。
+        - 移除 T13-A1 中由 GPL-3.0 transport/sudoku 直接派生的 sudoku 实现、测试与证据声明，恢复为显式拒绝并登记许可原因；sudoku 的 clean-room 重做归 T17。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T9
+        owner: sakullla-worker
+        integration_task_id: T9
+        interface_refs: [docs/coordination/t13-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [对端构建方式与依赖来源需在 evidence 中记录]
+    requirement_revision: 5
+    review_base_ref: 33a82cb19f13682f42b9c12a7a9cd1f5a37568bf
+    attempts:
+      - attempt_id: T13-A3
+        message_id: T13-A3-M1
+        recipe_digest: sha256:92a28db29e4b47a4e69b9289566de989d26244d0a2f4df66c4187d126ce44d6d
+        owner_mode: worker
+        handoff_digest: sha256:c6f507639d05b1d76e73f49d87a92d61588e5d1c3dd8f23c96ae9c776a26443b
+        baseline_ref: 33a82cb19f13682f42b9c12a7a9cd1f5a37568bf
+        checkpoint_ref: 6513ca718f8b2dfbfe614428f8736bb59c86333b
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 36
+        review_evidence_refs: [evidence/reviews/48.json]
+        scope_ref: evidence/history/25.json#Attempt-History/T13-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/25.json#Attempt-History/T13-A3/execution
+        execution_digest: sha256:2866f6459149b1b324b4ad323ae6b69ca0076cb182901f394a80e4f66dd8c2fc
+        review_ref: evidence/history/25.json#Attempt-History/T13-A3/review
+        review_digest: sha256:cc46ef82d5b4640e87c968ad26f9aa14dd91f10a880e28fb1b775326f0e16e68
+    history_head_ref: evidence/history/25.json
+    history_count: 2
+  - id: T17
+    status: completed
+    task_run_ref: task-runs/T17-run.md
+    recipe_digest: sha256:841632b1cf27195f30782a9a493fc83c2c7931bb612ac77f9f25d488364cdbb9
+    recipe_snapshot:
+      id: T17
+      goal: 以 clean-room 方式实现 sudoku 并保持线协议兼容
+      depends_on: [T4]
+      covers: [R2]
+      outcomes:
+        - 依据锁定 transport/sudoku 源码翻译实现必要子集（表/hint、KIP、RecordConn、legacy HTTP mask、pure/packed）；翻译代码属于 GPL-3.0 派生，必须在文件与 THIRD_PARTY_NOTICES 标注 GPL-3.0，并在分发说明保留合规义务。
+        - 以锁定 Mihomo 或受控对端验证成功、认证失败与边界，记录 GPL 派生与平台条件；multiplex/HTTP tunnel/UoT 未实现则显式拒绝。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T9
+        owner: sakullla-worker
+        integration_task_id: T9
+        interface_refs: [docs/coordination/t17-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [clean-room 观测来源与许可记录需在 evidence 中保存]
+    requirement_revision: 9
+    review_base_ref: a51aa97f7de6783cfc373bb542fc88d94e2e6ed0
+    attempts:
+      - attempt_id: T17-A4
+        message_id: T17-A4-M1
+        recipe_digest: sha256:841632b1cf27195f30782a9a493fc83c2c7931bb612ac77f9f25d488364cdbb9
+        owner_mode: worker
+        handoff_digest: sha256:5691d726586fb89ceeb5d4b7078d2877d3c3c07060618909082cd7747fd03201
+        baseline_ref: d796f5048f43c8c68a1505de9a8f2bae462723b8
+        checkpoint_ref: 686988376b52b772598c442c58eac50940f30461
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 13
+        review_evidence_refs: [evidence/reviews/64.json]
+        scope_ref: evidence/history/33.json#Attempt-History/T17-A4/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/33.json#Attempt-History/T17-A4/execution
+        execution_digest: sha256:ff08ff0a4f9392f98f5573bc54df6c9e76bd838812cb186159b0e90363e4b1db
+        review_ref: evidence/history/33.json#Attempt-History/T17-A4/review
+        review_digest: sha256:4818f18a13f63f6e5bee7853c39c8d4a87b7f9c59ac2aa2324867a5df2732f90
+    history_head_ref: evidence/history/33.json
+    history_count: 4
+  - id: T14
+    status: completed
+    task_run_ref: task-runs/T14-run.md
+    recipe_digest: sha256:dd0c28ed7aad61021e21c37a70f7be6e2fcb172dffddab57883d5ed35c69e3ce
+    recipe_snapshot:
+      id: T14
+      goal: 交付 masque CONNECT-UDP 子集并显式拒绝其余形态
+      depends_on: [T4, T10]
+      covers: [R2]
+      outcomes:
+        - 实现 RFC 9298 CONNECT-UDP over HTTP/3 子集（SETTINGS、认证、per-destination 流、capsule、证书校验、内存上限）并记录 QUIC 内存代价；CONNECT-IP/TCP/WARP 形状显式拒绝并登记。
+        - 受控 HTTP/3 对端验证成功、认证失败与边界；证据可复现；完整候选可构建。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T9
+        owner: sakullla-worker
+        integration_task_id: T9
+        interface_refs: [docs/coordination/t14-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [对端构建方式与依赖来源需在 evidence 中记录]
+    requirement_revision: 6
+    review_base_ref: f8ca6e6c5efa86cfcb952097a5935dcd3c6da0fb
+    attempts:
+      - attempt_id: T14-A3
+        message_id: T14-A3-M1
+        recipe_digest: sha256:dd0c28ed7aad61021e21c37a70f7be6e2fcb172dffddab57883d5ed35c69e3ce
+        owner_mode: worker
+        handoff_digest: sha256:45d978e0d2f03f48f752f339e1b750b35fdbd40f899d88c9604d4d41eb476cf5
+        baseline_ref: f8ca6e6c5efa86cfcb952097a5935dcd3c6da0fb
+        checkpoint_ref: 2ed8307c4ff2d8002661ebd7e249ed9c7ffb5ca1
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 4
+        path_count: 11
+        review_evidence_refs: [evidence/reviews/50.json]
+        scope_ref: evidence/history/26.json#Attempt-History/T14-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/26.json#Attempt-History/T14-A3/execution
+        execution_digest: sha256:94cd97fa3f901a576d6a2bd96ccb59e6b5e9ca2658dc1a33d03c1f854c7afd98
+        review_ref: evidence/history/26.json#Attempt-History/T14-A3/review
+        review_digest: sha256:447e5b9a5199fa9a79de75215c41823ecc043788f9ad494a53bd3e0c8ecc12af
+    history_head_ref: evidence/history/26.json
+    history_count: 2
+  - id: T16
+    status: completed
+    task_run_ref: task-runs/T16-run.md
+    recipe_digest: sha256:dba75aa89c2bdf27c206e45d28234bb7f0889e684d7bdb2220c389b5b9c7e278
+    recipe_snapshot:
+      id: T16
+      goal: 交付 wireguard/openvpn 协议层并登记设备层依赖
+      depends_on: [T4, T6]
+      covers: [R2]
+      outcomes:
+        - 交付 wireguard（Noise IK、transport、rekey）与 openvpn（控制通道、TLS 认证、AEAD 数据通道）的协议层，以锁定/受控对端验证成功、认证失败与边界；dial 的 IP 栈/TUN 由 T6/T7 接入并明确登记。
+        - 未实现的 WireGuard server-initiated handshake、OpenVPN tls-auth/tls-crypt/CBC/compression 等显式拒绝并登记；许可来源与 no-copy 审计必须与仓库事实一致。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T5
+        owner: sakullla-worker
+        integration_task_id: T5
+        interface_refs: [docs/coordination/t16-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [依赖与对端构建方式需在 evidence 中记录]
+    requirement_revision: 7
+    review_base_ref: 99aa475ac7fda11f680393b732112039150c3917
+    attempts:
+      - attempt_id: T16-A3
+        message_id: T16-A3-M1
+        recipe_digest: sha256:dba75aa89c2bdf27c206e45d28234bb7f0889e684d7bdb2220c389b5b9c7e278
+        owner_mode: worker
+        handoff_digest: sha256:cd366e16adf2b6db9652b4e60950fdd54b4b7f20ad2c7681945f8244060f89aa
+        baseline_ref: 99aa475ac7fda11f680393b732112039150c3917
+        checkpoint_ref: d8688319f30e05c9a178498a2a3cceb6c227136c
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 12
+        review_evidence_refs: [evidence/reviews/56.json]
+        scope_ref: evidence/history/29.json#Attempt-History/T16-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/29.json#Attempt-History/T16-A3/execution
+        execution_digest: sha256:d725ba7f4fad8091cf392756d57d6434363506ef35eb962835853c2087fab008
+        review_ref: evidence/history/29.json#Attempt-History/T16-A3/review
+        review_digest: sha256:09fdc280a42fab0f4727ef1bf638ffb3f3eb7a1d52104bd2ba4c77f33d5176d0
+    history_head_ref: evidence/history/29.json
+    history_count: 2
+  - id: T19
+    status: completed
+    task_run_ref: task-runs/T19-run.md
+    recipe_digest: sha256:dd859c41e4146becf3636b3cc3f5686acac855f0bbd5e59db05fafc74db72378
+    recipe_snapshot:
+      id: T19
+      goal: 交付 Tailscale/ZeroTier 协议层并记录 EasyTier 材料缺口
+      depends_on: [T4, T6]
+      covers: [R2]
+      outcomes:
+        - 交付 Tailscale（control-base Noise、HTTP/2 /machine/map、DERP）与 ZeroTier（identity/PoW、planet/roots、VL1/VL2、HELLO/OK）的协议层；未接入的 registration/controller/TCP fallback 在加载期显式拒绝；设备/TUN 由 T6/T7。
+        - 以锁定/受控对端验证成功与认证失败；记录离线依赖与许可；EasyTier 整族拒绝的理由与材料缺口移交 T20。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T9
+        owner: sakullla-worker
+        integration_task_id: T9
+        interface_refs: [docs/coordination/t19-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [控制面对端与离线依赖记录需在 evidence 中保存]
+    requirement_revision: 8
+    review_base_ref: 686988376b52b772598c442c58eac50940f30461
+    attempts:
+      - attempt_id: T19-A4
+        message_id: T19-A4-M1
+        recipe_digest: sha256:dd859c41e4146becf3636b3cc3f5686acac855f0bbd5e59db05fafc74db72378
+        owner_mode: worker
+        handoff_digest: sha256:ab06636524d98fe3efa8ed40bb78feabb7dfcaf1125a304cc92a78555a72c0d7
+        baseline_ref: 686988376b52b772598c442c58eac50940f30461
+        checkpoint_ref: 686988376b52b772598c442c58eac50940f30461
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 0
+        review_evidence_refs: [evidence/reviews/66.json]
+        scope_ref: evidence/history/34.json#Attempt-History/T19-A4/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/34.json#Attempt-History/T19-A4/execution
+        execution_digest: sha256:74720f4203bab55ba50f7a774724932a33d406777797761b42d02d3a246ee9c7
+        review_ref: evidence/history/34.json#Attempt-History/T19-A4/review
+        review_digest: sha256:2b9e86b372c348f280f54b2c051774d7ebf5293a7d9c6d60235b1f519bf7b0c0
+    history_head_ref: evidence/history/34.json
+    history_count: 3
+  - id: T20
+    status: completed
+    task_run_ref: task-runs/T20-run.md
+    recipe_digest: sha256:cd549df694c1bdf40d386621a1af039c92ff681a4e674c08f898ace5843dab22
+    recipe_snapshot:
+      id: T20
+      goal: 实现 EasyTier 协议适配或记录不可复现的材料缺口
+      depends_on: [T4, T6]
+      covers: [R2]
+      outcomes:
+        - 依据锁定 EasyTier 源码翻译 network_secret_digest 的派生与 host/discovery/secure-datagram；翻译代码属于上游 GPL/LGPL 派生，必须标注相应许可；若上游源码不可复现则显式拒绝。
+        - 以锁定 Mihomo 或受控对端验证成功、认证失败与边界，记录派生许可与平台条件。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T9
+        owner: sakullla-worker
+        integration_task_id: T9
+        interface_refs: [docs/coordination/t20-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [network_secret_digest 的离线可复现性与对端记录需在 evidence 中保存]
+    requirement_revision: 9
+    review_base_ref: a51aa97f7de6783cfc373bb542fc88d94e2e6ed0
+    attempts:
+      - attempt_id: T20-A2
+        message_id: T20-A2-M1
+        recipe_digest: sha256:cd549df694c1bdf40d386621a1af039c92ff681a4e674c08f898ace5843dab22
+        owner_mode: worker
+        handoff_digest: sha256:6775038fadad7a335a076666d2e3eed3c39f026616861521a0d2aca1167bb0f6
+        baseline_ref: 6ad70857830c1d7210ca4cfe08a3ce2dd2e40af2
+        checkpoint_ref: d709ef986f3bbd51e193322c7a969991abefd593
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 18
+        review_evidence_refs: [evidence/reviews/70.json]
+        scope_ref: evidence/history/36.json#Attempt-History/T20-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/36.json#Attempt-History/T20-A2/execution
+        execution_digest: sha256:bef6a688f49537d7aa5d5556d1e74e27f2b8f097c0d0d47ec6e0f767a4174484
+        review_ref: evidence/history/36.json#Attempt-History/T20-A2/review
+        review_digest: sha256:4356e0e594d7c474ad287c6873a56d55f41f9a01d2e216000e24c4ca493d6986
+    history_head_ref: evidence/history/36.json
+    history_count: 2
+  - id: T18
+    status: completed
+    task_run_ref: task-runs/T18-run.md
+    recipe_digest: sha256:bda2c54346f86278cbc56c2e8bf73945e3d38205b0bafa9be3afc98528aa3e40
+    recipe_snapshot:
+      id: T18
+      goal: 交付 masque CONNECT-UDP/CONNECT-IP 的 UDP 与 WARP 形状
+      depends_on: [T4, T10, T14]
+      covers: [R2]
+      outcomes:
+        - 交付 RFC 9298 CONNECT-UDP 与 RFC 9484 CONNECT-IP 的 IPv4/IPv6 UDP、WARP key/cert pin、ip-stack/remote-dns；TCP over tunnel 显式拒绝并由 T21 承接。
+        - 以受控 HTTP/3 对端验证成功、认证失败与边界；记录内存代价；masque 计 partial，T9 不得计完整兼容。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T9
+        owner: sakullla-worker
+        integration_task_id: T9
+        interface_refs: [docs/coordination/t18-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [WARP 真实端点或受控 CONNECT-IP 对端与内存记录需在 evidence 中保存]
+    requirement_revision: 9
+    review_base_ref: d709ef986f3bbd51e193322c7a969991abefd593
+    attempts:
+      - attempt_id: T18-A3
+        message_id: T18-A3-M1
+        recipe_digest: sha256:bda2c54346f86278cbc56c2e8bf73945e3d38205b0bafa9be3afc98528aa3e40
+        owner_mode: worker
+        handoff_digest: sha256:e384fa66956f5934ce9da82a1d7463b99118411d954d94dc095a09149cc5b30e
+        baseline_ref: d709ef986f3bbd51e193322c7a969991abefd593
+        checkpoint_ref: d709ef986f3bbd51e193322c7a969991abefd593
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 0
+        path_count: 0
+        review_evidence_refs: [evidence/reviews/72.json]
+        scope_ref: evidence/history/37.json#Attempt-History/T18-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/37.json#Attempt-History/T18-A3/execution
+        execution_digest: sha256:8365773b7cb177e60a9e85a6ac55bb70d44ed99c3490b95cd8d23cf38f23bedc
+        review_ref: evidence/history/37.json#Attempt-History/T18-A3/review
+        review_digest: sha256:64f69c1d912cdf1b32972e6838227497b007c86f8cf30064b9aa84da56a082ff
+    history_head_ref: evidence/history/37.json
+    history_count: 2
+  - id: T21
+    status: completed
+    task_run_ref: task-runs/T21-run.md
+    recipe_digest: sha256:ab40a1d226016bfd0668e2e88526e494065f4951ff6719314c4bd4e473f87872
+    recipe_snapshot:
+      id: T21
+      goal: 实现 masque TCP 终结并接入设备栈
+      depends_on: [T4, T10, T14, T18]
+      covers: [R2]
+      outcomes:
+        - 实现最小 TCP 状态机或接入 T6/T7 用户态 IP 栈，使 CONNECT-IP/CONNECT-UDP 的 TCP 目标可用；未实现项显式拒绝。
+        - 以受控 HTTP/3 对端验证 TCP 成功、认证失败与边界，记录内存与平台条件。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+      coordination:
+        parent_task_id: T9
+        owner: sakullla-worker
+        integration_task_id: T9
+        interface_refs: [docs/coordination/t21-handoff.md]
+        evidence_refs: [docs/requirements/2026-11-20-native-rust-kernel.md]
+        unresolved: [TCP 状态机/设备栈选择与对端记录需在 evidence 中保存]
+    requirement_revision: 9
+    review_base_ref: d709ef986f3bbd51e193322c7a969991abefd593
+    attempts:
+      - attempt_id: T21-A1
+        message_id: T21-A1-M1
+        recipe_digest: sha256:ab40a1d226016bfd0668e2e88526e494065f4951ff6719314c4bd4e473f87872
+        owner_mode: worker
+        handoff_digest: sha256:ecf96126b3663f8addad96c99eab954242f57612e5a773c8fcee7e2c13e62376
+        baseline_ref: d709ef986f3bbd51e193322c7a969991abefd593
+        checkpoint_ref: 50d2e1c45cde80f9f9616581e28cefb355c3c127
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 15
+        review_evidence_refs: [evidence/reviews/74.json]
+        scope_ref: evidence/history/38.json#Attempt-History/T21-A1/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/38.json#Attempt-History/T21-A1/execution
+        execution_digest: sha256:f876ba35d798c14b2bf3dd3d2deae466cabcb719cdd7a7ebea15719146dbef6b
+        review_ref: evidence/history/38.json#Attempt-History/T21-A1/review
+        review_digest: sha256:2b28f7de20eaf25c89a43950c28ec335f6698a33c35aa854ea1bafdb5bcb4e7d
+    history_head_ref: evidence/history/38.json
+    history_count: 1
 blocker: null
 delivery:
-  status: locked
-plan_input_digest: sha256:591d0d08da65f798539d295d25ff33f985c83aebbdc7df5b75399feeeb8179a7
+  status: pending
+plan_input_digest: sha256:cebfc2273565b86f81415262f08f66b31de8e4b01d086c3d69de42894b7bce61
 scheduling:
   capacities: {}
   capabilities: {}
-  leases: []
+  leases:
+    - lease_id: task:T9-A1
+      invocation_id: ses_e033cffa4ffeMwno92wM3HOZcu
+      task_id: T9
+      attempt_id: T9-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t9-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T9-A2
+      invocation_id: ses_e033cffa4ffeMwno92wM3HOZcu
+      task_id: T9
+      attempt_id: T9-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t9-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T11-A1
+      invocation_id: ses_e03040012ffehn6KkDtxyFxvMp
+      task_id: T11
+      attempt_id: T11-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t11-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T11-A1:released:3
+      invocation_id: ses_t11_a1
+      task_id: T11
+      attempt_id: T11-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t11-a1-reservation-release.json
+      admission_evidence_ref: ""
+    - lease_id: task:T11-A2
+      invocation_id: ses_e03040012ffehn6KkDtxyFxvMp
+      task_id: T11
+      attempt_id: T11-A2
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T6-A1
+      invocation_id: ses_e02aabe55ffeh9RJNwYVkQjdaL
+      task_id: T6
+      attempt_id: T6-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t6-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T10-A1
+      invocation_id: ses_e0268aa50ffePxjk4d5tWkU0vt
+      task_id: T10
+      attempt_id: T10-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t10-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T11-A3
+      invocation_id: ses_e03040012ffehn6KkDtxyFxvMp
+      task_id: T11
+      attempt_id: T11-A3
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T12-A1
+      invocation_id: ses_e0218ef9afferDwsGjbtE7ixYP
+      task_id: T12
+      attempt_id: T12-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t12-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T13-A1
+      invocation_id: ses_e0167a6cbffedm1VewGmiXGu3C
+      task_id: T13
+      attempt_id: T13-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t13-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T14-A1
+      invocation_id: ses_e010a4a4bffehcBUUvuXzpvxGb
+      task_id: T14
+      attempt_id: T14-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t14-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T15-A1
+      invocation_id: ses_e00d2b46affedenOoGjlU0c4en
+      task_id: T15
+      attempt_id: T15-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t15-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T16-A1
+      invocation_id: ses_e0065b19fffeLpj6OxQVtQwQ7q
+      task_id: T16
+      attempt_id: T16-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t16-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T13-A3
+      invocation_id: ses_e0167a6cbffedm1VewGmiXGu3C
+      task_id: T13
+      attempt_id: T13-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t13-a3-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T17-A1
+      invocation_id: ses_e0020f2a7ffeGMpTumEuN40uG5
+      task_id: T17
+      attempt_id: T17-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t17-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T14-A3
+      invocation_id: ses_e010a4a4bffehcBUUvuXzpvxGb
+      task_id: T14
+      attempt_id: T14-A3
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T19-A1
+      invocation_id: ses_dffe00e56ffeNJm8TdaE3wH6Um
+      task_id: T19
+      attempt_id: T19-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t19-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T18-A1
+      invocation_id: ses_dff8a37a1ffesRI2FmW30D0MEg
+      task_id: T18
+      attempt_id: T18-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t18-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T17-A2
+      invocation_id: ses_dff195aa9ffegaJRyHAL06DzNK
+      task_id: T17
+      attempt_id: T17-A2
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T17-A2:released:19
+      invocation_id: ses_e0167a6cbffedm1VewGmiXGu3C
+      task_id: T17
+      attempt_id: T17-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t17-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T17-A2:released:20
+      invocation_id: ses_dff4b28c6ffey1TWxk43BjejQB
+      task_id: T17
+      attempt_id: T17-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t17-a2-invocation-2.json
+      admission_evidence_ref: ""
+    - lease_id: task:T17-A3
+      invocation_id: ses_dff195aa9ffegaJRyHAL06DzNK
+      task_id: T17
+      attempt_id: T17-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t17-a3-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T17-A4
+      invocation_id: ses_dff195aa9ffegaJRyHAL06DzNK
+      task_id: T17
+      attempt_id: T17-A4
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t17-a4-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T19-A4
+      invocation_id: ses_dffe00e56ffeNJm8TdaE3wH6Um
+      task_id: T19
+      attempt_id: T19-A4
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t19-a4-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T20-A1
+      invocation_id: ses_dffe00e56ffeNJm8TdaE3wH6Um
+      task_id: T20
+      attempt_id: T20-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t20-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T20-A2
+      invocation_id: ses_dffe00e56ffeNJm8TdaE3wH6Um
+      task_id: T20
+      attempt_id: T20-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t20-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T18-A3
+      invocation_id: ses_dff8a37a1ffesRI2FmW30D0MEg
+      task_id: T18
+      attempt_id: T18-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t18-a3-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T21-A1
+      invocation_id: ses_dff8a37a1ffesRI2FmW30D0MEg
+      task_id: T21
+      attempt_id: T21-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t21-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T9-A10
+      invocation_id: ses_dff195aa9ffegaJRyHAL06DzNK
+      task_id: T9
+      attempt_id: T9-A10
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t9-a10-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T9-A12
+      invocation_id: ses_dfde76b3dfferI45Tj4mhPKa2Z
+      task_id: T9
+      attempt_id: T9-A12
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t9-a12-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T24-A1
+      invocation_id: ses_dfdc85905ffe24LXuSqwiq79hz
+      task_id: T24
+      attempt_id: T24-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t24-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T24-A2
+      invocation_id: ses_dfd7ce470ffeUv2YyoJnOesV5B
+      task_id: T24
+      attempt_id: T24-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t24-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T23-A1
+      invocation_id: ses_dfd51d6bdffeVVTMG9u4OUVyRi
+      task_id: T23
+      attempt_id: T23-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t23-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T23-A2
+      invocation_id: ses_dfcfbbab0ffeE9ZPdPRzJM5hvu
+      task_id: T23
+      attempt_id: T23-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t23-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T23-A3
+      invocation_id: ses_dfcbb0a6affefo6LIMBqSmw6IN
+      task_id: T23
+      attempt_id: T23-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t23-a3-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T23-A4
+      invocation_id: ses_dfc6c761effeO35vv1na6xm14c
+      task_id: T23
+      attempt_id: T23-A4
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t23-a4-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T22-A1
+      invocation_id: ses_dfc32ebddffeWJ8DLI0iirggy4
+      task_id: T22
+      attempt_id: T22-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t22-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T22-A2
+      invocation_id: ses_dfbfa0306ffe12PzVpyoFaXBWX
+      task_id: T22
+      attempt_id: T22-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t22-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T25-A1
+      invocation_id: ses_dfbca6fceffe3D2taMa755TrZz
+      task_id: T25
+      attempt_id: T25-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t25-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T25-A2
+      invocation_id: ses_dfb8eedc9fferldE4fKlVbHRLR
+      task_id: T25
+      attempt_id: T25-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t25-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T5-A1
+      invocation_id: ses_dfb70778affePBDz6P582fTRJW
+      task_id: T5
+      attempt_id: T5-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t5-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T5-A2
+      invocation_id: ses_dfb2b0058ffexQFiH73YoeCaKQ
+      task_id: T5
+      attempt_id: T5-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t5-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T7-A1
+      invocation_id: ses_dfb02a42cffeSLHnlDfWrLy9Mk
+      task_id: T7
+      attempt_id: T7-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t7-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T7-A2
+      invocation_id: ses_dfad38ba9ffewgApM73Zyk2NT8
+      task_id: T7
+      attempt_id: T7-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t7-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T7-A3
+      invocation_id: ses_dfaad49f2ffef23qdKqoLXXKLI
+      task_id: T7
+      attempt_id: T7-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t7-a3-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T8-A1
+      invocation_id: ses_dfa9afff0ffeX1IA8vzPhB0KPS
+      task_id: T8
+      attempt_id: T8-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t8-a1-invocation.json
+      admission_evidence_ref: ""
   bypasses: {}
+result_inbox_ref: evidence/results/362.json
