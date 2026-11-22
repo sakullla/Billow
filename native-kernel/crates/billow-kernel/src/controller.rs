@@ -23,8 +23,7 @@ use tokio::sync::broadcast;
 
 use crate::config::{Action, Config, ControllerConfig, GroupKind, ProviderVehicle};
 use crate::engine::{
-    chain_for, rule_payload_text, rule_type_name, ControlCore, Kernel, OpenConnection, StartError,
-    VERSION,
+    chain_for, rule_payload_text, rule_type_name, ControlCore, Kernel, OpenConnection, VERSION,
 };
 use crate::proxies::Proxy;
 use crate::rules::Target;
@@ -90,12 +89,16 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub(crate) fn start(kernel: &Kernel) -> Result<Option<Controller>, StartError> {
+    /// Starts every configured listener. A listener that cannot bind is logged
+    /// and skipped (pinned `hub/route.start*` logs `External controller listen
+    /// error` and returns without failing the process); the mixed inbound and
+    /// the other listeners keep running.
+    pub(crate) fn start(kernel: &Kernel) -> Option<Controller> {
         let core = kernel.control();
         let runtime = core.runtime.snapshot();
         let config = runtime.config.controller.clone();
         if !config.enabled() {
-            return Ok(None);
+            return None;
         }
         let state = Arc::new(ControlState {
             core: core.clone(),
@@ -111,44 +114,55 @@ impl Controller {
             unix_path: None,
         };
         if let Some(spec) = &config.external_controller {
-            let listener = bind_tcp(spec).map_err(|source| StartError::Bind {
-                addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-                source: Arc::new(source),
-            })?;
-            let addr = listener.local_addr().ok();
-            let stop = spawn_plain(state.clone(), listener, None, &mut controller.threads);
-            controller.stops.push(stop);
-            controller.tcp_addr = addr;
-            core.log_bus.publish(
-                "info",
-                format!(
-                    "RESTful API listening at: {}",
-                    addr.map(|addr| addr.to_string())
-                        .unwrap_or_else(|| spec.clone())
-                ),
-            );
-        }
-        if let Some(spec) = &config.external_controller_tls {
-            match state.tls_config.clone() {
-                Some(tls) => {
-                    let listener = bind_tcp(spec).map_err(|source| StartError::Bind {
-                        addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-                        source: Arc::new(source),
-                    })?;
+            match bind_tcp(spec) {
+                Ok(listener) => {
                     let addr = listener.local_addr().ok();
                     let stop =
-                        spawn_plain(state.clone(), listener, Some(tls), &mut controller.threads);
+                        spawn_plain(state.clone(), listener, None, &mut controller.threads);
                     controller.stops.push(stop);
-                    controller.tls_addr = addr;
+                    controller.tcp_addr = addr;
                     core.log_bus.publish(
                         "info",
                         format!(
-                            "RESTful API tls listening at: {}",
+                            "RESTful API listening at: {}",
                             addr.map(|addr| addr.to_string())
                                 .unwrap_or_else(|| spec.clone())
                         ),
                     );
                 }
+                Err(error) => core.log_bus.publish(
+                    "error",
+                    format!(
+                        "External controller listen error at {spec}: {error}; the TCP control listener is skipped"
+                    ),
+                ),
+            }
+        }
+        if let Some(spec) = &config.external_controller_tls {
+            match state.tls_config.clone() {
+                Some(tls) => match bind_tcp(spec) {
+                    Ok(listener) => {
+                        let addr = listener.local_addr().ok();
+                        let stop =
+                            spawn_plain(state.clone(), listener, Some(tls), &mut controller.threads);
+                        controller.stops.push(stop);
+                        controller.tls_addr = addr;
+                        core.log_bus.publish(
+                            "info",
+                            format!(
+                                "RESTful API tls listening at: {}",
+                                addr.map(|addr| addr.to_string())
+                                    .unwrap_or_else(|| spec.clone())
+                            ),
+                        );
+                    }
+                    Err(error) => core.log_bus.publish(
+                        "error",
+                        format!(
+                            "External controller tls listen error at {spec}: {error}; the TLS control listener is skipped"
+                        ),
+                    ),
+                },
                 None => {
                     core.log_bus.publish(
                         "error",
@@ -186,7 +200,7 @@ impl Controller {
                 "external-controller-unix is configured but Unix sockets are not available on this platform; no unix listener is started"
             );
         }
-        Ok(Some(controller))
+        Some(controller)
     }
 
     /// Actual TCP controller address (`None` without `external-controller`).
@@ -230,14 +244,31 @@ struct ControlState {
 
 fn bind_tcp(spec: &str) -> io::Result<std::net::TcpListener> {
     use std::net::ToSocketAddrs;
-    let mut addrs = spec.to_socket_addrs()?;
-    let addr = addrs.next().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("external-controller '{spec}' resolved to no address"),
-        )
-    })?;
-    let listener = std::net::TcpListener::bind(addr)?;
+    // Pinned passes the string straight to `net.Listen("tcp", addr)`, so a
+    // hostless `:9090` binds every interface (`[::]` with the platform's
+    // dual-stack default). `to_socket_addrs` rejects that form, so resolve it
+    // explicitly and fall back to IPv4 wildcard where IPv6 is unavailable.
+    let listener = if let Some(port) = spec.strip_prefix(':') {
+        let port: u16 = port.parse().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("external-controller '{spec}' has an invalid port"),
+            )
+        })?;
+        match std::net::TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, port)) {
+            Ok(listener) => listener,
+            Err(_) => std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?,
+        }
+    } else {
+        let mut addrs = spec.to_socket_addrs()?;
+        let addr = addrs.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("external-controller '{spec}' resolved to no address"),
+            )
+        })?;
+        std::net::TcpListener::bind(addr)?
+    };
     listener.set_nonblocking(true)?;
     Ok(listener)
 }
@@ -296,7 +327,12 @@ fn build_tls_config(
         .with_single_cert(certs, private_key)
     {
         Ok(mut server) => {
-            server.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            // This listener speaks HTTP/1.1 only. Pinned advertises
+            // `["h2","http/1.1"]` because Go's http server also serves h2;
+            // advertising h2 here would make an h2-only client negotiate a
+            // protocol the router never speaks. Offer only http/1.1 so curl
+            // and h2-capable clients fall back to the implemented protocol.
+            server.alpn_protocols = vec![b"http/1.1".to_vec()];
             Some(Arc::new(server))
         }
         Err(error) => {
@@ -956,7 +992,10 @@ impl Route {
         _state: &ControlState,
     ) -> Option<(StreamKind, Option<Response>)> {
         match self {
-            Route::Logs => Some((StreamKind::Logs, None)),
+            Route::Logs => match requested_log_level(request) {
+                Ok(_) => Some((StreamKind::Logs, None)),
+                Err(response) => Some((StreamKind::Logs, Some(response))),
+            },
             Route::Traffic => Some((StreamKind::Traffic, None)),
             Route::Memory => Some((StreamKind::Memory, None)),
             Route::Connections => {
@@ -1000,7 +1039,7 @@ impl Route {
                 Response::json(200, "OK", configs_json(&runtime.config))
             }
             Route::ConfigsPatch => patch_configs(request, state),
-            Route::ConfigsPut => put_configs(request, state),
+            Route::ConfigsPut => put_configs(request, state).await,
             Route::Proxies => {
                 let runtime = core.runtime.snapshot();
                 Response::json(200, "OK", json!({ "proxies": proxies_map(&runtime) }))
@@ -1059,9 +1098,18 @@ impl Route {
                     }
                     return Response::message(404, "Not Found", "Resource not found");
                 }
-                match runtime.providers.update_proxy_provider(name) {
-                    Ok(update) => {
-                        runtime.groups.note_provider_update(name);
+                // `update_proxy_provider` fetches http(s) providers with a
+                // blocking socket; keep it off this current_thread runtime.
+                let groups = runtime.groups.clone();
+                let runtime = runtime.clone();
+                let name_for_task = name.clone();
+                let update = tokio::task::spawn_blocking(move || {
+                    runtime.providers.update_proxy_provider(&name_for_task)
+                })
+                .await;
+                match update {
+                    Ok(Ok(update)) => {
+                        groups.note_provider_update(name);
                         core.log_bus.publish(
                             "info",
                             format!(
@@ -1071,19 +1119,36 @@ impl Route {
                         );
                         Response::empty(204, "No Content")
                     }
-                    Err(error) => {
+                    Ok(Err(error)) => {
                         core.log_bus.publish(
                             "warning",
                             format!("proxy provider '{name}' update failed: {error}"),
                         );
                         Response::message(503, "Service Unavailable", error.to_string())
                     }
+                    Err(error) => {
+                        core.log_bus.publish(
+                            "warning",
+                            format!("proxy provider '{name}' update task failed: {error}"),
+                        );
+                        Response::message(503, "Service Unavailable", "provider update failed")
+                    }
                 }
             }
             Route::ProxyProviderHealth(name) => {
                 let runtime = core.runtime.snapshot();
                 if runtime.providers.proxy_provider(name).is_none() {
-                    if provider_is_compatible(&runtime, name) {
+                    if let Some(_status) = runtime.groups.group_status(name) {
+                        // Compatible providers probe their members in the
+                        // background and answer 204 immediately, like pinned.
+                        let groups = runtime.groups.clone();
+                        let name = name.clone();
+                        tokio::spawn(async move {
+                            let _ = groups.probe_group_named(&name).await;
+                        });
+                        return Response::empty(204, "No Content");
+                    }
+                    if name == "default" {
                         return Response::empty(204, "No Content");
                     }
                     return Response::message(404, "Not Found", "Resource not found");
@@ -1094,12 +1159,30 @@ impl Route {
             }
             Route::ProxyProviderNodeGet(provider, name) => {
                 let runtime = core.runtime.snapshot();
-                match provider_node(&runtime, provider, name) {
-                    Some(proxy) => Response::json(200, "OK", proxy_json(&runtime, &proxy, Some(provider))),
-                    None => Response::message(404, "Not Found", "Resource not found"),
+                if let Some(proxy) = provider_node(&runtime, provider, name) {
+                    return Response::json(
+                        200,
+                        "OK",
+                        proxy_json(&runtime, &proxy, Some(provider)),
+                    );
                 }
+                if provider_is_compatible(&runtime, provider)
+                    && compatible_provider_has_node(&runtime, provider, name)
+                {
+                    if let Some(value) = proxy_value(&runtime, name) {
+                        return Response::json(200, "OK", value);
+                    }
+                }
+                Response::message(404, "Not Found", "Resource not found")
             }
             Route::ProxyProviderNodeHealth(provider, name) => {
+                let runtime = core.runtime.snapshot();
+                if runtime.providers.proxy_provider(provider).is_none()
+                    && !(provider_is_compatible(&runtime, provider)
+                        && compatible_provider_has_node(&runtime, provider, name))
+                {
+                    return Response::message(404, "Not Found", "Resource not found");
+                }
                 proxy_delay(request, state, name, Some(provider)).await
             }
             Route::RuleProviders => {
@@ -1115,8 +1198,15 @@ impl Route {
                     // Pinned inline `Update` only refreshes the timestamp.
                     return Response::empty(204, "No Content");
                 }
-                match runtime.providers.update_rule_provider(name) {
-                    Ok(update) => {
+                // Blocking file/http read; keep it off the control runtime.
+                let runtime = runtime.clone();
+                let name_for_task = name.clone();
+                let update = tokio::task::spawn_blocking(move || {
+                    runtime.providers.update_rule_provider(&name_for_task)
+                })
+                .await;
+                match update {
+                    Ok(Ok(update)) => {
                         core.log_bus.publish(
                             "info",
                             format!(
@@ -1126,12 +1216,19 @@ impl Route {
                         );
                         Response::empty(204, "No Content")
                     }
-                    Err(error) => {
+                    Ok(Err(error)) => {
                         core.log_bus.publish(
                             "warning",
                             format!("rule provider '{name}' update failed: {error}"),
                         );
                         Response::message(503, "Service Unavailable", error.to_string())
+                    }
+                    Err(error) => {
+                        core.log_bus.publish(
+                            "warning",
+                            format!("rule provider '{name}' update task failed: {error}"),
+                        );
+                        Response::message(503, "Service Unavailable", "provider update failed")
                     }
                 }
             }
@@ -1288,7 +1385,7 @@ fn configs_json(config: &Config) -> Value {
     Value::Object(object)
 }
 
-fn put_configs(request: &Request, state: &ControlState) -> Response {
+async fn put_configs(request: &Request, state: &ControlState) -> Response {
     let body = match serde_json::from_slice::<Value>(&request.body) {
         Ok(value) => value,
         Err(_) => return Response::message(400, "Bad Request", "Body invalid"),
@@ -1296,66 +1393,80 @@ fn put_configs(request: &Request, state: &ControlState) -> Response {
     let payload = body
         .get("payload")
         .and_then(Value::as_str)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
     let path = body
         .get("path")
         .and_then(Value::as_str)
-        .unwrap_or_default();
-    let yaml = if !payload.is_empty() {
-        payload.to_string()
-    } else {
-        let path = if path.is_empty() {
-            // Pinned falls back to the config file; the controller does not
-            // know a file path when it was started from YAML text.
-            return Response::message(
-                400,
-                "Bad Request",
-                "config path is empty and no payload was given",
-            );
+        .unwrap_or_default()
+        .to_string();
+    if payload.is_empty() && path.is_empty() {
+        // Pinned falls back to the config file; the controller does not know
+        // a file path when it was started from YAML text.
+        return Response::message(
+            400,
+            "Bad Request",
+            "config path is empty and no payload was given",
+        );
+    }
+    // `PUT /configs` reads provider files and fetches http(s) providers while
+    // building the replacement generation. That path uses blocking sockets
+    // (`std::net::TcpStream`, 15s connect / 30s read) and the controller runs
+    // on a current_thread runtime, so the whole build must stay off the event
+    // loop or every other control request (accept, /version, /traffic) stalls.
+    let core = state.core.clone();
+    let built = tokio::task::spawn_blocking(move || -> Result<(), Response> {
+        let yaml = if !payload.is_empty() {
+            payload
         } else {
-            std::path::PathBuf::from(path)
-        };
-        if !path.is_absolute() {
-            return Response::message(400, "Bad Request", "path is not a absolute path");
-        }
-        let base = state
-            .core
-            .base_dir
-            .canonicalize()
-            .unwrap_or_else(|_| state.core.base_dir.clone());
-        let candidate = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if !candidate.starts_with(&base) {
-            return Response::message(
-                400,
-                "Bad Request",
-                format!("path is not a safe path: {}", path.display()),
-            );
-        }
-        match std::fs::read_to_string(&candidate) {
-            Ok(text) => text,
-            Err(error) => {
-                return Response::message(
+            let path = std::path::PathBuf::from(&path);
+            if !path.is_absolute() {
+                return Err(Response::message(400, "Bad Request", "path is not a absolute path"));
+            }
+            let base = core
+                .base_dir
+                .canonicalize()
+                .unwrap_or_else(|_| core.base_dir.clone());
+            let candidate = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if !candidate.starts_with(&base) {
+                return Err(Response::message(
                     400,
                     "Bad Request",
-                    format!("{}: {error}", candidate.display()),
-                )
+                    format!("path is not a safe path: {}", path.display()),
+                ));
             }
-        }
-    };
-    match state.core.reload(&yaml) {
-        Ok(_) => {
-            state
-                .core
-                .log_bus
-                .publish("info", "configuration reloaded");
-            Response::empty(204, "No Content")
-        }
-        Err(error) => {
-            state.core.log_bus.publish(
+            match std::fs::read_to_string(&candidate) {
+                Ok(text) => text,
+                Err(error) => {
+                    return Err(Response::message(
+                        400,
+                        "Bad Request",
+                        format!("{}: {error}", candidate.display()),
+                    ))
+                }
+            }
+        };
+        core.reload(&yaml).map(|_| ()).map_err(|error| {
+            core.log_bus.publish(
                 "warning",
                 format!("configuration reload failed: {error}"),
             );
             Response::message(400, "Bad Request", error.to_string())
+        })
+    })
+    .await;
+    match built {
+        Ok(Ok(())) => {
+            state.core.log_bus.publish("info", "configuration reloaded");
+            Response::empty(204, "No Content")
+        }
+        Ok(Err(response)) => response,
+        Err(error) => {
+            state.core.log_bus.publish(
+                "error",
+                format!("configuration reload task failed: {error}"),
+            );
+            Response::message(500, "Internal Server Error", "reload task failed")
         }
     }
 }
@@ -1812,6 +1923,27 @@ fn provider_is_compatible(runtime: &crate::engine::RuntimeSnapshot, provider: &s
     provider == "default" || runtime.groups.group_status(provider).is_some()
 }
 
+/// Whether a Compatible provider (a group or the reserved `default`) exposes
+/// `name` as one of its adapters. Pinned registers the reserved `default`
+/// provider over every proxy/group and each group's explicit `proxies:` list
+/// as its own Compatible provider, so `/providers/proxies/<group>/<node>` and
+/// `<node>/healthcheck` resolve members through it.
+fn compatible_provider_has_node(
+    runtime: &crate::engine::RuntimeSnapshot,
+    provider: &str,
+    name: &str,
+) -> bool {
+    if let Some(status) = runtime.groups.group_status(provider) {
+        return status.all.iter().any(|member| member == name);
+    }
+    if provider == "default" {
+        return matches!(name, "DIRECT" | "COMPATIBLE" | "REJECT" | "REJECT-DROP")
+            || runtime.config.proxies.iter().any(|proxy| proxy.name == name)
+            || runtime.groups.group_status(name).is_some();
+    }
+    false
+}
+
 fn proxy_providers_map(runtime: &crate::engine::RuntimeSnapshot) -> Map<String, Value> {
     let mut map = Map::new();
     for provider in runtime.providers.proxy_provider_names() {
@@ -2070,7 +2202,20 @@ async fn proxy_delay(
     let node = match provider {
         Some(provider) => match provider_node(&runtime, provider, name) {
             Some(proxy) => DelayNode::Proxy(Arc::new(proxy)),
-            None => return Response::message(404, "Not Found", "Resource not found"),
+            None => {
+                // A Compatible provider (group or reserved `default`) exposes
+                // its members through the same route; resolve them like
+                // `/proxies/:name/delay` once membership is confirmed.
+                match resolve_delay_node(&runtime, name) {
+                    Some(node)
+                        if provider_is_compatible(&runtime, provider)
+                            && compatible_provider_has_node(&runtime, provider, name) =>
+                    {
+                        node
+                    }
+                    _ => return Response::message(404, "Not Found", "Resource not found"),
+                }
+            }
         },
         None => match resolve_delay_node(&runtime, name) {
             Some(node) => node,
@@ -2306,9 +2451,15 @@ fn log_level_rank(level: &str) -> u8 {
 }
 
 fn requested_log_level(request: &Request) -> Result<u8, Response> {
-    let level = request.query("level").unwrap_or("info");
+    // Pinned `getLogs` defaults an empty/missing `level` to info and rejects
+    // anything outside `log.LogLevelMapping` before switching to stream mode
+    // (`warn` is not a key there; the emitted type is `warning`).
+    let level = match request.query("level") {
+        None | Some("") => "info",
+        Some(level) => level,
+    };
     match level {
-        "debug" | "info" | "warning" | "warn" | "error" | "silent" => Ok(log_level_rank(level)),
+        "debug" | "info" | "warning" | "error" | "silent" => Ok(log_level_rank(level)),
         _ => Err(Response::message(400, "Bad Request", "Body invalid")),
     }
 }

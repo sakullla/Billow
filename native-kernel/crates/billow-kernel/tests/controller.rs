@@ -6,8 +6,9 @@
 //! are what the pinned API returns.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use billow_kernel::{Kernel, Limits};
@@ -748,4 +749,372 @@ fn cors_allow_origins_is_enforced_when_configured() {
         response.header("access-control-allow-private-network"),
         Some("true")
     );
+}
+
+// ---------------------------------------------------------------------------
+// T25-A2 regressions
+// ---------------------------------------------------------------------------
+
+/// Self-signed controller certificate (CN=billow-controller-test, SAN
+/// localhost/127.0.0.1) and its P-256 key. Test fixture only; the client in
+/// the tests trusts this certificate as its root.
+const TLS_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBkTCCATigAwIBAgIUev1mUgnlaLCsrNYpIgHkANSlvrAwCgYIKoZIzj0EAwIw
+ITEfMB0GA1UEAwwWYmlsbG93LWNvbnRyb2xsZXItdGVzdDAeFw0yNjExMjIxODEz
+MTlaFw00NjExMTcxODEzMTlaMCExHzAdBgNVBAMMFmJpbGxvdy1jb250cm9sbGVy
+LXRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATKHK13nDIil2xXNB1f5F8t
+cVSqnXeEOl29ngSSTVHg0gPWH0tFo6h6R4UhDI0n/+KEpEZAZYiztL6q4qSkFAI+
+o04wTDAdBgNVHQ4EFgQUK0Oe6HViE6YpW618ddH+mhR63ZkwDwYDVR0TAQH/BAUw
+AwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZIzj0EAwIDRwAw
+RAIgcXVPy05sGTWUPELZYpxhk2amdKVYkOyW5tBP5N+SSYQCIH7kvRx5CDQG3bu8
+98BglR4KvR4VLW5dtblQ1hslKQGo
+-----END CERTIFICATE-----";
+
+const TLS_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQggtX2azzclaLuRUnB
+uxb0WCzSkB4MNUwodV1l2qBaj8+hRANCAATKHK13nDIil2xXNB1f5F8tcVSqnXeE
+Ol29ngSSTVHg0gPWH0tFo6h6R4UhDI0n/+KEpEZAZYiztL6q4qSkFAI+
+-----END PRIVATE KEY-----";
+
+fn pem_block(pem: &str) -> String {
+    pem.lines()
+        .map(|line| format!("    {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `curl -k https://127.0.0.1:PORT/version` offers `h2,http/1.1`. The Rust
+/// listener only speaks HTTP/1.1, so ALPN must settle on `http/1.1` instead of
+/// selecting h2 (which a client then reads as missing SETTINGS).
+#[test]
+fn tls_alpn_advertises_only_http11_and_serves_version() {
+    #[derive(Debug)]
+    struct NoVerify(Arc<rustls::crypto::CryptoProvider>);
+
+    impl rustls::client::danger::ServerCertVerifier for NoVerify {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &rustls::pki_types::CertificateDer<'_>,
+            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &rustls::pki_types::CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls12_signature(
+                message,
+                cert,
+                dss,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &rustls::pki_types::CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            self.0
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    let yaml = format!(
+        "mixed-port: {}\nexternal-controller-tls: 127.0.0.1:0\nsecret: {SECRET}\ntls:\n  certificate: |\n{}\n  private-key: |\n{}\nrules:\n  - MATCH,DIRECT\n",
+        free_port(),
+        pem_block(TLS_CERT_PEM),
+        pem_block(TLS_KEY_PEM)
+    );
+    let (mut kernel, _) = Kernel::start_from_yaml(&yaml, None, Limits::default())
+        .expect("kernel starts with an inline TLS certificate");
+    let (_, tls, _) = kernel.controller_addrs();
+    let addr = tls.expect("TLS controller listener");
+
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let conn = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
+    let tcp = TcpStream::connect(addr).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut stream = rustls::StreamOwned::new(conn, tcp);
+    let head = format!(
+        "GET /version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer {SECRET}\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let alpn = stream
+        .conn
+        .alpn_protocol()
+        .map(|protocol| String::from_utf8_lossy(protocol).to_string());
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&chunk[..n]),
+            // The server drops the TLS session without a close_notify after
+            // `Connection: close`; rustls reports that as UnexpectedEof.
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => panic!("TLS read failed: {error}"),
+        }
+    }
+    let response = parse_response(&raw);
+    assert_eq!(alpn.as_deref(), Some("http/1.1"), "ALPN must not select h2");
+    assert_eq!(response.status, 200, "{}", response.body);
+    kernel.stop().unwrap();
+}
+
+/// Provider http(s) reads use blocking sockets. A `PUT /providers/...` must
+/// hand the read to a blocking thread so the current_thread control runtime
+/// keeps accepting and answering (`/version`) while the fetch stalls.
+#[test]
+fn provider_update_stall_does_not_freeze_the_control_plane() {
+    use std::sync::mpsc;
+
+    let provider = TcpListener::bind("127.0.0.1:0").unwrap();
+    let provider_addr = provider.local_addr().unwrap();
+    let (stalled_tx, stalled_rx) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        // Initial load: answer with a valid provider payload.
+        if let Ok((mut stream, _)) = provider.accept() {
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let body = b"proxies:\n  - {name: hp1, type: socks5, server: 127.0.0.1, port: 1}\n";
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body);
+        }
+        // The update: accept and read the request, then stop answering. The
+        // pinned/Rust read timeout is 30s; close after 3s so the update turns
+        // into a fast 503 once the control-plane assertions are done.
+        if let Ok((mut stream, _)) = provider.accept() {
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let _ = stalled_tx.send(());
+            std::thread::sleep(Duration::from_secs(3));
+        }
+    });
+
+    let harness = Harness::start(&format!(
+        "mixed-port: {}\nexternal-controller: 127.0.0.1:0\nsecret: {SECRET}\nproxy-providers:\n  pp:\n    type: http\n    url: http://{provider_addr}/proxies.yaml\n    interval: 3600\nrules:\n  - MATCH,DIRECT\n",
+        free_port()
+    ));
+    let bearer = format!("Bearer {SECRET}");
+    let put_addr = harness.addr;
+    let put = std::thread::spawn(move || request(put_addr, "PUT", "/providers/proxies/pp", &[("Authorization", &bearer)], ""));
+
+    // Wait until the update is actually inside the blocking provider read.
+    stalled_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("provider update reached the stalled read");
+    let started = Instant::now();
+    let version = harness.authed("GET", "/version", "", SECRET);
+    let elapsed = started.elapsed();
+    assert_eq!(version.status, 200, "{}", version.body);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "control plane blocked for {elapsed:?} during the provider read"
+    );
+    for path in ["/proxies", "/connections"] {
+        let started = Instant::now();
+        let response = harness.authed("GET", path, "", SECRET);
+        let elapsed = started.elapsed();
+        assert_eq!(response.status, 200, "{path}: {}", response.body);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "{path} blocked for {elapsed:?} during the provider read"
+        );
+    }
+    let response = put.join().unwrap();
+    assert_eq!(response.status, 503, "{}", response.body);
+    server.join().unwrap();
+}
+
+/// Same blocking-I/O guarantee for `PUT /configs`: the replacement generation
+/// fetches providers while building, and the control loop must stay live.
+#[test]
+fn config_reload_stall_does_not_freeze_the_control_plane() {
+    use std::sync::mpsc;
+
+    let provider = TcpListener::bind("127.0.0.1:0").unwrap();
+    let provider_addr = provider.local_addr().unwrap();
+    let (stalled_tx, stalled_rx) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = provider.accept() {
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let _ = stalled_tx.send(());
+            std::thread::sleep(Duration::from_secs(3));
+        }
+    });
+
+    let controller = free_port();
+    let mixed = free_port();
+    let harness = Harness::start(&format!(
+        "mixed-port: {mixed}\nexternal-controller: 127.0.0.1:{controller}\nsecret: {SECRET}\nrules:\n  - MATCH,DIRECT\n"
+    ));
+    let payload = format!(
+        "mixed-port: {mixed}\nexternal-controller: 127.0.0.1:{controller}\nsecret: {SECRET}\nproxy-providers:\n  hp:\n    type: http\n    url: http://{provider_addr}/p.yaml\n    interval: 3600\nrules:\n  - MATCH,DIRECT\n"
+    );
+    let body = serde_json::json!({ "payload": payload }).to_string();
+    let bearer = format!("Bearer {SECRET}");
+    let put_addr = harness.addr;
+    let reload = std::thread::spawn(move || {
+        request(
+            put_addr,
+            "PUT",
+            "/configs?force=true",
+            &[("Authorization", &bearer)],
+            &body,
+        )
+    });
+
+    stalled_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("reload reached the stalled provider read");
+    let started = Instant::now();
+    let version = harness.authed("GET", "/version", "", SECRET);
+    let elapsed = started.elapsed();
+    assert_eq!(version.status, 200, "{}", version.body);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "control plane blocked for {elapsed:?} during the reload provider read"
+    );
+    let response = reload.join().unwrap();
+    assert_eq!(response.status, 400, "{}", response.body);
+    server.join().unwrap();
+}
+
+/// Pinned `getLogs` validates `level` against `log.LogLevelMapping` before it
+/// switches to streaming, so a bogus level is a 400 JSON body, not a 200
+/// empty stream.
+#[test]
+fn logs_level_is_validated_before_streaming() {
+    let harness = Harness::start(&format!(
+        "mixed-port: {}\nexternal-controller: 127.0.0.1:0\nsecret: {SECRET}\nrules:\n  - MATCH,DIRECT\n",
+        free_port()
+    ));
+    for level in ["bogus", "warn", "INFO"] {
+        let response = harness.authed("GET", &format!("/logs?level={level}"), "", SECRET);
+        assert_eq!(response.status, 400, "level {level}");
+        assert_eq!(response.json()["message"], "Body invalid");
+    }
+}
+
+/// Compatible providers (groups and the reserved `default`) expose their
+/// members under `/providers/proxies/:provider/:node`, including healthcheck;
+/// a group member must resolve instead of 404.
+#[test]
+fn compatible_provider_nodes_and_healthchecks_resolve_members() {
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let responder = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = target.accept() else {
+                return;
+            };
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer);
+            let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    let harness = Harness::start(&format!(
+        "mixed-port: {}\nexternal-controller: 127.0.0.1:0\nsecret: {SECRET}\nproxies:\n  - {{name: n1, type: socks5, server: 127.0.0.1, port: 1}}\nproxy-groups:\n  - {{name: Sel, type: select, proxies: [n1, DIRECT]}}\nrules:\n  - MATCH,Sel\n",
+        free_port()
+    ));
+
+    // Node detail falls back to the group member.
+    let response = harness.authed("GET", "/providers/proxies/Sel/n1", "", SECRET);
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(response.json()["name"], "n1");
+
+    // A dead member is resolved (503 from the delay), not a 404.
+    let response = harness.authed(
+        "GET",
+        "/providers/proxies/Sel/n1/healthcheck?timeout=500&url=http%3A%2F%2F127.0.0.1%3A9%2F",
+        "",
+        SECRET,
+    );
+    assert_ne!(response.status, 404, "{}", response.body);
+
+    // DIRECT is a member of the group and of the reserved default provider.
+    for provider in ["Sel", "default"] {
+        let response = harness.authed(
+            "GET",
+            &format!("/providers/proxies/{provider}/DIRECT/healthcheck?timeout=2000&url=http%3A%2F%2F{target_addr}%2F"),
+            "",
+            SECRET,
+        );
+        assert_eq!(response.status, 200, "{provider}: {}", response.body);
+        assert!(response.json()["delay"].is_u64());
+    }
+    responder.join().unwrap();
+}
+
+/// `external-controller: ":PORT"` is a hostless listen (pinned
+/// `net.Listen("tcp", ":PORT")` → `[::]:PORT`), not a configuration error.
+#[test]
+fn hostless_controller_address_binds_all_interfaces() {
+    let port = free_port();
+    let harness = Harness::start(&format!(
+        "mixed-port: {}\nexternal-controller: \":{port}\"\nsecret: {SECRET}\nrules:\n  - MATCH,DIRECT\n",
+        free_port()
+    ));
+    assert!(harness.addr.ip().is_unspecified(), "{}", harness.addr);
+    assert_eq!(harness.addr.port(), port);
+    let response = request(
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
+        "GET",
+        "/version",
+        &[("Authorization", &format!("Bearer {SECRET}"))],
+        "",
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+}
+
+/// A busy control port logs and skips that listener (pinned `start` returns
+/// after `External controller listen error`); the mixed inbound still starts.
+#[test]
+fn busy_controller_port_does_not_fail_kernel_start() {
+    let busy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy_port = busy.local_addr().unwrap().port();
+    let mixed = free_port();
+    let yaml = format!(
+        "mixed-port: {mixed}\nexternal-controller: 127.0.0.1:{busy_port}\nrules:\n  - MATCH,DIRECT\n"
+    );
+    let (mut kernel, _) = Kernel::start_from_yaml(&yaml, None, Limits::default())
+        .expect("kernel starts even when the controller port is busy");
+    assert_eq!(kernel.listen_addr().port(), mixed);
+    assert!(kernel.controller_addrs().0.is_none());
+    let _ = TcpStream::connect(kernel.listen_addr()).unwrap();
+    kernel.stop().unwrap();
+    drop(busy);
 }

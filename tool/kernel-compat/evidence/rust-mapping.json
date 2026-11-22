@@ -1902,9 +1902,9 @@
   "controller": {
     "status": "implemented",
     "listeners": [
-      "external-controller (TCP)",
+      "external-controller (TCP; a hostless ':PORT' binds [::]:PORT with an IPv4 wildcard fallback; a busy port logs and skips that listener without failing kernel start)",
       "external-controller-unix",
-      "external-controller-tls"
+      "external-controller-tls (HTTP/1.1 only; ALPN advertises http/1.1, unlike pinned which also serves h2)"
     ],
     "endpoints": {
       "/version": {
@@ -1946,9 +1946,10 @@
       },
       "/providers/proxies": {
         "status": "implemented",
-        "reason": "real providers plus Compatible group/default entries; update failure keeps the old snapshot",
+        "reason": "real providers plus Compatible group/default entries; update failure keeps the old snapshot; Compatible providers resolve member nodes and healthchecks through the group member list / all adapters",
         "evidence": [
-          "tests/controller.rs::provider_update_failure_keeps_the_old_snapshot"
+          "tests/controller.rs::provider_update_failure_keeps_the_old_snapshot",
+          "tests/controller.rs::compatible_provider_nodes_and_healthchecks_resolve_members"
         ]
       },
       "/providers/rules": {
@@ -1960,9 +1961,10 @@
       },
       "/logs": {
         "status": "partial",
-        "reason": "NDJSON/WebSocket stream carries controller events plus host-forwarded tracing events (the CLI forwards all tracing); library hosts must wire KernelOptions::log_bus to their logger",
+        "reason": "NDJSON/WebSocket stream carries controller events plus host-forwarded tracing events (the CLI forwards all tracing); library hosts must wire KernelOptions::log_bus to their logger; `level` is validated against the pinned keys before the stream starts (400 Body invalid otherwise)",
         "evidence": [
-          "tests/controller.rs::traffic_and_logs_stream_frames"
+          "tests/controller.rs::traffic_and_logs_stream_frames",
+          "tests/controller.rs::logs_level_is_validated_before_streaming"
         ]
       },
       "/traffic": {
@@ -2043,7 +2045,10 @@
       "PATCH /configs {\"tun\":{\"enable\":true}}: pinned answers 204 and attempts a TUN device; the Rust kernel rejects it by name (no device layer before T6/T7).",
       "GET /configs reports only fields this kernel honours; pinned General keys with no equivalent (unified-delay, routing-mark, geox-url, sniffing, find-process-mode, tcp-concurrent, keep-alive) are omitted rather than fabricated.",
       "The /proxies map omits pinned's GLOBAL/PASS/COMPATIBLE builtins; the kernel's routing has no such adapters.",
-      "Rule hit statistics (`extra` in /rules) are not tracked."
+      "Rule hit statistics (`extra` in /rules) are not tracked.",
+    "external-controller-tls advertises http/1.1 only and serves HTTP/1.1 only; pinned also offers h2 and serves it through Go's http server.",
+    "A control listener that cannot bind is logged and skipped without failing kernel start (pinned behaviour); the mixed inbound and the other control listeners keep running.",
+    "PUT /providers/{proxies,rules}/:name and PUT /configs perform blocking provider I/O on spawn_blocking workers, so the control runtime keeps serving while a provider stalls."
     ],
     "evidence": [
       "tool/kernel-compat/evidence/t25-differential.json",

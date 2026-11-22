@@ -1,7 +1,7 @@
 {
   "format": "t25-controller",
   "version": 1,
-  "generatedAt": "2026-11-23T01:45:00Z",
+  "generatedAt": "2026-11-23T02:20:00Z",
   "upstream": {
     "version": "v1.19.34",
     "source": "tool/kernel-compat/.cache/source/tree-v1.19.34",
@@ -16,9 +16,9 @@
       "native-kernel/crates/billow-kernel-cli/src/main.rs: Controller starts with the kernel; the tracing logger publishes to the /logs bus"
     ],
     "listeners": {
-      "external-controller": "implemented: TCP, started automatically when configured",
+      "external-controller": "implemented: TCP, started automatically when configured; a hostless ':9090' binds [::]:9090 (IPv4 wildcard fallback); a busy port logs an error and skips that listener without failing the kernel",
       "external-controller-unix": "implemented: Unix socket, unlinked before bind, 0666, no Bearer secret (pinned empty-secret semantics)",
-      "external-controller-tls": "implemented: TLS from top-level tls.certificate/tls.private-key; HTTP/1.1 served, h2 advertised in ALPN",
+      "external-controller-tls": "implemented: TLS from top-level tls.certificate/tls.private-key; HTTP/1.1 only, ALPN advertises http/1.1 only (pinned also serves h2 through Go's http server)",
       "external-controller-pipe": "unimplemented: rejected by name (Windows named pipe)",
       "external-controller-routing-mark": "unimplemented: rejected by name"
     },
@@ -45,12 +45,12 @@
       "/connections/:id": { "status": "implemented", "methods": ["DELETE"] },
       "/providers/proxies": { "status": "implemented", "methods": ["GET"] },
       "/providers/proxies/:name": { "status": "implemented", "methods": ["GET", "PUT"] },
-      "/providers/proxies/:name/healthcheck": { "status": "implemented", "methods": ["GET"] },
-      "/providers/proxies/:provider/:name": { "status": "implemented", "methods": ["GET"] },
-      "/providers/proxies/:provider/:name/healthcheck": { "status": "implemented", "methods": ["GET"] },
+      "/providers/proxies/:name/healthcheck": { "status": "implemented", "methods": ["GET"], "note": "a Compatible group probes its members asynchronously; default is a 204 no-op" },
+      "/providers/proxies/:provider/:name": { "status": "implemented", "methods": ["GET"], "note": "Compatible providers (groups and default) resolve members through the group member list / all adapters" },
+      "/providers/proxies/:provider/:name/healthcheck": { "status": "implemented", "methods": ["GET"], "note": "Compatible providers fall back to the group member or DIRECT instead of 404" },
       "/providers/rules": { "status": "implemented", "methods": ["GET"] },
       "/providers/rules/:name": { "status": "implemented", "methods": ["PUT"] },
-      "/logs": { "status": "partial", "methods": ["GET (NDJSON/WebSocket)"], "missing": ["a host that does not wire KernelOptions::log_bus only sees controller events; the CLI forwards all tracing"] },
+      "/logs": { "status": "partial", "methods": ["GET (NDJSON/WebSocket)"], "missing": ["a host that does not wire KernelOptions::log_bus only sees controller events; the CLI forwards all tracing"], "note": "level is validated (pinned error/warning/info/debug/silent) before the 200 stream; a bogus level is 400 Body invalid" },
       "/traffic": { "status": "implemented", "methods": ["GET (NDJSON/WebSocket)"] },
       "/memory": { "status": "implemented", "methods": ["GET (NDJSON/WebSocket)"], "note": "inuse is peak RSS via getrusage; oslimit 0" },
       "/configs/geo": { "status": "unimplemented", "http": 404 },
@@ -65,12 +65,13 @@
       "selection": "PUT /proxies/:group persists through the same SelectionCache as the library/CLI (`profile.store-selected`)",
       "delay": "GET /proxies/:name/delay and provider node healthcheck dial through the configured proxy chain, DIRECT/hosts resolver and DNS runtime, or the group's selected member",
       "connections": "live routed TCP tunnels are registered with metadata/chains/rule and byte counters; DELETE notifies the session future and the registry row disappears when the task ends",
-      "providerUpdate": "PUT /providers/{proxies,rules}/:name reuses the T24 update path; a failed fetch/compile returns 503 and the old Arc snapshot stays",
-      "reload": "PUT /configs builds providers/geodata/DNS/hosts/groups/rules into a new RuntimeSnapshot and swaps it; new sessions use it, in-flight sessions keep the old generation until they finish (R4)"
+      "providerUpdate": "PUT /providers/{proxies,rules}/:name reuses the T24 update path; the blocking file/http read runs on spawn_blocking so the control loop keeps serving; a failed fetch/compile returns 503 and the old Arc snapshot stays",
+      "reload": "PUT /configs builds providers/geodata/DNS/hosts/groups/rules into a new RuntimeSnapshot on spawn_blocking (blocking provider sockets) and swaps it; new sessions use it, in-flight sessions keep the old generation until they finish (R4)"
     },
     "knownDivergences": [
       "PUT /configs cannot move mixed-port/bind-address/dns.listen or change the controller listener/secret; pinned recreates them. The Rust kernel answers 400 naming the field (restart required).",
       "PATCH /configs {\"tun\":{\"enable\":true}} is 204 in pinned (it attempts a device); the Rust kernel rejects it with 400 because there is no device layer before T6/T7.",
+      "external-controller-tls advertises http/1.1 only: pinned advertises [\"h2\",\"http/1.1\"] and Go's http server also speaks h2; this router has no HTTP/2 frame layer, so h2-capable clients (curl's default offer) negotiate http/1.1 instead of reading a stream with no SETTINGS.",
       "GET /configs omits pinned General fields with no Rust equivalent (unified-delay, routing-mark, geox-url, sniffing, find-process-mode, tcp-concurrent, keep-alive*) instead of returning fabricated defaults.",
       "/proxies omits the pinned GLOBAL/PASS/COMPATIBLE builtin adapters, which this routing engine does not have.",
       "Rule hit/miss statistics are not tracked, so /rules has no `extra` object.",
@@ -97,7 +98,7 @@
     },
     "rustTests": {
       "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
-      "result": "all default suites pass: lib+controller/config/groups/dns/resources/sessions/protocols/peers (ignored by default) and CLI 11/11",
+      "result": "all default suites pass: lib+controller/config/groups/dns/resources/sessions/protocols/peers (ignored by default) and CLI 11/11; tests/controller.rs 15/15 (8 original + 7 T25-A2 regressions)",
       "controllerTests": [
         "tests/controller.rs::auth_routes_and_config_shapes_match_the_pinned_api",
         "tests/controller.rs::selection_delay_and_patch",
@@ -106,7 +107,14 @@
         "tests/controller.rs::connections_are_listed_with_metadata_and_can_be_closed",
         "tests/controller.rs::traffic_and_logs_stream_frames",
         "tests/controller.rs::unix_socket_serves_without_bearer",
-        "tests/controller.rs::cors_allow_origins_is_enforced_when_configured"
+        "tests/controller.rs::cors_allow_origins_is_enforced_when_configured",
+        "tests/controller.rs::tls_alpn_advertises_only_http11_and_serves_version",
+        "tests/controller.rs::provider_update_stall_does_not_freeze_the_control_plane",
+        "tests/controller.rs::config_reload_stall_does_not_freeze_the_control_plane",
+        "tests/controller.rs::logs_level_is_validated_before_streaming",
+        "tests/controller.rs::compatible_provider_nodes_and_healthchecks_resolve_members",
+        "tests/controller.rs::hostless_controller_address_binds_all_interfaces",
+        "tests/controller.rs::busy_controller_port_does_not_fail_kernel_start"
       ],
       "regressions": [
         "tool/kernel-compat/peer-tests.sh: 66 passed, 0 failed",
@@ -120,6 +128,7 @@
     }
   },
   "uncovered": [
+    "HTTP/2 on the control listener: the TLS listener advertises and serves HTTP/1.1 only (pinned serves h2 via Go's http server).",
     "TLS client-certificate authentication (tls.client-auth-type/client-auth-cert) is rejected at load; only server certificates are implemented.",
     "external-controller-pipe (Windows), external-controller-routing-mark and external-ui* are rejected by name.",
     "UDP SOCKS5 associations are not listed individually in /connections; they are closed with the kernel and are not addressable by DELETE.",

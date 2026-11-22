@@ -3146,12 +3146,12 @@ fn parse_controller_addr(
     if text.is_empty() {
         return Err(ConfigError::InvalidValue(format!("{path}: {key} must not be empty")));
     }
-    let (host, port) = text.rsplit_once(':').ok_or_else(|| {
+    let (_, port) = text.rsplit_once(':').ok_or_else(|| {
         ConfigError::InvalidValue(format!("{path}: {key} '{raw}' must be host:port"))
     })?;
-    if host.trim().is_empty() {
-        return Err(ConfigError::InvalidValue(format!("{path}: {key} '{raw}' has no host")));
-    }
+    // Pinned hands the string to `net.Listen`, where a hostless `:9090`
+    // binds every interface; accept it here and let the listener map it to
+    // `[::]:9090` (IPv4 wildcard fallback).
     port.parse::<u16>().map_err(|_| {
         ConfigError::InvalidValue(format!("{path}: {key} '{raw}' has an invalid port"))
     })?;

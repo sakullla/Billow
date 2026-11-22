@@ -584,7 +584,7 @@ impl Kernel {
             stop_tx,
             supervisor: Mutex::new(Some(supervisor)),
         };
-        let controller = crate::controller::Controller::start(&kernel)?;
+        let controller = crate::controller::Controller::start(&kernel);
         kernel.controller = controller;
         let identity = kernel.identity();
         info!(

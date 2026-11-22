@@ -481,7 +481,15 @@ and the nested-touch case dials once at 1 s and reads the nested group at
 listener starts automatically when the configuration sets
 `external-controller` (TCP), `external-controller-unix` (Unix socket) or
 `external-controller-tls` (TLS, using top-level `tls.certificate` and
-`tls.private-key`). `external-controller-cors` defaults to the pinned
+`tls.private-key`). A hostless address such as `external-controller: ":9090"`
+binds every interface (`[::]:9090`, IPv4 wildcard fallback), like the pinned
+`net.Listen`. A control listener that cannot bind is logged
+(`External controller listen error …`) and skipped without failing the kernel
+(the mixed inbound and the other listeners keep running), matching pinned
+`hub/route.start*`. The TLS listener speaks HTTP/1.1 only and advertises only
+`http/1.1` in ALPN: pinned also serves h2 through Go's http server, but this
+router has no HTTP/2 frame layer, so an h2 offer would negotiate a protocol
+that never sends SETTINGS. `external-controller-cors` defaults to the pinned
 `allow-origins: ["*"]`, `allow-private-network: true`.
 
 Implemented endpoints (statuses and JSON shapes follow pinned v1.19.34):
@@ -498,11 +506,11 @@ Implemented endpoints (statuses and JSON shapes follow pinned v1.19.34):
 | `/connections` | GET/DELETE | live routed tunnels with pinned metadata keys, byte counters, chains, rule; DELETE closes one/all; `connections: null` when empty |
 | `/providers/proxies` | GET | real proxy providers plus `Compatible` group/default providers |
 | `/providers/proxies/:name` | GET/PUT | detail and update; a failed update is 503 and keeps the old snapshot |
-| `/providers/proxies/:name/healthcheck` | GET | provider health check |
-| `/providers/proxies/:p/:name` | GET/healthcheck | provider node detail/latency |
+| `/providers/proxies/:name/healthcheck` | GET | provider health check (a `Compatible` group probes its members in the background; `default` is a 204 no-op) |
+| `/providers/proxies/:p/:name` | GET/healthcheck | provider node detail/latency; for a `Compatible` provider (group or `default`) the node resolves through the group's member list / all adapters, so group members and `DIRECT` keep the pinned 200 shape instead of 404 |
 | `/providers/rules` | GET | behavior/format/ruleCount/vehicleType/updatedAt (inline providers report `format: ""` and `payload`) |
 | `/providers/rules/:name` | PUT | re-read one provider; 503 on failure with the old snapshot kept |
-| `/logs` | GET (stream/WS) | NDJSON `{"type","payload"}` (or `format=structured`), level filter; the CLI forwards tracing events to the bus |
+| `/logs` | GET (stream/WS) | NDJSON `{"type","payload"}` (or `format=structured`), level filter; `level` is validated against the pinned `error`/`warning`/`info`/`debug`/`silent` keys before the 200 stream starts (a bogus level is the pinned 400 `Body invalid`), and the CLI forwards tracing events to the bus |
 | `/traffic` | GET (stream/WS) | `{"up","down","upTotal","downTotal"}` each second |
 | `/memory` | GET (stream/WS) | `{"inuse","oslimit"}`; `inuse` is the process peak RSS (`getrusage`) |
 
@@ -517,13 +525,17 @@ auth.
 
 Reload (`PUT /configs`) builds a complete replacement generation (providers,
 GEO, DNS, hosts, groups, rules) and only then swaps it; a failure leaves the old
-generation live. In-flight sessions keep the generation they started with, so a
-reload frees the previous rules/providers/DNS objects when their last session
-ends (R4). Pinned recreates the mixed listener/DNS server on reload while this
-kernel refuses a changed `mixed-port`/`bind-address`/`dns.listen` or controller
-listener/secret with a named 400 (restart required). `/configs/geo`,
-`/upgrade/geo`, `/group`, `/cache`, `/storage` and `/dns/query` are not
-implemented and return an explicit 404, recorded in
+generation live. Provider reads and the reload build use blocking file/socket
+I/O (`std::net::TcpStream` with 15s connect / 30s read); both run on a
+`spawn_blocking` worker so the controller's current_thread runtime keeps
+accepting and answering `/version`, `/traffic`, `/proxies` and `/connections`
+while a provider stalls. In-flight sessions keep the generation they started
+with, so a reload frees the previous rules/providers/DNS objects when their
+last session ends (R4). Pinned recreates the mixed listener/DNS server on
+reload while this kernel refuses a changed `mixed-port`/`bind-address`/
+`dns.listen` or controller listener/secret with a named 400 (restart
+required). `/configs/geo`, `/upgrade/geo`, `/group`, `/cache`, `/storage` and
+`/dns/query` are not implemented and return an explicit 404, recorded in
 `tool/kernel-compat/evidence/t25-controller.md`.
 
 ## Protocol outbounds
