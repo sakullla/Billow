@@ -73,12 +73,18 @@ impl ProxyProviderSlot {
             .clone()
     }
 
-    fn replace(&self, snapshot: ProxyProviderSnapshot) -> Arc<ProxyProviderSnapshot> {
+    /// Swaps in a new snapshot and returns the generation it was stamped with.
+    /// The `+1` happens under the write lock: two concurrent updates must not
+    /// both derive the same generation from the same old snapshot.
+    fn replace_next(&self, mut snapshot: ProxyProviderSnapshot) -> u64 {
         let mut state = self
             .state
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::replace(&mut *state, Arc::new(snapshot))
+        let generation = state.generation + 1;
+        snapshot.generation = generation;
+        *state = Arc::new(snapshot);
+        generation
     }
 }
 
@@ -152,9 +158,8 @@ impl RuleProviders {
             &self.geodata,
             &self.slots,
         )?;
-        let generation = slot.snapshot().generation + 1;
-        slot.replace(RuleProviderSnapshot {
-            generation,
+        let generation = slot.replace_next(RuleProviderSnapshot {
+            generation: 0,
             payload: payload.clone(),
             compiled: Arc::new(compiled),
             updated_at: SystemTime::now(),
@@ -197,10 +202,9 @@ impl RuleProviders {
             });
         }
         let proxies = read_proxy_payload(&slot.config, &self.base_dir, &self.tls, false)?;
-        let generation = slot.snapshot().generation + 1;
         let entries = proxies.len();
-        slot.replace(ProxyProviderSnapshot {
-            generation,
+        let generation = slot.replace_next(ProxyProviderSnapshot {
+            generation: 0,
             proxies,
             updated_at: SystemTime::now(),
         });

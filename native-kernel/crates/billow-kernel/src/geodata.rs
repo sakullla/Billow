@@ -827,7 +827,10 @@ impl GeoSiteDatabase {
                 let list = key.trim_start_matches('!');
                 let list = list.split_once('/').map(|(list, _)| list).unwrap_or(list);
                 let list = list.split_once('@').map(|(list, _)| list).unwrap_or(list);
-                if !db.entries.keys().any(|(candidate, _)| candidate == list) {
+                // Pinned `LoadGeoSiteMatcher` lowercases the tag; the dat
+                // stores lowercase codes, so `GEOSITE,CN` must resolve too.
+                let list = list.to_ascii_lowercase();
+                if !db.entries.keys().any(|(candidate, _)| candidate == &list) {
                     return Err(ConfigError::Unsupported(format!(
                         "geosite database {} does not contain key '{key}'",
                         path.display()

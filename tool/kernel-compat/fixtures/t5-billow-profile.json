@@ -1,0 +1,91 @@
+{
+  "mixed-port": 7890,
+  "allow-lan": false,
+  "mode": "rule",
+  "log-level": "info",
+  "hosts": {
+    "profile.static.test": "127.0.0.1"
+  },
+  "profile": {
+    "store-selected": true,
+    "store-fake-ip": false
+  },
+  "dns": {
+    "enable": true,
+    "enhanced-mode": "fake-ip",
+    "fake-ip-range": "198.18.0.1/16",
+    "fake-ip-filter": ["+.lan", "profile.real.test"],
+    "nameserver": ["223.5.5.5"],
+    "fallback": ["tls://1.0.0.1:853"]
+  },
+  "proxies": [
+    {
+      "name": "node-a",
+      "type": "ss",
+      "server": "127.0.0.1",
+      "port": 18388,
+      "cipher": "aes-256-gcm",
+      "password": "profile-a",
+      "udp": true
+    },
+    {
+      "name": "node-b",
+      "type": "trojan",
+      "server": "127.0.0.1",
+      "port": 18443,
+      "password": "profile-b",
+      "sni": "profile.example",
+      "skip-cert-verify": true
+    }
+  ],
+  "proxy-groups": [
+    {
+      "name": "PROXY",
+      "type": "select",
+      "proxies": ["node-a", "node-b", "DIRECT"]
+    },
+    {
+      "name": "AUTO",
+      "type": "url-test",
+      "proxies": ["node-a", "node-b"],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": 300,
+      "tolerance": 50
+    },
+    {
+      "name": "FALLBACK",
+      "type": "fallback",
+      "proxies": ["node-a", "node-b"],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": 300
+    }
+  ],
+  "proxy-providers": {
+    "billow-sub": {
+      "type": "file",
+      "path": "providers/billow-sub.yaml",
+      "interval": 3600,
+      "health-check": {
+        "enable": true,
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": 300
+      }
+    }
+  },
+  "rule-providers": {
+    "billow-corp": {
+      "type": "file",
+      "behavior": "domain",
+      "format": "text",
+      "path": "providers/billow-corp.txt",
+      "interval": 86400
+    }
+  },
+  "rules": [
+    "RULE-SET,billow-corp,REJECT",
+    "DOMAIN-SUFFIX,profile.example,PROXY",
+    "GEOSITE,CN,DIRECT",
+    "GEOIP,CN,DIRECT",
+    "MATCH,PROXY"
+  ]
+}

@@ -383,6 +383,83 @@ rules:
 }
 
 #[test]
+fn concurrent_provider_updates_stamp_unique_generations() {
+    // T25 moved provider updates off the single control runtime, so two
+    // updates of the same provider can overlap. The generation `+1` must be
+    // derived under the write lock; reading the old generation outside it lets
+    // both updates claim N+1 and the later swap look unchanged to the group
+    // health scheduler that keys off generation changes.
+    let server = TestServer::start("payload:\n  - +.first.example\n");
+    let dir = temp_dir("provider-generation-race");
+    std::fs::write(
+        dir.join("proxies.yaml"),
+        "proxies:\n  - {name: only, type: ss, server: 127.0.0.1, port: 8388, cipher: aes-256-gcm, password: p}\n",
+    )
+    .unwrap();
+    let yaml = format!(
+        r#"
+mixed-port: {}
+rule-providers:
+  remote:
+    type: http
+    behavior: domain
+    format: yaml
+    url: http://127.0.0.1:{}/rules.yaml
+    interval: 60
+proxy-providers:
+  sub:
+    type: file
+    path: proxies.yaml
+rules:
+  - RULE-SET,remote,REJECT
+  - MATCH,DIRECT
+"#,
+        free_port(),
+        server.port
+    );
+    let mut kernel = start_with_base(&yaml, None, dir.clone());
+    let (mut rules, mut proxies) = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let kernel = &kernel;
+            handles.push((
+                true,
+                scope.spawn(move || kernel.update_rule_provider("remote").unwrap().generation),
+            ));
+            handles.push((
+                false,
+                scope.spawn(move || kernel.update_proxy_provider("sub").unwrap().generation),
+            ));
+        }
+        let mut rules = Vec::new();
+        let mut proxies = Vec::new();
+        for (is_rule, handle) in handles {
+            let generation = handle.join().expect("update thread");
+            if is_rule {
+                rules.push(generation);
+            } else {
+                proxies.push(generation);
+            }
+        }
+        (rules, proxies)
+    });
+    rules.sort_unstable();
+    proxies.sort_unstable();
+    kernel.stop().expect("stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(
+        rules,
+        (2..=9).collect::<Vec<_>>(),
+        "concurrent rule-provider updates must not repeat a generation"
+    );
+    assert_eq!(
+        proxies,
+        (2..=9).collect::<Vec<_>>(),
+        "concurrent proxy-provider updates must not repeat a generation"
+    );
+}
+
+#[test]
 fn inline_provider_update_is_a_noop_like_mihomo() {
     let yaml = format!(
         r#"
@@ -696,11 +773,19 @@ rules:
     assert!(error.to_string().contains("circular"), "{error}");
 }
 
-/// The shape Billow's `profile.rs` produces for the Rust engine: override-merged
-/// rules/providers plus the launcher keys `prepare`/`apply_settings`/
-/// `finish_yaml_for` insert (Android adds `port: 0`, `socks-port: 0`,
-/// `external-controller` and a disabled `tun`; settings may add `dns`,
-/// `sniffer` and `geox-url`; the profile itself carries `proxy-groups`).
+/// The shape Billow's `profile.rs` hands the Rust engine with
+/// `tun_enable: false`, replayed from `kernel_yaml_for`: `prepare_named` (the
+/// override merge), `apply_settings`, `strip_launcher_tun`,
+/// `ensure_tun_dns`, `force_mode` and `finish_yaml_for` (selection order).
+/// Nuances that matter to this fixture:
+/// - desktop `apply_settings` materializes a launcher `tun` block even when the
+///   user wrote none, and `strip_launcher_tun` removes it again because the
+///   kernel has no TUN path (the `tun` key below therefore represents Android's
+///   disabled block, which Android's `apply_settings` inserts explicitly);
+/// - `port: 0` / `socks-port: 0` / `external-controller` are Android-only
+///   additions in `apply_settings`;
+/// - settings may add `dns`, `sniffer` and `geox-url`, and profiles carry
+///   `proxy-groups` whose rules normally target a group name.
 /// This is a replica of that output, not a hand-written "Mihomo config".
 fn billow_effective_yaml(port: u16) -> String {
     format!(
@@ -740,7 +825,7 @@ rule-providers:
 rules:
   - RULE-SET,override-extra,REJECT
   - DOMAIN-SUFFIX,corp.com,DIRECT
-  - DOMAIN-SUFFIX,profile.example,node-a
+  - DOMAIN-SUFFIX,profile.example,PROXY
   - MATCH,DIRECT
 "#
     )
@@ -851,5 +936,8 @@ fn billow_effective_configuration_rule_subset_keeps_override_order() {
     let kernel = start(&subset, None);
     assert_eq!(domain_eval(&kernel, "x.override.example"), Action::Reject);
     assert_eq!(domain_eval(&kernel, "corp.com"), Action::Direct);
-    assert!(matches!(domain_eval(&kernel, "profile.example"), Action::Proxy(_)));
+    // A real profile's rules normally name a group. The target resolves to the
+    // group, not to a bare proxy: the boundary T23 owns is group membership
+    // and selection, which this subset does not evaluate past.
+    assert_eq!(domain_eval(&kernel, "profile.example"), Action::Group(0));
 }

@@ -130,13 +130,20 @@ impl Controller {
                         ),
                     );
                 }
-                Err(error) => core.log_bus.publish(
-                    "error",
-                    format!(
+                Err(error) => {
+                    // The log bus is the control API's own log stream; a
+                    // failed bind must also reach the process logger so a
+                    // bare CLI run shows why no controller came up.
+                    tracing::error!(
                         "External controller listen error at {spec}: {error}; the TCP control listener is skipped"
-                    ),
-                ),
-            }
+                    );
+                    core.log_bus.publish(
+                        "error",
+                        format!(
+                            "External controller listen error at {spec}: {error}; the TCP control listener is skipped"
+                        ),
+                    );
+                }            }
         }
         if let Some(spec) = &config.external_controller_tls {
             match state.tls_config.clone() {
@@ -156,14 +163,22 @@ impl Controller {
                             ),
                         );
                     }
-                    Err(error) => core.log_bus.publish(
-                        "error",
-                        format!(
+                    Err(error) => {
+                        tracing::error!(
                             "External controller tls listen error at {spec}: {error}; the TLS control listener is skipped"
-                        ),
-                    ),
+                        );
+                        core.log_bus.publish(
+                            "error",
+                            format!(
+                                "External controller tls listen error at {spec}: {error}; the TLS control listener is skipped"
+                            ),
+                        );
+                    }
                 },
                 None => {
+                    tracing::error!(
+                        "External controller tls listen error: tls.certificate/tls.private-key are missing or invalid; the TLS listener is skipped"
+                    );
                     core.log_bus.publish(
                         "error",
                         "External controller tls listen error: tls.certificate/tls.private-key are missing or invalid; the TLS listener is skipped",
@@ -184,6 +199,10 @@ impl Controller {
                     );
                 }
                 Err(error) => {
+                    tracing::error!(
+                        "External controller unix listen error at {}: {error}",
+                        path.display()
+                    );
                     core.log_bus.publish(
                         "error",
                         format!(

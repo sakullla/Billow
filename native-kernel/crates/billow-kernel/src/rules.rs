@@ -894,4 +894,18 @@ impl RuleProviderSlot {
         let old = std::mem::replace(&mut *state, Arc::new(snapshot));
         old
     }
+
+    /// Swaps in a new snapshot and returns the generation it was stamped with.
+    /// The `+1` happens under the write lock so two concurrent updates of the
+    /// same provider cannot both derive the same generation.
+    pub(crate) fn replace_next(&self, mut snapshot: RuleProviderSnapshot) -> u64 {
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = state.generation + 1;
+        snapshot.generation = generation;
+        *state = Arc::new(snapshot);
+        generation
+    }
 }

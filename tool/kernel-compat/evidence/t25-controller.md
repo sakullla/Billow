@@ -46,9 +46,11 @@ another method is 405 plus `Allow`. JSON error bodies are
   with an IPv4 wildcard fallback), like pinned `net.Listen`. The IPv4-mapped
   acceptance depends on the platform IPv6 default (dual-stack on macOS/Linux;
   Windows defaults to v6-only). A control listener that cannot bind (port in
-  use, bad address) logs `External controller listen error …` and is skipped;
-  the mixed inbound and the other control listeners keep starting, matching
-  pinned `hub/route.start*`.
+  use, bad address) publishes `External controller listen error …` to the
+  `/logs` bus **and** emits it through `tracing::error!`, so a bare CLI run
+  (whose logger is the one-way tracing→bus sink) shows the reason on stderr; the
+  listener is skipped and the mixed inbound plus the other control listeners
+  keep starting, matching pinned `hub/route.start*`.
 - Unix socket: no Bearer secret (pinned starts the Unix router with an empty
   secret); the socket is created `0666` after unlinking a stale path.
 - `external-controller-tls`: top-level `tls.certificate`/`tls.private-key`;
@@ -161,7 +163,10 @@ Additional pinned/Rust differences that the differential normalizes or omits
   `/version` answers over `[::1]`.
 - **Busy control port** (`busy_controller_port_does_not_fail_kernel_start`):
   the kernel starts with the mixed listener live and `controller_addrs().0 ==
-  None` when the configured control port is already bound.
+  None` when the configured control port is already bound. T5 also added the
+  `tracing::error!` mirror so the reason is visible without `/logs`; provider
+  generation stamping now happens under the slot write lock
+  (`tests/resources.rs::concurrent_provider_updates_stamp_unique_generations`).
 
 Platform: macOS arm64 for every runtime case (TCP, Unix, TLS, reload,
 connections, streams). Linux/Android/iOS compile from the same code path but

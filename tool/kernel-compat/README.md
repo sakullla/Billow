@@ -90,6 +90,21 @@ node tool/kernel-compat/t23-differential.mjs \
 node tool/kernel-compat/t25-differential.mjs \
   --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
   --out tool/kernel-compat/evidence/t25-differential.json
+
+# T5 combined differential: one configuration with fake-ip DNS, hosts,
+# yaml/text/mrs/http rule-providers, a proxy-provider, RULE-SET/GEOSITE/GEOIP
+# rules, select/url-test/fallback groups, the controller and real ss/trojan/ssr
+# outbounds. The ss/trojan peers are pinned Mihomo `listeners:` processes; the
+# ssr peer is peers/ssr-server (built with go). The same CONNECT sequence
+# compares DNS answers, rule outcome, group selection, provider update/reload
+# semantics and what the echo receiver got. The generated Billow desktop/Android
+# artifacts are loaded with --check/-t. Run `brotli -dk
+# src-tauri/resources/runtime/geo/*.mmdb.br` and pass --mmdb-dir to add the T22
+# mmdb `!geoip-code` case to that differential.
+node tool/kernel-compat/t5-differential.mjs \
+  --mihomo <path-to-mihomo> --rust <path-to-billow-kernel> \
+  --out tool/kernel-compat/evidence/t5-integration.json \
+  --effective-dir tool/kernel-compat/evidence/t5-effective
 ```
 
 The Rust binary's path follows the cargo target directory: `native-kernel/target/release/billow-kernel`
@@ -119,8 +134,8 @@ judgement for either:
 The Rust CLI rejects `mixed-port: 0`, so the runner always passes the allocated port with
 `--port` as well as writing it into the YAML. A Rust kernel start that fails before listening
 is recorded as `startup-failed` with the CLI's own stderr (for example
-`[unsupported] unsupported configuration: top-level key 'hosts' is not implemented by the Rust
-kernel slice`); that is the coverage gap for T4/T5, never a pass. The Rust CLI accepts only
+`[unsupported] unsupported configuration: top-level key 'sniffer' with enable: true is not
+implemented (sniffing is T7)`); that is the remaining coverage gap, never a pass. The Rust CLI accepts only
 HTTP CONNECT (a forward GET is rejected with `405`/`unsupported_protocol`), so fixtures for it
 use `method: connect`.
 

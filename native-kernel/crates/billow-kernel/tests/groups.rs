@@ -1143,6 +1143,60 @@ async fn provider_registration_dedupes_urls_across_groups() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_registration_keeps_the_first_expected_status_for_a_shared_url() {
+    // Pinned dedupes the `extra` probe list by URL, and the entry kept is the
+    // one the first group registered (`addTestUrlToProviders` appends; a later
+    // group's filter is merged but its expected-status is not written back).
+    // Group A therefore pins 500 (the 204 answer is not the expected status)
+    // and group B's 204 must not override it. The filters merge, which is what
+    // makes the probe apply to `only` at all; without the merge group A's
+    // `^nope$` would exclude every member and the node would stay unprobed.
+    let dir = temp_dir("provider-shared-url-expected-status");
+    let echo = spawn_endpoint(EchoMode::Echo).await;
+    let node = spawn_http_proxy_node(ProxyNodeMode::Health {
+        delay: Duration::from_millis(5),
+        status: 204,
+    });
+    std::fs::write(
+        dir.join("nodes.yaml"),
+        format!(
+            "proxies:\n  - {{name: only, type: http, server: 127.0.0.1, port: {}}}\n",
+            node.port
+        ),
+    )
+    .expect("provider file");
+    let port = free_port();
+    let provider_url = format!("http://127.0.0.1:{}/provider", echo.port);
+    let shared_url = format!("http://127.0.0.1:{}/shared", echo.port);
+    let yaml = format!(
+        "mixed-port: {port}\nlog-level: silent\nproxy-providers:\n  remote:\n    type: file\n    path: nodes.yaml\n    health-check:\n      enable: false\n      url: '{provider_url}'\nproxy-groups:\n  - {{name: A, type: url-test, use: [remote], url: '{shared_url}', expected-status: 500, filter: '^nope$', interval: 1, lazy: false, timeout: 500}}\n  - {{name: B, type: url-test, use: [remote], url: '{shared_url}', expected-status: 204, filter: '^only$', interval: 1, lazy: false, timeout: 500}}\nrules:\n  - MATCH,A\n"
+    );
+    let (mut kernel, _) = start(&yaml, &dir, None);
+    let groups = kernel.groups().clone();
+    let probed = wait_until(Duration::from_secs(3), || {
+        node.connections.load(Ordering::Relaxed) >= 2
+    })
+    .await;
+    let status = groups.group_status("B").expect("B status");
+    let probes = node.connections.load(Ordering::Relaxed);
+    kernel.stop().expect("stop");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        probed,
+        "the merged filter must let the shared URL probe reach `only` (provider URL + shared URL): {status:?}"
+    );
+    let member = status
+        .members
+        .iter()
+        .find(|member| member.name == "only")
+        .expect("only member");
+    assert!(
+        !member.alive && member.delay.is_none(),
+        "the first group's expected-status 500 must win over the later 204: {member:?} ({probes} CONNECTs)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn force_set_keeps_the_url_test_tolerance_baseline() {
     // Pinned `URLTest.ForceSet` resets `fastSingle` but leaves `fastNode`
     // (`urltest.go`): when the new selection is alive, `fast()` returns it

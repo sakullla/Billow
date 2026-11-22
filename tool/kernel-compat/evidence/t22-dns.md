@@ -130,10 +130,20 @@ workflow after the T22-A2 changes:
 Residual note: the `geoip-code` fix follows the pinned **geodata** path
 (`geodata-mode: true`, `LoadGeoIPMatcher` not-matcher + `dnsFallbackFilter`),
 which is the mode the differential compares. Pinned's mmdb path
-(`geodata-mode: false`) lowercases the code but looks up `!xx` as an ISO code
-that never matches, so its fallback filter fires for every non-LAN answer; the
-kernel keeps the negation in both modes instead of reproducing that accident.
-No mmdb `!xx` differential case is recorded.
+(`geodata-mode: false`) passes the raw `!au` to `LookupCode` and negates the
+result again, so its fallback filter fires for every non-LAN answer; the kernel
+keeps the negation in both modes instead of reproducing that accident. The
+mmdb case is now exercised and registered instead of unrecorded:
+`fallback-geoip-code-mmdb-negated` (`--mmdb-dir`) records the observed split
+(pinned falls back to 6.6.6.6 for a non-AU 8.8.8.8; the kernel keeps 8.8.8.8)
+as `known-difference` with both answer sets checked exactly.
+
+T5 also closed the domain-hosts failure case: `hosts-domain-servfail-no-cname`
+(mirrored by `tests/dns.rs::failed_domain_hosts_alias_reports_servfail_without_a_cname`)
+compares a silent upstream for `alias.test -> dead-target.test`; both engines
+return SERVFAIL with no answer. Pinned `withHosts` prepends its CNAME only when
+the inner exchange returns `err == nil`, while a real NXDOMAIN answer still
+keeps the CNAME.
 
 ## Named gaps (rejected or recorded, never silent)
 

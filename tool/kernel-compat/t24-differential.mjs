@@ -313,6 +313,15 @@ const cases = [
     target: { host: 'localhost', port: 'echo' },
   },
   {
+    // Pinned lowercases the geosite tag; `GEOSITE,CN` (uppercase) is the
+    // common real-profile spelling and must resolve against the same list.
+    id: 'geosite-dat-uppercase-hit',
+    expect: 'blocked',
+    geodata: 'dat',
+    rules: ['GEOSITE,TEST,REJECT', 'MATCH,DIRECT'],
+    target: { host: 'localhost', port: 'echo' },
+  },
+  {
     id: 'geoip-dat-hit',
     expect: 'blocked',
     geodata: 'dat',

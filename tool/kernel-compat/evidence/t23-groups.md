@@ -118,7 +118,10 @@ provider's own `HealthCheck`:
 - `lazy` and `lastTouch` are the provider's;
 - registration is one `HealthCheck` per provider, not one task per (group,
   provider): the provider has a single interval/ticker, and extra URLs are
-  deduped by URL (the first `expected-status` wins, later filters merge);
+  deduped by URL (the first `expected-status` wins, later filters merge;
+  `tests/groups.rs::provider_registration_keeps_the_first_expected_status_for_a_shared_url`
+  registers the same URL twice with 500/204 and asserts the 204 answer stays
+  dead while the merged filters still probe the member);
 - a registration also activates a provider whose `health-check.enable` is
   false (`hc.interval` goes from 0 to the group interval, so pinned
   `Initial()` starts `process()`); its `check()` then probes the provider's

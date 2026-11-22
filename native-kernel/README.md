@@ -153,14 +153,25 @@ port of `0` means disabled (Mihomo's meaning); if every listener key is 0 the
 load fails by name instead of binding an ephemeral port.
 
 Billow's `profile.rs` effective YAML (`prepare`/`apply_settings`/
-`finish_yaml_for`) is the input shape this loader is tested against, but it is
-**not** claimed to load directly. Its rule/provider/proxy subset loads; the
-launcher keys are handled explicitly: a disabled `tun`/`sniffer` block is
-inert with a warning, `geox-url` is recorded with a warning, the controller
-keys load (T25), and an enabled `tun`/`sniffer` is rejected with the key named
-(T6-T7); `hosts` and `dns` load through the T22 runtime (see
+`strip_launcher_tun`/`ensure_tun_dns`/`finish_yaml_for`) is the input shape this
+loader is tested against. T5 generates that artifact from the real
+`kernel_yaml_for(Engine::Rust, tun_enable=false)` steps
+(`tool/kernel-compat/t5-effective.mjs`, profile fixture
+`fixtures/t5-billow-profile.json`) and loads it with `--check`: the desktop and
+Android artifacts both name only the enabled `sniffer` (T7); removing that one
+block makes the whole artifact load and register its groups. The launcher keys
+are handled explicitly: the launcher `tun` block is stripped before the kernel
+sees it (a user-written `tun` is rejected with `enable: true`), `geox-url` is
+recorded with a warning, `port: 0`/`socks-port: 0`/`redir-port: 0`/
+`tproxy-port: 0` are inert disabled listeners, `unified-delay`,
+`tcp-concurrent`, `find-process-mode: off` and the global keep-alive keys are
+accepted with a warning that their tuning is not applied, the controller keys
+load (T25), and `hosts`/`dns` load through the T22 runtime (see
 [DNS and hosts](#dns-and-hosts-t22)). `proxy-groups` is implemented by T23
-(see [Proxy groups](#proxy-groups-t23)).
+(see [Proxy groups](#proxy-groups-t23)); `tests/resources.rs` keeps the
+replica fixture, and a rule naming a group resolves to `Action::Group`.
+`tool/kernel-compat/evidence/t5-integration.json` records the combined
+differential and the two generated artifacts.
 
 Rules (T24): `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`,
 `DOMAIN-WILDCARD`, `GEOSITE`, `GEOIP`, `SRC-GEOIP`, `IP-ASN`, `SRC-IP-ASN`,
@@ -1077,11 +1088,12 @@ group differential runs the same pinned binary with loopback CONNECT nodes:
   connection metadata, `SUB-RULE` action selection, all rule-provider
   vehicles/formats (including MRS), proxy-provider filters, generated
   `GeoSite.dat`/`GeoIP.dat`, HTTP provider update success/failure with the old
-  generation kept, provider path containment, proxy-provider filter/override
-  semantics, the bundled `Country.mmdb`/`ASN.mmdb` (ignored unless
-  `BILLOW_MMDB_DIR` is set), and Billow's effective YAML: its
-  rule/provider/proxy subset loads in override order while the launcher keys
-  are registered as inert-with-warning or named rejections.
+  generation kept, concurrent updates stamping unique generations, provider
+  path containment, proxy-provider filter/override semantics, the bundled
+  `Country.mmdb`/`ASN.mmdb` (ignored unless `BILLOW_MMDB_DIR` is set), and
+  Billow's effective YAML: its rule/provider/proxy subset loads in override
+  order (including a rule naming a group) while the launcher keys are
+  registered as inert-with-warning or named rejections.
 - `tests/dns.rs` — T22: pinned hosts trie forms/priority and domain chains,
   strict nameserver/fake-ip/hosts rejections, UDP/TCP/DoT/DoH resolution,
   cache TTL, nameserver policy, fallback IP/domain filters, timeout, fake-ip

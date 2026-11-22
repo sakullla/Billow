@@ -106,21 +106,54 @@ and `+.sub.*.example.com` patterns now follow `component/trie/domain.go`: a
 
 ## Billow effective YAML
 
-Billow's `profile.rs` output is reproduced as a test fixture (the fields
-`prepare`, `apply_settings` and `finish_yaml_for` insert) instead of a
-hand-written Mihomo config. The full fixture is **not** asserted to load: its
-cross-task blocks are registered explicitly.
+`tests/resources.rs` reproduces Billow's `profile.rs` output for the Rust
+engine (`prepare` → `apply_settings` → `strip_launcher_tun` → `finish_yaml_for`)
+instead of a hand-written Mihomo config. The replica is the **Rust input**, not
+the generic Mihomo launch file: desktop `apply_settings` materializes a launcher
+`tun` block and `strip_launcher_tun` removes it because the user profile wrote
+no `tun`; `port: 0`/`socks-port: 0`/`external-controller` are Android-only
+additions. Its rules name a group (`PROXY`), which is what real profiles do;
+that target resolves to `Action::Group`, and group membership/selection stays
+T23.
 
-- `tun: {enable: false}` and `sniffer: {enable: false}` load with a warning;
-  `enable: true` is rejected by name (device/TUN is T6/T7, sniffer is T22).
+The full replica is **not** asserted to load as-is: its settings include the
+enabled sniffer, which T7 owns and the loader rejects by name. T5 later
+generated both platform artifacts from the mirror
+(`tool/kernel-compat/t5-effective.mjs`) and recorded them under
+`tool/kernel-compat/evidence/t5-effective/`: the enabled `sniffer` is the only
+remaining named rejection, and removing it makes the complete desktop and
+Android artifacts load (`--check`) with their groups registered. See
+`tool/kernel-compat/evidence/t5-integration.json`.
+
+- A disabled `tun`/`sniffer` block loads with a warning; `enable: true` is
+  rejected by name (device/TUN is T6/T7, sniffing is T7).
 - `geox-url` loads with a warning that no downloader runs.
 - `external-controller` (T25), `dns`/`hosts` (T22) and `proxy-groups` (T23) are
-  rejected by name.
-- `port: 0`/`socks-port: 0` are disabled aliases; with a positive `mixed-port`
-  the configuration loads, and an all-zero listener set fails instead of
-  binding an ephemeral port.
-- Removing only those registered keys yields the rule/provider/proxy subset;
-  the override's prepended rule, profile rules and `MATCH` retain their order.
+  implemented; their keys load.
+- `port: 0`/`socks-port: 0`/`redir-port: 0`/`tproxy-port: 0` are disabled
+  aliases; with a positive `mixed-port` the configuration loads, and an
+  all-zero listener set fails instead of binding an ephemeral port.
+- Removing the enabled sniffer yields the rule/provider/proxy artifact; the
+  override's prepended rule, profile rules and `MATCH` retain their order.
+
+## Provider root vs the pinned `-d` home (handoff to T6/T7)
+
+The Rust CLI resolves relative provider paths against the **configuration file's
+directory** (`crates/billow-kernel-cli/src/main.rs`: `base_dir` defaults to the
+config's parent; `provider.rs::resolve_provider_path` confines to it). Pinned
+resolves them against `C.Path`'s home, which Billow passes as `-d` (desktop:
+`~/.config/mihomo` or `CLASH_HOME_DIR`; the native runtime YAML is written into
+the profile work directory). Consequences for the host integration:
+
+- a relative `path:`/HTTP cache path that works under Mihomo is looked up under
+  the work directory by the Rust engine and fails by name (not silently);
+- an absolute path inside Mihomo's home may be outside the Rust config
+  directory and be rejected by the safety check.
+
+T6/T7 must either start the Rust engine with the same home as Mihomo's `-d`
+(and keep `CLASH_HOME_DIR` semantics) or rewrite provider paths when writing the
+native config. Sharing one home also makes `profile.store-fake-ip`/selection
+cache paths line up. This is an interface decision, not a provider-format gap.
 
 ## Coverage boundaries not claimed as pass
 

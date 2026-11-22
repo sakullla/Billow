@@ -2646,15 +2646,24 @@ impl DnsService {
                     let mut resolved = self.resolve_question_pipeline(&target, raw).await;
                     resolved.id = query.id;
                     resolved.question = Some(q.clone());
-                    resolved.answers.insert(
-                        0,
-                        Record {
-                            name: q.name.clone(),
-                            rtype: TYPE_CNAME,
-                            ttl: 10,
-                            data: RrData::Cname(domain),
-                        },
-                    );
+                    // Pinned `withHosts` prepends the CNAME only when the
+                    // inner exchange returned no error; a failed exchange
+                    // becomes an empty SERVFAIL reply (server.go). This kernel
+                    // marks a failed exchange with rcode 2 (SERVFAIL), so that
+                    // reply must not gain a synthesized CNAME. A real NXDOMAIN
+                    // from an upstream is still an answer message in pinned and
+                    // keeps the CNAME.
+                    if resolved.rcode != 2 {
+                        resolved.answers.insert(
+                            0,
+                            Record {
+                                name: q.name.clone(),
+                                rtype: TYPE_CNAME,
+                                ttl: 10,
+                                data: RrData::Cname(domain),
+                            },
+                        );
+                    }
                     message = Some(resolved);
                 }
                 _ => {}

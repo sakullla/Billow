@@ -45,7 +45,7 @@ fn rejects_every_unimplemented_top_level_key() {
         "tunnels",
         "external-controller-pipe",
         "experimental",
-        "unified-delay",
+        "skip-auth-prefixes",
         "global-client-fingerprint",
     ] {
         let yaml = format!("{key}: {{}}\nmixed-port: 1\n");
@@ -54,6 +54,38 @@ fn rejects_every_unimplemented_top_level_key() {
             "{key} must be rejected, got {}",
             err_tag(&yaml)
         );
+    }
+}
+
+#[test]
+fn billow_launcher_keys_are_inert_or_named() {
+    // Billow's `apply_settings` injects these into every Android/desktop
+    // artifact. The disabled/neutral forms must keep the file loadable while
+    // the tuning they request is named as a gap; a value that would need the
+    // missing implementation is still a named rejection.
+    let loaded = load_config(
+        "mixed-port: 1\nredir-port: 0\ntproxy-port: 0\nunified-delay: true\ntcp-concurrent: true\nfind-process-mode: off\nkeep-alive-interval: 30\ndisable-keep-alive: false\n",
+        "test.yaml",
+    )
+    .expect("Billow launcher keys load");
+    let warnings = loaded.warnings.join("\n");
+    for needle in [
+        "redir-port 0",
+        "tproxy-port 0",
+        "unified-delay",
+        "tcp-concurrent",
+        "find-process-mode is off",
+        "keep-alive-interval 30s",
+        "disable-keep-alive",
+    ] {
+        assert!(warnings.contains(needle), "missing warning '{needle}': {warnings}");
+    }
+    for yaml in [
+        "mixed-port: 1\nredir-port: 7892\n",
+        "mixed-port: 1\ntproxy-port: 7893\n",
+        "mixed-port: 1\nfind-process-mode: always\n",
+    ] {
+        assert!(err_tag(yaml).starts_with("unsupported"), "{yaml}: {}", err_tag(yaml));
     }
 }
 

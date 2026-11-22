@@ -17,7 +17,7 @@
 //     --out tool/kernel-compat/evidence/t22-dns.json
 import { execFileSync, spawn } from 'node:child_process'
 import dgram from 'node:dgram'
-import { writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { writeFile, mkdir, mkdtemp, rm, copyFile } from 'node:fs/promises'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -582,6 +582,7 @@ function formatDns(caseDef, fixtures) {
     '  store-fake-ip: false',
   ]
   if (caseDef.geodata) lines.push('geodata-mode: true')
+  if (caseDef.mmdb) lines.push('geodata-mode: false')
   if (caseDef.hosts) {
     lines.push('hosts:')
     for (const [domain, ip] of Object.entries(caseDef.hosts)) lines.push(`  ${domain}: ${ip}`)
@@ -744,6 +745,43 @@ const cases = [
       && answers[0]?.answers?.[1]?.ip === '9.9.9.9',
   },
   {
+    id: 'hosts-domain-servfail-no-cname',
+    // T22-A2 review: pinned `withHosts` sets Id/Question and prepends the
+    // CNAME only when the inner exchange returns `err == nil`; a transport
+    // failure becomes an empty SERVFAIL reply (`server.go`). The candidate used
+    // to prepend a CNAME to its SERVFAIL message.
+    hosts: { 'alias.test': 'dead-target.test' },
+    nameservers: (fixtures) => [`udp://127.0.0.1:${fixtures.silent.port}`],
+    queries: ['alias.test'],
+    queryTimeoutMs: 12000,
+    expect: (answers) => answers[0]?.rcode === 2 && (answers[0]?.answers?.length ?? 0) === 0,
+  },
+  {
+    // MaxMind path (`geodata-mode: false`). Pinned hands the raw `!au`
+    // string to `LookupCode` and negates the result again, so `!au` falls
+    // back for every non-LAN answer. The candidate applies the documented
+    // negation (`!au` falls back for an AU answer only). The pinned behaviour
+    // is itself anomalous; record the observed split instead of pretending
+    // the engines agree.
+    id: 'fallback-geoip-code-mmdb-negated',
+    mmdb: true,
+    nameservers: udpNameserver,
+    fallback: (fixtures) => [`udp://127.0.0.1:${fixtures.fallback.port}`],
+    fallbackFilter: { geoip: true, 'geoip-code': '!au' },
+    queries: ['public.test'],
+    knownDifference: {
+      reason: 'pinned mmdb LoadGeoIPMatcher keeps the leading `!` and dnsFallbackFilter.MatchIp negates it again; `!au` therefore falls back for any non-LAN address, while both engines use the same AU-only fallback in GeoIP.dat mode',
+      // Recorded on the pinned v1.19.34 binary with the bundled Country.mmdb:
+      // the pinned answer is an empty NXDOMAIN for the non-AU 8.8.8.8, the
+      // kernel keeps the main answer. A change on either side is reported.
+      observed: {
+        mihomo: [{ rcode: 3, timeout: false, answers: [] }],
+        rust: [{ rcode: 0, timeout: false, answers: ['A:8.8.8.8:60'] }],
+      },
+    },
+    expect: () => true,
+  },
+  {
     id: 'fake-ip',
     enhancedMode: 'fake-ip',
     fakeIpFilter: ['real.test'],
@@ -852,9 +890,12 @@ async function runEngine(engine, binary, item, fixtures, dir, context) {
       { code: 'zz', cidrs: [{ bytes: [1, 2, 3, 4], prefix: 32 }] },
     ]))
   }
+  if (item.mmdb) {
+    await copyFile(join(context.mmdbDir, 'Country.mmdb'), join(dir, 'Country.mmdb'))
+  }
   const args = engine === 'mihomo'
     ? ['-d', dir, '-f', join(dir, 'config.yaml')]
-    : item.geodata
+    : item.geodata || item.mmdb
       ? [join(dir, 'config.yaml'), '--geosite-dir', dir]
       : [join(dir, 'config.yaml')]
   const handle = startProcess(binary, args, dir)
@@ -915,15 +956,16 @@ function normalizeConnect(engine, observation) {
 }
 
 function parseArgs(argv) {
-  const args = { mihomo: null, rust: null, out: null }
+  const args = { mihomo: null, rust: null, out: null, mmdbDir: null }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--mihomo') args.mihomo = resolve(argv[++index])
     else if (arg === '--rust') args.rust = resolve(argv[++index])
     else if (arg === '--out') args.out = resolve(argv[++index])
+    else if (arg === '--mmdb-dir') args.mmdbDir = resolve(argv[++index])
     else throw new Error(`unknown argument ${arg}`)
   }
-  if (!args.mihomo || !args.rust || !args.out) throw new Error('usage: --mihomo <binary> --rust <binary> --out <json>')
+  if (!args.mihomo || !args.rust || !args.out) throw new Error('usage: --mihomo <binary> --rust <binary> --out <json> [--mmdb-dir <dir>]')
   return args
 }
 
@@ -958,6 +1000,10 @@ async function main() {
   const results = []
   try {
     for (const item of cases) {
+      if (item.mmdb && !args.mmdbDir) {
+        results.push({ id: item.id, status: 'skipped', reason: 'pass --mmdb-dir with decompressed Country.mmdb (brotli -dk on src-tauri/resources/runtime/geo/Country.mmdb.br)' })
+        continue
+      }
       const entry = { id: item.id, engines: {} }
       for (const engine of ['mihomo', 'rust']) {
         const binary = engine === 'mihomo' ? args.mihomo : args.rust
@@ -971,6 +1017,7 @@ async function main() {
             mixedPort: await reservePort(),
             dnsPort: await reservePort(),
             socksPort: fixtures.socks.port,
+            mmdbDir: args.mmdbDir,
           }
           // Counters are per-run for the cases that depend on them.
           for (const fixture of [fixtures.main, fixtures.policy, fixtures.fallback, fixtures.tcp, fixtures.dot, fixtures.doh, fixtures.socks]) {
@@ -1010,6 +1057,16 @@ async function main() {
         const same = JSON.stringify(left) === JSON.stringify(right)
         const expectation = item.expect(rust.dns)
         status = same && expectation ? 'pass' : !same ? 'differ' : 'unexpected'
+        if (item.knownDifference) {
+          // Registered divergence: the exact observed pair is checked so a
+          // later change on either side is still reported.
+          const recorded = item.knownDifference.observed
+          const observed = { mihomo: left, rust: right }
+          entry.knownDifference = { reason: item.knownDifference.reason, observed }
+          status = recorded && JSON.stringify(recorded) === JSON.stringify(observed)
+            ? 'known-difference'
+            : 'unexpected'
+        }
         if (item.id === 'respect-rules') {
           entry.socksConnects = { mihomo: mihomo.counters?.socks ?? 0, rust: rust.counters?.socks ?? 0 }
           if ((mihomo.counters?.socks ?? 0) < 1 || (rust.counters?.socks ?? 0) < 1) status = 'unexpected'
@@ -1022,8 +1079,10 @@ async function main() {
       cases: results.length,
       pass: results.filter((entry) => entry.status === 'pass').length,
       differ: results.filter((entry) => entry.status === 'differ').length,
+      knownDifference: results.filter((entry) => entry.status === 'known-difference').length,
       unexpected: results.filter((entry) => entry.status === 'unexpected').length,
       startupFailed: results.filter((entry) => entry.status === 'startup-failed').length,
+      skipped: results.filter((entry) => entry.status === 'skipped').length,
     }
     const report = {
       format: 't22-differential',
@@ -1031,6 +1090,7 @@ async function main() {
       startedAt: new Date().toISOString(),
       mihomo: args.mihomo,
       rust: args.rust,
+      mmdbDir: args.mmdbDir,
       fixtures: Object.fromEntries(Object.entries(fixtures).map(([name, value]) => [name, value.port])),
       summary,
       notes: [

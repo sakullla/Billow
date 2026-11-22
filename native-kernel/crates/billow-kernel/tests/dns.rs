@@ -1366,6 +1366,33 @@ async fn listener_follows_a_domain_valued_hosts_entry() {
     kernel.stop().ok();
 }
 
+#[tokio::test]
+async fn failed_domain_hosts_alias_reports_servfail_without_a_cname() {
+    // Pinned `withHosts` prepends its CNAME only when the inner exchange
+    // returned `err == nil`; a transport failure is written as an empty
+    // SERVFAIL (`dns/server.go`). Rule-time resolution keeps the failure.
+    let port = spawn_silent_udp();
+    let listen = free_port();
+    let yaml = format!(
+        "mixed-port: {}\nhosts:\n  alias.test: dead-target.test\ndns:\n  enable: true\n  listen: 127.0.0.1:{listen}\n  nameserver: ['udp://127.0.0.1:{port}']\n",
+        free_port()
+    );
+    let kernel = start_kernel(&yaml);
+    let addr: SocketAddr = format!("127.0.0.1:{listen}").parse().unwrap();
+    // The silent upstream makes the inner exchange wait for the pinned 5 s
+    // timeout, longer than `expect_listener`'s 3 s deadlock guard.
+    let mut kernel = kernel;
+    let answer = tokio::time::timeout(Duration::from_secs(15), dns_query_tcp(addr, "alias.test", TYPE_A))
+        .await
+        .expect("alias query timed out (DNS listener deadlock)");
+    assert_eq!(answer[3] & 0x0f, 2, "a failed alias exchange is SERVFAIL");
+    assert!(
+        parse_answers(&answer).is_empty(),
+        "no CNAME (or A) may be synthesized for a failed alias target"
+    );
+    kernel.stop().ok();
+}
+
 // ---------------------------------------------------------------------------
 // fallback-filter.geoip-code negation
 // ---------------------------------------------------------------------------

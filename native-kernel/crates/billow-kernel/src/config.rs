@@ -49,13 +49,12 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
 /// Mihomo key at all and is ignored exactly as Mihomo's decoder ignores it (R2:
 /// a valid configuration must load).
 pub const KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
-    "redir-port", "tproxy-port", "ss-config", "vmess-config", "inbound-tfo", "inbound-mptcp",
-    "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips", "unified-delay",
+    "ss-config", "vmess-config", "inbound-tfo", "inbound-mptcp",
+    "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips",
     "external-controller-routing-mark", "external-controller-pipe",
     "external-ui", "external-ui-url", "external-ui-name", "external-doh-server",
-    "interface-name", "routing-mark", "tunnels", "tcp-concurrent", "find-process-mode",
+    "interface-name", "routing-mark", "tunnels",
     "global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
-    "keep-alive-interval", "disable-keep-alive",
     "listeners", "ntp", "tun", "tuic-server",
     "iptables", "experimental", "geox-url", "sniffer", "clash-for-android"
 ];
@@ -1151,6 +1150,62 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
                     );
                 }
             }
+            "redir-port" | "tproxy-port" => {
+                // Billow's Android artifact disables the legacy listeners with
+                // `0`; the kernel has no redir/tproxy path (T6/T7 own device
+                // routing), so only the disabled form is inert.
+                let port = parse_port(value, path, key)?;
+                if port == 0 {
+                    warnings.push(format!("{key} 0 disables a listener this kernel never starts"));
+                } else {
+                    return Err(ConfigError::Unsupported(format!(
+                        "top-level key '{key}' is set to {port} (redir/tproxy listeners belong to the device/TUN layer, T6/T7)"
+                    )));
+                }
+            }
+            "keep-alive-interval" => {
+                let secs = value.as_u64().ok_or_else(|| {
+                    ConfigError::InvalidValue(format!(
+                        "{path}: keep-alive-interval must be a non-negative integer"
+                    ))
+                })?;
+                warnings.push(format!(
+                    "keep-alive-interval {secs}s is recorded but each outbound keeps its own default (a global TCP keep-alive default is not threaded yet)"
+                ));
+            }
+            "disable-keep-alive" => {
+                let _ = parse_bool(value, path, key)?;
+                warnings.push(
+                    "disable-keep-alive is recorded but outbounds keep their own keep-alive defaults"
+                        .to_string(),
+                );
+            }
+            "unified-delay" => {
+                // Accepted because every Billow profile carries the user's
+                // toggle; the delay probes here report the full round trip, so
+                // the pinned handshake subtraction has no effect to apply.
+                let _ = parse_bool(value, path, key)?;
+                warnings.push(
+                    "unified-delay is recorded but delay probes report the full round trip (handshake subtraction is not implemented)"
+                        .to_string(),
+                );
+            }
+            "tcp-concurrent" => {
+                let _ = parse_bool(value, path, key)?;
+                warnings.push(
+                    "tcp-concurrent is recorded but dials use one ordered address attempt (hedged concurrent dialing is not implemented)"
+                        .to_string(),
+                );
+            }
+            "find-process-mode" => {
+                let mode = parse_string(value, path, key)?;
+                if mode != "off" {
+                    return Err(ConfigError::Unsupported(format!(
+                        "find-process-mode '{mode}' (process lookup is not implemented; 'off' is accepted as inert)"
+                    )));
+                }
+                warnings.push("find-process-mode is off; process matching rules stay unsupported".to_string());
+            }
             "allow-lan" => allow_lan = Some(parse_bool(value, path, key)?),
             "bind-address" => {
                 let s = parse_string(value, path, key)?;
@@ -1268,7 +1323,7 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             // enabled block is a named rejection instead of a silent no-op.
             "tun" | "sniffer" => {
                 if block_enabled(value, path, key)? {
-                    let owner = if key == "tun" { "device/TUN is T6/T7" } else { "sniffer is T22" };
+                    let owner = if key == "tun" { "device/TUN is T6/T7" } else { "sniffing is T7" };
                     return Err(ConfigError::Unsupported(format!(
                         "top-level key '{key}' with enable: true is not implemented ({owner})"
                     )));
