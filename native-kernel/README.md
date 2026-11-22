@@ -130,16 +130,24 @@ listener), `socks-port` (legacy alias for `mixed-port`), `allow-lan`,
 `bind-address`, `mode: rule`, `log-level`, `authentication`, `tls` (extra
 roots only), `proxies`, `rules`, `sub-rules`, `rule-providers`,
 `proxy-providers`, `geodata-mode`, `geodata-loader`, `geosite-matcher`,
-`geo-auto-update` (`false` only) and `geo-update-interval` (parsed). Billow's
-override engine writes the same effective YAML (provider declarations with the
-profile's rules plus the override's prepended/appended rules), so the merged
-file loads directly.
+`geo-auto-update` (`false` only) and `geo-update-interval` (parsed). A listener
+port of `0` means disabled (Mihomo's meaning); if every listener key is 0 the
+load fails by name instead of binding an ephemeral port.
+
+Billow's `profile.rs` effective YAML (`prepare`/`apply_settings`/
+`finish_yaml_for`) is the input shape this loader is tested against, but it is
+**not** claimed to load directly. Its rule/provider/proxy subset loads; the
+launcher keys are handled explicitly: a disabled `tun`/`sniffer` block is
+inert with a warning, `geox-url` is recorded with a warning, and
+`external-controller`, `dns`/`hosts`, `proxy-groups`, or an enabled
+`tun`/`sniffer` are rejected with the key named (T25/T22/T23/T6-T7).
 
 Rules (T24): `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `DOMAIN-REGEX`,
 `DOMAIN-WILDCARD`, `GEOSITE`, `GEOIP`, `SRC-GEOIP`, `IP-ASN`, `SRC-IP-ASN`,
 `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `IP-SUFFIX`, `SRC-IP-SUFFIX`,
 `SRC-PORT`, `DST-PORT`, `IN-PORT`, `PROCESS-NAME`, `PROCESS-PATH`,
-`PROCESS-NAME-REGEX`, `PROCESS-PATH-REGEX`, `NETWORK`, `IN-TYPE`, `SUB-RULE`,
+`PROCESS-NAME-REGEX`, `PROCESS-PATH-REGEX`, `PROCESS-NAME-WILDCARD`,
+`PROCESS-PATH-WILDCARD`, `NETWORK`, `IN-TYPE`, `SUB-RULE`,
 `AND`, `OR`, `NOT`, `RULE-SET` and `MATCH`. Outbounds are `DIRECT`, `REJECT`,
 `REJECT-DROP` (close without an inbound reply) or the name of a configured
 proxy. The optional `no-resolve`/`src` parameters are accepted on IP/GEOIP/
@@ -166,24 +174,39 @@ never treated as empty data.
 Rule providers: `type: file|http|inline`, `behavior:
 domain|ipcidr|classical`, `format: yaml|text|mrs` (default yaml), `payload`
 fallback, `path`, `url`, `header`, `size-limit` and `interval` (recorded).
-A domain provider accepts the `x`, `+.x`, `.x` and `*.x` patterns; an IP
-provider accepts CIDR prefixes; a classical provider parses target-less rules
-and skips malformed entries with a warning, like Mihomo. `http` providers use a
-bounded HTTP/1.1 GET over the platform trust store (redirects, chunked bodies
-and `path` caching); a response through a configured `proxy` is rejected by
-name. `Kernel::update_rule_provider`/`update_all_rule_providers` fetch again
-and swap the snapshot atomically: a failed update returns its reason and keeps
-the previous generation, which is released when the last session that used it
-finishes. Inline provider updates are a timestamp-only no-op, as in Mihomo.
+Provider paths (`file` and the HTTP cache `path`) follow the pinned
+`C.Path.IsSafePath` rule: a relative path resolves against the configuration
+file's directory and must stay under it or a `SAFE_PATHS` entry; absolute paths
+outside those roots and `..` escapes are rejected by name. A domain provider
+accepts `x`, `+.x`, `.x`, `*.x` and `*` labels in the middle
+(`sub.*.example.com`, one label); an IP provider accepts CIDR prefixes. A
+classical provider parses target-less rules and **never silently drops one**:
+a pinned type this kernel cannot evaluate (DSCP/UID/IN-USER/IN-NAME/
+REMATCH-NAME) or a malformed entry fails the load with the provider, entry and
+rule type named. `http` providers use a bounded HTTP/1.1 GET over the platform
+trust store (redirects, chunked bodies and `path` caching); a response through
+a configured `proxy` is rejected by name, as is `path-in-bundle` (no 7z
+bundle reader). `Kernel::update_rule_provider`/`update_all_rule_providers`
+fetch again and swap the snapshot atomically: a failed update returns its
+reason and keeps the previous generation, which is released when the last
+session that used it finishes. Inline provider updates are a timestamp-only
+no-op, as in Mihomo.
 
 Proxy providers: `type: file|http|inline`, `url`/`path`, `header`,
-`filter`/`exclude-filter` (Rust regex; look-around/backreferences are rejected),
-`exclude-type`, `dialer-proxy`, `size-limit`, `interval`, and the
+`filter`/`exclude-filter` (each split on a backtick into multiple Rust regexes;
+look-around/backreferences are rejected), `exclude-type` (`|`-separated, as in
+the pinned schema), `dialer-proxy`, `size-limit`, `interval`, the
 `health-check` fields (`enable`, `url`, `interval`, `timeout`, `lazy`,
-`expected-status`). The proxies and filters are loaded and exposed; group
-`use`/`providers` references and latency probing belong to T23, so a
-`proxy-groups` key is still rejected by name. `Kernel::update_proxy_provider`
-applies the same success-replaces/failure-keeps-old rule.
+`expected-status`), and `override` with `udp`, `skip-cert-verify`,
+`dialer-proxy`, `additional-prefix`, `additional-suffix` and `proxy-name`.
+Other pinned override fields (`tfo`, `mptcp`, `udp-over-tcp`, `up`/`down`,
+`name-cert-verify`, `interface-name`, `routing-mark`, `ip-version`,
+`override-expr`) are rejected with `override.<field>`; a non-empty
+`age-secret-key` is rejected because age decryption is not implemented. The
+proxies and filters are loaded and exposed; group `use`/`providers` references
+and latency probing belong to T23, so a `proxy-groups` key is still rejected by
+name. `Kernel::update_proxy_provider` applies the same
+success-replaces/failure-keeps-old rule.
 
 `authentication: ["user:pass", ...]` guards the mixed inbound (SOCKS5 RFC 1929
 and HTTP `Proxy-Authorization: Basic`). `tls: {custom-cert: [...], certificate:
@@ -503,12 +526,14 @@ Configuration-plane gaps not claimed by T24 (each is rejected with the key or
 value named): proxy groups and `use`/`providers` references (T23), DNS/`hosts`
 and `find-process-mode` (T22), the control API (T25), `geo-auto-update: true`,
 an HTTP provider fetched through a configured `proxy`, compressed provider
-responses, geosite/process regex look-around or backreferences that Rust
-`regex` cannot express, and unknown MaxMind DB data types (the reader covers
-the Country/ASN shapes above). Provider `health-check` fields are parsed and
+responses, `path-in-bundle`, `age-secret-key`, unsupported `override.<field>`
+values, geosite/process regex look-around or backreferences that Rust `regex`
+cannot express, and unknown MaxMind DB data types (the reader covers the
+Country/ASN shapes above). Provider `health-check` fields are parsed and
 exposed, but probing/selection belongs to T23. Rule names `UID`, `DSCP`,
-`IN-USER`, `IN-NAME`, `REMATCH-NAME`, `PROCESS-*-WILDCARD` and
-`PASS`/`PASS-RULE` are rejected by name.
+`IN-USER`, `IN-NAME`, `REMATCH-NAME` and `PASS`/`PASS-RULE` are rejected by
+name; `PROCESS-NAME-WILDCARD`/`PROCESS-PATH-WILDCARD` are implemented with the
+pinned `component/wildcard` semantics (case-insensitive).
 
 Every option a proxy entry contains must be one this kernel honours: the
 loader reads only implemented keys and rejects the rest with the key named.
@@ -643,8 +668,10 @@ cargo run -p billow-kernel-cli -- <config.yaml> [--port N] [--geosite-dir DIR] \
     [--buffer-bytes N] [--max-sessions N] [--check]
 ```
 
-`--geosite-dir` (alias `--geodata-dir`) is the geodata directory and the base
-for relative provider paths. `--check` validates the configuration and rule set, starts the listener to prove
+`--geosite-dir` (alias `--geodata-dir`) is the geodata directory. Relative
+provider paths resolve against the configuration file's directory (and must
+stay under it or `SAFE_PATHS`), never the process cwd. `--check` validates the
+configuration and rule set, starts the listener to prove
 the bind, prints the identity and exits. A normal run prints one identity line,
 serves until SIGINT/SIGTERM (on Windows the host drives the library API; T6),
 then prints a session summary:
@@ -728,8 +755,11 @@ Mihomo binary and a loopback provider server:
   connection metadata, `SUB-RULE` action selection, all rule-provider
   vehicles/formats (including MRS), proxy-provider filters, generated
   `GeoSite.dat`/`GeoIP.dat`, HTTP provider update success/failure with the old
-  generation kept, the bundled `Country.mmdb`/`ASN.mmdb` (ignored unless
-  `BILLOW_MMDB_DIR` is set), and Billow's override-merged effective config.
+  generation kept, provider path containment, proxy-provider filter/override
+  semantics, the bundled `Country.mmdb`/`ASN.mmdb` (ignored unless
+  `BILLOW_MMDB_DIR` is set), and Billow's effective YAML: its
+  rule/provider/proxy subset loads in override order while the launcher keys
+  are registered as inert-with-warning or named rejections.
 - `tests/sessions.rs` — inbound sessions, half-close, stop/restart, limits.
 - `tests/quic_peers.rs` — T10/T14 QUIC loopback peers: TUIC v5 (auth token,
   domain and IP targets, wrong password, v4 token rejection, unimplemented

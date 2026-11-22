@@ -76,6 +76,8 @@ pub const SUPPORTED_RULE_TYPES: &[&str] = &[
     "PROCESS-PATH",
     "PROCESS-NAME-REGEX",
     "PROCESS-PATH-REGEX",
+    "PROCESS-NAME-WILDCARD",
+    "PROCESS-PATH-WILDCARD",
     "NETWORK",
     "IN-TYPE",
     "SUB-RULE",
@@ -224,6 +226,13 @@ pub enum Matcher {
         pattern: String,
         regex: bool,
     },
+    /// `PROCESS-NAME-WILDCARD`/`PROCESS-PATH-WILDCARD`: the pinned
+    /// `component/wildcard` semantics (`*` any run, `?` one byte), compared
+    /// case-insensitively like `PROCESS-NAME`.
+    ProcessWildcard {
+        kind: ProcessKind,
+        pattern: String,
+    },
     RuleSet {
         name: String,
         source: bool,
@@ -332,6 +341,14 @@ impl fmt::Display for Matcher {
                     (ProcessKind::Path, false) => "PROCESS-PATH,",
                     (ProcessKind::Name, true) => "PROCESS-NAME-REGEX,",
                     (ProcessKind::Path, true) => "PROCESS-PATH-REGEX,",
+                }
+            ),
+            Matcher::ProcessWildcard { kind, pattern } => write!(
+                f,
+                "{}{pattern}",
+                match kind {
+                    ProcessKind::Name => "PROCESS-NAME-WILDCARD,",
+                    ProcessKind::Path => "PROCESS-PATH-WILDCARD,",
                 }
             ),
             Matcher::RuleSet {
@@ -498,10 +515,31 @@ pub struct ProxyProviderConfig {
     pub exclude_type: Vec<String>,
     pub proxy: Option<String>,
     pub dialer_proxy: Option<String>,
+    pub overrides: ProxyOverride,
     pub size_limit: Option<u64>,
     pub header: Vec<(String, String)>,
     pub health_check: HealthCheckConfig,
     pub payload: Vec<serde_yaml::Value>,
+}
+
+/// A `proxy-name` rewrite from a proxy provider's `override` block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyNameRewrite {
+    pub pattern: String,
+    pub target: String,
+}
+
+/// The `override` block of a `proxy-providers` entry. The fields the kernel
+/// can apply are kept; the remaining pinned fields are rejected by name in
+/// [`parse_proxy_providers`], never silently ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxyOverride {
+    pub udp: Option<bool>,
+    pub skip_cert_verify: Option<bool>,
+    pub dialer_proxy: Option<String>,
+    pub additional_prefix: Option<String>,
+    pub additional_suffix: Option<String>,
+    pub proxy_name: Vec<ProxyNameRewrite>,
 }
 
 /// Geodata files that the configured rules need. Computed from inline rules,
@@ -660,6 +698,28 @@ pub struct LoadedConfig {
     pub warnings: Vec<String>,
 }
 
+/// `tun`/`sniffer` enabled flag. A missing `enable` is false in both pinned
+/// schemas; a non-mapping value is an invalid configuration.
+fn block_enabled(
+    value: &serde_yaml::Value,
+    path: &str,
+    key: &str,
+) -> Result<bool, ConfigError> {
+    match value {
+        serde_yaml::Value::Null => Ok(false),
+        serde_yaml::Value::Bool(flag) => Ok(*flag),
+        serde_yaml::Value::Mapping(mapping) => {
+            optional_bool(mapping, "enable")
+                .map(|flag| flag.unwrap_or(false))
+                .map_err(|error| config_error_with_prefix(error, &format!("{path}: {key}")))
+        }
+        other => Err(ConfigError::InvalidValue(format!(
+            "{path}: {key} must be a mapping or boolean, found {}",
+            kind_of(other)
+        ))),
+    }
+}
+
 /// Parse and validate `yaml`. `path` is only used for diagnostics.
 pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> {
     let raw: serde_yaml::Value =
@@ -685,6 +745,10 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     let mut tls_roots: Vec<rustls_pki_types::CertificateDer<'static>> = Vec::new();
     let mut listen_port: Option<u16> = None;
     let mut requested_port: Option<u16> = None;
+    // Mihomo treats port 0 as "this listener is disabled". Remember that so a
+    // configuration whose only ports are 0 fails by name instead of binding an
+    // ephemeral port the app never saw.
+    let mut listener_disabled = false;
     let mut allow_lan: Option<bool> = None;
     let mut bind: Option<String> = None;
     let mut mode = None;
@@ -701,15 +765,31 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             ))
         })?;
         match key {
-            "mixed-port" => listen_port = Some(parse_port(value, path, key)?),
+            "mixed-port" => {
+                let port = parse_port(value, path, key)?;
+                if port == 0 {
+                    listener_disabled = true;
+                    listen_port = None;
+                    warnings.push("mixed-port 0 disables the listener".to_string());
+                } else {
+                    listen_port = Some(port);
+                }
+            }
             "port" => {
                 let port = parse_port(value, path, key)?;
-                requested_port.get_or_insert(port);
+                if port == 0 {
+                    listener_disabled = true;
+                } else {
+                    requested_port.get_or_insert(port);
+                }
             }
             "socks-port" => {
                 // Legacy alias is only honoured when nothing else set the listener.
                 let port = parse_port(value, path, key)?;
-                if listen_port.is_none() {
+                if port == 0 {
+                    listener_disabled = true;
+                    warnings.push("socks-port 0 disables the legacy listener".to_string());
+                } else if listen_port.is_none() {
                     listen_port = Some(port);
                     warnings.push(
                         "socks-port alias used: the mixed listener also accepts HTTP CONNECT"
@@ -803,6 +883,35 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             }
             "authentication" => authentication = parse_authentication(value, path)?,
             "tls" => tls_roots = parse_tls(value, path)?,
+            // Inert forms of blocks the native kernel does not serve. Billow's
+            // effective YAML commonly carries `tun: {enable: false}`,
+            // `sniffer: {enable: false}` and `geox-url`; accepting the
+            // do-nothing form keeps a valid upstream file loadable, but an
+            // enabled block is a named rejection instead of a silent no-op.
+            "tun" | "sniffer" => {
+                if block_enabled(value, path, key)? {
+                    let owner = if key == "tun" { "device/TUN is T6/T7" } else { "sniffer is T22" };
+                    return Err(ConfigError::Unsupported(format!(
+                        "top-level key '{key}' with enable: true is not implemented ({owner})"
+                    )));
+                }
+                warnings.push(format!(
+                    "'{key}' is present but disabled; this kernel has no {key} implementation, so the block is inert"
+                ));
+            }
+            "geox-url" => {
+                let mapping = value.as_mapping().ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("{path}: geox-url must be a mapping"))
+                })?;
+                if mapping.is_empty() {
+                    warnings.push("geox-url is empty and inert".to_string());
+                } else {
+                    warnings.push(
+                        "geox-url is recorded but no downloader runs (geo-auto-update: true is rejected by name)"
+                            .to_string(),
+                    );
+                }
+            }
             _ => {
                 if KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS.contains(&key) {
                     let boundary = match key {
@@ -827,7 +936,16 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         }
     }
 
-    let port = listen_port.unwrap_or(DEFAULT_PORT);
+    let port = match listen_port {
+        Some(port) => port,
+        None if listener_disabled => {
+            return Err(ConfigError::Unsupported(
+                "no listener port is enabled: mixed-port/port/socks-port are 0 or unset while a 0 value disabled the default (this kernel has no TUN/redirect path yet)"
+                    .to_string(),
+            ))
+        }
+        None => DEFAULT_PORT,
+    };
     let host = match bind.as_deref() {
         None | Some("") => IpAddr::from([127, 0, 0, 1]),
         Some(s) => IpAddr::from_str(s).map_err(|_| {
@@ -1342,6 +1460,21 @@ fn parse_rule_line(
                 regex: true,
             }
         }
+        "PROCESS-NAME-WILDCARD" | "PROCESS-PATH-WILDCARD" => {
+            if payload.is_empty() {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{rule_type} needs a non-empty pattern"
+                )));
+            }
+            Matcher::ProcessWildcard {
+                kind: if rule_type == "PROCESS-NAME-WILDCARD" {
+                    ProcessKind::Name
+                } else {
+                    ProcessKind::Path
+                },
+                pattern: payload,
+            }
+        }
         "RULE-SET" => {
             if !context.providers.contains(&payload) {
                 return Err(ConfigError::ConfigFailed(format!(
@@ -1650,6 +1783,16 @@ fn parse_rule_providers(
             }
         };
         let vehicle = parse_provider_vehicle(fields, &location)?;
+        // The pinned schema has `path-in-bundle` (a 7z bundle entry). This
+        // kernel has no bundle reader, so a set value is a named rejection
+        // rather than a silently ignored key.
+        if let Some(path_in_bundle) = optional_string(fields, "path-in-bundle")? {
+            if !path_in_bundle.trim().is_empty() {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: path-in-bundle '{path_in_bundle}' is not implemented (no BundleMRS.7z reader)"
+                )));
+            }
+        }
         let interval = optional_seconds(fields, "interval")?;
         let payload = optional_string_list(fields, "payload")?;
         let header = parse_provider_header(fields, &location)?;
@@ -1693,23 +1836,34 @@ fn parse_proxy_providers(
         })?;
         let vehicle = parse_provider_vehicle(fields, &location)?;
         let interval = optional_seconds(fields, "interval")?;
+        // Pinned `NewProxiesParser` splits both filters on a backtick and
+        // compiles every piece as its own regexp.
         let filter = optional_string(fields, "filter")?;
         if let Some(pattern) = &filter {
-            validate_regex(pattern).map_err(|e| config_error_with_prefix(e, &location))?;
+            validate_provider_filter(pattern, &location, "filter")?;
         }
         let exclude_filter = optional_string(fields, "exclude-filter")?;
         if let Some(pattern) = &exclude_filter {
-            validate_regex(pattern).map_err(|e| config_error_with_prefix(e, &location))?;
+            validate_provider_filter(pattern, &location, "exclude-filter")?;
         }
+        // `exclude-type` is a `|`-separated list in the pinned schema.
         let exclude_type = optional_string(fields, "exclude-type")?
             .map(|types| {
                 types
-                    .split(',')
+                    .split('|')
                     .map(|value| value.trim().to_ascii_lowercase())
                     .filter(|value| !value.is_empty())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        if let Some(secret) = optional_string(fields, "age-secret-key")? {
+            if !secret.trim().is_empty() {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: age-secret-key is not implemented (age-encrypted provider payloads cannot be decrypted)"
+                )));
+            }
+        }
+        let overrides = parse_proxy_override(fields, &location)?;
         let health_check = parse_health_check(fields, &location)?;
         let payload = match optional_value(fields, "payload")? {
             None => Vec::new(),
@@ -1729,6 +1883,7 @@ fn parse_proxy_providers(
             exclude_type,
             proxy: optional_string(fields, "proxy")?,
             dialer_proxy: optional_string(fields, "dialer-proxy")?,
+            overrides,
             size_limit: optional_positive_int(fields, "size-limit")?,
             header: parse_provider_header(fields, &location)?,
             health_check,
@@ -1736,6 +1891,125 @@ fn parse_proxy_providers(
         });
     }
     Ok(providers)
+}
+
+fn validate_provider_filter(
+    patterns: &str,
+    location: &str,
+    key: &str,
+) -> Result<(), ConfigError> {
+    for pattern in patterns.split('`') {
+        if pattern.is_empty() {
+            continue;
+        }
+        validate_regex(pattern).map_err(|e| {
+            config_error_with_prefix(e, &format!("{location}: {key} {pattern:?}"))
+        })?;
+    }
+    Ok(())
+}
+
+fn parse_proxy_override(
+    fields: &serde_yaml::Mapping,
+    location: &str,
+) -> Result<ProxyOverride, ConfigError> {
+    let mut overrides = ProxyOverride::default();
+    let Some(value) = optional_value(fields, "override")? else {
+        return Ok(overrides);
+    };
+    let mapping = value.as_mapping().ok_or_else(|| {
+        ConfigError::InvalidValue(format!("{location}: override must be a mapping"))
+    })?;
+    for (key, value) in mapping {
+        let key = key.as_str().ok_or_else(|| {
+            ConfigError::InvalidValue(format!("{location}: override keys must be strings"))
+        })?;
+        match key {
+            "udp" => overrides.udp = Some(yaml_bool(value, location, "override.udp")?),
+            "skip-cert-verify" => {
+                overrides.skip_cert_verify =
+                    Some(yaml_bool(value, location, "override.skip-cert-verify")?)
+            }
+            "dialer-proxy" => {
+                overrides.dialer_proxy =
+                    Some(yaml_string(value, location, "override.dialer-proxy")?)
+            }
+            "additional-prefix" => {
+                overrides.additional_prefix =
+                    Some(yaml_string(value, location, "override.additional-prefix")?)
+            }
+            "additional-suffix" => {
+                overrides.additional_suffix =
+                    Some(yaml_string(value, location, "override.additional-suffix")?)
+            }
+            "proxy-name" => {
+                let items = value.as_sequence().ok_or_else(|| {
+                    ConfigError::InvalidValue(format!(
+                        "{location}: override.proxy-name must be a list"
+                    ))
+                })?;
+                for item in items {
+                    let item = item.as_mapping().ok_or_else(|| {
+                        ConfigError::InvalidValue(format!(
+                            "{location}: override.proxy-name entries must be mappings"
+                        ))
+                    })?;
+                    let pattern = optional_string(item, "pattern")?.ok_or_else(|| {
+                        ConfigError::InvalidValue(format!(
+                            "{location}: override.proxy-name entries need a pattern"
+                        ))
+                    })?;
+                    validate_regex(&pattern).map_err(|e| {
+                        config_error_with_prefix(
+                            e,
+                            &format!("{location}: override.proxy-name {pattern:?}"),
+                        )
+                    })?;
+                    let target = optional_string(item, "target")?.unwrap_or_default();
+                    overrides.proxy_name.push(ProxyNameRewrite { pattern, target });
+                }
+            }
+            // Every other field in the pinned `overrideSchema` (tfo, mptcp,
+            // udp-over-tcp, up/down, name-cert-verify, interface-name,
+            // routing-mark, ip-version, override-expr) changes a proxy option
+            // this kernel cannot apply here; name it instead of ignoring it.
+            other => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{location}: override.{other} is not implemented (supported: udp, skip-cert-verify, dialer-proxy, additional-prefix, additional-suffix, proxy-name)"
+                )))
+            }
+        }
+    }
+    Ok(overrides)
+}
+
+fn yaml_bool(
+    value: &serde_yaml::Value,
+    location: &str,
+    key: &str,
+) -> Result<bool, ConfigError> {
+    match value {
+        serde_yaml::Value::Bool(flag) => Ok(*flag),
+        other => Err(ConfigError::InvalidValue(format!(
+            "{location}: {key} must be a boolean, found {}",
+            kind_of(other)
+        ))),
+    }
+}
+
+fn yaml_string(
+    value: &serde_yaml::Value,
+    location: &str,
+    key: &str,
+) -> Result<String, ConfigError> {
+    match value {
+        serde_yaml::Value::String(text) => Ok(text.clone()),
+        serde_yaml::Value::Number(number) => Ok(number.to_string()),
+        other => Err(ConfigError::InvalidValue(format!(
+            "{location}: {key} must be a string, found {}",
+            kind_of(other)
+        ))),
+    }
 }
 
 fn parse_health_check(
@@ -1813,7 +2087,9 @@ fn parse_provider_vehicle(
                     "{location}: provider url '{url}' must be http(s)"
                 )));
             }
-            let path = optional_string(fields, "path")?.map(std::path::PathBuf::from);
+            let path = optional_string(fields, "path")?
+                .filter(|path| !path.is_empty())
+                .map(std::path::PathBuf::from);
             Ok(ProviderVehicle::Http { url, path })
         }
         "inline" => Ok(ProviderVehicle::Inline),
@@ -2055,9 +2331,11 @@ fn parse_port(value: &serde_yaml::Value, path: &str, key: &str) -> Result<u16, C
             "{path}: {key} must be an integer port, found {value:?}"
         ))
     })?;
-    if port == 0 || port > u16::MAX as u64 {
+    // Mihomo uses 0 to mean "this listener is disabled"; the caller records
+    // that and never binds an ephemeral port by accident.
+    if port > u16::MAX as u64 {
         return Err(ConfigError::InvalidValue(format!(
-            "{path}: {key} {port} is out of range 1..=65535"
+            "{path}: {key} {port} is out of range 0..=65535"
         )));
     }
     Ok(port as u16)

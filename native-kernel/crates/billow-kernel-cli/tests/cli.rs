@@ -408,6 +408,54 @@ fn process_rejects_unimplemented_config_and_exits_non_zero() {
 }
 
 #[test]
+fn check_rejects_a_provider_path_outside_the_configuration_root() {
+    let dir = std::env::temp_dir().join(format!("billow-cli-paths-{}", std::process::id()));
+    let config_dir = dir.join("config");
+    std::fs::create_dir_all(config_dir.join("providers")).unwrap();
+    std::fs::write(config_dir.join("providers/domain.txt"), "+.inside.example\n").unwrap();
+    std::fs::write(dir.join("outside.txt"), "+.outside.example\n").unwrap();
+    let config = config_dir.join("config.yaml");
+    let port = free_port();
+    std::fs::write(
+        &config,
+        format!(
+            "mixed-port: {port}\nrule-providers:\n  r:\n    type: file\n    behavior: domain\n    format: text\n    path: ../outside.txt\nrules: ['RULE-SET,r,REJECT', 'MATCH,DIRECT']\n"
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
+        .arg(&config)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not a subpath"), "{stderr}");
+
+    // The legal relative path resolves against the config directory and
+    // passes --check.
+    std::fs::write(
+        &config,
+        format!(
+            "mixed-port: {port}\nrule-providers:\n  r:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/domain.txt\nrules: ['RULE-SET,r,REJECT', 'MATCH,DIRECT']\n"
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_billow-kernel"))
+        .arg(&config)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("configuration accepted"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn process_forwards_through_a_protocol_outbound() {
     let (peer_port, seen) = spawn_socks5_peer();
     let echo_port = spawn_echo();

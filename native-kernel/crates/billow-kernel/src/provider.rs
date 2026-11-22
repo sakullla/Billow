@@ -11,13 +11,13 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
 use crate::config::{
-    Config, ConfigError, GeodataRequirements, ProviderVehicle, ProxyProviderConfig,
-    RuleBehavior, RuleFormat, RuleProviderConfig,
+    Config, ConfigError, GeodataRequirements, ProviderVehicle, ProxyOverride,
+    ProxyProviderConfig, RuleBehavior, RuleFormat, RuleProviderConfig,
 };
 use crate::geodata::{decode_mrs, GeoIpSource, Geodata};
 use crate::outbound::tls::{self, ClientTls};
@@ -146,6 +146,7 @@ impl RuleProviders {
             false,
         )?;
         let compiled = compile_provider_payload(
+            name,
             slot.config.behavior,
             &payload,
             &self.geodata,
@@ -331,7 +332,8 @@ pub fn finish(
                 format: provider.format,
                 vehicle: provider.vehicle.as_str(),
             });
-        let compiled = compile_provider_payload(provider.behavior, &payload, &geodata, &slots)?;
+        let compiled =
+            compile_provider_payload(&provider.name, provider.behavior, &payload, &geodata, &slots)?;
         let slot = slots.get(&provider.name).expect("placed above");
         slot.replace(RuleProviderSnapshot {
             generation: 1,
@@ -446,12 +448,96 @@ pub fn geodata_source(config: &Config) -> GeoIpSource {
 // Provider vehicles and payload parsing
 // ---------------------------------------------------------------------------
 
-fn resolve(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
+/// Lexically normalize an absolute path without touching the filesystem. A
+/// `..` at the root stays at the root (as `filepath.Clean` does); callers only
+/// use this for the pinned path-containment check.
+fn normalize_absolute(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => out.push(Component::RootDir.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(Component::RootDir.as_os_str());
+    }
+    out
+}
+
+fn absolute_from(base_dir: &Path, path: &Path) -> PathBuf {
+    let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
         base_dir.join(path)
+    };
+    absolute_from_cwd(&joined)
+}
+
+fn absolute_from_cwd(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    normalize_absolute(&absolute)
+}
+
+fn validate_vehicle_path(
+    name: &str,
+    kind: &str,
+    vehicle: &ProviderVehicle,
+    base_dir: &Path,
+) -> Result<(), ConfigError> {
+    let path = match vehicle {
+        ProviderVehicle::Inline => return Ok(()),
+        ProviderVehicle::File { path } => Some(path),
+        ProviderVehicle::Http { path, .. } => path.as_ref(),
+    };
+    let Some(path) = path else {
+        return Ok(());
+    };
+    resolve_provider_path(base_dir, path).map(|_| ()).map_err(|error| {
+        ConfigError::Unsupported(format!("{kind} '{name}': {error}"))
+    })
+}
+
+/// Provider paths follow the pinned `C.Path.IsSafePath` rule
+/// (`constant/path.go`): a relative path is resolved against the
+/// configuration directory (Mihomo's `homeDir`), then must stay under that
+/// directory or one of the `SAFE_PATHS` entries. The check is lexical, like
+/// `filepath.IsLocal(filepath.Rel(...))`; it rejects absolute paths outside the
+/// roots and any `..` that escapes them.
+fn resolve_provider_path(base_dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    let root = absolute_from(base_dir, Path::new(""));
+    let candidate = absolute_from(&root, path);
+    let mut allowed = vec![root.clone()];
+    if let Ok(extra) = std::env::var("SAFE_PATHS") {
+        for entry in std::env::split_paths(&extra) {
+            if entry.as_os_str().is_empty() {
+                continue;
+            }
+            allowed.push(absolute_from_cwd(&entry));
+        }
     }
+    if allowed
+        .iter()
+        .any(|allowed| candidate.strip_prefix(allowed).is_ok())
+    {
+        return Ok(candidate);
+    }
+    Err(format!(
+        "provider path {} is not a subpath of the provider root {} or SAFE_PATHS (pinned Mihomo IsSafePath rule)",
+        candidate.display(),
+        root.display()
+    ))
 }
 
 fn read_rule_payload(
@@ -469,6 +555,9 @@ fn read_rule_payload(
         };
         return Ok(payload);
     }
+    // A path outside the root is a configuration error, not a reason to use
+    // the payload fallback: pinned `ParseRuleProvider` rejects it up front.
+    validate_vehicle_path(&provider.name, "rule-provider", &provider.vehicle, base_dir)?;
     if matches!(provider.vehicle, ProviderVehicle::Http { .. }) {
         if let Some(proxy) = &provider.proxy {
             if !proxy.is_empty() {
@@ -593,6 +682,7 @@ fn read_proxy_payload(
     let raw = if matches!(provider.vehicle, ProviderVehicle::Inline) {
         serde_yaml::Value::Sequence(provider.payload.clone())
     } else {
+        validate_vehicle_path(&provider.name, "proxy-provider", &provider.vehicle, base_dir)?;
         if matches!(provider.vehicle, ProviderVehicle::Http { .. }) {
             if let Some(proxy) = &provider.proxy {
                 if !proxy.is_empty() {
@@ -641,34 +731,78 @@ fn read_proxy_payload(
             }
         }
     };
-    let mut proxies = parse_proxies(&raw)?;
-    if let Some(filter) = &provider.filter {
-        let regex = regex::Regex::new(filter).map_err(|e| {
-            ConfigError::Unsupported(format!(
-                "proxy-provider '{}' filter {filter:?}: {e}",
+    let entries = raw.as_sequence().ok_or_else(|| {
+        ConfigError::InvalidValue(format!(
+            "proxy-provider '{}': payload must be a list of proxy mappings",
+            provider.name
+        ))
+    })?;
+    let filter = compile_provider_filters(provider, provider.filter.as_deref(), "filter")?;
+    let exclude_filter =
+        compile_provider_filters(provider, provider.exclude_filter.as_deref(), "exclude-filter")?;
+    let mut kept = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let mapping = entry.as_mapping().ok_or_else(|| {
+            ConfigError::InvalidValue(format!(
+                "proxy-provider '{}': proxies[{index}] must be a mapping",
                 provider.name
             ))
         })?;
-        proxies.retain(|proxy| regex.is_match(&proxy.name));
+        // The pinned parser filters on the source `type`/`name`, before any
+        // override renames the proxy.
+        let kind = mapping
+            .get(serde_yaml::Value::String("type".to_string()))
+            .and_then(serde_yaml::Value::as_str);
+        let name = mapping
+            .get(serde_yaml::Value::String("name".to_string()))
+            .and_then(serde_yaml::Value::as_str);
+        let (Some(kind), Some(name)) = (kind, name) else {
+            // Pinned `NewProxiesParser` skips an entry without a string
+            // type/name; it is not a rule that could silently go missing.
+            continue;
+        };
+        if provider
+            .exclude_type
+            .iter()
+            .any(|excluded| excluded.eq_ignore_ascii_case(kind))
+        {
+            continue;
+        }
+        if exclude_filter.iter().any(|regex| regex.is_match(name)) {
+            continue;
+        }
+        if !filter.is_empty() && !filter.iter().any(|regex| regex.is_match(name)) {
+            continue;
+        }
+        if !seen.insert(name.to_string()) {
+            continue;
+        }
+        let mut mapping = mapping.clone();
+        apply_proxy_override(&mut mapping, &provider.overrides, provider)?;
+        kept.push(serde_yaml::Value::Mapping(mapping));
     }
-    if let Some(filter) = &provider.exclude_filter {
-        let regex = regex::Regex::new(filter).map_err(|e| {
-            ConfigError::Unsupported(format!(
-                "proxy-provider '{}' exclude-filter {filter:?}: {e}",
-                provider.name
-            ))
-        })?;
-        proxies.retain(|proxy| !regex.is_match(&proxy.name));
+    if kept.is_empty() {
+        let reason = if provider.filter.as_deref().is_some_and(|value| !value.is_empty()) {
+            "doesn't match any proxy, please check your filter"
+        } else {
+            "file doesn't have any proxy"
+        };
+        return Err(ConfigError::Unsupported(format!(
+            "proxy-provider '{}': {reason}",
+            provider.name
+        )));
     }
-    if !provider.exclude_type.is_empty() {
-        proxies.retain(|proxy| {
-            !provider
-                .exclude_type
-                .iter()
-                .any(|kind| kind.eq_ignore_ascii_case(proxy.type_name()))
-        });
-    }
-    if let Some(dialer) = &provider.dialer_proxy {
+    let mut proxies = parse_proxies(&serde_yaml::Value::Sequence(kept))?;
+    // Pinned applies the provider-level dialer first, then `override` may
+    // replace it. Doing this after `parse_proxies` keeps the hop lookup at
+    // evaluation time (the hop may be a top-level proxy, not in this provider).
+    let dialer = provider
+        .overrides
+        .dialer_proxy
+        .clone()
+        .or_else(|| provider.dialer_proxy.clone());
+    if let Some(dialer) = dialer {
         for proxy in &mut proxies {
             if !proxy.set_dialer_proxy(Some(dialer.clone())) {
                 return Err(ConfigError::Unsupported(format!(
@@ -683,6 +817,67 @@ fn read_proxy_payload(
     Ok(proxies)
 }
 
+fn compile_provider_filters(
+    provider: &ProxyProviderConfig,
+    patterns: Option<&str>,
+    key: &str,
+) -> Result<Vec<regex::Regex>, ConfigError> {
+    let Some(patterns) = patterns else {
+        return Ok(Vec::new());
+    };
+    let mut compiled = Vec::new();
+    for pattern in patterns.split('`') {
+        if pattern.is_empty() {
+            continue;
+        }
+        compiled.push(regex::Regex::new(pattern).map_err(|e| {
+            ConfigError::Unsupported(format!(
+                "proxy-provider '{}' {key} {pattern:?}: {e}",
+                provider.name
+            ))
+        })?);
+    }
+    Ok(compiled)
+}
+
+fn apply_proxy_override(
+    mapping: &mut serde_yaml::Mapping,
+    overrides: &ProxyOverride,
+    provider: &ProxyProviderConfig,
+) -> Result<(), ConfigError> {
+    let key = |name: &str| serde_yaml::Value::String(name.to_string());
+    if let Some(udp) = overrides.udp {
+        mapping.insert(key("udp"), serde_yaml::Value::Bool(udp));
+    }
+    if let Some(skip) = overrides.skip_cert_verify {
+        mapping.insert(key("skip-cert-verify"), serde_yaml::Value::Bool(skip));
+    }
+    let mut name = mapping
+        .get(&key("name"))
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    for rewrite in &overrides.proxy_name {
+        let regex = regex::Regex::new(&rewrite.pattern).map_err(|e| {
+            ConfigError::Unsupported(format!(
+                "proxy-provider '{}': override.proxy-name {:?}: {e}",
+                provider.name, rewrite.pattern
+            ))
+        })?;
+        name = regex.replace_all(&name, rewrite.target.as_str()).into_owned();
+    }
+    if let Some(prefix) = &overrides.additional_prefix {
+        name = format!("{prefix}{name}");
+    }
+    if let Some(suffix) = &overrides.additional_suffix {
+        name = format!("{name}{suffix}");
+    }
+    if !name.is_empty() {
+        mapping.insert(key("name"), serde_yaml::Value::String(name));
+    }
+    Ok(())
+}
+
 fn read_vehicle(
     vehicle: &ProviderVehicle,
     headers: &[(String, String)],
@@ -694,18 +889,28 @@ fn read_vehicle(
     match vehicle {
         ProviderVehicle::Inline => Err("inline providers carry their payload in the YAML".to_string()),
         ProviderVehicle::File { path } => {
-            let path = resolve(base_dir, path);
+            let path = resolve_provider_path(base_dir, path)?;
             let bytes = std::fs::read(&path)
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
             check_limit(bytes.len(), size_limit)?;
             Ok(bytes)
         }
         ProviderVehicle::Http { url, path } => {
-            let cache = path.as_ref().map(|path| resolve(base_dir, path));
+            // Validate before the fetch so an out-of-root cache path cannot be
+            // created even when the server response is malformed.
+            let cache = path
+                .as_ref()
+                .map(|path| resolve_provider_path(base_dir, path))
+                .transpose()?;
             match http_get(url, headers, tls, size_limit) {
                 Ok(bytes) => {
                     if let Some(cache) = cache {
-                        let _ = std::fs::write(&cache, &bytes);
+                        if let Some(parent) = cache.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        std::fs::write(&cache, &bytes).map_err(|e| {
+                            format!("cannot write provider cache {}: {e}", cache.display())
+                        })?;
                     }
                     Ok(bytes)
                 }

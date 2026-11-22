@@ -227,9 +227,18 @@ const cases = [
   { id: 'in-type-socks-miss', expect: 'echoed', rules: ['IN-TYPE,SOCKS5,REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
   { id: 'in-type-http-miss', expect: 'echoed', rules: ['IN-TYPE,HTTP,REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
   { id: 'in-port-hit', expect: 'blocked', rules: ['IN-PORT,{{mixed}},REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
+  { id: 'src-port-hit', expect: 'blocked', rules: ['SRC-PORT,1-65535,REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
   { id: 'src-ip-cidr-hit', expect: 'blocked', rules: ['SRC-IP-CIDR,127.0.0.0/8,REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
   { id: 'ip-cidr-hit', expect: 'blocked', rules: ['IP-CIDR,127.0.0.1/32,REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
   { id: 'ip-cidr-miss', expect: 'echoed', rules: ['IP-CIDR,10.0.0.0/8,REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
+  // `no-resolve` with an IP target. A domain-target miss is deliberately not
+  // a differential case: the pinned engine's hosts/DNS path can resolve the
+  // CONNECT hostname before rule matching, while this kernel keeps the domain
+  // unresolved until DNS (T22); see `normalizationNote` and the T24 evidence.
+  { id: 'ip-cidr-no-resolve-hit', expect: 'blocked', rules: ['IP-CIDR,127.0.0.1/32,REJECT,no-resolve', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
+  { id: 'ip-cidr6-hit', expect: 'blocked', rules: ['IP-CIDR6,::1/128,REJECT', 'MATCH,DIRECT'], target: { host: '::1', port: 'echo' } },
+  { id: 'ip-suffix-hit', expect: 'blocked', rules: ['IP-SUFFIX,0.0.0.1/8,REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
+  { id: 'ip-suffix-miss', expect: 'echoed', rules: ['IP-SUFFIX,0.0.0.2/8,REJECT', 'MATCH,DIRECT'], target: { host: '127.0.0.1', port: 'echo' } },
   { id: 'first-match-wins', expect: 'echoed', rules: ['DOMAIN,localhost,DIRECT', 'DOMAIN-SUFFIX,localhost,REJECT', 'MATCH,REJECT'], target: { host: 'localhost', port: 'echo' } },
   {
     id: 'rule-set-inline',
@@ -237,6 +246,13 @@ const cases = [
     ruleProviders: { inline: '  inline:\n    type: inline\n    behavior: domain\n    payload: [\'+.localhost\']\n' },
     rules: ['RULE-SET,inline,REJECT', 'MATCH,DIRECT'],
     target: { host: 'localhost', port: 'echo' },
+  },
+  {
+    id: 'rule-set-domain-middle-wildcard',
+    expect: 'blocked',
+    ruleProviders: { wild: "  wild:\n    type: inline\n    behavior: domain\n    payload: ['sub.*.example.com']\n" },
+    rules: ['RULE-SET,wild,REJECT', 'MATCH,DIRECT'],
+    target: { host: 'sub.a.example.com', port: 'echo' },
   },
   {
     id: 'rule-set-file-text',
@@ -448,8 +464,18 @@ async function main() {
       const rust = entry.engines.rust
       const mihomoCategory = mihomo.observation?.category ?? 'startup-failed'
       const rustCategory = rust.observation?.category ?? 'startup-failed'
-      const normalize = (category) => ['blocked', 'closed', 'timeout'].includes(category) ? 'blocked' : category
-      const normalized = { mihomo: normalize(mihomoCategory), rust: normalize(rustCategory) }
+      // Mihomo answers CONNECT with 200 before evaluating the rule and then
+      // drops the tunnel; a rejection may surface as `closed` or, when the
+      // client is still waiting for the echo reply, as `timeout`. The Rust
+      // inbound replies 403/502 itself, so it has no `timeout` rejection
+      // category; a Rust timeout is kept as a real difference. This asymmetry
+      // is recorded in `normalizationNote`, not claimed as a rule mismatch.
+      const normalize = (engine, category) => {
+        if (category === 'closed') return 'blocked'
+        if (category === 'timeout' && engine === 'mihomo') return 'blocked'
+        return category
+      }
+      const normalized = { mihomo: normalize('mihomo', mihomoCategory), rust: normalize('rust', rustCategory) }
       entry.observed = { mihomo: mihomoCategory, rust: rustCategory, normalized }
       const matchesExpect = (category) => item.expect === 'blocked'
         ? category === 'blocked'
@@ -521,6 +547,7 @@ async function main() {
       echo: { host: echo.host, port: echo.port },
       summary,
       framingNote: 'Mihomo answers HTTP CONNECT with 200 before rule evaluation and then closes a REJECT tunnel; the Rust mixed inbound answers REJECT with 403/502. The normalized rule outcome is compared (blocked vs echoed); inbound reply framing is not a T24 claim.',
+      normalizationNote: 'Only `closed` is normalized to blocked for both engines. `timeout` is normalized to blocked for Mihomo (its 200-then-close rejection can leave the echo write waiting) but is kept as a real difference for Rust, whose inbound writes 403/502. Rule coverage that needs metadata the mixed inbound does not produce (PROCESS-*, DSCP/UID, SRC-IP-SUFFIX without a controllable source address) is exercised by tests/resources.rs, not this probe. `no-resolve` is compared with an IP target: over HTTP CONNECT the pinned hosts/DNS path can pre-resolve a hostname before rule matching, while this kernel leaves the domain unresolved until T22 DNS.',
       results: results.map((entry) => ({
         ...entry,
         engines: entry.engines && Object.fromEntries(Object.entries(entry.engines).map(([engine, value]) => [engine, {

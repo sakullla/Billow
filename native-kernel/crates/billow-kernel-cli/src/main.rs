@@ -22,8 +22,7 @@ struct Args {
     /// Override the mixed listener port (diagnostic; recorded in the identity).
     #[arg(long)]
     port: Option<u16>,
-    /// Directory with geodata (GeoSite.dat, GeoIP.dat or Country.mmdb, ASN.mmdb)
-    /// and the base for relative provider paths.
+    /// Directory with geodata (GeoSite.dat, GeoIP.dat or Country.mmdb, ASN.mmdb).
     #[arg(long, alias = "geodata-dir")]
     geosite_dir: Option<PathBuf>,
     /// Per-direction copy buffer in bytes.
@@ -68,6 +67,15 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
     if let Some(port) = args.port {
         config.listen.set_port(port);
     }
+    // Relative provider paths resolve against the configuration file's
+    // directory and must stay under it (or `SAFE_PATHS`), matching the pinned
+    // `C.Path` home root rather than whatever directory launched the process.
+    let base_dir = args
+        .config
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     if args.check {
         let (mut kernel, _) = start(
             &billow_kernel::LoadedConfig {
@@ -75,6 +83,7 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
                 warnings: loaded.warnings.clone(),
             },
             &args,
+            &base_dir,
         )?;
         println!("{}", kernel.identity().to_line());
         kernel.stop().map_err(|e| e.to_string())?;
@@ -88,6 +97,7 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
             warnings: loaded.warnings.clone(),
         },
         &args,
+        &base_dir,
     )?;
     let identity = kernel.identity().clone();
     println!("{}", identity.to_line());
@@ -111,14 +121,16 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
 fn start(
     loaded: &billow_kernel::LoadedConfig,
     args: &Args,
+    base_dir: &std::path::Path,
 ) -> Result<(Kernel, Vec<String>), String> {
     let limits = Limits {
         buffer_size: args.buffer_bytes,
         max_sessions: args.max_sessions,
         ..Limits::default()
     };
-    let (mut kernel, warnings) = Kernel::start_with_yaml(loaded, args.geosite_dir.clone(), limits)
-        .map_err(|e| format!("[{}] {e}", e.tag()))?;
+    let (mut kernel, warnings) =
+        Kernel::start_with_dir(loaded, args.geosite_dir.clone(), base_dir.to_path_buf(), limits)
+            .map_err(|e| format!("[{}] {e}", e.tag()))?;
     let identity = kernel.identity().clone().with_port_override(args.port);
     kernel.set_identity(identity);
     Ok((kernel, warnings))

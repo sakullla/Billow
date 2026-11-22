@@ -36,7 +36,7 @@
     },
     "port": {
       "status": "partial",
-      "reason": "recorded only; the mixed listener is the only bound port",
+      "reason": "recorded; 0 disables the alias (Mihomo meaning), and an all-zero listener set fails by name instead of binding an ephemeral port",
       "evidence": [
         "tests/config.rs"
       ]
@@ -107,7 +107,7 @@
     },
     "rule-providers": {
       "status": "partial",
-      "reason": "file/http/inline vehicles; yaml/text/mrs; domain/ipcidr/classical; explicit update swaps snapshots and keeps the old generation on failure. The declared interval is parsed but not scheduled; hosts/T25 call the update API.",
+      "reason": "file/http/inline vehicles; yaml/text/mrs; domain/ipcidr/classical; provider paths are lexically confined to the configuration root or SAFE_PATHS (pinned IsSafePath); a classical provider rejects an unsupported/malformed entry by name instead of dropping it; path-in-bundle is named. Explicit update swaps snapshots and keeps the old generation on failure. The declared interval is parsed but not scheduled; hosts/T25 call the update API.",
       "evidence": [
         "tests/resources.rs",
         "evidence/t24-differential.json"
@@ -115,7 +115,7 @@
     },
     "proxy-providers": {
       "status": "partial",
-      "reason": "file/http/inline vehicles, filter/exclude-filter/exclude-type/dialer-proxy and health-check fields are loaded; latency probing and group use/providers are T23",
+      "reason": "file/http/inline vehicles; filter/exclude-filter split on a backtick; exclude-type split on |; override (udp, skip-cert-verify, dialer-proxy, additional-prefix/suffix, proxy-name) applied; other pinned override fields, age-secret-key, and group use/providers are named/rejected. Latency probing is T23.",
       "evidence": [
         "tests/config.rs",
         "tests/resources.rs"
@@ -164,6 +164,48 @@
       "reason": "parsed; only has an effect with geo-auto-update, which is rejected when true",
       "evidence": [
         "tests/config.rs"
+      ]
+    },
+    "tun": {
+      "status": "partial",
+      "reason": "disabled block is inert with a warning; enable: true is rejected by name (device/TUN is T6/T7)",
+      "evidence": [
+        "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly"
+      ]
+    },
+    "sniffer": {
+      "status": "partial",
+      "reason": "disabled block is inert with a warning; enable: true is rejected by name (sniffer is T22)",
+      "evidence": [
+        "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly"
+      ]
+    },
+    "geox-url": {
+      "status": "partial",
+      "reason": "mapping is accepted with a warning; no downloader runs and geo-auto-update: true is rejected",
+      "evidence": [
+        "tests/config.rs::unknown_top_level_keys_are_ignored_like_mihomo"
+      ]
+    },
+    "external-controller": {
+      "status": "unimplemented",
+      "reason": "control API is T25; rejected by name",
+      "evidence": [
+        "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly"
+      ]
+    },
+    "dns": {
+      "status": "unimplemented",
+      "reason": "DNS/hosts are T22; rejected by name",
+      "evidence": [
+        "tests/config.rs::rejects_every_unimplemented_top_level_key"
+      ]
+    },
+    "proxy-groups": {
+      "status": "unimplemented",
+      "reason": "groups/selection are T23; rejected by name",
+      "evidence": [
+        "tests/config.rs::rejects_every_unimplemented_top_level_key"
       ]
     }
   },
@@ -1584,12 +1626,19 @@
       "reason": "rematch rules are not implemented; rejected by name"
     },
     "PROCESS-NAME-WILDCARD": {
-      "status": "unimplemented",
-      "reason": "wildcard process matching is rejected by name"
+      "status": "implemented",
+      "reason": "pinned component/wildcard semantics, case-insensitive, over host-supplied process metadata",
+      "evidence": [
+        "tests/resources.rs::every_rule_type_matches_with_the_pinned_metadata",
+        "tests/resources.rs::rule_providers_cover_every_vehicle_and_format"
+      ]
     },
     "PROCESS-PATH-WILDCARD": {
-      "status": "unimplemented",
-      "reason": "wildcard process matching is rejected by name"
+      "status": "implemented",
+      "reason": "pinned component/wildcard semantics, case-insensitive, over host-supplied process metadata",
+      "evidence": [
+        "tests/resources.rs::every_rule_type_matches_with_the_pinned_metadata"
+      ]
     }
   },
   "familiesNotImplemented": {
@@ -1615,10 +1664,10 @@
   },
   "unmappedNotes": [
     "Every proxy type outside the implemented ones is rejected at load time with its type named, never ignored; familiesNotImplemented records the task that implements it.",
-    "Rule types UID/DSCP/IN-USER/IN-NAME/REMATCH-NAME/PROCESS-*-WILDCARD are rejected by name. PASS/PASS-RULE markers and proxy-group targets are T23.",
     "GEOIP/IP-ASN/IP-CIDR rules match a destination only when it is already an IP; DNS/hosts (T22) provide name resolution. A warning records this at load.",
     "geodata-mode false uses Country.mmdb; geodata-mode true uses GeoIP.dat; GEOSITE always uses GeoSite.dat. MRS rule-provider decoding shares the Tauri mrs.rs algorithm (ported, not shared code).",
-    "Proxy-provider health-check fields are parsed and exposed but latency probing is T23; provider updates are exposed through Kernel::update_*_provider for T25."
+    "Proxy-provider health-check fields are parsed and exposed but latency probing is T23; provider updates are exposed through Kernel::update_*_provider for T25.",
+    "Rule types UID/DSCP/IN-USER/IN-NAME/REMATCH-NAME are rejected by name, including when they appear in a classical rule-provider (the provider/entry/type are named and the load fails instead of silently dropping the rule). PROCESS-NAME-WILDCARD and PROCESS-PATH-WILDCARD are implemented. PASS/PASS-RULE markers and proxy-group targets are T23."
   ],
   "ignoredByPinnedVersion": {
     "note": "Keys the pinned type does not declare (or declares only as a no-op in the given configuration) are accepted and ignored, exactly as Mihomo ignores them. They are not compatibility gaps.",

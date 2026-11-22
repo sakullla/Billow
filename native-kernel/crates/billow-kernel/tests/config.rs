@@ -44,10 +44,8 @@ fn rejects_every_unimplemented_top_level_key() {
         "proxy-groups",
         "dns",
         "hosts",
-        "tun",
         "listeners",
         "tunnels",
-        "sniffer",
         "external-controller",
         "secret",
         "profile",
@@ -73,8 +71,6 @@ fn rejects_unimplemented_rule_types_and_outbounds() {
         "IN-USER,alice,DIRECT",
         "IN-NAME,DEFAULT-MIXED,DIRECT",
         "REMATCH-NAME,x,DIRECT",
-        "PROCESS-NAME-WILDCARD,a*,DIRECT",
-        "PROCESS-PATH-WILDCARD,/a*,DIRECT",
     ] {
         let yaml = format!("rules: ['{line}']\n");
         assert!(
@@ -146,6 +142,20 @@ fn parses_the_pinned_rule_types() {
         }
     );
     assert!(parse_rule("PROCESS-NAME-REGEX,^cur[lL]$,DIRECT").is_ok());
+    assert_eq!(
+        parse_rule("PROCESS-NAME-WILDCARD,cu*rl,DIRECT").unwrap().matcher,
+        Matcher::ProcessWildcard {
+            kind: ProcessKind::Name,
+            pattern: "cu*rl".into()
+        }
+    );
+    assert_eq!(
+        parse_rule("PROCESS-PATH-WILDCARD,/usr/bin/*,DIRECT").unwrap().matcher,
+        Matcher::ProcessWildcard {
+            kind: ProcessKind::Path,
+            pattern: "/usr/bin/*".into()
+        }
+    );
     assert_eq!(
         parse_rule("SRC-IP-CIDR,10.0.0.0/8,DIRECT").unwrap().matcher,
         Matcher::IpCidr {
@@ -326,6 +336,67 @@ rules: ['MATCH,DIRECT']
     assert!(!provider.health_check.lazy);
 }
 
+#[test]
+fn proxy_providers_follow_the_pinned_filter_override_and_bundle_schema() {
+    // Pinned `NewProxiesParser`: filters split on a backtick, exclude-type on
+    // `|`; `override` and `age-secret-key` are declared fields.
+    let yaml = r#"
+mixed-port: 1
+proxy-providers:
+  sub:
+    type: inline
+    payload:
+      - {name: HK-1, type: ss, server: 127.0.0.1, port: 8388, cipher: aes-256-gcm, password: p}
+    filter: '^HK`^JP'
+    exclude-filter: 'expired`test'
+    exclude-type: ss|ssr
+    override:
+      udp: true
+      skip-cert-verify: true
+      dialer-proxy: hop
+      additional-prefix: '[p] '
+      additional-suffix: ' +'
+      proxy-name:
+        - pattern: 'HK'
+          target: 'HongKong'
+rules: ['MATCH,DIRECT']
+"#;
+    let loaded = load_config(yaml, "test.yaml").unwrap();
+    let provider = &loaded.config.proxy_providers[0];
+    assert_eq!(provider.exclude_type, ["ss", "ssr"]);
+    assert_eq!(provider.overrides.udp, Some(true));
+    assert_eq!(provider.overrides.skip_cert_verify, Some(true));
+    assert_eq!(provider.overrides.dialer_proxy.as_deref(), Some("hop"));
+    assert_eq!(provider.overrides.additional_prefix.as_deref(), Some("[p] "));
+    assert_eq!(provider.overrides.proxy_name.len(), 1);
+
+    // A pinned override field this kernel cannot apply is named, not ignored.
+    for field in [
+        "override: {tfo: true}",
+        "override: {mptcp: true}",
+        "override: {udp-over-tcp: true}",
+        "override: {up: '1 Mbps'}",
+        "override: {name-cert-verify: x}",
+        "override: {interface-name: en0}",
+        "override: {routing-mark: 1}",
+        "override: {ip-version: ipv4}",
+        "override: {override-expr: ['x']}",
+    ] {
+        let yaml = format!("proxy-providers: {{sub: {{type: inline, payload: [], {field}}}}}\n");
+        let error = err_tag(&yaml);
+        assert!(error.starts_with("unsupported"), "{field}: {error}");
+        assert!(error.contains("override."), "{field}: {error}");
+    }
+    assert!(err_tag(
+        "proxy-providers: {sub: {type: inline, payload: [], age-secret-key: AGE-SECRET-KEY-1X}}\n"
+    )
+    .contains("age-secret-key"));
+    assert!(err_tag(
+        "rule-providers: {r: {type: file, behavior: domain, path: x, path-in-bundle: rules/x.mrs}}\n"
+    )
+    .contains("path-in-bundle"));
+}
+
 /// Mihomo's decoder tolerates top-level keys it does not declare, so a file
 /// carrying one (a fixture block, a newer option) must load; a key the pinned
 /// version declares but this kernel does not implement still fails.
@@ -348,11 +419,27 @@ fn unknown_top_level_keys_are_ignored_like_mihomo() {
         loaded.warnings
     );
     // Known but unimplemented keys still fail with their name.
-    for key in ["dns", "hosts", "proxy-groups", "listeners", "tun"] {
+    for key in ["dns", "hosts", "proxy-groups", "listeners"] {
         let yaml = format!("mixed-port: 1\n{key}: {{}}\n");
         let e = err_tag(&yaml);
         assert!(e.starts_with("unsupported"), "{key}: {e}");
     }
+    // The do-nothing forms of TUN/sniffer and inert geox-url are registered
+    // with a warning; enabling them still fails by name.
+    let loaded = load_config(
+        "mixed-port: 1\ntun: {enable: false}\nsniffer: {enable: false}\ngeox-url: {geoip: 'https://example.invalid/GeoIP.dat'}\n",
+        "t",
+    )
+    .expect("disabled tun/sniffer and geox-url load");
+    for needle in ["tun", "sniffer", "geox-url"] {
+        assert!(
+            loaded.warnings.iter().any(|warning| warning.contains(needle)),
+            "{needle}: {:?}",
+            loaded.warnings
+        );
+    }
+    assert!(err_tag("tun: {enable: true}\n").starts_with("unsupported"));
+    assert!(err_tag("sniffer: {enable: true}\n").starts_with("unsupported"));
 }
 
 #[test]
@@ -379,7 +466,10 @@ fn geodata_options_are_parsed_and_named_gaps_rejected() {
 fn rejects_unimplemented_modes_and_levels() {
     assert!(err_tag("mode: global\n").starts_with("unsupported"));
     assert!(err_tag("log-level: trace\n").starts_with("unsupported"));
-    assert!(err_tag("mixed-port: 0\n").starts_with("invalid_value"));
+    // Port 0 is valid Mihomo syntax (disabled); a configuration with no other
+    // listener fails by name rather than binding an ephemeral port.
+    assert!(err_tag("mixed-port: 0\n").starts_with("unsupported"));
+    assert!(err_tag("mixed-port: 0\n").contains("no listener"));
     assert!(err_tag("mixed-port: 70000\n").starts_with("invalid_value"));
     assert!(err_tag("bind-address: 0.0.0.0\n").starts_with("invalid_value"));
     assert!(err_tag("bind-address: 0.0.0.0\nallow-lan: true\n").starts_with("ok"));

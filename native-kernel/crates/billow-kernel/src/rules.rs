@@ -138,6 +138,7 @@ pub enum CompiledMatcher {
     Network(NetworkKind),
     InType(Vec<InType>),
     Process { kind: ProcessKind, pattern: String, regex: Option<regex::Regex> },
+    ProcessWildcard { kind: ProcessKind, pattern: String },
     RuleSet { name: String, source: bool },
     SubRule { gate: Box<CompiledRule>, name: String },
     And(Vec<CompiledRule>),
@@ -362,6 +363,21 @@ impl CompiledMatcher {
                     None => value.eq_ignore_ascii_case(pattern),
                 }
             }
+            CompiledMatcher::ProcessWildcard { kind, pattern } => {
+                let value = match kind {
+                    ProcessKind::Name => target.process_name.as_deref(),
+                    ProcessKind::Path => target.process_path.as_deref(),
+                };
+                let Some(value) = value else {
+                    return None;
+                };
+                // Pinned `rules/common/process.go` lowercases both sides and
+                // uses `component/wildcard`.
+                wildcard_match(
+                    &pattern.to_ascii_lowercase(),
+                    &value.to_ascii_lowercase(),
+                )
+            }
             CompiledMatcher::RuleSet { name, source } => {
                 let snapshot = set.providers.rule_provider(name)?.snapshot();
                 if *source {
@@ -543,6 +559,10 @@ pub(crate) fn compile_matcher(
                 None
             },
         },
+        Matcher::ProcessWildcard { kind, pattern } => CompiledMatcher::ProcessWildcard {
+            kind: *kind,
+            pattern: pattern.clone(),
+        },
         Matcher::RuleSet { name, source, .. } => {
             if !slots.contains_key(name) {
                 return Err(ConfigError::ConfigFailed(format!(
@@ -580,6 +600,7 @@ pub(crate) fn compile_matcher(
 /// Compile a rule-provider payload into its matcher. Domain/IP payloads are
 /// inserted directly; classical payloads are parsed as target-less rules.
 pub(crate) fn compile_provider_payload(
+    name: &str,
     behavior: crate::config::RuleBehavior,
     payload: &ProviderPayload,
     geodata: &Geodata,
@@ -611,14 +632,21 @@ pub(crate) fn compile_provider_payload(
         crate::config::RuleBehavior::Classical => {
             let names = slots.keys().cloned().collect::<std::collections::BTreeSet<_>>();
             for entry in &payload.entries {
-                match crate::config::parse_rule_without_target_in(entry, &names) {
-                    Ok(rule) if !matches!(rule.matcher, crate::config::Matcher::Match) => {
-                        classical.push(compile_rule(&rule, geodata, slots)?);
-                    }
-                    // Mihomo warns and skips an invalid classical entry; a
-                    // malformed entry or MATCH does not fail the whole provider.
-                    _ => {}
+                let rule = crate::config::parse_rule_without_target_in(entry, &names)
+                    .map_err(|error| {
+                        // Never drop a pinned rule type silently: name the
+                        // provider, the entry and the reason so `--check`
+                        // fails instead of the rule becoming a permanent miss.
+                        ConfigError::Unsupported(format!(
+                            "rule-provider '{name}' entry {entry:?}: {error}"
+                        ))
+                    })?;
+                if matches!(rule.matcher, crate::config::Matcher::Match) {
+                    return Err(ConfigError::Unsupported(format!(
+                        "rule-provider '{name}' entry {entry:?}: MATCH is not allowed in a classical rule-provider"
+                    )));
                 }
+                classical.push(compile_rule(&rule, geodata, slots)?);
             }
         }
     }

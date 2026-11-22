@@ -37,6 +37,24 @@ fn start(yaml: &str, geodata: Option<PathBuf>) -> Kernel {
     kernel
 }
 
+fn start_with_base(yaml: &str, geodata: Option<PathBuf>, base: PathBuf) -> Kernel {
+    let loaded = billow_kernel::load_config(yaml, "test.yaml").expect("config parses");
+    let (kernel, warnings) =
+        Kernel::start_with_dir(&loaded, geodata, base, Limits::default()).expect("kernel starts");
+    for warning in warnings {
+        eprintln!("warning: {warning}");
+    }
+    kernel
+}
+
+fn start_error(yaml: &str, base: PathBuf) -> String {
+    let loaded = billow_kernel::load_config(yaml, "test.yaml").expect("config parses");
+    Kernel::start_with_dir(&loaded, None, base, Limits::default())
+        .err()
+        .expect("start must fail")
+        .to_string()
+}
+
 fn eval(kernel: &Kernel, target: &Target) -> Action {
     kernel.evaluate_target(target).0
 }
@@ -91,6 +109,11 @@ fn every_rule_type_matches_with_the_pinned_metadata() {
     assert_eq!(eval(&kernel, &Target::new("a.example", None).with_process(Some("wget"), None)), Action::Direct);
     let kernel = start(&one_rule("PROCESS-PATH-REGEX,/usr/bin/curl$,REJECT"), None);
     assert_eq!(eval(&kernel, &Target::new("a.example", None).with_process(None, Some("/usr/bin/curl"))), Action::Reject);
+    let kernel = start(&one_rule("PROCESS-NAME-WILDCARD,cu*?l,REJECT"), None);
+    assert_eq!(eval(&kernel, &Target::new("a.example", None).with_process(Some("CURL"), None)), Action::Reject);
+    assert_eq!(eval(&kernel, &Target::new("a.example", None).with_process(Some("wget"), None)), Action::Direct);
+    let kernel = start(&one_rule("PROCESS-PATH-WILDCARD,/usr/*/curl,REJECT"), None);
+    assert_eq!(eval(&kernel, &Target::new("a.example", None).with_process(None, Some("/usr/bin/curl"))), Action::Reject);
     let kernel = start(&one_rule("IP-SUFFIX,0.0.0.7/8,REJECT"), None);
     assert_eq!(ip_eval(&kernel, "10.0.0.7"), Action::Reject);
     assert_eq!(ip_eval(&kernel, "10.0.0.8"), Action::Direct);
@@ -120,14 +143,16 @@ rules:
 #[test]
 fn rule_providers_cover_every_vehicle_and_format() {
     let dir = temp_dir("providers");
-    std::fs::write(dir.join("domain.txt"), "+.blocked.example\n*.wild.example\nplain.example\n").unwrap();
-    std::fs::write(dir.join("ip.txt"), "10.0.0.0/8\n2001:db8::/32\n").unwrap();
+    let providers = dir.join("providers");
+    std::fs::create_dir_all(&providers).unwrap();
+    std::fs::write(providers.join("domain.txt"), "+.blocked.example\n*.wild.example\nplain.example\nsub.*.middle.example\n").unwrap();
+    std::fs::write(providers.join("ip.txt"), "10.0.0.0/8\n2001:db8::/32\n").unwrap();
     std::fs::write(
-        dir.join("classical.yaml"),
-        "payload:\n  - DOMAIN-SUFFIX,classical.example\n  - DST-PORT,8080\n",
+        providers.join("classical.yaml"),
+        "payload:\n  - DOMAIN-SUFFIX,classical.example\n  - DST-PORT,8080\n  - PROCESS-NAME-WILDCARD,cur*\n",
     )
     .unwrap();
-    std::fs::write(dir.join("domain.mrs"), include_bytes!("../../../../src-tauri/testdata/domain.mrs")).unwrap();
+    std::fs::write(providers.join("domain.mrs"), include_bytes!("../../../../src-tauri/testdata/domain.mrs")).unwrap();
     let yaml = format!(
         r#"
 mixed-port: {}
@@ -140,22 +165,22 @@ rule-providers:
     type: file
     behavior: domain
     format: text
-    path: {domain}
+    path: providers/domain.txt
   file-ip:
     type: file
     behavior: ipcidr
     format: text
-    path: {ip}
+    path: providers/ip.txt
   classical:
     type: file
     behavior: classical
     format: yaml
-    path: {classical}
+    path: providers/classical.yaml
   mrs:
     type: file
     behavior: domain
     format: mrs
-    path: {mrs}
+    path: providers/domain.mrs
 rules:
   - RULE-SET,inline-domain,REJECT
   - RULE-SET,file-domain,REJECT
@@ -165,25 +190,99 @@ rules:
   - MATCH,DIRECT
 "#,
         free_port(),
-        domain = dir.join("domain.txt").display(),
-        ip = dir.join("ip.txt").display(),
-        classical = dir.join("classical.yaml").display(),
-        mrs = dir.join("domain.mrs").display(),
     );
-    let kernel = start(&yaml, None);
+    let kernel = start_with_base(&yaml, None, dir.clone());
     assert_eq!(domain_eval(&kernel, "a.inline.example"), Action::Reject);
     assert_eq!(domain_eval(&kernel, "plain.example"), Action::Reject);
     assert_eq!(domain_eval(&kernel, "x.wild.example"), Action::Reject);
     assert_eq!(ip_eval(&kernel, "10.1.2.3"), Action::Reject);
     assert_eq!(ip_eval(&kernel, "2001:db8::1"), Action::Reject);
+    assert_eq!(domain_eval(&kernel, "sub.a.middle.example"), Action::Reject);
+    assert_eq!(domain_eval(&kernel, "sub.a.b.middle.example"), Action::Direct);
     assert_eq!(domain_eval(&kernel, "a.classical.example"), Action::Reject);
     assert_eq!(eval(&kernel, &Target::new("unmatched.example", None).with_port(8080)), Action::Reject);
+    assert_eq!(
+        eval(&kernel, &Target::new("unmatched.example", None).with_process(Some("CURL"), None)),
+        Action::Reject
+    );
     // The MRS fixture contains +.google.com and example.org.
     assert_eq!(domain_eval(&kernel, "www.google.com"), Action::Reject);
     assert_eq!(domain_eval(&kernel, "example.org"), Action::Reject);
     assert_eq!(domain_eval(&kernel, "unmatched.example"), Action::Direct);
     let info = kernel.providers().rule_provider("mrs").unwrap().snapshot();
     assert_eq!(info.compiled.count, 5);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn provider_paths_are_confined_to_the_configuration_root() {
+    let dir = temp_dir("provider-paths");
+    let outside = temp_dir("provider-paths-outside");
+    std::fs::create_dir_all(dir.join("providers")).unwrap();
+    std::fs::write(dir.join("providers/domain.txt"), "+.inside.example\n").unwrap();
+    std::fs::write(outside.join("outside.txt"), "+.outside.example\n").unwrap();
+
+    let legal = format!(
+        "mixed-port: {}\nrule-providers:\n  r:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/domain.txt\nrules: ['RULE-SET,r,REJECT', 'MATCH,DIRECT']\n",
+        free_port()
+    );
+    let kernel = start_with_base(&legal, None, dir.clone());
+    assert_eq!(domain_eval(&kernel, "a.inside.example"), Action::Reject);
+
+    // An absolute path inside the root is allowed, as `IsSafePath` allows it.
+    let absolute_inside = format!(
+        "mixed-port: {}\nrule-providers:\n  r:\n    type: file\n    behavior: domain\n    format: text\n    path: {}\nrules: ['RULE-SET,r,REJECT', 'MATCH,DIRECT']\n",
+        free_port(),
+        dir.join("providers/domain.txt").display()
+    );
+    let kernel = start_with_base(&absolute_inside, None, dir.clone());
+    assert_eq!(domain_eval(&kernel, "a.inside.example"), Action::Reject);
+
+    // Both `..` and an absolute path outside the root are named rejections.
+    for path in [
+        "../outside.txt".to_string(),
+        outside.join("outside.txt").display().to_string(),
+    ] {
+        let yaml = format!(
+            "mixed-port: {}\nrule-providers:\n  r:\n    type: file\n    behavior: domain\n    format: text\n    path: {path}\nrules: ['RULE-SET,r,REJECT']\n",
+            free_port()
+        );
+        let error = start_error(&yaml, dir.clone());
+        assert!(error.contains("not a subpath"), "{path}: {error}");
+    }
+
+    // The HTTP cache `path` is validated before the fetch/write.
+    let server = TestServer::start("payload:\n  - +.remote.example\n");
+    let yaml = format!(
+        "mixed-port: {}\nrule-providers:\n  r:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:{}/rules.yaml\n    path: ../escape.yaml\nrules: ['RULE-SET,r,REJECT']\n",
+        free_port(),
+        server.port
+    );
+    let error = start_error(&yaml, dir.clone());
+    assert!(error.contains("not a subpath"), "{error}");
+    assert!(!dir.parent().unwrap().join("escape.yaml").exists());
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&outside).unwrap();
+}
+
+#[test]
+fn classical_provider_names_unsupported_rule_types_instead_of_dropping_them() {
+    let dir = temp_dir("classical-reject");
+    std::fs::create_dir_all(dir.join("providers")).unwrap();
+    // `DSCP` is a pinned rule type but this kernel has no DSCP metadata, so
+    // the provider must fail by name rather than load an incomplete set.
+    std::fs::write(
+        dir.join("providers/classical.yaml"),
+        "payload:\n  - DOMAIN-SUFFIX,dropped.example\n  - DSCP,10\n",
+    )
+    .unwrap();
+    let yaml = format!(
+        "mixed-port: {}\nrule-providers:\n  classical:\n    type: file\n    behavior: classical\n    format: yaml\n    path: providers/classical.yaml\nrules: ['RULE-SET,classical,REJECT', 'MATCH,DIRECT']\n",
+        free_port()
+    );
+    let error = start_error(&yaml, dir.clone());
+    assert!(error.contains("classical") && error.contains("DSCP"), "{error}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -319,7 +418,7 @@ mixed-port: {}
 proxy-providers:
   sub:
     type: file
-    path: {}
+    path: proxies.yaml
     filter: '^HK'
     exclude-type: ssr
     dialer-proxy: hop
@@ -328,13 +427,86 @@ proxies:
 rules: ['MATCH,DIRECT']
 "#,
         free_port(),
-        dir.join("proxies.yaml").display()
     );
-    let kernel = start(&yaml, None);
+    let kernel = start_with_base(&yaml, None, dir.clone());
     let snapshot = kernel.providers().proxy_provider("sub").unwrap().snapshot();
     assert_eq!(snapshot.proxies.len(), 1);
     assert_eq!(snapshot.proxies[0].name, "HK-1");
     assert_eq!(snapshot.proxies[0].dialer_proxy(), Some("hop"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn proxy_provider_override_and_filter_lists_follow_pinned_semantics() {
+    let dir = temp_dir("proxy-provider-override");
+    std::fs::write(
+        dir.join("proxies.yaml"),
+        "proxies:\n  - {name: HK-1, type: ss, server: 127.0.0.1, port: 8388, cipher: aes-256-gcm, password: p}\n  - {name: JP-1, type: ss, server: 127.0.0.1, port: 8389, cipher: aes-256-gcm, password: p}\n  - {name: HK-2, type: ssr, server: 127.0.0.1, port: 8390, cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain}\n  - {name: HK-3, type: trojan, server: 127.0.0.1, port: 8391, password: p}\n",
+    )
+    .unwrap();
+    let yaml = format!(
+        r#"
+mixed-port: {}
+proxy-providers:
+  sub:
+    type: file
+    path: proxies.yaml
+    filter: '^HK`^JP'
+    exclude-filter: 'JP'
+    exclude-type: ss|ssr
+    dialer-proxy: hop
+    override:
+      udp: true
+      skip-cert-verify: true
+      dialer-proxy: hop
+      additional-prefix: '[p] '
+      additional-suffix: ' +'
+      proxy-name:
+        - pattern: '^HK'
+          target: 'HongKong'
+  ss-only:
+    type: file
+    path: proxies.yaml
+    filter: '^HK-1$'
+    override:
+      udp: true
+proxies:
+  - {{name: hop, type: socks5, server: 127.0.0.1, port: 1080}}
+rules: ['MATCH,DIRECT']
+"#,
+        free_port()
+    );
+    let kernel = start_with_base(&yaml, None, dir.clone());
+    // `exclude-type: ss|ssr` drops both ss entries; the trojan remains and
+    // receives the name/udp/TLS/dialer overrides.
+    let snapshot = kernel.providers().proxy_provider("sub").unwrap().snapshot();
+    assert_eq!(snapshot.proxies.len(), 1);
+    let trojan = &snapshot.proxies[0];
+    assert_eq!(trojan.name, "[p] HongKong-3 +");
+    assert_eq!(trojan.dialer_proxy(), Some("hop"));
+    let billow_kernel::proxies::Protocol::Trojan(trojan_out) = &trojan.protocol else {
+        panic!("expected trojan");
+    };
+    assert!(trojan_out.udp);
+    assert!(trojan_out.tls_settings.skip_cert_verify);
+
+    let ss = kernel.providers().proxy_provider("ss-only").unwrap().snapshot();
+    assert_eq!(ss.proxies.len(), 1);
+    let billow_kernel::proxies::Protocol::Shadowsocks(ss_out) = &ss.proxies[0].protocol else {
+        panic!("expected ss");
+    };
+    assert!(ss_out.udp);
+
+    // An unsupported pinned override field is named at load, never ignored.
+    let yaml = format!(
+        "mixed-port: {}\nproxy-providers:\n  sub:\n    type: file\n    path: proxies.yaml\n    override:\n      tfo: true\nrules: ['MATCH,DIRECT']\n",
+        free_port()
+    );
+    let error = billow_kernel::load_config(&yaml, "test.yaml")
+        .err()
+        .expect("override.tfo must fail");
+    assert!(error.to_string().contains("override.tfo"), "{error}");
+
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -524,35 +696,133 @@ rules:
     assert!(error.to_string().contains("circular"), "{error}");
 }
 
-#[test]
-fn billow_override_merged_configuration_loads_and_keeps_rule_order() {
-    // Shape produced by Billow's override engine: provider declarations plus the
-    // override's prepended/appended rules around the profile's own rules.
-    let yaml = format!(
-        r#"
-mixed-port: {}
+/// The shape Billow's `profile.rs` produces for the Rust engine: override-merged
+/// rules/providers plus the launcher keys `prepare`/`apply_settings`/
+/// `finish_yaml_for` insert (Android adds `port: 0`, `socks-port: 0`,
+/// `external-controller` and a disabled `tun`; settings may add `dns`,
+/// `sniffer` and `geox-url`; the profile itself carries `proxy-groups`).
+/// This is a replica of that output, not a hand-written "Mihomo config".
+fn billow_effective_yaml(port: u16) -> String {
+    format!(
+        r#"mixed-port: {port}
+port: 0
+socks-port: 0
+allow-lan: false
 mode: rule
-geodata-mode: true
+log-level: info
+external-controller: 127.0.0.1:49152
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  nameserver: ['223.5.5.5']
+tun:
+  enable: false
+  auto-route: false
+  auto-detect-interface: false
+  dns-hijack: ['any:53']
+sniffer:
+  enable: true
+  sniff:
+    TLS:
+      ports: [443]
+geox-url:
+  geoip: 'https://example.invalid/GeoIP.dat'
+  geosite: 'https://example.invalid/GeoSite.dat'
+proxies:
+  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}
+proxy-groups:
+  - {{name: PROXY, type: select, proxies: [node-a]}}
 rule-providers:
   override-extra:
     type: inline
     behavior: domain
     payload: ['+.override.example', 'corp.example']
-proxies:
-  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}
 rules:
   - RULE-SET,override-extra,REJECT
   - DOMAIN-SUFFIX,corp.com,DIRECT
   - DOMAIN-SUFFIX,profile.example,node-a
   - MATCH,DIRECT
-"#,
-        free_port()
+"#
+    )
+}
+
+#[test]
+fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
+    let yaml = billow_effective_yaml(free_port());
+
+    // The full artifact is not claimed to load directly: the behavior-changing
+    // cross-task blocks are named rejections.
+    let error = billow_kernel::load_config(&yaml, "effective.yaml")
+        .err()
+        .expect("cross-task blocks must be rejected");
+    let text = error.to_string();
+    assert!(
+        ["external-controller", "dns", "proxy-groups", "sniffer", "tun"]
+            .iter()
+            .any(|key| text.contains(key)),
+        "{text}"
     );
-    let loaded = billow_kernel::load_config(&yaml, "effective.yaml").expect("effective config loads");
+
+    // Each boundary is individually named.
+    for (key, value) in [
+        ("external-controller", "127.0.0.1:49152"),
+        ("dns", "{enable: true}"),
+        ("proxy-groups", "[]"),
+    ] {
+        let yaml = format!("mixed-port: {}\n{key}: {value}\n", free_port());
+        let error = billow_kernel::load_config(&yaml, "effective.yaml")
+            .err()
+            .expect("must be rejected");
+        assert!(error.to_string().contains(key), "{key}: {error}");
+    }
+    for key in ["sniffer", "tun"] {
+        let yaml = format!("mixed-port: {}\n{key}: {{enable: true}}\n", free_port());
+        let error = billow_kernel::load_config(&yaml, "effective.yaml")
+            .err()
+            .expect("enabled block must be rejected");
+        assert!(error.to_string().contains(key), "{key}: {error}");
+    }
+
+    // `port: 0`/`socks-port: 0` are disabled listener aliases, not ephemeral
+    // binds; `mixed-port` still selects the listener. A file whose only ports
+    // are 0 has no listener and is named instead of binding an unseen port.
+    let loaded = billow_kernel::load_config(
+        &format!("mixed-port: {}\nport: 0\nsocks-port: 0\n", free_port()),
+        "effective.yaml",
+    )
+    .expect("zero aliases are inert");
+    assert_ne!(loaded.config.listen.port(), 0);
+    assert!(billow_kernel::load_config("mixed-port: 0\n", "effective.yaml").is_err());
+}
+
+#[test]
+fn billow_effective_configuration_rule_subset_keeps_override_order() {
+    // Take the real launcher artifact, remove only the keys registered as
+    // cross-task rejections above, and verify the override engine's rule order
+    // (prepended provider rule, profile rules, MATCH) survives.
+    let mixed_port = free_port();
+    let yaml = billow_effective_yaml(mixed_port);
+    let mut value: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let mapping = value.as_mapping_mut().unwrap();
+    for key in [
+        "external-controller",
+        "dns",
+        "tun",
+        "sniffer",
+        "geox-url",
+        "proxy-groups",
+    ] {
+        mapping.remove(serde_yaml::Value::String(key.to_string()));
+    }
+    let subset = serde_yaml::to_string(&value).unwrap();
+    let loaded = billow_kernel::load_config(&subset, "effective-rust.yaml")
+        .expect("rule/provider/proxy subset loads");
     assert_eq!(loaded.config.rules.len(), 4);
     assert_eq!(loaded.config.rule_providers.len(), 1);
     assert_eq!(loaded.config.proxies.len(), 1);
-    let kernel = start(&yaml, None);
+    assert_eq!(loaded.config.listen.port(), mixed_port);
+    let kernel = start(&subset, None);
     assert_eq!(domain_eval(&kernel, "x.override.example"), Action::Reject);
     assert_eq!(domain_eval(&kernel, "corp.com"), Action::Direct);
+    assert!(matches!(domain_eval(&kernel, "profile.example"), Action::Proxy(_)));
 }

@@ -345,6 +345,16 @@ pub enum DomainPattern {
     Suffix(String),
     /// One leading label (`*.x`).
     Wildcard(String),
+    /// A dot-separated pattern with `*` labels anywhere, matching the pinned
+    /// `component/trie/domain.go` semantics: each `*` covers exactly one
+    /// label. `suffix` follows the leading `.`/`+.` forms (`host` ends with
+    /// the pattern), and `include_exact` follows `+.` (the pattern itself is
+    /// also a match).
+    WildcardSegments {
+        segments: Vec<String>,
+        suffix: bool,
+        include_exact: bool,
+    },
     /// Case-sensitive substring (geosite `plain`).
     Substring(String),
     /// Case-sensitive compiled regular expression (geosite `regex`).
@@ -354,14 +364,41 @@ pub enum DomainPattern {
 impl DomainPattern {
     pub fn parse(pattern: &str) -> DomainPattern {
         let lower = pattern.trim().to_ascii_lowercase();
+        let segments = || lower.split('.').map(str::to_string).collect::<Vec<_>>();
+        let has_wildcard = |parts: &[String]| parts.iter().any(|part| part == "*");
         if let Some(rest) = lower.strip_prefix("+.") {
-            DomainPattern::SuffixAndExact(rest.to_string())
+            let parts: Vec<String> = rest.split('.').map(str::to_string).collect();
+            if has_wildcard(&parts) {
+                DomainPattern::WildcardSegments {
+                    segments: parts,
+                    suffix: true,
+                    include_exact: true,
+                }
+            } else {
+                DomainPattern::SuffixAndExact(rest.to_string())
+            }
         } else if let Some(rest) = lower.strip_prefix('.') {
-            DomainPattern::Suffix(rest.to_string())
-        } else if let Some(rest) = lower.strip_prefix("*.") {
-            DomainPattern::Wildcard(rest.to_string())
+            let parts: Vec<String> = rest.split('.').map(str::to_string).collect();
+            if has_wildcard(&parts) {
+                DomainPattern::WildcardSegments {
+                    segments: parts,
+                    suffix: true,
+                    include_exact: false,
+                }
+            } else {
+                DomainPattern::Suffix(rest.to_string())
+            }
         } else {
-            DomainPattern::Exact(lower)
+            let parts = segments();
+            if has_wildcard(&parts) {
+                DomainPattern::WildcardSegments {
+                    segments: parts,
+                    suffix: false,
+                    include_exact: true,
+                }
+            } else {
+                DomainPattern::Exact(lower)
+            }
         }
     }
 
@@ -377,6 +414,34 @@ impl DomainPattern {
                     return false;
                 };
                 !prefix.is_empty() && !prefix.contains('.')
+            }
+            DomainPattern::WildcardSegments {
+                segments,
+                suffix,
+                include_exact,
+            } => {
+                let labels = host.split('.').collect::<Vec<_>>();
+                let window = if *suffix {
+                    // `+.` also covers the pattern itself; a leading `.` is
+                    // subdomains only and needs at least one extra label.
+                    if *include_exact {
+                        if labels.len() < segments.len() {
+                            return false;
+                        }
+                    } else if labels.len() <= segments.len() {
+                        return false;
+                    }
+                    &labels[labels.len() - segments.len()..]
+                } else {
+                    if labels.len() != segments.len() {
+                        return false;
+                    }
+                    &labels[..]
+                };
+                window
+                    .iter()
+                    .zip(segments.iter())
+                    .all(|(label, pattern)| pattern == "*" || label == pattern)
             }
             DomainPattern::Substring(value) => host.contains(value),
             DomainPattern::Regex(regex) => regex.is_match(host),
@@ -1784,6 +1849,23 @@ mod tests {
         assert!(DomainPattern::parse("*.example.com").matches("a.example.com"));
         assert!(!DomainPattern::parse("*.example.com").matches("b.a.example.com"));
         assert!(DomainPattern::parse("*.example.com").matches("a.example.com"));
+
+        // A `*` label in the middle is a one-label wildcard, not an exact name
+        // with a literal asterisk (pinned `component/trie/domain.go`).
+        let middle = DomainPattern::parse("sub.*.example.com");
+        assert!(middle.matches("sub.a.example.com"));
+        assert!(!middle.matches("sub.a.b.example.com"));
+        assert!(!middle.matches("sub.example.com"));
+        // A `*` label also matches a literal `*` host label, as the trie's
+        // wildcard child does.
+        assert!(middle.matches("sub.*.example.com"));
+        let plus = DomainPattern::parse("+.sub.*.example.com");
+        assert!(plus.matches("sub.a.example.com"));
+        assert!(plus.matches("x.sub.a.example.com"));
+        assert!(!plus.matches("x.sub.a.b.example.com"));
+        let dot = DomainPattern::parse(".sub.*.example.com");
+        assert!(!dot.matches("sub.a.example.com"));
+        assert!(dot.matches("x.sub.a.example.com"));
     }
 
     #[test]
