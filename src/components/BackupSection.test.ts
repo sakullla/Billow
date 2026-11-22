@@ -212,4 +212,58 @@ describe('BackupSection', () => {
     expect(find('[data-testid="webdav-upload"]').tagName).toBe('BUTTON')
     expect(find('[data-testid="webdav-restore"], [data-testid="webdav-test"]')).toBeTruthy()
   })
+
+  it('toggles WebDAV password visibility and collapses verified credentials into a summary bar', async () => {
+    await setup()
+    const password = find<HTMLInputElement>('[data-testid="webdav-password"]')
+    expect(password.type).toBe('password')
+
+    await click('webdav-toggle-password')
+    expect(password.type).toBe('text')
+    await click('webdav-toggle-password')
+    expect(password.type).toBe('password')
+
+    await type('webdav-url', 'https://dav.example.com/dav/')
+    await type('webdav-username', 'Billow')
+    await type('webdav-password', 'secret')
+    await click('webdav-test')
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="webdav-summary"]')).not.toBeNull()
+    })
+    const summary = find('[data-testid="webdav-summary"]')
+    expect(summary.textContent).toContain('dav.example.com/dav')
+    expect(summary.textContent).toContain('Billow')
+    expect(document.querySelector('[data-testid="webdav-url"]')).toBeNull()
+
+    await click('webdav-edit')
+    expect(document.querySelector('[data-testid="webdav-url"]')).not.toBeNull()
+    await click('webdav-collapse')
+    expect(document.querySelector('[data-testid="webdav-summary"]')).not.toBeNull()
+  })
+
+  it('renders readable device titles with a latest badge and supports copying exported paths', async () => {
+    await setup()
+    await click('backup-export')
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="backup-copy-path"]')).not.toBeNull()
+    })
+
+    await type('webdav-url', 'https://dav.example.com/billow')
+    await type('webdav-username', 'me')
+    await type('webdav-password', 'pw')
+    await click('webdav-test')
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="webdav-summary"]')).not.toBeNull()
+    })
+    await click('webdav-upload')
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('[data-testid="webdav-item"]')).toHaveLength(1)
+    })
+
+    const item = find('[data-testid="webdav-item"]')
+    expect(item.textContent).toContain('demo')
+    expect(item.textContent).toContain('最新')
+    expect(item.querySelector('[title*="billow-backup-demo-"]')).not.toBeNull()
+  })
 })

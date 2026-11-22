@@ -22,14 +22,19 @@ const store = useStore()
 const fileInput = ref<HTMLInputElement | null>(null)
 const exporting = ref(false)
 const exported = ref<string | null>(null)
+const copiedPath = ref(false)
 const localError = ref<string | null>(null)
 
-type PendingRestore = { kind: 'local'; name: string; file: File } | { kind: 'remote'; name: string }
+type PendingRestore =
+  | { kind: 'local'; name: string; file: File }
+  | { kind: 'remote'; name: string; device?: string; modified?: string | null; size?: number | null }
 const pending = ref<PendingRestore | null>(null)
 const restoring = ref(false)
 
 const form = ref<WebdavSettings>({ url: '', username: '', password: '', available: false })
 const available = ref(false)
+const editingAccount = ref(true)
+const showPassword = ref(false)
 const testing = ref(false)
 const uploading = ref(false)
 const listing = ref(false)
@@ -48,24 +53,54 @@ onMounted(async () => {
     const info = await store.backend.webdavSettings()
     form.value = { ...info }
     available.value = info.available
-    // A verified account shows its cloud backups right away instead of behind another click.
+    // Verified accounts open in summary mode so upload & cloud backups stay above the fold.
+    editingAccount.value = !info.available
     if (info.available) await refreshList()
   } catch (error) {
     testError.value = reason(error)
+    editingAccount.value = true
   }
 })
 
 const canTest = computed(() => Boolean(form.value.url.trim()))
 
+/** Short human-readable endpoint for the collapsed account summary row. */
+const endpointLabel = computed(() => {
+  const raw = form.value.url.trim()
+  if (!raw) return '—'
+  try {
+    const parsed = new URL(raw)
+    const path = parsed.pathname.replace(/\/+$/, '')
+    return path && path !== '/' ? `${parsed.host}${path}` : parsed.host
+  } catch {
+    return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+  }
+})
+
 async function onExport() {
   if (exporting.value) return
   exporting.value = true
   localError.value = null
+  copiedPath.value = false
   try {
     const path = await store.exportBackup()
     if (path) exported.value = path
   } finally {
     exporting.value = false
+  }
+}
+
+async function copyExportedPath() {
+  if (!exported.value) return
+  try {
+    await navigator.clipboard?.writeText(exported.value)
+    copiedPath.value = true
+    store.toast(t('backup.pathCopied'), 'success')
+    setTimeout(() => {
+      copiedPath.value = false
+    }, 1800)
+  } catch {
+    // Clipboard may be unavailable in restricted contexts; title tooltip still exposes the path.
   }
 }
 
@@ -119,8 +154,13 @@ async function onTest() {
     const result = await store.backend.testWebdav()
     available.value = result.available
     testError.value = result.error
-    if (result.available) await refreshList()
-    else remote.value = []
+    if (result.available) {
+      editingAccount.value = false
+      showPassword.value = false
+      await refreshList()
+    } else {
+      remote.value = []
+    }
   } catch (error) {
     available.value = false
     testError.value = reason(error)
@@ -191,11 +231,25 @@ function formatModified(value: string | null | undefined): string {
   return Number.isNaN(time) ? value : formatRelative(time)
 }
 
+function formatExactTime(value: string | null | undefined): string {
+  if (!value) return ''
+  const time = Date.parse(value)
+  if (Number.isNaN(time)) return ''
+  const date = new Date(time)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 function formatSize(size: number | null): string {
   if (size == null) return '—'
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
   return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function backupTitle(item: RemoteBackup): string {
+  if (item.device && item.device.trim()) return item.device.trim()
+  return item.name.replace(/^billow-backup-/, '').replace(/\.json$/i, '') || item.name
 }
 </script>
 
@@ -204,7 +258,7 @@ function formatSize(size: number | null): string {
     <SettingsRow :title="t('backup.export')" :description="t('backup.local.detail')" setting="backup-file">
       <button
         type="button"
-        class="btn sm"
+        class="btn sm backup-row-btn"
         data-testid="backup-export"
         :disabled="exporting"
         @click="onExport"
@@ -216,7 +270,7 @@ function formatSize(size: number | null): string {
     <SettingsRow :title="t('backup.importTitle')" :description="t('backup.importDetail')">
       <button
         type="button"
-        class="btn sm"
+        class="btn sm backup-row-btn"
         data-testid="backup-import"
         :disabled="restoring"
         @click="pickFile"
@@ -224,10 +278,21 @@ function formatSize(size: number | null): string {
         <Icon name="upload" :size="15" />{{ t('backup.importShort') }}
       </button>
     </SettingsRow>
-    <div v-if="exported || localError" class="srow srow-info">
-      <p v-if="exported" class="backup-note ok small" data-testid="backup-exported">
-        <Icon name="check" :size="14" /><span class="ellipsis" :title="exported">{{ t('backup.exported', { path: exported }) }}</span>
-      </p>
+    <div v-if="exported || localError" class="srow srow-info backup-feedback-row">
+      <div v-if="exported" class="backup-banner ok small" data-testid="backup-exported">
+        <Icon name="check" :size="14" />
+        <span class="ellipsis" :title="exported">{{ t('backup.exported', { path: exported }) }}</span>
+        <button
+          type="button"
+          class="icon-btn xs"
+          :title="copiedPath ? t('backup.pathCopied') : t('backup.copyPath')"
+          :aria-label="t('backup.copyPath')"
+          data-testid="backup-copy-path"
+          @click="copyExportedPath"
+        >
+          <Icon :name="copiedPath ? 'check' : 'copy'" :size="13" />
+        </button>
+      </div>
       <p v-if="localError" class="field-error small backup-note" role="alert" data-testid="backup-error">
         <Icon name="alert" :size="14" /><span>{{ localError }}</span>
       </p>
@@ -252,13 +317,47 @@ function formatSize(size: number | null): string {
   <SettingsSection title="WebDAV" :description="t('backup.webdav.detail')" data-testid="backup-webdav">
     <template #action>
       <span
-        class="tag"
+        class="tag backup-status"
         :class="available ? 'ok' : ''"
         aria-live="polite"
         data-testid="webdav-status"
-      >{{ available ? t('backup.webdav.available') : t('backup.webdav.unavailable') }}</span>
+      >
+        <span class="backup-status-dot" aria-hidden="true" />
+        {{ available ? t('backup.webdav.available') : t('backup.webdav.unavailable') }}
+      </span>
     </template>
-    <form class="srow srow-form backup-grid" data-setting="webdav" @submit.prevent="onTest">
+
+    <!-- Verified & collapsed: compact account summary + primary upload action above the fold. -->
+    <div v-if="available && !editingAccount" class="srow backup-account-bar" data-setting="webdav" data-testid="webdav-summary">
+      <span class="backup-row-icon accent" aria-hidden="true"><Icon name="globe" :size="15" /></span>
+      <div class="srow-main">
+        <span class="srow-title ellipsis" :title="form.url">{{ endpointLabel }}</span>
+        <span v-if="form.username" class="srow-desc ellipsis">{{ form.username }}</span>
+      </div>
+      <div class="backup-summary-actions">
+        <button
+          type="button"
+          class="btn sm"
+          data-testid="webdav-edit"
+          @click="editingAccount = true"
+        >
+          <Icon name="edit" :size="14" />{{ t('backup.webdav.edit') }}
+        </button>
+        <button
+          type="button"
+          class="btn sm primary"
+          data-testid="webdav-upload"
+          :disabled="uploading"
+          @click="onUpload"
+        >
+          <span v-if="uploading" class="spinner xs" aria-hidden="true" />
+          <Icon v-else name="upload" :size="15" />{{ uploading ? t('backup.webdav.uploading') : t('backup.webdav.upload') }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Account form: open by default until verified, or when user chooses to edit. -->
+    <form v-else class="srow srow-form backup-grid" data-setting="webdav" @submit.prevent="onTest">
       <label class="field backup-url">
         <span>{{ t('backup.webdav.url') }}</span>
         <input
@@ -289,14 +388,27 @@ function formatSize(size: number | null): string {
       </label>
       <label class="field">
         <span>{{ t('backup.webdav.password') }}</span>
-        <input
-          v-model="form.password"
-          class="input"
-          type="password"
-          autocomplete="current-password"
-          data-testid="webdav-password"
-          @change="onAccountChange"
-        />
+        <div class="input-with-action">
+          <input
+            v-model="form.password"
+            class="input"
+            :type="showPassword ? 'text' : 'password'"
+            autocomplete="current-password"
+            data-testid="webdav-password"
+            @change="onAccountChange"
+          />
+          <button
+            type="button"
+            class="icon-btn xs"
+            :title="showPassword ? t('backup.webdav.hidePassword') : t('backup.webdav.showPassword')"
+            :aria-label="showPassword ? t('backup.webdav.hidePassword') : t('backup.webdav.showPassword')"
+            :aria-pressed="showPassword"
+            data-testid="webdav-toggle-password"
+            @click="showPassword = !showPassword"
+          >
+            <Icon :name="showPassword ? 'eye-off' : 'eye'" :size="15" />
+          </button>
+        </div>
       </label>
       <div class="backup-toolbar">
         <div class="grow min0" aria-live="polite">
@@ -310,8 +422,17 @@ function formatSize(size: number | null): string {
         </div>
         <div class="backup-actions">
           <button
+            v-if="available"
             type="button"
             class="btn ghost sm"
+            data-testid="webdav-collapse"
+            @click="editingAccount = false"
+          >
+            {{ t('backup.webdav.done') }}
+          </button>
+          <button
+            type="button"
+            class="btn sm"
             data-testid="webdav-test"
             :disabled="testing || !canTest"
             @click="onTest"
@@ -334,13 +455,24 @@ function formatSize(size: number | null): string {
       </div>
     </form>
 
+    <!-- Inline status banner when summary bar is collapsed and user uploads or hits an error. -->
+    <div v-if="available && !editingAccount && (testError || uploaded)" class="srow srow-info backup-feedback-row" aria-live="polite">
+      <p v-if="testError" class="field-error small backup-note" role="alert" data-testid="webdav-error">
+        <Icon name="alert" :size="14" /><span>{{ testError }}</span>
+      </p>
+      <div v-else-if="uploaded" class="backup-banner ok small" data-testid="webdav-uploaded">
+        <Icon name="check" :size="14" />
+        <span class="ellipsis" :title="uploaded">{{ t('backup.webdav.uploaded', { name: uploaded }) }}</span>
+      </div>
+    </div>
+
     <!-- Cloud backups only appear once the account works; restoring always asks first. -->
     <template v-if="available || listed">
       <div class="srow backup-cloud-head">
         <div class="srow-main">
           <span class="srow-title">
             {{ t('backup.webdav.list') }}
-            <span v-if="listed && remote.length" class="muted">{{ remote.length }}</span>
+            <span v-if="listed && remote.length" class="backup-count">{{ remote.length }}</span>
           </span>
         </div>
         <button
@@ -358,25 +490,41 @@ function formatSize(size: number | null): string {
       <p v-if="listError" class="srow field-error small" role="alert" data-testid="webdav-list-error">
         <Icon name="alert" :size="14" /><span>{{ listError }}</span>
       </p>
-      <p v-if="listing && !remote.length" class="srow muted small" data-testid="webdav-loading">
-        {{ t('backup.webdav.loading') }}
-      </p>
+      <div v-if="listing && !remote.length" class="srow muted small backup-loading" data-testid="webdav-loading">
+        <span class="spinner xs" aria-hidden="true" />
+        <span>{{ t('backup.webdav.loading') }}</span>
+      </div>
       <ul v-else-if="listed" class="backup-list" data-testid="webdav-list">
-        <li v-if="!remote.length" class="srow muted small">{{ t('backup.webdav.empty') }}</li>
-        <li v-for="item in remote" :key="item.name" class="srow backup-row" data-testid="webdav-item">
-          <span class="backup-row-icon" aria-hidden="true"><Icon name="file" :size="15" /></span>
+        <li v-if="!remote.length" class="srow backup-empty">
           <div class="srow-main">
-            <span class="srow-title ellipsis" :title="item.name">{{ item.name }}</span>
-            <span class="srow-desc ellipsis">
-              {{ item.device || '—' }}<template v-if="item.modified"> · {{ formatModified(item.modified) }}</template>
-              <template v-if="item.size != null"> · {{ formatSize(item.size) }}</template>
+            <span class="muted small">{{ t('backup.webdav.empty') }}</span>
+            <span class="backup-empty-hint">{{ t('backup.webdav.emptyHint') }}</span>
+          </div>
+        </li>
+        <li v-for="(item, index) in remote" :key="item.name" class="srow backup-row" data-testid="webdav-item">
+          <span class="backup-row-icon" :class="{ latest: index === 0 }" aria-hidden="true">
+            <Icon name="file" :size="15" />
+          </span>
+          <div class="srow-main">
+            <span class="srow-title backup-item-title" :title="item.name">
+              <span class="ellipsis">{{ backupTitle(item) }}</span>
+              <span v-if="index === 0" class="srow-badge">{{ t('backup.webdav.latest') }}</span>
+            </span>
+            <span class="srow-desc backup-item-meta" :title="item.name">
+              <template v-if="item.modified">
+                <span>{{ formatModified(item.modified) }}</span>
+                <span v-if="!compact && formatExactTime(item.modified)" class="backup-item-exact"> · {{ formatExactTime(item.modified) }}</span>
+              </template>
+              <template v-if="item.size != null">
+                <template v-if="item.modified"> · </template>{{ formatSize(item.size) }}
+              </template>
             </span>
           </div>
           <button
             type="button"
-            class="btn ghost sm"
+            class="btn sm backup-row-btn"
             data-testid="webdav-restore"
-            @click="askRestore({ kind: 'remote', name: item.name })"
+            @click="askRestore({ kind: 'remote', name: item.name, device: item.device, modified: item.modified, size: item.size })"
           >
             {{ t('backup.webdav.restore') }}
           </button>
@@ -388,9 +536,17 @@ function formatSize(size: number | null): string {
   <Modal v-if="pending" :title="t('backup.confirm.title')" :before-close="() => !restoring" @close="pending = null">
     <div class="backup-confirm">
       <p>{{ t('backup.confirm.body') }}</p>
-      <p class="backup-confirm-file small" data-testid="backup-confirm-file">
-        <Icon name="file" :size="14" /><span class="ellipsis mono">{{ t('backup.confirm.file', { name: pending.name }) }}</span>
-      </p>
+      <div class="backup-confirm-card" data-testid="backup-confirm-file">
+        <div class="backup-confirm-head small">
+          <span class="srow-badge">{{ pending.kind === 'remote' ? t('backup.confirm.sourceRemote') : t('backup.confirm.sourceLocal') }}</span>
+          <span v-if="pending.kind === 'remote' && pending.device" class="backup-confirm-device ellipsis">{{ pending.device }}</span>
+          <span v-if="pending.kind === 'remote' && pending.modified" class="muted">{{ formatModified(pending.modified) }}</span>
+          <span v-if="pending.kind === 'remote' && pending.size != null" class="muted">{{ formatSize(pending.size) }}</span>
+        </div>
+        <p class="backup-confirm-file small">
+          <Icon name="file" :size="14" /><span class="ellipsis mono" :title="pending.name">{{ t('backup.confirm.file', { name: pending.name }) }}</span>
+        </p>
+      </div>
       <p class="backup-note warn small" data-testid="backup-confirm-warning">
         <Icon name="alert" :size="14" /><span>{{ t('backup.confirm.sensitive') }}</span>
       </p>
@@ -414,6 +570,39 @@ function formatSize(size: number | null): string {
 </template>
 
 <style scoped>
+.backup-row-btn {
+  min-width: 72px;
+  justify-content: center;
+}
+.backup-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  flex: none;
+}
+.backup-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.72;
+}
+.backup-status.ok .backup-status-dot {
+  opacity: 1;
+}
+.backup-account-bar {
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: 62px;
+}
+.backup-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  margin-left: auto;
+}
 .backup-actions {
   display: flex;
   flex-wrap: wrap;
@@ -430,6 +619,30 @@ function formatSize(size: number | null): string {
 .backup-url,
 .backup-toolbar {
   grid-column: 1 / -1;
+}
+.backup-feedback-row {
+  padding-top: 8px;
+  padding-bottom: 10px;
+}
+.backup-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: var(--radius-control);
+}
+.backup-banner > svg {
+  flex: none;
+}
+.backup-banner > span {
+  flex: 1;
+  min-width: 0;
+}
+.backup-banner.ok {
+  background: var(--good-soft);
+  color: var(--good-ink);
 }
 .backup-note {
   display: inline-flex;
@@ -450,7 +663,7 @@ function formatSize(size: number | null): string {
 }
 .backup-note.warn {
   display: flex;
-  padding: 8px 10px;
+  padding: 9px 11px;
   border-radius: var(--radius-control);
   background: var(--fair-soft);
   color: var(--fair-ink);
@@ -460,39 +673,114 @@ function formatSize(size: number | null): string {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  padding-top: 2px;
 }
-.backup-cloud-head .srow-title .muted {
-  margin-left: 4px;
-  font-weight: 500;
+.backup-cloud-head {
+  min-height: 46px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  background: var(--surface-2);
+}
+.backup-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+.backup-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+}
+.backup-empty {
+  min-height: 56px;
+}
+.backup-empty-hint {
+  font-size: var(--text-xs);
+  color: var(--text-3);
 }
 .backup-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
+.backup-row {
+  transition: background var(--dur-fast) var(--ease);
+}
+.backup-row:hover {
+  background: var(--hover);
+}
 .backup-row-icon {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
   background: var(--sunken);
   color: var(--text-2);
   flex: none;
+}
+.backup-row-icon.accent,
+.backup-row-icon.latest {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.backup-item-title {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.backup-item-title > .ellipsis {
+  min-width: 0;
+}
+.backup-item-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 2px;
+  font-variant-numeric: tabular-nums;
 }
 .backup-confirm {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+.backup-confirm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--sunken);
+}
+.backup-confirm-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+.backup-confirm-device {
+  font-weight: 620;
+  color: var(--text);
+}
 .backup-confirm-file {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
-  border-radius: var(--radius-control);
-  background: var(--sunken);
+  margin: 0;
   color: var(--text-2);
+}
+.backup-confirm-file > svg {
+  flex: none;
 }
 .backup-confirm-file > span {
   flex: 1;
@@ -501,6 +789,25 @@ function formatSize(size: number | null): string {
 @media (max-width: 560px) {
   .backup-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .backup-summary-actions {
+    width: 100%;
+    justify-content: flex-end;
+    padding-top: 2px;
+  }
+  .backup-summary-actions > .btn {
+    flex: 1;
+    justify-content: center;
+  }
+  .backup-actions {
+    width: 100%;
+  }
+  .backup-actions > .btn {
+    flex: 1;
+    justify-content: center;
+  }
+  .backup-item-exact {
+    display: none;
   }
 }
 </style>
