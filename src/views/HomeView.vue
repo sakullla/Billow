@@ -33,6 +33,9 @@ defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const profile = computed(() => store.current.value)
+const activeProfileLabel = computed(
+  () => profile.value?.name ?? (snap.value.custom_profile_active ? t('customNodes.standaloneActive') : null),
+)
 
 const MODES: { id: Mode; label: string; hint: string; icon: string }[] = [
   { id: 'rule', get label() { return tr('规则') }, get hint() { return tr('按配置中的规则分流') }, icon: 'route' },
@@ -450,16 +453,16 @@ onBeforeUnmount(() => {
               <Icon :name="portCopied ? 'check' : 'copy'" :size="12" />
             </button>
             <button
-              v-if="profile"
+              v-if="activeProfileLabel"
               type="button"
               class="hero-profile-pill"
               data-testid="mobile-profile-trigger"
-              :aria-label="tr('当前配置：{0}，点击切换配置', { 0: profile.name })"
-              :title="tr('当前配置：{0}（点击切换配置）', { 0: profile.name })"
-              @click="openProfileSheet"
+              :aria-label="tr('当前配置：{0}，点击切换配置', { 0: activeProfileLabel })"
+              :title="tr('当前配置：{0}（点击切换配置）', { 0: activeProfileLabel })"
+              @click="snap.profiles.length ? openProfileSheet() : store.go('profiles')"
             >
-              <Icon :name="profile.kind === 'local' ? 'file' : 'link'" :size="13" />
-              <span class="hero-profile ellipsis">{{ profile.name }}</span>
+              <Icon :name="profile ? (profile.kind === 'local' ? 'file' : 'link') : 'layers'" :size="13" />
+              <span class="hero-profile ellipsis">{{ activeProfileLabel }}</span>
               <Icon name="chevron-down" :size="13" />
             </button>
           </div>
@@ -500,7 +503,7 @@ onBeforeUnmount(() => {
                   @click="store.setMode('rule')"
                 >{{ tr('切回规则模式') }}</button>
               </p>
-              <p v-else-if="!profile" class="hero-sub muted">{{ tr('选择一份配置后即可开启代理') }}</p>
+              <p v-else-if="!profile && !snap.custom_profile_active" class="hero-sub muted">{{ tr('选择一份配置后即可开启代理') }}</p>
               <p v-else class="hero-sub muted">
                 <span>{{ activeMode ? tr('{0}模式', { 0: activeMode.label }) : tr('就绪') }}</span>
                 <template v-if="store.isAndroid.value && snap.mixed_port">

@@ -1,9 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, provide } from 'vue'
 import { createDemoBackend } from '../lib/demo'
 import { createStore, PAGES, STORE } from '../lib/store'
 import { CUSTOM_PROFILE_ID } from '../lib/types'
+import App from '../App.vue'
 import ProfilesView from '../views/ProfilesView.vue'
 
 const cleanups: (() => void)[] = []
@@ -333,5 +334,50 @@ describe('CustomNodesPanel & ProfilesView integration (R1–R7, R9)', () => {
     await click(`[data-testid="edit-custom-node-${exitA!.id}"]`)
     expect(find('[data-testid="custom-node-dialer"] button').textContent).toContain('已删除')
     expect(find('[data-testid="custom-node-dialer-warning"]').textContent).toContain('已删除')
+  })
+
+  it('connects from HomeView and sidebar in zero-subscription standalone custom-node mode and shows failure banner when all custom nodes are disabled (R5, R9)', async () => {
+    const backend = createDemoBackend({ profiles: false })
+    const wrapper = mount(App, { props: { backend, width: 1200 }, attachTo: document.body })
+    cleanups.push(() => wrapper.unmount())
+    await waitDemo()
+
+    // Pure empty state still shows welcome screen
+    expect(document.querySelector('[data-testid="welcome"]')).not.toBeNull()
+
+    // Import one custom node with zero subscriptions -> auto-activates standalone custom profile
+    await backend.importCustomNodes('anytls://pw@jp-opt.example.com:443?sni=jp-opt.example.com#JP-Opt')
+    await waitDemo()
+
+    // Re-mount App to pick up backend state (or navigate to profiles & back to home)
+    wrapper.unmount()
+    const wrapper2 = mount(App, { props: { backend, width: 1200 }, attachTo: document.body })
+    cleanups.push(() => wrapper2.unmount())
+    await waitDemo()
+
+    // HomeView leaves welcome state, shows standalone profile name and sidebar power button
+    expect(document.querySelector('[data-testid="welcome"]')).toBeNull()
+    expect(find('[data-testid="mobile-profile-trigger"]').textContent).toContain('纯自建节点')
+    expect(document.querySelector('[data-testid="side-power"]')).not.toBeNull()
+
+    // Clicking Home power button connects directly without opening Add Profile modal
+    await click('[data-testid="power"]')
+    await vi.waitFor(() => {
+      expect(find('[data-testid="status"]').textContent).toContain('已连接')
+    }, { timeout: 3000 })
+    expect(document.querySelector('[data-testid="add-profile-modal"]')).toBeNull()
+
+    // Disconnect, disable the only custom node, and verify connecting shows clear error banner
+    await click('[data-testid="power"]')
+    await vi.waitFor(() => {
+      expect(find('[data-testid="status"]').textContent).toContain('未连接')
+    }, { timeout: 3000 })
+    const state = await backend.state()
+    const onlyNode = state.custom_nodes.nodes[0]!
+    await backend.setCustomNodeEnabled(onlyNode.id, false)
+    await click('[data-testid="power"]')
+    await vi.waitFor(() => {
+      expect(find('[data-testid="home-failure"]').textContent).toContain('还没有启用的自建节点')
+    }, { timeout: 3000 })
   })
 })

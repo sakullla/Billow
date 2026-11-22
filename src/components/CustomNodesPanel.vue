@@ -149,7 +149,7 @@ async function confirmDelete() {
     </header>
 
     <div class="custom-nodes-controls">
-      <div v-if="store.hasProfiles.value" class="custom-control-row">
+      <div v-if="store.snapshot.value.profiles.length > 0" class="custom-control-row">
         <div class="grow min0">
           <strong>{{ t('customNodes.overlay') }}</strong>
           <p class="muted small">{{ t('customNodes.overlayHint') }}</p>

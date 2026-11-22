@@ -240,7 +240,12 @@ export function createStore(backend: Backend) {
   const lastRunError = ref<string | null>(null)
 
   const current = computed(() => snapshot.value.profiles.find((item) => item.current) ?? null)
-  const hasProfiles = computed(() => snapshot.value.profiles.length > 0)
+  const hasProfiles = computed(
+    () =>
+      snapshot.value.profiles.length > 0 ||
+      snapshot.value.custom_profile_active ||
+      snapshot.value.custom_nodes.nodes.length > 0,
+  )
   const customNodes = computed(() => snapshot.value.custom_nodes)
   const hasCustomNodes = computed(() => snapshot.value.custom_nodes.nodes.length > 0)
   const enabledCustomNodes = computed(() => snapshot.value.custom_nodes.nodes.filter((item) => item.enabled))
@@ -1156,9 +1161,14 @@ export function createStore(backend: Backend) {
       try {
         if (!snapshot.value.active_id) {
           connectStage.value = tr('正在初始化内核和配置资源…')
-          const id = snapshot.value.profiles[0]!.id
-          const enabled = await backend.enable(id)
-          if (enabled.active_id !== id || enabled.failure) return enabled
+          if (snapshot.value.profiles.length === 0) {
+            const activated = await backend.useCustomProfile()
+            if (!activated.custom_profile_active || activated.failure) return activated
+          } else {
+            const id = snapshot.value.profiles[0]!.id
+            const enabled = await backend.enable(id)
+            if (enabled.active_id !== id || enabled.failure) return enabled
+          }
         }
         connectStage.value = isAndroid.value ? tr('正在建立 VPN，请留意系统授权提示…') : tr('正在建立代理连接…')
         return await backend.connect()

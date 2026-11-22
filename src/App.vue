@@ -1,4 +1,4 @@
-<script setup lang="ts">import { tr } from './lib/i18n'
+<script setup lang="ts">import { t, tr } from './lib/i18n'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import CommandPalette from './components/CommandPalette.vue'
@@ -63,8 +63,11 @@ const sideModeLabel = computed(() => {
   if (snap.value.mode === 'direct') return tr('直连')
   return tr('规则')
 })
+const activeProfileName = computed(
+  () => store.current.value?.name ?? (snap.value.custom_profile_active ? t('customNodes.standaloneActive') : null),
+)
 const sideMetaText = computed(() => {
-  const profileName = store.current.value?.name
+  const profileName = activeProfileName.value
   return profileName ? `${sideModeLabel.value} · ${profileName}` : sideModeLabel.value
 })
 const themeMeta = computed(() => {
@@ -745,10 +748,10 @@ defineExpose({ store })
                 data-testid="side-status-meta"
               >
                 <span class="side-mode-badge">{{ sideModeLabel }}</span>
-                <span v-if="store.current.value?.name" class="side-profile-name ellipsis">{{ store.current.value.name }}</span>
+                <span v-if="activeProfileName" class="side-profile-name ellipsis">{{ activeProfileName }}</span>
               </div>
             </template>
-            <div v-else class="side-rates muted ellipsis">{{ store.current.value?.name ?? tr('还没有配置') }}</div>
+            <div v-else class="side-rates muted ellipsis">{{ activeProfileName ?? tr('还没有配置') }}</div>
           </div>
           <button
             v-if="store.hasProfiles.value"
@@ -860,7 +863,7 @@ defineExpose({ store })
       :platform="isAndroid ? 'android' : 'desktop'"
       :connected="snap.connected"
       :kernel-running="snap.kernel_running"
-      :has-profiles="snap.profiles.length > 0"
+      :has-profiles="store.hasProfiles.value"
       :system-proxy="snap.system_proxy"
       :tun="snap.tun"
       :profiles="snap.profiles"
