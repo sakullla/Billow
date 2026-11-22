@@ -1395,6 +1395,7 @@ pub struct ProcessRuntime {
     last_requested_yaml: Option<String>,
     controller: Option<ControllerEndpoint>,
     cached_catalog: nodes::RuntimeCatalog,
+    catalog_updated: Option<Instant>,
     provider_catalog: Option<(Instant, nodes::RuntimeCatalog)>,
     launched_kernel: Option<PathBuf>,
     launched_privileged: bool,
@@ -1464,6 +1465,7 @@ impl ProcessRuntime {
             last_requested_yaml: None,
             controller: None,
             cached_catalog: nodes::RuntimeCatalog::default(),
+            catalog_updated: None,
             provider_catalog: None,
             launched_kernel: None,
             launched_privileged: false,
@@ -1478,6 +1480,31 @@ impl ProcessRuntime {
             connection_total: None,
             connections_error: None,
             started: None,
+        }
+    }
+
+    pub(crate) fn invalidate_node_catalog(&mut self) {
+        self.catalog_updated = None;
+        self.provider_catalog = None;
+    }
+
+    // The home dashboard polls once per second. A full /proxies response serializes
+    // every node, group and delay history in the kernel, even when only traffic changed.
+    fn refresh_node_catalog(&mut self, endpoint: &ControllerEndpoint) {
+        if self.catalog_updated.is_some_and(|at| at.elapsed() < Duration::from_secs(5)) {
+            return;
+        }
+        if let Ok(mut catalog) = nodes::fetch_catalog(endpoint) {
+            if self.provider_catalog.as_ref().is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(30)) {
+                if let Ok(providers) = nodes::fetch_provider_catalog(endpoint) {
+                    self.provider_catalog = Some((Instant::now(), providers));
+                }
+            }
+            if let Some((_, providers)) = &self.provider_catalog {
+                catalog.merge_providers(providers);
+            }
+            self.cached_catalog = catalog;
+            self.catalog_updated = Some(Instant::now());
         }
     }
 
@@ -1555,7 +1582,7 @@ impl ProcessRuntime {
         self.launched_privileged = false;
         self.tun_active = false;
         self.cached_catalog = nodes::RuntimeCatalog::default();
-        self.provider_catalog = None;
+        self.invalidate_node_catalog();
         self.log_buffer = None;
         self.exit_detail = None;
         self.totals = None;
@@ -1741,7 +1768,7 @@ impl ProcessRuntime {
                             self.last_requested_yaml = Some(config_yaml.to_string());
                             self.tun_active = tun;
                             self.cached_catalog = nodes::RuntimeCatalog::default();
-                            self.provider_catalog = None;
+                            self.invalidate_node_catalog();
                             return Ok(());
                         }
                         let _ = fs::remove_file(&next_path);
@@ -1967,6 +1994,7 @@ impl KernelLaunch for ProcessRuntime {
             self.child = None;
             self.controller = None;
             self.cached_catalog = nodes::RuntimeCatalog::default();
+            self.invalidate_node_catalog();
             self.halt_metrics();
         }
         alive
@@ -1979,7 +2007,9 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
-        nodes::put_selection(&endpoint, group, node)
+        nodes::put_selection(&endpoint, group, node)?;
+        self.catalog_updated = None;
+        Ok(())
     }
 
     fn unfix_proxy(&mut self, group: &str) -> Result<(), String> {
@@ -1989,7 +2019,9 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
-        nodes::delete_selection(&endpoint, group)
+        nodes::delete_selection(&endpoint, group)?;
+        self.catalog_updated = None;
+        Ok(())
     }
 
     fn close_previous_group_connections(&mut self, group: &str, selected: &str) -> Result<Vec<String>, String> {
@@ -2004,6 +2036,7 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
+        self.catalog_updated = None;
         nodes::fetch_provider_delays(&endpoint, names, &self.cached_catalog.providers, &mut |_, _, _| {})
     }
 
@@ -2019,6 +2052,7 @@ impl KernelLaunch for ProcessRuntime {
         let Some(endpoint) = self.controller.clone() else {
             return Err(KERNEL_DOWN.to_string());
         };
+        self.catalog_updated = None;
         nodes::fetch_provider_delays(&endpoint, names, &self.cached_catalog.providers, on_result)
     }
 
@@ -2030,7 +2064,9 @@ impl KernelLaunch for ProcessRuntime {
             return Err(KERNEL_DOWN.to_string());
         };
         let effective_yaml = nodes::rewrite_controller_endpoint(config_yaml, &endpoint);
-        nodes::put_config(&endpoint, &effective_yaml)
+        nodes::put_config(&endpoint, &effective_yaml)?;
+        self.invalidate_node_catalog();
+        Ok(())
     }
 
     fn node_catalog(&mut self) -> nodes::RuntimeCatalog {
@@ -2038,17 +2074,7 @@ impl KernelLaunch for ProcessRuntime {
             return nodes::RuntimeCatalog::default();
         }
         if let Some(endpoint) = self.controller.clone() {
-            if let Ok(mut catalog) = nodes::fetch_catalog(&endpoint) {
-                if self.provider_catalog.as_ref().is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(30)) {
-                    if let Ok(providers) = nodes::fetch_provider_catalog(&endpoint) {
-                        self.provider_catalog = Some((Instant::now(), providers));
-                    }
-                }
-                if let Some((_, providers)) = &self.provider_catalog {
-                    catalog.merge_providers(providers);
-                }
-                self.cached_catalog = catalog;
-            }
+            self.refresh_node_catalog(&endpoint);
         }
         self.cached_catalog.clone()
     }
@@ -10159,6 +10185,51 @@ proxy-groups:
         fn kernel_uptime_secs(&mut self) -> Option<u64> {
             self.uptime
         }
+    }
+
+    #[test]
+    fn dashboard_reuses_node_catalog_until_expiry_or_invalidation() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        let dir = temp_dir("catalog-poll");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = ControllerEndpoint {
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            secret: String::new(),
+        };
+        let server = std::thread::spawn(move || {
+            for (path, body) in [
+                ("/proxies", r#"{"proxies":{"group":{"now":"one"}}}"#),
+                ("/providers/proxies", r#"{"providers":{}}"#),
+                ("/proxies", r#"{"proxies":{"group":{"now":"two"}}}"#),
+                ("/proxies", r#"{"proxies":{"group":{"now":"three"}}}"#),
+                ("/providers/proxies", r#"{"providers":{}}"#),
+            ] {
+                let (mut client, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(&client);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(line.split_whitespace().nth(1), Some(path));
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap() == 0 || line.trim().is_empty() { break; }
+                }
+                write!(client, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let mut runtime = ProcessRuntime::new(&dir.0);
+        for _ in 0..3 {
+            runtime.refresh_node_catalog(&endpoint);
+            assert_eq!(runtime.cached_catalog.now["group"], "one");
+        }
+        runtime.catalog_updated = Some(Instant::now() - Duration::from_secs(6));
+        runtime.refresh_node_catalog(&endpoint);
+        assert_eq!(runtime.cached_catalog.now["group"], "two");
+        runtime.invalidate_node_catalog();
+        runtime.refresh_node_catalog(&endpoint);
+        assert_eq!(runtime.cached_catalog.now["group"], "three");
+        server.join().unwrap();
     }
 
     #[test]

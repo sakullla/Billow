@@ -1293,12 +1293,17 @@ impl Drop for ProviderActionGuard {
 #[tauri::command]
 async fn provider_action(app: AppHandle, kind: String, name: String, action: String) -> Result<(), String> {
     let endpoint = controller(&app)?;
+    let updates_nodes = kind != "rule";
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = ProviderActionGuard::acquire();
         diagnostics::provider_action(&endpoint, &kind, &name, &action)
     })
     .await
-    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())??;
+    if updates_nodes {
+        with_profile(&app, |session| session.runtime.invalidate_node_catalog());
+    }
+    Ok(())
 }
 
 /// Nodes of a proxy provider (live from the kernel) or rules of a rule provider (from its file).
