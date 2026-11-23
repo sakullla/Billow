@@ -96,6 +96,26 @@ fn timeout_error(timeout: Duration) -> DialError {
     DialError::Timeout(timeout)
 }
 
+/// QUIC congestion tuning for TUIC. The pinned `SetCongestionController`
+/// accepts `cubic`, `new_reno` and `bbr`; only the BBR branch consumes `cwnd`
+/// (default 32 packets), while `cwnd` without a controller and with the other
+/// controllers is accepted and left to the library default.
+fn congestion_tuning(name: Option<&str>, cwnd: u32) -> (CongestionController, Option<u64>) {
+    let controller = match name {
+        Some("cubic") => CongestionController::Cubic,
+        Some("new_reno") => CongestionController::NewReno,
+        Some("bbr") => CongestionController::Bbr,
+        _ => CongestionController::Default,
+    };
+    let initial = if name == Some("bbr") {
+        let packets = if cwnd == 0 { 32 } else { cwnd };
+        Some(u64::from(packets) * 1200)
+    } else {
+        None
+    };
+    (controller, initial)
+}
+
 /// Dial `target` through a TUIC v5 server.
 pub async fn dial(
     option: &TuicOutbound,
@@ -120,19 +140,13 @@ pub async fn dial(
     if let Some(window) = option.connection_receive_window {
         quic_options.connection_receive_window = window;
     }
-    if let Some(name) = option.congestion_controller.as_deref() {
-        quic_options.congestion_controller = match name {
-            "cubic" => CongestionController::Cubic,
-            "new_reno" => CongestionController::NewReno,
-            "bbr" => CongestionController::Bbr,
-            _ => CongestionController::Default,
-        };
-        let packets = if option.cwnd == 0 { 32 } else { option.cwnd };
-        quic_options.initial_congestion_window = Some(u64::from(packets) * 1200);
-    } else if option.cwnd != 0 {
-        // quic-go ignores `cwnd` when no controller is named; applying it to
-        // the default controller keeps the value meaningful.
-        quic_options.initial_congestion_window = Some(u64::from(option.cwnd) * 1200);
+    if option.congestion_controller.is_some() || option.cwnd != 0 {
+        let (controller, initial) = congestion_tuning(
+            option.congestion_controller.as_deref(),
+            option.cwnd,
+        );
+        quic_options.congestion_controller = controller;
+        quic_options.initial_congestion_window = initial;
     }
     let (connection, endpoint) = quic::connect(
         &option.server,
@@ -256,5 +270,29 @@ mod tests {
             port: 1
         })
         .is_err());
+    }
+
+    #[test]
+    fn cwnd_only_applies_to_bbr() {
+        assert_eq!(
+            congestion_tuning(Some("bbr"), 64),
+            (CongestionController::Bbr, Some(64 * 1200))
+        );
+        assert_eq!(
+            congestion_tuning(Some("bbr"), 0),
+            (CongestionController::Bbr, Some(32 * 1200))
+        );
+        assert_eq!(
+            congestion_tuning(Some("cubic"), 64),
+            (CongestionController::Cubic, None)
+        );
+        assert_eq!(
+            congestion_tuning(Some("new_reno"), 64),
+            (CongestionController::NewReno, None)
+        );
+        assert_eq!(
+            congestion_tuning(None, 64),
+            (CongestionController::Default, None)
+        );
     }
 }

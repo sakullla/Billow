@@ -311,6 +311,152 @@ async fn udp_datagrams_cross_the_tunnel_in_both_directions() {
     device.tunnel.stop();
 }
 
+/// A minimal SOCKS5 server with a UDP relay: RFC 1928 method negotiation,
+/// `UDP ASSOCIATE`, and one datagram round-trip per client packet. It proves
+/// the TUN data plane really uses `Socks5Udp`, not a DIRECT fallback.
+async fn socks5_udp_peer() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let relay = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let relay_addr = relay.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let mut buffer = vec![0u8; 65_535];
+        loop {
+            let Ok((read, from)) = relay.recv_from(&mut buffer).await else {
+                return;
+            };
+            let Some(datagram) = billow_kernel::outbound::udp::parse_datagram(&buffer[..read])
+            else {
+                continue;
+            };
+            let payload = buffer[datagram.offset..read].to_vec();
+            let Ok(ip) = datagram.target.host.parse::<IpAddr>() else {
+                continue;
+            };
+            let target = SocketAddr::new(ip, datagram.target.port);
+            let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let _ = peer.send_to(&payload, target).await;
+            let mut reply = vec![0u8; 65_535];
+            let Ok(Ok((n, source))) =
+                tokio::time::timeout(Duration::from_secs(2), peer.recv_from(&mut reply)).await
+            else {
+                continue;
+            };
+            let origin = billow_kernel::outbound::Target {
+                host: source.ip().to_string(),
+                port: source.port(),
+            };
+            let mut packet = vec![0u8, 0u8, 0u8];
+            packet.extend_from_slice(&billow_kernel::outbound::udp::address_header(&origin));
+            packet.extend_from_slice(&reply[..n]);
+            let _ = relay.send_to(&packet, from).await;
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let relay_addr = relay_addr;
+            tokio::spawn(async move {
+                let mut greeting = [0u8; 2];
+                if stream.read_exact(&mut greeting).await.is_err() {
+                    return;
+                }
+                let mut methods = vec![0u8; greeting[1] as usize];
+                if stream.read_exact(&mut methods).await.is_err() {
+                    return;
+                }
+                if stream.write_all(&[0x05, 0x00]).await.is_err() {
+                    return;
+                }
+                let mut request = [0u8; 4];
+                if stream.read_exact(&mut request).await.is_err() {
+                    return;
+                }
+                let skip = match request[3] {
+                    0x01 => 4,
+                    0x04 => 16,
+                    0x03 => {
+                        let mut len = [0u8; 1];
+                        if stream.read_exact(&mut len).await.is_err() {
+                            return;
+                        }
+                        1 + len[0] as usize
+                    }
+                    _ => return,
+                };
+                let mut rest = vec![0u8; skip + 2];
+                if stream.read_exact(&mut rest).await.is_err() {
+                    return;
+                }
+                let mut reply = vec![0x05, 0x00, 0x00, 0x01];
+                reply.extend_from_slice(&[127, 0, 0, 1]);
+                reply.extend_from_slice(&relay_addr.port().to_be_bytes());
+                if stream.write_all(&reply).await.is_err() {
+                    return;
+                }
+                // Keep the control connection alive: the association ends with
+                // it, and the kernel keeps it open while a flow is live.
+                let mut scratch = [0u8; 64];
+                while stream.read(&mut scratch).await.unwrap_or(0) > 0 {}
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn socks5_udp_datagrams_cross_the_tunnel_in_both_directions() {
+    let echo = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let echo_addr = echo.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buffer = [0u8; 128];
+        if let Ok((read, from)) = echo.recv_from(&mut buffer).await {
+            let _ = echo.send_to(&buffer[..read], from).await;
+        }
+    });
+    let peer = socks5_udp_peer().await;
+    let config = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: s5, type: socks5, server: 127.0.0.1, port: {peer}, udp: true}}\nrules:\n  - 'MATCH,s5'\n",
+        free_port()
+    );
+    let device = Device::start(&config, TunnelOptions::default());
+    let port = device.next_port();
+    let query = ipstack::build_udp_packet(
+        DEVICE_IP,
+        echo_addr.ip(),
+        port,
+        echo_addr.port(),
+        b"tun-socks5",
+        64,
+    )
+    .unwrap();
+    device.send(&query);
+    let packets = device
+        .sink
+        .wait_for(|packets| {
+            packets.iter().any(|packet| {
+                ipstack::parse_ip_packet(packet).map(|p| p.protocol) == Ok(ipstack::IPPROTO_UDP)
+            })
+        })
+        .await;
+    let reply = packets
+        .iter()
+        .find_map(|packet| ipstack::parse_ip_packet(packet).ok())
+        .expect("UDP reply");
+    assert_eq!(reply.protocol, ipstack::IPPROTO_UDP);
+    assert_eq!(reply.src, echo_addr.ip());
+    assert_eq!(reply.dst, DEVICE_IP);
+    let udp = ipstack::parse_udp(&reply).expect("UDP datagram");
+    assert_eq!(udp.payload, b"tun-socks5");
+    assert_eq!(udp.dst_port, port);
+    assert_eq!(udp.src_port, echo_addr.port());
+    let stats = device.tunnel.stats();
+    assert_eq!(stats.udp_replies, 1, "{stats:?}");
+    assert_eq!(stats.unsupported_protocols, 0, "{stats:?}");
+    device.tunnel.stop();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_device_sockets_to_one_remote_keep_their_replies() {
     // Two device sockets (different source ports) reach the same remote at

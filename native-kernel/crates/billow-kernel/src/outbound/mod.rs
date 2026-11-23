@@ -715,7 +715,7 @@ fn dial_socket(addr: SocketAddr, options: &DialerOptions) -> io::Result<tokio::n
     };
     apply_interface(&socket, addr, options.interface_name.as_deref())?;
     apply_routing_mark(&socket, options.routing_mark)?;
-    apply_tfo(&socket)?;
+    apply_tfo(&socket, options.tfo)?;
     socket.set_nonblocking(true)?;
     let std_stream: std::net::TcpStream = socket.into();
     Ok(tokio::net::TcpSocket::from_std_stream(std_stream))
@@ -816,9 +816,11 @@ fn apply_interface(
 ) -> io::Result<()> {
     match name {
         None => Ok(()),
-        Some(_) => Err(io::Error::new(
+        Some(name) => Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "interface-name is not implemented on this platform",
+            format!(
+                "interface-name '{name}' is not implemented on this platform (Linux SO_BINDTODEVICE and macOS IP_BOUND_IF are the implemented bindings)"
+            ),
         )),
     }
 }
@@ -856,8 +858,11 @@ fn apply_routing_mark(_socket: &socket2::Socket, mark: u32) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn apply_tfo(socket: &socket2::Socket) -> io::Result<()> {
+fn apply_tfo(socket: &socket2::Socket, enabled: bool) -> io::Result<()> {
     use std::os::fd::AsRawFd;
+    if !enabled {
+        return Ok(());
+    }
     const TCP_FASTOPEN_CONNECT: libc::c_int = 30;
     let enabled: libc::c_int = 1;
     let result = unsafe {
@@ -877,8 +882,11 @@ fn apply_tfo(socket: &socket2::Socket) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn apply_tfo(socket: &socket2::Socket) -> io::Result<()> {
+fn apply_tfo(socket: &socket2::Socket, enabled: bool) -> io::Result<()> {
     use std::os::fd::AsRawFd;
+    if !enabled {
+        return Ok(());
+    }
     const TCP_FASTOPEN: libc::c_int = 0x105;
     let enabled: libc::c_int = 1;
     let result = unsafe {
@@ -897,19 +905,29 @@ fn apply_tfo(socket: &socket2::Socket) -> io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn apply_tfo(_socket: &socket2::Socket) -> io::Result<()> {
+fn apply_tfo(_socket: &socket2::Socket, enabled: bool) -> io::Result<()> {
+    if enabled {
+        // Never a silent success: a configuration that asks for TFO on a
+        // platform this dialer cannot express it on is logged once and uses a
+        // normal connect, the same fallback tfo-go uses.
+        warn_once(
+            "tfo",
+            "TCP fast open is not available on this platform; the connection uses a normal connect",
+        );
+    }
     Ok(())
 }
 
 /// Upstream logs an unsupported platform knob once; do the same instead of
 /// rejecting a configuration the pinned engine accepts.
 fn warn_once(key: &'static str, message: &str) {
-    static WARNED_MARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if key == "routing-mark" {
-        if !WARNED_MARK.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            tracing::warn!("{message}");
-        }
-    } else {
+    static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static str>>> =
+        std::sync::OnceLock::new();
+    let warned = WARNED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut guard = warned
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.insert(key) {
         tracing::warn!("{message}");
     }
 }

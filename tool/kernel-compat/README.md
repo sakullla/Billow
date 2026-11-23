@@ -263,8 +263,14 @@ rows to 179 enabled / 135 disagreements (0 problems, 50 implemented cases):
 `BasicOption` knobs (tfo/mptcp/interface-name/routing-mark/ip-version) for every
 first-batch family, TLS identities (fingerprint/name-cert-verify/certificate/
 private-key), QUIC congestion/window/MTU tuning for TUIC, Hysteria2 and
-Hysteria v1, the vless `ws-headers` inert key and socks5 `UDP ASSOCIATE`. The remaining per-family
-gaps and the platform conditions are listed in `evidence/t27-option-parity.md`.
+Hysteria v1, the vless `ws-headers` inert key and socks5 `UDP ASSOCIATE`. The
+repair pass (T27-A2) made SSH dial through the shared socket dialer (so its
+`BasicOption` knobs are no longer skipped by russh), added socks5 `udp: true`
+to the TUN data plane, added a real mTLS client-identity case, scoped chained
+UDP dials to the hop's socket options, and made `cwnd` BBR-only as pinned. The
+remaining per-family gaps, their proposed owners (T28/T29/decision) and the
+platform conditions are listed in `evidence/t27-option-parity.md`; raw logs are
+in `evidence/t27-a2/`.
 
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every

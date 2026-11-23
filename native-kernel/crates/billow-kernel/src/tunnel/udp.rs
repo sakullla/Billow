@@ -3,9 +3,12 @@
 //! The device sends UDP datagrams as IP packets; each one is routed through
 //! the engine (rule -> group -> outbound) exactly like a SOCKS5 `UDP
 //! ASSOCIATE` datagram. The transports are the same association types the
-//! mixed listener uses (`ss`, `trojan`, `ssr`, `masque`, `shadowquic`), plus
-//! `DIRECT`. A family without a UDP association in this kernel is refused by
-//! name instead of being sent the wrong way.
+//! mixed listener uses (`socks5`, `ss`, `trojan`, `ssr`, `masque`,
+//! `shadowquic`), plus `DIRECT`. A family without a UDP association in this
+//! kernel is refused by name instead of being sent the wrong way. The mesh
+//! families (`wireguard`/`openvpn`/`tailscale`/`zerotier`/`easytier`) and
+//! `gost-relay` still have no TUN transport; that is registered in the
+//! evidence rather than silently accepted.
 //!
 //! Memory is bounded: at most [`MAX_ASSOCIATIONS`] live proxy associations and
 //! at most [`crate::tunnel::TunnelOptions::max_udp_flows`] tracked device
@@ -57,6 +60,7 @@ pub(crate) enum AssocCommand {
 }
 
 enum Transport {
+    Socks5(crate::outbound::socks5::Socks5Udp),
     Ss(SsUdp),
     Trojan(TrojanUdp),
     Ssr(SsrUdp),
@@ -67,6 +71,7 @@ enum Transport {
 impl Transport {
     async fn send(&mut self, target: &outbound::Target, payload: &[u8]) -> io::Result<()> {
         match self {
+            Transport::Socks5(transport) => transport.send(target, payload).await,
             Transport::Ss(transport) => transport.send(target, payload).await,
             Transport::Trojan(transport) => transport.send(target, payload).await,
             Transport::Ssr(transport) => transport.send(target, payload).await,
@@ -78,6 +83,16 @@ impl Transport {
     /// One reply, already mapped to the remote address. `None` on EOF.
     async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(SocketAddr, usize)>> {
         let result = match self {
+            // A SOCKS5 relay datagram that is not from the relay or is
+            // malformed is ignored (the mixed inbound does the same); only a
+            // real transport error ends the association.
+            Transport::Socks5(transport) => loop {
+                match transport.recv(buffer).await {
+                    Ok(Some(reply)) => break Ok(Some(reply)),
+                    Ok(None) => continue,
+                    Err(error) => break Err(error),
+                }
+            },
             Transport::Ss(transport) => transport.recv(buffer).await,
             Transport::Trojan(transport) => transport.recv(buffer).await,
             Transport::Ssr(transport) => transport.recv(buffer).await,
@@ -118,6 +133,7 @@ pub(crate) async fn association_task(
     let hops = crate::engine::chain_for(&session.runtime.config, &proxy);
     let family = proxy.type_name();
     let supported = match &proxy.protocol {
+        Protocol::Socks5(option) => option.udp,
         Protocol::Shadowsocks(option) => option.udp,
         Protocol::Trojan(option) => option.udp,
         Protocol::Ssr(option) => option.udp,
@@ -131,6 +147,11 @@ pub(crate) async fn association_task(
     }
     let transport = outbound::with_dialer(proxy.dialer.clone(), async {
         match &proxy.protocol {
+            Protocol::Socks5(option) => {
+                crate::outbound::socks5::Socks5Udp::connect(option, timeout, &tls)
+                    .await
+                    .map(Transport::Socks5)
+            }
             Protocol::Shadowsocks(option) => {
                 SsUdp::connect(option, &hops, timeout, &tls)
                     .await

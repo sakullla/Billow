@@ -166,7 +166,7 @@
       "ws-headers (accepted as the pinned inert key)"
     ],
     "socks5": [
-      "udp (RFC 1928 UDP ASSOCIATE)"
+      "udp (RFC 1928 UDP ASSOCIATE; mixed inbound and the packet-tunnel data plane)"
     ]
   },
   "remainingGaps": {
@@ -221,6 +221,7 @@
       "reduce-rtt",
       "fast-open",
       "udp-over-stream",
+      "congestion-controller (bbr_meta_v1/bbr_meta_v2 values)",
       "bbr-profile",
       "max-datagram-frame-size",
       "max-udp-relay-packet-size",
@@ -245,23 +246,42 @@
     ]
   },
   "platformNotes": {
-    "tfo": "Linux: TCP_FASTOPEN_CONNECT before connect. macOS: TCP_FASTOPEN set before connect (no connectx early data; the pinned tfo-go writes the first bytes with the SYN). Unsupported platforms fall back to a normal connect.",
-    "mptcp": "Linux: IPPROTO_MPTCP with a TCP fallback if socket creation fails. Other platforms log and use TCP (the pinned Go dialer behaves the same where the stack lacks MPTCP).",
-    "interface-name": "Linux SO_BINDTODEVICE; macOS IP_BOUND_IF/IPV6_BOUND_IF. Applied to TCP dials, UDP association sockets and QUIC endpoints.",
+    "tfo": "Linux: TCP_FASTOPEN_CONNECT before connect, only when tfo: true. macOS: TCP_FASTOPEN set before connect (no connectx early data; the pinned tfo-go writes the first bytes with the SYN). Any other platform logs once and uses a normal connect.",
+    "mptcp": "Linux: IPPROTO_MPTCP with a TCP fallback if socket creation fails. Other platforms log once and use TCP (the pinned Go dialer behaves the same where the stack lacks MPTCP).",
+    "interface-name": "Linux SO_BINDTODEVICE; macOS IP_BOUND_IF/IPV6_BOUND_IF. Applied to TCP dials, UDP association sockets and QUIC endpoints, including the SSH server socket. On any other platform (Windows included) the key loads but each dial fails with an Unsupported error naming the option; the pinned Windows dialer uses IP_UNICAST_IF, which this build does not implement (T29).",
     "routing-mark": "Linux SO_MARK; other platforms accept and log once, exactly like the pinned mark_nonlinux.go.",
     "ip-version": "Filters (ipv4/ipv6) or orders (ipv4-prefer/ipv6-prefer) the proxy-server address list; literals of the other family are refused before connecting.",
-    "certificate/private-key": "Path or inline PEM loaded when the TLS handshake is built (Mihomo loads at start for QUIC families). A missing file fails the handshake, never silently leaks the connection. File paths are resolved against the process working directory; Mihomo resolves them against the configuration directory, so a config that relies on a relative path should be started with that directory as cwd.",
+    "certificate/private-key": "Path or inline PEM loaded when the TLS handshake is built (Mihomo loads at start for QUIC families). A missing file fails the handshake, never silently leaks the connection. The client identity is exercised by a real mTLS handshake (tests/protocols.rs::certificate_and_private_key_present_a_client_certificate). File paths are resolved against the process working directory; Mihomo resolves them against the configuration directory, so a config that relies on a relative path should be started with that directory as cwd.",
     "fingerprint": "SHA-256 pin. Leaf match accepts without chain/name verification (pinned behaviour); non-leaf match verifies the chain with the pinned certificate as the anchor.",
     "client-fingerprint": "Still rejected: a uTLS ClientHello cannot be reproduced with rustls, so the gap stays registered."
   },
   "tests": [
     "tests/config.rs::t27_tls_identity_options_are_parsed",
     "tests/config.rs::t27_quic_transport_tuning_is_parsed",
+    "tests/config.rs::t27_socks5_udp_is_accepted_and_chain_is_named",
     "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
     "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
     "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
-    "cargo test --offline -p billow-kernel (all targets)",
+    "tests/protocols.rs::certificate_and_private_key_present_a_client_certificate",
     "tests/protocols.rs::socks5_udp_association_reaches_the_peer_relay",
-    "tests/config.rs::t27_socks5_udp_is_accepted_and_chain_is_named"
-  ]
+    "tests/protocols.rs::ssh_outbound_basic_options_use_the_shared_dialer",
+    "tests/protocols.rs::shadowsocks_udp_hop_dialer_options_own_the_hop_socket",
+    "tests/ios_tunnel.rs::socks5_udp_datagrams_cross_the_tunnel_in_both_directions",
+    "cargo test --manifest-path native-kernel/Cargo.toml --locked",
+    "cargo test --manifest-path native-kernel/Cargo.toml --locked --features ios-vpn",
+    "cargo test --manifest-path native-kernel/Cargo.toml --locked --features android-vpn",
+    "src/outbound/tuic.rs::tests::cwnd_only_applies_to_bbr"
+  ],
+  "repair": {
+    "attempt": "T27-A2",
+    "ssh": "outbound/ssh.rs dials the server socket with outbound::connect_tcp and hands the stream to russh::client::connect_stream, so tfo/mptcp/interface-name/routing-mark/ip-version are applied instead of silently skipped by russh::client::connect. tests/protocols.rs::ssh_outbound_basic_options_use_the_shared_dialer.",
+    "socks5_udp": "tunnel/udp.rs maps Protocol::Socks5 to Socks5Udp, so the iOS/Android TUN data plane uses the same RFC 1928 association as the mixed inbound. tests/ios_tunnel.rs::socks5_udp_datagrams_cross_the_tunnel_in_both_directions.",
+    "counts": "After the repair the probe still reports 179 enabled / 135 rust-reject-mihomo-accept / 50 implemented / 0 problems; the repair changes the applied path, not the option classification."
+  },
+  "ownership": {
+    "T28": "remaining protocol-family gaps listed in remainingGaps (vmess/vless/anytls UoT and transports, trojan ss-opts/shadow-tls/jls, ss udp-over-tcp, trusttunnel udp, tuic UDP/0-RTT/meta BBR, hysteria/hysteria2 hopping/obfs/realm, client-fingerprint) and the TUN transports still missing for gost-relay and the mesh families",
+    "T29": "Windows interface-name/TFO evidence (and the platform runs for the socket-knob paths); owner must add the missing families to T28 outcomes/scope or a new task",
+    "decision_needed": "pinned-only options with no local observable behaviour (xhttp/grpc without a pinned listener); Owner decides implementation versus requirement narrowing"
+  },
+  "verificationLogs": "tool/kernel-compat/evidence/t27-a2/"
 }

@@ -278,7 +278,14 @@ impl SsUdp {
             }
             2 => match &via[1].protocol {
                 crate::proxies::Protocol::Socks5(hop) => PacketTransport::Socks5 {
-                    association: super::socks5::Socks5Udp::connect(hop, timeout, tls).await?,
+                    // The socket that actually leaves this host is the one to
+                    // the hop (`chain.last()`, as in `dial_chain`), so the
+                    // hop's BasicOption knobs own it, not the exit's.
+                    association: super::with_dialer(
+                        via[1].dialer.clone(),
+                        super::socks5::Socks5Udp::connect(hop, timeout, tls),
+                    )
+                    .await?,
                     server_addrs: resolved,
                 },
                 other => {
@@ -377,7 +384,14 @@ impl SsrUdp {
             }
             2 => match &via[1].protocol {
                 crate::proxies::Protocol::Socks5(hop) => PacketTransport::Socks5 {
-                    association: super::socks5::Socks5Udp::connect(hop, timeout, tls).await?,
+                    // The socket that actually leaves this host is the one to
+                    // the hop (`chain.last()`, as in `dial_chain`), so the
+                    // hop's BasicOption knobs own it, not the exit's.
+                    association: super::with_dialer(
+                        via[1].dialer.clone(),
+                        super::socks5::Socks5Udp::connect(hop, timeout, tls),
+                    )
+                    .await?,
                     server_addrs: resolved,
                 },
                 other => {
@@ -492,13 +506,19 @@ impl TrojanUdp {
             1 => Box::new(connect_tcp(&option.server, option.port).await?),
             2 => match &via[1].protocol {
                 crate::proxies::Protocol::Socks5(hop) => {
-                    let (read, write) = super::socks5::tunnel(
-                        hop,
-                        &option.server,
-                        option.port,
-                        &[],
-                        timeout,
-                        tls,
+                    // The hop is the locally dialled socket, so its own
+                    // BasicOption knobs own it (as `dial_chain` uses
+                    // `chain.last()`), not the exit's.
+                    let (read, write) = super::with_dialer(
+                        via[1].dialer.clone(),
+                        super::socks5::tunnel(
+                            hop,
+                            &option.server,
+                            option.port,
+                            &[],
+                            timeout,
+                            tls,
+                        ),
                     )
                     .await?;
                     super::joined(read, write)

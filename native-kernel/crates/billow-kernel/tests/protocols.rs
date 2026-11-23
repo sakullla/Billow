@@ -172,6 +172,22 @@ fn require_cert(name: &str) -> Cert {
 /// localhost). The CA PEM stays next to the server identity, so a kernel can
 /// be started with `tls: {custom-cert: [<ca>]}` while the `Cert` is alive.
 fn make_ca_signed_cert(name: &str) -> Option<(Cert, PathBuf)> {
+    make_ca_signed(
+        name,
+        "subjectAltName=IP:127.0.0.1,DNS:localhost\n         basicConstraints=critical,CA:FALSE\n         keyUsage=critical,digitalSignature,keyEncipherment\n         extendedKeyUsage=serverAuth\n",
+    )
+}
+
+/// A private CA and a client certificate signed by it (`clientAuth` EKU), for
+/// the server side of an mTLS handshake.
+fn make_ca_signed_client_cert(name: &str) -> Option<(Cert, PathBuf)> {
+    make_ca_signed(
+        name,
+        "subjectAltName=DNS:billow-test-client\n         basicConstraints=critical,CA:FALSE\n         keyUsage=critical,digitalSignature\n         extendedKeyUsage=clientAuth\n",
+    )
+}
+
+fn make_ca_signed(name: &str, extensions: &str) -> Option<(Cert, PathBuf)> {
     let dir = std::env::temp_dir().join(format!(
         "billow-ca-{name}-{}-{}",
         std::process::id(),
@@ -189,7 +205,7 @@ fn make_ca_signed_cert(name: &str) -> Option<(Cert, PathBuf)> {
     let ext = dir.join("server.ext");
     std::fs::write(
         &ext,
-        "subjectAltName=IP:127.0.0.1,DNS:localhost\n         basicConstraints=critical,CA:FALSE\n         keyUsage=critical,digitalSignature,keyEncipherment\n         extendedKeyUsage=serverAuth\n",
+        extensions,
     )
     .ok()?;
     let openssl = |args: &[&std::ffi::OsStr]| -> bool {
@@ -277,6 +293,38 @@ fn require_ca_cert(name: &str) -> (Cert, PathBuf) {
 fn tls_acceptor(cert: &Cert) -> TlsAcceptor {
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(cert.der.clone())],
+            PrivateKeyDer::Pkcs8(
+                rustls_pemfile::private_key(&mut std::io::BufReader::new(
+                    std::fs::File::open(&cert.key).unwrap(),
+                ))
+                .unwrap()
+                .map(|k| match k {
+                    PrivateKeyDer::Pkcs8(k) => k,
+                    _ => PrivatePkcs8KeyDer::from(Vec::new()),
+                })
+                .unwrap(),
+            ),
+        )
+        .expect("server tls config");
+    TlsAcceptor::from(Arc::new(config))
+}
+
+/// Server TLS that requires a client certificate signed by `ca_pem` (mTLS).
+fn tls_acceptor_with_client_auth(cert: &Cert, ca_pem: &std::path::Path) -> TlsAcceptor {
+    let mut roots = rustls::RootCertStore::empty();
+    let pem = std::fs::read_to_string(ca_pem).expect("CA PEM");
+    for anchor in rustls_pemfile::certs(&mut pem.as_bytes()) {
+        roots
+            .add(CertificateDer::from(anchor.expect("CA cert").as_ref().to_vec()))
+            .expect("CA anchor");
+    }
+    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .expect("client verifier");
+    let config = rustls::ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
         .with_single_cert(
             vec![CertificateDer::from(cert.der.clone())],
             PrivateKeyDer::Pkcs8(
@@ -916,7 +964,10 @@ fn parse_socks_addr(raw: &[u8]) -> Option<SocketAddr> {
 }
 
 async fn trojan_peer(cert: &Cert, password: &'static str) -> (u16, Log) {
-    let acceptor = tls_acceptor(cert);
+    trojan_peer_with(tls_acceptor(cert), password).await
+}
+
+async fn trojan_peer_with(acceptor: TlsAcceptor, password: &'static str) -> (u16, Log) {
     let (listener, addr) = spawn_tcp().await;
     let log: Log = Arc::new(Mutex::new(Vec::new()));
     let log_task = log.clone();
@@ -2962,6 +3013,49 @@ async fn shadowsocks_udp_goes_through_the_dialer_proxy_hop() {
     kernel.stop().unwrap();
 }
 
+/// A chained UDP association dials the hop locally, so the *hop's*
+/// BasicOption knobs own that socket (as `dial_chain` uses `chain.last()`),
+/// not the exit's. A hop limited to IPv6 cannot reach its own `127.0.0.1`
+/// server, so the association must fail instead of the exit's `dual` policy
+/// silently connecting it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shadowsocks_udp_hop_dialer_options_own_the_hop_socket() {
+    let cipher = billow_kernel::proxies::SsCipher::Aes256Gcm;
+    let password = "hop-dialer-pw";
+    let (echo_port, _) = udp_echo().await;
+    let (ss_port, ss_log) = ss_udp_peer(cipher, password, echo_port).await;
+    let (hop_port, hop_log) = socks5_udp_peer().await;
+    let dir = scratch("ss-udp-hop-dialer");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: exit, type: ss, server: 127.0.0.1, port: {ss_port}, cipher: aes-256-gcm, password: {password}, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {hop_port}, ip-version: ipv6}}\nrules:\n  - 'MATCH,exit'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    assert!(
+        udp_roundtrip(relay, target, b"hop-dialer", Duration::from_millis(700)).is_none(),
+        "the hop's ip-version: ipv6 must fail its own 127.0.0.1 dial"
+    );
+    let hop_details = detail(&hop_log);
+    assert!(
+        !hop_details.iter().any(|line| line == "udp-associate"),
+        "the hop socket must never be reached: {hop_details:?}"
+    );
+    let ss_details = detail(&ss_log);
+    assert!(
+        !ss_details.iter().any(|line| line == "payload=hop-dialer"),
+        "the exit's policy must not bypass the hop: {ss_details:?}"
+    );
+    drop(control);
+    kernel.stop().unwrap();
+}
+
 /// `dialer-proxy` keeps the matched exit (regression: the dispatcher used to
 /// drop `chain[0]`, so the last hop dialled the final target directly and the
 /// exit never saw the request). The hop must be asked to CONNECT the exit's
@@ -4275,6 +4369,68 @@ async fn ssh_outbound_pinned_host_key_must_match_the_server() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssh_outbound_basic_options_use_the_shared_dialer() {
+    // `tfo`/`mptcp`/`interface-name`/`routing-mark`/`ip-version` must reach the
+    // socket that russh consumes. `russh::client::connect` would build its own
+    // `TcpStream` and silently skip them; this dials through `connect_tcp` and
+    // hands the stream to `connect_stream`.
+    let interface = if cfg!(target_os = "macos") { "lo0" } else { "lo" };
+    let (peer_port, log, _host_key) = ssh_peer("tester", "secret", None).await;
+    let (target_port, _received) = echo_target().await;
+    let dir = scratch("ssh-basic-options");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: sp, type: ssh, server: 127.0.0.1, port: {peer_port}, username: tester, password: secret, tfo: true, mptcp: true, interface-name: {interface}, routing-mark: 100, ip-version: ipv4}}\n"
+        ),
+        "sp",
+        limits(),
+    )
+    .unwrap();
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"ssh-basic")
+        .await
+        .expect("the SSH dial with BasicOption knobs reaches the peer");
+    assert_eq!(back, b"ssh-basic");
+    assert!(
+        detail(&log)
+            .iter()
+            .any(|d| d == "auth-password user=tester ok=true"),
+        "{:?}",
+        detail(&log)
+    );
+    kernel.stop().unwrap();
+
+    // A name that cannot be bound must fail while the local socket is created,
+    // before any SSH bytes: that is only true when the shared dialer owns it.
+    let (bad_port, bad_log, _bad_key) = ssh_peer("tester", "secret", None).await;
+    let dir = scratch("ssh-basic-bad-interface");
+    let (mut kernel, _) = start_kernel(
+        &dir,
+        &format!(
+            "  - {{name: sp, type: ssh, server: 127.0.0.1, port: {bad_port}, username: tester, password: secret, interface-name: billow-no-such-interface}}\n"
+        ),
+        "sp",
+        limits(),
+    )
+    .unwrap();
+    let error = roundtrip(kernel.listen_addr(), "127.0.0.1", target_port, b"ssh-basic").await;
+    assert!(
+        error.is_err(),
+        "an unbindable interface must fail the dial: {error:?}"
+    );
+    let details = detail(&bad_log);
+    assert!(
+        !details.iter().any(|d| d.starts_with("auth-")),
+        "the SSH handshake must not start: {details:?}"
+    );
+    assert!(
+        !details.iter().any(|d| d.starts_with("direct-tcpip")),
+        "{details:?}"
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gost_relay_udp_relays_datagrams_to_the_bound_target() {
     let mode = GostMode {
         udp: true,
@@ -5006,6 +5162,48 @@ async fn name_cert_verify_checks_the_configured_name() {
     roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"name")
         .await
         .expect_err("name-cert-verify must reject a different name");
+    kernel.stop().unwrap();
+}
+
+/// `certificate`/`private-key` are a real client identity: the same mTLS
+/// server accepts the handshake only when the configured client certificate
+/// is presented, and refuses the connection without it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn certificate_and_private_key_present_a_client_certificate() {
+    let (server_cert, _server_ca) = require_ca_cert("t27-mtls-server");
+    let (client_cert, client_ca) =
+        make_ca_signed_client_cert("t27-mtls-client").expect("openssl client identity");
+    let (echo_port, _) = echo_target().await;
+    let acceptor = tls_acceptor_with_client_auth(&server_cert, &client_ca);
+    let (peer_port, _) = trojan_peer_with(acceptor, "pw").await;
+    let identity = format!(
+        "certificate: {}, private-key: {}",
+        client_cert.dir.join("cert.pem").display(),
+        client_cert.dir.join("key.pem").display()
+    );
+
+    let dir = scratch("t27-mtls");
+    let proxies = format!(
+        "  - {{name: p, type: trojan, server: 127.0.0.1, port: {peer_port}, password: pw, sni: localhost, skip-cert-verify: true, {identity}}}\n"
+    );
+    let (mut kernel, _) = start_kernel(&dir, &proxies, "p", limits())
+        .unwrap_or_else(|(e, _)| panic!("kernel start: {e}"));
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"mtls")
+        .await
+        .expect("the configured client certificate is accepted by the mTLS server");
+    assert_eq!(back, b"mtls");
+    kernel.stop().unwrap();
+
+    // The same server without a client identity must abort the handshake.
+    let dir = scratch("t27-mtls-none");
+    let proxies = format!(
+        "  - {{name: p, type: trojan, server: 127.0.0.1, port: {peer_port}, password: pw, sni: localhost, skip-cert-verify: true}}\n"
+    );
+    let (mut kernel, _) = start_kernel(&dir, &proxies, "p", limits())
+        .unwrap_or_else(|(e, _)| panic!("kernel start: {e}"));
+    roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"mtls")
+        .await
+        .expect_err("an mTLS server must refuse a client without a certificate");
     kernel.stop().unwrap();
 }
 

@@ -85,7 +85,7 @@ listener are unchanged). `src/ios_vpn.rs` is the `billow_ios_vpn_*` C ABI of
 `src-tauri/gen/apple/network-extension/RustExtension/include/billow_ios_vpn.h`,
 and `src/tunnel/` is the shared userspace IP stack. It terminates the device's TCP
 (passive open in `tunnel/tcp_server.rs`) and UDP (the same outbound
-associations the mixed listener uses) in userspace, routes every flow through
+associations the mixed listener uses, including the SOCKS5 relay) in userspace, routes every flow through
 the engine (rules, proxy groups, `dialer-proxy`, DIRECT, `:53` DNS hijack
 through the configured resolver), and shares `outbound/ipstack` with MASQUE so
 a desktop TUN (T6) can reuse the same codec. `IN-TYPE,TUN` now loads and
@@ -627,7 +627,7 @@ identities of the servers are logged as the session exit.
 
 | type | transport options implemented | UDP | verified against the pinned Mihomo |
 | --- | --- | --- | --- |
-| `socks5` | plain, `tls: true` (+ `sni`, `skip-cert-verify`, `alpn`), RFC 1929 auth | no | `listeners: type: socks` (with users), wrong password |
+| `socks5` | plain, `tls: true` (+ `sni`, `skip-cert-verify`, `alpn`), RFC 1929 auth; the server socket is dialled by the shared dialer so `BasicOption` knobs apply | `udp: true`: RFC 1928 `UDP ASSOCIATE` (mixed inbound and TUN data plane) | `listeners: type: socks` (with users), wrong password |
 | `http` | plain, `tls: true`, Basic auth, extra `headers` | no | `listeners: type: http` (with users) |
 | `ss` | AEAD 2017 `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305` | `udp: true`: AEAD-2017 datagrams | `listeners: type: shadowsocks`, wrong password (TCP and UDP) |
 | `trojan` | TLS, `network: tcp` / `ws` (`ws-opts.path`, `headers`, `v2ray-http-upgrade`) | `udp: true`: `addr|len|CRLF|payload` frames over the TLS stream | `listeners: type: trojan`, wrong password, untrusted certificate (TCP and UDP) |
@@ -637,7 +637,7 @@ identities of the servers are logged as the session exit.
 | `snell` | v1 (chacha20-poly1305) / v2 / v3 (aes-128-gcm), Argon2id KDF, `obfs-opts: {mode: http, host}` | no | `listeners: type: snell` v1/v2/v3, v3 + http obfs, wrong psk |
 | `trusttunnel` | TLS + HTTP/2 `CONNECT`, Basic `Proxy-Authorization`, ALPN `h2`, `sni`, `skip-cert-verify` | no | `listeners: type: trusttunnel` (`network: [tcp]`), wrong password |
 | `gost-relay` | relay v2 over TCP, `tls: true` (`sni`, `skip-cert-verify`), `username`/`password`, `forward` (no address feature), `mux` (smux v1 session, one stream per dial) | `udp: true`: one association bound to the target, `length(u16 BE) || payload` frames | controlled relay-v2 server (header vectors, auth/forward/TLS/status, UDP and smux cases); no Mihomo listener exists |
-| `ssh` | password and inline-PEM public-key auth, `private-key-passphrase`, `host-key` pinning, `host-key-algorithms`, one `direct-tcpip` channel per dial | no | controlled `russh` server (password/key/host-key cases); no Mihomo listener exists |
+| `ssh` | password and inline-PEM public-key auth, `private-key-passphrase`, `host-key` pinning, `host-key-algorithms`, one `direct-tcpip` channel per dial; the server socket is dialled by the shared dialer (BasicOption applies) | no | controlled `russh` server (password/key/host-key/basic-option cases); no Mihomo listener exists |
 | `ssr` | stream ciphers (`rc4-md5`, `aes-128/192/256-cfb`, `aes-128/192/256-ctr`, `chacha20`, `chacha20-ietf`, `xchacha20`, `none`), every protocol plugin (`origin`, `auth_sha1_v4`, `auth_aes128_md5`, `auth_aes128_sha1`, `auth_chain_a`, `auth_chain_b`), every obfs plugin (`plain`, `http_simple`, `http_post`, `random_head`, `tls1.2_ticket_auth`, `tls1.2_ticket_fastauth`) | `udp: true`: the pinned `cipher.PacketConn` + `protocol.PacketConn` association (no obfs, as in the pinned outbound). Pinned limit: `auth_aes128_*` datagrams are sealed with the derived user key but opened with the cipher key, so `protocol-param` breaks the UDP path; the UDP cases use no `protocol-param` | pinned Go cipher vectors; the Go plugin peer, which the *pinned* client packages also accept for all 36 protocol/obfs combinations; wrong-password and UDP cases; no Mihomo listener exists |
 | `tuic` | QUIC (`quinn` 0.11, TLS 1.3, ALPN `h3`), v5 `uuid`/`password` authentication via the TLS exporter, one TCP stream per dial, `ip`/`sni`/`skip-cert-verify`/`disable-sni`/`heartbeat-interval`/`request-timeout` (bounds the auth/Connect stream operations) | no | `listeners: type: tuic` (users map), wrong password; controlled `quinn` peer for the default suite |
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
@@ -668,13 +668,17 @@ crate. The translation and its verification are in
 Every outbound also parses Mihomo's `BasicOption` socket knobs. `tfo`,
 `mptcp`, `interface-name`, `routing-mark` and `ip-version` are applied to the
 connection to the proxy server (TCP dial, UDP association socket and the QUIC
-endpoint): `ip-version` filters/orders the resolved addresses, `interface-name`
-binds the socket (Linux `SO_BINDTODEVICE`, macOS `IP_BOUND_IF`/`IPV6_BOUND_IF`),
-`routing-mark` is `SO_MARK` on Linux and accepted+logged elsewhere (as the
-pinned dialer does), `mptcp` uses `IPPROTO_MPTCP` on Linux with a TCP fallback,
-and `tfo` sets Linux `TCP_FASTOPEN_CONNECT` / macOS `TCP_FASTOPEN`. The mesh
-adapters (wireguard/openvpn/masque/mieru/sudoku/shadowquic/easytier) still name
-forms they cannot apply. T27 evidence: `tool/kernel-compat/evidence/t27-option-parity.md`.
+endpoint; SSH now hands the shared dialer's stream to
+`russh::client::connect_stream`): `ip-version` filters/orders the resolved
+addresses, `interface-name` binds the socket (Linux `SO_BINDTODEVICE`, macOS
+`IP_BOUND_IF`/`IPV6_BOUND_IF`; other platforms fail the dial with the option
+named), `routing-mark` is `SO_MARK` on Linux and accepted+logged elsewhere (as
+the pinned dialer does), `mptcp` uses `IPPROTO_MPTCP` on Linux with a TCP
+fallback, and `tfo` (only when `tfo: true`) sets Linux
+`TCP_FASTOPEN_CONNECT` / macOS `TCP_FASTOPEN` and logs once with a normal
+connect on other platforms. The mesh adapters
+(wireguard/openvpn/masque/mieru/sudoku/shadowquic/easytier) still name forms
+they cannot apply. T27 evidence: `tool/kernel-compat/evidence/t27-option-parity.md`.
 
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
@@ -700,11 +704,14 @@ is evaluated by the same rule set as TCP before it is forwarded. Per family:
 | `DIRECT` / `REJECT` | forwarded from one unconnected UDP socket per address family (wildcard-bound, so a loopback listener still reaches remote targets) / dropped before any socket |
 | `ss` with `udp: true` | AEAD-2017 datagrams to the server (directly, or through one SOCKS5 `dialer-proxy` hop), replies decrypted and returned with their source address |
 | `trojan` with `udp: true` | command `3` over TLS (the server connection is established through the `dialer-proxy` chain like TCP), `addr|length|CRLF|payload` frames both ways |
-| `socks5`, `http`, `vless`, `anytls` | **no association**: `udp: true` is rejected at load time; `udp: false` (or absent) loads, and an association routed to such a proxy drops the datagram and logs it |
+| `socks5` with `udp: true` | RFC 1928 `UDP ASSOCIATE`: the control connection stays open and datagrams travel through the server relay (also the TUN data-plane transport); a `dialer-proxy` chain is rejected at load time because the association dials the server directly |
+| `http`, `vless`, `anytls` | **no association**: `udp: true` is rejected at load time; `udp: false` (or absent) loads, and an association routed to such a proxy drops the datagram and logs it |
 
-`vless` UDP would need `packet-addr`/XUDP, `anytls` needs UoT, and a SOCKS5
-outbound would need its own UDP relay: all three are explicit gaps recorded in
+`vless` UDP would need `packet-addr`/XUDP and `anytls` needs UoT: both are
+explicit gaps recorded in
 `tool/kernel-compat/evidence/rust-mapping.json`, not silent successes.
+`gost-relay` and the mesh families are still missing a TUN transport even
+though `udp_enabled()` says yes; that path-specific gap is registered for T28.
 Fragmented datagrams (`FRAG != 0`) are dropped. Destination names follow the
 same path as TCP: a fake-ip/redir-host mapping is applied first, the rule set
 may resolve the name lazily, and a DIRECT send uses `direct-nameserver` (or the

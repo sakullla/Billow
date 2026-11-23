@@ -340,7 +340,7 @@
         "private-key",
         "udp"
       ],
-      "udp": "implemented: RFC 1928 `UDP ASSOCIATE`; the control connection stays open and datagrams carry the SOCKS5 address header to the server relay (a `dialer-proxy` chain is rejected for this UDP form because the association dials the server directly)",
+      "udp": "implemented: RFC 1928 `UDP ASSOCIATE`; the control connection stays open and datagrams carry the SOCKS5 address header to the server relay (a `dialer-proxy` chain is rejected for this UDP form because the association dials the server directly); the same association is the packet-tunnel (iOS/Android TUN) UDP transport, so device flows use the SOCKS5 relay rather than a DIRECT fallback",
       "notImplemented": [],
       "evidence": [
         "tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target",
@@ -350,7 +350,9 @@
         "tests/config.rs::t27_tls_identity_options_are_parsed",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
-        "tests/protocols.rs::socks5_udp_association_reaches_the_peer_relay"
+        "tests/protocols.rs::socks5_udp_association_reaches_the_peer_relay",
+        "tests/ios_tunnel.rs::socks5_udp_datagrams_cross_the_tunnel_in_both_directions",
+        "tests/protocols.rs::certificate_and_private_key_present_a_client_certificate"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
@@ -810,9 +812,11 @@
         "tests/config.rs::ssh_options_are_strict",
         "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssh",
         "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
-        "tests/config.rs::t27_tls_identity_options_are_parsed"
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::ssh_outbound_basic_options_use_the_shared_dialer",
+        "tests/protocols.rs::certificate_and_private_key_present_a_client_certificate"
       ],
-      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). The SSH server connection is dialled by the shared outbound dialer (`connect_tcp` then `russh::client::connect_stream`), so these knobs are applied to the real socket instead of a `TcpStream` created inside russh."
     },
     "ssr": {
       "status": "implemented",
@@ -1086,7 +1090,7 @@
     },
     "tuic": {
       "status": "partial",
-      "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token), one TCP stream per session, request-timeout, congestion-controller (cubic/new_reno/bbr), cwnd, receive windows and disable-mtu-discovery mapped onto quinn's transport config. The legacy v4 token (BLAKE3 TKN), the UDP relay modes, 0-RTT and meta BBR profiles are rejected by name; one QUIC connection is created per dial instead of the pinned pool.",
+      "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token), one TCP stream per session, request-timeout, congestion-controller (cubic/new_reno/bbr; `cwnd` only inside the BBR branch, as the pinned SetCongestionController does), receive windows and disable-mtu-discovery mapped onto quinn's transport config. The legacy v4 token (BLAKE3 TKN), the UDP relay modes, 0-RTT, the meta BBR profiles (`bbr_meta_v1`/`bbr_meta_v2`) and `bbr-profile` are rejected by name; one QUIC connection is created per dial instead of the pinned pool.",
       "options": [
         "server",
         "port",
@@ -1122,6 +1126,7 @@
         "udp-over-stream",
         "reduce-rtt",
         "fast-open",
+        "congestion-controller (bbr_meta_v1/bbr_meta_v2 values)",
         "bbr-profile",
         "max-datagram-frame-size",
         "max-udp-relay-packet-size",
@@ -1143,7 +1148,9 @@
         "tests/config.rs::t27_tls_identity_options_are_parsed",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
-        "tests/config.rs::t27_quic_transport_tuning_is_parsed"
+        "tests/config.rs::t27_quic_transport_tuning_is_parsed",
+        "tests/protocols.rs::certificate_and_private_key_present_a_client_certificate",
+        "src/outbound/tuic.rs::tests::cwnd_only_applies_to_bbr"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },

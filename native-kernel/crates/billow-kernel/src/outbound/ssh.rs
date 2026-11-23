@@ -10,7 +10,9 @@
 //! The pinned outbound keeps one client per proxy and multiplexes channels on
 //! it. This kernel keeps the same wire protocol but opens a connection per
 //! dial, so a server sees more SSH sessions; the observable `direct-tcpip`
-//! behaviour (target, payload, auth failure) is identical.
+//! behaviour (target, payload, auth failure) is identical. The server socket
+//! comes from the shared outbound dialer so the `BasicOption` knobs are not
+//! silently bypassed by `russh`'s own `TcpStream::connect`.
 
 use std::borrow::Cow;
 use std::io;
@@ -21,7 +23,7 @@ use russh::client;
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::{handshake, resolve, BoxStream, DialError, Dialed, Target};
+use super::{connect_tcp, handshake, BoxStream, DialError, Dialed, Target};
 use crate::proxies::SshOutbound;
 
 /// Client handler: accepts any host key when the configuration pins none,
@@ -110,7 +112,15 @@ fn load_private_key(option: &SshOutbound) -> Result<PrivateKey, DialError> {
 }
 
 pub async fn dial(option: &SshOutbound, target: &Target) -> Result<Dialed, DialError> {
-    let server: SocketAddr = resolve(&option.server, option.port).await?;
+    // The connection to the SSH server is opened by the shared dialer (not by
+    // `russh::client::connect`, which builds its own `TcpStream`), so the
+    // per-outbound BasicOption knobs (`tfo`, `mptcp`, `interface-name`,
+    // `routing-mark`) and `ip-version` apply to the socket, exactly like every
+    // other outbound. `connect_stream` consumes that stream for the handshake.
+    let tcp = connect_tcp(&option.server, option.port).await?;
+    let server: SocketAddr = tcp
+        .peer_addr()
+        .map_err(|e| error(format!("peer address: {e}")))?;
     let mut preferred = russh::Preferred::default();
     if !option.host_key_algorithms.is_empty() {
         use std::str::FromStr;
@@ -137,7 +147,7 @@ pub async fn dial(option: &SshOutbound, target: &Target) -> Result<Dialed, DialE
         );
     }
     let handler = Handler { host_keys };
-    let mut session = client::connect(Arc::new(config), server, handler)
+    let mut session = client::connect_stream(Arc::new(config), tcp, handler)
         .await
         .map_err(|e| error(format!("connect: {e}")))?;
 
