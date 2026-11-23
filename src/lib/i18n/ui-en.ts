@@ -1753,5 +1753,7 @@ export const UI_EN: Record<string, string> = {
   '自建节点功能当前已关闭，开启后即可导入并管理单个节点链接。': 'Custom nodes are currently turned off. Enable them in settings to import and manage individual node links.',
   '转入自建节点导入': 'Import as custom node',
   '前往开启': 'Enable in settings',
+  '查看配置': 'View profiles',
+  '重试失败': 'Retry failed',
 }
 

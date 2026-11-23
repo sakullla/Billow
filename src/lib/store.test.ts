@@ -1,8 +1,10 @@
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectScope } from 'vue'
+import App from '../App.vue'
 import { createDemoBackend } from './demo'
 import { looksLikeCustomNodeInput } from './links'
-import { createStore } from './store'
+import { createStore, type Store } from './store'
 import { CUSTOM_PROFILE_ID, LANDING_GROUP_NAME, emptySnapshot, type Snapshot, type TrafficHistoryView } from './types'
 
 function deferred<T>() {
@@ -275,14 +277,14 @@ describe('store lifecycle', () => {
   it('bounds toast timers to visible messages and clears them on stop', () => {
     const { store } = setup()
     for (let i = 0; i < 100; i += 1) store.toast(`message ${i}`)
-    expect(store.toasts.value).toHaveLength(3)
-    expect(vi.getTimerCount()).toBe(3)
+    expect(store.toasts.value).toHaveLength(4)
+    expect(vi.getTimerCount()).toBe(4)
     store.stop()
     expect(vi.getTimerCount()).toBe(0)
     expect(store.toasts.value).toHaveLength(0)
   })
 
-  it('deduplicates active toasts with the same tone and text, refreshes action and resets timer', async () => {
+  it('deduplicates active toasts with the same tone and text, supports dedupe:false and respects paused state', async () => {
     const { store } = setup()
     const firstClick = vi.fn()
     const secondClick = vi.fn()
@@ -301,16 +303,70 @@ describe('store lifecycle', () => {
     expect(store.toasts.value[0]!.action?.label).toBe('立即重试')
     expect(store.toasts.value[0]!.action?.onClick).toBe(secondClick)
 
+    // Refreshing a paused toast keeps it paused instead of restarting the timer.
+    store.pauseToast(firstId)
+    store.toast('连接失败', 'error', { label: '继续重试', onClick: secondClick })
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(store.toasts.value.some((item) => item.id === firstId)).toBe(true)
+    store.resumeToast(firstId)
+
+    // Explicit dedupe: false allows repeated identical prompts.
+    store.toast('连接失败', 'error', { dedupe: false })
+    expect(store.toasts.value.filter((item) => item.tone === 'error')).toHaveLength(2)
+
     // Different tone with same text is kept separate.
     store.toast('连接失败', 'info')
-    expect(store.toasts.value).toHaveLength(2)
+    expect(store.toasts.value).toHaveLength(3)
 
-    await vi.advanceTimersByTimeAsync(2000)
-    // Refreshed error toast must still be alive (only 2000ms of 5200ms elapsed).
-    expect(store.toasts.value.some((item) => item.id === firstId)).toBe(true)
-
-    await vi.advanceTimersByTimeAsync(3300)
+    await vi.advanceTimersByTimeAsync(5300)
     expect(store.toasts.value.some((item) => item.id === firstId)).toBe(false)
+  })
+
+  it('attaches real interactive retry actions on subscription update failure and renders clickable .toast-action in App', async () => {
+    const { backend, state, store } = setup()
+    const adding = backend.addSubscription('https://example.org/sub')
+    await vi.runAllTimersAsync()
+    const initial = await adding
+    const id = initial.profiles.find((profile) => profile.source === 'https://example.org/sub')!.id
+    state.mockResolvedValue(initial)
+    await store.start()
+
+    const refresh = vi
+      .spyOn(backend, 'refresh')
+      .mockRejectedValueOnce(new Error('网络超时'))
+      .mockResolvedValueOnce(initial)
+
+    await store.update(id)
+    const errToast = store.toasts.value.find((item) => item.tone === 'error' && item.text.includes('网络超时'))
+    expect(errToast?.action?.label).toBe('重试')
+    errToast?.action?.onClick()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(refresh).toHaveBeenCalledTimes(2)
+
+    // Verify App.vue renders .toast-action, pauses on focusin, invokes onClick and dismisses.
+    const appBackend = createDemoBackend()
+    const wrapper = mount(App, { props: { backend: appBackend, width: 1200 }, attachTo: document.body })
+    cleanup.push(() => wrapper.unmount())
+    await vi.advanceTimersByTimeAsync(50)
+    await flushPromises()
+
+    const appStore = (wrapper.vm as unknown as { store: Store }).store
+    const onAction = vi.fn()
+    appStore.toast('已添加订阅，点击即可启用', 'success', { label: '查看配置', onClick: onAction })
+    await flushPromises()
+
+    const actionBtn = wrapper.find('[data-testid="toast-action"]')
+    expect(actionBtn.exists()).toBe(true)
+    expect(actionBtn.text()).toBe('查看配置')
+
+    await wrapper.find('.toast').trigger('focusin')
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(wrapper.find('[data-testid="toast-action"]').exists()).toBe(true)
+
+    await actionBtn.trigger('click')
+    await flushPromises()
+    expect(onAction).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.toast').exists()).toBe(false)
   })
 
   it('exposes customNodeImportRequest for cross-view handoff and detects custom node inputs', () => {

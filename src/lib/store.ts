@@ -106,6 +106,11 @@ export interface ToastAction {
   onClick: () => void
 }
 
+export interface ToastOptions {
+  action?: ToastAction
+  dedupe?: boolean
+}
+
 export interface Toast {
   id: number
   tone: 'info' | 'success' | 'error'
@@ -349,22 +354,31 @@ export function createStore(backend: Backend) {
     scheduleToast(id, meta.remaining)
   }
 
-  const MAX_TOASTS = 3
+  const MAX_TOASTS = 4
 
-  function toast(text: string, tone: Toast['tone'] = 'info', action?: ToastAction) {
+  function toast(text: string, tone: Toast['tone'] = 'info', actionOrOptions?: ToastAction | ToastOptions) {
     if (stopped) return
+    const action = actionOrOptions && 'onClick' in actionOrOptions ? actionOrOptions : actionOrOptions?.action
+    const dedupe = actionOrOptions && 'onClick' in actionOrOptions ? true : (actionOrOptions?.dedupe ?? true)
     // Backend messages arrive in Chinese; the catalog translates a known reason
     // and leaves unknown text untouched (T8).
     const shown = tr(text)
     const duration = tone === 'error' || action ? 5200 : 2800
-    const existingIndex = toasts.value.findIndex((item) => item.tone === tone && item.text === shown)
-    if (existingIndex !== -1) {
-      const existing = toasts.value[existingIndex]!
-      const next = toasts.value.slice()
-      next[existingIndex] = { ...existing, action }
-      toasts.value = next
-      scheduleToast(existing.id, duration)
-      return
+    if (dedupe) {
+      const existingIndex = toasts.value.findIndex((item) => item.tone === tone && item.text === shown)
+      if (existingIndex !== -1) {
+        const existing = toasts.value[existingIndex]!
+        const next = toasts.value.slice()
+        next[existingIndex] = { ...existing, action }
+        toasts.value = next
+        const meta = toastMeta.get(existing.id)
+        if (meta && meta.startedAt === 0) {
+          toastMeta.set(existing.id, { remaining: duration, startedAt: 0 })
+        } else {
+          scheduleToast(existing.id, duration)
+        }
+        return
+      }
     }
     const id = ++toastId
     const overflow =
@@ -789,8 +803,15 @@ export function createStore(backend: Backend) {
     }
     const changed = newFailure(before, result)
     const failed = attempt ? !attempt.done(result) : false
-    if (changed) toast(changed, 'error')
-    else if (!failed && success) toast(success, 'success')
+    if (changed) {
+      toast(
+        changed,
+        'error',
+        page.value !== 'logs' ? { label: tr('查看日志'), onClick: () => go('logs') } : undefined,
+      )
+    } else if (!failed && success) {
+      toast(success, 'success')
+    }
     if (attempt) {
       if (failed) {
         lastActionError.value = result.failure ?? changed ?? tr('操作没有完成')
@@ -848,7 +869,14 @@ export function createStore(backend: Backend) {
     }
     if (reason) {
       profileUpdates[id] = { state: 'failure', reason }
-      if (!quiet) toast(reason, 'error')
+      if (!quiet) {
+        toast(reason, 'error', {
+          label: tr('重试'),
+          onClick: () => {
+            void trackUpdate(id, false)
+          },
+        })
+      }
       if (!quiet && backend.live) void backend.syncTray()
       return false
     }
@@ -898,9 +926,23 @@ export function createStore(backend: Backend) {
       )
       if (backend.live) void backend.syncTray()
       if (ids.length) {
+        const failedIds = failed ? ids.filter((id) => profileUpdates[id]?.state === 'failure') : []
         toast(
           failed ? tr('更新完成：{0}/{1}，{2} 个订阅失败', { 0: done, 1: ids.length, 2: failed }) : tr('全部订阅已更新'),
           failed ? 'error' : 'success',
+          failed && failedIds.length
+            ? {
+                label: tr('重试失败'),
+                onClick: () => {
+                  void updateAll(failedIds)
+                },
+              }
+            : failed
+              ? {
+                  label: tr('查看配置'),
+                  onClick: () => go('profiles'),
+                }
+              : undefined,
         )
       }
     } finally {
@@ -1566,7 +1608,7 @@ export function createStore(backend: Backend) {
       const result = await run('close-connections', () => backend.closeConnections(ids))
       if (!result) return undefined
       // The backend sets `notice` for this call alone, so a repeated failure count still toasts.
-      if (result.notice) toast(result.notice, 'error')
+      if (result.notice) toast(result.notice, 'error', { dedupe: false })
       else toast(ids ? tr('已关闭 {0} 条连接', { 0: ids.length }) : tr('已关闭全部连接'), 'success')
       return result
     },

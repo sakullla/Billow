@@ -226,7 +226,13 @@ async function submitUrl() {
   if (snap.value.profiles.length > before) {
     url.value = ''
     store.adding.value = false
-    store.toast(tr('已添加订阅，点击即可启用'), 'success')
+    store.toast(
+      tr('已添加订阅，点击即可启用'),
+      'success',
+      store.page.value !== 'profiles'
+        ? { label: tr('查看配置'), onClick: () => store.go('profiles') }
+        : undefined,
+    )
     const added = snap.value.profiles[snap.value.profiles.length - 1]
     if (!snap.value.active_id && added) void store.enable(added.id)
   }
@@ -242,6 +248,7 @@ function onToastFocusOut(id: number, event: FocusEvent) {
   const el = event.currentTarget as HTMLElement | null
   const next = event.relatedTarget as Node | null
   if (el && next && el.contains(next)) return
+  if (el?.matches?.(':hover')) return
   store.resumeToast(id)
 }
 
@@ -270,7 +277,13 @@ async function addFile(file: File | undefined) {
   await store.addLocal(file.name.replace(/\.(ya?ml|txt)$/i, ''), await file.text())
   if (snap.value.profiles.length > before) {
     store.adding.value = false
-    store.toast(tr('已导入 {0}', { 0: file.name }), 'success')
+    store.toast(
+      tr('已导入 {0}', { 0: file.name }),
+      'success',
+      store.page.value !== 'profiles'
+        ? { label: tr('查看配置'), onClick: () => store.go('profiles') }
+        : undefined,
+    )
     const added = snap.value.profiles[snap.value.profiles.length - 1]
     if (!snap.value.active_id && added) void store.enable(added.id)
   }
