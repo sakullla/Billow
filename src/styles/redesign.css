@@ -358,7 +358,7 @@ body {
   height: 38px;
 }
 .side-status.on .side-power {
-  box-shadow: 0 6px 16px -4px color-mix(in srgb, var(--good) 52%, transparent);
+  box-shadow: 0 6px 16px -4px color-mix(in srgb, var(--accent) 52%, transparent);
 }
 
 /* ───────────── 4. Page frame, cards, controls ───────────── */
