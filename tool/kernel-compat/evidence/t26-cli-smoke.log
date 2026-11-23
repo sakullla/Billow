@@ -1,8 +1,8 @@
 {
   "ok": true,
-  "identity": "instance=ef3676f1-4bb4-4a71-a3ac-b7629ffb8f2e pid=90802 version=0.1.0 listen=127.0.0.1:65162 overridden_port=- config=sha256:f3e0f5b8718778e812752accd2d1f11e0d46d3053d3a6b020a26bf2d42e7f41b rules=1 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t26-cli-smoke-vol3kzay state_dir=-",
+  "identity": "instance=9192b5bc-37ad-43a0-ade9-16b1994a98de pid=6138 version=0.1.0 listen=127.0.0.1:55556 overridden_port=- config=sha256:9be8b36b182ad7b1f19c8d3ab9dd81fa51f8957a50ac3a4645177716ed2ed9ac rules=1 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t26-cli-smoke-jwzwpkql state_dir=-",
   "stdout": [
-    "instance=ef3676f1-4bb4-4a71-a3ac-b7629ffb8f2e pid=90802 version=0.1.0 listen=127.0.0.1:65162 overridden_port=- config=sha256:f3e0f5b8718778e812752accd2d1f11e0d46d3053d3a6b020a26bf2d42e7f41b rules=1 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t26-cli-smoke-vol3kzay state_dir=-",
+    "instance=9192b5bc-37ad-43a0-ade9-16b1994a98de pid=6138 version=0.1.0 listen=127.0.0.1:55556 overridden_port=- config=sha256:9be8b36b182ad7b1f19c8d3ab9dd81fa51f8957a50ac3a4645177716ed2ed9ac rules=1 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t26-cli-smoke-jwzwpkql state_dir=-",
     "features: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off",
     "tun_fd: 4"
   ],
@@ -13,21 +13,21 @@
   "exitCode": 0,
   "stagedFileRemoved": true,
   "stderrTail": [
-    "[00:35:24.023 INFO  billow_kernel::tunnel] message=tunnel data plane started listen=65162 mtu=1500",
-    "[00:35:24.024 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"",
-    "[00:35:24.226 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0",
-    "[00:35:24.226 INFO  billow_kernel::engine] message=all session tasks joined; listener released",
-    "[00:35:24.227 INFO  billow_kernel::engine] message=billow-kernel stopped instance=ef3676f1-4bb4-4a71-a3ac-b7629ffb8f2e sessions=0 active=0 finished=0",
-    "[00:35:24.227 INFO  billow_kernel::tunnel] message=tunnel data plane stopped"
+    "[01:00:32.588 INFO  billow_kernel::tunnel] message=tunnel data plane started listen=55556 mtu=1500",
+    "[01:00:32.589 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"",
+    "[01:00:32.800 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0",
+    "[01:00:32.800 INFO  billow_kernel::engine] message=all session tasks joined; listener released",
+    "[01:00:32.800 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9192b5bc-37ad-43a0-ade9-16b1994a98de sessions=0 active=0 finished=0",
+    "[01:00:32.801 INFO  billow_kernel::tunnel] message=tunnel data plane stopped"
   ],
   "fdLoss": {
     "ready": true,
     "exitCode": 1,
     "reported": true,
     "stderrTail": [
-      "[00:35:24.935 INFO  billow_kernel::engine] message=all session tasks joined; listener released",
-      "[00:35:24.935 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d3975c4e-04dc-4e6b-9c89-6639b92bd0a0 sessions=0 active=0 finished=0",
-      "[00:35:24.936 INFO  billow_kernel::tunnel] message=tunnel data plane stopped",
+      "[01:00:33.535 INFO  billow_kernel::engine] message=all session tasks joined; listener released",
+      "[01:00:33.535 INFO  billow_kernel::engine] message=billow-kernel stopped instance=630a3f88-235c-442f-90db-d7dc05d860b7 sessions=0 active=0 finished=0",
+      "[01:00:33.536 INFO  billow_kernel::tunnel] message=tunnel data plane stopped",
       "error: android-vpn: the inherited TUN fd stopped carrying packets; exiting so the host can release the VPN"
     ]
   }

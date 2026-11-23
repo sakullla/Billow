@@ -46,10 +46,19 @@ poll 宿主已释放的描述符。撤销（系统 `onRevoke`）则是系统先�
 `stats().running` 变为 false，CLI 以非零码退出（stderr 明确报告 TUN fd 不再承载报文），宿主按进程退出处理，
 不会长期保留“进程活着但数据面已死”的状态。目标引擎启动失败时仍清理目标并恢复 Mihomo，失败原因写入连接状态。
 
+应用分流保存（`set_app_rules`/`exclude_package`/`include_package`）不能沿用“先停后判”：有效 App 过滤
+未变化时（例如在“绕过选中应用”与“仅代理选中应用”两个空列表之间切换，二者都归一为 `{only:false, packages:[]}`），
+`takeover` 不会重建 fd，若仍先停子进程就只剩“子进程已死、宿主 PFD 仍开、快照仍 connected/vpn”的黑洞。
+因此停止动作下沉到 `refresh_vpn` 的 `before_replace` 回调：只有确定会用新 fd 替换旧 fd（或重建失败并关闭
+接管）时才停子进程；无变化仅持久化规则，进程与隧道保持原样。`stop_android_rust_kernel` 也不再要求
+`KernelLaunch::running()` 为真才清空待移交 fd：子进程已异常退出时也要丢弃陈旧 fd 号，避免下一次启动继承
+一个宿主已关闭的描述符；`connect_android` 的授权拒绝分支同样按“先停子进程、再关 PFD”的顺序处理。
+
 验证边界：本仓库当前环境没有 Android NDK（`aarch64-linux-android-clang` 缺失）也没有设备，因此
 `aarch64-linux-android` 交叉编译与真机双向切换流量均未执行；宿主单测用 `UnixDatagram` 模拟 TUN fd 覆盖
-TCP/UDP/DNS、启停、reload、撤销后泵停止与错误路径，`src-tauri` 单测覆盖“断开先停子进程再关 fd”和
-“从 Rust 切走先停子进程”。命令、退出码与错误原文见
+TCP/UDP/DNS、启停、reload、撤销后泵停止与错误路径，`src-tauri` 单测覆盖“断开先停子进程再关 fd”、
+“从 Rust 切走先停子进程”、无变化的分流保存不杀进程、真实变化时“先停后换”的事件顺序、子进程退出后的
+陈旧 fd 清理，以及授权拒绝重连的停止顺序。命令、退出码与错误原文见
 `tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`，真机结果保持待验。桌面 Rust 引擎不接管 TUN
 （`tun` 块在所有平台都被移除，桌面 TUN 属 T6/Mihomo 路径），因此 Rust 桌面会话只走 mixed 监听器，快照不得
 据此声称桌面 TUN 已支持。

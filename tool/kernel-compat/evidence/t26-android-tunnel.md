@@ -1,6 +1,6 @@
 # T26 Android Rust VpnService 数据面
 
-- workflow: `2026-11-20-native-rust-kernel` / task `T26` / attempt `T26-A2`（修复复审阻断项；基线 `T26-A1`）
+- workflow: `2026-11-20-native-rust-kernel` / task `T26` / attempt `T26-A3`（修复复审阻断项 P1/P3；基线 `T26-A2`）
 - 环境: macOS arm64；rustup 已安装 `aarch64-linux-android` target；**无 Android NDK**（`NDK_HOME`/`ANDROID_NDK_HOME` 为空，
   `~/Library/Android/sdk/ndk` 不存在）；**无 Android 设备/模拟器**。
 - 结论: 数据面、宿主移交、断开/切换的停进程顺序与宿主单测已完成并在 macOS 上通过；Android 目标编译与真机双向切换**未验证**，保持待验。
@@ -56,6 +56,27 @@
    再关闭宿主 PFD 或建立新引擎的会话；目标启动失败时清理目标并恢复 Mihomo，失败原因进入连接状态。
    撤销时系统先使 fd 失效，子进程 fd 泵读到 EOF/错误后由 CLI 以非零码退出（见 §6）。
 
+### 2.1 应用分流保存与停止时序（T26-A3）
+
+`takeover::set_app_rules` / `exclude_package` / `include_package` 接收 `before_replace` 回调，只在
+`refresh_vpn` 确实准备 `establish`（或用失败路径关闭接管）之前触发；`ProfileBook` 在该回调里调用
+`stop_android_rust_kernel`。这样：
+
+- 有效过滤未变化时（`include` 空列表被归一为 `{only:false, packages:[]}`，与空的 `exclude` 列表等价）只持久化
+  规则，不停止子进程、不重建 fd，快照保持 connected/vpn 与子进程状态一致；
+- 过滤确实变化时事件顺序仍为 `stop` → `establish` → `start`（新 fd 被重新继承），失败清理路径不变。
+
+`stop_android_rust_kernel` 现在无论 `running()` 与否都 `set_tun_fd(None)`：子进程异常退出后残留的 fd 号不会被
+下一次启动继承；只有存活子进程才 `stop_kernel()`。`connect_android` 的授权拒绝分支同样先停子进程再
+`vpn.close()`。
+
+| 宿主回归用例 | 断言 |
+| --- | --- |
+| `android_rust_noop_app_rule_saves_keep_the_child_and_tunnel` | include/exclude 空列表互切与重复保存不改变 stop/start/establish 计数，子进程仍活、fd 未换；旧顺序下该用例失败 |
+| `android_rust_changed_app_rules_stop_the_child_before_the_new_fd_is_established` | 真实变化的日志顺序 `stop` < `establish` < `start` |
+| `android_rust_stop_clears_a_stale_fd_even_after_the_child_exited` | 子进程退出后 disconnect 仍清空 `tun_fd`，且不重复 stop |
+| `android_rust_denied_reconnect_stops_the_child_before_closing_vpn` | 拒绝重连：子进程先停、`tun_fd` 清空、`vpn.open` 关闭、快照 !vpn/!connected |
+
 ## 3. 验证结果（macOS 宿主）
 
 | 命令 | 结果 | 日志 |
@@ -64,7 +85,7 @@
 | `cargo test -p billow-kernel --features android-vpn` | 全部套件通过（lib 182 passed/1 ignored、android_tunnel 9、config 43、controller 15、dns 19、groups 32、protocols 50、quic_peers 32、resources 15、sessions 11） | `t26-android-tests.log` |
 | `cargo test --manifest-path native-kernel/Cargo.toml --locked`（默认 feature） | 全部通过（lib 160 passed/1 ignored，CLI 11 + family_cli 10），桌面路径不回归 | `t26-default-tests.log` |
 | `cargo test -p billow-kernel --features ios-vpn --test ios_tunnel` | 6 passed，iOS 数据面不回归 | `t26-ios-regression.log` |
-| `cargo test --manifest-path src-tauri/Cargo.toml --locked` | 240 passed，0 failed，10 ignored（新增 3 条 Android Rust 停进程顺序用例） | `t26-host-tests.log` |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked` | 244 passed，0 failed，10 ignored（新增 P1 回归、先停后换顺序、陈旧 fd 清理、授权拒绝顺序 4 例） | `t26-host-tests.log` |
 | `python3 tool/kernel-compat/t26-android-smoke.py`（`--tun-fd` 进程入口） | UDP 回显穿过继承 fd（proto 17 / `pong`），SIGTERM 退出 0、staged 文件清理；第二个进程关闭设备侧后 CLI 退出 1 并报告 fd 失效 | `t26-cli-smoke.log` |
 
 `tests/android_tunnel.rs` 用 `UnixDatagram` 对模拟包式 TUN fd，覆盖：

@@ -3,8 +3,8 @@
   "version": 1,
   "workflow": "2026-11-20-native-rust-kernel",
   "task": "T26",
-  "attempt": "T26-A2",
-  "generatedAt": "2026-11-23T00:31:59Z",
+  "attempt": "T26-A3",
+  "generatedAt": "2026-11-23T01:01:13Z",
   "environment": {
     "host": "macOS arm64 (aarch64-apple-darwin)",
     "androidTarget": "aarch64-linux-android (rustup target installed)",
@@ -47,7 +47,12 @@
       "src/profile.rs: ProfileBook::stop_android_rust_kernel sets the pending fd to None and stops the child before the host closes/replaces the VpnService descriptor; used by disconnect, switch_engine, connect_android (before establish and on failure), restart_android (before establish and on failure), app-rule refresh and finish_android_fd failure. Mihomo keeps tun.file-descriptor and desktop is unchanged",
       "src/profile.rs tests: android_rust_disconnect_stops_the_kernel_before_closing_the_vpn_fd, android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes and android_restart_failure_stops_the_rust_child_before_closing_the_vpn_fd prove the child stopped while the fd was still live",
       "src/profile.rs: ProcessRuntime stores the Android TUN fd, appends --tun-fd only for Engine::Rust, forces a respawn for a fresh fd, strips the tun block for Rust on every platform (including a user-written block), keeps force_tun(tun.file-descriptor) for Mihomo",
-      "src-tauri/gen/android/.../BillowVpnService.kt: documents the FD_CLOEXEC clear for the Rust child and releases/closes the fd on onRevoke before stopSelf"
+      "src-tauri/gen/android/.../BillowVpnService.kt: documents the FD_CLOEXEC clear for the Rust child and releases/closes the fd on onRevoke before stopSelf",
+      "src/profile.rs: 应用分流保存的预停下沉到 takeover 的 before_replace 回调；有效 App 过滤未变化（include 空列表与 exclude 空列表等价）时不停止子进程、不重建 fd，避免“子进程已死、宿主 PFD 仍开、快照仍 connected/vpn”的黑洞",
+      "src/profile.rs: stop_android_rust_kernel 在 running() 之外无条件 set_tun_fd(None)，子进程已退出时也不把陈旧 fd 号带入下一次启动",
+      "src/profile.rs: connect_android 授权拒绝分支先停存活子进程再 vpn.close()，与其他分支顺序一致",
+      "src/takeover.rs: set_app_rules/exclude_package/include_package 接受 before_replace 回调，仅在 refresh_vpn 确实要 establish（或失败关闭接管）前触发；takeover 单测调用方随签名更新",
+      "src/profile.rs tests: 新增 android_rust_noop_app_rule_saves_keep_the_child_and_tunnel、android_rust_changed_app_rules_stop_the_child_before_the_new_fd_is_established、android_rust_stop_clears_a_stale_fd_even_after_the_child_exited、android_rust_denied_reconnect_stops_the_child_before_closing_vpn；EngineKernel 记录 stop 次数"
     ],
     "tooling-docs": [
       "tool/prepare_android_rust_kernel.mjs: builds billow-kernel-cli with --features android-vpn and keys the cache on it",
@@ -93,16 +98,20 @@
       },
       {
         "command": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
-        "result": "240 passed, 0 failed, 10 ignored",
+        "result": "244 passed, 0 failed, 10 ignored",
         "log": "tool/kernel-compat/evidence/t26-host-tests.log",
         "newCases": [
-          "profile::tests::android_rust_disconnect_stops_the_kernel_before_closing_the_vpn_fd",
-          "profile::tests::android_restart_failure_stops_the_rust_child_before_closing_the_vpn_fd",
-          "profile::tests::android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes",
-          "profile::tests::android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml",
-          "profile::tests::android_mihomo_connect_keeps_the_vpn_fd_in_yaml",
-          "profile::tests::stopping_preserves_the_pending_tun_fd_for_the_next_launch",
-          "profile::tests::the_native_kernel_never_receives_the_launcher_tun_block (updated)"
+          "profile::tests::android_rust_disconnect_stops_the_kernel_before_closing_the_vpn_fd (T26-A2)",
+          "profile::tests::android_restart_failure_stops_the_rust_child_before_closing_the_vpn_fd (T26-A2)",
+          "profile::tests::android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes (T26-A2)",
+          "profile::tests::android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml (T26-A2)",
+          "profile::tests::android_mihomo_connect_keeps_the_vpn_fd_in_yaml (T26-A2)",
+          "profile::tests::stopping_preserves_the_pending_tun_fd_for_the_next_launch (T26-A2)",
+          "profile::tests::the_native_kernel_never_receives_the_launcher_tun_block (T26-A2 updated)",
+          "profile::tests::android_rust_noop_app_rule_saves_keep_the_child_and_tunnel (T26-A3, P1 regression)",
+          "profile::tests::android_rust_changed_app_rules_stop_the_child_before_the_new_fd_is_established (T26-A3)",
+          "profile::tests::android_rust_stop_clears_a_stale_fd_even_after_the_child_exited (T26-A3, P3)",
+          "profile::tests::android_rust_denied_reconnect_stops_the_child_before_closing_vpn (T26-A3, P3)"
         ],
         "switchRelease": "profile::tests::android_engine_switch_releases_the_vpn_descriptor_before_starting_the_target (existing release order) plus android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes; fd-level release is stop_releases_the_fd_and_every_flow"
       }
@@ -151,5 +160,32 @@
     "The Android process route inherits the fd via FD_CLOEXEC clearing; an in-process embedder calling billow_android_vpn_start must also clear FD_CLOEXEC before the call or pass an owned descriptor.",
     "The host has no direct revoke callback: Kotlin reports fd -1, the child exits on fd loss, and the host notices the dead data plane on a later process-liveness sample; on-device confirmation is pending.",
     "A desktop Rust session does not take over a TUN device (tun is stripped for Engine::Rust on every platform; desktop TUN belongs to T6/Mihomo), so it serves the mixed listener only and must not be read as desktop Rust TUN support."
-  ]
+  ],
+  "repair": {
+    "attempt": "T26-A3",
+    "blockedFindings": [
+      {
+        "id": "P1",
+        "summary": "无变化的 app 分流保存会杀掉 Android Rust 子进程且不重建：set_app_rules 在判断过滤是否变化前就 stop_android_rust_kernel，takeover 返回 None 后既不 establish 也不 reload；stop() 清空 exit_detail 使 recover_crashed_kernel 无法自愈",
+        "fix": "停止动作下沉到 refresh_vpn 的 before_replace 回调（takeover::set_app_rules/exclude_package/include_package），只有确定替换 fd 时才停子进程",
+        "regression": "android_rust_noop_app_rule_saves_keep_the_child_and_tunnel；在旧顺序下该用例失败（a no-op save must not kill the child），修复后通过"
+      },
+      {
+        "id": "P3.1",
+        "summary": "stop_android_rust_kernel 的 set_tun_fd(None) 位于 running() 判断内，子进程已退出时旧 fd 号残留",
+        "fix": "set_tun_fd(None) 在 running() 之外执行，仅在有存活子进程时 stop_kernel",
+        "regression": "android_rust_stop_clears_a_stale_fd_even_after_the_child_exited"
+      },
+      {
+        "id": "P3.2",
+        "summary": "connect_android 授权拒绝分支先 vpn.close() 后没有停存活子进程",
+        "fix": "改为先 stop_android_rust_kernel 再 vpn.close()",
+        "regression": "android_rust_denied_reconnect_stops_the_child_before_closing_vpn"
+      }
+    ],
+    "scopeNotes": [
+      "include_package 在 VPN 存活时仍会重建 fd（即使列表未变），因此照常先停后换；exclude/include 的非法或空白包名不再触发停止",
+      "Android 目标编译与真机仍待环境验证，未声称通过"
+    ]
+  }
 }

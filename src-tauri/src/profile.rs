@@ -3291,6 +3291,9 @@ impl ProfileBook {
             return self.publish(kernel);
         }
         if !matches!(vpn.authorize(), Ok(true)) {
+            // Same order as every other branch: no Rust child may outlive the
+            // descriptor the host is about to close.
+            self.stop_android_rust_kernel(kernel);
             let _ = vpn.close();
             let mut model = self.link_model();
             model.vpn = false;
@@ -3353,12 +3356,14 @@ impl ProfileBook {
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
         let mut model = self.link_model();
-        if model.vpn {
-            // Re-establishing the VPN replaces the host descriptor; stop the
-            // Rust child that inherited the previous one first.
-            self.stop_android_rust_kernel(kernel);
-        }
-        let fd = takeover::set_app_rules(&mut model, mode, packages, vpn);
+        // Stopping the Rust child must happen only when the fd is actually
+        // replaced; see `takeover::set_app_rules`. Stopping earlier kills the
+        // kernel even when the effective filter is unchanged and nothing is
+        // re-established, leaving the host PFD open with nobody reading it.
+        let fd = {
+            let mut before_replace = || self.stop_android_rust_kernel(kernel);
+            takeover::set_app_rules(&mut model, mode, packages, vpn, &mut before_replace)
+        };
         if let Some(fd) = fd {
             return self.finish_android_fd(kernel, vpn, model, fd);
         }
@@ -3375,14 +3380,15 @@ impl ProfileBook {
         vpn: &mut dyn VpnGrant,
     ) -> ProfileSnapshot {
         let mut model = self.link_model();
-        if model.vpn {
-            // `refresh_vpn` replaces the descriptor; stop the Rust child first.
-            self.stop_android_rust_kernel(kernel);
-        }
-        let fd = if exclude {
-            takeover::exclude_package(&mut model, package_name, vpn)
-        } else {
-            takeover::include_package(&mut model, package_name, vpn)
+        // `refresh_vpn` replaces the descriptor; the stop is deferred to that
+        // decision point so a no-op change cannot kill the running child.
+        let fd = {
+            let mut before_replace = || self.stop_android_rust_kernel(kernel);
+            if exclude {
+                takeover::exclude_package(&mut model, package_name, vpn, &mut before_replace)
+            } else {
+                takeover::include_package(&mut model, package_name, vpn, &mut before_replace)
+            }
         };
         if let Some(fd) = fd {
             return self.finish_android_fd(kernel, vpn, model, fd);
@@ -3635,13 +3641,14 @@ impl ProfileBook {
     /// host released. Mihomo keeps `tun.file-descriptor` semantics and desktop
     /// has no fd argument, so both stay on their existing reload path.
     fn stop_android_rust_kernel(&self, kernel: &mut dyn KernelLaunch) {
-        if self.platform == ClientPlatform::Android
-            && self.engine == Engine::Rust
-            && kernel.running()
-        {
-            // Never hand this fd to the next launch either.
+        if self.platform == ClientPlatform::Android && self.engine == Engine::Rust {
+            // Never hand this fd to the next launch either. Clearing it must not
+            // depend on `running()`: a child that already exited still leaves a
+            // stale fd number behind for the next spawn to inherit.
             kernel.set_tun_fd(None);
-            kernel.stop_kernel();
+            if kernel.running() {
+                kernel.stop_kernel();
+            }
         }
     }
 
@@ -10838,6 +10845,7 @@ proxy-groups:
         launched: Option<Engine>,
         last: String,
         starts: u32,
+        stops: u32,
         refuse: Option<String>,
         fail_engine: Option<Engine>,
         tun_fd: Option<i32>,
@@ -10852,6 +10860,7 @@ proxy-groups:
                 launched: None,
                 last: String::new(),
                 starts: 0,
+                stops: 0,
                 refuse: None,
                 fail_engine: None,
                 tun_fd: None,
@@ -10903,6 +10912,7 @@ proxy-groups:
         }
 
         fn stop_kernel(&mut self) {
+            self.stops += 1;
             self.alive = false;
             self.launched = None;
         }
@@ -11067,6 +11077,199 @@ proxy-groups:
         let yaml: Value = serde_yaml::from_str(&kernel.last).unwrap();
         assert!(yaml.get("tun").is_none(), "{}", kernel.last);
         assert!(yaml.get("file-descriptor").is_none(), "{}", kernel.last);
+    }
+
+    #[test]
+    fn android_rust_noop_app_rule_saves_keep_the_child_and_tunnel() {
+        let dir = temp_dir("android-noop-app-rules");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn && connected.connected, "{connected:?}");
+        assert!(kernel.alive);
+        let (stops, starts, establishes) = (kernel.stops, kernel.starts, vpn.establish_calls);
+
+        // An empty allowlist degrades to "bypass nothing", which is the same
+        // filter as an empty exclusion list. Switching between the two modes
+        // changes nothing, so the running Rust child and the live tunnel stay.
+        let include = book.set_app_rules("include", &[], &mut kernel, &mut vpn);
+        assert!(include.vpn && include.connected, "{include:?}");
+        assert_eq!(include.app_mode, "include");
+        assert!(kernel.alive, "a no-op save must not kill the child");
+        assert!(vpn.open);
+        assert_eq!(kernel.tun_fd, Some(1), "the child still reads the same fd");
+        assert_eq!(
+            (kernel.stops, kernel.starts, vpn.establish_calls),
+            (stops, starts, establishes)
+        );
+
+        let exclude = book.set_app_rules("exclude", &[], &mut kernel, &mut vpn);
+        assert!(exclude.vpn && exclude.connected, "{exclude:?}");
+        assert_eq!(exclude.app_mode, "exclude");
+        assert!(kernel.alive && vpn.open);
+        assert_eq!(kernel.tun_fd, Some(1));
+        assert_eq!(
+            (kernel.stops, kernel.starts, vpn.establish_calls),
+            (stops, starts, establishes)
+        );
+
+        // Saving an unchanged non-empty allowlist is likewise a no-op.
+        book.set_app_rules("include", &["com.a".to_string()], &mut kernel, &mut vpn);
+        let (stops, starts, establishes) = (kernel.stops, kernel.starts, vpn.establish_calls);
+        let again = book.set_app_rules("include", &["com.a".to_string()], &mut kernel, &mut vpn);
+        assert!(again.vpn && again.connected);
+        assert!(kernel.alive && vpn.open);
+        assert_eq!(
+            (kernel.stops, kernel.starts, vpn.establish_calls),
+            (stops, starts, establishes)
+        );
+        // A blank package is not a change either.
+        let blank = book.include_package("  ", &mut kernel, &mut vpn);
+        assert!(blank.vpn && blank.connected);
+        assert!(kernel.alive);
+        assert_eq!(
+            (kernel.stops, kernel.starts, vpn.establish_calls),
+            (stops, starts, establishes)
+        );
+    }
+
+    #[test]
+    fn android_rust_changed_app_rules_stop_the_child_before_the_new_fd_is_established() {
+        use std::sync::{Arc, Mutex};
+
+        struct LogKernel {
+            log: Arc<Mutex<Vec<&'static str>>>,
+            alive: bool,
+            fd: Option<i32>,
+        }
+        impl KernelLaunch for LogKernel {
+            fn start_or_reload(&mut self, _config_yaml: &str) -> Result<(), String> {
+                self.log.lock().unwrap().push("start");
+                self.alive = true;
+                Ok(())
+            }
+            fn running(&mut self) -> bool {
+                self.alive
+            }
+            fn set_tun_fd(&mut self, fd: Option<i32>) {
+                self.log.lock().unwrap().push("fd");
+                self.fd = fd;
+            }
+            fn stop_kernel(&mut self) {
+                self.log.lock().unwrap().push("stop");
+                self.alive = false;
+            }
+        }
+        struct LogVpn {
+            log: Arc<Mutex<Vec<&'static str>>>,
+            open: bool,
+        }
+        impl VpnGrant for LogVpn {
+            fn authorize(&mut self) -> Result<bool, String> {
+                Ok(true)
+            }
+            fn establish(&mut self, _filter: &crate::takeover::AppFilter) -> Result<i32, String> {
+                self.log.lock().unwrap().push("establish");
+                self.open = true;
+                Ok(9)
+            }
+            fn close(&mut self) -> Result<(), String> {
+                self.open = false;
+                Ok(())
+            }
+        }
+
+        let dir = temp_dir("android-app-rules-order");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut kernel = LogKernel { log: log.clone(), alive: false, fd: None };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = LogVpn { log: log.clone(), open: false };
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn && connected.connected, "{connected:?}");
+        assert_eq!(kernel.fd, Some(9));
+        log.lock().unwrap().clear();
+
+        // A real filter change replaces the fd: the child must be stopped after
+        // the decision to replace and before the new descriptor is established.
+        let saved = book.set_app_rules("include", &["com.a".to_string()], &mut kernel, &mut vpn);
+        assert!(saved.vpn && saved.connected, "{saved:?}");
+        assert_eq!(saved.included, ["com.a"]);
+        assert!(kernel.alive, "the reloaded child is running");
+        assert_eq!(kernel.fd, Some(9));
+        let events = log.lock().unwrap();
+        let position = |name: &str| events.iter().position(|item| *item == name).unwrap_or_else(|| panic!("missing {name} in {events:?}"));
+        assert!(position("stop") < position("establish"), "{events:?}");
+        assert!(position("establish") < position("start"), "{events:?}");
+    }
+
+    #[test]
+    fn android_rust_stop_clears_a_stale_fd_even_after_the_child_exited() {
+        let dir = temp_dir("android-stale-fd");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn && connected.connected, "{connected:?}");
+        assert_eq!(kernel.tun_fd, Some(1));
+
+        // The child exited on its own while the host still tracked the fd. The
+        // next launch must not inherit that stale number.
+        kernel.alive = false;
+        let stops = kernel.stops;
+        let off = book.disconnect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(!off.vpn && !off.connected);
+        assert_eq!(kernel.tun_fd, None);
+        assert_eq!(kernel.stops, stops, "an exited child is not stopped again");
+    }
+
+    #[test]
+    fn android_rust_denied_reconnect_stops_the_child_before_closing_vpn() {
+        let dir = temp_dir("android-denied-reconnect");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn && connected.connected, "{connected:?}");
+        assert!(kernel.alive);
+        let stops = kernel.stops;
+
+        vpn.grant = false;
+        let denied = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert_eq!(denied.failure.as_deref(), Some(takeover::VPN_DENIED));
+        assert!(!denied.vpn && !denied.connected);
+        assert!(!vpn.open, "the host descriptor is closed after the child");
+        assert!(!kernel.alive, "no Rust child outlives the closed descriptor");
+        assert_eq!(kernel.tun_fd, None);
+        assert_eq!(kernel.stops, stops + 1);
     }
 
     #[test]

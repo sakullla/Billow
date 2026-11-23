@@ -479,11 +479,18 @@ impl LinkModel {
 }
 
 /// Replace the app list of one mode and make that mode current; re-establishes a live VPN.
+///
+/// `before_replace` runs only when a live tunnel is about to be re-established,
+/// i.e. exactly when the fd returned by `vpn.establish` replaces the previous
+/// one. Callers that must stop an Android Rust child holding the old descriptor
+/// do it there: a caller-side stop happens even when the effective filter is
+/// unchanged, and then no tunnel is rebuilt.
 pub fn set_app_rules(
     model: &mut LinkModel,
     mode: &str,
     packages: &[String],
     vpn: &mut dyn VpnGrant,
+    before_replace: &mut dyn FnMut(),
 ) -> Option<i32> {
     if model.platform != ClientPlatform::Android {
         return None;
@@ -500,13 +507,14 @@ pub fn set_app_rules(
     if model.app_filter() == before {
         return None;
     }
-    refresh_vpn(model, vpn)
+    refresh_vpn(model, vpn, before_replace)
 }
 
 pub fn exclude_package(
     model: &mut LinkModel,
     package_name: &str,
     vpn: &mut dyn VpnGrant,
+    before_replace: &mut dyn FnMut(),
 ) -> Option<i32> {
     if model.platform != ClientPlatform::Android {
         return None;
@@ -517,13 +525,14 @@ pub fn exclude_package(
     if !model.excluded.iter().any(|item| item == &package_name) {
         model.excluded.push(package_name);
     }
-    refresh_vpn(model, vpn)
+    refresh_vpn(model, vpn, before_replace)
 }
 
 pub fn include_package(
     model: &mut LinkModel,
     package_name: &str,
     vpn: &mut dyn VpnGrant,
+    before_replace: &mut dyn FnMut(),
 ) -> Option<i32> {
     if model.platform != ClientPlatform::Android {
         return None;
@@ -532,15 +541,22 @@ pub fn include_package(
         return None;
     };
     model.excluded.retain(|item| item != &package_name);
-    refresh_vpn(model, vpn)
+    refresh_vpn(model, vpn, before_replace)
 }
 
 /// `None` means the list was saved and VPN stayed down, or establish failed.
 /// `Some` is the replacement TUN fd. The previous fd no longer reads traffic.
-fn refresh_vpn(model: &mut LinkModel, vpn: &mut dyn VpnGrant) -> Option<i32> {
+fn refresh_vpn(
+    model: &mut LinkModel,
+    vpn: &mut dyn VpnGrant,
+    before_replace: &mut dyn FnMut(),
+) -> Option<i32> {
     if !model.vpn {
         return None;
     }
+    // The host descriptor is about to be replaced (or the connect attempt will
+    // fail): release anyone still reading the previous one first.
+    before_replace();
     match vpn.establish(&model.app_filter()) {
         Ok(fd) => Some(fd),
         Err(_) => {
