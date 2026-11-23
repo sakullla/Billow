@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue'
+import Icon from '../../components/Icon.vue'
 import Segmented from '../../components/Segmented.vue'
 import Toggle from '../../components/Toggle.vue'
 import SettingsRow from '../../components/settings/SettingsRow.vue'
@@ -20,13 +21,24 @@ const THEMES = computed<{ id: ThemePreference; label: string; icon: string }[]>(
   { id: 'light', label: tr('浅色'), icon: 'sun' },
   { id: 'dark', label: tr('深色'), icon: 'moon' },
 ])
-const PALETTE_OPTIONS = computed<{ id: PalettePreference; label: string; accent: string; surface: string }[]>(() => [
-  { id: 'teal', label: tr('碧潮'), accent: '#0d9488', surface: '#e9eff0' },
-  { id: 'sapphire', label: tr('晴空蓝'), accent: '#2563eb', surface: '#eaedf4' },
-  { id: 'indigo', label: tr('星夜靛'), accent: '#4f46e5', surface: '#ececf5' },
-  { id: 'terracotta', label: tr('暖砂陶'), accent: '#c25e2c', surface: '#f1ebe2' },
-  { id: 'berry', label: tr('绯莓'), accent: '#be185d', surface: '#f1e9ee' },
-  { id: 'graphite', label: tr('墨韵'), accent: '#27272a', surface: '#ececef' },
+const PALETTE_OPTIONS = computed<
+  {
+    id: PalettePreference
+    label: string
+    accent: string
+    darkAccent: string
+    chrome: string
+    surface: string
+    darkChrome: string
+    darkSurface: string
+  }[]
+>(() => [
+  { id: 'teal', label: tr('碧潮'), accent: '#0d9488', darkAccent: '#14b8a6', chrome: '#e4eded', surface: '#ffffff', darkChrome: '#091012', darkSurface: '#141e22' },
+  { id: 'sapphire', label: tr('晴空蓝'), accent: '#2563eb', darkAccent: '#3b82f6', chrome: '#e6ebf5', surface: '#ffffff', darkChrome: '#090d14', darkSurface: '#151c27' },
+  { id: 'indigo', label: tr('星夜靛'), accent: '#4f46e5', darkAccent: '#818cf8', chrome: '#eaeaf6', surface: '#ffffff', darkChrome: '#0a0a14', darkSurface: '#181828' },
+  { id: 'terracotta', label: tr('暖砂陶'), accent: '#c25e2c', darkAccent: '#e8834f', chrome: '#efe8dd', surface: '#fffdfa', darkChrome: '#100d0a', darkSurface: '#1e1915' },
+  { id: 'berry', label: tr('绯莓'), accent: '#be185d', darkAccent: '#f472b6', chrome: '#f0e6ec', surface: '#ffffff', darkChrome: '#100a0f', darkSurface: '#1e151c' },
+  { id: 'graphite', label: tr('墨韵'), accent: '#18181b', darkAccent: '#e4e4e7', chrome: '#e9e9ec', surface: '#ffffff', darkChrome: '#09090b', darkSurface: '#18181c' },
 ])
 const LANGUAGES = computed<{ id: LanguagePreference; label: string }[]>(() => [
   { id: 'system', label: t('language.system') },
@@ -43,7 +55,13 @@ const desktopWindow = computed(() => Boolean(app.value && app.value.autostart !=
     <SettingsRow :title="tr('主题')" setting="theme" :stacked="compact">
       <Segmented :model-value="store.theme.value" :options="THEMES" size="sm" :label="tr('主题')" @update:model-value="store.setTheme" />
     </SettingsRow>
-    <SettingsRow :title="tr('配色方案')" setting="palette" :stacked="compact" data-testid="palette-setting">
+    <SettingsRow
+      :title="tr('配色方案')"
+      :description="tr('与明暗模式自由组合，实时切换表面色温与主色')"
+      setting="palette"
+      stacked
+      data-testid="palette-setting"
+    >
       <div class="palette-picker" role="radiogroup" :aria-label="tr('配色方案')" data-testid="palette-picker">
         <button
           v-for="item in PALETTE_OPTIONS"
@@ -54,14 +72,31 @@ const desktopWindow = computed(() => Boolean(app.value && app.value.autostart !=
           :class="{ active: store.palette.value === item.id }"
           :aria-checked="store.palette.value === item.id"
           :data-value="item.id"
+          :style="{
+            '--pv-accent': item.accent,
+            '--pv-dark-accent': item.darkAccent,
+            '--pv-chrome': item.chrome,
+            '--pv-surface': item.surface,
+            '--pv-dark-chrome': item.darkChrome,
+            '--pv-dark-surface': item.darkSurface,
+          }"
           @click="store.setPalette(item.id)"
         >
-          <span
-            class="palette-swatch"
-            aria-hidden="true"
-            :style="{ '--swatch-accent': item.accent, '--swatch-surface': item.surface }"
-          />
-          <span>{{ item.label }}</span>
+          <span class="palette-preview" aria-hidden="true">
+            <span class="palette-pv-side">
+              <span class="palette-pv-dot" />
+              <span class="palette-pv-bar" />
+              <span class="palette-pv-bar short" />
+            </span>
+            <span class="palette-pv-main">
+              <span class="palette-pv-pill" />
+              <span class="palette-pv-lines"><i /><i /></span>
+            </span>
+            <span v-if="store.palette.value === item.id" class="palette-check">
+              <Icon name="check" :size="10" :stroke="2.8" />
+            </span>
+          </span>
+          <span class="palette-label">{{ item.label }}</span>
         </button>
       </div>
     </SettingsRow>

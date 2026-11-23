@@ -1737,6 +1737,7 @@ export const UI_EN: Record<string, string> = {
   '功能': 'Features',
   '已叠加到当前订阅': 'Overlaid on active subscription',
   '配色方案': 'Color scheme',
+  '与明暗模式自由组合，实时切换表面色温与主色': 'Combine freely with light or dark mode to preview surface tone and accent live',
   '切换配色方案': 'Switch color scheme',
   '碧潮': 'Deep Teal',
   '晴空蓝': 'Sapphire',

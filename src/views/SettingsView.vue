@@ -136,14 +136,67 @@ function onSearchKey(event: KeyboardEvent) {
 
 const content = ref<HTMLElement | null>(null)
 
-// Horizontal tab strip: let the mouse wheel scroll sideways when narrow and keep the active tab visible.
+// Horizontal tab strip: support wheel + left-button drag scrolling when narrow, and keep the active tab visible.
 const navEl = ref<HTMLElement | null>(null)
+const navDragging = ref(false)
+let navDragStartX = 0
+let navDragStartScroll = 0
+let navMoved = false
+let navSuppressClick = false
+
 function onNavWheel(event: WheelEvent) {
   const el = navEl.value
   if (!el || el.scrollWidth <= el.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
   el.scrollLeft += event.deltaY
   event.preventDefault()
 }
+
+function onNavMouseMove(event: MouseEvent) {
+  const el = navEl.value
+  if (!el) return
+  const dx = event.clientX - navDragStartX
+  if (!navMoved && Math.abs(dx) > 4) {
+    navMoved = true
+    navDragging.value = true
+  }
+  if (navMoved) {
+    el.scrollLeft = navDragStartScroll - dx
+    event.preventDefault()
+  }
+}
+
+function stopNavDrag() {
+  window.removeEventListener('mousemove', onNavMouseMove)
+  window.removeEventListener('mouseup', stopNavDrag)
+  if (navMoved) {
+    navSuppressClick = true
+    window.setTimeout(() => {
+      navSuppressClick = false
+    }, 0)
+  }
+  navMoved = false
+  navDragging.value = false
+}
+
+function onNavMouseDown(event: MouseEvent) {
+  if (event.button !== 0) return
+  const el = navEl.value
+  if (!el || el.scrollWidth <= el.clientWidth) return
+  navDragStartX = event.clientX
+  navDragStartScroll = el.scrollLeft
+  navMoved = false
+  window.addEventListener('mousemove', onNavMouseMove)
+  window.addEventListener('mouseup', stopNavDrag)
+}
+
+function onNavClickCapture(event: MouseEvent) {
+  if (!navSuppressClick) return
+  navSuppressClick = false
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+onBeforeUnmount(stopNavDrag)
 watch(
   () => active.value.id,
   () => void nextTick(() => navEl.value?.querySelector<HTMLElement>('.settings-tab.active')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })),
@@ -372,9 +425,12 @@ const settingsBack = inject<() => void>('settingsBack', () => (store.settingsTab
     <nav
       ref="navEl"
       class="settings-tabs-bar"
+      :class="{ dragging: navDragging }"
       :aria-label="tr('设置分类')"
       data-testid="settings-tabs"
       @wheel="onNavWheel"
+      @mousedown="onNavMouseDown"
+      @click.capture="onNavClickCapture"
     >
       <template v-for="category in categories" :key="category.id">
         <button

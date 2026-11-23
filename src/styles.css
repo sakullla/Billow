@@ -705,8 +705,8 @@ hr {
   border-radius: var(--radius-pill);
 }
 .sidebar.collapsed .side-status.on {
-  box-shadow: 0 0 0 3px var(--good-soft);
-  border-color: color-mix(in srgb, var(--good) 45%, var(--border));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 .sidebar.collapsed .side-status.pending {
   box-shadow: 0 0 0 3px var(--fair-soft);
@@ -834,8 +834,8 @@ hr {
   transition: border-color var(--dur-base) var(--ease), background var(--dur-base) var(--ease);
 }
 .side-status.on {
-  background-image: linear-gradient(135deg, var(--good-soft), transparent 72%);
-  border-color: color-mix(in srgb, var(--good) 28%, var(--border));
+  background-image: linear-gradient(135deg, var(--accent-soft), transparent 72%);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
 .side-status-body {
   flex: 1;
@@ -861,8 +861,8 @@ hr {
   flex: none;
 }
 .side-status.on .dot {
-  background: var(--good);
-  box-shadow: 0 0 0 3px var(--good-soft);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .side-status.pending .dot {
   background: var(--fair);
@@ -877,11 +877,12 @@ hr {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   height: 18px;
   line-height: 18px;
   margin-top: 3px;
-  font-size: var(--text-xs);
+  font-size: 10.5px;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
   color: var(--text-2);
   overflow: hidden;
@@ -891,7 +892,7 @@ hr {
 .side-rates span {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
   overflow: hidden;
 }
@@ -2170,7 +2171,7 @@ button.delay:hover:not(:disabled) {
 }
 .hero.on {
   background-image: var(--hero-stage-on);
-  border-color: color-mix(in srgb, var(--good) 32%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
 }
 .hero.bare,
 .hero.pending {
@@ -2222,13 +2223,13 @@ button.delay:hover:not(:disabled) {
   flex: none;
 }
 .hero.on:not(.bare) .hero-status-pill {
-  background: var(--good-soft);
-  border-color: color-mix(in srgb, var(--good) 28%, transparent);
-  color: var(--good-ink);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent-ink);
 }
 .hero.on:not(.bare) .hero-dot {
-  background: var(--good);
-  box-shadow: 0 0 0 3px var(--good-soft);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .hero.bare .hero-status-pill,
 .hero.pending .hero-status-pill {

@@ -24,16 +24,22 @@
   z-index: 8;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   margin: -6px calc(var(--page-pad-x) * -1) 0;
   padding: 10px var(--page-pad-x);
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
+  cursor: grab;
   background: color-mix(in srgb, var(--bg) 86%, transparent);
   backdrop-filter: saturate(1.8) blur(20px);
   -webkit-backdrop-filter: saturate(1.8) blur(20px);
   border-bottom: 1px solid var(--border);
+}
+.settings-tabs-bar.dragging,
+.settings-tabs-bar.dragging .settings-tab {
+  cursor: grabbing;
+  user-select: none;
 }
 .settings-tabs-bar::-webkit-scrollbar {
   display: none;
@@ -41,10 +47,10 @@
 .settings-tab {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   flex: none;
   height: 36px;
-  padding: 0 13px;
+  padding: 0 11px;
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   color: var(--text-2);

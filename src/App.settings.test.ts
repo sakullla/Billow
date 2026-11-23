@@ -204,4 +204,32 @@ describe('settings page', () => {
     store.setPalette('teal')
     expect(document.documentElement.getAttribute('data-palette')).toBeNull()
   })
+
+  it('supports left-button drag scrolling on the horizontal settings tabs bar without accidental tab activation', async () => {
+    const { wrapper } = await mountApp()
+    const store = storeOf(wrapper)
+    store.go('settings')
+    await flushPromises()
+
+    const nav = wrapper.find('[data-testid="settings-tabs"]')
+    const el = nav.element as HTMLElement
+    Object.defineProperty(el, 'scrollWidth', { value: 900, configurable: true })
+    Object.defineProperty(el, 'clientWidth', { value: 600, configurable: true })
+    el.scrollLeft = 10
+
+    await nav.trigger('mousedown', { button: 0, clientX: 300 })
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 220, bubbles: true }))
+    await flushPromises()
+    expect(el.scrollLeft).toBe(90)
+    expect(nav.classes()).toContain('dragging')
+
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 220, bubbles: true }))
+    await flushPromises()
+    expect(nav.classes()).not.toContain('dragging')
+
+    // Click immediately following a drag is suppressed so it does not switch tabs.
+    await nav.find('[data-value="proxy"]').trigger('click')
+    await flushPromises()
+    expect(store.settingsTab.value).not.toBe('proxy')
+  })
 })
