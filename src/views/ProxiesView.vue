@@ -1004,21 +1004,6 @@ onBeforeUnmount(() => {
     </header>
 
     <div
-      v-if="compact && snap.active_id"
-      class="proxies-mobile-mode"
-      data-testid="proxies-mobile-mode"
-    >
-      <Segmented
-        :model-value="snap.mode"
-        :options="MODES"
-        size="sm"
-        :label="tr('出站模式')"
-        :disabled="store.busy.mode"
-        @update:model-value="store.setMode"
-      />
-    </div>
-
-    <div
       v-if="!snap.kernel_running && snap.node_catalog.length"
       class="proxies-connect-bar"
       data-testid="proxies-connect-bar"
@@ -1155,7 +1140,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="quickFilters.length"
+        v-if="quickFilters.length && (!compact || optionsOpen || Boolean(activeTag))"
         class="proxy-quick-filters"
         role="group"
         :aria-label="tr('筛选')"
@@ -1506,17 +1491,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.proxies-mobile-mode {
-  display: flex;
-  margin-bottom: var(--space-2);
-}
-
-.proxies-mobile-mode > :deep(.segmented) {
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .proxy-quick-filters {
   flex-basis: 100%;
   display: flex;
@@ -1532,6 +1506,8 @@ onBeforeUnmount(() => {
 }
 
 .proxy-quick-chip {
+  display: inline-flex;
+  align-items: center;
   height: 28px;
   padding: 0 10px;
   font-size: var(--text-xs);

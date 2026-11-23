@@ -902,18 +902,6 @@ defineExpose({ store })
       </div>
     </main>
 
-    <button
-      v-if="compact && !paletteOpen"
-      type="button"
-      class="mobile-palette-btn"
-      :aria-label="tr('搜索与命令')"
-      :title="tr('搜索与命令')"
-      data-testid="mobile-open-palette"
-      @click="paletteOpen = true"
-    >
-      <Icon name="search" :size="18" />
-    </button>
-
     <nav v-if="compact" class="tabbar" :aria-label="tr('主导航')">
       <button
         v-for="item in mobilePages"
