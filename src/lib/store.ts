@@ -101,10 +101,16 @@ export function resolvePage(value: string | null | undefined): PageId {
   return PAGES.some((page) => page.id === value) ? (value as PageId) : 'home'
 }
 
+export interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
 export interface Toast {
   id: number
   tone: 'info' | 'success' | 'error'
   text: string
+  action?: ToastAction
 }
 
 /** The home-level action behind the last failure banner, so "重试" repeats it (R24). */
@@ -194,6 +200,8 @@ export function createStore(backend: Backend) {
   const settingsFocus = ref<string | null>(null)
   /** Text another page asks the profiles page to append to a profile's 覆写 editor (unsaved). */
   const overrideRequest = ref<{ id: string; append: string } | null>(null)
+  /** Custom node input handed off from the global add-profile dialog to ProfilesView (R4). */
+  const customNodeImportRequest = ref<string | null>(null)
   /** The DNS query dialog, opened from the DNS settings tab or the palette (R31). */
   const dnsQueryOpen = ref(false)
   /** Exit IP lookup result, stale mark, in-flight flag and last failure (R40). */
@@ -341,19 +349,35 @@ export function createStore(backend: Backend) {
     scheduleToast(id, meta.remaining)
   }
 
-  function toast(text: string, tone: Toast['tone'] = 'info') {
+  const MAX_TOASTS = 3
+
+  function toast(text: string, tone: Toast['tone'] = 'info', action?: ToastAction) {
     if (stopped) return
+    // Backend messages arrive in Chinese; the catalog translates a known reason
+    // and leaves unknown text untouched (T8).
+    const shown = tr(text)
+    const duration = tone === 'error' || action ? 5200 : 2800
+    const existingIndex = toasts.value.findIndex((item) => item.tone === tone && item.text === shown)
+    if (existingIndex !== -1) {
+      const existing = toasts.value[existingIndex]!
+      const next = toasts.value.slice()
+      next[existingIndex] = { ...existing, action }
+      toasts.value = next
+      scheduleToast(existing.id, duration)
+      return
+    }
     const id = ++toastId
-    for (const item of toasts.value.slice(0, -3)) {
+    const overflow =
+      toasts.value.length >= MAX_TOASTS
+        ? toasts.value.slice(0, toasts.value.length - (MAX_TOASTS - 1))
+        : []
+    for (const item of overflow) {
       clearTimeout(toastTimers.get(item.id))
       toastTimers.delete(item.id)
       toastMeta.delete(item.id)
     }
-    // Backend messages arrive in Chinese; the catalog translates a known reason
-    // and leaves unknown text untouched (T8).
-    const shown = tr(text)
-    toasts.value = [...toasts.value.slice(-3), { id, tone, text: shown }]
-    scheduleToast(id, tone === 'error' ? 5200 : 2800)
+    toasts.value = [...toasts.value.slice(-(MAX_TOASTS - 1)), { id, tone, text: shown, action }]
+    scheduleToast(id, duration)
   }
 
   function proxyEnvCommand(): { host: string; port: number; command: string } {
@@ -1306,6 +1330,7 @@ export function createStore(backend: Backend) {
     settingsTab,
     settingsFocus,
     overrideRequest,
+    customNodeImportRequest,
     dnsQueryOpen,
     openSettings,
     loaded,

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectScope } from 'vue'
 import { createDemoBackend } from './demo'
+import { looksLikeCustomNodeInput } from './links'
 import { createStore } from './store'
 import { CUSTOM_PROFILE_ID, LANDING_GROUP_NAME, emptySnapshot, type Snapshot, type TrafficHistoryView } from './types'
 
@@ -274,11 +275,56 @@ describe('store lifecycle', () => {
   it('bounds toast timers to visible messages and clears them on stop', () => {
     const { store } = setup()
     for (let i = 0; i < 100; i += 1) store.toast(`message ${i}`)
-    expect(store.toasts.value).toHaveLength(4)
-    expect(vi.getTimerCount()).toBe(4)
+    expect(store.toasts.value).toHaveLength(3)
+    expect(vi.getTimerCount()).toBe(3)
     store.stop()
     expect(vi.getTimerCount()).toBe(0)
     expect(store.toasts.value).toHaveLength(0)
+  })
+
+  it('deduplicates active toasts with the same tone and text, refreshes action and resets timer', async () => {
+    const { store } = setup()
+    const firstClick = vi.fn()
+    const secondClick = vi.fn()
+
+    store.toast('连接失败', 'error', { label: '重试', onClick: firstClick })
+    expect(store.toasts.value).toHaveLength(1)
+    const firstId = store.toasts.value[0]!.id
+
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(store.toasts.value).toHaveLength(1)
+
+    // Same tone + text updates in-place and resets the 5200ms timer.
+    store.toast('连接失败', 'error', { label: '立即重试', onClick: secondClick })
+    expect(store.toasts.value).toHaveLength(1)
+    expect(store.toasts.value[0]!.id).toBe(firstId)
+    expect(store.toasts.value[0]!.action?.label).toBe('立即重试')
+    expect(store.toasts.value[0]!.action?.onClick).toBe(secondClick)
+
+    // Different tone with same text is kept separate.
+    store.toast('连接失败', 'info')
+    expect(store.toasts.value).toHaveLength(2)
+
+    await vi.advanceTimersByTimeAsync(2000)
+    // Refreshed error toast must still be alive (only 2000ms of 5200ms elapsed).
+    expect(store.toasts.value.some((item) => item.id === firstId)).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(3300)
+    expect(store.toasts.value.some((item) => item.id === firstId)).toBe(false)
+  })
+
+  it('exposes customNodeImportRequest for cross-view handoff and detects custom node inputs', () => {
+    const { store } = setup()
+    expect(store.customNodeImportRequest.value).toBeNull()
+    store.customNodeImportRequest.value = 'vless://uuid@example.com:443#Node'
+    expect(store.customNodeImportRequest.value).toBe('vless://uuid@example.com:443#Node')
+
+    expect(looksLikeCustomNodeInput('vless://uuid@example.com:443#HK')).toBe(true)
+    expect(looksLikeCustomNodeInput('hy2://pwd@example.com:443#JP')).toBe(true)
+    expect(looksLikeCustomNodeInput('http://user:pass@proxy.example.com:8080')).toBe(true)
+    expect(looksLikeCustomNodeInput('proxies:\n  - name: demo\n    type: ss\n    server: 1.2.3.4')).toBe(true)
+    expect(looksLikeCustomNodeInput('https://sub.example.com/clash?token=abc')).toBe(false)
+    expect(looksLikeCustomNodeInput('   ')).toBe(false)
   })
 })
 

@@ -240,6 +240,74 @@ function pageKeyHint(id: string): string | undefined {
 // The palette never offers irreversible actions, whatever a caller passes in (R25).
 const DESTRUCTIVE_ACTION = /(^|:)(delete|remove|clear|reset)(:|$)|删除|清空|重置/
 
+const RECENT_STORAGE_KEY = 'billow:palette-recent'
+const MAX_RECENT = 4
+const VALID_KINDS = new Set<EntryKind>(['page', 'setting', 'action', 'profile', 'group', 'node'])
+
+interface RecentRecord {
+  kind: EntryKind
+  id: string
+  groupName?: string
+}
+
+function readRecent(): RecentRecord[] | null {
+  try {
+    if (typeof localStorage === 'undefined') return null
+    const raw = localStorage.getItem(RECENT_STORAGE_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const result: RecentRecord[] = []
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue
+      const rec = item as Record<string, unknown>
+      if (typeof rec.kind !== 'string' || !VALID_KINDS.has(rec.kind as EntryKind)) continue
+      if (typeof rec.id !== 'string' || !rec.id) continue
+      if (rec.groupName !== undefined && typeof rec.groupName !== 'string') continue
+      result.push({
+        kind: rec.kind as EntryKind,
+        id: rec.id,
+        ...(rec.groupName ? { groupName: rec.groupName } : {}),
+      })
+      if (result.length >= MAX_RECENT) break
+    }
+    return result
+  } catch {
+    return null
+  }
+}
+
+function writeRecent(items: readonly RecentRecord[]) {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(items.slice(0, MAX_RECENT)))
+  } catch {
+    /* degrade silently to in-memory recent list */
+  }
+}
+
+const recentRecords = ref<RecentRecord[]>(readRecent() ?? [])
+
+function recordRecent(entry: PaletteEntry) {
+  if (DESTRUCTIVE_ACTION.test(`${entry.id} ${entry.label}`)) return
+  const nextRecord: RecentRecord = {
+    kind: entry.kind,
+    id: entry.id,
+    ...(entry.groupName ? { groupName: entry.groupName } : {}),
+  }
+  const deduped = recentRecords.value.filter(
+    (item) =>
+      !(
+        item.kind === nextRecord.kind &&
+        item.id === nextRecord.id &&
+        (item.groupName ?? '') === (nextRecord.groupName ?? '')
+      ),
+  )
+  const updated = [nextRecord, ...deduped].slice(0, MAX_RECENT)
+  recentRecords.value = updated
+  writeRecent(updated)
+}
+
 function matches(label: string, hint?: string): boolean {
   if (!queryTokens.value.length) return true
   return matchesTokens(`${label} ${hint ?? ''}`, queryTokens.value)
@@ -255,6 +323,12 @@ const primaryManualGroup = computed(() => {
   }
   return manual.find((group) => Boolean(group.now)) ?? manual[0] ?? null
 })
+
+function groupHint(group: NodeGroup): string {
+  const typeLabel = autoTypeLabel(group)
+  const now = [typeLabel, group.now].filter(Boolean).join(' · ') || tr('未选择节点')
+  return group.fixed ? tr('{0} · 已固定', { 0: now }) : now
+}
 
 const groups = computed(() => {
   let index = 0
@@ -291,9 +365,137 @@ const groups = computed(() => {
     (item) => !DESTRUCTIVE_ACTION.test(`${item.id} ${item.label}`),
   )
 
+  const visibleGroups = props.mode === 'global'
+    ? listedCatalog.value
+    : listedCatalog.value.filter((group) => group.name !== 'GLOBAL')
+  const groupNames = new Set(props.nodeCatalog.map((group) => group.name))
+
+  const recentEntries: PaletteEntry[] = []
+  const quickEntries: PaletteEntry[] = []
   const profileEntries: PaletteEntry[] = []
   const proxyEntries: PaletteEntry[] = []
-  if (normalized.value) {
+
+  if (!normalized.value) {
+    for (const rec of recentRecords.value) {
+      const recentKey = `recent:${rec.kind}:${rec.id}${rec.groupName ? `:${rec.groupName}` : ''}`
+      if (rec.kind === 'page') {
+        const page = props.pages.find((item) => item.id === rec.id)
+        if (!page) continue
+        recentEntries.push({
+          key: recentKey,
+          kind: 'page',
+          id: page.id,
+          label: page.label,
+          icon: page.icon,
+          hint: props.currentPage && page.id === props.currentPage ? tr('当前') : pageKeyHint(page.id),
+          index: 0,
+        })
+      } else if (rec.kind === 'setting') {
+        const setting = settings.value.find((item) => item.id === rec.id)
+        if (!setting) continue
+        recentEntries.push({
+          key: recentKey,
+          kind: 'setting',
+          id: setting.id,
+          label: setting.label,
+          icon: setting.icon,
+          hint: setting.description,
+          index: 0,
+        })
+      } else if (rec.kind === 'action') {
+        const action = actionItems.find((item) => item.id === rec.id)
+        if (!action) continue
+        const isDisabled = Boolean(action.disabled)
+        recentEntries.push({
+          key: recentKey,
+          kind: 'action',
+          id: action.id,
+          label: action.label,
+          icon: action.icon,
+          hint: action.hint,
+          disabled: isDisabled,
+          reason: isDisabled ? (action.reason ?? tr('当前不可用')) : undefined,
+          index: 0,
+        })
+      } else if (rec.kind === 'profile') {
+        const profile = props.profiles.find((item) => item.id === rec.id)
+        if (!profile) continue
+        recentEntries.push({
+          key: recentKey,
+          kind: 'profile',
+          id: profile.id,
+          label: profile.name,
+          icon: profile.kind === 'local' ? 'file' : 'link',
+          hint: profile.current
+            ? tr('当前')
+            : profile.proxy_count
+              ? tr('{0} 个节点', { 0: profile.proxy_count })
+              : undefined,
+          index: 0,
+        })
+      } else if (rec.kind === 'group') {
+        const group = visibleGroups.find((item) => item.name === rec.id)
+        if (!group) continue
+        recentEntries.push({
+          key: recentKey,
+          kind: 'group',
+          id: group.name,
+          label: group.name,
+          icon: 'route',
+          hint: groupHint(group),
+          index: 0,
+        })
+      } else if (rec.kind === 'node' && rec.groupName) {
+        const targetGroup = visibleGroups.find((item) => item.name === rec.groupName)
+        if (!targetGroup || (targetGroup.kind !== 'manual' && !targetGroup.pinnable)) continue
+        const node = targetGroup.nodes.find((item) => item.name === rec.id)
+        if (!node || groupNames.has(node.name) || isInfoNode(node.name)) continue
+        const proto = protocolLabel(node.node_type)
+        const delay = props.connected ? delayText(node.delay_ms, node.failed) : ''
+        const pinned = targetGroup.pinnable && targetGroup.fixed === node.name
+        const pinOffline = targetGroup.pinnable && !props.kernelRunning
+        recentEntries.push({
+          key: recentKey,
+          kind: 'node',
+          id: node.name,
+          groupName: targetGroup.name,
+          label: node.name,
+          icon: 'globe',
+          hint: [targetGroup.name, pinned ? tr('已固定') : node.selected ? tr('当前') : delay || proto]
+            .filter(Boolean)
+            .join(' · '),
+          disabled: pinOffline || undefined,
+          reason: pinOffline ? tr('内核没有运行') : undefined,
+          index: 0,
+        })
+      }
+    }
+
+    const currentProfile = props.profiles.find((item) => item.current) ?? null
+    if (currentProfile) {
+      quickEntries.push({
+        key: `profile:${currentProfile.id}`,
+        kind: 'profile',
+        id: currentProfile.id,
+        label: currentProfile.name,
+        icon: currentProfile.kind === 'local' ? 'file' : 'link',
+        hint: tr('当前配置'),
+        index: 0,
+      })
+    }
+    const primary = primaryManualGroup.value
+    if (primary) {
+      quickEntries.push({
+        key: `group:${primary.name}`,
+        kind: 'group',
+        id: primary.name,
+        label: primary.name,
+        icon: 'route',
+        hint: groupHint(primary),
+        index: 0,
+      })
+    }
+  } else {
     for (const item of props.profiles) {
       const itemHint = item.current ? tr('当前') : item.proxy_count ? tr('{0} 个节点', { 0: item.proxy_count }) : undefined
       if (!matches(item.name, itemHint)) continue
@@ -308,20 +510,16 @@ const groups = computed(() => {
       })
     }
 
-    const visibleGroups = props.mode === 'global'
-      ? listedCatalog.value
-      : listedCatalog.value.filter((group) => group.name !== 'GLOBAL')
     for (const group of visibleGroups) {
       const typeLabel = autoTypeLabel(group)
       if (!matches(group.name, typeLabel || groupTypeLabel(group))) continue
-      const now = [typeLabel, group.now].filter(Boolean).join(' · ') || tr('未选择节点')
       proxyEntries.push({
         key: `group:${group.name}`,
         kind: 'group',
         id: group.name,
         label: group.name,
         icon: 'route',
-        hint: group.fixed ? tr('{0} · 已固定', { 0: now }) : now,
+        hint: groupHint(group),
         index: 0,
       })
     }
@@ -333,7 +531,6 @@ const groups = computed(() => {
       ...visibleGroups.filter((group) => group.kind === 'manual' && group.name !== primary?.name),
       ...visibleGroups.filter((group) => group.pinnable),
     ]
-    const groupNames = new Set(props.nodeCatalog.map((group) => group.name))
     let added = 0
     for (const targetGroup of manualGroups) {
       if (added >= 12) break
@@ -364,6 +561,8 @@ const groups = computed(() => {
   }
 
   const sections = [
+    { id: 'recent', get label() { return tr('最近使用') }, entries: recentEntries },
+    { id: 'quick', get label() { return tr('快捷访问') }, entries: quickEntries },
     build(
       'page',
       tr('页面'),
@@ -443,6 +642,7 @@ function onKeydown(event: KeyboardEvent) {
 
 function choose(entry: PaletteEntry) {
   if (entry.disabled) return
+  recordRecent(entry)
   if (entry.kind === 'page') emit('navigate', entry.id)
   // Traffic stats are a dialog opened from the general settings section (R43).
   else if (entry.kind === 'setting' && entry.id === 'traffic-stats') emit('open-settings', 'general', 'traffic-history')
@@ -492,6 +692,8 @@ watch(
   () => props.open,
   (isOpen) => {
     if (isOpen) {
+      const stored = readRecent()
+      if (stored !== null) recentRecords.value = stored
       query.value = ''
       active.value = 0
     }

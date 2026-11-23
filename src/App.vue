@@ -11,7 +11,9 @@ import Modal from './components/Modal.vue'
 import TitleBar from './components/TitleBar.vue'
 import { createBackend, type Backend } from './lib/backend'
 import { formatSpeed, formatSpeedCompact } from './lib/format'
-import { createStore, PAGES, resolvePage, STORE, type PageId, type SettingsTab } from './lib/store'
+import { looksLikeCustomNodeInput } from './lib/links'
+import { getPaletteMeta } from './lib/palettes'
+import { createStore, PAGES, resolvePage, STORE, type PageId, type SettingsTab, type Toast } from './lib/store'
 import { closeTopLayer as dismissTopLayer, layerDepth, onLayerChange } from './lib/ui/focus'
 import { useHotkeys } from './lib/ui/hotkeys'
 import { installInsets, syncSystemBars } from './lib/ui/insets'
@@ -148,24 +150,16 @@ function goBack() {
 provide('connectionBack', goBack)
 
 // ── System bars & theme-color meta follow the effective theme & palette ──
-const PALETTE_BG: Record<string, { light: string; dark: string }> = {
-  teal: { light: '#f5f8f8', dark: '#0b1113' },
-  sapphire: { light: '#f5f7fb', dark: '#0c1017' },
-  indigo: { light: '#f6f6fb', dark: '#0d0d16' },
-  terracotta: { light: '#faf7f2', dark: '#13100d' },
-  berry: { light: '#faf6f8', dark: '#130d12' },
-  graphite: { light: '#f6f6f7', dark: '#0c0c0e' },
-}
 const prefersDark = ref(typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true)
 const darkTheme = computed(() => store.theme.value === 'dark' || (store.theme.value === 'system' && prefersDark.value))
 watch(darkTheme, (dark) => syncSystemBars(dark), { immediate: true })
 watch(
   [darkTheme, store.palette],
   ([dark, palette]) => {
-    const colors = PALETTE_BG[palette] ?? PALETTE_BG.teal!
-    const content = dark ? colors.dark : colors.light
-    document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
-      meta.setAttribute('content', content)
+    const meta = getPaletteMeta(palette)
+    const content = dark ? meta.dark.bg : meta.light.bg
+    document.querySelectorAll('meta[name="theme-color"]').forEach((metaEl) => {
+      metaEl.setAttribute('content', content)
     })
   },
   { immediate: true },
@@ -203,9 +197,29 @@ watch(addTab, () => {
   dragging.value = false
 })
 
+const urlLooksLikeNode = computed(() => looksLikeCustomNodeInput(url.value))
+
+function handoffCustomNodeImport(raw = url.value) {
+  const value = raw.trim()
+  if (!value) return
+  store.customNodeImportRequest.value = value
+  url.value = ''
+  store.adding.value = false
+  store.go('profiles')
+}
+
+function openCustomNodeSetting() {
+  store.adding.value = false
+  store.openSettings('general', 'custom-nodes')
+}
+
 async function submitUrl() {
   const value = url.value.trim()
   if (!value) return
+  if (looksLikeCustomNodeInput(value)) {
+    if (store.customNodesVisible.value) handoffCustomNodeImport(value)
+    return
+  }
   addErrorCleared.value = false
   const before = snap.value.profiles.length
   await store.addSubscription(value)
@@ -216,6 +230,25 @@ async function submitUrl() {
     const added = snap.value.profiles[snap.value.profiles.length - 1]
     if (!snap.value.active_id && added) void store.enable(added.id)
   }
+}
+
+function onToastMouseLeave(id: number, event: MouseEvent) {
+  const el = event.currentTarget as HTMLElement | null
+  if (el && document.activeElement && el.contains(document.activeElement)) return
+  store.resumeToast(id)
+}
+
+function onToastFocusOut(id: number, event: FocusEvent) {
+  const el = event.currentTarget as HTMLElement | null
+  const next = event.relatedTarget as Node | null
+  if (el && next && el.contains(next)) return
+  store.resumeToast(id)
+}
+
+function runToastAction(item: Toast) {
+  const action = item.action
+  store.dismissToast(item.id)
+  action?.onClick()
 }
 
 async function pasteUrl() {
@@ -856,6 +889,18 @@ defineExpose({ store })
       </div>
     </main>
 
+    <button
+      v-if="compact && !paletteOpen"
+      type="button"
+      class="mobile-palette-btn"
+      :aria-label="tr('搜索与命令')"
+      :title="tr('搜索与命令')"
+      data-testid="mobile-open-palette"
+      @click="paletteOpen = true"
+    >
+      <Icon name="search" :size="18" />
+    </button>
+
     <nav v-if="compact" class="tabbar" :aria-label="tr('主导航')">
       <button
         v-for="item in mobilePages"
@@ -951,7 +996,7 @@ defineExpose({ store })
               <!-- Phones open the sheet without the keyboard; paste or tap the field to type. -->
               <input
                 v-model="url"
-                type="url"
+                type="text"
                 inputmode="url"
                 enterkeyhint="go"
                 placeholder="https://…"
@@ -964,9 +1009,34 @@ defineExpose({ store })
             </div>
           </label>
           <p v-if="snap.input_error && !addErrorCleared" class="field-error" role="alert">{{ snap.input_error }}</p>
-          <p class="muted small">{{ tr('添加后会下载订阅内容，并读取流量与到期信息；也可直接拖入 YAML 文件。') }}</p>
-          <button type="submit" class="btn primary block" :disabled="!url.trim() || store.busy.add">
-            <span v-if="store.busy.add" class="spinner sm" /> {{ tr('添加订阅') }} </button>
+          <div v-if="urlLooksLikeNode" class="add-node-notice" data-testid="add-node-detected" role="status">
+            <Icon name="sparkles" :size="16" />
+            <div class="add-node-notice-body">
+              <strong>{{ tr('识别为自建节点链接') }}</strong>
+              <p class="muted small">
+                {{
+                  store.customNodesVisible.value
+                    ? tr('这不是订阅地址，将转入自建节点导入并自动预填内容。')
+                    : tr('自建节点功能当前已关闭，开启后即可导入并管理单个节点链接。')
+                }}
+              </p>
+            </div>
+          </div>
+          <template v-if="urlLooksLikeNode && store.customNodesVisible.value">
+            <button type="submit" class="btn primary block" data-testid="add-to-custom-nodes">
+              {{ tr('转入自建节点导入') }}
+            </button>
+          </template>
+          <template v-else-if="urlLooksLikeNode">
+            <button type="button" class="btn primary block" data-testid="add-enable-custom-nodes" @click="openCustomNodeSetting">
+              {{ tr('前往开启') }}
+            </button>
+          </template>
+          <template v-else>
+            <p class="muted small">{{ tr('添加后会下载订阅内容，并读取流量与到期信息；也可直接拖入 YAML 文件。') }}</p>
+            <button type="submit" class="btn primary block" :disabled="!url.trim() || store.busy.add">
+              <span v-if="store.busy.add" class="spinner sm" /> {{ tr('添加订阅') }} </button>
+          </template>
         </form>
         <div v-else class="stack">
           <label
@@ -1000,15 +1070,26 @@ defineExpose({ store })
           v-for="item in store.toasts.value"
           :key="item.id"
           class="toast"
-          :class="item.tone"
+          :class="[item.tone, { 'has-action': Boolean(item.action) }]"
           :role="item.tone === 'error' ? 'alert' : 'status'"
           :title="tr('点击关闭')"
           @mouseenter="store.pauseToast(item.id)"
-          @mouseleave="store.resumeToast(item.id)"
+          @mouseleave="onToastMouseLeave(item.id, $event)"
+          @focusin="store.pauseToast(item.id)"
+          @focusout="onToastFocusOut(item.id, $event)"
           @click="store.dismissToast(item.id)"
         >
           <Icon :name="item.tone === 'error' ? 'alert' : item.tone === 'success' ? 'check' : 'info'" :size="16" />
           <span class="grow">{{ item.text }}</span>
+          <button
+            v-if="item.action"
+            type="button"
+            class="toast-action"
+            data-testid="toast-action"
+            @click.stop="runToastAction(item)"
+          >
+            {{ item.action.label }}
+          </button>
         </div>
       </TransitionGroup>
     </div>

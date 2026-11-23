@@ -1746,5 +1746,12 @@ export const UI_EN: Record<string, string> = {
   '绯莓': 'Rose Berry',
   '墨韵': 'Graphite',
   '碧潮、晴空蓝、星夜靛、暖砂陶、绯莓、墨韵': 'Deep Teal, Sapphire, Indigo, Terracotta, Rose Berry, Graphite',
+  '最近使用': 'Recent',
+  '快捷访问': 'Quick access',
+  '识别为自建节点链接': 'Detected as a custom node link',
+  '这不是订阅地址，将转入自建节点导入并自动预填内容。': 'This is not a subscription URL. Switch to custom node import with the input prefilled.',
+  '自建节点功能当前已关闭，开启后即可导入并管理单个节点链接。': 'Custom nodes are currently turned off. Enable them in settings to import and manage individual node links.',
+  '转入自建节点导入': 'Import as custom node',
+  '前往开启': 'Enable in settings',
 }
 
