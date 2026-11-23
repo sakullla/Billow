@@ -1562,5 +1562,119 @@ describe('UI/UX polish', () => {
       expect(wheelEv.defaultPrevented).toBe(true)
       expect(el.scrollLeft).toBe(180)
     })
+
+    it('R3: renders dynamic quick filter chips in ProxiesView, combines with search/hideFailed, and resets in one click', async () => {
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      await openPage(wrapper, 'proxies')
+
+      const filterBar = wrapper.find('[data-testid="proxy-quick-filters"]')
+      expect(filterBar.exists()).toBe(true)
+      const chips = filterBar.findAll('[data-testid^="quick-filter-"]')
+      expect(chips.length).toBeGreaterThanOrEqual(2)
+
+      // UDP and protocol chips come from real nodes in the demo catalog.
+      const udpChip = wrapper.find('[data-testid="quick-filter-tag:udp"]')
+      expect(udpChip.exists()).toBe(true)
+      expect(udpChip.attributes('aria-pressed')).toBe('false')
+
+      await udpChip.trigger('click')
+      await flushPromises()
+      expect(udpChip.attributes('aria-pressed')).toBe('true')
+      expect(wrapper.find('[data-testid="clear-proxy-quick-filters"]').exists()).toBe(true)
+      const matchedNodes = wrapper.findAll('.node[data-node]')
+      expect(matchedNodes.length).toBeGreaterThan(0)
+
+      // Combining quick tag with an unmatched search shows empty state with one-click reset.
+      await wrapper.find('[data-testid="node-search"]').setValue('nonexistent-xyz-node')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="no-match"]').exists()).toBe(true)
+
+      await wrapper.find('[data-testid="reset-proxy-filters"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="no-match"]').exists()).toBe(false)
+      expect((wrapper.find('[data-testid="node-search"]').element as HTMLInputElement).value).toBe('')
+      expect(wrapper.find('[data-testid="quick-filter-tag:udp"]').attributes('aria-pressed')).toBe('false')
+      expect(wrapper.find('[data-testid="clear-proxy-quick-filters"]').exists()).toBe(false)
+    })
+
+    it('R4: hands off node links from the global add dialog to ProfilesView custom node import modal', async () => {
+      const { wrapper } = await mountApp()
+      const store = storeOf(wrapper)
+      expect(store.page.value).toBe('home')
+
+      // Open the global add-profile dialog and paste a node share link.
+      store.adding.value = true
+      await flushPromises()
+      const urlInput = body().find('.modal input[inputmode="url"]')
+      expect(urlInput.exists()).toBe(true)
+      const sampleUri = 'vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls#HK-Test'
+      await urlInput.setValue(sampleUri)
+      await flushPromises()
+
+      expect(body().find('[data-testid="add-node-detected"]').exists()).toBe(true)
+      const handoffBtn = body().find('[data-testid="add-to-custom-nodes"]')
+      expect(handoffBtn.exists()).toBe(true)
+      await body().find('.modal form').trigger('submit')
+      await settle(250)
+
+      expect(store.page.value).toBe('profiles')
+      expect(store.customNodeImportRequest.value).toBeNull()
+      const importTextarea = body().find('.custom-import-textarea')
+      expect(importTextarea.exists()).toBe(true)
+      expect((importTextarea.element as HTMLTextAreaElement).value).toBe(sampleUri)
+    })
+
+    it('R4: shows batch refresh progress and dismissible summary banner with inline retry on ProfilesView', async () => {
+      const { wrapper, backend } = await mountApp()
+      const store = storeOf(wrapper)
+      await openPage(wrapper, 'profiles')
+
+      // Add a second subscription so batch refresh updates multiple items.
+      const addTask = store.addSubscription('https://sub.example.org/second.yaml')
+      await settle(1500)
+      await addTask
+      const subs = store.snapshot.value.profiles.filter((item) => item.kind === 'subscription')
+      expect(subs.length).toBeGreaterThanOrEqual(2)
+      const failId = subs[1]!.id
+
+      let shouldFail = true
+      const origRefresh = backend.refresh.bind(backend)
+      const refreshSpy = vi.spyOn(backend, 'refresh').mockImplementation(async (id) => {
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        if (id === failId && shouldFail) throw new Error('模拟订阅超时')
+        return origRefresh(id)
+      })
+
+      await wrapper.find('[data-testid="update-all-profiles"]').trigger('click')
+      await flushPromises()
+      // Progress banner and bar appear while running.
+      expect(wrapper.find('[data-testid="profiles-refresh-banner"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="profiles-refresh-progress"]').exists()).toBe(true)
+
+      await settle(1500)
+      // Completed with 1 failure: summary banner shows inline retry and dismiss buttons.
+      const banner = wrapper.find('[data-testid="profiles-refresh-banner"]')
+      expect(banner.exists()).toBe(true)
+      expect(banner.classes()).toContain('warn')
+      expect(banner.text()).toContain('1 个订阅失败')
+      const retryBtn = wrapper.find('[data-testid="refresh-banner-retry"]')
+      expect(retryBtn.exists()).toBe(true)
+
+      // Inline retry retries only the failed subscription and updates banner to success.
+      shouldFail = false
+      refreshSpy.mockClear()
+      await retryBtn.trigger('click')
+      await settle(1500)
+      expect(refreshSpy).toHaveBeenCalledTimes(1)
+      expect(refreshSpy).toHaveBeenCalledWith(failId)
+      expect(wrapper.find('[data-testid="profiles-refresh-banner"]').classes()).toContain('ok')
+      expect(wrapper.find('[data-testid="refresh-banner-retry"]').exists()).toBe(false)
+
+      // Dismissing hides the summary banner cleanly.
+      await wrapper.find('[data-testid="refresh-banner-dismiss"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="profiles-refresh-banner"]').exists()).toBe(false)
+    })
   })
 })

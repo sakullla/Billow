@@ -18,6 +18,7 @@ import Segmented from '../components/Segmented.vue'
 import SelectField from '../components/SelectField.vue'
 import YamlEditor from '../components/YamlEditor.vue'
 import { daysLeft, formatBytes, formatDate, formatRelative, hostOf, usagePercent } from '../lib/format'
+import { looksLikeCustomNodeInput } from '../lib/links'
 import { matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import { subscriptionUserAgent } from '../lib/subscription'
@@ -87,28 +88,6 @@ watch(
   },
 )
 
-const NODE_SCHEME_RE = /^(vless|vmess|trojan|ss|hysteria2|hy2|tuic|anytls|socks5|socks):\/\//i
-const HTTP_PROXY_CRED_RE = /^https?:\/\/[^/\s@]+@[^/\s]+$/i
-
-function looksLikeCustomNodeInput(raw: string): boolean {
-  const trimmed = raw.trim()
-  if (!trimmed) return false
-  const lines = trimmed
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-  if (lines.some((line) => NODE_SCHEME_RE.test(line))) return true
-  if (lines.length === 1 && HTTP_PROXY_CRED_RE.test(lines[0]!)) return true
-  if (/^proxies\s*:/im.test(trimmed) || (/\btype\s*:/i.test(trimmed) && /\bserver\s*:/i.test(trimmed))) {
-    return true
-  }
-  if (!/^https?:\/\//i.test(trimmed)) {
-    const compact = trimmed.replace(/\s+/g, '')
-    if (compact.length >= 16 && /^[A-Za-z0-9+/=_-]+$/.test(compact)) return true
-  }
-  return false
-}
-
 const quickLooksLikeNode = computed(() => looksLikeCustomNodeInput(quickUrl.value))
 const overlayActiveCount = computed(() =>
   store.customNodes.value.overlay_enabled && !store.customProfileActive.value
@@ -127,6 +106,25 @@ function openCustomImport(initial = '') {
   customImportInitial.value = initial
   customImportOpen.value = true
 }
+
+function consumeCustomNodeImportRequest(raw: string | null) {
+  const value = raw?.trim()
+  if (!value) return
+  store.customNodeImportRequest.value = null
+  if (!store.customNodesVisible.value) {
+    store.openSettings('general', 'custom-nodes')
+    return
+  }
+  openCustomImport(value)
+}
+
+watch(
+  () => store.customNodeImportRequest.value,
+  (value) => {
+    consumeCustomNodeImportRequest(value)
+  },
+  { immediate: true },
+)
 
 function openCustomAdd() {
   editingCustomNode.value = null
@@ -864,6 +862,7 @@ function onProfileContextSelect(item: MenuItem) {
 
 const REFRESH_RESULT_MS = 4000
 const showRefreshResult = ref(false)
+const refreshBannerDismissed = ref(false)
 let refreshResetTimer: ReturnType<typeof setTimeout> | null = null
 
 function clearRefreshResetTimer() {
@@ -889,6 +888,7 @@ watch(
       clearRefreshResetTimer()
       refreshResultWindow.delete(store)
       showRefreshResult.value = false
+      refreshBannerDismissed.value = false
       return
     }
     if (total > 0 && done >= total) {
@@ -934,6 +934,23 @@ const failedSubscriptionIds = computed(() =>
     .filter((item) => item.kind === 'subscription' && store.profileUpdates[item.id]?.state === 'failure')
     .map((item) => item.id),
 )
+
+const refreshProgressPct = computed(() => {
+  const { done, total } = store.refreshProgress.value
+  if (total <= 0) return 0
+  return Math.min(100, Math.round((done / total) * 100))
+})
+
+const refreshSucceededCount = computed(() =>
+  Math.max(0, store.refreshProgress.value.done - store.refreshProgress.value.failed),
+)
+
+const showRefreshBanner = computed(() => {
+  const { done, total } = store.refreshProgress.value
+  if (activeTab.value !== 'profiles' || total <= 0) return false
+  if (store.busy.refreshAll) return true
+  return !refreshBannerDismissed.value && done >= total
+})
 </script>
 
 <template>
@@ -1072,6 +1089,86 @@ const failedSubscriptionIds = computed(() =>
     </div>
 
     <template v-if="activeTab === 'profiles'">
+
+    <div
+      v-if="showRefreshBanner"
+      class="profiles-refresh-banner"
+      :class="{
+        running: store.busy.refreshAll,
+        warn: !store.busy.refreshAll && store.refreshProgress.value.failed > 0,
+        ok: !store.busy.refreshAll && store.refreshProgress.value.failed === 0,
+      }"
+      role="status"
+      aria-live="polite"
+      data-testid="profiles-refresh-banner"
+    >
+      <div class="profiles-refresh-row">
+        <div class="profiles-refresh-main grow min0">
+          <span v-if="store.busy.refreshAll" class="spinner xs" aria-hidden="true" />
+          <Icon
+            v-else
+            :name="store.refreshProgress.value.failed > 0 ? 'alert' : 'check'"
+            :size="15"
+            aria-hidden="true"
+          />
+          <span class="profiles-refresh-text small">
+            <template v-if="store.busy.refreshAll">
+              {{ tr('已更新') }}
+              <span class="mono">{{ store.refreshProgress.value.done }}/{{ store.refreshProgress.value.total }}</span>
+              <template v-if="store.refreshProgress.value.failed > 0">
+                · {{ tr('{0} 个更新失败', { 0: store.refreshProgress.value.failed }) }}
+              </template>
+            </template>
+            <template v-else-if="store.refreshProgress.value.failed > 0">
+              {{
+                tr('更新完成：{0}/{1}，{2} 个订阅失败', {
+                  0: refreshSucceededCount,
+                  1: store.refreshProgress.value.total,
+                  2: store.refreshProgress.value.failed,
+                })
+              }}
+            </template>
+            <template v-else>
+              {{ tr('全部订阅已更新') }} ·
+              {{ tr('已完成 {0}/{1}', { 0: refreshSucceededCount, 1: store.refreshProgress.value.total }) }}
+            </template>
+          </span>
+        </div>
+        <div v-if="!store.busy.refreshAll" class="profiles-refresh-actions">
+          <button
+            v-if="failedSubscriptionIds.length"
+            type="button"
+            class="btn ghost sm danger-text"
+            data-testid="refresh-banner-retry"
+            @click="store.refreshAll(failedSubscriptionIds)"
+          >
+            <Icon name="refresh" :size="14" />
+            {{ tr('重试失败') }}
+          </button>
+          <button
+            type="button"
+            class="icon-btn sm"
+            :aria-label="tr('关闭')"
+            :title="tr('关闭')"
+            data-testid="refresh-banner-dismiss"
+            @click="refreshBannerDismissed = true"
+          >
+            <Icon name="x" :size="14" />
+          </button>
+        </div>
+      </div>
+      <div
+        v-if="store.busy.refreshAll"
+        class="profiles-refresh-track"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="refreshProgressPct"
+        data-testid="profiles-refresh-progress"
+      >
+        <span class="profiles-refresh-fill" :style="{ width: `${refreshProgressPct}%` }" />
+      </div>
+    </div>
 
     <form class="quick-import" :class="{ 'is-node-input': quickLooksLikeNode }" novalidate @submit.prevent="quickImport">
       <Icon :name="quickLooksLikeNode ? 'layers' : 'link'" :size="16" :class="quickLooksLikeNode ? 'text-accent' : 'muted'" />
@@ -1749,3 +1846,84 @@ const failedSubscriptionIds = computed(() =>
     />
   </div>
 </template>
+
+<style scoped>
+.profiles-refresh-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 13px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.profiles-refresh-banner.running {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+}
+
+.profiles-refresh-banner.ok {
+  border-color: color-mix(in srgb, var(--good) 35%, var(--border));
+  background: color-mix(in srgb, var(--good) 8%, var(--surface));
+}
+
+.profiles-refresh-banner.warn {
+  border-color: color-mix(in srgb, var(--poor) 38%, var(--border));
+  background: color-mix(in srgb, var(--poor) 8%, var(--surface));
+}
+
+.profiles-refresh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.profiles-refresh-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profiles-refresh-banner.ok .profiles-refresh-main > .icon {
+  color: var(--good);
+}
+
+.profiles-refresh-banner.warn .profiles-refresh-main > .icon {
+  color: var(--poor);
+}
+
+.profiles-refresh-text {
+  line-height: 1.4;
+}
+
+.profiles-refresh-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.profiles-refresh-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+.profiles-refresh-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--dur-base, 180ms) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .profiles-refresh-fill {
+    transition: none;
+  }
+}
+</style>

@@ -180,4 +180,38 @@ describe('phone layout', () => {
     expect(wrapper.find('[data-testid="kernel-update-subtitle"]').text()).toContain('最新版本')
     expect(wrapper.find('.toasts').text()).toContain('最新版本')
   })
+
+  it('R3: provides an outbound mode switcher in the compact proxies header', async () => {
+    const { wrapper, backend } = await mountPhone()
+    const setModeSpy = vi.spyOn(backend, 'setMode')
+    storeOf(wrapper).go('proxies')
+    await settle(100)
+
+    const mobileMode = wrapper.find('[data-testid="proxies-mobile-mode"]')
+    expect(mobileMode.exists()).toBe(true)
+    const buttons = mobileMode.findAll('button.segment')
+    expect(buttons.map((b) => b.text())).toEqual(['规则', '全局', '直连'])
+
+    await buttons[1]!.trigger('click')
+    await settle(600)
+    expect(setModeSpy).toHaveBeenCalledWith('global')
+    expect(storeOf(wrapper).snapshot.value.mode).toBe('global')
+
+    await buttons[2]!.trigger('click')
+    await settle(600)
+    expect(setModeSpy).toHaveBeenCalledWith('direct')
+    expect(wrapper.find('[data-testid="proxies-direct-bar"]').exists()).toBe(true)
+  })
+
+  it('R5: opens the command palette from the compact floating trigger without keyboard shortcuts', async () => {
+    const { wrapper } = await mountPhone()
+    const trigger = wrapper.find('[data-testid="mobile-open-palette"]')
+    expect(trigger.exists()).toBe(true)
+
+    await trigger.trigger('click')
+    await flushPromises()
+
+    expect(body().find('.palette .palette-search').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="mobile-open-palette"]').exists()).toBe(false)
+  })
 })

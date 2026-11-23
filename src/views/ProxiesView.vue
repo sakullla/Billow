@@ -165,6 +165,114 @@ const queryTokens = computed(() => splitQueryTokens(query.value))
 const hideFailed = ref<boolean>(readBoolPref('proxy-hide-failed', false))
 watch(hideFailed, (value) => writePref('proxy-hide-failed', value))
 
+interface QuickFilter {
+  id: string
+  label: string
+  kind: 'udp' | 'chained' | 'protocol'
+  count: number
+}
+
+const BUILTIN_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
+const groupNamesSet = computed(() => new Set(catalog.value.map((group) => group.name)))
+
+const NON_PROTOCOL_TYPES = new Set([
+  'direct',
+  'reject',
+  'reject-drop',
+  'pass',
+  'selector',
+  'url-test',
+  'urltest',
+  'fallback',
+  'load-balance',
+  'loadbalance',
+  'smart',
+  'relay',
+  'compatible',
+])
+const MAX_PROTOCOL_QUICK_FILTERS = 4
+
+const activeTag = ref<string | null>(null)
+
+function isUdpNode(node: NodeItem): boolean {
+  return node.tags.some((tag) => tag.toUpperCase() === 'UDP')
+}
+
+function isChainedNode(node: NodeItem): boolean {
+  return Boolean(node.dialer_proxy) || node.tags.some((tag) => tag === 'chained' || tag === '链式')
+}
+
+const quickFilters = computed<QuickFilter[]>(() => {
+  const seen = new Set<string>()
+  let udpCount = 0
+  let chainedCount = 0
+  const protocolCounts = new Map<string, number>()
+
+  for (const group of modeListed.value) {
+    if (autoHidden(group)) continue
+    for (const node of group.nodes) {
+      if (
+        groupNamesSet.value.has(node.name) ||
+        BUILTIN_POLICIES.has(node.name.toUpperCase()) ||
+        isInfoNode(node.name) ||
+        seen.has(node.name)
+      ) {
+        continue
+      }
+      seen.add(node.name)
+      if (isUdpNode(node)) udpCount += 1
+      if (isChainedNode(node)) chainedCount += 1
+      const rawType = node.node_type.trim().toLowerCase()
+      if (rawType && !NON_PROTOCOL_TYPES.has(rawType)) {
+        const label = protocolLabel(node.node_type).trim()
+        if (label) protocolCounts.set(label, (protocolCounts.get(label) ?? 0) + 1)
+      }
+    }
+  }
+
+  const chips: QuickFilter[] = []
+  if (udpCount > 0) chips.push({ id: 'tag:udp', label: 'UDP', kind: 'udp', count: udpCount })
+  if (chainedCount > 0) chips.push({ id: 'tag:chained', label: tr('链式'), kind: 'chained', count: chainedCount })
+  const topProtocols = [...protocolCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || compareText(a[0], b[0]))
+    .slice(0, MAX_PROTOCOL_QUICK_FILTERS)
+  for (const [label, count] of topProtocols) {
+    chips.push({ id: `proto:${label}`, label, kind: 'protocol', count })
+  }
+  return chips
+})
+
+watch(quickFilters, (chips) => {
+  if (activeTag.value && !chips.some((chip) => chip.id === activeTag.value)) {
+    activeTag.value = null
+  }
+})
+
+function toggleQuickTag(id: string) {
+  activeTag.value = activeTag.value === id ? null : id
+}
+
+function matchesQuickTag(node: NodeItem): boolean {
+  const selectedId = activeTag.value
+  if (!selectedId) return true
+  if (selectedId === 'tag:udp') return isUdpNode(node)
+  if (selectedId === 'tag:chained') return isChainedNode(node)
+  if (selectedId.startsWith('proto:')) {
+    const target = selectedId.slice('proto:'.length)
+    return protocolLabel(node.node_type).trim() === target
+  }
+  return true
+}
+
+const hasSearchOrTag = computed(() => Boolean(needle.value || activeTag.value))
+const hasActiveFilter = computed(() => Boolean(hasSearchOrTag.value || (hideFailed.value && failedNodeCount.value > 0)))
+
+function resetFilters() {
+  query.value = ''
+  activeTag.value = null
+  hideFailed.value = false
+}
+
 type ViewGroup = NodeGroup & { info?: NodeItem[]; hiddenFailedCount?: number }
 
 /** Info text without the provider's leading 【tag】 prefix. */
@@ -322,7 +430,9 @@ const groups = computed(() => {
   return source
     .filter((group) => !autoHidden(group))
     .map((group): ViewGroup => {
-      let nodes = needle.value ? group.nodes.filter(matches) : group.nodes
+      let nodes = group.nodes
+      if (needle.value) nodes = nodes.filter(matches)
+      if (activeTag.value) nodes = nodes.filter(matchesQuickTag)
       const beforeHideFailed = nodes.length
       if (hideFailed.value && failedNodeCount.value > 0) {
         nodes = nodes.filter((node) => node.selected || !nodeState(node).failed)
@@ -330,7 +440,7 @@ const groups = computed(() => {
       const hiddenFailedCount = beforeHideFailed - nodes.length
       nodes = sorted(nodes)
       // Quota/expiry pseudo-nodes leave the grid unless selected or searched for (R11).
-      const info = needle.value ? [] : nodes.filter((node) => !node.selected && isInfoNode(node.name))
+      const info = hasSearchOrTag.value ? [] : nodes.filter((node) => !node.selected && isInfoNode(node.name))
       if (info.length) nodes = nodes.filter((node) => !info.includes(node))
       if (nodes === group.nodes && hiddenFailedCount === 0) return group
       return {
@@ -340,11 +450,16 @@ const groups = computed(() => {
         ...(hiddenFailedCount > 0 ? { hiddenFailedCount } : {}),
       }
     })
-    .filter((group) => !needle.value || group.nodes.length > 0 || matchesTokens(group.name, queryTokens.value))
+    .filter(
+      (group) =>
+        !hasSearchOrTag.value ||
+        group.nodes.length > 0 ||
+        (!activeTag.value && matchesTokens(group.name, queryTokens.value)),
+    )
 })
 
 const matchCount = computed(() =>
-  needle.value ? groups.value.reduce((total, group) => total + group.nodes.length, 0) : 0,
+  hasSearchOrTag.value ? groups.value.reduce((total, group) => total + group.nodes.length, 0) : 0,
 )
 
 /** Groups share nodes, so the page total counts distinct names instead of row copies. */
@@ -403,8 +518,6 @@ function groupTestedAt(group: NodeGroup): number | null {
   })
   return latest || null
 }
-
-const groupNamesSet = computed(() => new Set(catalog.value.map((group) => group.name)))
 
 const failedNodeCount = computed(() => {
   const seen = new Set<string>()
@@ -525,8 +638,6 @@ function pick(group: NodeGroup, node: NodeItem) {
   void store.selectNode(group.name, node.name)
 }
 
-const BUILTIN_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
-
 /** Lowest-latency tested proxy in a manual group, hidden if it is already selected. */
 function fastestCandidate(group: NodeGroup): { node: NodeItem; delay: number } | null {
   if (group.kind !== 'manual' || !snap.value.kernel_running) return null
@@ -570,7 +681,7 @@ function nodeTitle(group: NodeGroup): string | undefined {
 }
 
 function isOpen(name: string) {
-  return needle.value.length > 0 || open.value.has(name)
+  return hasSearchOrTag.value || open.value.has(name)
 }
 
 /** Gap between the sticky toolbar and a located group header. */
@@ -627,6 +738,7 @@ async function locateActiveNode() {
   if (!preferred || !preferred.now) return
   revealAuto(preferred)
   if (query.value) query.value = ''
+  if (activeTag.value) activeTag.value = null
   if (!open.value.has(preferred.name)) {
     open.value = new Set([...open.value, preferred.name])
     persistOpen()
@@ -655,8 +767,9 @@ async function locate(name: string | null, behavior: ScrollBehavior = 'instant')
   const group = manifest().find((item) => item.name === name)
   if (!group) return
   revealAuto(group)
-  // A search could hide the group or its nodes; the deep link wins.
+  // A search or quick tag could hide the group or its nodes; the deep link wins.
   if (query.value) query.value = ''
+  if (activeTag.value) activeTag.value = null
   if (!open.value.has(name)) {
     open.value = new Set([...open.value, name])
     persistOpen()
@@ -891,6 +1004,21 @@ onBeforeUnmount(() => {
     </header>
 
     <div
+      v-if="compact && snap.active_id"
+      class="proxies-mobile-mode"
+      data-testid="proxies-mobile-mode"
+    >
+      <Segmented
+        :model-value="snap.mode"
+        :options="MODES"
+        size="sm"
+        :label="tr('出站模式')"
+        :disabled="store.busy.mode"
+        @update:model-value="store.setMode"
+      />
+    </div>
+
+    <div
       v-if="!snap.kernel_running && snap.node_catalog.length"
       class="proxies-connect-bar"
       data-testid="proxies-connect-bar"
@@ -949,7 +1077,7 @@ onBeforeUnmount(() => {
       >
         <Icon name="sliders" />
       </button>
-      <span v-if="needle && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite"> {{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }} </span>
+      <span v-if="hasSearchOrTag && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite"> {{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }} </span>
       <button
         v-if="failedNodeCount > 0"
         type="button"
@@ -1026,8 +1154,40 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <div
+        v-if="quickFilters.length"
+        class="proxy-quick-filters"
+        role="group"
+        :aria-label="tr('筛选')"
+        data-testid="proxy-quick-filters"
+      >
+        <button
+          v-for="chip in quickFilters"
+          :key="chip.id"
+          type="button"
+          class="chip-btn proxy-quick-chip"
+          :class="{ active: activeTag === chip.id }"
+          :aria-pressed="activeTag === chip.id"
+          :data-testid="`quick-filter-${chip.id}`"
+          @click="toggleQuickTag(chip.id)"
+        >
+          <span>{{ chip.label }}</span>
+          <span class="proxy-quick-count mono">{{ chip.count }}</span>
+        </button>
+        <button
+          v-if="hasActiveFilter"
+          type="button"
+          class="btn ghost sm proxy-quick-reset"
+          data-testid="clear-proxy-quick-filters"
+          @click="resetFilters"
+        >
+          <Icon name="x" :size="13" />
+          {{ tr('重置筛选') }}
+        </button>
+      </div>
+
       <nav
-        v-if="groups.length > 2 && !needle"
+        v-if="groups.length > 2 && !hasSearchOrTag"
         ref="groupPillsEl"
         class="group-pills"
         :class="{ dragging: draggingPills }"
@@ -1093,15 +1253,15 @@ onBeforeUnmount(() => {
           type="button"
           class="btn ghost sm"
           data-testid="reset-proxy-filters"
-          @click="query = ''; hideFailed = false"
-        >{{ hideFailed && !needle ? tr('重置筛选') : tr('清空筛选') }}</button>
+          @click="resetFilters"
+        >{{ (hideFailed || activeTag) && !needle ? tr('重置筛选') : tr('清空筛选') }}</button>
       </template>
     </EmptyState>
 
     <section
       v-for="(group, index) in groups"
       :key="group.name"
-      v-memo="[group, autoNowKey, isOpen(group.name), view, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, store.activeTest.value, store.pendingTests.value.size, groupTestedAt(group), busyKeys]"
+      v-memo="[group, autoNowKey, isOpen(group.name), view, needle, activeTag, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, store.activeTest.value, store.pendingTests.value.size, groupTestedAt(group), busyKeys]"
       class="card group"
       :class="{ open: isOpen(group.name), located: store.focusGroup.value === group.name }"
       :data-group-card="group.name"
@@ -1243,7 +1403,7 @@ onBeforeUnmount(() => {
             >{{ tr('显示超时节点') }}</button>
           </div>
           <p v-else-if="!group.nodes.length" class="muted small">
-            {{ needle ? tr('没有匹配的节点') : snap.kernel_running ? tr('该组暂时没有可用节点，请检查资源页中的订阅源状态。') : tr('连接后加载订阅源节点。') }}
+            {{ hasSearchOrTag ? tr('没有匹配的节点') : snap.kernel_running ? tr('该组暂时没有可用节点，请检查资源页中的订阅源状态。') : tr('连接后加载订阅源节点。') }}
           </p>
           <div
             v-for="node in visibleNodes"
@@ -1344,3 +1504,62 @@ onBeforeUnmount(() => {
     />
   </div>
 </template>
+
+<style scoped>
+.proxies-mobile-mode {
+  display: flex;
+  margin-bottom: var(--space-2);
+}
+
+.proxies-mobile-mode > :deep(.segmented) {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.proxy-quick-filters {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px 0;
+}
+
+.proxy-quick-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.proxy-quick-chip {
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--text-xs);
+  gap: 5px;
+}
+
+.proxy-quick-chip:focus-visible,
+.proxy-quick-reset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.proxy-quick-count {
+  font-size: 11px;
+  opacity: 0.72;
+}
+
+.proxy-quick-reset {
+  flex: none;
+  height: 28px;
+  padding: 0 9px;
+  font-size: var(--text-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .proxy-quick-chip,
+  .proxy-quick-reset {
+    transition: none;
+  }
+}
+</style>
