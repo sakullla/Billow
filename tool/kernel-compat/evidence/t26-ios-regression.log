@@ -1,0 +1,4 @@
+# cargo test -p billow-kernel --features ios-vpn --test ios_tunnel
+# 2026-11-22T23:56:55Z
+     Running tests/ios_tunnel.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/ios_tunnel-0aa7306ebe2a0550)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s

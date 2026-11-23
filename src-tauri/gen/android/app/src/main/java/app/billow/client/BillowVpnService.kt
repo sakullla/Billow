@@ -38,9 +38,7 @@ class BillowVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        tunnel?.close()
-        tunnel = null
-        BillowVpnBridge.reportFd(-1)
+        releaseTunnel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
@@ -59,8 +57,18 @@ class BillowVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        // A revoke invalidates the fd before stopSelf()/onDestroy() runs. Release
+        // it now so the Rust kernel's inherited copy and the host's launch
+        // argument cannot outlive the system grant.
+        releaseTunnel()
         BillowVpnBridge.reportConsent(false)
         stopSelf()
+    }
+
+    private fun releaseTunnel() {
+        tunnel?.close()
+        tunnel = null
+        BillowVpnBridge.reportFd(-1)
     }
 
     fun establishTun(packages: List<String>, only: Boolean): Int? {
@@ -82,6 +90,9 @@ class BillowVpnService : VpnService() {
             }
         }
         val opened = builder.establish() ?: return null
+        // Clear FD_CLOEXEC: the native kernel runs as a child process and
+        // inherits this fd. The Rust host passes the number as `--tun-fd`;
+        // Android never writes tun.file-descriptor into the YAML.
         android.system.Os.fcntlInt(opened.fileDescriptor, android.system.OsConstants.F_SETFD, 0)
         tunnel?.close()
         tunnel = opened

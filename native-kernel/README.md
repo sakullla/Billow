@@ -76,11 +76,12 @@ provider `use`, filters, latency probes and a selection cache), and T25 exposes
 the control API. The remaining configuration-plane ownership is split across
 T22/T25 and is named at each boundary.
 
-T7 added the iOS Packet Tunnel data plane behind `--features ios-vpn` (off by
-default, so desktop and Android builds are unchanged): `src/ios_vpn.rs` is the
-`billow_ios_vpn_*` C ABI of
+T7 added the iOS Packet Tunnel data plane; T26 generalised the same userspace
+stack behind `--features device-vpn`, with `ios-vpn` and `android-vpn` as the
+two device entries (all off by default, so desktop builds and the mixed
+listener are unchanged). `src/ios_vpn.rs` is the `billow_ios_vpn_*` C ABI of
 `src-tauri/gen/apple/network-extension/RustExtension/include/billow_ios_vpn.h`,
-and `src/tunnel/` is the userspace IP stack. It terminates the device's TCP
+and `src/tunnel/` is the shared userspace IP stack. It terminates the device's TCP
 (passive open in `tunnel/tcp_server.rs`) and UDP (the same outbound
 associations the mixed listener uses) in userspace, routes every flow through
 the engine (rules, proxy groups, `dialer-proxy`, DIRECT, `:53` DNS hijack
@@ -92,6 +93,26 @@ matches. Bounds (flows, queues, associations, buffers) and the
 (R3/R4) is `docs/testing/2026-11-23-ios-rust-extension-memory.md`. Everything
 was verified on macOS and in the iOS simulator; no physical device was
 available, so the extension's device peak and termination evidence are pending.
+
+T26 added the Android VpnService entry behind `--features android-vpn`
+(`src/android_vpn.rs`). Android's host process owns the `VpnService` TUN
+`ParcelFileDescriptor`, clears `FD_CLOEXEC` and reports the fd; the Rust host
+`profile.rs`/`process` launch then passes it as `--tun-fd <fd>` instead of
+writing `tun.file-descriptor` into the YAML (the YAML `tun` block is stripped
+for this engine on every platform). The CLI starts `AndroidVpn`, whose reader
+thread polls the fd and feeds `Tunnel::ingest`, and whose bounded writer queue
+writes emitted IP packets back. `stop`/`Drop` joins both threads, closes the
+fd and stops the engine, so a switch back to Mihomo or a revoked VPN leaves no
+descriptor or flow behind. The `billow_android_vpn_*` C ABI in the same module
+is the in-process embed point (`start(fd, home)`, `stop`, `reload`, `stats`);
+the packaged Android kernel uses the `--tun-fd` process route. Host-side
+tests use a `UnixDatagram` pair as the packet descriptor and cover TCP
+bidirectional data, UDP, DNS hijack, reload, stop/release and invalid fds
+(`tests/android_tunnel.rs`), and the host wiring is covered in
+`src-tauri/src/profile.rs` tests. The Android target build needs the NDK and is
+not available in this environment; the exact failure and the device entry are
+recorded in `tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`, and
+real-device traffic remains pending.
 
 ## License
 
@@ -141,15 +162,19 @@ native-kernel/
     │   ├── src/inbound.rs          # SOCKS5 + HTTP CONNECT handshake, authentication
     │   ├── src/engine.rs           # listener, sessions, bounded relay, lifecycle
     │   ├── src/ios_vpn.rs          # billow_ios_vpn_* C ABI (feature `ios-vpn`)
-    │   ├── src/tunnel/             # userspace IPv4/IPv6 data plane for the iOS Packet
-    │   │                           # Tunnel: passive TCP (tcp_server.rs), UDP
-    │   │                           # associations (udp.rs), rule/group/outbound
-    │   │                           # routing (route.rs)
+    │   ├── src/android_vpn.rs      # VpnService fd pump + billow_android_vpn_* ABI
+    │   │                           # (feature `android-vpn`, CLI `--tun-fd`)
+    │   ├── src/tunnel/             # shared userspace IPv4/IPv6 data plane (feature
+    │   │                           # `device-vpn`): passive TCP (tcp_server.rs),
+    │   │                           # UDP associations (udp.rs), rule/group/outbound
+    │   │                           # routing (route.rs), device config staging
+    │   │                           # (stage.rs)
     │   ├── src/identity.rs         # uuid / pid / version / listener / config digest
     │   ├── examples/embed.rs       # embedding example
     │   └── tests/                  # config, resources (rules/providers/GEO/updates),
     │                               # protocols (loopback peers), sessions,
     │                               # mihomo_peers (pinned Mihomo),
+    │                               # ios_tunnel/android_tunnel (device data planes),
     │                               # shadowquic_stream (stream/control reopen),
     │                               # wireguard_peer/openvpn_peer (controlled peers),
     │                               # data/shadowquic-jls.txt (locked JLS hello vectors),
@@ -182,8 +207,10 @@ loader is tested against. T5 generates that artifact from the real
 `fixtures/t5-billow-profile.json`) and loads it with `--check`: the desktop and
 Android artifacts both name only the enabled `sniffer` (T7); removing that one
 block makes the whole artifact load and register its groups. The launcher keys
-are handled explicitly: the launcher `tun` block is stripped before the kernel
-sees it (a user-written `tun` is rejected with `enable: true`), `geox-url` is
+are handled explicitly: the `tun` block is stripped before the kernel sees it
+for the Rust engine (the device route belongs to the launcher and the Android
+fd arrives as `--tun-fd`; a `tun` block reaching the loader is still rejected
+with `enable: true`), `geox-url` is
 recorded with a warning, `port: 0`/`socks-port: 0`/`redir-port: 0`/
 `tproxy-port: 0` are inert disabled listeners, `unified-delay`,
 `tcp-concurrent`, `find-process-mode: off` and the global keep-alive keys are

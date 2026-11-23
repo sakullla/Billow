@@ -24,7 +24,7 @@ async function workspaceVersion() {
 
 export async function prepareAndroidRustKernel() {
   const version = await workspaceVersion()
-  const key = JSON.stringify({ version, triple })
+  const key = JSON.stringify({ version, triple, features: ['android-vpn'] })
   const previous = JSON.parse(await readFile(stamp, 'utf8').catch(() => '{}'))
   const existing = await readFile(target).catch(() => null)
   if (previous.key === key && existing && sha(existing) === previous.sha256) {
@@ -41,7 +41,8 @@ export async function prepareAndroidRustKernel() {
   execFileSync('cargo', [
     'build', '--release', '--locked',
     '--manifest-path', resolve(root, 'native-kernel/Cargo.toml'),
-    '-p', 'billow-kernel-cli', '--target', triple, '--target-dir', targetDir,
+    '-p', 'billow-kernel-cli', '--features', 'android-vpn',
+    '--target', triple, '--target-dir', targetDir,
   ], {
     cwd: root,
     stdio: 'inherit',

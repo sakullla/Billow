@@ -1,17 +1,19 @@
-//! Userspace IP data plane for device tunnels (feature `ios-vpn`).
+//! Userspace IP data plane for device tunnels (feature `device-vpn`).
 //!
-//! The iOS Packet Tunnel (`src-tauri/gen/apple/network-extension/RustExtension`)
-//! hands whole IP packets to this module and expects IP packets back. The
-//! module terminates the device's TCP and UDP flows in userspace, routes every
-//! flow through the engine (rules, proxy groups, outbound dialling, DNS) and
-//! emits the replies as IP packets. It is deliberately independent of
-//! Tauri/NetworkExtension so a host can drive it in tests; the C ABI in
-//! `ios_vpn` is a thin wrapper.
+//! Both device entries hand whole IP packets to this module and expect IP
+//! packets back: the iOS Packet Tunnel through `packetFlow` and the Android
+//! VpnService through an inherited TUN fd. The module terminates the device's
+//! TCP and UDP flows in userspace, routes every flow through the engine
+//! (rules, proxy groups, outbound dialling, DNS) and emits the replies as IP
+//! packets. It is deliberately independent of Tauri/NetworkExtension so a host
+//! can drive it in tests; the C ABIs in `ios_vpn` and `android_vpn` are thin
+//! wrappers, and [`stage`] prepares the shared `config.yaml` for either.
 //!
 //! Layout:
 //! * [`tcp_server`] — the passive-open TCP endpoint (device -> kernel);
 //! * [`udp`] — UDP associations (the same transports the mixed listener uses);
-//! * [`route`] — rule/group/outbound decisions shared with the listener path.
+//! * [`route`] — rule/group/outbound decisions shared with the listener path;
+//! * [`stage`] — device-side config staging (tun/sniffer removal, provider paths).
 //!
 //! Bounds (R3/R4): one task per TCP flow up to [`TunnelOptions::max_tcp_flows`],
 //! at most [`TunnelOptions::max_udp_flows`] UDP flows, an inbound queue per flow
@@ -20,6 +22,7 @@
 //! buffered without a limit.
 
 mod route;
+pub mod stage;
 pub mod tcp_server;
 pub mod udp;
 
@@ -696,6 +699,18 @@ impl Tunnel {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         queue.clear();
+    }
+
+    /// Identity line of the engine inside this tunnel. The iOS and Android
+    /// hosts print it so a launch can be verified by instance, not just by a
+    /// listening port.
+    pub fn identity(&self) -> Option<crate::identity::Identity> {
+        self.inner
+            .kernel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|kernel| kernel.identity())
     }
 
     /// Live counters for the extension (`billow_ios_vpn_stats`).

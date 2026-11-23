@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::tunnel::stage::stage_config;
 use crate::tunnel::{PacketSink, Tunnel, TunnelOptions};
 
 /// The kernel version string the extension reports (`billow-rust 0.1.0`).
@@ -113,102 +114,6 @@ fn container_of(home: &Path) -> Option<PathBuf> {
         return None;
     }
     versions.parent().map(Path::to_path_buf)
-}
-
-/// One Rust-specific view of the shared `config.yaml`.
-#[derive(Debug)]
-struct Staged {
-    yaml: String,
-    path: PathBuf,
-}
-
-/// Prepares the configuration the Rust kernel can actually run:
-///
-/// * `mixed-port` (and every other listener key) is preserved: the engine
-///   binds its mixed listener from this file;
-/// * a vendor `tun` block with `enable: true` is removed. On iOS the Packet
-///   Tunnel itself is the device side and the device route belongs to
-///   NetworkExtension; the shared file keeps the block for Mihomo, which uses
-///   its launcher TUN;
-/// * a `sniffer` block with `enable: true` is removed as well. This kernel
-///   does not implement sniffing (`config.rs` rejects the enabled block by
-///   name), and the iOS Tunnel cannot accept a configuration it refuses. The
-///   difference is visible: domain rules after staging match on the
-///   destination IP/DNS result rather than a sniffed SNI/Host;
-/// * `rule-providers.*.path` / `proxy-providers.*.path` files referenced
-///   outside the version directory are copied next to the config and the path
-///   is rewritten to the basename (the extension cannot read the host sandbox);
-/// * the result is written to `config.rust.yaml` beside the shared file.
-fn stage_config(home: &Path, yaml: &str) -> Result<Staged, String> {
-    let mut value: serde_yaml::Value = serde_yaml::from_str(yaml)
-        .map_err(|error| format!("ios-staging: config.yaml is not YAML: {error}"))?;
-    let mapping = value
-        .as_mapping_mut()
-        .ok_or_else(|| "ios-staging: config.yaml top level must be a mapping".to_string())?;
-    if block_enabled(mapping.get(serde_yaml::Value::String("tun".into()))) {
-        mapping.remove(serde_yaml::Value::String("tun".into()));
-        tracing::warn!(
-            "tun.enable was removed for the Rust engine: the iOS Packet Tunnel owns the device route"
-        );
-    }
-    if block_enabled(mapping.get(serde_yaml::Value::String("sniffer".into()))) {
-        mapping.remove(serde_yaml::Value::String("sniffer".into()));
-        tracing::warn!(
-            "sniffer.enable was removed for the Rust engine: sniffing is not implemented, so domain rules use the destination IP/DNS result instead of a sniffed SNI/Host"
-        );
-    }
-    for group in ["rule-providers", "proxy-providers"] {
-        let Some(providers) = mapping
-            .get_mut(serde_yaml::Value::String(group.into()))
-            .and_then(serde_yaml::Value::as_mapping_mut)
-        else {
-            continue;
-        };
-        for (_name, provider) in providers.iter_mut() {
-            let Some(entry) = provider.as_mapping_mut() else {
-                continue;
-            };
-            let key = serde_yaml::Value::String("path".into());
-            let Some(raw) = entry.get(&key).and_then(serde_yaml::Value::as_str) else {
-                continue;
-            };
-            let raw = raw.to_string();
-            let source = if Path::new(&raw).is_absolute() {
-                PathBuf::from(&raw)
-            } else {
-                home.join(&raw)
-            };
-            let Some(name) = source.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if source.is_file() {
-                let destination = home.join(name);
-                if source != destination {
-                    std::fs::copy(&source, &destination).map_err(|error| {
-                        format!("ios-staging: copy {}: {error}", source.display())
-                    })?;
-                }
-                entry.insert(key, serde_yaml::Value::String(name.to_string()));
-            }
-        }
-    }
-    let yaml = serde_yaml::to_string(&value)
-        .map_err(|error| format!("ios-staging: serialize config: {error}"))?;
-    let path = home.join("config.rust.yaml");
-    std::fs::write(&path, &yaml)
-        .map_err(|error| format!("ios-staging: write {}: {error}", path.display()))?;
-    Ok(Staged { yaml, path })
-}
-
-fn block_enabled(block: Option<&serde_yaml::Value>) -> bool {
-    match block {
-        Some(serde_yaml::Value::Bool(value)) => *value,
-        Some(serde_yaml::Value::Mapping(mapping)) => mapping
-            .get(serde_yaml::Value::String("enable".into()))
-            .and_then(serde_yaml::Value::as_bool)
-            .unwrap_or(false),
-        _ => false,
-    }
 }
 
 /// Read `engine.json` (written by the host when the engine is selected):

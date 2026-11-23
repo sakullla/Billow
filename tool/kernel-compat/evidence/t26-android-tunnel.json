@@ -1,0 +1,128 @@
+{
+  "format": "t26-android-tunnel",
+  "version": 1,
+  "workflow": "2026-11-20-native-rust-kernel",
+  "task": "T26",
+  "attempt": "T26-A1",
+  "generatedAt": "2026-11-22T23:48:00Z",
+  "environment": {
+    "host": "macOS arm64 (aarch64-apple-darwin)",
+    "androidTarget": "aarch64-linux-android (rustup target installed)",
+    "ndk": {
+      "available": false,
+      "NDK_HOME": null,
+      "ANDROID_NDK_HOME": null,
+      "sdkNdkDir": "~/Library/Android/sdk/ndk does not exist",
+      "missingTool": "aarch64-linux-android-clang"
+    },
+    "device": {
+      "available": false,
+      "note": "No Android device or emulator is attached to this environment."
+    }
+  },
+  "featureLayout": {
+    "device-vpn": "shared userspace IPv4/IPv6 + TCP/UDP data plane (src/tunnel/)",
+    "ios-vpn": ["device-vpn", "billow_ios_vpn_* C ABI (src/ios_vpn.rs)"],
+    "android-vpn": ["device-vpn", "VpnService fd pump + billow_android_vpn_* ABI (src/android_vpn.rs)"]
+  },
+  "changes": {
+    "native-kernel": [
+      "crates/billow-kernel/Cargo.toml: device-vpn base feature; ios-vpn and android-vpn imply it; android_tunnel test target",
+      "crates/billow-kernel/src/lib.rs: tunnel compiled for device-vpn, android_vpn for android-vpn (unix)",
+      "crates/billow-kernel/src/tunnel/stage.rs: shared config staging moved out of ios_vpn (tun/sniffer enable:true removed, provider paths rewritten)",
+      "crates/billow-kernel/src/tunnel/mod.rs: Tunnel::identity(); packet_session gate moved to device-vpn",
+      "crates/billow-kernel/src/android_vpn.rs: AndroidVpn start/stop/stats/reload, polled fd reader, bounded writer queue, owned-fd close on stop/Drop, billow_android_vpn_* C ABI",
+      "crates/billow-kernel-cli: --features android-vpn and --tun-fd <fd>; runs AndroidVpn instead of only the mixed listener",
+      "crates/billow-kernel/tests/android_tunnel.rs: 7 end-to-end tests over a packet-preserving UnixDatagram descriptor"
+    ],
+    "src-tauri": [
+      "src/profile.rs: ProcessRuntime stores the Android TUN fd, appends --tun-fd only for Engine::Rust, forces a respawn for a fresh fd, strips the tun block for Rust on every platform (including a user-written block), keeps force_tun(tun.file-descriptor) for Mihomo",
+      "src-tauri/gen/android/.../BillowVpnService.kt: documents the FD_CLOEXEC clear for the Rust child and releases/closes the fd on onRevoke before stopSelf"
+    ],
+    "tooling-docs": [
+      "tool/prepare_android_rust_kernel.mjs: builds billow-kernel-cli with --features android-vpn and keys the cache on it",
+      "tool/engine-switch.md: Android Rust/VpnService hand-off, release order and pending-device boundary",
+      "native-kernel/README.md: device-vpn/android-vpn layout, --tun-fd process route, host wiring and pending verification",
+      "tool/kernel-compat/evidence/rust-mapping.json: tun staging boundary and platform note"
+    ]
+  },
+  "verification": {
+    "hostUnitTests": [
+      {
+        "command": "cargo test -p billow-kernel --features android-vpn --manifest-path native-kernel/Cargo.toml --test android_tunnel",
+        "result": "7 passed, 0 failed",
+        "log": "tool/kernel-compat/evidence/t26-android-tests.log",
+        "cases": [
+          "tcp_stream_crosses_the_fd_in_both_directions",
+          "udp_datagrams_cross_the_fd_in_both_directions",
+          "dns_queries_are_hijacked_and_answered_through_the_fd",
+          "stop_releases_the_fd_and_every_flow",
+          "reload_closes_flows_and_keeps_pumping",
+          "a_user_tun_block_is_staged_away_instead_of_rejected",
+          "an_invalid_fd_is_refused_before_anything_starts"
+        ]
+      },
+      {
+        "command": "cargo test -p billow-kernel --features android-vpn --manifest-path native-kernel/Cargo.toml",
+        "result": "all suites green (lib 182 passed, 1 ignored; android_tunnel 7 passed; config 43; controller 15; dns 19; groups 32; protocols 50; quic_peers 32; resources 15; sessions 11)",
+        "log": "tool/kernel-compat/evidence/t26-android-tests.log"
+      },
+      {
+        "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
+        "result": "default-feature workspace green, including billow-kernel-cli 11 cli + 10 family_cli tests (unchanged desktop path)",
+        "log": "tool/kernel-compat/evidence/t26-default-tests.log"
+      },
+      {
+        "command": "cargo test -p billow-kernel --features ios-vpn --manifest-path native-kernel/Cargo.toml --test ios_tunnel",
+        "result": "6 passed, 0 failed (iOS data plane did not regress)",
+        "log": "tool/kernel-compat/evidence/t26-ios-regression.log"
+      },
+      {
+        "command": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
+        "result": "237 passed, 0 failed, 10 ignored",
+        "log": "tool/kernel-compat/evidence/t26-host-tests.log",
+        "newCases": [
+          "profile::tests::android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml",
+          "profile::tests::android_mihomo_connect_keeps_the_vpn_fd_in_yaml",
+          "profile::tests::stopping_preserves_the_pending_tun_fd_for_the_next_launch",
+          "profile::tests::the_native_kernel_never_receives_the_launcher_tun_block (updated)"
+        ],
+        "switchRelease": "profile::tests::android_engine_switch_releases_the_vpn_descriptor_before_starting_the_target (existing release-order test) plus the fd/YAML tests above; the fd-level release is stop_releases_the_fd_and_every_flow"
+      }
+    ],
+    "cliProcessSmoke": {
+      "command": "BILLOW_KERNEL_BIN=<target>/debug/billow-kernel python3 tool/kernel-compat/t26-android-smoke.py",
+      "result": "ok: inherited --tun-fd 4, UDP echo crossed the fd (proto 17, payload pong), identity line printed, SIGTERM exit 0, staged config.rust.yaml removed",
+      "log": "tool/kernel-compat/evidence/t26-cli-smoke.log",
+      "scope": "macOS host with a UnixDatagram descriptor; exercises the real packaged process path, not Android"
+    },
+    "androidAppBuild": {
+      "status": "not run",
+      "reason": "No Android SDK/NDK in this environment. The Kotlin edit is limited to a shared releaseTunnel()/onRevoke path and comments around the existing FD_CLOEXEC clear; it was not compiled."
+    },
+    "androidTargetBuild": {
+      "command": "CARGO_TARGET_DIR=<tmp>/t26-android-target cargo build --release --locked --manifest-path native-kernel/Cargo.toml -p billow-kernel-cli --features android-vpn --target aarch64-linux-android",
+      "status": "failed",
+      "reason": "No Android NDK in this environment; ring's build script cannot find aarch64-linux-android-clang.",
+      "error": "error: failed to run custom build command for `ring v0.17.14`: failed to find tool \"aarch64-linux-android-clang\": No such file or directory (os error 2)",
+      "log": "tool/kernel-compat/evidence/t26-cross-android.log"
+    }
+  },
+  "deviceVerification": {
+    "status": "pending",
+    "entry": "Install the APK on an arm64 Android device, grant VpnService consent, select the Rust engine and toggle connect; then switch to Mihomo and back.",
+    "mustRecord": [
+      "device model, Android version, APK build",
+      "engine identity line (instance/version) and process PID",
+      "TCP/UDP/DNS marked traffic for each engine and each switch direction",
+      "fd release after disconnect/revoke (no leaked descriptor or flow)",
+      "fallback to Mihomo and the readable failure reason when the Rust target fails"
+    ],
+    "notClaimed": "Android two-way engine switching with real traffic has NOT been verified; only host-level fd tests and wiring are green."
+  },
+  "knownLimits": [
+    "The shared T7 stack answers DNS on :53 via the configured resolver and drops ICMP by name; it is not a full Android kernel network stack.",
+    "The fd pump assumes a packet-oriented descriptor (VpnService TUN). A host that supplies a stream socket must frame packets itself.",
+    "The Android process route inherits the fd via FD_CLOEXEC clearing; an in-process embedder calling billow_android_vpn_start must also clear FD_CLOEXEC before the call or pass an owned descriptor."
+  ]
+}

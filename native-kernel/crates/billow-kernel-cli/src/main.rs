@@ -52,6 +52,13 @@ struct Args {
     /// Validate the configuration and rule set, then exit without listening.
     #[arg(long)]
     check: bool,
+    /// Run the Android VpnService data plane on an inherited TUN fd: read
+    /// device IP packets from it and write emitted packets back instead of
+    /// only serving the mixed listener. The host passes the fd number after
+    /// clearing FD_CLOEXEC (`BillowVpnService.establishTun`).
+    #[cfg(feature = "android-vpn")]
+    #[arg(long, value_name = "FD")]
+    tun_fd: Option<i32>,
 }
 
 fn main() -> ExitCode {
@@ -68,6 +75,27 @@ fn main() -> ExitCode {
 fn real_main(args: Args) -> Result<ExitCode, String> {
     let yaml = std::fs::read_to_string(&args.config)
         .map_err(|e| format!("[invalid_yaml] {}: {e}", args.config.display()))?;
+    // Relative provider paths resolve against the configuration file's
+    // directory and must stay under it (or `SAFE_PATHS`), matching the pinned
+    // `C.Path` home root rather than whatever directory launched the process.
+    let base_dir = args
+        .config
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    #[cfg(feature = "android-vpn")]
+    if let Some(fd) = args.tun_fd {
+        // The Android host hands the VpnService TUN fd to this process instead
+        // of writing `tun.file-descriptor` into the YAML. Stage the shared file
+        // first (the staging removes the launcher `tun`/`sniffer` blocks) and
+        // start the fd pump; `--check` keeps its single meaning below.
+        if args.check {
+            return Err("--tun-fd and --check cannot be combined".to_string());
+        }
+        install_line_logger(tracing::Level::INFO, billow_kernel::LogBus::new());
+        return run_android_tunnel(&args, &yaml, &base_dir, fd);
+    }
     // Validate before starting threads so a rejected configuration exits non-zero with its explicit reason.
     let loaded = billow_kernel::load_config(&yaml, &args.config.display().to_string())
         .map_err(|e| format!("[{}] {e}", e.tag()))?;
@@ -86,15 +114,6 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
     if let Some(port) = args.port {
         config.listen.set_port(port);
     }
-    // Relative provider paths resolve against the configuration file's
-    // directory and must stay under it (or `SAFE_PATHS`), matching the pinned
-    // `C.Path` home root rather than whatever directory launched the process.
-    let base_dir = args
-        .config
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
     let options = billow_kernel::KernelOptions {
         cache_dir: args
             .cache_dir
@@ -153,6 +172,62 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
     println!(
         "stopped instance={} accepted={} active={} completed={} rejected={} failed={} bytes_up={} bytes_down={}",
         identity.uuid, stats.accepted, stats.active, stats.completed, stats.rejected, stats.failed, stats.bytes_up, stats.bytes_down
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Runs the Android VpnService data plane on an inherited TUN fd.
+#[cfg(feature = "android-vpn")]
+fn run_android_tunnel(
+    args: &Args,
+    yaml: &str,
+    base_dir: &std::path::Path,
+    fd: i32,
+) -> Result<ExitCode, String> {
+    use billow_kernel::android_vpn::{AndroidVpn, AndroidVpnOptions};
+    use billow_kernel::tunnel::TunnelOptions;
+
+    let options = AndroidVpnOptions {
+        tunnel: TunnelOptions {
+            limits: Limits {
+                buffer_size: args.buffer_bytes,
+                max_sessions: args.max_sessions,
+                ..Limits::default()
+            },
+            ..TunnelOptions::default()
+        },
+        ..AndroidVpnOptions::default()
+    };
+    let vpn = AndroidVpn::start(fd, yaml, base_dir.to_path_buf(), options)
+        .map_err(|error| format!("android-vpn: {error}"))?;
+    let identity = vpn
+        .identity()
+        .ok_or_else(|| "android-vpn: the engine did not start".to_string())?;
+    println!("{}", identity.to_line());
+    println!("features: {}", identity.features);
+    println!("tun_fd: {fd}");
+
+    let reason = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?
+        .block_on(wait_for_stop());
+    tracing::info!(reason, "stop requested");
+    vpn.stop();
+    // Staged by `AndroidVpn::start`; the next launch rewrites it.
+    let _ = std::fs::remove_file(base_dir.join("config.rust.yaml"));
+    let stats = vpn.stats();
+    println!(
+        "stopped instance={} accepted={} active={} rejected={} failed={} inPackets={} outPackets={} fdReads={} fdWritten={}",
+        identity.uuid,
+        stats.tunnel.tcp_opened,
+        stats.tunnel.tcp_flows,
+        stats.tunnel.tcp_rejected,
+        stats.tunnel.invalid_packets,
+        stats.tunnel.in_packets,
+        stats.tunnel.out_packets,
+        stats.fd.reads,
+        stats.fd.written
     );
     Ok(ExitCode::SUCCESS)
 }

@@ -166,7 +166,8 @@ pub enum InType {
     Https,
     Socks5,
     /// A device TUN / Packet Tunnel (the pinned `C.TUN`, matched by the
-    /// `feature = "ios-vpn"` iOS tunnel; desktop TUN is T6).
+    /// `device-vpn` iOS Packet Tunnel and Android VpnService data planes;
+    /// desktop TUN is T6).
     Tun,
 }
 

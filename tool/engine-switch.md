@@ -13,6 +13,7 @@ Billow 在同一安装包中分发 Mihomo 与自研 Rust 内核（`billow-kernel
 - Android ARM64：`TAURI_ENV_PLATFORM=android node tool/prepare_android_kernel.mjs --force`
   - 需要 `NDK_HOME`（或 `ANDROID_NDK_HOME`）与已安装的 `aarch64-linux-android` 目标。
   - 产物：`jniLibs/arm64-v8a/libmihomo.so` 与 `libbillow_kernel.so`（同 APK 内两个 PIE 进程）。
+  - Rust 进程用 `-p billow-kernel-cli --features android-vpn` 构建，启用 `--tun-fd` 与 VpnService 数据面。
 
 ## 实跑验证（可用宿主）
 
@@ -33,5 +34,14 @@ BILLOW_TEST_RESOURCES="$PWD/src-tauri/resources/runtime" \
 macOS 已按此入口实跑通过。Windows/Linux 由 `.github/workflows/release.yml` 在对应 runner 上执行同一命令
 （`Verify both packaged engines switch with marked traffic`）；本仓库当前未在 Windows/Linux 实跑。
 
-Android 的真机入口为安装 APK 后在设置页切换引擎；Rust 内核目前尚未接入 VpnService TUN 描述符与
-Mihomo 控制接口，因此 Android 上的 Rust 切换会明确失败并恢复 Mihomo，待 T5/T7 接入后复验。
+Android 的入口为安装 APK 后在设置页切换引擎。VpnService 的 TUN 描述符由
+`BillowVpnService.establishTun` 建立并清除 `FD_CLOEXEC`，`BillowVpnBridge.nativeTunFd` 把 fd 交给宿主；
+`profile.rs` 对 Rust 引擎总是移除 YAML 的 `tun` 块（含用户自写块），仅在 Android 上把 fd 作为
+`--tun-fd <fd>` 启动参数交给 Rust 进程；Mihomo 路径保持 `tun.file-descriptor` 注入不变。切换、断开或
+撤销时先停旧进程再关闭 fd（`--tun-fd` 接收方在 `AndroidVpn::stop`/`Drop` 中关闭 fd、join 收发线程并停止
+引擎），目标启动失败则清理目标并恢复 Mihomo，失败原因写入连接状态。
+
+验证边界：本仓库当前环境没有 Android NDK（`aarch64-linux-android-clang` 缺失）也没有设备，因此
+`aarch64-linux-android` 交叉编译与真机双向切换流量均未执行；宿主单测用 `UnixDatagram` 模拟 TUN fd 覆盖
+TCP/UDP/DNS、启停、reload 与错误路径。命令、退出码与错误原文见
+`tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`，真机结果保持待验。

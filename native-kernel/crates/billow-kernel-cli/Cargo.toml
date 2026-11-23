@@ -11,6 +11,12 @@ publish.workspace = true
 name = "billow-kernel"
 path = "src/main.rs"
 
+[features]
+# Android packaging builds with `--features android-vpn` so the binary accepts
+# `--tun-fd` and runs the VpnService data plane instead of only the mixed
+# listener. Desktop builds leave it off.
+android-vpn = ["billow-kernel/android-vpn"]
+
 [dependencies]
 anyhow.workspace = true
 billow-kernel = { path = "../billow-kernel" }

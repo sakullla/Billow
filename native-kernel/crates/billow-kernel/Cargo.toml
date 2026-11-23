@@ -14,10 +14,15 @@ publish.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# iOS Packet Tunnel data plane (userspace IPv4/IPv6 + TCP/UDP termination) and
-# the billow_ios_vpn_* C ABI. Off by default: desktop and Android builds do not
-# compile the tunnel or export the symbols.
-ios-vpn = []
+# Host-agnostic device data plane (userspace IPv4/IPv6 + TCP/UDP termination).
+# It is the shared core of the iOS Packet Tunnel and the Android VpnService
+# entry; enabling a device feature turns it on.
+device-vpn = []
+# iOS Packet Tunnel data plane plus the billow_ios_vpn_* C ABI.
+ios-vpn = ["device-vpn"]
+# Android VpnService data plane: the host hands over a TUN file descriptor and
+# `android_vpn` pumps IP packets through it. Off for desktop builds.
+android-vpn = ["device-vpn"]
 
 [dependencies]
 aes.workspace = true
@@ -67,6 +72,12 @@ x25519-dalek.workspace = true
 # The packet-tunnel integration test needs the data plane.
 name = "ios_tunnel"
 required-features = ["ios-vpn"]
+
+[[test]]
+# Drives the data plane through a real file descriptor (socket pair), the way
+# Android's VpnService does.
+name = "android_tunnel"
+required-features = ["android-vpn"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "full"] }

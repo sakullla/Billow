@@ -1,0 +1,19 @@
+# Android target build (NDK absent in this environment)
+# 2026-11-22T23:47:35Z
+# CARGO_TARGET_DIR=/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t26-android-target
+# cargo build --release --locked --manifest-path native-kernel/Cargo.toml -p billow-kernel-cli --features android-vpn --target aarch64-linux-android
+
+## toolchain probe
+$ NDK_HOME= ANDROID_NDK_HOME= ; ls ~/Library/Android/sdk/ndk
+ls: /Users/yanggeng/Library/Android/sdk/ndk: No such file or directory
+
+## build output (compiler detection + failure)
+warning: ring@0.17.14: Compiler family detection failed due to error: ToolNotFound: failed to find tool "aarch64-linux-android-clang": No such file or directory (os error 2)
+warning: ring@0.17.14: Compiler family detection failed due to error: ToolNotFound: failed to find tool "aarch64-linux-android-clang": No such file or directory (os error 2)
+error: failed to run custom build command for `ring v0.17.14`
+  cargo:warning=Compiler family detection failed due to error: ToolNotFound: failed to find tool "aarch64-linux-android-clang": No such file or directory (os error 2)
+  cargo:warning=Compiler family detection failed due to error: ToolNotFound: failed to find tool "aarch64-linux-android-clang": No such file or directory (os error 2)
+  error occurred in cc-rs: failed to find tool "aarch64-linux-android-clang": No such file or directory (os error 2)
+warning: build failed, waiting for other jobs to finish...
+
+## exit: build failed (cc-rs could not find aarch64-linux-android-clang)

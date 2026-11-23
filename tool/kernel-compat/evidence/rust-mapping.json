@@ -3,7 +3,7 @@
   "version": 3,
   "engine": "rust",
   "kernel": "billow-kernel",
-  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,dns.rs,proxies.rs,inbound.rs,groups.rs,engine.rs,controller.rs,outbound/*.rs} and tests/{config,dns,groups,controller,protocols,mihomo_peers,quic_peers,resources}.rs",
+  "generatedFrom": "native-kernel/crates/billow-kernel/src/{config.rs,dns.rs,proxies.rs,inbound.rs,groups.rs,engine.rs,controller.rs,ios_vpn.rs,android_vpn.rs,tunnel/*.rs,outbound/*.rs} and tests/{config,dns,groups,controller,protocols,mihomo_peers,quic_peers,resources,ios_tunnel,android_tunnel}.rs",
   "platform": {
     "verified": [
       "macos-aarch64"
@@ -17,7 +17,7 @@
     "notImplementedOnPlatform": {
       "windows": "sessions compile but the platform session/TUN path is T6; no Windows run has been recorded"
     },
-    "note": "Every runtime result here comes from macOS arm64, including the UDP and private-CA cases. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run."
+    "note": "Every runtime result here comes from macOS arm64, including the UDP and private-CA cases. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run. The Android VpnService fd data plane (feature `android-vpn`) is exercised on macOS arm64 through a packet-preserving UnixDatagram descriptor; the Android target build (NDK absent in this environment) and real-device traffic remain unverified — see tool/kernel-compat/evidence/t26-android-tunnel.json."
   },
   "statusVocabulary": {
     "implemented": "the Rust kernel performs the behaviour and a loopback or pinned-Mihomo test observes it",
@@ -174,9 +174,11 @@
     },
     "tun": {
       "status": "partial",
-      "reason": "disabled block is inert with a warning; enable: true is rejected by name (device/TUN is T6/T7)",
+      "reason": "disabled block is inert with a warning; enable: true is rejected by name when it reaches the config loader. The device entries never pass it: the host strips it for the Rust engine on every platform and Android hands the VpnService fd as `--tun-fd` (iOS uses the Packet Tunnel's own packetFlow); desktop TUN is T6",
       "evidence": [
-        "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly"
+        "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly",
+        "tests/android_tunnel.rs::a_user_tun_block_is_staged_away_instead_of_rejected",
+        "src-tauri/src/profile.rs::tests::android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml"
       ]
     },
     "sniffer": {

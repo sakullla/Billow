@@ -77,11 +77,17 @@ pub mod keys;
 pub mod outbound;
 pub mod proxies;
 
-/// iOS Packet Tunnel data plane and its C ABI (`include/billow_ios_vpn.h`).
-/// Compiled only with `--features ios-vpn`; desktop and Android builds are
-/// unaffected, and the userspace IP stack is shared so a desktop TUN (T6) can
-/// reuse it.
+/// Host-agnostic device data plane. Compiled with `device-vpn`, which the
+/// `ios-vpn` and `android-vpn` features turn on; the userspace IP stack is
+/// shared so a desktop TUN (T6) can reuse it.
+#[cfg(feature = "device-vpn")]
+pub mod tunnel;
+
+/// iOS Packet Tunnel C ABI (`include/billow_ios_vpn.h`), `--features ios-vpn`.
 #[cfg(feature = "ios-vpn")]
 pub mod ios_vpn;
-#[cfg(feature = "ios-vpn")]
-pub mod tunnel;
+
+/// Android VpnService file-descriptor data plane and its C ABI,
+/// `--features android-vpn`.
+#[cfg(all(feature = "android-vpn", unix))]
+pub mod android_vpn;

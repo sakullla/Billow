@@ -1,0 +1,39 @@
+# cargo test --manifest-path native-kernel/Cargo.toml --locked (default features, workspace)
+# 2026-11-22T23:58:04Z
+     Running unittests src/lib.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/billow_kernel-83fd506e559ae5eb)
+test result: ok. 160 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.83s
+     Running tests/config.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/config-cd2b2768f50da9ef)
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+     Running tests/controller.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/controller-02a246de7e65aa0f)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.70s
+     Running tests/dns.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/dns-3760d6f069152a19)
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.05s
+     Running tests/groups.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/groups-d47f06dec6c96d0c)
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.39s
+     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-77667ffc4707c99a)
+test result: ok. 0 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mesh_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mesh_peers-7fcaefc779957a89)
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-aee29c4185ce9cbd)
+test result: ok. 0 passed; 0 failed; 66 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/openvpn_peer.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/openvpn_peer-7fe72a3360ac5177)
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-35669a1a39577725)
+test result: ok. 50 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.91s
+     Running tests/quic_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/quic_peers-2d8dacb1e0444ad5)
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.46s
+     Running tests/resources.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/resources-1c5ec3694406d7b4)
+test result: ok. 15 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.55s
+     Running tests/sessions.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/sessions-113d98493372f250)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+     Running tests/shadowquic_stream.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/shadowquic_stream-3f7a2ea50cba81ec)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+     Running tests/wireguard_peer.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/wireguard_peer-f0cb9a151d086ecc)
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/main.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/billow_kernel-c52e3a66f348d48b)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/cli.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/cli-29547d3693aa87f6)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.29s
+     Running tests/family_cli.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/family_cli-f89001c3341bc0d3)
+test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.52s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s

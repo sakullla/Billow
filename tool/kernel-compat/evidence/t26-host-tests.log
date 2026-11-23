@@ -1,0 +1,7 @@
+# cargo test --manifest-path src-tauri/Cargo.toml --locked
+# 2026-11-22T23:59:44Z
+     Running unittests src/lib.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/billow_lib-a348cec30b23a6a2)
+test result: ok. 237 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 1.56s
+     Running unittests src/main.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/billow-59cf639d95aee454)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

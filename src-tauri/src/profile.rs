@@ -931,6 +931,10 @@ pub trait KernelLaunch {
     /// process first; the engine never changes underneath a running instance.
     fn set_engine(&mut self, _engine: Engine) {}
 
+    /// The Android VpnService fd the next Rust launch inherits. The fd is
+    /// passed as `--tun-fd`, never written into the YAML; `None` clears it.
+    fn set_tun_fd(&mut self, _fd: Option<i32>) {}
+
     /// Identity of the process actually started, or `None` while none runs.
     fn identity(&self) -> Option<EngineIdentity> {
         None
@@ -1318,6 +1322,9 @@ pub struct ProcessRuntime {
     launched_version: Option<String>,
     launched_privileged: bool,
     tun_active: bool,
+    /// Android TUN fd the next Rust launch inherits (`--tun-fd`). The Android
+    /// VpnService hand-off never writes it into the YAML.
+    tun_fd: Option<i32>,
     log_buffer: Option<CapturedLogs>,
     pending_logs: Vec<LogView>,
     exit_detail: Option<String>,
@@ -1390,6 +1397,7 @@ impl ProcessRuntime {
             launched_version: None,
             launched_privileged: false,
             tun_active: false,
+            tun_fd: None,
             log_buffer: None,
             pending_logs: Vec::new(),
             exit_detail: None,
@@ -1490,6 +1498,8 @@ impl ProcessRuntime {
         self.launched_version = None;
         self.launched_privileged = false;
         self.tun_active = false;
+        // `launch` calls `stop` before spawning and must still see the fd the
+        // caller handed over for this launch; only `set_tun_fd(None)` clears it.
         self.cached_catalog = nodes::RuntimeCatalog::default();
         self.provider_catalog = None;
         self.log_buffer = None;
@@ -1756,6 +1766,14 @@ impl ProcessRuntime {
                 command.arg(&config_path);
             }
         }
+        // Android hands the established VpnService TUN to the Rust process as
+        // an inherited fd (`BillowVpnService.establishTun` clears FD_CLOEXEC),
+        // never as a `tun.file-descriptor` YAML key. Desktop has no such fd.
+        if self.engine == Engine::Rust {
+            if let Some(fd) = self.tun_fd {
+                command.arg("--tun-fd").arg(fd.to_string());
+            }
+        }
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1936,6 +1954,10 @@ impl KernelLaunch for ProcessRuntime {
 
     fn set_engine(&mut self, engine: Engine) {
         self.engine = engine;
+    }
+
+    fn set_tun_fd(&mut self, fd: Option<i32>) {
+        self.tun_fd = fd;
     }
 
     fn identity(&self) -> Option<EngineIdentity> {
@@ -3417,14 +3439,14 @@ impl ProfileBook {
         };
         let selected = self.profiles[index].selected.clone();
         let desktop = self.platform == ClientPlatform::Desktop;
-        let user_had_tun = config_has_tun(&prepared.yaml);
         let (settled, settled_port) = match apply_settings(&prepared.yaml, &self.settings, desktop)
             .and_then(|(yaml, port)| {
                 // Subscription TUN settings must not replace the authorized session.
                 // In particular, an omitted enable flag disables Mihomo's TUN on reload.
-                // The native kernel has no TUN path, so its launcher-owned block goes.
-                if desktop && self.engine == Engine::Rust && !self.takeover.tun {
-                    strip_launcher_tun(&yaml, user_had_tun).map(|yaml| (yaml, port))
+                // The native kernel never serves a `tun` block: the desktop route
+                // is the launcher's and Android passes the VpnService fd as argv.
+                if desktop && self.engine == Engine::Rust {
+                    strip_tun(&yaml).map(|yaml| (yaml, port))
                 } else if desktop {
                     force_tun(&yaml, self.takeover.tun, None).map(|yaml| (yaml, port))
                 } else {
@@ -3577,7 +3599,7 @@ impl ProfileBook {
         tun_enable: bool,
         fd: Option<i32>,
     ) -> Result<u16, StartError> {
-        let force = std::mem::take(&mut self.force_launch);
+        let mut force = std::mem::take(&mut self.force_launch);
         let (base, port) = self.kernel_yaml(tun_enable, fd)?;
         let filtered;
         let yaml = if self.disabled_rules.is_empty() {
@@ -3590,6 +3612,20 @@ impl ProfileBook {
         self.runtime_catalog = nodes::RuntimeCatalog::default();
         self.auto_now.clear();
         kernel.set_engine(self.engine);
+        // Only the Android Rust launch takes the VpnService fd as an argument.
+        // Every other path clears it so a restarted process never inherits a
+        // descriptor the host is about to close.
+        let android_fd = match (self.platform, self.engine, fd) {
+            (ClientPlatform::Android, Engine::Rust, Some(fd)) => Some(fd),
+            _ => None,
+        };
+        kernel.set_tun_fd(android_fd);
+        // A fresh VpnService descriptor means the previous TUN session ended.
+        // Even if the host reuses the fd number and the YAML text is
+        // identical, the Rust process must be respawned to inherit the new fd.
+        if android_fd.is_some() {
+            force = true;
+        }
         kernel.start_or_reload_with(yaml, force).map_err(|message| {
             StartError::Failed(if message.is_empty() {
                 KERNEL_ERROR.to_string()
@@ -3668,7 +3704,6 @@ impl ProfileBook {
             Err(PrepareError::Override(reason)) => return Err(StartError::Failed(format!("{OVERRIDE_ERROR}：{reason}"))),
             Err(PrepareError::Content) => return Err(StartError::Failed(CONTENT_ERROR.to_string())),
         };
-        let user_had_tun = config_has_tun(&prepared.yaml);
         let (settled, settled_port) =
             apply_settings(&prepared.yaml, &self.settings, self.platform == ClientPlatform::Desktop)
                 .map_err(StartError::Failed)?;
@@ -3685,10 +3720,14 @@ impl ProfileBook {
             return Err(StartError::Failed("没有本地端口".to_string()));
         };
         let selected = profile.selected.clone();
-        // TUN is a Mihomo launch parameter here; the native kernel has no TUN
-        // path yet, so it must not receive an injected `tun: {enable: false}`.
-        let yaml = if engine == Engine::Rust && !tun_enable {
-            strip_launcher_tun(&prepared.yaml, user_had_tun).map_err(StartError::Failed)?
+        // TUN is a Mihomo launch parameter. The concrete route belongs to the
+        // launcher: desktop TUN for Mihomo, the iOS Packet Tunnel or the
+        // Android VpnService fd for the native kernel. The Rust engine never
+        // reads `tun` from YAML (an enabled block is rejected by name), and on
+        // Android its fd travels as `--tun-fd`, so the block is always
+        // stripped for that engine — including a user-written one.
+        let yaml = if engine == Engine::Rust {
+            strip_tun(&prepared.yaml).map_err(StartError::Failed)?
         } else {
             force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?
         };
@@ -5088,8 +5127,9 @@ fn default_sniffer() -> Value {
     .unwrap_or(Value::Null)
 }
 
-/// TUN hijacks DNS, so the kernel must answer it. Without a `dns` block that is enabled,
-/// a profile written for system-proxy use would leave every lookup unanswered under TUN.
+/// Whether the profile carries a `tun` block (used by tests that pin the
+/// staging boundary).
+#[cfg(test)]
 fn config_has_tun(yaml: &str) -> bool {
     serde_yaml::from_str::<Value>(yaml)
         .ok()
@@ -5097,9 +5137,13 @@ fn config_has_tun(yaml: &str) -> bool {
         .is_some()
 }
 
-/// Desktop settings always materialize a `tun` block (without `enable`) for
-/// Mihomo. The native kernel has no TUN path, so that launcher-owned block is
-/// removed for it; a `tun` key the user actually wrote stays and is rejected.
+/// Removes a `tun` block unconditionally. The native kernel takes its device
+/// route from the launcher (iOS Packet Tunnel / Android VpnService fd), so a
+/// user-written or launcher-injected block must never reach its config loader.
+fn strip_tun(yaml: &str) -> Result<String, String> {
+    strip_launcher_tun(yaml, false)
+}
+
 fn strip_launcher_tun(yaml: &str, user_had_tun: bool) -> Result<String, String> {
     if user_had_tun {
         return Ok(yaml.to_string());
@@ -10744,6 +10788,8 @@ proxy-groups:
         starts: u32,
         refuse: Option<String>,
         fail_engine: Option<Engine>,
+        tun_fd: Option<i32>,
+        last_force: bool,
     }
 
     impl EngineKernel {
@@ -10756,6 +10802,8 @@ proxy-groups:
                 starts: 0,
                 refuse: None,
                 fail_engine: None,
+                tun_fd: None,
+                last_force: false,
             }
         }
     }
@@ -10773,6 +10821,11 @@ proxy-groups:
             Ok(())
         }
 
+        fn start_or_reload_with(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
+            self.last_force = force;
+            self.start_or_reload(config_yaml)
+        }
+
         fn running(&mut self) -> bool {
             self.alive
         }
@@ -10783,6 +10836,10 @@ proxy-groups:
 
         fn set_engine(&mut self, engine: Engine) {
             self.engine = engine;
+        }
+
+        fn set_tun_fd(&mut self, fd: Option<i32>) {
+            self.tun_fd = fd;
         }
 
         fn identity(&self) -> Option<EngineIdentity> {
@@ -10915,14 +10972,81 @@ proxy-groups:
     #[test]
     fn the_native_kernel_never_receives_the_launcher_tun_block() {
         let yaml = "mixed-port: 7890\ntun:\n  auto-route: true\n  mtu: 1500\n";
-        let stripped = strip_launcher_tun(yaml, false).unwrap();
+        // The Rust engine always strips tun, including a user-written block:
+        // its device route is the launcher's (iOS Packet Tunnel / Android
+        // VpnService fd), so an enabled block must not reach the config loader.
+        let stripped = strip_tun(yaml).unwrap();
         assert!(!stripped.contains("tun:"), "{stripped}");
         assert!(stripped.contains("mixed-port"));
-        // A tun block the user wrote is kept so the native kernel can reject it
-        // instead of silently ignoring user configuration.
+        // The conditional helper remains for callers that want to preserve a
+        // user block explicitly.
         assert!(strip_launcher_tun(yaml, true).unwrap().contains("tun:"));
         assert!(config_has_tun(yaml));
         assert!(!config_has_tun("mixed-port: 7890\n"));
+    }
+
+    #[test]
+    fn android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml() {
+        let dir = temp_dir("engine-android-fd");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local(
+            "direct.yaml",
+            "mixed-port: 7890\ntun:\n  enable: true\nmode: rule\nrules:\n  - MATCH,DIRECT\n",
+        );
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap();
+        let snapshot = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(snapshot.connected && snapshot.vpn, "{snapshot:?}");
+        assert_eq!(
+            kernel.tun_fd,
+            Some(1),
+            "the VpnService fd is a launch argument for the Rust engine"
+        );
+        assert!(
+            kernel.last_force,
+            "a fresh VpnService fd always respawns the Rust process"
+        );
+        let yaml: Value = serde_yaml::from_str(&kernel.last).unwrap();
+        assert!(yaml.get("tun").is_none(), "{}", kernel.last);
+        assert!(yaml.get("file-descriptor").is_none(), "{}", kernel.last);
+    }
+
+    #[test]
+    fn stopping_preserves_the_pending_tun_fd_for_the_next_launch() {
+        // `launch` calls `stop()` before spawning; clearing the fd there would
+        // drop the `--tun-fd` argument the caller just handed over.
+        let dir = temp_dir("pending-tun-fd");
+        let mut runtime = ProcessRuntime::new(dir.0.join("runtime"));
+        runtime.set_tun_fd(Some(7));
+        runtime.stop();
+        assert_eq!(runtime.tun_fd, Some(7));
+        runtime.set_tun_fd(None);
+        assert_eq!(runtime.tun_fd, None);
+    }
+
+    #[test]
+    fn android_mihomo_connect_keeps_the_vpn_fd_in_yaml() {
+        let dir = temp_dir("engine-android-mihomo-fd");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("direct.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let snapshot = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(snapshot.connected && snapshot.vpn, "{snapshot:?}");
+        assert_eq!(kernel.tun_fd, None, "Mihomo takes the fd through the YAML");
+        let yaml: Value = serde_yaml::from_str(&kernel.last).unwrap();
+        assert_eq!(yaml["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(yaml["tun"]["file-descriptor"].as_i64(), Some(1));
     }
 
     /// Records the order in which the Android VPN descriptor is released and re-acquired.

@@ -1,0 +1,35 @@
+# cargo test -p billow-kernel --features android-vpn --manifest-path native-kernel/Cargo.toml
+# 2026-11-23T00:03:59Z
+     Running unittests src/lib.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/billow_kernel-5a88002de3d8c21f)
+test result: ok. 182 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.88s
+     Running tests/android_tunnel.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/android_tunnel-29f1c28544e3dcb0)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+     Running tests/config.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/config-c0da6f33b547654a)
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.45s
+     Running tests/controller.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/controller-3d8fd71e04c8d673)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.67s
+     Running tests/dns.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/dns-79caf665c9fc8830)
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.01s
+     Running tests/groups.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/groups-c4ebd71ad687ba3a)
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.39s
+     Running tests/independent_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/independent_peers-fdcd2ae8041f2935)
+test result: ok. 0 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mesh_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mesh_peers-39837e4b73e6a109)
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/mihomo_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/mihomo_peers-6cd88578bc3baa9b)
+test result: ok. 0 passed; 0 failed; 66 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/openvpn_peer.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/openvpn_peer-cd3d063a0627215f)
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/protocols.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/protocols-9ca0bcbc53658a89)
+test result: ok. 50 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.91s
+     Running tests/quic_peers.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/quic_peers-c8313a1c96ecdf99)
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s
+     Running tests/resources.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/resources-fb5d09764bbf8918)
+test result: ok. 15 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.54s
+     Running tests/sessions.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/sessions-b776a419944c2476)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+     Running tests/shadowquic_stream.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/shadowquic_stream-be501137133c379c)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+     Running tests/wireguard_peer.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/wireguard_peer-9f77248ce538746b)
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s

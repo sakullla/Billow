@@ -599,10 +599,11 @@ impl Kernel {
     }
 
     /// A session context for a data plane that owns no listener (the iOS
-    /// tunnel behind `feature = "ios-vpn"` and, later, a desktop TUN). The
-    /// snapshot is the current generation, so a reload affects the next flow
-    /// and an in-flight flow keeps the generation it started with.
-    #[cfg(feature = "ios-vpn")]
+    /// Packet Tunnel and the Android VpnService fd pump behind
+    /// `feature = "device-vpn"`, and, later, a desktop TUN). The snapshot is
+    /// the current generation, so a reload affects the next flow and an
+    /// in-flight flow keeps the generation it started with.
+    #[cfg(feature = "device-vpn")]
     pub(crate) fn packet_session(&self) -> Arc<SessionContext> {
         Arc::new(SessionContext {
             runtime: self.control.runtime.snapshot(),
