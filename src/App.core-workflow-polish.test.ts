@@ -1124,11 +1124,31 @@ describe('T3: Home takeover, profile sheet search/refresh, group pinning & NodeP
     expect(body().find('[data-testid="home-profile-sheet"]').exists()).toBe(true)
     expect(body().find('[data-testid="sheet-refresh-p1"]').classes()).toContain('success')
 
-    // Inline refresh on p2 fails and marks error state inline
+    // Inline refresh on p2 fails: displays specific failure reason & retry ONLY on p2 (p1 unaffected)
     await body().find('[data-testid="sheet-refresh-p2"]').trigger('click')
     await settle(1500)
     expect(refreshSpy).toHaveBeenCalledWith('p2')
     expect(body().find('[data-testid="sheet-refresh-p2"]').classes()).toContain('error')
+    const p2Err = body().find('[data-testid="sheet-refresh-error-p2"]')
+    expect(p2Err.exists()).toBe(true)
+    expect(p2Err.text()).toContain('订阅没有取回')
+    expect(body().find('[data-testid="sheet-refresh-error-p1"]').exists()).toBe(false)
+    expect(body().find('[data-testid="sheet-error-p2"]').exists()).toBe(false)
+
+    // Retry from the inline refresh error row re-triggers refresh and clears the error on success
+    const store = storeOf(wrapper)
+    refreshSpy.mockResolvedValueOnce({
+      ...store.snapshot.value,
+      profiles: store.snapshot.value.profiles.map((p) =>
+        p.id === 'p2' ? { ...p, failure: null, updated_ms: Date.now() } : p,
+      ),
+    })
+    await body().find('[data-testid="sheet-refresh-retry-p2"]').trigger('click')
+    await settle(1500)
+    expect(refreshSpy).toHaveBeenCalledTimes(3)
+    expect(refreshSpy).toHaveBeenLastCalledWith('p2')
+    expect(body().find('[data-testid="sheet-refresh-error-p2"]').exists()).toBe(false)
+    expect(body().find('[data-testid="sheet-refresh-p2"]').classes()).toContain('success')
   })
 
   it('R2: pins/unpins home proxy groups with localStorage persistence and ignores stale names', async () => {

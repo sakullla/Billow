@@ -183,6 +183,7 @@ const profileSheetQuery = ref('')
 const switchingProfileId = ref<string | null>(null)
 const sheetFailure = ref<{ id: string; reason: string } | null>(null)
 const sheetRefreshStatus = ref<Record<string, 'success' | 'error'>>({})
+const sheetRefreshErrors = ref<Record<string, string>>({})
 const pickerGroupName = ref<string | null>(null)
 const pickerGroup = computed(() =>
   pickerGroupName.value ? snap.value.node_catalog.find((group) => group.name === pickerGroupName.value) ?? null : null,
@@ -234,10 +235,15 @@ function sheetFailureFor(id: string): string | null {
   return sheetFailure.value?.id === id ? sheetFailure.value.reason : null
 }
 
+function sheetRefreshErrorFor(id: string): string | null {
+  return sheetRefreshErrors.value[id] ?? null
+}
+
 function openProfileSheet() {
   sheetFailure.value = null
   profileSheetQuery.value = ''
   sheetRefreshStatus.value = {}
+  sheetRefreshErrors.value = {}
   profileSheetOpen.value = true
 }
 
@@ -248,14 +254,34 @@ function closeProfileSheet() {
 
 async function refreshFromSheet(item: ProfileItem) {
   if (item.kind !== 'subscription' || isSheetSwitching.value || isUpdatingProfile(item.id)) return
-  const next = { ...sheetRefreshStatus.value }
-  delete next[item.id]
-  sheetRefreshStatus.value = next
+  const nextStatus = { ...sheetRefreshStatus.value }
+  delete nextStatus[item.id]
+  sheetRefreshStatus.value = nextStatus
+  const nextErrors = { ...sheetRefreshErrors.value }
+  delete nextErrors[item.id]
+  sheetRefreshErrors.value = nextErrors
+
   const ok = await store.update(item.id)
   const after = snap.value.profiles.find((p) => p.id === item.id)
+  const succeeded = ok && !after?.failure
   sheetRefreshStatus.value = {
     ...sheetRefreshStatus.value,
-    [item.id]: ok && !after?.failure ? 'success' : 'error',
+    [item.id]: succeeded ? 'success' : 'error',
+  }
+  if (succeeded) {
+    const cleared = { ...sheetRefreshErrors.value }
+    delete cleared[item.id]
+    sheetRefreshErrors.value = cleared
+  } else {
+    const reason =
+      store.profileUpdates[item.id]?.reason ||
+      after?.failure ||
+      store.lastRunError.value ||
+      tr('更新失败')
+    sheetRefreshErrors.value = {
+      ...sheetRefreshErrors.value,
+      [item.id]: reason,
+    }
   }
 }
 
@@ -1174,7 +1200,7 @@ onBeforeUnmount(() => {
           :class="{
             active: item.current,
             enabling: isEnablingProfile(item.id),
-            failed: sheetFailureFor(item.id) !== null,
+            failed: sheetFailureFor(item.id) !== null || sheetRefreshErrorFor(item.id) !== null,
           }"
           :data-testid="`sheet-item-${item.id}`"
         >
@@ -1253,6 +1279,27 @@ onBeforeUnmount(() => {
               :data-testid="`sheet-retry-${item.id}`"
               @click="switchFromSheet(item)"
             > {{ tr('重试') }} </button>
+          </div>
+          <div
+            v-if="sheetRefreshErrorFor(item.id)"
+            :id="`sheet-refresh-error-${item.id}`"
+            class="profile-sheet-error field-error small"
+            role="alert"
+            :data-testid="`sheet-refresh-error-${item.id}`"
+          >
+            <Icon name="alert" :size="14" />
+            <span class="grow">{{ tr(sheetRefreshErrorFor(item.id) ?? '') }}</span>
+            <button
+              type="button"
+              class="btn ghost sm"
+              :disabled="isSheetSwitching || isUpdatingProfile(item.id)"
+              :aria-busy="isUpdatingProfile(item.id) || undefined"
+              :data-testid="`sheet-refresh-retry-${item.id}`"
+              @click.stop="refreshFromSheet(item)"
+            >
+              <span v-if="isUpdatingProfile(item.id)" class="spinner xs" aria-hidden="true" />
+              {{ isUpdatingProfile(item.id) ? tr('更新中') : tr('重试') }}
+            </button>
           </div>
         </div>
       </div>
