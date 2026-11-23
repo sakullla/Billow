@@ -1016,3 +1016,237 @@ describe('Core workflow polish (R5–R6)', () => {
     })
   })
 })
+
+describe('T3: Home takeover, profile sheet search/refresh, group pinning & NodePickerModal enhancements (R1–R2)', () => {
+  it('R1: exposes direct proxy/TUN (desktop) and VPN (Android) takeover actions in Hero bare state', async () => {
+    // Desktop: kernel running, no takeover -> shows enable proxy & enable TUN
+    const { wrapper, backend } = await mountApp()
+    const store = storeOf(wrapper)
+    await connect(wrapper)
+    // Turn off system proxy so kernel stays running without takeover
+    void store.setSystemProxy(false)
+    await settle(400)
+    expect(store.snapshot.value.kernel_running).toBe(true)
+    expect(store.snapshot.value.system_proxy).toBe(false)
+    expect(store.snapshot.value.tun).toBe(false)
+
+    const bareActions = () => wrapper.find('[data-testid="hero-bare-actions"]')
+    expect(bareActions().exists()).toBe(true)
+    expect(wrapper.find('[data-testid="hero-enable-proxy"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="hero-enable-tun"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="hero-enable-vpn"]').exists()).toBe(false)
+
+    // Failing setSystemProxy keeps bare actions visible and reports via home-failure
+    const origProxy = backend.setSystemProxy.bind(backend)
+    const proxySpy = vi
+      .spyOn(backend, 'setSystemProxy')
+      .mockRejectedValueOnce(new Error('system proxy denied'))
+      .mockImplementationOnce((enabled) => origProxy(enabled))
+
+    await wrapper.find('[data-testid="hero-enable-proxy"]').trigger('click')
+    await settle(300)
+    expect(proxySpy).toHaveBeenCalledWith(true)
+    expect(bareActions().exists()).toBe(true)
+    expect(wrapper.find('[data-testid="home-failure"]').text()).toContain('system proxy denied')
+
+    // Succeeding setSystemProxy(true) hides bare actions
+    await wrapper.find('[data-testid="hero-enable-proxy"]').trigger('click')
+    await settle(400)
+    expect(store.snapshot.value.system_proxy).toBe(true)
+    expect(bareActions().exists()).toBe(false)
+
+    // Turn off proxy again and trigger TUN directly from Hero
+    void store.setSystemProxy(false)
+    await settle(400)
+    const tunSpy = vi.spyOn(backend, 'setTun')
+    await wrapper.find('[data-testid="hero-enable-tun"]').trigger('click')
+    await settle(400)
+    expect(tunSpy).toHaveBeenCalledWith(true)
+    expect(store.snapshot.value.tun).toBe(true)
+    expect(bareActions().exists()).toBe(false)
+
+    // Android: kernel running, vpn false -> shows VPN button and triggers connect()
+    const android = await mountApp({ platform: 'android' }, 390)
+    const androidStore = storeOf(android.wrapper)
+    androidStore.snapshot.value = {
+      ...androidStore.snapshot.value,
+      connected: false,
+      kernel_running: true,
+      vpn: false,
+    }
+    await flushPromises()
+    expect(android.wrapper.find('[data-testid="hero-bare-actions"]').exists()).toBe(true)
+    expect(android.wrapper.find('[data-testid="hero-enable-vpn"]').exists()).toBe(true)
+    expect(android.wrapper.find('[data-testid="hero-enable-proxy"]').exists()).toBe(false)
+    const connectSpy = vi.spyOn(android.backend, 'connect')
+    await android.wrapper.find('[data-testid="hero-enable-vpn"]').trigger('click')
+    await settle(1200)
+    expect(connectSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('R1: supports profile sheet search, empty-state reset, and inline subscription refresh', async () => {
+    const { wrapper, backend } = await mountApp({ failRefreshId: 'p2' })
+    const refreshSpy = vi.spyOn(backend, 'refresh')
+
+    await wrapper.find('[data-testid="mobile-profile-trigger"]').trigger('click')
+    await flushPromises()
+
+    // Search input appears when multiple profiles exist
+    const search = body().find('[data-testid="profile-sheet-search"]')
+    expect(search.exists()).toBe(true)
+    const initialItems = body().findAll('[data-testid^="sheet-item-"]').length
+    expect(initialItems).toBeGreaterThan(1)
+
+    // Filter by subscription host
+    await search.setValue('sub.example.com')
+    await flushPromises()
+    expect(body().findAll('[data-testid^="sheet-item-"]').length).toBeGreaterThanOrEqual(1)
+    expect(body().findAll('[data-testid^="sheet-item-"]').length).toBeLessThan(initialItems)
+
+    // No-match empty state + clear filter
+    await search.setValue('no-such-sheet-profile')
+    await flushPromises()
+    expect(body().find('[data-testid="profile-sheet-empty"]').exists()).toBe(true)
+    await body().find('[data-testid="profile-sheet-clear-filter"]').trigger('click')
+    await flushPromises()
+    expect(body().find('[data-testid="profile-sheet-empty"]').exists()).toBe(false)
+    expect(body().findAll('[data-testid^="sheet-item-"]')).toHaveLength(initialItems)
+
+    // Subscription profiles have inline refresh button; local profile (p3) does not
+    expect(body().find('[data-testid="sheet-refresh-p1"]').exists()).toBe(true)
+    expect(body().find('[data-testid="sheet-refresh-p2"]').exists()).toBe(true)
+    expect(body().find('[data-testid="sheet-refresh-p3"]').exists()).toBe(false)
+
+    // Inline refresh on p1 succeeds without closing modal
+    await body().find('[data-testid="sheet-refresh-p1"]').trigger('click')
+    await settle(1500)
+    expect(refreshSpy).toHaveBeenCalledWith('p1')
+    expect(body().find('[data-testid="home-profile-sheet"]').exists()).toBe(true)
+    expect(body().find('[data-testid="sheet-refresh-p1"]').classes()).toContain('success')
+
+    // Inline refresh on p2 fails and marks error state inline
+    await body().find('[data-testid="sheet-refresh-p2"]').trigger('click')
+    await settle(1500)
+    expect(refreshSpy).toHaveBeenCalledWith('p2')
+    expect(body().find('[data-testid="sheet-refresh-p2"]').classes()).toContain('error')
+  })
+
+  it('R2: pins/unpins home proxy groups with localStorage persistence and ignores stale names', async () => {
+    // Pre-seed storage with one stale group name and one valid group name
+    localStorage.setItem('billow:home-pinned-groups', JSON.stringify(['已删除的失效组', '流媒体']))
+
+    const { wrapper } = await mountApp()
+    const groupOrder = () =>
+      wrapper.findAll('[data-testid="groups-card"] [data-group]').map((el) => el.attributes('data-group'))
+
+    // Valid pinned group moves to front; stale name is ignored cleanly
+    expect(groupOrder()[0]).toBe('流媒体')
+    expect(wrapper.find('[data-testid="pin-group-流媒体"]').attributes('aria-pressed')).toBe('true')
+
+    // Pin another group without opening NodePickerModal
+    await wrapper.find('[data-testid="pin-group-自动选择"]').trigger('click')
+    await flushPromises()
+    expect(body().find('[data-testid="home-node-picker"]').exists()).toBe(false)
+    expect(groupOrder().slice(0, 2)).toEqual(['流媒体', '自动选择'])
+    expect(JSON.parse(localStorage.getItem('billow:home-pinned-groups') ?? '[]')).toContain('自动选择')
+
+    // Unpin 流媒体 -> 自动选择 becomes first
+    await wrapper.find('[data-testid="pin-group-流媒体"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="pin-group-流媒体"]').attributes('aria-pressed')).toBe('false')
+    expect(groupOrder()[0]).toBe('自动选择')
+    expect(JSON.parse(localStorage.getItem('billow:home-pinned-groups') ?? '[]')).not.toContain('流媒体')
+
+    // Remount preserves pinned order from localStorage
+    const remounted = await mountApp()
+    const remountOrder = remounted.wrapper
+      .findAll('[data-testid="groups-card"] [data-group]')
+      .map((el) => el.attributes('data-group'))
+    expect(remountOrder[0]).toBe('自动选择')
+  })
+
+  it('R2: supports NodePickerModal delay sort, persisted hide-failed with reset, and inline single-node latency test', async () => {
+    // Corrupt storage values fall back safely
+    localStorage.setItem('billow:node-picker-sort', '{bad-json')
+    localStorage.setItem('billow:node-picker-hide-failed', 'not-a-bool')
+
+    const { wrapper, backend } = await mountApp()
+    await connect(wrapper)
+    const store = storeOf(wrapper)
+
+    // Populate deterministic delays and one timed-out node in 节点选择
+    store.snapshot.value = {
+      ...store.snapshot.value,
+      node_catalog: store.snapshot.value.node_catalog.map((group) =>
+        group.name === '节点选择'
+          ? {
+              ...group,
+              nodes: group.nodes.map((node) => {
+                if (node.name === '香港 01') return { ...node, delay_ms: 180, failed: false }
+                if (node.name === '日本 01') return { ...node, delay_ms: 42, failed: false }
+                if (node.name === '新加坡 01') return { ...node, delay_ms: null, failed: true }
+                return { ...node, delay_ms: 95, failed: false }
+              }),
+            }
+          : group,
+      ),
+    }
+    await flushPromises()
+
+    await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
+    await flushPromises()
+
+    // Switch to delay sort -> 日本 01 (42ms) sorts ahead of 香港 01 (180ms), persisted to localStorage
+    await body().find('[data-testid="node-picker-sort"] [data-value="delay"]').trigger('click')
+    await flushPromises()
+    expect(localStorage.getItem('billow:node-picker-sort')).toBe('"delay"')
+    const sortedNames = body().findAll('[data-picker-node]').map((el) => el.attributes('data-picker-node'))
+    expect(sortedNames.indexOf('日本 01')).toBeLessThan(sortedNames.indexOf('香港 01'))
+    expect(sortedNames.indexOf('香港 01')).toBeLessThan(sortedNames.indexOf('新加坡 01'))
+
+    // Toggle hide-failed -> removes 新加坡 01 and persists to localStorage
+    const hideBtn = () => body().find('[data-testid="node-picker-hide-failed"]')
+    expect(hideBtn().exists()).toBe(true)
+    expect(hideBtn().attributes('aria-pressed')).toBe('false')
+    await hideBtn().trigger('click')
+    await flushPromises()
+    expect(hideBtn().attributes('aria-pressed')).toBe('true')
+    expect(localStorage.getItem('billow:node-picker-hide-failed')).toBe('true')
+    expect(body().find('[data-testid="picker-node-新加坡 01"]').exists()).toBe(false)
+
+    // Search for the hidden timed-out node -> empty state with one-click reset restores both search & hideFailed
+    await body().find('[data-testid="node-picker-search"]').setValue('新加坡 01')
+    await flushPromises()
+    expect(body().find('[data-testid="node-picker-empty"]').exists()).toBe(true)
+    await body().find('[data-testid="node-picker-clear-filter"]').trigger('click')
+    await flushPromises()
+    expect(body().find('[data-testid="picker-node-新加坡 01"]').exists()).toBe(true)
+    expect(hideBtn().attributes('aria-pressed')).toBe('false')
+
+    // Inline single-node latency test works without selecting node or closing modal; nested policy group omits it
+    expect(body().find('[data-testid="picker-test-node-自动选择"]').exists()).toBe(false)
+    const testNodeSpy = vi.spyOn(backend, 'testNode')
+    const selectNodeSpy = vi.spyOn(backend, 'selectNode')
+    await body().find('[data-testid="picker-test-node-日本 01"]').trigger('click')
+    await settle(600)
+    expect(testNodeSpy).toHaveBeenCalledWith('日本 01')
+    expect(selectNodeSpy).not.toHaveBeenCalled()
+    expect(body().find('[data-testid="home-node-picker"]').exists()).toBe(true)
+
+    // Disconnected -> single-node test button is disabled with clear tooltip and does not invoke backend
+    await body().find('.modal-head .icon-btn').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1200)
+    await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
+    await flushPromises()
+    const offlineTestBtn = body().find('[data-testid="picker-test-node-日本 01"]')
+    expect(offlineTestBtn.exists()).toBe(true)
+    expect(offlineTestBtn.attributes('disabled')).toBeDefined()
+    expect(offlineTestBtn.attributes('title')).toContain('连接后才能测速')
+    testNodeSpy.mockClear()
+    await offlineTestBtn.trigger('click')
+    await flushPromises()
+    expect(testNodeSpy).not.toHaveBeenCalled()
+  })
+})

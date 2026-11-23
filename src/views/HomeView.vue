@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import ChainPath from '../components/ChainPath.vue'
 import BrandMark from '../components/BrandMark.vue'
+import EmptyState from '../components/EmptyState.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import Icon from '../components/Icon.vue'
 import Modal from '../components/Modal.vue'
@@ -25,6 +26,7 @@ import {
   resolveChain,
   usagePercent,
 } from '../lib/format'
+import { matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import { t, tr } from '../lib/i18n'
 import type { Mode, NodeGroup, ProfileItem } from '../lib/types'
@@ -77,6 +79,59 @@ const homeTestTitle = computed(() => {
 })
 const updateBusy = computed(() => (profile.value ? Boolean(store.busy[`update:${profile.value.id}`]) : false))
 
+const HOME_PINNED_GROUPS_KEY = 'billow:home-pinned-groups'
+
+function readPinnedGroups(): string[] {
+  try {
+    const raw = localStorage.getItem(HOME_PINNED_GROUPS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const item of parsed) {
+      if (typeof item === 'string' && item.length > 0 && !seen.has(item)) {
+        seen.add(item)
+        result.push(item)
+      }
+    }
+    return result
+  } catch {
+    return []
+  }
+}
+
+function writePinnedGroups(names: string[]) {
+  try {
+    localStorage.setItem(HOME_PINNED_GROUPS_KEY, JSON.stringify(names))
+  } catch {
+    // Storage unavailable; keep in-memory state.
+  }
+}
+
+const pinnedGroups = ref<string[]>(readPinnedGroups())
+const pinnedGroupSet = computed(() => new Set(pinnedGroups.value))
+
+function isGroupPinned(name: string): boolean {
+  return pinnedGroupSet.value.has(name)
+}
+
+function togglePinGroup(name: string) {
+  const next = pinnedGroupSet.value.has(name)
+    ? pinnedGroups.value.filter((item) => item !== name)
+    : [...pinnedGroups.value, name]
+  pinnedGroups.value = next
+  writePinnedGroups(next)
+}
+
+function onGroupCardKeydown(event: KeyboardEvent, groupName: string) {
+  if (event.target !== event.currentTarget) return
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    openNodePicker(groupName)
+  }
+}
+
 const showAllGroups = ref(false)
 /** Config `hidden: true` groups stay out of the picker; chains below still pass through them (R29). */
 const allManualGroups = computed(() =>
@@ -89,9 +144,24 @@ const allPickableGroups = computed(() => {
   const list = snap.value.node_catalog.filter(
     (group) => canPickNode(group) && !group.hidden && (snap.value.mode === 'global' || group.name !== 'GLOBAL'),
   )
-  if (snap.value.mode !== 'global') return list
-  const globalGroup = list.find((group) => group.name === 'GLOBAL')
-  return globalGroup ? [globalGroup, ...list.filter((group) => group.name !== 'GLOBAL')] : list
+  const byName = new Map(list.map((group) => [group.name, group]))
+  const pinned: NodeGroup[] = []
+  const pinnedSeen = new Set<string>()
+  for (const name of pinnedGroups.value) {
+    const match = byName.get(name)
+    if (match && !pinnedSeen.has(name)) {
+      pinned.push(match)
+      pinnedSeen.add(name)
+    }
+  }
+  const rest = list.filter((group) => !pinnedSeen.has(group.name))
+  if (snap.value.mode === 'global') {
+    const globalGroup = rest.find((group) => group.name === 'GLOBAL')
+    if (globalGroup) {
+      return [...pinned, globalGroup, ...rest.filter((group) => group.name !== 'GLOBAL')]
+    }
+  }
+  return [...pinned, ...rest]
 })
 const manualGroups = computed(() => (showAllGroups.value ? allPickableGroups.value : allPickableGroups.value.slice(0, 8)))
 const hiddenGroupCount = computed(() => Math.max(0, allPickableGroups.value.length - 8))
@@ -109,8 +179,10 @@ function openProfileOverride(id: string) {
 }
 
 const profileSheetOpen = ref(false)
+const profileSheetQuery = ref('')
 const switchingProfileId = ref<string | null>(null)
 const sheetFailure = ref<{ id: string; reason: string } | null>(null)
+const sheetRefreshStatus = ref<Record<string, 'success' | 'error'>>({})
 const pickerGroupName = ref<string | null>(null)
 const pickerGroup = computed(() =>
   pickerGroupName.value ? snap.value.node_catalog.find((group) => group.name === pickerGroupName.value) ?? null : null,
@@ -127,8 +199,31 @@ const orderedProfiles = computed(() =>
   [...snap.value.profiles].sort((a, b) => Number(b.current) - Number(a.current)),
 )
 
+function profileHost(url?: string | null): string {
+  if (!url) return ''
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
+const profileSheetTokens = computed(() => splitQueryTokens(profileSheetQuery.value))
+const showProfileSheetSearch = computed(
+  () => orderedProfiles.value.length > 1 || profileSheetQuery.value.trim().length > 0,
+)
+const filteredSheetProfiles = computed(() => {
+  const tokens = profileSheetTokens.value
+  if (!tokens.length) return orderedProfiles.value
+  return orderedProfiles.value.filter((item) => matchesTokens(`${item.name} ${profileHost(item.source)}`, tokens))
+})
+
 function isEnablingProfile(id: string): boolean {
   return switchingProfileId.value === id || Boolean(store.busy[`enable:${id}`])
+}
+
+function isUpdatingProfile(id: string): boolean {
+  return Boolean(store.busy[`update:${id}`])
 }
 
 const isSheetSwitching = computed(
@@ -141,12 +236,27 @@ function sheetFailureFor(id: string): string | null {
 
 function openProfileSheet() {
   sheetFailure.value = null
+  profileSheetQuery.value = ''
+  sheetRefreshStatus.value = {}
   profileSheetOpen.value = true
 }
 
 function closeProfileSheet() {
   if (isSheetSwitching.value) return
   profileSheetOpen.value = false
+}
+
+async function refreshFromSheet(item: ProfileItem) {
+  if (item.kind !== 'subscription' || isSheetSwitching.value || isUpdatingProfile(item.id)) return
+  const next = { ...sheetRefreshStatus.value }
+  delete next[item.id]
+  sheetRefreshStatus.value = next
+  const ok = await store.update(item.id)
+  const after = snap.value.profiles.find((p) => p.id === item.id)
+  sheetRefreshStatus.value = {
+    ...sheetRefreshStatus.value,
+    [item.id]: ok && !after?.failure ? 'success' : 'error',
+  }
 }
 
 function sheetInitialFocus(): HTMLElement | null | undefined {
@@ -257,6 +367,7 @@ const takeoverSummary = computed(() => {
 })
 
 const takeoverOn = computed(() => (store.isAndroid.value ? snap.value.vpn : snap.value.system_proxy || snap.value.tun))
+const showBareTakeoverActions = computed(() => snap.value.kernel_running && !takeoverOn.value && !store.connecting.value)
 
 const proxySubtitle = computed(() => {
   const sp = snap.value.settings.system_proxy
@@ -545,6 +656,48 @@ onBeforeUnmount(() => {
               <span class="connect-label">{{ connectLabel }}</span>
             </button>
           </div>
+        </div>
+
+        <div v-if="showBareTakeoverActions" class="hero-bare-actions" data-testid="hero-bare-actions">
+          <template v-if="store.isAndroid.value">
+            <button
+              type="button"
+              class="btn primary sm"
+              :disabled="store.connecting.value"
+              :aria-busy="store.connecting.value || undefined"
+              data-testid="hero-enable-vpn"
+              @click="store.connect()"
+            >
+              <Icon name="shield" :size="14" />
+              <span>{{ tr('启用') }} VPN</span>
+            </button>
+          </template>
+          <template v-else>
+            <button
+              type="button"
+              class="btn primary sm"
+              :disabled="Boolean(store.busy.proxy)"
+              :aria-busy="Boolean(store.busy.proxy) || undefined"
+              data-testid="hero-enable-proxy"
+              @click="store.setSystemProxy(true)"
+            >
+              <span v-if="store.busy.proxy" class="spinner xs" aria-hidden="true" />
+              <Icon v-else name="monitor" :size="14" />
+              <span>{{ tr('启用系统代理') }}</span>
+            </button>
+            <button
+              type="button"
+              class="btn ghost sm"
+              :disabled="Boolean(store.busy.tun)"
+              :aria-busy="Boolean(store.busy.tun) || undefined"
+              data-testid="hero-enable-tun"
+              @click="store.setTun(true)"
+            >
+              <span v-if="store.busy.tun" class="spinner xs" aria-hidden="true" />
+              <Icon v-else name="shield" :size="14" />
+              <span>{{ tr('启用 TUN') }}</span>
+            </button>
+          </template>
         </div>
 
         <Transition name="hero-reveal">
@@ -858,13 +1011,16 @@ onBeforeUnmount(() => {
             <p v-if="snap.mode === 'direct' && manualGroups.length" class="card-note muted small">{{ tr('当前为直连模式，新发起的连接不经过代理组') }}</p>
             <p v-if="!manualGroups.length" class="empty-line muted">{{ snap.nodes_notice ? tr(snap.nodes_notice) : tr('这份配置没有可手动选择的代理组') }}</p>
             <div v-else class="home-groups-grid" :class="{ single: manualGroups.length === 1 }">
-              <button
+              <div
                 v-for="group in manualGroups"
                 :key="group.name"
-                type="button"
+                role="button"
+                tabindex="0"
                 class="group-row"
+                :class="{ pinned: isGroupPinned(group.name) }"
                 :data-group="group.name"
                 @click="openNodePicker(group.name)"
+                @keydown="onGroupCardKeydown($event, group.name)"
               >
                 <template v-if="compact">
                   <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="20" /></span>
@@ -884,6 +1040,19 @@ onBeforeUnmount(() => {
                     </span>
                   </div>
                   <span class="group-row-side">
+                    <button
+                      type="button"
+                      class="icon-btn xs group-pin-btn"
+                      :class="{ active: isGroupPinned(group.name) }"
+                      :aria-pressed="isGroupPinned(group.name)"
+                      :aria-label="isGroupPinned(group.name) ? tr('取消置顶') : tr('置顶')"
+                      :title="isGroupPinned(group.name) ? tr('取消置顶') : tr('置顶')"
+                      :data-testid="`pin-group-${group.name}`"
+                      @click.stop="togglePinGroup(group.name)"
+                      @keydown.stop
+                    >
+                      <Icon name="up" :size="12" />
+                    </button>
                     <span
                       class="delay home-group-delay mono"
                       :class="groupDelay(group).tone"
@@ -908,6 +1077,19 @@ onBeforeUnmount(() => {
                         :class="groupDelay(group).tone"
                         data-testid="home-group-delay"
                       >{{ groupDelay(group).text }}</span>
+                      <button
+                        type="button"
+                        class="icon-btn xs group-pin-btn"
+                        :class="{ active: isGroupPinned(group.name) }"
+                        :aria-pressed="isGroupPinned(group.name)"
+                        :aria-label="isGroupPinned(group.name) ? tr('取消置顶') : tr('置顶')"
+                        :title="isGroupPinned(group.name) ? tr('取消置顶') : tr('置顶')"
+                        :data-testid="`pin-group-${group.name}`"
+                        @click.stop="togglePinGroup(group.name)"
+                        @keydown.stop
+                      >
+                        <Icon name="up" :size="12" />
+                      </button>
                     </span>
                   </div>
                   <div class="group-row-text">
@@ -918,7 +1100,7 @@ onBeforeUnmount(() => {
                     </span>
                   </div>
                 </template>
-              </button>
+              </div>
             </div>
             <button
               v-if="hiddenGroupCount > 0"
@@ -944,8 +1126,49 @@ onBeforeUnmount(() => {
       @close="closeProfileSheet"
     >
       <div class="option-list profile-sheet-list" data-testid="home-profile-sheet">
+        <label v-if="showProfileSheetSearch" class="search profile-sheet-search">
+          <Icon name="search" :size="15" />
+          <input
+            v-model="profileSheetQuery"
+            type="search"
+            :placeholder="tr('筛选配置名称或域名')"
+            :aria-label="tr('筛选配置名称或域名')"
+            :disabled="isSheetSwitching"
+            data-testid="profile-sheet-search"
+          />
+          <button
+            v-if="profileSheetQuery"
+            type="button"
+            class="icon-btn xs"
+            :aria-label="tr('清空筛选')"
+            data-testid="profile-sheet-search-clear"
+            @click="profileSheetQuery = ''"
+          >
+            <Icon name="x" :size="13" />
+          </button>
+        </label>
+
+        <EmptyState
+          v-if="!filteredSheetProfiles.length && profileSheetTokens.length"
+          variant="no-match"
+          compact
+          :title="tr('没有匹配的配置')"
+          data-testid="profile-sheet-empty"
+        >
+          <template #action>
+            <button
+              type="button"
+              class="btn ghost sm"
+              data-testid="profile-sheet-clear-filter"
+              @click="profileSheetQuery = ''"
+            >
+              {{ tr('清空筛选') }}
+            </button>
+          </template>
+        </EmptyState>
+
         <div
-          v-for="item in orderedProfiles"
+          v-for="item in filteredSheetProfiles"
           :key="item.id"
           class="profile-sheet-item"
           :class="{
@@ -955,43 +1178,65 @@ onBeforeUnmount(() => {
           }"
           :data-testid="`sheet-item-${item.id}`"
         >
-          <button
-            type="button"
-            class="option-row profile-sheet-row"
-            :class="{ active: item.current, enabling: isEnablingProfile(item.id) }"
-            :aria-current="item.current ? 'true' : undefined"
-            :aria-busy="isEnablingProfile(item.id) || undefined"
-            :aria-disabled="isSheetSwitching || undefined"
-            :aria-describedby="sheetFailureFor(item.id) ? `sheet-error-${item.id}` : undefined"
-            :data-testid="`sheet-profile-${item.id}`"
-            @click="switchFromSheet(item)"
-          >
-            <span class="sub-icon sm"><Icon :name="item.kind === 'local' ? 'file' : 'link'" :size="16" /></span>
-            <span class="profile-sheet-body">
-              <span class="profile-sheet-title-row">
-                <span class="option-label profile-sheet-name" :title="item.name">{{ item.name }}</span>
-                <span v-if="item.current" class="tag accent sm" data-testid="sheet-current-tag">{{ tr('使用中') }}</span>
-              </span>
-              <span class="muted small">
-                {{ item.proxy_count ? tr('{0} 个节点', { 0: item.proxy_count }) : item.kind === 'local' ? tr('本地配置') : tr('远程订阅') }}
-                <template v-if="usagePercent(item.used, item.total) != null"> {{ tr('· 已用') }} {{ Math.round(usagePercent(item.used, item.total)!) }}%
-                </template>
-                <span v-if="item.expire && daysLeft(item.expire) < 0" class="text-error">{{ tr('· 已过期') }}</span>
-                <span v-else-if="item.expire && daysLeft(item.expire) <= 7" class="text-warn">{{ tr('· 剩 {0} 天', { 0: daysLeft(item.expire) }) }}</span>
-                <span v-else-if="item.failure || item.override_error" class="text-error">{{ tr('· 有异常') }}</span>
-              </span>
-            </span>
-            <span
-              v-if="isEnablingProfile(item.id)"
-              class="profile-sheet-state pending"
-              role="status"
-              data-testid="sheet-enabling"
+          <div class="profile-sheet-main">
+            <button
+              type="button"
+              class="option-row profile-sheet-row"
+              :class="{ active: item.current, enabling: isEnablingProfile(item.id) }"
+              :aria-current="item.current ? 'true' : undefined"
+              :aria-busy="isEnablingProfile(item.id) || undefined"
+              :aria-disabled="isSheetSwitching || undefined"
+              :aria-describedby="sheetFailureFor(item.id) ? `sheet-error-${item.id}` : undefined"
+              :data-testid="`sheet-profile-${item.id}`"
+              @click="switchFromSheet(item)"
             >
-              <span class="spinner xs" aria-hidden="true" />
-              <span>{{ tr('正在启用') }}</span>
-            </span>
-            <Icon v-else-if="item.current" name="check" :size="18" class="option-check" aria-hidden="true" />
-          </button>
+              <span class="sub-icon sm"><Icon :name="item.kind === 'local' ? 'file' : 'link'" :size="16" /></span>
+              <span class="profile-sheet-body">
+                <span class="profile-sheet-title-row">
+                  <span class="option-label profile-sheet-name" :title="item.name">{{ item.name }}</span>
+                  <span v-if="item.current" class="tag accent sm" data-testid="sheet-current-tag">{{ tr('使用中') }}</span>
+                </span>
+                <span class="muted small">
+                  {{ item.proxy_count ? tr('{0} 个节点', { 0: item.proxy_count }) : item.kind === 'local' ? tr('本地配置') : tr('远程订阅') }}
+                  <template v-if="usagePercent(item.used, item.total) != null"> {{ tr('· 已用') }} {{ Math.round(usagePercent(item.used, item.total)!) }}%
+                  </template>
+                  <span v-if="isUpdatingProfile(item.id)" class="profile-sheet-refresh-note"> · {{ tr('更新中') }}</span>
+                  <span v-else-if="sheetRefreshStatus[item.id] === 'success'" class="profile-sheet-refresh-note ok"> · {{ tr('已更新') }}</span>
+                  <span v-else-if="sheetRefreshStatus[item.id] === 'error'" class="text-error"> · {{ tr('更新失败') }}</span>
+                  <span v-else-if="item.expire && daysLeft(item.expire) < 0" class="text-error">{{ tr('· 已过期') }}</span>
+                  <span v-else-if="item.expire && daysLeft(item.expire) <= 7" class="text-warn">{{ tr('· 剩 {0} 天', { 0: daysLeft(item.expire) }) }}</span>
+                  <span v-else-if="item.failure || item.override_error" class="text-error">{{ tr('· 有异常') }}</span>
+                </span>
+              </span>
+              <span
+                v-if="isEnablingProfile(item.id)"
+                class="profile-sheet-state pending"
+                role="status"
+                data-testid="sheet-enabling"
+              >
+                <span class="spinner xs" aria-hidden="true" />
+                <span>{{ tr('正在启用') }}</span>
+              </span>
+              <Icon v-else-if="item.current" name="check" :size="18" class="option-check" aria-hidden="true" />
+            </button>
+            <button
+              v-if="item.kind === 'subscription'"
+              type="button"
+              class="icon-btn sm profile-sheet-refresh"
+              :class="sheetRefreshStatus[item.id]"
+              :disabled="isSheetSwitching || isUpdatingProfile(item.id)"
+              :aria-busy="isUpdatingProfile(item.id) || undefined"
+              :aria-label="tr('更新订阅')"
+              :title="isUpdatingProfile(item.id) ? tr('更新中') : sheetRefreshStatus[item.id] === 'success' ? tr('已更新') : sheetRefreshStatus[item.id] === 'error' ? tr('更新失败') : tr('更新订阅')"
+              :data-testid="`sheet-refresh-${item.id}`"
+              @click.stop="refreshFromSheet(item)"
+            >
+              <span v-if="isUpdatingProfile(item.id)" class="spinner xs" aria-hidden="true" />
+              <Icon v-else-if="sheetRefreshStatus[item.id] === 'success'" name="check" :size="14" />
+              <Icon v-else-if="sheetRefreshStatus[item.id] === 'error'" name="alert" :size="14" />
+              <Icon v-else name="refresh" :size="14" />
+            </button>
+          </div>
           <div
             v-if="sheetFailureFor(item.id)"
             :id="`sheet-error-${item.id}`"
@@ -1102,5 +1347,96 @@ onBeforeUnmount(() => {
 
 .accent-text {
   color: var(--accent-ink);
+}
+
+.hero-bare-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.compact .hero-bare-actions {
+  justify-content: center;
+}
+
+.group-row {
+  cursor: pointer;
+}
+
+.group-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.group-row.pinned {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+
+.group-pin-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  color: var(--text-3);
+  opacity: 0.72;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+
+.group-row:hover .group-pin-btn,
+.group-pin-btn:focus-visible,
+.group-pin-btn.active {
+  opacity: 1;
+}
+
+.group-pin-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.group-pin-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.profile-sheet-search {
+  margin-bottom: 4px;
+}
+
+.profile-sheet-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.profile-sheet-main .profile-sheet-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.profile-sheet-refresh {
+  flex: none;
+  margin-right: 4px;
+  color: var(--text-2);
+}
+
+.profile-sheet-refresh.success {
+  color: var(--good-ink);
+}
+
+.profile-sheet-refresh.error {
+  color: var(--poor-ink);
+}
+
+.profile-sheet-refresh-note.ok {
+  color: var(--good-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group-pin-btn {
+    transition: none;
+  }
 }
 </style>
