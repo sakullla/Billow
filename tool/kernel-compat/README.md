@@ -252,10 +252,19 @@ probe-through-dialer-proxy) and the unit suite.
 
 `evidence/option-matrix.txt` is the probe's output, one line per option with the
 Rust and Mihomo verdicts. `noop` rows must be accepted by both (a valid Mihomo
-configuration that the kernel rejects is a compatibility failure), `enabled`
-rows must be rejected by the kernel with the field named; Mihomo's own verdict is
-recorded so a form Mihomo already rejects is not counted as a gap. The probe
-exits 1 on any violation.
+configuration that the kernel rejects is a compatibility failure), `impl` rows
+are options that are implemented and must load (`t27-option-parity.{json,md}`),
+and `enabled` rows must be rejected by the kernel with the field named;
+Mihomo's own verdict is recorded so a form Mihomo already rejects is not counted
+as a gap. The probe exits 1 on any violation.
+
+T27 reduced the first batch from 304 enabled / 250 `rust=reject, mihomo=accept`
+rows to 179 enabled / 135 disagreements (0 problems, 50 implemented cases):
+`BasicOption` knobs (tfo/mptcp/interface-name/routing-mark/ip-version) for every
+first-batch family, TLS identities (fingerprint/name-cert-verify/certificate/
+private-key), QUIC congestion/window/MTU tuning for TUIC, Hysteria2 and
+Hysteria v1, the vless `ws-headers` inert key and socks5 `UDP ASSOCIATE`. The remaining per-family
+gaps and the platform conditions are listed in `evidence/t27-option-parity.md`.
 
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every

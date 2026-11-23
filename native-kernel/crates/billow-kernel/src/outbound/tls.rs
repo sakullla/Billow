@@ -14,8 +14,9 @@ use std::io;
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::client::WebPkiServerVerifier;
 use rustls::crypto::{ring, CryptoProvider};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
@@ -129,6 +130,188 @@ impl ServerCertVerifier for AcceptAny {
     }
 }
 
+/// `fingerprint`: accept the handshake when any presented certificate matches
+/// the SHA-256 pin. A leaf match skips the chain/name check (the pinned
+/// `NewFingerprintVerifier` returns before verifying); a non-leaf match
+/// verifies the chain with the pinned certificate as the anchor.
+#[derive(Debug)]
+struct PinnedVerifier {
+    pins: Vec<Vec<u8>>,
+    name_cert_verify: Option<String>,
+    provider: Arc<CryptoProvider>,
+}
+
+impl ServerCertVerifier for PinnedVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        use sha2::{Digest, Sha256};
+        let digest = |der: &[u8]| Sha256::digest(der).to_vec();
+        if self
+            .pins
+            .iter()
+            .any(|pin| pin.as_slice() == digest(end_entity.as_ref()).as_slice())
+        {
+            // Matching the leaf is the pin: the pinned verifier accepts here
+            // without a name or chain check.
+            return Ok(ServerCertVerified::assertion());
+        }
+        for (index, cert) in intermediates.iter().enumerate() {
+            if !self
+                .pins
+                .iter()
+                .any(|pin| pin.as_slice() == digest(cert.as_ref()).as_slice())
+            {
+                continue;
+            }
+            let mut roots = RootCertStore::empty();
+            roots.add(cert.clone()).map_err(|error| {
+                rustls::Error::General(format!("pinned intermediate is not a CA: {error}"))
+            })?;
+            let verifier = WebPkiServerVerifier::builder_with_provider(
+                Arc::new(roots),
+                self.provider.clone(),
+            )
+            .build()
+            .map_err(|error| rustls::Error::General(error.to_string()))?;
+            let name = match &self.name_cert_verify {
+                Some(name) => ServerName::try_from(name.clone()).map_err(|error| {
+                    rustls::Error::General(format!("invalid name-cert-verify: {error}"))
+                })?,
+                None => server_name.clone(),
+            };
+            // `intermediates[..index]` are the certificates between the leaf
+            // and the pinned anchor.
+            return verifier.verify_server_cert(
+                end_entity,
+                &intermediates[..index],
+                &name,
+                ocsp,
+                now,
+            );
+        }
+        Err(rustls::Error::General(
+            "certificate fingerprints do not match".to_string(),
+        ))
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// `name-cert-verify`: verify the chain against this name while the SNI stays
+/// `sni`/`server` (pinned `ca.NewNameCertVerifier`).
+#[derive(Debug)]
+struct NameVerifier {
+    inner: Arc<WebPkiServerVerifier>,
+    name: ServerName<'static>,
+}
+
+impl ServerCertVerifier for NameVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        self.inner
+            .verify_server_cert(end_entity, intermediates, &self.name, ocsp, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+/// Load `certificate`/`private-key`: inline PEM when the value contains a PEM
+/// header, otherwise a file path (the pinned loader also tries inline first).
+fn client_auth(
+    settings: &TlsSettings,
+) -> io::Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>> {
+    match (&settings.certificate, &settings.private_key) {
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "options 'certificate' and 'private-key' must be set together",
+        )),
+        (Some(certificate), Some(private_key)) => {
+            let cert_pem = read_material(certificate)?;
+            let key_pem = read_material(private_key)?;
+            let certs = parse_pem_certs(&cert_pem).map_err(io::Error::other)?;
+            let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(key_pem.as_bytes()))
+                .map_err(io::Error::other)?
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "private-key holds no key block")
+                })?;
+            Ok(Some((certs, key)))
+        }
+    }
+}
+
+fn read_material(value: &str) -> io::Result<String> {
+    if value.contains("-----BEGIN") {
+        Ok(value.to_string())
+    } else {
+        std::fs::read_to_string(value)
+    }
+}
+
 pub fn client_config(
     settings: &TlsSettings,
     tls: &ClientTls,
@@ -201,15 +384,45 @@ fn client_config_with(
             .with_safe_default_protocol_versions()
             .map_err(io::Error::other)?
     };
-    let mut config = if settings.skip_cert_verify {
+    let builder = if let Some(pins) = &settings.fingerprint {
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(PinnedVerifier {
+                pins: vec![pins.clone()],
+                name_cert_verify: settings.name_cert_verify.clone(),
+                provider: provider.clone(),
+            }))
+    } else if let Some(name) = &settings.name_cert_verify {
+        let name = ServerName::try_from(name.clone()).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid name-cert-verify '{name}': {error}"),
+            )
+        })?;
+        let inner = WebPkiServerVerifier::builder_with_provider(
+            Arc::new(tls.roots().clone()),
+            provider.clone(),
+        )
+        .build()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NameVerifier {
+                inner,
+                name,
+            }))
+    } else if settings.skip_cert_verify {
         builder
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(AcceptAny { provider }))
-            .with_no_client_auth()
     } else {
-        builder
-            .with_root_certificates(tls.roots().clone())
-            .with_no_client_auth()
+        builder.with_root_certificates(tls.roots().clone())
+    };
+    let mut config = match client_auth(settings)? {
+        Some((certs, key)) => builder
+            .with_client_auth_cert(certs, key)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?,
+        None => builder.with_no_client_auth(),
     };
     config.alpn_protocols = alpn.iter().map(|a| a.as_bytes().to_vec()).collect();
     config.enable_sni = enable_sni;

@@ -75,6 +75,70 @@ pub struct TlsSettings {
     /// Also the `Host` value of a WebSocket upgrade.
     pub skip_cert_verify: bool,
     pub alpn: Vec<String>,
+    /// `name-cert-verify`: verify the chain against this name while SNI stays
+    /// `sni`/`server` (Mihomo `ca.NewNameCertVerifier`).
+    pub name_cert_verify: Option<String>,
+    /// `fingerprint`: a SHA-256 certificate pin (hex, colons allowed). Mihomo
+    /// accepts a match on any presented certificate; a leaf match skips the
+    /// chain/name check, a non-leaf match verifies the chain with that
+    /// certificate as the anchor.
+    pub fingerprint: Option<Vec<u8>>,
+    /// `certificate` / `private-key`: inline PEM or a file path loaded when the
+    /// TLS handshake is built (Mihomo's `NewTLSKeyPairLoader`).
+    pub certificate: Option<String>,
+    pub private_key: Option<String>,
+}
+
+/// `ip-version` (Mihomo `constant.DNSPrefer`): controls which addresses a
+/// proxy-server name resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IpVersion {
+    #[default]
+    Dual,
+    V4Only,
+    V6Only,
+    V4Prefer,
+    V6Prefer,
+}
+
+impl IpVersion {
+    /// The pinned `UnmarshalText` maps any unknown spelling to `dual`.
+    pub fn parse(value: &str) -> IpVersion {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ipv4" => IpVersion::V4Only,
+            "ipv6" => IpVersion::V6Only,
+            "ipv4-prefer" => IpVersion::V4Prefer,
+            "ipv6-prefer" => IpVersion::V6Prefer,
+            _ => IpVersion::Dual,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IpVersion::Dual => "dual",
+            IpVersion::V4Only => "ipv4",
+            IpVersion::V6Only => "ipv6",
+            IpVersion::V4Prefer => "ipv4-prefer",
+            IpVersion::V6Prefer => "ipv6-prefer",
+        }
+    }
+}
+
+/// Socket-shaping options every outbound embeds through Mihomo's
+/// `BasicOption`: they apply to the connection to the proxy server, not to the
+/// target stream.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DialerOptions {
+    /// TCP Fast Open on the proxy-server connection.
+    pub tfo: bool,
+    /// Multipath TCP (`IPPROTO_MPTCP`, Linux only).
+    pub mptcp: bool,
+    /// Bind the socket to this interface.
+    pub interface_name: Option<String>,
+    /// `SO_MARK` on Linux; accepted and logged as unsupported elsewhere, as
+    /// the pinned dialer does.
+    pub routing_mark: u32,
+    pub ip_version: IpVersion,
 }
 
 /// WebSocket transport options (`ws-opts`).
@@ -100,6 +164,8 @@ pub struct Socks5Outbound {
     pub password: Option<Secret>,
     pub tls: bool,
     pub tls_settings: TlsSettings,
+    /// SOCKS5 `UDP ASSOCIATE` to this server (RFC 1928 datagram relay).
+    pub udp: bool,
     /// `dialer-proxy`: reach this server through another configured proxy.
     pub dialer_proxy: Option<String>,
 }
@@ -871,6 +937,12 @@ pub struct Hysteria2Outbound {
     pub alpn: Vec<String>,
     pub receive_bps: u64,
     pub handshake_timeout: u64,
+    /// BBR initial congestion window in packets (pinned default 32, one
+    /// packet = 1200 bytes). `0` keeps quinn's default.
+    pub cwnd: u32,
+    /// QUIC receive windows (`initial-*`/`max-*` share one value in quinn).
+    pub stream_receive_window: Option<u32>,
+    pub connection_receive_window: Option<u32>,
     pub dialer_proxy: Option<String>,
 }
 
@@ -887,6 +959,9 @@ pub struct HysteriaOutbound {
     pub alpn: Vec<String>,
     pub send_bps: u64,
     pub receive_bps: u64,
+    pub stream_receive_window: Option<u32>,
+    pub connection_receive_window: Option<u32>,
+    pub disable_mtu_discovery: bool,
     pub dialer_proxy: Option<String>,
 }
 
@@ -908,6 +983,14 @@ pub struct TuicOutbound {
     pub disable_sni: bool,
     pub heartbeat_interval: u64,
     pub request_timeout: u64,
+    /// `congestion-controller`: cubic, new_reno or bbr (the pinned default is
+    /// quic-go's cubic).
+    pub congestion_controller: Option<String>,
+    /// Initial congestion window in packets (pinned default 32).
+    pub cwnd: u32,
+    pub stream_receive_window: Option<u32>,
+    pub connection_receive_window: Option<u32>,
+    pub disable_mtu_discovery: bool,
     pub dialer_proxy: Option<String>,
 }
 
@@ -917,6 +1000,9 @@ pub struct TuicOutbound {
 pub struct Proxy {
     pub name: String,
     pub protocol: Protocol,
+    /// `BasicOption` socket-shaping options (tfo/mptcp/interface-name/
+    /// routing-mark/ip-version), parsed once for every outbound type.
+    pub dialer: DialerOptions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1112,6 +1198,7 @@ impl Proxy {
     /// `plugin`; that combination is reported unsupported, never accepted silently.
     pub fn udp_enabled(&self) -> bool {
         match &self.protocol {
+            Protocol::Socks5(p) => p.udp,
             Protocol::Shadowsocks(p) => p.udp,
             Protocol::Trojan(p) => p.udp,
             Protocol::Ssr(p) => p.udp,
@@ -1149,6 +1236,45 @@ fn is_noop_value(value: &serde_yaml::Value) -> bool {
         serde_yaml::Value::Mapping(map) => map.iter().all(|(_, item)| is_noop_value(item)),
         serde_yaml::Value::Tagged(tagged) => is_noop_value(&tagged.value),
     }
+}
+
+/// `fingerprint`: SHA-256 certificate pin. The pinned `NewFingerprintVerifier`
+/// strips colons, hex-decodes and requires exactly 32 bytes; browser names are
+/// rejected with a message pointing at `client-fingerprint`.
+fn parse_fingerprint(encoded: &str) -> Result<Vec<u8>, String> {
+    let compact = encoded.trim().replace(':', "");
+    let bytes = hex::decode(&compact).map_err(|error| format!("not a hex string: {error}"))?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "expected a SHA-256 fingerprint (32 bytes), found {} bytes; browser fingerprints belong to 'client-fingerprint'",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
+/// quinn's flow-control window from the pinned `initial-*`/`max-*` pair: the
+/// maximum wins when set (quinn uses one value for both), else the initial.
+fn receive_window(
+    entry: &mut Entry<'_>,
+    initial: &str,
+    maximum: &str,
+) -> Result<Option<u32>, ConfigError> {
+    let mut chosen = None;
+    for key in [initial, maximum] {
+        match entry.int(key)? {
+            Some(value) if value < 0 => {
+                return Err(entry.invalid(format!("option '{key}' must not be negative")))
+            }
+            Some(0) | None => {}
+            Some(value) => {
+                let value = u32::try_from(value)
+                    .map_err(|_| entry.invalid(format!("option '{key}' is out of range")))?;
+                chosen = Some(value);
+            }
+        }
+    }
+    Ok(chosen)
 }
 
 /// Blocks Mihomo validates even when empty: `reality-opts` requires a
@@ -1282,6 +1408,12 @@ fn validate_udp_chains(proxies: &[Proxy]) -> Result<(), ConfigError> {
         }
         match hops.len() {
             1 => {}
+            2 if matches!(proxy.protocol, Protocol::Socks5(_)) => {
+                return Err(ConfigError::Unsupported(format!(
+                    "proxies[{i}] (name={}, type=socks5): option 'udp' with 'dialer-proxy' is not implemented (the SOCKS5 UDP association dials the server directly)",
+                    proxy.name
+                )))
+            }
             2 => {
                 let hop = hops[1];
                 if !matches!(hop.protocol, Protocol::Socks5(_)) {
@@ -1541,12 +1673,14 @@ impl<'a> Entry<'a> {
     }
 
     /// TLS options the type declares: `socks5` has no `sni`/`alpn`, `http` no
-    /// `alpn` (Mihomo ignores those there, so reading them would apply a value
-    /// the reference ignores).
+    /// `alpn` (Mihomo ignores those there, so identifying them would apply a
+    /// value the reference ignores). `tls` gates the certificate-identity
+    /// options: Mihomo ignores them entirely when TLS is off.
     fn tls_settings(
         &mut self,
         sni: bool,
         alpn: bool,
+        tls: bool,
     ) -> Result<TlsSettings, ConfigError> {
         let sni = if sni {
             self.string("sni")?.filter(|s| !s.is_empty())
@@ -1555,10 +1689,58 @@ impl<'a> Entry<'a> {
         };
         let skip = self.bool("skip-cert-verify")?.unwrap_or(false);
         let alpn = if alpn { self.string_list("alpn")? } else { Vec::new() };
-        Ok(TlsSettings {
+        let mut settings = TlsSettings {
             sni,
             skip_cert_verify: skip,
             alpn,
+            ..TlsSettings::default()
+        };
+        if tls {
+            settings.name_cert_verify = self
+                .string("name-cert-verify")?
+                .filter(|s| !s.is_empty());
+            settings.certificate = self
+                .string("certificate")?
+                .filter(|s| !s.is_empty());
+            settings.private_key = self
+                .string("private-key")?
+                .filter(|s| !s.is_empty());
+            if let Some(encoded) = self.string("fingerprint")?.filter(|s| !s.is_empty()) {
+                settings.fingerprint = Some(parse_fingerprint(&encoded).map_err(|error| {
+                    self.invalid(format!("option 'fingerprint': {error}"))
+                })?);
+            }
+        }
+        Ok(settings)
+    }
+
+    /// `BasicOption` socket options, parsed for every outbound type. They are
+    /// marked used here so a protocol parser does not have to know about them;
+    /// mesh adapters still reject the forms they cannot apply.
+    fn dialer_options(&mut self) -> Result<DialerOptions, ConfigError> {
+        let tfo = self.bool("tfo")?.unwrap_or(false);
+        let mptcp = self.bool("mptcp")?.unwrap_or(false);
+        let interface_name = self
+            .string("interface-name")?
+            .filter(|value| !value.is_empty());
+        let routing_mark = match self.int("routing-mark")? {
+            Some(value) if value < 0 => {
+                return Err(self.invalid("option 'routing-mark' must not be negative"))
+            }
+            Some(0) | None => 0,
+            Some(value) => u32::try_from(value)
+                .map_err(|_| self.invalid("option 'routing-mark' is out of range"))?,
+        };
+        let ip_version = match self.string("ip-version")? {
+            Some(value) => IpVersion::parse(&value),
+            None => IpVersion::default(),
+        };
+        Ok(DialerOptions {
+            tfo,
+            mptcp,
+            interface_name,
+            routing_mark,
+            ip_version,
         })
     }
 
@@ -1846,6 +2028,7 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
     };
     let name = entry.name.clone();
     let kind = entry.kind.clone();
+    let dialer = entry.dialer_options()?;
     let protocol = match kind.as_str() {
         "socks5" => Protocol::Socks5(parse_socks5(&mut entry)?),
         "http" => Protocol::Http(parse_http(&mut entry)?),
@@ -1879,7 +2062,11 @@ fn parse_proxy(mapping: &serde_yaml::Mapping, index: usize) -> Result<Proxy, Con
             )))
         }
     };
-    Ok(Proxy { name, protocol })
+    Ok(Proxy {
+        name,
+        protocol,
+        dialer,
+    })
 }
 
 /// Basic options shared by every outbound. The mesh adapters dial their own
@@ -1903,6 +2090,46 @@ fn reject_device_basic(entry: &mut Entry<'_>) -> Result<(), ConfigError> {
     }
     if entry.string("dialer-proxy")?.filter(|v| !v.is_empty()).is_some() {
         return Err(entry.unsupported("option 'dialer-proxy' is not implemented for mesh outbounds (their control sockets are dialled locally)"));
+    }
+    Ok(())
+}
+
+/// Families whose local socket is not the stream dialer (QUIC/packet-device
+/// adapters) still name the BasicOption forms they cannot apply, so a
+/// configuration never looks accepted while the knob is dropped.
+fn reject_unwired_basic(entry: &mut Entry<'_>, kind: &str) -> Result<(), ConfigError> {
+    if entry.bool("tfo")?.unwrap_or(false) {
+        return Err(entry.unsupported(format!(
+            "option 'tfo' is not implemented for {kind} (its socket is not created by the stream dialer)"
+        )));
+    }
+    if entry.bool("mptcp")?.unwrap_or(false) {
+        return Err(entry.unsupported(format!(
+            "option 'mptcp' is not implemented for {kind} (its socket is not created by the stream dialer)"
+        )));
+    }
+    if entry
+        .string("interface-name")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(format!(
+            "option 'interface-name' is not implemented for {kind}"
+        )));
+    }
+    if entry.int("routing-mark")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported(format!(
+            "option 'routing-mark' is not implemented for {kind}"
+        )));
+    }
+    if entry
+        .string("ip-version")?
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Err(entry.unsupported(format!(
+            "option 'ip-version' is not implemented for {kind}"
+        )));
     }
     Ok(())
 }
@@ -2399,15 +2626,11 @@ fn parse_socks5(entry: &mut Entry<'_>) -> Result<Socks5Outbound, ConfigError> {
         .filter(|s| !s.is_empty())
         .map(Secret::new);
     let tls = entry.bool("tls")?.unwrap_or(false);
-    let tls_settings = entry.tls_settings(false, false)?;
+    let tls_settings = entry.tls_settings(false, false, tls)?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
-    // `udp: false` states the same thing this outbound does (no UDP); `true`
-    // would need a UDP association this kernel does not open to a SOCKS5 peer.
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'udp' is not implemented for socks5 (UDP over proxies is implemented for ss and trojan)",
-        ));
-    }
+    // SOCKS5 `UDP ASSOCIATE` (RFC 1928): the control connection stays open and
+    // datagrams carry the SOCKS5 address header to the relay the server names.
+    let udp = entry.bool("udp")?.unwrap_or(false);
     let allowed = [
         "dialer-proxy",
         "name",
@@ -2436,6 +2659,7 @@ fn parse_socks5(entry: &mut Entry<'_>) -> Result<Socks5Outbound, ConfigError> {
         password,
         tls,
         tls_settings,
+        udp,
         dialer_proxy,
     })
 }
@@ -2452,7 +2676,7 @@ fn parse_http(entry: &mut Entry<'_>) -> Result<HttpOutbound, ConfigError> {
         .filter(|s| !s.is_empty())
         .map(Secret::new);
     let tls = entry.bool("tls")?.unwrap_or(false);
-    let tls_settings = entry.tls_settings(true, false)?;
+    let tls_settings = entry.tls_settings(true, false, tls)?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let headers = entry.string_map("headers")?;
     // Mihomo's HTTP outbound has no `udp` option at all, so any occurrence is
@@ -2562,7 +2786,7 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
     if password.expose().len() > 56 {
         return Err(entry.invalid("option 'password' longer than 56 bytes"));
     }
-    let tls_settings = entry.tls_settings(true, true)?;
+    let tls_settings = entry.tls_settings(true, true, true)?;
     let network = entry
         .string("network")?
         .unwrap_or_else(|| "tcp".to_string());
@@ -2639,7 +2863,7 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
         )));
     }
     let tls = entry.bool("tls")?.unwrap_or(false);
-    let mut tls_settings = entry.tls_settings(true, true)?;
+    let mut tls_settings = entry.tls_settings(true, true, tls)?;
     // `servername` is the pinned type's alias for `sni`.
     if tls_settings.sni.is_none() {
         tls_settings.sni = entry.string("servername")?.filter(|value| !value.is_empty());
@@ -2671,14 +2895,15 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
             return Err(entry.unsupported(format!("option '{key}' is not implemented")));
         }
     }
-    for key in ["packet-encoding", "ws-headers"] {
-        if entry
-            .get(key)
-            .is_some_and(|value| !is_noop_value(value))
-        {
-            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
-        }
+    if entry
+        .get("packet-encoding")
+        .is_some_and(|value| !is_noop_value(value))
+    {
+        return Err(entry.unsupported("option 'packet-encoding' is not implemented"));
     }
+    // The pinned `VlessOption` declares `ws-headers` but no code path reads it
+    // (`WSOpts.Headers` is the one applied), so accepting it is exact parity.
+    let _ = entry.string_map("ws-headers")?;
     let allowed = [
         "dialer-proxy",
         "name",
@@ -2733,7 +2958,7 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
     let password = Secret::new(entry.required_string("password")?);
-    let tls_settings = entry.tls_settings(true, true)?;
+    let tls_settings = entry.tls_settings(true, true, true)?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     for key in [
         "client-metadata",
@@ -2820,7 +3045,7 @@ fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
         ))
     })?;
     let tls = entry.bool("tls")?.unwrap_or(false);
-    let mut tls_settings = entry.tls_settings(true, true)?;
+    let mut tls_settings = entry.tls_settings(true, true, tls)?;
     // `servername` is the pinned type's alias for the TLS name.
     if tls_settings.sni.is_none() {
         tls_settings.sni = entry.string("servername")?.filter(|value| !value.is_empty());
@@ -2987,6 +3212,7 @@ fn parse_snell(entry: &mut Entry<'_>) -> Result<SnellOutbound, ConfigError> {
 /// multiplexing levels and traffic patterns are rejected with the reason
 /// recorded instead of being ignored.
 fn parse_mieru(entry: &mut Entry<'_>) -> Result<MieruOutbound, ConfigError> {
+    reject_unwired_basic(entry, "mieru")?;
     let server = entry.server()?;
     let port = entry.int("port")?;
     let port_range = entry
@@ -3124,6 +3350,7 @@ fn finish_mieru(
 /// kernel implements the legacy mask, TCP sessions and the session mux, and
 /// rejects the tunnel modes and UoT with the reason recorded.
 fn parse_sudoku(entry: &mut Entry<'_>) -> Result<SudokuOutbound, ConfigError> {
+    reject_unwired_basic(entry, "sudoku")?;
     let server = entry.server()?;
     let port = entry.port()?;
     let key = Secret::new(entry.required_string("key")?);
@@ -3326,7 +3553,7 @@ fn parse_trusttunnel(entry: &mut Entry<'_>) -> Result<TrustTunnelOutbound, Confi
     let port = entry.port()?;
     let username = Secret::new(entry.string("username")?.unwrap_or_default());
     let password = Secret::new(entry.string("password")?.unwrap_or_default());
-    let tls_settings = entry.tls_settings(true, true)?;
+    let tls_settings = entry.tls_settings(true, true, true)?;
     if !tls_settings.alpn.is_empty()
         && !tls_settings.alpn.iter().any(|value| value == "h2")
     {
@@ -3561,7 +3788,7 @@ fn parse_gost_relay(entry: &mut Entry<'_>) -> Result<GostRelayOutbound, ConfigEr
     let tls = entry.bool("tls")?.unwrap_or(false);
     let mux = entry.bool("mux")?.unwrap_or(false);
     let udp = entry.bool("udp")?.unwrap_or(false);
-    let tls_settings = entry.tls_settings(true, false)?;
+    let tls_settings = entry.tls_settings(true, false, tls)?;
     let username = entry
         .string("username")?
         .filter(|value| !value.is_empty())
@@ -3613,7 +3840,7 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
     let server = entry.server()?;
     let port = entry.port()?;
     let password = Secret::new(entry.string("password")?.unwrap_or_default());
-    let tls_settings = entry.tls_settings(true, true)?;
+    let tls_settings = entry.tls_settings(true, true, true)?;
     let alpn = entry.string_list("alpn")?;
     let up = entry.string("up")?;
     if up.as_deref().is_some_and(|value| !value.is_empty()) {
@@ -3664,27 +3891,35 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
     if entry.int("udp-mtu")?.unwrap_or(0) != 0 {
         return Err(entry.unsupported("option 'udp-mtu' is not implemented (UDP relay)"));
     }
-    for key in ["cwnd"] {
-        if entry.int(key)?.unwrap_or(0) != 0 {
-            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+    let cwnd = match entry.int("cwnd")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'cwnd' must not be negative"))
         }
-    }
+        Some(0) | None => 0,
+        Some(value) => u32::try_from(value)
+            .map_err(|_| entry.invalid("option 'cwnd' is out of range"))?,
+    };
     if entry
         .string("bbr-profile")?
         .is_some_and(|value| !value.is_empty())
     {
-        return Err(entry.unsupported("option 'bbr-profile' is not implemented"));
+        return Err(entry.unsupported(
+            "option 'bbr-profile' is not implemented: quinn's BBR controller has no profile selector",
+        ));
     }
-    for key in [
+    // quinn exposes one receive window per stream/connection (it uses the same
+    // value as both the initial and maximum): take the maximum when both are
+    // set, otherwise the initial one.
+    let stream_receive_window = receive_window(
+        entry,
         "initial-stream-receive-window",
         "max-stream-receive-window",
+    )?;
+    let connection_receive_window = receive_window(
+        entry,
         "initial-connection-receive-window",
         "max-connection-receive-window",
-    ] {
-        if entry.int(key)?.unwrap_or(0) != 0 {
-            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
-        }
-    }
+    )?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let allowed = [
         "dialer-proxy",
@@ -3730,6 +3965,9 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
         alpn,
         receive_bps,
         handshake_timeout,
+        cwnd,
+        stream_receive_window,
+        connection_receive_window,
         dialer_proxy,
     })
 }
@@ -3798,18 +4036,13 @@ fn parse_hysteria(entry: &mut Entry<'_>) -> Result<HysteriaOutbound, ConfigError
     if entry.int("hop-interval")?.unwrap_or(0) != 0 {
         return Err(entry.unsupported("option 'hop-interval' is not implemented (port hopping)"));
     }
-    for key in ["recv-window-conn", "recv-window"] {
-        if entry.int(key)?.unwrap_or(0) != 0 {
-            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
-        }
-    }
-    if entry.bool("disable-mtu-discovery")?.unwrap_or(false) {
-        return Err(entry.unsupported("option 'disable-mtu-discovery' is not implemented"));
-    }
+    let stream_receive_window = receive_window(entry, "recv-window-conn", "")?;
+    let connection_receive_window = receive_window(entry, "recv-window", "")?;
+    let disable_mtu_discovery = entry.bool("disable-mtu-discovery")?.unwrap_or(false);
     if entry.bool("fast-open")?.unwrap_or(false) {
-        return Err(entry.unsupported("option 'fast-open' is not implemented"));
+        return Err(entry.unsupported("option 'fast-open' is not implemented (QUIC 0-RTT)"));
     }
-    let tls_settings = entry.tls_settings(true, true)?;
+    let tls_settings = entry.tls_settings(true, true, true)?;
     let alpn = entry.string_list("alpn")?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let allowed = [
@@ -3853,6 +4086,9 @@ fn parse_hysteria(entry: &mut Entry<'_>) -> Result<HysteriaOutbound, ConfigError
         alpn,
         send_bps,
         receive_bps,
+        stream_receive_window,
+        connection_receive_window,
+        disable_mtu_discovery,
         dialer_proxy,
     })
 }
@@ -3879,7 +4115,7 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     };
     let password = Secret::new(entry.string("password")?.unwrap_or_default());
     let ip = entry.string("ip")?.filter(|value| !value.is_empty());
-    let mut tls_settings = entry.tls_settings(true, true)?;
+    let mut tls_settings = entry.tls_settings(true, true, true)?;
     let disable_sni = entry.bool("disable-sni")?.unwrap_or(false);
     // The pinned client sets both `ServerName = ""` and
     // `InsecureSkipVerify = true` for `disable-sni` (TLS needs one of them).
@@ -3907,35 +4143,66 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
             ));
         }
     }
-    for key in [
-        "congestion-controller",
-        "bbr-profile",
-        "max-udp-relay-packet-size",
-        "cwnd",
-        "recv-window-conn",
-        "recv-window",
-        "max-datagram-frame-size",
-        "udp-over-stream-version",
-    ] {
-        let requested = if key == "congestion-controller" || key == "bbr-profile" {
-            entry.string(key)?.filter(|value| !value.is_empty()).is_some()
-        } else {
-            entry.int(key)?.unwrap_or(0) != 0
-        };
-        if requested {
-            return Err(entry.unsupported(format!(
-                "option '{key}' is not implemented (one QUIC connection per dial; UDP relay and congestion tuning are not wired)"
-            )));
-        }
+    // Congestion tuning maps onto quinn's transport config. cubic/new_reno/bbr
+    // exist in quinn; the meta BBR variants do not, so they are rejected by
+    // name rather than silently downgraded.
+    let congestion_controller = match entry
+        .string("congestion-controller")?
+        .filter(|value| !value.is_empty())
+    {
+        None => None,
+        Some(value) => match value.as_str() {
+            "cubic" | "new_reno" | "bbr" => Some(value),
+            other => {
+                return Err(entry.unsupported(format!(
+                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr; quinn has no meta BBR variant)"
+                )))
+            }
+        },
+    };
+    if entry
+        .string("bbr-profile")?
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Err(entry.unsupported(
+            "option 'bbr-profile' is not implemented: quinn's BBR controller has no profile selector",
+        ));
     }
-    for key in [
-        "reduce-rtt",
-        "fast-open",
-        "disable-mtu-discovery",
-        "udp-over-stream",
-    ] {
+    let cwnd = match entry.int("cwnd")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'cwnd' must not be negative"))
+        }
+        Some(0) | None => 0,
+        Some(value) => u32::try_from(value)
+            .map_err(|_| entry.invalid("option 'cwnd' is out of range"))?,
+    };
+    let stream_receive_window = receive_window(entry, "recv-window-conn", "")?;
+    let connection_receive_window = receive_window(entry, "recv-window", "")?;
+    let disable_mtu_discovery = entry.bool("disable-mtu-discovery")?.unwrap_or(false);
+    if entry
+        .int("max-udp-relay-packet-size")?
+        .unwrap_or(0)
+        != 0
+    {
+        return Err(entry.unsupported(
+            "option 'max-udp-relay-packet-size' is not implemented (TUIC UDP relay)",
+        ));
+    }
+    if entry.int("max-datagram-frame-size")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported(
+            "option 'max-datagram-frame-size' is not implemented (TUIC UDP datagrams)",
+        ));
+    }
+    if entry.int("udp-over-stream-version")?.unwrap_or(0) != 0 {
+        return Err(entry.unsupported(
+            "option 'udp-over-stream-version' is not implemented (UoT over TUIC)",
+        ));
+    }
+    for key in ["reduce-rtt", "fast-open", "udp-over-stream"] {
         if entry.bool(key)?.unwrap_or(false) {
-            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+            return Err(entry.unsupported(format!(
+                "option '{key}' is not implemented (TUIC 0-RTT / UDP relay)"
+            )));
         }
     }
     // A per-connection stream cap is trivially honoured: this client opens at
@@ -3992,6 +4259,11 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
         disable_sni,
         heartbeat_interval,
         request_timeout,
+        congestion_controller,
+        cwnd,
+        stream_receive_window,
+        connection_receive_window,
+        disable_mtu_discovery,
         dialer_proxy,
     })
 }
@@ -4009,6 +4281,7 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
 ///   variant, `h3-l4proxy`, the QUIC congestion-controller options and
 ///   `dialer-proxy` are still rejected by name.
 fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
+    reject_unwired_basic(entry, "masque")?;
     let server = entry.server()?;
     let port = entry.port()?;
     if let Some(network) = entry.string("network")?.filter(|value| !value.is_empty()) {
@@ -4197,7 +4470,7 @@ fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
         Some(value) => value as u64,
         None => 0,
     };
-    let tls_settings = entry.tls_settings(true, false)?;
+    let tls_settings = entry.tls_settings(true, false, false)?;
     // A pinned placeholder: the adapter sets the option but never verifies a
     // certificate name (it pins the endpoint key instead), so it is a no-op.
     let _ = entry.string("name-cert-verify")?;
@@ -4300,6 +4573,7 @@ fn parse_masque_dns_server(value: &str) -> Result<SocketAddr, String> {
 /// the tunnel into TCP/UDP sockets is T6/T7, so `ip-stack`, `remote-dns-resolve`
 /// and `dns` are rejected by name.
 fn parse_wireguard(entry: &mut Entry<'_>) -> Result<WireguardOutbound, ConfigError> {
+    reject_unwired_basic(entry, "wireguard")?;
     let private_key_text = entry.required_string("private-key")?;
     if crate::outbound::wireguard::decode_key(&private_key_text).is_err() {
         return Err(entry.invalid("option 'private-key' must be base64 of 32 bytes"));
@@ -4734,6 +5008,7 @@ fn openvpn_auth(value: &str) -> Option<String> {
 }
 
 fn parse_openvpn(entry: &mut Entry<'_>) -> Result<OpenVpnOutbound, ConfigError> {
+    reject_unwired_basic(entry, "openvpn")?;
     let server = entry.server()?;
     let port = entry.port()?;
     let proto = match entry.string("proto")?.unwrap_or_default() {
@@ -5021,6 +5296,7 @@ fn wireguard_u16(entry: &mut Entry<'_>, key: &str, default: u16) -> Result<u16, 
 ///   mihomo's private Brutal controller, which quinn does not have; only their
 ///   no-op values are accepted.
 fn parse_shadowquic(entry: &mut Entry<'_>) -> Result<ShadowQuicOutbound, ConfigError> {
+    reject_unwired_basic(entry, "shadowquic")?;
     let server = entry.server()?;
     let port = entry.port()?;
     let username = entry.string("username")?.unwrap_or_default();

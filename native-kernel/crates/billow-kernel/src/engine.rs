@@ -1742,6 +1742,7 @@ async fn serve_udp_associate(
     // it; in-flight replies of the previous family are dropped, which the log
     // records.
     let mut direct_v4 = true;
+    let mut socks5: Option<outbound::socks5::Socks5Udp> = None;
     let mut ss: Option<outbound::udp::SsUdp> = None;
     let mut trojan: Option<outbound::udp::TrojanUdp> = None;
     let mut ssr: Option<outbound::udp::SsrUdp> = None;
@@ -1754,6 +1755,7 @@ async fn serve_udp_associate(
     // or trojan buffer.
     let mut client_buf = vec![0u8; outbound::udp::MAX_DATAGRAM];
     let mut direct_buf: Option<Vec<u8>> = None;
+    let mut socks5_buf: Option<Vec<u8>> = None;
     let mut ss_buf: Option<Vec<u8>> = None;
     let mut trojan_buf: Option<Vec<u8>> = None;
     let mut ssr_buf: Option<Vec<u8>> = None;
@@ -1767,6 +1769,7 @@ async fn serve_udp_associate(
     // its branch cannot be polled again against a dead stream (which would spin
     // on an immediate EOF).
     let mut direct_eof = false;
+    let mut socks5_eof = false;
     let mut ss_eof = false;
     let mut trojan_eof = false;
     let mut ssr_eof = false;
@@ -1779,6 +1782,11 @@ async fn serve_udp_associate(
             direct = None;
             direct_buf = None;
             direct_eof = false;
+        }
+        if socks5_eof {
+            socks5 = None;
+            socks5_buf = None;
+            socks5_eof = false;
         }
         if ss_eof {
             ss = None;
@@ -1947,14 +1955,46 @@ async fn serve_udp_associate(
                         socket.send_to(payload, destination).await.map(|_| ())
                     }
                     Some(proxy) => match &proxy.protocol {
+                        crate::proxies::Protocol::Socks5(option) if option.udp => {
+                            if socks5.is_none() {
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::socks5::Socks5Udp::connect(
+                                        option,
+                                        limits.dial_timeout,
+                                        &context.runtime.tls,
+                                    ),
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        socks5 = Some(association);
+                                        socks5_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "socks5 UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            socks5
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&outgoing, payload)
+                                .await
+                        }
                         crate::proxies::Protocol::Shadowsocks(option) if option.udp => {
                             if ss.is_none() {
                                 let hops = chain_for(config, &proxy);
-                            match outbound::udp::SsUdp::connect(
-                                option,
-                                &hops,
-                                limits.dial_timeout,
-                                &context.runtime.tls,
+                            match outbound::with_dialer(
+                                proxy.dialer.clone(),
+                                outbound::udp::SsUdp::connect(
+                                    option,
+                                    &hops,
+                                    limits.dial_timeout,
+                                    &context.runtime.tls,
+                                ),
                             )
                             .await
                             {
@@ -1974,11 +2014,14 @@ async fn serve_udp_associate(
                         crate::proxies::Protocol::Trojan(option) if option.udp => {
                             if trojan.is_none() {
                                 let hops = chain_for(config, &proxy);
-                                match outbound::udp::TrojanUdp::connect(
-                                    option,
-                                    &hops,
-                                    limits.dial_timeout,
-                                    &context.runtime.tls,
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::udp::TrojanUdp::connect(
+                                        option,
+                                        &hops,
+                                        limits.dial_timeout,
+                                        &context.runtime.tls,
+                                    ),
                                 )
                                 .await
                                 {
@@ -1998,11 +2041,14 @@ async fn serve_udp_associate(
                         crate::proxies::Protocol::Ssr(option) if option.udp => {
                             if ssr.is_none() {
                                 let hops = chain_for(config, &proxy);
-                                match outbound::udp::SsrUdp::connect(
-                                    option,
-                                    &hops,
-                                    limits.dial_timeout,
-                                    &context.runtime.tls,
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::udp::SsrUdp::connect(
+                                        option,
+                                        &hops,
+                                        limits.dial_timeout,
+                                        &context.runtime.tls,
+                                    ),
                                 )
                                 .await
                                 {
@@ -2030,10 +2076,13 @@ async fn serve_udp_associate(
                             if !reuse {
                                 gost = None;
                                 gost_target = None;
-                                match outbound::gost_relay::GostRelayUdp::connect(
-                                    option,
-                                    &outgoing,
-                                    &context.runtime.tls,
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::gost_relay::GostRelayUdp::connect(
+                                        option,
+                                        &outgoing,
+                                        &context.runtime.tls,
+                                    ),
                                 )
                                 .await
                                 {
@@ -2053,10 +2102,13 @@ async fn serve_udp_associate(
                         }
                         crate::proxies::Protocol::Masque(option) if option.udp => {
                             if masque.is_none() {
-                                match outbound::masque::MasqueUdpAssociation::connect(
-                                    option,
-                                    &context.runtime.tls,
-                                    limits.dial_timeout,
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::masque::MasqueUdpAssociation::connect(
+                                        option,
+                                        &context.runtime.tls,
+                                        limits.dial_timeout,
+                                    ),
                                 )
                                 .await
                                 {
@@ -2143,6 +2195,27 @@ async fn serve_udp_associate(
                             port: from.port(),
                         };
                         let mut reply = outbound::udp::reply_header(&target);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (socks5.as_mut(), socks5_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if socks5.is_some() && !socks5_eof => {
+                if received.is_err() {
+                    socks5_eof = true;
+                    failed = true;
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, socks5_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
                         reply.extend_from_slice(&buffer[..read]);
                         let _ = relay.send_to(&reply, client_udp).await;
                         counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);

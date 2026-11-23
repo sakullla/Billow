@@ -3082,6 +3082,7 @@ impl ExchangeContext {
             sni: Some(server.host.clone()),
             skip_cert_verify: server.skip_cert_verify(),
             alpn: Vec::new(),
+            ..Default::default()
         };
         let mut stream = crate::outbound::tls::wrap_stream(
             WrapStream(stream),
@@ -3109,6 +3110,7 @@ impl ExchangeContext {
                 sni: Some(server.host.clone()),
                 skip_cert_verify: server.skip_cert_verify(),
                 alpn: vec!["http/1.1".to_string()],
+                ..Default::default()
             };
             Box::new(
                 crate::outbound::tls::wrap_stream(

@@ -281,7 +281,7 @@ impl Socks5Udp {
             relay
         };
         let bind = if relay.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-        let socket = tokio::net::UdpSocket::bind(bind)
+        let socket = super::bind_udp_str(bind)
             .await
             .map_err(|source| DialError::Connect {
                 addr: bind.to_string(),

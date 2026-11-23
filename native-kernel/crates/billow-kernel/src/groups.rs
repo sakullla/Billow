@@ -1591,6 +1591,7 @@ impl GroupRegistry {
                     sni: Some(parsed.host.clone()),
                     skip_cert_verify: false,
                     alpn: Vec::new(),
+                    ..Default::default()
                 };
                 let mut stream = crate::outbound::tls::wrap_stream(stream, &parsed.host, &settings, &self.tls)
                     .await

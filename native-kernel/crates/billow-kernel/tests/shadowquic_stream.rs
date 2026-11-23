@@ -255,6 +255,7 @@ async fn udp_over_stream_reopens_a_stopped_uni_stream_and_control() {
         sni: Some("localhost".to_string()),
         skip_cert_verify: true,
         alpn: vec!["h3".to_string()],
+        ..Default::default()
     };
     let rustls_config =
         quic_client_config(&settings, &tls, &["h3".to_string()], true).expect("client TLS");

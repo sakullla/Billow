@@ -143,6 +143,13 @@ pub async fn dial(
     let mut quic_options = QuicOptions::new(alpn);
     quic_options.keep_alive = Some(Duration::from_secs(10));
     quic_options.datagrams = true;
+    quic_options.mtu_discovery = !option.disable_mtu_discovery;
+    if let Some(window) = option.stream_receive_window {
+        quic_options.stream_receive_window = window;
+    }
+    if let Some(window) = option.connection_receive_window {
+        quic_options.connection_receive_window = window;
+    }
     let (connection, endpoint) = quic::connect(
         &option.server,
         &option.server,

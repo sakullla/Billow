@@ -117,29 +117,47 @@ pub(crate) async fn association_task(
     let tls = session.runtime.tls.clone();
     let hops = crate::engine::chain_for(&session.runtime.config, &proxy);
     let family = proxy.type_name();
-    let transport = match &proxy.protocol {
-        Protocol::Shadowsocks(option) if option.udp => SsUdp::connect(option, &hops, timeout, &tls)
-            .await
-            .map(Transport::Ss),
-        Protocol::Trojan(option) if option.udp => TrojanUdp::connect(option, &hops, timeout, &tls)
-            .await
-            .map(Transport::Trojan),
-        Protocol::Ssr(option) if option.udp => SsrUdp::connect(option, &hops, timeout, &tls)
-            .await
-            .map(Transport::Ssr),
-        Protocol::Masque(option) if option.udp => {
-            MasqueUdpAssociation::connect(option, &tls, timeout)
-                .await
-                .map(Transport::Masque)
-        }
-        Protocol::ShadowQuic(option) => ShadowQuicUdp::connect(option, &tls, timeout)
-            .await
-            .map(Transport::ShadowQuic),
-        _ => {
-            inner.note_udp_unsupported(&name, family);
-            return;
-        }
+    let supported = match &proxy.protocol {
+        Protocol::Shadowsocks(option) => option.udp,
+        Protocol::Trojan(option) => option.udp,
+        Protocol::Ssr(option) => option.udp,
+        Protocol::Masque(option) => option.udp,
+        Protocol::ShadowQuic(_) => true,
+        _ => false,
     };
+    if !supported {
+        inner.note_udp_unsupported(&name, family);
+        return;
+    }
+    let transport = outbound::with_dialer(proxy.dialer.clone(), async {
+        match &proxy.protocol {
+            Protocol::Shadowsocks(option) => {
+                SsUdp::connect(option, &hops, timeout, &tls)
+                    .await
+                    .map(Transport::Ss)
+            }
+            Protocol::Trojan(option) => {
+                TrojanUdp::connect(option, &hops, timeout, &tls)
+                    .await
+                    .map(Transport::Trojan)
+            }
+            Protocol::Ssr(option) => {
+                SsrUdp::connect(option, &hops, timeout, &tls)
+                    .await
+                    .map(Transport::Ssr)
+            }
+            Protocol::Masque(option) => {
+                MasqueUdpAssociation::connect(option, &tls, timeout)
+                    .await
+                    .map(Transport::Masque)
+            }
+            Protocol::ShadowQuic(option) => ShadowQuicUdp::connect(option, &tls, timeout)
+                .await
+                .map(Transport::ShadowQuic),
+            _ => unreachable!("supported was checked above"),
+        }
+    })
+    .await;
     let mut transport = match transport {
         Ok(transport) => transport,
         Err(error) => {

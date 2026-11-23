@@ -509,8 +509,6 @@ async fn tuic_v5_unimplemented_options_are_named() {
         ("reduce-rtt", "true"),
         ("fast-open", "true"),
         ("udp-over-stream", "true"),
-        ("congestion-controller", "bbr"),
-        ("recv-window", "1024"),
     ] {
         let yaml = format!(
             "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, uuid: {UUID}, password: x, {option}: {value}}}\nrules:\n  - MATCH,t1\n"

@@ -143,6 +143,7 @@ pub async fn dial(
         sni: option.sni.clone(),
         skip_cert_verify: false,
         alpn: quic_options.alpn.clone(),
+        ..Default::default()
     };
     let credentials = JlsCredentials {
         username: option.username.clone(),
@@ -296,6 +297,7 @@ impl ShadowQuicUdp {
             sni: option.sni.clone(),
             skip_cert_verify: false,
             alpn: quic_options.alpn.clone(),
+            ..Default::default()
         };
         let credentials = JlsCredentials {
             username: option.username.clone(),

@@ -27,7 +27,7 @@ use std::io;
 use std::time::Duration;
 
 use super::h3;
-use super::quic::{self, QuicOptions, QuicStream};
+use super::quic::{self, CongestionController, QuicOptions, QuicStream};
 use super::tls::ClientTls;
 use super::{DialError, Dialed, Target};
 use quinn::RecvStream;
@@ -104,6 +104,17 @@ pub async fn dial(
     let mut quic_options = QuicOptions::new(alpn);
     quic_options.keep_alive = Some(Duration::from_secs(10));
     quic_options.datagrams = true;
+    // The pinned client always switches hysteria2 to BBR (`SetBBRCongestion`)
+    // with `cwnd` packets (default 32) as the initial window.
+    let packets = if option.cwnd == 0 { 32 } else { option.cwnd };
+    quic_options.congestion_controller = CongestionController::Bbr;
+    quic_options.initial_congestion_window = Some(u64::from(packets) * 1200);
+    if let Some(window) = option.stream_receive_window {
+        quic_options.stream_receive_window = window;
+    }
+    if let Some(window) = option.connection_receive_window {
+        quic_options.connection_receive_window = window;
+    }
     let handshake_timeout = if option.handshake_timeout == 0 {
         timeout
     } else {

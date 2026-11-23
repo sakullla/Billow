@@ -129,6 +129,17 @@ impl AsyncWrite for QuicStream {
     }
 }
 
+/// QUIC congestion controller selected by a family's `congestion-controller`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CongestionController {
+    /// Keep quinn's default (CUBIC).
+    #[default]
+    Default,
+    Cubic,
+    NewReno,
+    Bbr,
+}
+
 /// Knobs a family sets on the QUIC handshake. The pinned clients differ in
 /// keep-alive, idle timeout and datagram buffers; only values that change the
 /// handshake/transport behaviour are carried here.
@@ -158,6 +169,11 @@ pub struct QuicOptions {
     /// QUIC datagram buffers when `datagrams` is set.
     pub datagram_receive_buffer: Option<usize>,
     pub datagram_send_buffer: Option<usize>,
+    /// Congestion controller (hysteria2 always selects BBR, as the pinned
+    /// client does).
+    pub congestion_controller: CongestionController,
+    /// Initial congestion window in bytes.
+    pub initial_congestion_window: Option<u64>,
 }
 
 impl QuicOptions {
@@ -176,6 +192,8 @@ impl QuicOptions {
             mtu_discovery: true,
             datagram_receive_buffer: None,
             datagram_send_buffer: None,
+            congestion_controller: CongestionController::Default,
+            initial_congestion_window: None,
         }
     }
 }
@@ -253,6 +271,7 @@ pub async fn connect_with_tls_config(
         sni: None,
         skip_cert_verify: false,
         alpn: Vec::new(),
+        ..Default::default()
     };
     connect_with_crypto(
         server,
@@ -328,7 +347,24 @@ async fn connect_with_crypto(
     } else {
         SocketAddr::new(IpAddr::from([0u16; 8]), 0)
     };
-    let endpoint = Endpoint::client(bind).map_err(|source| DialError::Connect {
+    // The endpoint owns the UDP socket; create it here so interface-name and
+    // routing-mark are applied before QUIC sends anything.
+    let dialer_options = super::current_dialer().unwrap_or_default();
+    let socket = super::udp_socket_std(bind, &dialer_options).map_err(|source| DialError::Connect {
+        addr: bind.to_string(),
+        source,
+    })?;
+    let runtime = quinn::default_runtime().ok_or_else(|| DialError::Connect {
+        addr: bind.to_string(),
+        source: io::Error::other("quinn has no default async runtime"),
+    })?;
+    let endpoint = Endpoint::new(
+        quinn::EndpointConfig::default(),
+        None,
+        socket,
+        runtime,
+    )
+    .map_err(|source| DialError::Connect {
         addr: bind.to_string(),
         source,
     })?;
@@ -371,6 +407,38 @@ async fn connect_with_crypto(
         transport.datagram_send_buffer_size(
             options.datagram_send_buffer.unwrap_or(64 * 1024).max(1200),
         );
+    }
+    match options.congestion_controller {
+        CongestionController::Default => {
+            // quinn's default is CUBIC; only an explicit initial window needs
+            // a factory.
+            if let Some(window) = options.initial_congestion_window {
+                let mut config = quinn::congestion::CubicConfig::default();
+                config.initial_window(window);
+                transport.congestion_controller_factory(Arc::new(config));
+            }
+        }
+        CongestionController::Cubic => {
+            let mut config = quinn::congestion::CubicConfig::default();
+            if let Some(window) = options.initial_congestion_window {
+                config.initial_window(window);
+            }
+            transport.congestion_controller_factory(Arc::new(config));
+        }
+        CongestionController::NewReno => {
+            let mut config = quinn::congestion::NewRenoConfig::default();
+            if let Some(window) = options.initial_congestion_window {
+                config.initial_window(window);
+            }
+            transport.congestion_controller_factory(Arc::new(config));
+        }
+        CongestionController::Bbr => {
+            let mut config = quinn::congestion::BbrConfig::default();
+            if let Some(window) = options.initial_congestion_window {
+                config.initial_window(window);
+            }
+            transport.congestion_controller_factory(Arc::new(config));
+        }
     }
     client_config.transport_config(Arc::new(transport));
 

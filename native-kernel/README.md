@@ -14,7 +14,9 @@ host-key pinning, `direct-tcpip`) and `ssr` (every pinned stream cipher,
 protocol plugin and obfs plugin, plus the UDP association). T12 completed the
 SSR plugin layers and the gost-relay UDP association and smux session. T10
 added the QUIC families `tuic` (v5 `uuid`/`password`), `hysteria` (v1) and
-`hysteria2` (HTTP/3 auth + TCP), all over `quinn` 0.11. T13 added `mieru`
+`hysteria2` (HTTP/3 auth + TCP), all over `quinn` 0.11. T27 implemented the
+per-outbound `BasicOption` dialer knobs, the TLS certificate-identity options,
+the QUIC congestion/window tuning and socks5 `UDP ASSOCIATE`. T13 added `mieru`
 (single-session TCP, an independent implementation of the published protocol).
 T17 added `sudoku` as a translation of the pinned GPL-3.0 `transport/sudoku`
 (TCP with the legacy HTTP mask, the pure and packed downlink codecs, the three
@@ -306,10 +308,16 @@ and HTTP `Proxy-Authorization: Basic`). `tls: {custom-cert: [...], certificate:
 <dir>}` adds trust anchors for outbound TLS: they are built into the kernel
 instance at start and used by every TLS dial of that instance (the platform
 store stays the base, and a second kernel in the same process keeps its own
-anchors). `skip-cert-verify: true` accepts any certificate instead (only
-`true`; `fingerprint`/`certificate`/`private-key`/`name-cert-verify` are
-rejected). The private-CA case is covered by
-`tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls`.
+anchors). `skip-cert-verify: true` accepts any certificate instead. The
+per-proxy TLS identities are implemented: `fingerprint` is a SHA-256
+certificate pin (a leaf match is accepted, a non-leaf match verifies the chain
+with the pinned certificate as the anchor), `name-cert-verify` verifies the
+chain against a name that differs from SNI, and `certificate`/`private-key`
+add a client certificate from inline PEM or a file loaded at handshake time.
+`client-fingerprint` (uTLS) stays a named gap. The private-CA case is covered
+by `tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls`; the
+T27 identity cases are `fingerprint_pins_the_leaf_certificate` and
+`name_cert_verify_checks_the_configured_name`.
 Process rules match metadata supplied by the embedding host
 (`Target::with_process`); the mixed inbound has no process lookup, and
 `find-process-mode` remains T6/T22 scope.
@@ -339,7 +347,7 @@ rules:
 ```
 
 A key the pinned version declares but this kernel does not implement (a
-top-level key such as `external-controller-pipe`, or a proxy option such as `tfo`)
+top-level key such as `external-controller-pipe`, or a proxy option such as `obfs`)
 fails when its value asks for something; a key the pinned version does not declare at all
 is ignored with a warning, exactly as Mihomo's decoder ignores it, so a valid
 upstream configuration is not rejected (R2). Errors are categorized by a stable tag: `invalid_yaml`,
@@ -657,6 +665,17 @@ crate. The translation and its verification are in
 `tool/kernel-compat/evidence/t17-translation.md`; the earlier removal audit is
 `tool/kernel-compat/evidence/t13-a3-sudoku-removal.md`.
 
+Every outbound also parses Mihomo's `BasicOption` socket knobs. `tfo`,
+`mptcp`, `interface-name`, `routing-mark` and `ip-version` are applied to the
+connection to the proxy server (TCP dial, UDP association socket and the QUIC
+endpoint): `ip-version` filters/orders the resolved addresses, `interface-name`
+binds the socket (Linux `SO_BINDTODEVICE`, macOS `IP_BOUND_IF`/`IPV6_BOUND_IF`),
+`routing-mark` is `SO_MARK` on Linux and accepted+logged elsewhere (as the
+pinned dialer does), `mptcp` uses `IPPROTO_MPTCP` on Linux with a TCP fallback,
+and `tfo` sets Linux `TCP_FASTOPEN_CONNECT` / macOS `TCP_FASTOPEN`. The mesh
+adapters (wireguard/openvpn/masque/mieru/sudoku/shadowquic/easytier) still name
+forms they cannot apply. T27 evidence: `tool/kernel-compat/evidence/t27-option-parity.md`.
+
 `dialer-proxy` chains are supported when every hop before the exit is `socks5`
 (the hop is entered through the previous hop's SOCKS5 tunnel); any other chain
 is rejected at load time or at dial time with a `[unsupported]`/chain error,
@@ -856,10 +875,8 @@ key, so it is ignored like Mihomo ignores it).
 
 The remaining gaps are named in [Not implemented](#not-implemented):
 `ssh` rejects private-key file paths and opens one SSH client per dial;
-`gost-relay` rejects the certificate-pinning knobs (`name-cert-verify`,
-`fingerprint`, `certificate`, `private-key`, `client-fingerprint`); `ssr` and
-`gost-relay` reject only the transport knobs Mihomo accepts and ignores
-(`ip-version`, `tfo`, `mptcp`, `interface-name`, `routing-mark`). `ssh` uses `russh` 0.56 with the `ring` backend; `russh` 0.64
+`gost-relay` rejects only `client-fingerprint` among the TLS identities; the
+`BasicOption` transport knobs are implemented for these families (T27). `ssh` uses `russh` 0.56 with the `ring` backend; `russh` 0.64
 requires Rust 1.89 and its default `aws-lc-rs` backend would add a C/CMake
 build, so it is not used. `russh` 0.56 declares MSRV 1.85 but its transitive
 `home` 0.5.12 declares 1.88 and the Windows-only `pageant` 0.2.5 declares 1.89
@@ -894,31 +911,31 @@ pinned `component/wildcard` semantics (case-insensitive).
 
 Every option a proxy entry contains must be one this kernel honours: the
 loader reads only implemented keys and rejects the rest with the key named.
-With the pinned option tables that means `tfo`, `mptcp`, `interface-name`,
-`routing-mark`, the trojan/vless `smux` block, `udp-over-tcp`,
-`udp-over-tcp-version`, `ech-opts`,
-`shadow-tls-opts`, `restls-opts`, `jls-opts`, `fingerprint`, `certificate`,
-`private-key`, `name-cert-verify`, `reality-opts`, `grpc-opts`, `http-opts`,
-`h2-opts`, `xhttp-opts`, `ss-opts`, `plugin`/`plugin-opts`, ws early data and
-`v2ray-http-upgrade-fast-open`, `client-fingerprint`, `ip-version`, vless
-`flow`/`packet-addr`/`xudp`/`packet-encoding`/`ws-headers`, anytls
+With the pinned option tables that means the trojan/vless `smux` block,
+`udp-over-tcp`, `udp-over-tcp-version`, `ech-opts`,
+`shadow-tls-opts`, `restls-opts`, `jls-opts`, `reality-opts`, `grpc-opts`,
+`http-opts`, `h2-opts`, `xhttp-opts`, `ss-opts`, `plugin`/`plugin-opts`, ws
+early data and `v2ray-http-upgrade-fast-open`, `client-fingerprint`, vless
+`flow`/`packet-addr`/`xudp`/`packet-encoding`, anytls
 `client-metadata`/`idle-session-*`/`min-idle-session`/`disable-reuse`, vmess
 `alterId > 0`/`packet-addr`/`xudp`/`packet-encoding`/`global-padding`/
 `authenticated-length` and the vmess mux/TLS-mirror blocks, snell
 `version: 4-6`/`reuse`/`mode`/obfs `tls`, trusttunnel
 `udp`/`quic`/`health-check`/`max-connections`/`min-streams`/`max-streams`/
 `congestion-controller`/`cwnd`/`bbr-profile`, gost-relay
-`name-cert-verify`/`fingerprint`/`certificate`/`private-key`/
 `client-fingerprint`, ssh private-key file paths, and `udp: true` on
-`socks5`/`vless`/`anytls`/`vmess`/`snell`/`trusttunnel`
-(no UDP association for those families). T10's families reject the options
+`vless`/`anytls`/`vmess`/`snell`/`trusttunnel` (no UDP association for those
+families; socks5 UDP is implemented). T10's families reject the options
 they do not implement by name: `tuic` `token` (v4/BLAKE3), `udp-relay-mode:
-quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, congestion/window tuning;
-`hysteria` `ports`/`hop-interval` (port hopping), `obfs` (XPlus),
-`protocol: faketcp|wechat`, `fast-open`, receive-window/MTU tuning;
-`hysteria2` `ports`/`hop-interval`, `obfs` (Salamander/Gecko), `realm-opts`,
-`up` (the pinned Brutal TX-rate cap; quinn has no Brutal controller),
-`udp-mtu`, congestion/window tuning. `mieru` rejects `transport: UDP`,
+quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, meta BBR profiles and the
+UDP datagram sizing; the cubic/new_reno/bbr controller, `cwnd`, receive
+windows and `disable-mtu-discovery` are applied to quinn. `hysteria`
+`ports`/`hop-interval` (port hopping), `obfs` (XPlus), `protocol:
+faketcp|wechat`, `fast-open`; `recv-window*` and `disable-mtu-discovery` are
+applied. `hysteria2` `ports`/`hop-interval`, `obfs` (Salamander/Gecko),
+`realm-opts`, `up` (the pinned Brutal TX-rate cap; quinn has no Brutal
+controller), `udp-mtu`, `bbr-profile`; BBR with `cwnd` and the receive windows
+are applied. `mieru` rejects `transport: UDP`,
 `udp: true`, the multiplexing levels (one session per underlay) and
 `traffic-pattern` (padding/nonce/low-entropy shaping). `sudoku` rejects
 `udp: true` (the UDP-over-TCP/UoT association) and the HTTP tunnel modes

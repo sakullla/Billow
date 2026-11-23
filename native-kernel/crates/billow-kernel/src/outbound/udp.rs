@@ -265,7 +265,7 @@ impl SsUdp {
         let transport = match via.len() {
             1 => {
                 let bind = if resolved[0].is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-                let socket = UdpSocket::bind(bind)
+                let socket = super::bind_udp_str(bind)
                     .await
                     .map_err(|source| DialError::Connect {
                         addr: bind.to_string(),
@@ -364,7 +364,7 @@ impl SsrUdp {
         let transport = match via.len() {
             1 => {
                 let bind = if resolved[0].is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-                let socket = UdpSocket::bind(bind)
+                let socket = super::bind_udp_str(bind)
                     .await
                     .map_err(|source| DialError::Connect {
                         addr: bind.to_string(),

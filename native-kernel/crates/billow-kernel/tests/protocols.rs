@@ -4904,3 +4904,133 @@ fn sudoku_codec_matches_the_pinned_implementation() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// T27: BasicOption dialer knobs and TLS identity options.
+// ---------------------------------------------------------------------------
+
+/// `tfo`/`mptcp`/`interface-name`/`routing-mark`/`ip-version` are accepted on
+/// every outbound and applied to the connection to the proxy server. The
+/// loopback peer proves the configured socket still reaches the peer; the
+/// option parsing/validation is covered by tests/config.rs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn basic_dialer_options_are_applied_to_the_proxy_connection() {
+    let (echo_port, _) = echo_target().await;
+    let (peer_port, log) = socks5_peer("u", "p").await;
+    let interface = if cfg!(target_os = "macos") { "lo0" } else { "lo" };
+    let dir = scratch("t27-basic");
+    let proxies = format!(
+        "  - {{name: p, type: socks5, server: 127.0.0.1, port: {peer_port}, username: u, password: p, tfo: true, mptcp: true, interface-name: {interface}, routing-mark: 100, ip-version: ipv4}}\n"
+    );
+    let (mut kernel, _) = start_kernel(&dir, &proxies, "p", limits())
+        .unwrap_or_else(|(e, _)| panic!("kernel start: {e}"));
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"basic")
+        .await
+        .expect("a dial with BasicOption knobs reaches the peer");
+    assert_eq!(back, b"basic");
+    assert!(detail(&log).iter().any(|line| line.contains("127.0.0.1")));
+    kernel.stop().unwrap();
+}
+
+/// `fingerprint` is a SHA-256 certificate pin: the correct leaf pin accepts a
+/// certificate no CA signs, and a wrong pin aborts before forwarding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fingerprint_pins_the_leaf_certificate() {
+    use sha2::{Digest, Sha256};
+    let cert = require_cert("t27-fingerprint");
+    let (echo_port, _) = echo_target().await;
+    let (peer_port, _) = trojan_peer(&cert, "pw").await;
+    let pin = Sha256::digest(&cert.der)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let dir = scratch("t27-fingerprint-kernel");
+    let proxies = format!(
+        "  - {{name: p, type: trojan, server: 127.0.0.1, port: {peer_port}, password: pw, sni: localhost, fingerprint: {pin}}}\n"
+    );
+    let (mut kernel, _) = start_kernel(&dir, &proxies, "p", limits())
+        .unwrap_or_else(|(e, _)| panic!("kernel start: {e}"));
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"pin")
+        .await
+        .expect("the matching pin accepts the self-signed certificate");
+    assert_eq!(back, b"pin");
+    kernel.stop().unwrap();
+
+    let dir = scratch("t27-fingerprint-wrong");
+    let proxies = format!(
+        "  - {{name: p, type: trojan, server: 127.0.0.1, port: {peer_port}, password: pw, sni: localhost, fingerprint: {}}}\n",
+        "00".repeat(32)
+    );
+    let (mut kernel, _) = start_kernel(&dir, &proxies, "p", limits())
+        .unwrap_or_else(|(e, _)| panic!("kernel start: {e}"));
+    roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"pin")
+        .await
+        .expect_err("a wrong pin must fail the handshake");
+    kernel.stop().unwrap();
+}
+
+/// `name-cert-verify` verifies the chain against a name different from SNI:
+/// the trusted CA-signed certificate names `localhost` while SNI stays the IP.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn name_cert_verify_checks_the_configured_name() {
+    let (cert, ca) = require_ca_cert("t27-name");
+    let (echo_port, _) = echo_target().await;
+    let (peer_port, _) = trojan_peer(&cert, "pw").await;
+
+    let run = |name: &str| {
+        let proxies = format!(
+            "  - {{name: p, type: trojan, server: 127.0.0.1, port: {peer_port}, password: pw, sni: 127.0.0.1, name-cert-verify: {name}}}\n"
+        );
+        let dir = scratch(&format!("t27-name-{name}"));
+        let path = dir.join("kernel.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                "mixed-port: {}\nlog-level: warn\ntls:\n  custom-cert: [{}]\nproxies:\n{proxies}rules:\n  - 'MATCH,p'\n",
+                free_port(),
+                ca.display()
+            ),
+        )
+        .unwrap();
+        Kernel::start(&path, None, limits())
+    };
+
+    let (mut kernel, _) = run("localhost").unwrap_or_else(|e| panic!("kernel start: {e}"));
+    let back = roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"name")
+        .await
+        .expect("the CA chain matches name-cert-verify");
+    assert_eq!(back, b"name");
+    kernel.stop().unwrap();
+
+    let (mut kernel, _) = run("wrong.example").unwrap_or_else(|e| panic!("kernel start: {e}"));
+    roundtrip(kernel.listen_addr(), "127.0.0.1", echo_port, b"name")
+        .await
+        .expect_err("name-cert-verify must reject a different name");
+    kernel.stop().unwrap();
+}
+
+/// A `socks5` outbound with `udp: true` opens RFC 1928 `UDP ASSOCIATE` to the
+/// proxy server and relays datagrams through the relay socket it names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socks5_udp_association_reaches_the_peer_relay() {
+    let (echo_port, _) = udp_echo().await;
+    let (peer_port, log) = socks5_udp_peer().await;
+    let dir = scratch("t27-socks5-udp");
+    let proxies = format!(
+        "  - {{name: p, type: socks5, server: 127.0.0.1, port: {peer_port}, udp: true}}\n"
+    );
+    let (mut kernel, _) = start_kernel(&dir, &proxies, "p", limits())
+        .unwrap_or_else(|(e, _)| panic!("kernel start: {e}"));
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let reply = udp_roundtrip(relay, target, b"socks5-udp", Duration::from_secs(3))
+        .expect("a datagram must be relayed through the SOCKS5 server");
+    assert_eq!(reply, b"socks5-udp");
+    let details = detail(&log);
+    assert!(
+        details.iter().any(|line| line.starts_with(&format!("udp-target=127.0.0.1:{echo_port}"))),
+        "{details:?}"
+    );
+    drop(control);
+    kernel.stop().unwrap();
+}

@@ -24,7 +24,7 @@
     "partial": "part of the upstream shape works; the missing options are named and rejected explicitly",
     "unimplemented": "the Rust kernel rejects the entry/field instead of ignoring it"
   },
-  "optionPolicy": "proxies.rs accepts only the keys its parser read and honoured, plus values Mihomo accepts and ignores: disabled booleans (`udp: false`, `disable-reuse: false`, `packet-addr: false`, `xudp: false`, `v2ray-http-upgrade-fast-open: false`), empty blocks (`grpc-opts: {}`, `ech-opts: {enable: false}`, `smux: {enabled: false}`, `ss-opts: {}`, `shadow-tls-opts: {}`, `restls-opts: {}`, `plugin-opts: {}`) and TLS-only options with TLS off (`skip-cert-verify`, `sni`, `alpn`, `fingerprint`, `certificate`, `private-key`, `name-cert-verify`, `client-fingerprint`, `ech-opts`, `reality-opts`). `reality-opts` and `jls-opts` require fields even when empty (Mihomo's `-t` rejects them), so their empty form fails here too. Every behaviour-changing form fails with the key named. tool/kernel-compat/option-probe.mjs compares the no-op and enabled forms against the pinned Mihomo `-t` and writes evidence/option-matrix.txt. A `udp: true` proxy with `dialer-proxy` must name exactly one socks5 hop; other chains fail at load time (validate_udp_chains). `reality-opts`, `shadow-tls-opts`, `restls-opts` and `jls-opts` require `tls: true` (Mihomo rejects them without TLS), so with TLS off a non-empty block fails; with TLS on, a non-empty block fails as not implemented. Keys the pinned type does not declare at all (`smux`, `ss-opts` on vless, `udp` on http, any unknown name) are ignored exactly as Mihomo ignores them.",
+  "optionPolicy": "proxies.rs accepts only the keys its parser read and honoured, plus values Mihomo accepts and ignores: disabled booleans (`udp: false`, `disable-reuse: false`, `packet-addr: false`, `xudp: false`, `v2ray-http-upgrade-fast-open: false`), empty blocks (`grpc-opts: {}`, `ech-opts: {enable: false}`, `smux: {enabled: false}`, `ss-opts: {}`, `shadow-tls-opts: {}`, `restls-opts: {}`, `plugin-opts: {}`) and TLS-only options with TLS off (`skip-cert-verify`, `sni`, `alpn`, `fingerprint`, `certificate`, `private-key`, `name-cert-verify`, `client-fingerprint`, `ech-opts`, `reality-opts`). `reality-opts` and `jls-opts` require fields even when empty (Mihomo's `-t` rejects them), so their empty form fails here too. Every behaviour-changing form that is still a gap fails with the key named; the T27 batch (BasicOption knobs, TLS certificate identities, QUIC congestion/window tuning, socks5 UDP) is implemented and no longer listed as `notImplemented`. tool/kernel-compat/option-probe.mjs compares the no-op and enabled forms against the pinned Mihomo `-t` and writes evidence/option-matrix.txt. A `udp: true` proxy with `dialer-proxy` must name exactly one socks5 hop; other chains fail at load time (validate_udp_chains). `reality-opts`, `shadow-tls-opts`, `restls-opts` and `jls-opts` require `tls: true` (Mihomo rejects them without TLS), so with TLS off a non-empty block fails; with TLS on, a non-empty block fails as not implemented. Keys the pinned type does not declare at all (`smux`, `ss-opts` on vless, `udp` on http, any unknown name) are ignored exactly as Mihomo ignores them.",
   "configFields": {
     "mixed-port": {
       "status": "implemented",
@@ -328,26 +328,31 @@
         "sni",
         "skip-cert-verify",
         "alpn",
-        "dialer-proxy"
-      ],
-      "udp": "not implemented: `udp: true` is rejected (no SOCKS5 UDP relay to the server); `udp: false` loads",
-      "notImplemented": [
-        "udp: true",
-        "fingerprint",
-        "certificate",
-        "private-key",
-        "name-cert-verify",
-        "ip-version",
+        "dialer-proxy",
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark"
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "udp"
       ],
+      "udp": "implemented: RFC 1928 `UDP ASSOCIATE`; the control connection stays open and datagrams carry the SOCKS5 address header to the server relay (a `dialer-proxy` chain is rejected for this UDP form because the association dials the server directly)",
+      "notImplemented": [],
       "evidence": [
         "tests/protocols.rs::socks5_outbound_with_username_password_reaches_the_target",
         "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls",
-        "tests/mihomo_peers.rs::socks5_outbound_reaches_the_receiving_side_through_mihomo"
-      ]
+        "tests/mihomo_peers.rs::socks5_outbound_reaches_the_receiving_side_through_mihomo",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
+        "tests/protocols.rs::socks5_udp_association_reaches_the_peer_relay"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "http": {
       "status": "implemented",
@@ -361,25 +366,29 @@
         "skip-cert-verify",
         "alpn",
         "headers",
-        "dialer-proxy"
-      ],
-      "udp": "not applicable: Mihomo's HTTP outbound has no UDP option, so any `udp` key is rejected as a non-Mihomo option",
-      "notImplemented": [
-        "fingerprint",
-        "certificate",
-        "private-key",
-        "name-cert-verify",
-        "ip-version",
+        "dialer-proxy",
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark"
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key"
       ],
+      "udp": "not applicable: Mihomo's HTTP outbound has no UDP option, so any `udp` key is rejected as a non-Mihomo option",
+      "notImplemented": [],
       "evidence": [
         "tests/protocols.rs::http_connect_outbound_with_basic_auth",
         "tests/mihomo_peers.rs::http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::http_outbound_wrong_password_never_reaches_the_sink"
-      ]
+        "tests/mihomo_peers.rs::http_outbound_wrong_password_never_reaches_the_sink",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "ss": {
       "status": "implemented",
@@ -389,27 +398,30 @@
         "cipher (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)",
         "password",
         "udp",
-        "dialer-proxy (one socks5 hop for UDP)"
+        "dialer-proxy (one socks5 hop for UDP)",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version"
       ],
       "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt; with `dialer-proxy` the datagrams travel through exactly one socks5 hop's UDP relay (any other chain fails at load time)",
       "notImplemented": [
         "plugin",
         "plugin-opts",
         "udp-over-tcp",
-        "udp-over-tcp-version",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "udp-over-tcp-version"
       ],
       "evidence": [
         "tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip",
         "tests/protocols.rs::shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead",
         "tests/mihomo_peers.rs::shadowsocks_outbound_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::shadowsocks_udp_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::shadowsocks_udp_wrong_password_never_reaches_the_echo"
-      ]
+        "tests/mihomo_peers.rs::shadowsocks_udp_wrong_password_never_reaches_the_echo",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "trojan": {
       "status": "implemented",
@@ -425,7 +437,16 @@
         "ws-opts.headers (Host override)",
         "ws-opts.v2ray-http-upgrade",
         "udp",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key"
       ],
       "udp": "implemented: command 3 over TLS with `addr|length|CRLF|payload` frames; the server connection is established through the `dialer-proxy` chain exactly like TCP (one socks5 hop)",
       "notImplemented": [
@@ -437,12 +458,7 @@
         "restls-opts",
         "jls-opts",
         "client-fingerprint",
-        "ip-version",
         "ws-opts.v2ray-http-upgrade-fast-open",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark",
         "ws early data"
       ],
       "evidence": [
@@ -450,8 +466,13 @@
         "tests/protocols.rs::trojan_over_websocket_tunnels_with_a_host_override",
         "tests/mihomo_peers.rs::trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::trojan_udp_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::trojan_udp_wrong_password_never_reaches_the_echo"
-      ]
+        "tests/mihomo_peers.rs::trojan_udp_wrong_password_never_reaches_the_echo",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "vless": {
       "status": "implemented",
@@ -468,7 +489,17 @@
         "ws-opts.path",
         "ws-opts.headers (Host override)",
         "ws-opts.v2ray-http-upgrade",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "ws-headers"
       ],
       "udp": "not implemented: `udp: true` is rejected (needs packet-addr/XUDP); `udp: false` loads",
       "notImplemented": [
@@ -486,12 +517,6 @@
         "restls-opts",
         "jls-opts",
         "client-fingerprint",
-        "ip-version",
-        "ws-headers",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark",
         "flow (xtls-rprx-vision)"
       ],
       "evidence": [
@@ -500,8 +525,13 @@
         "tests/protocols.rs::vless_over_v2ray_http_upgrade_tunnels_raw_bytes",
         "tests/mihomo_peers.rs::vless_over_websocket_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::vless_over_v2ray_http_upgrade_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::vless_over_websocket_with_a_host_override_reaches_the_receiving_side_through_mihomo"
-      ]
+        "tests/mihomo_peers.rs::vless_over_websocket_with_a_host_override_reaches_the_receiving_side_through_mihomo",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). `ws-headers` is declared by the pinned VlessOption but never read (WSOpts.Headers is the applied map), so it is accepted as the same inert key."
     },
     "anytls": {
       "status": "implemented",
@@ -512,7 +542,16 @@
         "sni",
         "skip-cert-verify",
         "alpn",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key"
       ],
       "udp": "not implemented: `udp: true` is rejected (needs UoT); `udp: false` loads",
       "notImplemented": [
@@ -522,25 +561,21 @@
         "idle-session-timeout",
         "min-idle-session",
         "disable-reuse: true",
-        "fingerprint",
-        "certificate",
-        "private-key",
         "ech-opts",
         "shadow-tls-opts",
         "restls-opts",
         "jls-opts",
-        "client-fingerprint",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "client-fingerprint"
       ],
       "evidence": [
         "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo",
-        "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls"
+        "tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
       ],
-      "notes": "shadow-tls-opts/restls-opts/jls-opts are declared by the pinned anytls type and applied (they add a security mode to the TLS config), so a non-empty block is a registered rejection; the same keys on socks5/http/ss are not declared there and are ignored."
+      "notes": "shadow-tls-opts/restls-opts/jls-opts are declared by the pinned anytls type and applied (they add a security mode to the TLS config), so a non-empty block is a registered rejection; the same keys on socks5/http/ss are not declared there and are ignored. BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "vmess": {
       "status": "implemented",
@@ -557,7 +592,16 @@
         "skip-cert-verify",
         "alpn",
         "ws-opts (path, headers)",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key"
       ],
       "udp": "not implemented: `udp: true` is rejected (no VMess UDP command); `udp: false` loads",
       "notImplemented": [
@@ -580,16 +624,7 @@
         "tlsmirror-opts",
         "mekya-opts",
         "mkcp-opts",
-        "fingerprint",
-        "certificate",
-        "private-key",
-        "name-cert-verify",
-        "client-fingerprint",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "client-fingerprint"
       ],
       "evidence": [
         "src/outbound/vmess.rs::tests::request_body_layout_is_fixed",
@@ -598,8 +633,13 @@
         "tests/mihomo_peers.rs::vmess_cipher_none_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::vmess_over_websocket_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::vmess_domain_target_is_resolved_by_the_mihomo_side",
-        "tests/mihomo_peers.rs::vmess_wrong_uuid_never_reaches_the_sink"
-      ]
+        "tests/mihomo_peers.rs::vmess_wrong_uuid_never_reaches_the_sink",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "snell": {
       "status": "implemented",
@@ -609,7 +649,12 @@
         "psk",
         "version (1, 2, 3)",
         "obfs-opts (mode http, host)",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version"
       ],
       "udp": "not implemented: `udp: true` is rejected (no Snell UDP command); `udp: false` loads",
       "notImplemented": [
@@ -617,12 +662,7 @@
         "version 4-6",
         "reuse",
         "mode",
-        "obfs-opts.mode: tls",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "obfs-opts.mode: tls"
       ],
       "evidence": [
         "src/outbound/snell.rs::tests::request_header_layouts",
@@ -630,8 +670,11 @@
         "tests/mihomo_peers.rs::snell_v1_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::snell_v2_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::snell_v3_with_http_obfs_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::snell_wrong_psk_never_reaches_the_sink"
-      ]
+        "tests/mihomo_peers.rs::snell_wrong_psk_never_reaches_the_sink",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "trusttunnel": {
       "status": "implemented",
@@ -644,7 +687,16 @@
         "sni",
         "skip-cert-verify",
         "alpn (h2)",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key"
       ],
       "udp": "not implemented: `udp: true` is rejected (`_udp2` multiplex); `udp: false` loads",
       "notImplemented": [
@@ -657,23 +709,19 @@
         "congestion-controller",
         "cwnd",
         "bbr-profile",
-        "fingerprint",
-        "certificate",
-        "private-key",
-        "name-cert-verify",
         "client-fingerprint",
-        "ech-opts",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "ech-opts"
       ],
       "evidence": [
         "tests/mihomo_peers.rs::trusttunnel_outbound_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::trusttunnel_domain_target_is_resolved_by_the_mihomo_side",
-        "tests/mihomo_peers.rs::trusttunnel_wrong_password_never_reaches_the_sink"
-      ]
+        "tests/mihomo_peers.rs::trusttunnel_wrong_password_never_reaches_the_sink",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "gost-relay": {
       "status": "implemented",
@@ -689,20 +737,20 @@
         "password",
         "udp (one association bound to one target; `length(u16 BE) || payload` frames)",
         "mux (smux DefaultConfig version 1, keep-alive disabled, one stream per dial)",
-        "dialer-proxy"
-      ],
-      "udp": "implemented: `udp: true` opens the pinned association (command 0x81, network feature 1, address feature = the bound target); a server that refuses it produces no reply and no DIRECT fallback",
-      "notImplemented": [
-        "name-cert-verify",
-        "fingerprint",
-        "certificate",
-        "private-key",
-        "client-fingerprint",
-        "ip-version",
+        "dialer-proxy",
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark"
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key"
+      ],
+      "udp": "implemented: `udp: true` opens the pinned association (command 0x81, network feature 1, address feature = the bound target); a server that refuses it produces no reply and no DIRECT fallback",
+      "notImplemented": [
+        "client-fingerprint"
       ],
       "evidence": [
         "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_gost_relay_mux",
@@ -722,8 +770,13 @@
         "tests/protocols.rs::gost_relay_mux_relays_over_one_smux_stream",
         "tests/protocols.rs::gost_relay_mux_and_udp_share_the_smux_session",
         "tests/config.rs::gost_relay_options_are_strict",
-        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_gost_relay"
-      ]
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_gost_relay",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "ssh": {
       "status": "partial",
@@ -737,17 +790,17 @@
         "private-key-passphrase",
         "host-key",
         "host-key-algorithms",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version"
       ],
       "udp": "not applicable: Mihomo's SSH outbound reports UDP false; any `udp` key is rejected as a non-Mihomo option",
       "notImplemented": [
         "private-key file paths",
-        "shared client/multiplexing across dials",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "shared client/multiplexing across dials"
       ],
       "evidence": [
         "tests/protocols.rs::ssh_outbound_password_auth_relays_direct_tcpip",
@@ -755,8 +808,11 @@
         "tests/protocols.rs::ssh_outbound_public_key_auth_relays_direct_tcpip",
         "tests/protocols.rs::ssh_outbound_pinned_host_key_must_match_the_server",
         "tests/config.rs::ssh_options_are_strict",
-        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssh"
-      ]
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssh",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "ssr": {
       "status": "implemented",
@@ -771,16 +827,15 @@
         "obfs: plain/http_simple/http_post/random_head/tls1.2_ticket_auth/tls1.2_ticket_fastauth",
         "obfs-param (http host/body, tls SNI)",
         "udp (the pinned cipher.PacketConn + protocol.PacketConn association; no obfs layer, as in the pinned outbound)",
-        "dialer-proxy"
-      ],
-      "udp": "implemented: `udp: true` opens the pinned association (IV || cipher(protocol packet), SOCKS5 address inside, no obfs). Every protocol is verified against the Go peer and a wrong password is rejected. Limit inherited from the pinned client: `auth_aes128_*` datagrams are sealed with the derived user key but opened with the cipher key, so a `protocol-param` breaks the UDP path in both directions; the UDP tests therefore use no protocol-param (TCP with `protocol-param` is covered).",
-      "notImplemented": [
-        "ip-version",
+        "dialer-proxy",
         "tfo",
         "mptcp",
         "interface-name",
-        "routing-mark"
+        "routing-mark",
+        "ip-version"
       ],
+      "udp": "implemented: `udp: true` opens the pinned association (IV || cipher(protocol packet), SOCKS5 address inside, no obfs). Every protocol is verified against the Go peer and a wrong password is rejected. Limit inherited from the pinned client: `auth_aes128_*` datagrams are sealed with the derived user key but opened with the cipher key, so a `protocol-param` breaks the UDP path in both directions; the UDP tests therefore use no protocol-param (TCP with `protocol-param` is covered).",
+      "notImplemented": [],
       "evidence": [
         "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_an_ssr_plugin",
         "src/outbound/ssr/obfs.rs::tests::random_head_length_picks_the_real_boundary",
@@ -803,8 +858,11 @@
         "tests/independent_peers.rs::ssr_plugin_protocol_param_and_large_payloads",
         "tests/independent_peers.rs::ssr_udp_reaches_the_echo_for_every_protocol",
         "tests/independent_peers.rs::ssr_udp_wrong_password_never_reaches_the_echo",
-        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssr"
-      ]
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_ssr",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "mieru": {
       "status": "partial",
@@ -1028,7 +1086,7 @@
     },
     "tuic": {
       "status": "partial",
-      "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token), one TCP stream per session, and `request-timeout` bounding the auth/Connect stream operations; the legacy v4 token (BLAKE3 TKN) is rejected, the UDP relay modes are not wired into the engine, and one QUIC connection is created per dial instead of the pinned pool.",
+      "reason": "TUIC v5 over QUIC: uuid/password authentication (TLS exporter token), one TCP stream per session, request-timeout, congestion-controller (cubic/new_reno/bbr), cwnd, receive windows and disable-mtu-discovery mapped onto quinn's transport config. The legacy v4 token (BLAKE3 TKN), the UDP relay modes, 0-RTT and meta BBR profiles are rejected by name; one QUIC connection is created per dial instead of the pinned pool.",
       "options": [
         "server",
         "port",
@@ -1041,7 +1099,21 @@
         "disable-sni",
         "heartbeat-interval",
         "request-timeout",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "congestion-controller",
+        "cwnd",
+        "recv-window-conn",
+        "recv-window",
+        "disable-mtu-discovery"
       ],
       "udp": "not implemented: the engine's UDP association has no TUIC datagram/uni-stream relay; UDP traffic routed to TUIC is dropped and logged",
       "notImplemented": [
@@ -1050,25 +1122,11 @@
         "udp-over-stream",
         "reduce-rtt",
         "fast-open",
-        "congestion-controller",
-        "cwnd",
         "bbr-profile",
-        "recv-window-conn",
-        "recv-window",
-        "disable-mtu-discovery",
         "max-datagram-frame-size",
         "max-udp-relay-packet-size",
         "ech-opts",
-        "name-cert-verify",
-        "fingerprint",
-        "certificate",
-        "private-key",
-        "client-fingerprint",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "client-fingerprint"
       ],
       "evidence": [
         "src/outbound/tuic.rs::tests::address_encoding_uses_tuic_type_numbers",
@@ -1080,12 +1138,18 @@
         "tests/quic_peers.rs::tuic_v5_unimplemented_options_are_named",
         "tests/mihomo_peers.rs::tuic_v5_outbound_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::tuic_v5_wrong_password_never_reaches_the_sink",
-        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_tuic"
-      ]
+        "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_tuic",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
+        "tests/config.rs::t27_quic_transport_tuning_is_parsed"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "hysteria": {
       "status": "partial",
-      "reason": "Hysteria v1 over QUIC: TCP with the binary control hello (auth/auth-str, up/down) and one stream per session; port hopping, the XPlus obfuscator, the faketcp/wechat transports and UDP datagrams are rejected by name.",
+      "reason": "Hysteria v1 over QUIC: TCP with the binary control hello (auth/auth-str, up/down) and one stream per session; recv-window-conn/recv-window and disable-mtu-discovery are applied to quinn's transport config. Port hopping, the XPlus obfuscator, the faketcp/wechat transports, UDP datagrams and 0-RTT are rejected by name.",
       "options": [
         "server",
         "port",
@@ -1098,7 +1162,19 @@
         "sni",
         "skip-cert-verify",
         "alpn",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "recv-window-conn",
+        "recv-window",
+        "disable-mtu-discovery"
       ],
       "udp": "not implemented: the engine has no Hysteria UDP session relay; `udp` traffic routed to Hysteria is dropped and logged",
       "notImplemented": [
@@ -1106,21 +1182,9 @@
         "hop-interval",
         "obfs",
         "protocol",
-        "recv-window-conn",
-        "recv-window",
-        "disable-mtu-discovery",
         "fast-open",
         "ech-opts",
-        "name-cert-verify",
-        "fingerprint",
-        "certificate",
-        "private-key",
-        "client-fingerprint",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "client-fingerprint"
       ],
       "evidence": [
         "src/outbound/hysteria.rs::tests::base64_matches_the_standard_alphabet",
@@ -1129,12 +1193,18 @@
         "tests/quic_peers.rs::hysteria_v1_wrong_auth_fails_without_forwarding",
         "tests/quic_peers.rs::hysteria_v1_base64_auth_roundtrip",
         "tests/quic_peers.rs::hysteria_v1_unsupported_options_are_named",
-        "tests/quic_peers.rs::hysteria_v1_requires_valid_rates"
-      ]
+        "tests/quic_peers.rs::hysteria_v1_requires_valid_rates",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
+        "tests/config.rs::t27_quic_transport_tuning_is_parsed"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "hysteria2": {
       "status": "partial",
-      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233) and one TCP stream per session with the 0x401 request frame; `down` is sent as Hysteria-CC-RX. Port hopping, Salamander/Gecko obfuscation, realm, UDP and `up` (the Brutal TX-rate cap) are rejected by name.",
+      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233), one TCP stream per session with the 0x401 request frame, BBR with `cwnd` as the initial window (pinned default 32 packets) and the initial/max stream/connection receive windows mapped to quinn. `down` is sent as Hysteria-CC-RX. Port hopping, Salamander/Gecko obfuscation, realm, UDP, `up` (Brutal TX cap) and `bbr-profile` are rejected by name.",
       "options": [
         "server",
         "port",
@@ -1144,7 +1214,21 @@
         "skip-cert-verify",
         "alpn",
         "handshake-timeout",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "cwnd",
+        "initial-stream-receive-window",
+        "max-stream-receive-window",
+        "initial-connection-receive-window",
+        "max-connection-receive-window"
       ],
       "udp": "not implemented: the engine has no Hysteria2 UDP session relay; `udp` traffic routed to Hysteria2 is dropped and logged",
       "notImplemented": [
@@ -1154,23 +1238,9 @@
         "obfs",
         "realm-opts",
         "udp-mtu",
-        "cwnd",
         "bbr-profile",
-        "initial-stream-receive-window",
-        "max-stream-receive-window",
-        "initial-connection-receive-window",
-        "max-connection-receive-window",
         "ech-opts",
-        "name-cert-verify",
-        "fingerprint",
-        "certificate",
-        "private-key",
-        "client-fingerprint",
-        "ip-version",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark"
+        "client-fingerprint"
       ],
       "evidence": [
         "src/outbound/h3.rs::tests::varint_round_trip",
@@ -1179,8 +1249,14 @@
         "src/outbound/h3.rs::tests::huffman_decodes_a_known_string",
         "src/outbound/hysteria2.rs::tests::tcp_request_frame_has_the_pinned_layout",
         "tests/mihomo_peers.rs::hysteria2_outbound_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::hysteria2_wrong_password_never_reaches_the_sink"
-      ]
+        "tests/mihomo_peers.rs::hysteria2_wrong_password_never_reaches_the_sink",
+        "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
+        "tests/config.rs::t27_quic_transport_tuning_is_parsed"
+      ],
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "shadowquic": {
       "status": "partial",

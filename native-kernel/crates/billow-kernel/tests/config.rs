@@ -667,17 +667,6 @@ fn unimplemented_protocol_and_option_name_the_field() {
 #[test]
 fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
     let cases: &[(&str, &str, &str)] = &[
-        ("socks5", "server: 127.0.0.1, port: 1", "udp: true"),
-        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "fingerprint: chrome"),
-        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "certificate: x.pem"),
-        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "private-key: k.pem"),
-        ("socks5", "server: 127.0.0.1, port: 1, tls: true", "name-cert-verify: x"),
-        ("socks5", "server: 127.0.0.1, port: 1", "ip-version: ipv4"),
-        ("http", "server: 127.0.0.1, port: 1, tls: true", "fingerprint: chrome"),
-        ("http", "server: 127.0.0.1, port: 1, tls: true", "certificate: x.pem"),
-        ("http", "server: 127.0.0.1, port: 1, tls: true", "private-key: k.pem"),
-        ("http", "server: 127.0.0.1, port: 1, tls: true", "name-cert-verify: x"),
-        ("http", "server: 127.0.0.1, port: 1", "ip-version: ipv4"),
         (
             "ss",
             "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
@@ -687,11 +676,6 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "ss",
             "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
             "udp-over-tcp-version: 2",
-        ),
-        (
-            "ss",
-            "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
-            "ip-version: ipv4",
         ),
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {enabled: true}"),
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "ech-opts: {enable: true}"),
@@ -711,7 +695,6 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "server: 127.0.0.1, port: 1, password: p",
             "client-fingerprint: chrome",
         ),
-        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ip-version: ipv4"),
         (
             "vless",
             "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
@@ -736,11 +719,6 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "vless",
             "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
             "client-fingerprint: chrome",
-        ),
-        (
-            "vless",
-            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
-            "ip-version: ipv4",
         ),
         (
             "vless",
@@ -772,27 +750,7 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "server: 127.0.0.1, port: 1, password: p",
             "client-fingerprint: chrome",
         ),
-        (
-            "anytls",
-            "server: 127.0.0.1, port: 1, password: p",
-            "ip-version: ipv4",
-        ),
-        (
-            "anytls",
-            "server: 127.0.0.1, port: 1, password: p",
-            "fingerprint: chrome",
-        ),
-        (
-            "anytls",
-            "server: 127.0.0.1, port: 1, password: p",
-            "certificate: x.pem",
-        ),
-        (
-            "anytls",
-            "server: 127.0.0.1, port: 1, password: p",
-            "private-key: k.pem",
-        ),
-    ];
+            ];
     for (kind, base, option) in cases {
         let key = option.split(':').next().unwrap_or_default();
         let yaml = format!(
@@ -955,9 +913,6 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
     let enabled: &[(&str, &str, &str)] = &[
         // `ech-opts`/`udp-over-tcp` are not socks5 options: Mihomo ignores them
         // there (covered by the no-op list), so they cannot be "enabled".
-        ("socks5", "server: 127.0.0.1, port: 1", "tfo: true"),
-        ("socks5", "server: 127.0.0.1, port: 1", "routing-mark: 100"),
-        ("socks5", "server: 127.0.0.1, port: 1", "interface-name: eth0"),
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {enabled: true}"),
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {public-key: k}"),
         ("anytls", "server: 127.0.0.1, port: 1, password: p", "idle-session-timeout: 30"),
@@ -1182,10 +1137,6 @@ fn trusttunnel_options_are_strict() {
         ("cwnd", "16"),
         ("bbr-profile", "standard"),
         ("client-fingerprint", "chrome"),
-        ("fingerprint", "sha256"),
-        ("certificate", "cert.pem"),
-        ("private-key", "key.pem"),
-        ("name-cert-verify", "example.org"),
         ("ech-opts", "{enable: true, config: x}"),
         ("alpn", "[h3]"),
     ] {
@@ -1193,6 +1144,12 @@ fn trusttunnel_options_are_strict() {
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
     }
+    // Certificate identities are verified by the shared TLS client.
+    load_config(
+        "proxies:\n  - {name: tt, type: trusttunnel, server: x, port: 1, sni: tt.example, name-cert-verify: tt.example, fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', certificate: cert.pem, private-key: key.pem}\nrules: ['MATCH,tt']\n",
+        "t",
+    )
+    .expect("trusttunnel TLS identities load");
 }
 
 #[test]
@@ -1214,17 +1171,16 @@ fn gost_relay_options_are_strict() {
         "t",
     )
     .expect("udp and mux load");
-    for (field, value) in [
-        ("name-cert-verify", "example.org"),
-        ("fingerprint", "sha256"),
-        ("certificate", "cert.pem"),
-        ("private-key", "key.pem"),
-        ("client-fingerprint", "chrome"),
-    ] {
+    for (field, value) in [("client-fingerprint", "chrome")] {
         let yaml = format!("proxies:\n  - {{name: gr, type: gost-relay, server: x, port: 1, tls: true, {field}: {value}}}\nrules: ['MATCH,gr']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
     }
+    load_config(
+        "proxies:\n  - {name: gr, type: gost-relay, server: x, port: 1, tls: true, sni: gr.example, name-cert-verify: gr.example, fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}\nrules: ['MATCH,gr']\n",
+        "t",
+    )
+    .expect("gost-relay TLS identities load");
 }
 
 #[test]
@@ -1248,17 +1204,18 @@ fn ssh_options_are_strict() {
         pem.lines().map(|line| format!("      {line}\n")).collect::<String>()
     );
     load_config(&yaml, "t").expect("inline key, host key and algorithm accepted");
-    for (field, value) in [
-        ("tfo", "true"),
-        ("mptcp", "true"),
-        ("interface-name", "en0"),
-        ("routing-mark", "1"),
-        ("ip-version", "ipv4"),
-    ] {
-        let yaml = format!("proxies:\n  - {{name: sh, type: ssh, server: x, port: 22, username: u, {field}: {value}}}\nrules: ['MATCH,sh']\n");
-        let e = proxy_err(&yaml);
-        assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
-    }
+    // `BasicOption` socket knobs are part of every outbound; the stream dialer
+    // applies them instead of rejecting a valid configuration.
+    let with_basic = "proxies:\n  - {name: sh, type: ssh, server: x, port: 22, username: u, tfo: true, mptcp: true, interface-name: en0, routing-mark: 100, ip-version: ipv4}\nrules: ['MATCH,sh']\n";
+    let loaded = load_config(with_basic, "t").expect("basic dialer options load");
+    let dialer = &loaded.config.proxies[0].dialer;
+    assert!(dialer.tfo);
+    assert!(dialer.mptcp);
+    assert_eq!(dialer.interface_name.as_deref(), Some("en0"));
+    assert_eq!(dialer.routing_mark, 100);
+    assert_eq!(dialer.ip_version, billow_kernel::proxies::IpVersion::V4Only);
+    let e = proxy_err("proxies:\n  - {name: sh, type: ssh, server: x, port: 22, username: u, routing-mark: -1}\nrules: ['MATCH,sh']\n");
+    assert!(e.contains("option 'routing-mark'"), "{e}");
     let e = proxy_err("proxies:\n  - {name: sh, type: ssh, server: x, port: 22, password: p}\nrules: ['MATCH,sh']\n");
     assert!(e.contains("missing required option 'username'"), "{e}");
     let e = proxy_err("proxies:\n  - {name: sh, type: ssh, server: x, port: 22, username: u, private-key: /tmp/id_ed25519}\nrules: ['MATCH,sh']\n");
@@ -1298,7 +1255,6 @@ fn ssr_options_are_strict() {
         ("protocol", "auth_chain_c"),
         ("obfs", "tls1.3_ticket_auth"),
         ("cipher", "aes-256-gcm"),
-        ("tfo", "true"),
     ] {
         // protocol/obfs/cipher are required, so replace the base value
         // instead of adding a duplicate key.
@@ -1312,6 +1268,11 @@ fn ssr_options_are_strict() {
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
     }
+    load_config(
+        "proxies:\n  - {name: sr, type: ssr, server: x, port: 1, cipher: aes-256-cfb, password: p, protocol: origin, obfs: plain, tfo: true, mptcp: true, ip-version: ipv6}\nrules: ['MATCH,sr']\n",
+        "t",
+    )
+    .expect("basic dialer options load for ssr");
     let e = proxy_err("proxies:\n  - {name: sr, type: ssr, server: x, port: 1, cipher: aes-256-cfb, password: p, obfs: plain}\nrules: ['MATCH,sr']\n");
     assert!(e.contains("missing required option 'protocol'"), "{e}");
 }
@@ -1831,4 +1792,80 @@ fn sudoku_options_are_strict() {
     }
     let e = proxy_err("proxies:\n  - {name: s, type: sudoku, server: x, port: 1}\nrules: ['MATCH,s']\n");
     assert!(e.contains("missing required option 'key'"), "{e}");
+}
+
+// ---------------------------------------------------------------------------
+// T27: BasicOption dialer knobs, TLS identities and QUIC transport tuning.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t27_tls_identity_options_are_parsed() {
+    let yaml = "proxies:\n  - {name: s, type: socks5, server: 127.0.0.1, port: 1, tls: true, sni: s.example, skip-cert-verify: false, name-cert-verify: verify.example, fingerprint: 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99', certificate: cert.pem, private-key: key.pem}\nrules: ['MATCH,s']\n";
+    let loaded = load_config(yaml, "t").expect("TLS identity options load");
+    let billow_kernel::proxies::Protocol::Socks5(proxy) = &loaded.config.proxies[0].protocol else {
+        panic!("expected socks5");
+    };
+    let settings = &proxy.tls_settings;
+    assert_eq!(settings.name_cert_verify.as_deref(), Some("verify.example"));
+    assert_eq!(settings.fingerprint.as_deref().map(|bytes| bytes.len()), Some(32));
+    assert_eq!(settings.certificate.as_deref(), Some("cert.pem"));
+    assert_eq!(settings.private_key.as_deref(), Some("key.pem"));
+
+    // `fingerprint` is a certificate pin, not a browser fingerprint.
+    let error = proxy_err("proxies:\n  - {name: s, type: socks5, server: x, port: 1, tls: true, fingerprint: chrome}\nrules: ['MATCH,s']\n");
+    assert!(error.contains("option 'fingerprint'"), "{error}");
+    // With TLS off Mihomo ignores the identity options, so they load unread.
+    load_config(
+        "proxies:\n  - {name: s, type: socks5, server: x, port: 1, fingerprint: chrome, certificate: cert.pem}\nrules: ['MATCH,s']\n",
+        "t",
+    )
+    .expect("TLS identity options are ignored without TLS");
+}
+
+#[test]
+fn t27_quic_transport_tuning_is_parsed() {
+    let tuic = "proxies:\n  - {name: q, type: tuic, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p, congestion-controller: bbr, cwnd: 32, recv-window-conn: 1024, recv-window: 2048, disable-mtu-discovery: true}\nrules: ['MATCH,q']\n";
+    let loaded = load_config(tuic, "t").expect("TUIC tuning loads");
+    let billow_kernel::proxies::Protocol::Tuic(proxy) = &loaded.config.proxies[0].protocol else {
+        panic!("expected tuic");
+    };
+    assert_eq!(proxy.congestion_controller.as_deref(), Some("bbr"));
+    assert_eq!(proxy.cwnd, 32);
+    assert_eq!(proxy.stream_receive_window, Some(1024));
+    assert_eq!(proxy.connection_receive_window, Some(2048));
+    assert!(proxy.disable_mtu_discovery);
+    let error = proxy_err("proxies:\n  - {name: q, type: tuic, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p, congestion-controller: bbr_meta_v1}\nrules: ['MATCH,q']\n");
+    assert!(error.contains("congestion-controller"), "{error}");
+
+    let h2 = "proxies:\n  - {name: q, type: hysteria2, server: x, port: 1, password: p, cwnd: 64, initial-stream-receive-window: 1024, max-stream-receive-window: 4096, initial-connection-receive-window: 2048, max-connection-receive-window: 8192}\nrules: ['MATCH,q']\n";
+    let loaded = load_config(h2, "t").expect("hysteria2 tuning loads");
+    let billow_kernel::proxies::Protocol::Hysteria2(proxy) = &loaded.config.proxies[0].protocol else {
+        panic!("expected hysteria2");
+    };
+    assert_eq!(proxy.cwnd, 64);
+    assert_eq!(proxy.stream_receive_window, Some(4096));
+    assert_eq!(proxy.connection_receive_window, Some(8192));
+
+    let h1 = "proxies:\n  - {name: q, type: hysteria, server: x, port: 1, up: 50 Mbps, down: 50 Mbps, recv-window-conn: 1024, recv-window: 2048, disable-mtu-discovery: true}\nrules: ['MATCH,q']\n";
+    let loaded = load_config(h1, "t").expect("hysteria tuning loads");
+    let billow_kernel::proxies::Protocol::Hysteria(proxy) = &loaded.config.proxies[0].protocol else {
+        panic!("expected hysteria");
+    };
+    assert_eq!(proxy.stream_receive_window, Some(1024));
+    assert_eq!(proxy.connection_receive_window, Some(2048));
+    assert!(proxy.disable_mtu_discovery);
+}
+
+#[test]
+fn t27_socks5_udp_is_accepted_and_chain_is_named() {
+    let loaded = load_config(
+        "proxies:\n  - {name: s, type: socks5, server: 127.0.0.1, port: 1080, udp: true}\nrules: ['MATCH,s']\n",
+        "t",
+    )
+    .expect("socks5 UDP association loads");
+    assert!(loaded.config.proxies[0].udp_enabled());
+    let error = proxy_err(
+        "proxies:\n  - {name: s, type: socks5, server: 127.0.0.1, port: 1080, udp: true, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081}\nrules: ['MATCH,s']\n",
+    );
+    assert!(error.contains("option 'udp' with 'dialer-proxy'"), "{error}");
 }

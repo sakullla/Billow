@@ -5,7 +5,8 @@
 //   node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> \
 //     [--mihomo <mihomo>] [--out tool/kernel-compat/evidence/option-matrix.txt]
 //
-// Two groups, because "not implemented" has two shapes:
+// Three groups: implemented options must load, and "not implemented" has two
+// shapes:
 //
 // - `noop`: Mihomo accepts the value and does nothing with it (a disabled
 //   boolean, an empty block, a TLS-only option without TLS). Rejecting those
@@ -14,10 +15,12 @@
 // - `enabled`: the value changes behaviour (or would, once implemented). Mihomo
 //   accepts it and the Rust kernel must reject it naming the field, so no
 //   unimplemented behaviour is silently skipped.
+// - `impl`: an option that was a registered gap and now has an implementation;
+//   it must load (its behaviour is covered by the native-kernel tests).
 //
-// The run exits 1 when a no-op form is rejected, when an enabled form is
-// accepted, or (with `--mihomo`) when the two engines disagree on a no-op or
-// Mihomo rejects a case this matrix calls valid.
+// The run exits 1 when a no-op or implemented form is rejected, when an
+// enabled form is accepted, or (with `--mihomo`) when the two engines disagree
+// on a no-op or Mihomo rejects a case this matrix calls valid.
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -215,67 +218,27 @@ const t10Enabled = [
   ['tuic', 'reduce-rtt', 'reduce-rtt: true'],
   ['tuic', 'fast-open', 'fast-open: true'],
   ['tuic', 'udp-over-stream', 'udp-over-stream: true'],
-  ['tuic', 'congestion-controller', 'congestion-controller: bbr'],
-  ['tuic', 'cwnd', 'cwnd: 32'],
   ['tuic', 'bbr-profile', 'bbr-profile: standard'],
-  ['tuic', 'recv-window-conn', 'recv-window-conn: 1024'],
-  ['tuic', 'recv-window', 'recv-window: 1024'],
-  ['tuic', 'disable-mtu-discovery', 'disable-mtu-discovery: true'],
   ['tuic', 'max-datagram-frame-size', 'max-datagram-frame-size: 1400'],
   ['tuic', 'max-udp-relay-packet-size', 'max-udp-relay-packet-size: 1252'],
   ['tuic', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
-  ['tuic', 'name-cert-verify', 'name-cert-verify: example.org'],
-  ['tuic', 'fingerprint', `fingerprint: ${pin}`],
-  ['tuic', 'certificate', 'certificate: cert.pem'],
-  ['tuic', 'private-key', 'private-key: key.pem'],
   ['tuic', 'client-fingerprint', 'client-fingerprint: chrome'],
-  ['tuic', 'ip-version', 'ip-version: ipv4'],
-  ['tuic', 'tfo', 'tfo: true'],
-  ['tuic', 'mptcp', 'mptcp: true'],
-  ['tuic', 'interface-name', 'interface-name: eth0'],
-  ['tuic', 'routing-mark', 'routing-mark: 100'],
   ['hysteria', 'ports', 'ports: 443,8443'],
   ['hysteria', 'hop-interval', 'hop-interval: 10'],
   ['hysteria', 'obfs', 'obfs: xplus'],
   ['hysteria', 'protocol', 'protocol: faketcp'],
-  ['hysteria', 'recv-window-conn', 'recv-window-conn: 1024'],
-  ['hysteria', 'recv-window', 'recv-window: 1024'],
-  ['hysteria', 'disable-mtu-discovery', 'disable-mtu-discovery: true'],
   ['hysteria', 'fast-open', 'fast-open: true'],
   ['hysteria', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
-  ['hysteria', 'name-cert-verify', 'name-cert-verify: example.org'],
-  ['hysteria', 'fingerprint', `fingerprint: ${pin}`],
-  ['hysteria', 'certificate', 'certificate: cert.pem'],
-  ['hysteria', 'private-key', 'private-key: key.pem'],
   ['hysteria', 'client-fingerprint', 'client-fingerprint: chrome'],
-  ['hysteria', 'ip-version', 'ip-version: ipv4'],
-  ['hysteria', 'tfo', 'tfo: true'],
-  ['hysteria', 'mptcp', 'mptcp: true'],
-  ['hysteria', 'interface-name', 'interface-name: eth0'],
-  ['hysteria', 'routing-mark', 'routing-mark: 100'],
   ['hysteria2', 'up', 'up: 50 Mbps'],
   ['hysteria2', 'ports', 'ports: 443,8443'],
   ['hysteria2', 'hop-interval', 'hop-interval: 10'],
   ['hysteria2', 'obfs', 'obfs: salamander'],
   ['hysteria2', 'realm-opts', 'realm-opts: {enable: true, server-url: "https://realm.example"}'],
   ['hysteria2', 'udp-mtu', 'udp-mtu: 1200'],
-  ['hysteria2', 'cwnd', 'cwnd: 32'],
   ['hysteria2', 'bbr-profile', 'bbr-profile: standard'],
-  ['hysteria2', 'initial-stream-receive-window', 'initial-stream-receive-window: 1024'],
-  ['hysteria2', 'max-stream-receive-window', 'max-stream-receive-window: 1024'],
-  ['hysteria2', 'initial-connection-receive-window', 'initial-connection-receive-window: 1024'],
-  ['hysteria2', 'max-connection-receive-window', 'max-connection-receive-window: 1024'],
   ['hysteria2', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
-  ['hysteria2', 'name-cert-verify', 'name-cert-verify: example.org'],
-  ['hysteria2', 'fingerprint', `fingerprint: ${pin}`],
-  ['hysteria2', 'certificate', 'certificate: cert.pem'],
-  ['hysteria2', 'private-key', 'private-key: key.pem'],
   ['hysteria2', 'client-fingerprint', 'client-fingerprint: chrome'],
-  ['hysteria2', 'ip-version', 'ip-version: ipv4'],
-  ['hysteria2', 'tfo', 'tfo: true'],
-  ['hysteria2', 'mptcp', 'mptcp: true'],
-  ['hysteria2', 'interface-name', 'interface-name: eth0'],
-  ['hysteria2', 'routing-mark', 'routing-mark: 100'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].on, option }))
 // T13/T17 families: explicit forms, because some rejected values are not
 // booleans (`multiplexing: MULTIPLEXING_LOW`, `http-mask-mode: stream`) and
@@ -619,6 +582,40 @@ add('easytier', 'mtu', '0')
 add('easytier', 'state-dir', 'easytier/probe')
 add('easytier', 'instance-name', 'probe')
 
+// Implemented forms: options that used to be registered gaps and now have a
+// real implementation. They must load in the Rust kernel (and in Mihomo when
+// the base shape matches); the unit/integration tests in native-kernel cover
+// the behaviour, this group only keeps the option matrix honest.
+const implemented = []
+const firstBatch = ['socks5', 'http', 'ss', 'trojan', 'vless', 'anytls', 'vmess', 'snell', 'trusttunnel', 'gost-relay', 'ssh', 'ssr', 'tuic', 'hysteria', 'hysteria2']
+const tlsFamilies = ['socks5', 'http', 'trojan', 'vless', 'anytls', 'vmess', 'trusttunnel', 'gost-relay', 'tuic', 'hysteria', 'hysteria2']
+const basicOption = 'tfo: true, mptcp: true, interface-name: lo0, routing-mark: 100, ip-version: ipv4'
+for (const type of firstBatch) {
+  const base = ['tuic', 'hysteria', 'hysteria2'].includes(type) ? bases[type].on : bases[type].off
+  implemented.push({ type, key: 'basic-options', base, option: basicOption })
+}
+for (const type of tlsFamilies) {
+  implemented.push({ type, key: 'fingerprint', base: bases[type].on, option: `fingerprint: ${pin}` })
+  implemented.push({ type, key: 'name-cert-verify', base: bases[type].on, option: 'name-cert-verify: example.org' })
+}
+for (const [type, key, option] of [
+  ['tuic', 'congestion-controller', 'congestion-controller: bbr'],
+  ['tuic', 'cwnd', 'cwnd: 32'],
+  ['tuic', 'recv-window-conn', 'recv-window-conn: 1024'],
+  ['tuic', 'recv-window', 'recv-window: 1024'],
+  ['tuic', 'disable-mtu-discovery', 'disable-mtu-discovery: true'],
+  ['hysteria', 'recv-window-conn', 'recv-window-conn: 1024'],
+  ['hysteria', 'recv-window', 'recv-window: 1024'],
+  ['hysteria', 'disable-mtu-discovery', 'disable-mtu-discovery: true'],
+  ['hysteria2', 'cwnd', 'cwnd: 32'],
+  ['hysteria2', 'initial-stream-receive-window', 'initial-stream-receive-window: 1024'],
+  ['hysteria2', 'max-stream-receive-window', 'max-stream-receive-window: 1024'],
+  ['hysteria2', 'initial-connection-receive-window', 'initial-connection-receive-window: 1024'],
+  ['hysteria2', 'max-connection-receive-window', 'max-connection-receive-window: 1024'],
+]) {
+  implemented.push({ type, key, base: bases[type].on, option })
+}
+
 // Enabled forms: every one must be rejected by name.
 
 function parseArgs(argv) {
@@ -672,7 +669,30 @@ function runCase({ type, key, base, option }, expectReject, group) {
   lines.push(`${label} ${verdict}${rustRejected && rustNamed ? '' : expectReject ? '' : ''}`)
 }
 
+function runImplemented({ type, key, base, option }) {
+  const config = join(dir, `impl-${type}-${key}.yaml`.replace(/[^a-z0-9.-]/gi, '-'))
+  writeFileSync(
+    config,
+    `mixed-port: 1\nproxies:\n  - {name: p, type: ${type}, ${base}, ${option}}\nrules:\n  - 'MATCH,p'\n`,
+  )
+  rustPort = rustPort === 17991 ? 17992 : 17991
+  const rust = spawnSync(binary, [config, '--check', '--port', String(rustPort)], { encoding: 'utf8' })
+  const rustRejected = rust.status !== 0
+  let mihomoVerdict = '-'
+  if (mihomo) {
+    const peerDir = mkdtempSync(join(dir, 'peer-'))
+    const run = spawnSync(mihomo, ['-t', '-d', peerDir, '-f', config], { encoding: 'utf8' })
+    mihomoVerdict = run.status === 0 ? 'accept' : 'reject'
+    rmSync(peerDir, { recursive: true, force: true })
+  }
+  if (rustRejected) {
+    problems.push(`${type}/${key}: an implemented option was rejected (${`${rust.stderr}`.trim().split('\n')[0] ?? ''})`)
+  }
+  lines.push(`impl    ${type.padEnd(7)} ${key.padEnd(28)} rust=${rustRejected ? 'reject' : 'accept'} mihomo=${mihomoVerdict}`)
+}
+
 for (const entry of noops) runCase(entry, false, 'noop')
+for (const entry of implemented) runImplemented(entry)
 for (const entry of allEnabled) runCase(entry, true, 'enabled')
 
 // A family the matrix cannot compare: its pinned base configuration itself
@@ -684,7 +704,7 @@ const header = [
   '# Proxy option matrix: no-op forms must load, enabled forms must be rejected.',
   `# rust: ${binary}`,
   `# mihomo: ${mihomo ?? '(not provided: only the Rust verdict was checked)'}`,
-  `# no-op cases: ${noops.length}, enabled cases: ${allEnabled.length}, problems: ${problems.length}`,
+  `# no-op cases: ${noops.length}, implemented cases: ${implemented.length}, enabled cases: ${allEnabled.length}, problems: ${problems.length}`,
   '# command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>',
   ...skipped.map(([type, reason]) => `# skipped: ${type} (- ${reason})`),
   '',

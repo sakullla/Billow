@@ -55,7 +55,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
-use crate::proxies::{Protocol, Proxy};
+use crate::proxies::{DialerOptions, IpVersion, Protocol, Proxy};
 
 use self::tls::ClientTls;
 
@@ -167,12 +167,11 @@ pub async fn dial(
     timeout: Duration,
     tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
-    match tokio::time::timeout(
+    let inner = tokio::time::timeout(
         timeout,
         dial_inner(&proxy.protocol, target, &[], timeout, tls),
-    )
-    .await
-    {
+    );
+    match with_dialer(proxy.dialer.clone(), inner).await {
         Ok(result) => result,
         Err(_) => Err(DialError::Timeout(timeout)),
     }
@@ -195,7 +194,10 @@ pub async fn dial_chain(
         return Err(DialError::Chain("empty dialer-proxy chain".to_string()));
     };
     let inner = dial_through(exit, hops, target, timeout, tls);
-    match tokio::time::timeout(timeout, inner).await {
+    // The last hop is the only one dialled locally; its BasicOption knobs own
+    // the socket. A chain with no hops is the exit itself.
+    let local = chain.last().copied().unwrap_or(exit);
+    match with_dialer(local.dialer.clone(), tokio::time::timeout(timeout, inner)).await {
         Ok(result) => result,
         Err(_) => Err(DialError::Timeout(timeout)),
     }
@@ -541,6 +543,17 @@ pub(crate) async fn connect_hop(
 }
 
 tokio::task_local! {
+    /// BasicOption socket knobs of the proxy whose server is dialled locally.
+    static DIALER: DialerOptions;
+}
+
+/// Run `future` with `options` as the socket knobs for locally dialled
+/// proxy-server connections.
+pub(crate) async fn with_dialer<F: Future>(options: DialerOptions, future: F) -> F::Output {
+    DIALER.scope(options, future).await
+}
+
+tokio::task_local! {
     /// Proxy-server resolver installed for a session or health probe: the
     /// pinned engine resolves proxy `server` names through
     /// `proxy-server-nameserver` (`resolver.ProxyServerHostResolver`), not
@@ -553,9 +566,40 @@ pub(crate) async fn with_proxy_dns<F: Future>(dns: Arc<crate::dns::DnsService>, 
     PROXY_DNS.scope(dns, future).await
 }
 
-/// Resolve the server name once, preferring addresses of the given family order.
+/// The `ip-version` of the dial currently in progress (`dual` when none is
+/// scoped, e.g. a direct/health path).
+fn current_dialer() -> Option<DialerOptions> {
+    DIALER.try_with(|options| options.clone()).ok()
+}
+
+/// Sort (and, for `ipv4`/`ipv6`, filter) addresses the way the pinned
+/// `dialer.WithPreferIPv4`/`WithOnlySingleStack` options do.
+pub(crate) fn order_addresses(addrs: &mut Vec<SocketAddr>, ip_version: IpVersion) {
+    match ip_version {
+        IpVersion::V4Only => addrs.retain(SocketAddr::is_ipv4),
+        IpVersion::V6Only => addrs.retain(SocketAddr::is_ipv6),
+        IpVersion::Dual | IpVersion::V4Prefer => {
+            addrs.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 })
+        }
+        IpVersion::V6Prefer => addrs.sort_by_key(|addr| if addr.is_ipv6() { 0 } else { 1 }),
+    }
+}
+
+/// Resolve the server name once, applying the in-scope `ip-version`.
 pub(crate) async fn resolve(server: &str, port: u16) -> Result<SocketAddr, DialError> {
+    let ip_version = current_dialer().map(|options| options.ip_version).unwrap_or_default();
     if let Ok(ip) = server.parse::<IpAddr>() {
+        if ip_version == IpVersion::V4Only && !ip.is_ipv4()
+            || ip_version == IpVersion::V6Only && !ip.is_ipv6()
+        {
+            return Err(DialError::Resolve {
+                host: server.to_string(),
+                source: io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("address does not match ip-version {}", ip_version.as_str()),
+                ),
+            });
+        }
         return Ok(SocketAddr::new(ip, port));
     }
     let dns = PROXY_DNS.try_with(|dns| dns.clone()).ok();
@@ -567,16 +611,12 @@ pub(crate) async fn resolve(server: &str, port: u16) -> Result<SocketAddr, DialE
                 host: server.to_string(),
                 source: io::Error::other(error.to_string()),
             })?;
-        let mut ips = ips;
-        ips.sort_by_key(|ip| if ip.is_ipv4() { 0 } else { 1 });
-        return ips
-            .into_iter()
-            .next()
-            .map(|ip| SocketAddr::new(ip, port))
-            .ok_or_else(|| DialError::Resolve {
-                host: server.to_string(),
-                source: io::Error::new(io::ErrorKind::NotFound, "resolved to no address"),
-            });
+        let mut addrs = ips.into_iter().map(|ip| SocketAddr::new(ip, port)).collect();
+        order_addresses(&mut addrs, ip_version);
+        return addrs.into_iter().next().ok_or_else(|| DialError::Resolve {
+            host: server.to_string(),
+            source: io::Error::new(io::ErrorKind::NotFound, "resolved to no address"),
+        });
     }
     let mut addrs = tokio::net::lookup_host((server, port))
         .await
@@ -585,8 +625,7 @@ pub(crate) async fn resolve(server: &str, port: u16) -> Result<SocketAddr, DialE
             source,
         })?
         .collect::<Vec<_>>();
-    // Deterministic order: IPv4 first, then IPv6.
-    addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
+    order_addresses(&mut addrs, ip_version);
     addrs.into_iter().next().ok_or_else(|| DialError::Resolve {
         host: server.to_string(),
         source: io::Error::new(io::ErrorKind::NotFound, "resolved to no address"),
@@ -595,7 +634,8 @@ pub(crate) async fn resolve(server: &str, port: u16) -> Result<SocketAddr, DialE
 
 pub(crate) async fn connect_tcp(server: &str, port: u16) -> Result<TcpStream, DialError> {
     let addr = resolve(server, port).await?;
-    let stream = TcpStream::connect(addr)
+    let options = current_dialer().unwrap_or_default();
+    let stream = connect_resolved(addr, &options)
         .await
         .map_err(|source| DialError::Connect {
             addr: addr.to_string(),
@@ -603,6 +643,275 @@ pub(crate) async fn connect_tcp(server: &str, port: u16) -> Result<TcpStream, Di
         })?;
     let _ = stream.set_nodelay(true);
     Ok(stream)
+}
+
+/// Connect with the BasicOption socket knobs. With no options set this is
+/// tokio's own connect; otherwise the socket is created through `socket2`, the
+/// options are applied and the non-blocking connect is awaited by tokio.
+async fn connect_resolved(
+    addr: SocketAddr,
+    options: &DialerOptions,
+) -> io::Result<TcpStream> {
+    if options == &DialerOptions::default() {
+        return TcpStream::connect(addr).await;
+    }
+    let socket = dial_socket(addr, options)?;
+    let stream = socket.connect(addr).await?;
+    Ok(stream)
+}
+
+/// Bind a UDP socket with the in-scope BasicOption knobs (interface-name and
+/// routing-mark; tfo/mptcp are TCP-only).
+pub(crate) async fn bind_udp(addr: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
+    let options = current_dialer().unwrap_or_default();
+    if options == DialerOptions::default() {
+        return tokio::net::UdpSocket::bind(addr).await;
+    }
+    let socket = udp_socket_std(addr, &options)?;
+    tokio::net::UdpSocket::from_std(socket)
+}
+
+/// [`bind_udp`] for the `"0.0.0.0:0"` / `"[::]:0"` literals the outbounds use.
+pub(crate) async fn bind_udp_str(bind: &str) -> io::Result<tokio::net::UdpSocket> {
+    let addr: SocketAddr = bind.parse().map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, format!("invalid bind address '{bind}'"))
+    })?;
+    bind_udp(addr).await
+}
+
+/// The raw bound socket for QUIC endpoints, which need to own the socket.
+pub(crate) fn udp_socket_std(addr: SocketAddr, options: &DialerOptions) -> io::Result<std::net::UdpSocket> {
+    let domain = if addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+    apply_interface(&socket, addr, options.interface_name.as_deref())?;
+    apply_routing_mark(&socket, options.routing_mark)?;
+    socket.bind(&addr.into())?;
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
+}
+
+/// Create a non-blocking TCP socket and apply tfo/mptcp/interface-name/
+/// routing-mark before connecting.
+fn dial_socket(addr: SocketAddr, options: &DialerOptions) -> io::Result<tokio::net::TcpSocket> {
+    let domain = if addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let protocol = mptcp_protocol(options.mptcp);
+    let socket = match socket2::Socket::new(domain, socket2::Type::STREAM, Some(protocol)) {
+        Ok(socket) => socket,
+        Err(error) if options.mptcp => {
+            // Go's net package falls back to TCP when the MPTCP protocol is
+            // not available; keep the configuration usable the same way.
+            tracing::warn!("mptcp: socket creation failed ({error}); falling back to TCP");
+            socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?
+        }
+        Err(error) => return Err(error),
+    };
+    apply_interface(&socket, addr, options.interface_name.as_deref())?;
+    apply_routing_mark(&socket, options.routing_mark)?;
+    apply_tfo(&socket)?;
+    socket.set_nonblocking(true)?;
+    let std_stream: std::net::TcpStream = socket.into();
+    Ok(tokio::net::TcpSocket::from_std_stream(std_stream))
+}
+
+fn mptcp_protocol(enabled: bool) -> socket2::Protocol {
+    if !enabled {
+        return socket2::Protocol::TCP;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // `IPPROTO_MPTCP`; the kernel falls back to TCP when the stack does
+        // not implement it.
+        socket2::Protocol::from(262)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        warn_once(
+            "mptcp",
+            "multipath TCP is not available on this platform; the connection uses TCP",
+        );
+        socket2::Protocol::TCP
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_interface(
+    socket: &socket2::Socket,
+    _addr: SocketAddr,
+    name: Option<&str>,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let Some(name) = name else {
+        return Ok(());
+    };
+    let bytes = name.as_bytes();
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_BINDTODEVICE,
+            bytes.as_ptr().cast(),
+            bytes.len() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_interface(
+    socket: &socket2::Socket,
+    addr: SocketAddr,
+    name: Option<&str>,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let Some(name) = name else {
+        return Ok(());
+    };
+    let c_name = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "interface name has a NUL"))?;
+    let index = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+    if index == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Darwin binds sockets with IP_BOUND_IF / IPV6_BOUND_IF rather than
+    // SO_BINDTODEVICE.
+    const IP_BOUND_IF: libc::c_int = 25;
+    const IPV6_BOUND_IF: libc::c_int = 125;
+    let (level, option) = if addr.is_ipv4() {
+        (libc::IPPROTO_IP, IP_BOUND_IF)
+    } else {
+        (libc::IPPROTO_IPV6, IPV6_BOUND_IF)
+    };
+    let index = index as libc::c_int;
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            level,
+            option,
+            (&index as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn apply_interface(
+    _socket: &socket2::Socket,
+    _addr: SocketAddr,
+    name: Option<&str>,
+) -> io::Result<()> {
+    match name {
+        None => Ok(()),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "interface-name is not implemented on this platform",
+        )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_routing_mark(socket: &socket2::Socket, mark: u32) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if mark == 0 {
+        return Ok(());
+    }
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_MARK,
+            (&mark as *const u32).cast(),
+            std::mem::size_of::<u32>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_routing_mark(_socket: &socket2::Socket, mark: u32) -> io::Result<()> {
+    if mark != 0 {
+        warn_once(
+            "routing-mark",
+            "routing mark on sockets is not supported on this platform (the pinned dialer also only logs this)",
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn apply_tfo(socket: &socket2::Socket) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    const TCP_FASTOPEN_CONNECT: libc::c_int = 30;
+    let enabled: libc::c_int = 1;
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            TCP_FASTOPEN_CONNECT,
+            (&enabled as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        // tfo-go falls back to a normal connect when the option is rejected.
+        tracing::debug!("tfo: TCP_FASTOPEN_CONNECT rejected: {}", io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_tfo(socket: &socket2::Socket) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    const TCP_FASTOPEN: libc::c_int = 0x105;
+    let enabled: libc::c_int = 1;
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            TCP_FASTOPEN,
+            (&enabled as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        tracing::debug!("tfo: TCP_FASTOPEN rejected: {}", io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn apply_tfo(_socket: &socket2::Socket) -> io::Result<()> {
+    Ok(())
+}
+
+/// Upstream logs an unsupported platform knob once; do the same instead of
+/// rejecting a configuration the pinned engine accepts.
+fn warn_once(key: &'static str, message: &str) {
+    static WARNED_MARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if key == "routing-mark" {
+        if !WARNED_MARK.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!("{message}");
+        }
+    } else {
+        tracing::warn!("{message}");
+    }
 }
 
 pub(crate) fn handshake(protocol: &'static str, source: io::Error) -> DialError {

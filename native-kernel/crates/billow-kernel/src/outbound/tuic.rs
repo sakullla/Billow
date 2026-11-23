@@ -22,7 +22,7 @@
 use std::io;
 use std::time::Duration;
 
-use super::quic::{self, QuicOptions, QuicStream};
+use super::quic::{self, CongestionController, QuicOptions, QuicStream};
 use super::tls::ClientTls;
 use super::{DialError, Dialed, Target};
 
@@ -113,6 +113,27 @@ pub async fn dial(
     quic_options.keep_alive = Some(Duration::from_millis(option.heartbeat_interval.max(1)));
     quic_options.datagrams = true;
     quic_options.disable_sni = option.disable_sni;
+    quic_options.mtu_discovery = !option.disable_mtu_discovery;
+    if let Some(window) = option.stream_receive_window {
+        quic_options.stream_receive_window = window;
+    }
+    if let Some(window) = option.connection_receive_window {
+        quic_options.connection_receive_window = window;
+    }
+    if let Some(name) = option.congestion_controller.as_deref() {
+        quic_options.congestion_controller = match name {
+            "cubic" => CongestionController::Cubic,
+            "new_reno" => CongestionController::NewReno,
+            "bbr" => CongestionController::Bbr,
+            _ => CongestionController::Default,
+        };
+        let packets = if option.cwnd == 0 { 32 } else { option.cwnd };
+        quic_options.initial_congestion_window = Some(u64::from(packets) * 1200);
+    } else if option.cwnd != 0 {
+        // quic-go ignores `cwnd` when no controller is named; applying it to
+        // the default controller keeps the value meaningful.
+        quic_options.initial_congestion_window = Some(u64::from(option.cwnd) * 1200);
+    }
     let (connection, endpoint) = quic::connect(
         &option.server,
         address,

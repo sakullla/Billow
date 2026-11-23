@@ -208,8 +208,12 @@ test('the Rust mapping names only pinned entries and backs every claim with a te
   // The option matrix is the recorded comparison with Mihomo's own `-t`: no-op
   // forms accepted by both, enabled forms rejected by the kernel.
   const matrix = await readFile(resolve(here, 'evidence', 'option-matrix.txt'), 'utf8')
-  assert.match(matrix, /no-op cases: [1-9]\d*, enabled cases: [1-9]\d*, problems: 0/)
+  assert.match(
+    matrix,
+    /no-op cases: [1-9]\d*(, implemented cases: [1-9]\d*)?, enabled cases: [1-9]\d*, problems: 0/,
+  )
   assert.ok(matrix.split('\n').some((line) => /^noop .*rust=accept mihomo=accept/.test(line)))
+  assert.ok(matrix.split('\n').some((line) => /^impl .*rust=accept/.test(line)))
   assert.ok(matrix.split('\n').some((line) => /^enabled .*rust=reject mihomo=accept/.test(line)))
   assert.equal(matrix.split('\n').some((line) => line.startsWith('PROBLEM')), false)
   // Every proxy type the index marks unimplemented must name an owner, so a
