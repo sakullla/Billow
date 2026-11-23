@@ -1755,5 +1755,7 @@ export const UI_EN: Record<string, string> = {
   '前往开启': 'Enable in settings',
   '查看配置': 'View profiles',
   '重试失败': 'Retry failed',
+  '置顶': 'Pin',
+  '取消置顶': 'Unpin',
 }
 

@@ -941,8 +941,14 @@ const refreshProgressPct = computed(() => {
   return Math.min(100, Math.round((done / total) * 100))
 })
 
+const refreshBannerFailedCount = computed(() =>
+  store.busy.refreshAll
+    ? store.refreshProgress.value.failed
+    : Math.min(store.refreshProgress.value.failed, failedSubscriptionIds.value.length),
+)
+
 const refreshSucceededCount = computed(() =>
-  Math.max(0, store.refreshProgress.value.done - store.refreshProgress.value.failed),
+  Math.max(0, store.refreshProgress.value.done - refreshBannerFailedCount.value),
 )
 
 const showRefreshBanner = computed(() => {
@@ -1095,8 +1101,8 @@ const showRefreshBanner = computed(() => {
       class="profiles-refresh-banner"
       :class="{
         running: store.busy.refreshAll,
-        warn: !store.busy.refreshAll && store.refreshProgress.value.failed > 0,
-        ok: !store.busy.refreshAll && store.refreshProgress.value.failed === 0,
+        warn: !store.busy.refreshAll && refreshBannerFailedCount > 0,
+        ok: !store.busy.refreshAll && refreshBannerFailedCount === 0,
       }"
       role="status"
       aria-live="polite"
@@ -1107,7 +1113,7 @@ const showRefreshBanner = computed(() => {
           <span v-if="store.busy.refreshAll" class="spinner xs" aria-hidden="true" />
           <Icon
             v-else
-            :name="store.refreshProgress.value.failed > 0 ? 'alert' : 'check'"
+            :name="refreshBannerFailedCount > 0 ? 'alert' : 'check'"
             :size="15"
             aria-hidden="true"
           />
@@ -1119,12 +1125,12 @@ const showRefreshBanner = computed(() => {
                 · {{ tr('{0} 个更新失败', { 0: store.refreshProgress.value.failed }) }}
               </template>
             </template>
-            <template v-else-if="store.refreshProgress.value.failed > 0">
+            <template v-else-if="refreshBannerFailedCount > 0">
               {{
                 tr('更新完成：{0}/{1}，{2} 个订阅失败', {
                   0: refreshSucceededCount,
                   1: store.refreshProgress.value.total,
-                  2: store.refreshProgress.value.failed,
+                  2: refreshBannerFailedCount,
                 })
               }}
             </template>

@@ -440,7 +440,7 @@ const groups = computed(() => {
       const hiddenFailedCount = beforeHideFailed - nodes.length
       nodes = sorted(nodes)
       // Quota/expiry pseudo-nodes leave the grid unless selected or searched for (R11).
-      const info = hasSearchOrTag.value ? [] : nodes.filter((node) => !node.selected && isInfoNode(node.name))
+      const info = needle.value ? [] : nodes.filter((node) => !node.selected && isInfoNode(node.name))
       if (info.length) nodes = nodes.filter((node) => !info.includes(node))
       if (nodes === group.nodes && hiddenFailedCount === 0) return group
       return {
