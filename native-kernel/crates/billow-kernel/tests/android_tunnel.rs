@@ -122,6 +122,14 @@ impl Device {
         self.peer.send(packet).expect("device packet written");
     }
 
+    /// Closes the VpnService side of the descriptor, as a revoke does.
+    fn revoke(&mut self) {
+        // `Device` implements `Drop`, so the peer is swapped out instead of
+        // moved; the old socket closes when the replacement is dropped.
+        let (replacement, _) = std::os::unix::net::UnixDatagram::pair().expect("socketpair");
+        let _ = std::mem::replace(&mut self.peer, replacement);
+    }
+
     fn send_tcp(
         &self,
         src_port: u16,
@@ -490,5 +498,45 @@ fn an_invalid_fd_is_refused_before_anything_starts() {
         Err(error) => error,
     };
     assert!(error.contains("not open"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_revoked_device_fd_stops_the_pump_and_is_visible_to_the_host() {
+    let mut device = Device::start(&direct_config(), TunnelOptions::default());
+    assert!(device.vpn.stats().running);
+    // The VpnService side closing the descriptor (a revoke) ends the pump; a
+    // host that only samples process liveness must still be able to notice.
+    device.revoke();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while device.vpn.stats().running && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !device.vpn.stats().running,
+        "a closed peer must stop the fd pump instead of polling forever"
+    );
+}
+
+#[test]
+fn a_failed_start_leaves_the_descriptor_open_for_the_caller() {
+    let dir = test_dir("failed-ownership");
+    let (host, _peer) = std::os::unix::net::UnixDatagram::pair().expect("socketpair");
+    let fd = host.into_raw_fd();
+    let error = match AndroidVpn::start(fd, "not: [valid yaml", dir.clone(), AndroidVpnOptions::default()) {
+        Ok(vpn) => {
+            vpn.stop();
+            panic!("invalid YAML must be refused");
+        }
+        Err(error) => error,
+    };
+    assert!(!error.is_empty());
+    // The documented ownership rule: a failed start hands the fd back, so the
+    // caller closes it exactly once and a later double close cannot happen.
+    assert!(
+        unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0,
+        "a failed start must not close the caller's descriptor"
+    );
+    unsafe { libc::close(fd) };
     let _ = std::fs::remove_dir_all(&dir);
 }

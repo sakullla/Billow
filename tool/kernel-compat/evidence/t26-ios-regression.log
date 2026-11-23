@@ -1,4 +1,13 @@
-# cargo test -p billow-kernel --features ios-vpn --test ios_tunnel
-# 2026-11-22T23:56:55Z
-     Running tests/ios_tunnel.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/ios_tunnel-0aa7306ebe2a0550)
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
+   Compiling billow-kernel v0.1.0 (/Users/yanggeng/github/Billow/native-kernel/crates/billow-kernel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.95s
+     Running tests/ios_tunnel.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t26a2-nk-target/debug/deps/ios_tunnel-0aa7306ebe2a0550)
+
+running 6 tests
+test tcp_stream_crosses_the_tunnel_in_both_directions ... ok
+test a_rejected_rule_closes_the_flow_with_reset ... ok
+test udp_datagrams_cross_the_tunnel_in_both_directions ... ok
+test concurrent_device_sockets_to_one_remote_keep_their_replies ... ok
+test dns_queries_are_answered_from_the_configured_resolver ... ok
+test reload_closes_flows_and_keeps_forwarding ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s

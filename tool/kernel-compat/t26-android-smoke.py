@@ -12,8 +12,13 @@ Run:
 A Unix datagram socket pair plays the packet-oriented TUN fd. The script
 starts the kernel with the inherited fd, forwards one UDP packet to a loopback
 echo server, checks the reply came back through the fd, then sends SIGTERM and
-checks the exit code and the staged-file cleanup. It is a host check only; it
-is not a substitute for the Android device run.
+checks the exit code and the staged-file cleanup.
+
+A second process then loses the device side of the fd (a revoked VPN): the CLI
+must exit non-zero instead of keeping a live process with a dead data plane,
+because the host samples only process liveness for the Rust engine.
+
+It is a host check only; it is not a substitute for the Android device run.
 """
 
 import json
@@ -66,6 +71,42 @@ def free_port() -> int:
     return port
 
 
+def start_kernel(config: str, fd: int):
+    """Spawns the CLI with the inherited fd and waits for its readiness lines."""
+    process = subprocess.Popen(
+        [BIN, config, "--tun-fd", str(fd)],
+        pass_fds=(fd,),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    lines = queue.Queue()
+
+    def pump():
+        for line in process.stdout:
+            lines.put(line.rstrip())
+
+    threading.Thread(target=pump, daemon=True).start()
+    collected = []
+    identity = None
+    ready = False
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        try:
+            line = lines.get(timeout=0.5)
+        except queue.Empty:
+            if process.poll() is not None:
+                break
+            continue
+        collected.append(line)
+        if line.startswith("instance="):
+            identity = line
+        if line.startswith("tun_fd:"):
+            ready = True
+            break
+    return process, collected, identity, ready
+
+
 def main() -> int:
     echo = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     echo.bind(("127.0.0.1", 0))
@@ -85,37 +126,7 @@ def main() -> int:
             )
         host, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
         peer.settimeout(10.0)
-        process = subprocess.Popen(
-            [BIN, config, "--tun-fd", str(host.fileno())],
-            pass_fds=(host.fileno(),),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        lines = queue.Queue()
-
-        def pump():
-            for line in process.stdout:
-                lines.put(line.rstrip())
-
-        threading.Thread(target=pump, daemon=True).start()
-        collected = []
-        identity = None
-        ready = False
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            try:
-                line = lines.get(timeout=0.5)
-            except queue.Empty:
-                if process.poll() is not None:
-                    break
-                continue
-            collected.append(line)
-            if line.startswith("instance="):
-                identity = line
-            if line.startswith("tun_fd:"):
-                ready = True
-                break
+        process, collected, identity, ready = start_kernel(config, host.fileno())
         if identity is None or not ready:
             process.kill()
             print(json.dumps({"ok": False, "stdout": collected,
@@ -149,8 +160,36 @@ def main() -> int:
             os.path.join(tmp, "config.rust.yaml")
         )
         result["stderrTail"] = process.stderr.read().strip().splitlines()[-6:]
+
+        # Second process: the device side disappears (a revoked VPN). The host
+        # only samples process liveness for the Rust engine, so the CLI must
+        # exit non-zero rather than keep polling a dead descriptor.
+        host2, peer2 = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        process2, collected2, identity2, ready2 = start_kernel(config, host2.fileno())
+        host2.close()
+        peer2.close()
+        try:
+            fd_code = process2.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process2.kill()
+            fd_code = process2.wait()
+        fd_stderr = process2.stderr.read().strip()
+        result["fdLoss"] = {
+            "ready": ready2 and identity2 is not None,
+            "exitCode": fd_code,
+            "reported": "stopped carrying packets" in fd_stderr,
+            "stderrTail": fd_stderr.splitlines()[-4:],
+        }
+        result["ok"] = (
+            result["ok"]
+            and code == 0
+            and result["stagedFileRemoved"]
+            and result["fdLoss"]["ready"]
+            and fd_code != 0
+            and result["fdLoss"]["reported"]
+        )
         print(json.dumps(result, indent=2, ensure_ascii=False))
-        return 0 if result["ok"] and code == 0 and result["stagedFileRemoved"] else 1
+        return 0 if result["ok"] else 1
 
 
 if __name__ == "__main__":

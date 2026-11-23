@@ -174,11 +174,15 @@
     },
     "tun": {
       "status": "partial",
-      "reason": "disabled block is inert with a warning; enable: true is rejected by name when it reaches the config loader. The device entries never pass it: the host strips it for the Rust engine on every platform and Android hands the VpnService fd as `--tun-fd` (iOS uses the Packet Tunnel's own packetFlow); desktop TUN is T6",
+      "reason": "disabled block is inert with a warning; enable: true is rejected by name when it reaches the config loader. The device entries never pass it: the host strips it for the Rust engine on every platform and Android hands the VpnService fd as `--tun-fd` (iOS uses the Packet Tunnel's own packetFlow). A desktop Rust session therefore serves only the mixed listener and does not create or take over a TUN device (desktop TUN belongs to T6/Mihomo); status must not read as desktop Rust TUN support.",
       "evidence": [
         "tests/resources.rs::billow_effective_configuration_registers_cross_task_keys_explicitly",
         "tests/android_tunnel.rs::a_user_tun_block_is_staged_away_instead_of_rejected",
-        "src-tauri/src/profile.rs::tests::android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml"
+        "src-tauri/src/profile.rs::tests::android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml",
+        "tests/android_tunnel.rs::a_revoked_device_fd_stops_the_pump_and_is_visible_to_the_host",
+        "tests/android_tunnel.rs::a_failed_start_leaves_the_descriptor_open_for_the_caller",
+        "src-tauri/src/profile.rs::tests::android_rust_disconnect_stops_the_kernel_before_closing_the_vpn_fd",
+        "src-tauri/src/profile.rs::tests::android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes"
       ]
     },
     "sniffer": {
@@ -888,7 +892,7 @@
         "bbr-profile",
         "dialer-proxy",
         "remote-dns-resolve with DNS over TCP/DoT/DoH or `#param` name servers",
-        "URI templates / IP flow forwarding (RFC 9484 \u00a78.2)",
+        "URI templates / IP flow forwarding (RFC 9484 §8.2)",
         "ADDRESS_REQUEST from the peer (no address-assignment policy)",
         "IPv6 extension headers and IPv4 fragments (reported and dropped, not reassembled)",
         "ICMP error generation",
@@ -2048,9 +2052,9 @@
       "GET /configs reports only fields this kernel honours; pinned General keys with no equivalent (unified-delay, routing-mark, geox-url, sniffing, find-process-mode, tcp-concurrent, keep-alive) are omitted rather than fabricated.",
       "The /proxies map omits pinned's GLOBAL/PASS/COMPATIBLE builtins; the kernel's routing has no such adapters.",
       "Rule hit statistics (`extra` in /rules) are not tracked.",
-    "external-controller-tls advertises http/1.1 only and serves HTTP/1.1 only; pinned also offers h2 and serves it through Go's http server.",
-    "A control listener that cannot bind is logged and skipped without failing kernel start (pinned behaviour); the mixed inbound and the other control listeners keep running.",
-    "PUT /providers/{proxies,rules}/:name and PUT /configs perform blocking provider I/O on spawn_blocking workers, so the control runtime keeps serving while a provider stalls."
+      "external-controller-tls advertises http/1.1 only and serves HTTP/1.1 only; pinned also offers h2 and serves it through Go's http server.",
+      "A control listener that cannot bind is logged and skipped without failing kernel start (pinned behaviour); the mixed inbound and the other control listeners keep running.",
+      "PUT /providers/{proxies,rules}/:name and PUT /configs perform blocking provider I/O on spawn_blocking workers, so the control runtime keeps serving while a provider stalls."
     ],
     "evidence": [
       "tool/kernel-compat/evidence/t25-differential.json",

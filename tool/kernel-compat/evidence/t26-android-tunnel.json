@@ -3,8 +3,8 @@
   "version": 1,
   "workflow": "2026-11-20-native-rust-kernel",
   "task": "T26",
-  "attempt": "T26-A1",
-  "generatedAt": "2026-11-22T23:48:00Z",
+  "attempt": "T26-A2",
+  "generatedAt": "2026-11-23T00:31:59Z",
   "environment": {
     "host": "macOS arm64 (aarch64-apple-darwin)",
     "androidTarget": "aarch64-linux-android (rustup target installed)",
@@ -22,8 +22,14 @@
   },
   "featureLayout": {
     "device-vpn": "shared userspace IPv4/IPv6 + TCP/UDP data plane (src/tunnel/)",
-    "ios-vpn": ["device-vpn", "billow_ios_vpn_* C ABI (src/ios_vpn.rs)"],
-    "android-vpn": ["device-vpn", "VpnService fd pump + billow_android_vpn_* ABI (src/android_vpn.rs)"]
+    "ios-vpn": [
+      "device-vpn",
+      "billow_ios_vpn_* C ABI (src/ios_vpn.rs)"
+    ],
+    "android-vpn": [
+      "device-vpn",
+      "VpnService fd pump + billow_android_vpn_* ABI (src/android_vpn.rs)"
+    ]
   },
   "changes": {
     "native-kernel": [
@@ -33,9 +39,13 @@
       "crates/billow-kernel/src/tunnel/mod.rs: Tunnel::identity(); packet_session gate moved to device-vpn",
       "crates/billow-kernel/src/android_vpn.rs: AndroidVpn start/stop/stats/reload, polled fd reader, bounded writer queue, owned-fd close on stop/Drop, billow_android_vpn_* C ABI",
       "crates/billow-kernel-cli: --features android-vpn and --tun-fd <fd>; runs AndroidVpn instead of only the mixed listener",
-      "crates/billow-kernel/tests/android_tunnel.rs: 7 end-to-end tests over a packet-preserving UnixDatagram descriptor"
+      "crates/billow-kernel/tests/android_tunnel.rs: 9 end-to-end tests over a packet-preserving UnixDatagram descriptor, including revoked-fd visibility and failed-start ownership",
+      "crates/billow-kernel/src/android_vpn.rs: a failed start_at no longer closes the caller's fd (reader/writer thread spawn failures), matching the documented ownership; billow_android_vpn_start doc states the caller closes on failure",
+      "crates/billow-kernel-cli/src/main.rs: --tun-fd waits on signals and pump state; when the fd pump stops (revoked VPN/EOF/read-write error) it prints the reason and exits 1, so a host that only samples process liveness notices the dead data plane"
     ],
     "src-tauri": [
+      "src/profile.rs: ProfileBook::stop_android_rust_kernel sets the pending fd to None and stops the child before the host closes/replaces the VpnService descriptor; used by disconnect, switch_engine, connect_android (before establish and on failure), restart_android (before establish and on failure), app-rule refresh and finish_android_fd failure. Mihomo keeps tun.file-descriptor and desktop is unchanged",
+      "src/profile.rs tests: android_rust_disconnect_stops_the_kernel_before_closing_the_vpn_fd, android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes and android_restart_failure_stops_the_rust_child_before_closing_the_vpn_fd prove the child stopped while the fd was still live",
       "src/profile.rs: ProcessRuntime stores the Android TUN fd, appends --tun-fd only for Engine::Rust, forces a respawn for a fresh fd, strips the tun block for Rust on every platform (including a user-written block), keeps force_tun(tun.file-descriptor) for Mihomo",
       "src-tauri/gen/android/.../BillowVpnService.kt: documents the FD_CLOEXEC clear for the Rust child and releases/closes the fd on onRevoke before stopSelf"
     ],
@@ -43,14 +53,16 @@
       "tool/prepare_android_rust_kernel.mjs: builds billow-kernel-cli with --features android-vpn and keys the cache on it",
       "tool/engine-switch.md: Android Rust/VpnService hand-off, release order and pending-device boundary",
       "native-kernel/README.md: device-vpn/android-vpn layout, --tun-fd process route, host wiring and pending verification",
-      "tool/kernel-compat/evidence/rust-mapping.json: tun staging boundary and platform note"
+      "tool/kernel-compat/evidence/rust-mapping.json: tun staging boundary and platform note",
+      "tool/kernel-compat/t26-android-smoke.py: second process loses the device side; asserts a non-zero exit and the reported reason in addition to the SIGTERM/echo path",
+      "tool/engine-switch.md / native-kernel/README.md / tool/kernel-compat/evidence/rust-mapping.json: disconnect/switch/restart release order, revoke-to-exit visibility and the desktop Rust no-TUN boundary"
     ]
   },
   "verification": {
     "hostUnitTests": [
       {
         "command": "cargo test -p billow-kernel --features android-vpn --manifest-path native-kernel/Cargo.toml --test android_tunnel",
-        "result": "7 passed, 0 failed",
+        "result": "9 passed, 0 failed",
         "log": "tool/kernel-compat/evidence/t26-android-tests.log",
         "cases": [
           "tcp_stream_crosses_the_fd_in_both_directions",
@@ -59,17 +71,19 @@
           "stop_releases_the_fd_and_every_flow",
           "reload_closes_flows_and_keeps_pumping",
           "a_user_tun_block_is_staged_away_instead_of_rejected",
-          "an_invalid_fd_is_refused_before_anything_starts"
+          "an_invalid_fd_is_refused_before_anything_starts",
+          "a_revoked_device_fd_stops_the_pump_and_is_visible_to_the_host",
+          "a_failed_start_leaves_the_descriptor_open_for_the_caller"
         ]
       },
       {
         "command": "cargo test -p billow-kernel --features android-vpn --manifest-path native-kernel/Cargo.toml",
-        "result": "all suites green (lib 182 passed, 1 ignored; android_tunnel 7 passed; config 43; controller 15; dns 19; groups 32; protocols 50; quic_peers 32; resources 15; sessions 11)",
+        "result": "all suites green (lib 182 passed, 1 ignored; android_tunnel 9 passed; config 43; controller 15; dns 19; groups 32; protocols 50; quic_peers 32; resources 15; sessions 11)",
         "log": "tool/kernel-compat/evidence/t26-android-tests.log"
       },
       {
         "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
-        "result": "default-feature workspace green, including billow-kernel-cli 11 cli + 10 family_cli tests (unchanged desktop path)",
+        "result": "default-feature workspace green (lib 160 passed, 1 ignored; CLI 11 + family_cli 10; unchanged desktop path)",
         "log": "tool/kernel-compat/evidence/t26-default-tests.log"
       },
       {
@@ -79,22 +93,31 @@
       },
       {
         "command": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
-        "result": "237 passed, 0 failed, 10 ignored",
+        "result": "240 passed, 0 failed, 10 ignored",
         "log": "tool/kernel-compat/evidence/t26-host-tests.log",
         "newCases": [
+          "profile::tests::android_rust_disconnect_stops_the_kernel_before_closing_the_vpn_fd",
+          "profile::tests::android_restart_failure_stops_the_rust_child_before_closing_the_vpn_fd",
+          "profile::tests::android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes",
           "profile::tests::android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml",
           "profile::tests::android_mihomo_connect_keeps_the_vpn_fd_in_yaml",
           "profile::tests::stopping_preserves_the_pending_tun_fd_for_the_next_launch",
           "profile::tests::the_native_kernel_never_receives_the_launcher_tun_block (updated)"
         ],
-        "switchRelease": "profile::tests::android_engine_switch_releases_the_vpn_descriptor_before_starting_the_target (existing release-order test) plus the fd/YAML tests above; the fd-level release is stop_releases_the_fd_and_every_flow"
+        "switchRelease": "profile::tests::android_engine_switch_releases_the_vpn_descriptor_before_starting_the_target (existing release order) plus android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes; fd-level release is stop_releases_the_fd_and_every_flow"
       }
     ],
     "cliProcessSmoke": {
       "command": "BILLOW_KERNEL_BIN=<target>/debug/billow-kernel python3 tool/kernel-compat/t26-android-smoke.py",
-      "result": "ok: inherited --tun-fd 4, UDP echo crossed the fd (proto 17, payload pong), identity line printed, SIGTERM exit 0, staged config.rust.yaml removed",
+      "result": "ok: inherited --tun-fd 4, UDP echo crossed the fd (proto 17, payload pong), identity line printed, SIGTERM exit 0, staged config.rust.yaml removed; second process: device side closed, pump reported not running, CLI exit 1 with the fd-loss error",
       "log": "tool/kernel-compat/evidence/t26-cli-smoke.log",
-      "scope": "macOS host with a UnixDatagram descriptor; exercises the real packaged process path, not Android"
+      "scope": "macOS host with a UnixDatagram descriptor; exercises the real packaged process path, not Android",
+      "fdLoss": {
+        "ready": true,
+        "exitCode": 1,
+        "reported": true,
+        "scope": "macOS host; a revoked VpnService fd is simulated by closing the peer end of the UnixDatagram"
+      }
     },
     "androidAppBuild": {
       "status": "not run",
@@ -105,7 +128,8 @@
       "status": "failed",
       "reason": "No Android NDK in this environment; ring's build script cannot find aarch64-linux-android-clang.",
       "error": "error: failed to run custom build command for `ring v0.17.14`: failed to find tool \"aarch64-linux-android-clang\": No such file or directory (os error 2)",
-      "log": "tool/kernel-compat/evidence/t26-cross-android.log"
+      "log": "tool/kernel-compat/evidence/t26-cross-android.log",
+      "note": "unchanged from T26-A1; no NDK in this environment"
     }
   },
   "deviceVerification": {
@@ -116,13 +140,16 @@
       "engine identity line (instance/version) and process PID",
       "TCP/UDP/DNS marked traffic for each engine and each switch direction",
       "fd release after disconnect/revoke (no leaked descriptor or flow)",
-      "fallback to Mihomo and the readable failure reason when the Rust target fails"
+      "fallback to Mihomo and the readable failure reason when the Rust target fails",
+      "disconnect/engine switch stops the Rust child before the host ParcelFileDescriptor closes; the fd loss (revoke) exits the CLI non-zero within the host sampling window"
     ],
     "notClaimed": "Android two-way engine switching with real traffic has NOT been verified; only host-level fd tests and wiring are green."
   },
   "knownLimits": [
     "The shared T7 stack answers DNS on :53 via the configured resolver and drops ICMP by name; it is not a full Android kernel network stack.",
     "The fd pump assumes a packet-oriented descriptor (VpnService TUN). A host that supplies a stream socket must frame packets itself.",
-    "The Android process route inherits the fd via FD_CLOEXEC clearing; an in-process embedder calling billow_android_vpn_start must also clear FD_CLOEXEC before the call or pass an owned descriptor."
+    "The Android process route inherits the fd via FD_CLOEXEC clearing; an in-process embedder calling billow_android_vpn_start must also clear FD_CLOEXEC before the call or pass an owned descriptor.",
+    "The host has no direct revoke callback: Kotlin reports fd -1, the child exits on fd loss, and the host notices the dead data plane on a later process-liveness sample; on-device confirmation is pending.",
+    "A desktop Rust session does not take over a TUN device (tun is stripped for Engine::Rust on every platform; desktop TUN belongs to T6/Mihomo), so it serves the mixed listener only and must not be read as desktop Rust TUN support."
   ]
 }

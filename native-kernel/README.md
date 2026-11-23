@@ -102,17 +102,28 @@ writing `tun.file-descriptor` into the YAML (the YAML `tun` block is stripped
 for this engine on every platform). The CLI starts `AndroidVpn`, whose reader
 thread polls the fd and feeds `Tunnel::ingest`, and whose bounded writer queue
 writes emitted IP packets back. `stop`/`Drop` joins both threads, closes the
-fd and stops the engine, so a switch back to Mihomo or a revoked VPN leaves no
-descriptor or flow behind. The `billow_android_vpn_*` C ABI in the same module
-is the in-process embed point (`start(fd, home)`, `stop`, `reload`, `stats`);
-the packaged Android kernel uses the `--tun-fd` process route. Host-side
+fd and stops the engine. The host stops the Android Rust child before it
+closes its own descriptor on disconnect, engine switch and a failed restart
+(a reload of the same stripped YAML would otherwise be a no-op); on a revoke
+the system invalidates the fd first, the pump reports `running: false`, and the
+CLI exits non-zero so the host no longer sees a live process with a dead data
+plane. The `billow_android_vpn_*` C ABI in the same module is the in-process
+embed point (`start(fd, home)`, `stop`, `reload`, `stats`); a successful
+`start` takes the fd and a failed one leaves it open for the caller to close
+once. The packaged Android kernel uses the `--tun-fd` process route. Host-side
 tests use a `UnixDatagram` pair as the packet descriptor and cover TCP
-bidirectional data, UDP, DNS hijack, reload, stop/release and invalid fds
-(`tests/android_tunnel.rs`), and the host wiring is covered in
-`src-tauri/src/profile.rs` tests. The Android target build needs the NDK and is
-not available in this environment; the exact failure and the device entry are
-recorded in `tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`, and
-real-device traffic remains pending.
+bidirectional data, UDP, DNS hijack, reload, stop/release, revoked fd, failed
+start ownership and invalid fds (`tests/android_tunnel.rs`), and the host
+wiring is covered in `src-tauri/src/profile.rs` tests. The Android target build
+needs the NDK and is not available in this environment; the exact failure and
+the device entry are recorded in
+`tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`, and real-device
+traffic remains pending.
+
+Desktop Rust sessions do **not** take over a TUN device: the `tun` block is
+stripped for `Engine::Rust` on every platform and desktop TUN belongs to the
+T6/Mihomo path. A desktop Rust session serves the mixed listener only, so
+status/snapshots must not be read as desktop Rust TUN support.
 
 ## License
 

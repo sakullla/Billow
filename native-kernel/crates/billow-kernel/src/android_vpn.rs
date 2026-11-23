@@ -136,7 +136,8 @@ impl AndroidVpn {
 
     /// Starts the engine and the fd pump. A successful call owns `fd`; the
     /// caller must not read, write or close it afterwards. A failed call
-    /// leaves the descriptor with the caller.
+    /// leaves the descriptor open and owned by the caller (this function never
+    /// closes it on failure), so the caller closes it exactly once.
     pub fn start_at(
         fd: RawFd,
         config_yaml: &str,
@@ -170,8 +171,9 @@ impl AndroidVpn {
         let reader = match reader {
             Ok(handle) => handle,
             Err(error) => {
+                // A failed start leaves the descriptor with the caller (see
+                // `start_at`); closing it here would double-close the host's fd.
                 tunnel.stop();
-                unsafe { libc::close(fd) };
                 return Err(format!("android-vpn: reader thread: {error}"));
             }
         };
@@ -188,7 +190,8 @@ impl AndroidVpn {
                 stop_flag.store(true, Ordering::SeqCst);
                 let _ = reader.join();
                 tunnel.stop();
-                unsafe { libc::close(fd) };
+                // Same ownership rule: the caller still owns `fd` after a
+                // failed start and closes it exactly once.
                 return Err(format!("android-vpn: writer thread: {error}"));
             }
         };
@@ -425,8 +428,9 @@ unsafe fn set_error(error: *mut *mut c_char, message: &str) {
 /// `int32_t billow_android_vpn_start(int32_t fd, const char *home, char **error)`.
 ///
 /// Reads `<home>/config.yaml`, stages it for the Rust engine and starts the
-/// fd pump. A successful call owns `fd`. Returns 0 on success and sets a
-/// `malloc`'d `*error` otherwise.
+/// fd pump. A successful call owns `fd`. On failure the caller still owns and
+/// closes `fd` (this entry point never closes it), and a `malloc`'d `*error`
+/// explains the rejection. Returns 0 on success.
 #[no_mangle]
 pub unsafe extern "C" fn billow_android_vpn_start(
     fd: i32,

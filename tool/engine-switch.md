@@ -37,11 +37,19 @@ macOS 已按此入口实跑通过。Windows/Linux 由 `.github/workflows/release
 Android 的入口为安装 APK 后在设置页切换引擎。VpnService 的 TUN 描述符由
 `BillowVpnService.establishTun` 建立并清除 `FD_CLOEXEC`，`BillowVpnBridge.nativeTunFd` 把 fd 交给宿主；
 `profile.rs` 对 Rust 引擎总是移除 YAML 的 `tun` 块（含用户自写块），仅在 Android 上把 fd 作为
-`--tun-fd <fd>` 启动参数交给 Rust 进程；Mihomo 路径保持 `tun.file-descriptor` 注入不变。切换、断开或
-撤销时先停旧进程再关闭 fd（`--tun-fd` 接收方在 `AndroidVpn::stop`/`Drop` 中关闭 fd、join 收发线程并停止
-引擎），目标启动失败则清理目标并恢复 Mihomo，失败原因写入连接状态。
+`--tun-fd <fd>` 启动参数交给 Rust 进程；Mihomo 路径保持 `tun.file-descriptor` 注入不变。
+
+断开、切换引擎、重建/刷新 VpnService fd 以及 `restart_android` 的失败清理，都先停掉 Rust 子进程
+（`KernelLaunch::stop_kernel` 同时清空待移交的 fd），再关闭宿主自己的 `ParcelFileDescriptor`。原因：Rust
+配置里没有 fd，断开与连接的 YAML 逐字节相同，普通 reload 会命中“已运行且配置未变”的早退，子进程会继续
+poll 宿主已释放的描述符。撤销（系统 `onRevoke`）则是系统先使 fd 失效：子进程的 fd 泵读到 EOF/错误后
+`stats().running` 变为 false，CLI 以非零码退出（stderr 明确报告 TUN fd 不再承载报文），宿主按进程退出处理，
+不会长期保留“进程活着但数据面已死”的状态。目标引擎启动失败时仍清理目标并恢复 Mihomo，失败原因写入连接状态。
 
 验证边界：本仓库当前环境没有 Android NDK（`aarch64-linux-android-clang` 缺失）也没有设备，因此
 `aarch64-linux-android` 交叉编译与真机双向切换流量均未执行；宿主单测用 `UnixDatagram` 模拟 TUN fd 覆盖
-TCP/UDP/DNS、启停、reload 与错误路径。命令、退出码与错误原文见
-`tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`，真机结果保持待验。
+TCP/UDP/DNS、启停、reload、撤销后泵停止与错误路径，`src-tauri` 单测覆盖“断开先停子进程再关 fd”和
+“从 Rust 切走先停子进程”。命令、退出码与错误原文见
+`tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`，真机结果保持待验。桌面 Rust 引擎不接管 TUN
+（`tun` 块在所有平台都被移除，桌面 TUN 属 T6/Mihomo 路径），因此 Rust 桌面会话只走 mixed 监听器，快照不得
+据此声称桌面 TUN 已支持。

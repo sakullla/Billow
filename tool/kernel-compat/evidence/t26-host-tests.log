@@ -1,7 +1,465 @@
-# cargo test --manifest-path src-tauri/Cargo.toml --locked
-# 2026-11-22T23:59:44Z
-     Running unittests src/lib.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/billow_lib-a348cec30b23a6a2)
-test result: ok. 237 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 1.56s
-     Running unittests src/main.rs (/Users/yanggeng/.cache/cargo-target/debug/deps/billow-59cf639d95aee454)
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> vendor/serde_yaml/src/mapping.rs:81:18
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry {
+   |                  ^^^^^^^^^               ^^^^^ the same lifetime is hidden here
+   |                  |
+   |                  the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry<'_> {
+   |                                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:188:17
+    |
+188 |     pub fn iter(&self) -> Iter {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+188 |     pub fn iter(&self) -> Iter<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:197:21
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut {
+    |                     ^^^^^^^^^     ^^^^^^^ the same lifetime is hidden here
+    |                     |
+    |                     the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut<'_> {
+    |                                          ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:204:17
+    |
+204 |     pub fn keys(&self) -> Keys {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+204 |     pub fn keys(&self) -> Keys<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:218:19
+    |
+218 |     pub fn values(&self) -> Values {
+    |                   ^^^^^     ^^^^^^ the same lifetime is hidden here
+    |                   |
+    |                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+218 |     pub fn values(&self) -> Values<'_> {
+    |                                   ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:225:23
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut {
+    |                       ^^^^^^^^^     ^^^^^^^^^ the same lifetime is hidden here
+    |                       |
+    |                       the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut<'_> {
+    |                                              ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/number.rs:555:34
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected {
+    |                                  ^^^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+    |                                  |
+    |                                  the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected<'_> {
+    |                                                        ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> vendor/serde_yaml/src/value/de.rs:1231:30
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected {
+     |                              ^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+     |                              |
+     |                              the lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected<'_> {
+     |                                                  ++++
+
+warning: `serde_yaml` (lib) generated 8 warnings (run `cargo fix --lib -p serde_yaml` to apply 8 suggestions)
+warning: function `seed` is never used
+  --> src/bundled_geo.rs:99:8
+   |
+99 | pub fn seed(apk: &Path, home: &Path) -> Result<(), String> {
+   |        ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fetch_delays` is never used
+   --> src/nodes.rs:666:8
+    |
+666 | pub fn fetch_delays(
+    |        ^^^^^^^^^^^^
+
+warning: function `fetch_delays_with_progress` is never used
+   --> src/nodes.rs:675:8
+    |
+675 | pub fn fetch_delays_with_progress(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `set_installed`, `matching_installed`, and `test_group` are never used
+    --> src/profile.rs:2527:12
+     |
+2374 | impl ProfileBook {
+     | ---------------- methods in this implementation
+...
+2527 |     pub fn set_installed(&mut self, apps: Vec<crate::takeover::InstalledApp>) {
+     |            ^^^^^^^^^^^^^
+...
+2549 |     pub fn matching_installed(&self, query: &str) -> Vec<&crate::takeover::InstalledApp> {
+     |            ^^^^^^^^^^^^^^^^^^
+...
+4337 |     pub fn test_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+     |            ^^^^^^^^^^
+
+warning: function `filter_installed` is never used
+   --> src/takeover.rs:228:8
+    |
+228 | pub fn filter_installed<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<&'a InstalledApp> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+
+warning: methods `calls` and `last_excluded` are never used
+    --> src/takeover.rs:1079:12
+     |
+1065 | impl HostVpn {
+     | ------------ methods in this implementation
+...
+1079 |     pub fn calls(&self) -> &[String] {
+     |            ^^^^^
+...
+1083 |     pub fn last_excluded(&self) -> &[String] {
+     |            ^^^^^^^^^^^^^
+
+warning: struct `RecordingVpn` is never constructed
+    --> src/takeover.rs:1113:12
+     |
+1113 | pub struct RecordingVpn {
+     |            ^^^^^^^^^^^^
+
+warning: associated function `granted` is never used
+    --> src/takeover.rs:1122:12
+     |
+1121 | impl RecordingVpn {
+     | ----------------- associated function in this implementation
+1122 |     pub fn granted() -> Self {
+     |            ^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `billow` (lib) generated 9 warnings
+warning: `billow` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t26a2-src-target/debug/deps/billow_lib-a348cec30b23a6a2)
+
+running 250 tests
+test app_update::tests::android_updates_only_offer_newer_stable_releases ... ok
+test app_update::tests::android_updates_reject_missing_and_external_assets ... ok
+test age_key::tests::validates_and_normalizes_keys_and_derives_public_keys ... ok
+test bundled_geo::tests::missing_package_fails_before_starting_the_kernel ... ok
+test diagnostics::tests::a_missing_controller_is_a_read_error_not_an_empty_list ... ok
+test diagnostics::tests::closing_listed_connections_deletes_each_and_counts_failures ... ok
+test diagnostics::tests::connection_rows_carry_details_and_filter_on_the_host ... ok
+test diagnostics::tests::closing_without_ids_deletes_the_whole_collection ... ok
+test age_key::tests::explains_missing_mismatched_and_corrupt_inputs ... ok
+test age_key::tests::decrypts_armored_and_binary_files_with_a_matching_key ... ok
+test diagnostics::tests::connections_keep_the_count_before_the_view_truncates ... ok
+test diagnostics::tests::disabled_rule_keys_normalize_kind_and_keep_duplicate_occurrences ... ok
+test diagnostics::tests::dns_names_and_types_are_validated_before_any_request ... ok
+test diagnostics::tests::dns_query_reads_a_windows_socket_timeout_as_a_timeout ... ok
+test diagnostics::tests::dns_query_reads_answers_and_maps_numeric_types ... ok
+test diagnostics::tests::logs_keep_error_warning_and_info_and_a_start_failure_is_an_error ... ok
+test diagnostics::tests::kernel_gc_puts_debug_gc_and_reports_failures ... ok
+test diagnostics::tests::memory_reads_the_first_reported_byte_count ... ok
+test diagnostics::tests::exported_log_name_is_timestamped_and_writes_the_content ... ok
+test diagnostics::tests::metric_samples_accept_fragmented_lines_and_skip_the_initial_memory_zero ... ok
+test diagnostics::tests::native_kernel_log_lines_keep_their_level ... ok
+test diagnostics::tests::providers_skip_inline_ones_and_read_counts_and_usage ... ok
+test diagnostics::tests::rule_hits_keep_a_zero_count_and_skip_blank_times ... ok
+test diagnostics::tests::rule_parts_ignore_trailing_modifiers_and_match_has_no_payload ... ok
+test diagnostics::tests::rule_rows_large_catalog_benchmark ... ignored, manual rule matching benchmark; run with --ignored --nocapture
+test diagnostics::tests::rule_rows_keep_duplicate_occurrence_and_expose_disabled_rows ... ok
+test diagnostics::tests::rules_body_is_read_into_type_payload_and_proxy ... ok
+test diagnostics::tests::rule_rows_match_enabled_duplicates_before_stale_disabled_rows ... ok
+test bundled_geo::tests::desktop_seeds_offline_repairs_bad_files_and_preserves_user_updates_and_aliases ... ok
+test diagnostics::tests::runtime_config_drops_only_the_disabled_occurrence_and_keeps_modifiers ... ok
+test diagnostics::tests::switch_cleanup_deletes_only_matching_old_connections ... ok
+test diagnostics::tests::connection_limit_keeps_first_valid_rows_and_full_totals ... ok
+test engine::tests::legacy_state_defaults_to_mihomo_and_only_two_engines_exist ... ok
+test diagnostics::tests::traffic_text_reads_up_and_down_only ... ok
+test ios_vpn::tests::connect_payload_carries_engine_and_version ... ok
+test ios_vpn::tests::engines_decode_the_host_rows ... ok
+test diagnostics::tests::upgrade_geo_prefers_configs_geo_and_surfaces_actionable_errors ... ok
+test ios_vpn::tests::host_errors_keep_the_stable_code_and_domain ... ok
+test diagnostics::tests::switch_cleanup_filters_full_chains_without_the_display_row_limit ... ok
+test diagnostics::tests::memory_is_available_while_the_controller_stream_is_still_open ... ok
+test engine::tests::manifest_version_is_optional_and_trimmed ... ok
+test ios_vpn::tests::non_ios_platform_reports_not_ios ... ok
+test ios_vpn::tests::null_status_is_not_an_error ... ok
+test ios_vpn::tests::malformed_host_replies_are_named ... ok
+test ios_vpn::tests::request_payload_uses_the_host_field_names ... ok
+test bundled_geo::tests::first_launch_seeds_without_network_and_preserves_updated_files ... ok
+test kernel::tests::commands_are_exposed_to_the_window ... ok
+test kernel::tests::bundled_kernel_is_ready_offline_and_never_replaced_by_a_download ... ok
+test kernel::tests::default_channel_is_stable_and_has_no_third_channel ... ok
+test kernel::tests::a_different_cached_image_is_repaired_at_a_new_path ... ok
+test kernel::tests::desktop_bootstrap_rejects_corrupt_and_wrong_platform_packages ... ok
+test kernel::tests::github_release_json_keeps_checksum_asset ... ok
+test kernel::tests::compressed_kernel_bootstrap_preserves_bytes_permissions_and_rejects_damage ... ok
+test kernel::tests::interrupted_download_and_truncated_gzip_leave_no_staging_files ... ok
+test kernel::tests::desktop_and_android_assets_do_not_mix ... ok
+test kernel::tests::failed_kernel_state_save_keeps_the_previous_selection_and_image ... ok
+test kernel::tests::download_failure_keeps_channel_and_file ... ok
+test kernel::tests::missing_kernel_connect_fails_and_takeover_stays_off ... ok
+test mrs::tests::domain_sets_dump_like_mihomo ... ok
+test mrs::tests::ip_sets_dump_as_merged_prefixes ... ok
+test mrs::tests::ranges_split_into_aligned_prefixes ... ok
+test mrs::tests::trie_pairing_preserves_wildcards_nested_suffixes_and_unicode ... ok
+test nodes::tests::auto_groups_report_pinnable_fixed_and_hidden_from_yaml_and_controller ... ok
+test mrs::tests::damaged_files_report_instead_of_panicking ... ok
+test bundled_geo::tests::compressed_desktop_and_apk_resources_initialize_offline_and_preserve_updates ... ok
+test nodes::tests::controller_stays_on_loopback_and_keeps_an_existing_one ... ok
+test nodes::tests::group_icons_keep_remote_and_inline_images_only ... ok
+test kernel::tests::desktop_first_launch_and_missing_kernel_repair_work_without_network ... ok
+test nodes::tests::node_test_event_payload_carries_progress_and_failure ... ok
+test nodes::tests::parses_manual_and_auto_groups_from_saved_config ... ok
+test kernel::tests::stable_release_without_checksums_uses_asset_digest ... ok
+test kernel::tests::update_uses_new_file_on_next_launch_and_keeps_channel ... ok
+test nodes::tests::provider_nodes_keep_protocol_and_use_the_provider_healthcheck_endpoint ... ok
+test nodes::tests::probe_pool_starts_the_next_node_while_an_earlier_one_is_slow ... ok
+test nodes::tests::proxy_tags_follow_config_capabilities_without_repeating_the_protocol ... ok
+test nodes::tests::runtime_members_replace_static_lists_and_keep_provider_filters_and_selection ... ok
+test nodes::tests::put_config_sends_raw_yaml_with_force_reload_and_preserves_controller ... ok
+test nodes::tests::saved_choice_moves_only_manual_group_to_front ... ok
+test override_engine::tests::angle_brackets_quote_keys_with_plus ... ok
+test nodes::tests::listener_readiness_requires_the_requested_port_and_tun_state ... ok
+test override_engine::tests::bang_replaces_a_whole_mapping ... ok
+test nodes::tests::unfix_sends_delete_to_the_injected_endpoint_and_reports_the_kernel_reason ... ok
+test nodes::tests::selection_and_delay_use_the_injected_endpoint_only ... ok
+test kernel::tests::switching_channels_back_reuses_the_running_executable_without_rewriting_it ... ok
+test override_engine::tests::plain_keys_deep_merge_mappings_and_replace_lists ... ok
+test override_engine::tests::plus_prepends_and_appends_lists ... ok
+test override_engine::tests::scripts_are_detected_by_a_top_level_main ... ok
+test override_engine::tests::verge_prepend_keys_are_supported_at_the_top_level ... ok
+test override_engine::tests::yaml_errors_report_the_line ... ok
+test override_engine::tests::script_main_edits_the_config_and_logs ... ok
+test override_engine::tests::script_may_mutate_without_returning_or_be_async ... ok
+test override_engine::tests::script_errors_are_reported_with_lines ... ok
+test profile::tests::a_start_failure_is_kept_in_the_log_and_level_filters_do_not_drop_it ... ok
+test profile::tests::a_target_that_rejects_the_config_leaves_the_live_session_untouched ... ok
+test profile::tests::a_failed_target_launch_restores_the_previous_engine_session ... ok
+test profile::tests::age_encrypted_subscriptions_need_a_matching_key_that_persists ... ok
+test profile::tests::android_engine_switch_releases_the_vpn_descriptor_before_starting_the_target ... ok
+test profile::tests::android_package_list_is_cached_between_traffic_polls_and_retries_after_expiry ... ok
+test profile::tests::android_mihomo_connect_keeps_the_vpn_fd_in_yaml ... ok
+test profile::tests::android_restart_failure_stops_the_rust_child_before_closing_the_vpn_fd ... ok
+test profile::tests::android_restart_without_a_vpn_drops_tun_by_hot_reload ... ok
+test profile::tests::android_restart_reestablishes_the_vpn_and_forces_a_respawn ... ok
+test profile::tests::android_rust_connect_passes_the_vpn_fd_to_the_launcher_not_yaml ... ok
+test profile::tests::android_rust_disconnect_stops_the_kernel_before_closing_the_vpn_fd ... ok
+test profile::tests::android_switch_away_from_rust_stops_the_child_before_the_vpn_fd_closes ... ok
+test profile::tests::auto_connect_starts_once_clears_guard_when_stable_and_pauses_after_crashed_launch ... ok
+test profile::tests::benchmark_cached_snapshot ... ignored, manual snapshot benchmark; no timing assertion on shared runners
+test profile::tests::benchmark_subscription_refresh_and_reopen ... ignored, manual subscription refresh and reopen benchmark
+test profile::tests::cached_metadata_tracks_saved_content_and_only_applied_overrides ... ok
+test packed::tests::verified_stream_is_identical_and_failed_unpack_preserves_existing_file ... ok
+test profile::tests::closing_a_connection_set_reports_failures_and_offline_kernels ... ok
+test profile::tests::auto_groups_can_be_fixed_replayed_after_reload_and_released ... ok
+test profile::tests::closing_tun_after_a_sampled_exit_stays_disconnected_while_the_proxy_switch_stays_on ... ok
+test profile::tests::concurrent_refreshes_discard_results_after_edits_or_newer_requests ... ok
+test profile::tests::closing_tun_drops_the_replaced_kernels_connections_and_a_later_sample_sees_new_traffic ... ok
+test profile::tests::cancelled_kernel_elevation_preserves_the_running_session_and_can_retry ... ok
+test profile::tests::controller_injection_belongs_to_the_mihomo_engine_only ... ok
+test profile::tests::deep_link_scheme_is_billow_only ... ok
+test profile::tests::connected_rates_follow_samples_and_a_missing_sample_is_not_stuck_at_zero ... ok
+test profile::tests::delay_results_arrive_only_after_an_explicit_test_and_a_failure_stays_local ... ok
+test profile::tests::delete_rename_and_edit_manage_saved_profiles ... ok
+test profile::tests::desktop_mixed_port_never_collides_with_legacy_listeners ... ok
+test profile::tests::desktop_packaged_runtime_starts_offline ... ignored, requires BILLOW_TEST_RESOURCES pointing to the built desktop runtime bundle
+test profile::tests::config_overview_reports_each_layer_and_masks_credentials ... ok
+test profile::tests::direct_mode_keeps_the_system_proxy_and_a_failed_switch_keeps_the_mode ... ok
+test profile::tests::dns_override_emits_mapping_policy_hosts_and_geo_overrides ... ok
+test profile::tests::disconnect_without_tun_does_not_restart_the_kernel ... ok
+test profile::tests::duplicate_subscription_urls_are_rejected_without_adding ... ok
+test profile::tests::enabling_a_downloaded_subscription_works_offline_and_only_update_fetches ... ok
+test profile::tests::external_profile_survives_runtime_preparation ... ignored, requires BILLOW_TEST_PROFILE_DIR and BILLOW_TEST_KERNEL; isolated loopback listeners, no system proxy/TUN
+test profile::tests::enabling_two_profiles_keeps_one_current_mark ... ok
+test profile::tests::engine_selection_is_persisted_and_used_by_the_next_connection ... ok
+test profile::tests::extra_inbound_ports_interface_and_routing_mark ... ok
+test profile::tests::geo_settings_override_auto_update_interval_and_source ... ok
+test profile::tests::failed_restart_releases_takeover_like_a_failed_launch ... ok
+test profile::tests::group_tests_emit_each_node_and_keep_final_results_in_shared_groups ... ok
+test nodes::tests::catalog_skips_unneeded_history_and_rejects_incomplete_payloads ... ok
+test profile::tests::injected_connections_filter_by_host_and_disappear_when_the_kernel_stops ... ok
+test profile::tests::install_link_adds_only_after_confirm_and_does_not_enable ... ok
+test profile::tests::activating_profiles_preserves_the_desktop_tun_session ... ok
+test profile::tests::home_failure_survives_disconnect_proxy_close_and_tun_until_connect ... ok
+test profile::tests::legacy_profile_book_without_an_engine_stays_on_mihomo ... ok
+test profile::tests::listener_failures_explain_the_port_or_tun_conflict ... ok
+test profile::tests::listener_failures_name_the_port_kind ... ok
+test profile::tests::kernel_settings_overwrite_the_profile_and_a_missing_port_gets_a_default ... ok
+test profile::tests::macos_real_kernel_listens_and_reloads ... ignored, requires BILLOW_TEST_KERNEL; BILLOW_TEST_TUN=1 requests macOS administrator consent
+test profile::tests::mobile_runtime_owns_its_listeners_and_leaves_routing_to_vpn_service ... ok
+test profile::tests::kernel_start_failure_does_not_take_effect_and_closes_takeover ... ok
+test profile::tests::native_kernel_identity_lines_are_parsed_for_readiness ... ok
+test profile::tests::lan_access_fingerprint_and_keep_alive_reach_the_running_config ... ok
+test profile::tests::name_filter_hides_rows_without_clearing_the_saved_profile ... ok
+test profile::tests::packaged_engines_switch_both_ways_with_a_marked_request ... ignored, requires BILLOW_TEST_RESOURCES with packaged Mihomo and billow-kernel; loopback listeners only, no system proxy/TUN
+test profile::tests::outbound_mode_keeps_the_previous_failure_until_the_next_connect ... ok
+test profile::tests::prepared_configs_resolve_merge_keys_like_the_kernel ... ok
+test profile::tests::prefixed_override_rules_reach_the_kernel_and_bad_drafts_report_why ... ok
+test profile::tests::next_successful_connect_applies_the_saved_manual_choice ... ok
+test profile::tests::profile_changes_keep_the_system_proxy_on_the_live_listener ... ok
+test profile::tests::provider_members_can_be_selected_tested_and_are_cleared_on_stop ... ok
+test profile::tests::provider_urls_keep_scalar_types_through_aliases_overrides_and_runtime_settings ... ok
+test profile::tests::real_selector_switch_reconnects_old_streams_and_keeps_other_groups ... ignored, requires BILLOW_TEST_KERNEL; uses isolated loopback streams without OS proxy/TUN changes
+test profile::tests::refresh_settings_and_rule_reload_preserve_the_selected_mode ... ok
+test profile::tests::rejected_live_refresh_preserves_the_last_working_subscription_on_disk ... ok
+test profile::tests::repeated_anchor_names_do_not_rebind_urls_to_an_unrelated_mapping ... ok
+test profile::tests::restart_kernel_respawns_and_keeps_takeover_and_mode ... ok
+test profile::tests::rule_toggle_filters_the_runtime_config_and_rolls_back_a_failed_reload ... ok
+test profile::tests::runtime_crash_recovers_once_then_trips_circuit_breaker_and_releases_proxy ... ok
+test profile::tests::process_runtime_hot_reloads_in_place_without_killing_child_process ... ok
+test profile::tests::saved_config_lists_groups_while_kernel_is_stopped_and_keeps_manual_choice ... ok
+test profile::tests::saved_override_is_not_applied_until_enable ... ok
+test profile::tests::snapshot_reports_kernel_memory_uptime_connection_count_and_read_errors ... ok
+test profile::tests::sniff_details_layer_on_the_final_sniffer_block_only_while_it_is_on ... ok
+test profile::tests::saving_system_proxy_or_geo_settings_keeps_session_smooth_without_spurious_tun_prompts ... ok
+test profile::tests::stopping_preserves_the_pending_tun_fd_for_the_next_launch ... ok
+test profile::tests::stored_proxy_counts_survive_refresh_and_load_from_legacy_files ... ok
+test profile::tests::subscription_http_requests_use_the_actual_kernel_version_or_custom_header ... ok
+test profile::tests::subscription_user_agents_inherit_persist_and_reach_enable_and_refresh ... ok
+test profile::tests::subscriptions_with_an_interval_become_due_after_it_passes ... ok
+test profile::tests::switching_closes_old_group_connections_only_after_success_and_respects_the_setting ... ok
+test profile::tests::test_all_reports_each_node_with_tested_and_total ... ok
+test profile::tests::the_native_kernel_never_receives_the_launcher_tun_block ... ok
+test profile::tests::tun_gets_routing_and_dns_and_dns_override_replaces_the_profile_block ... ok
+test profile::tests::tun_only_session_publishes_connections_without_a_system_proxy ... ok
+test profile::tests::tun_route_addresses_reach_desktop_and_bad_entries_are_named ... ok
+test profile::tests::tun_stack_accepts_mips_and_empty_follows_the_kernel ... ok
+test profile::tests::unreachable_subscription_enable_closes_takeover_and_keeps_the_reason ... ok
+test profile::tests::unusable_override_does_not_replace_the_active_config ... ok
+test profile::tests::userinfo_records_usage_only_when_total_is_positive_and_skips_zero_expiry ... ok
+test resources::tests::benchmark_large_mrs_preview_and_search ... ignored, requires BILLOW_TEST_MRS; benchmarks a local rule set without touching the live kernel
+test resources::tests::download_geo_files_updates_all_or_single_database_and_rejects_html ... ok
+test resources::tests::geo_files_recognises_android_seeded_and_lowercase_filenames ... ok
+test resources::tests::geo_files_report_presence_and_size ... ok
+test resources::tests::interrupted_geo_download_keeps_the_previous_file_and_removes_partial_data ... ok
+test resources::tests::large_rule_previews_count_all_but_retain_only_the_limit ... ok
+test resources::tests::mrs_cache_reuses_decoding_and_invalidates_replaced_files ... ok
+test resources::tests::provider_proxies_keep_type_flags_and_last_delay ... ok
+test resources::tests::rule_providers_read_type_and_format_through_merge_keys ... ok
+test resources::tests::rule_providers_resolve_inline_path_and_url_cache ... ok
+test resources::tests::rule_search_preserves_ascii_and_unicode_case_matching ... ok
+test shell::tests::corrupt_or_invalid_state_still_opens_with_defaults ... ok
+test shell::tests::package_window_is_named_billow_and_matches_default_size ... ok
+test shell::tests::unknown_entry_returns_home_and_unknown_theme_follows_system ... ok
+test shell::tests::unusable_window_size_is_rejected ... ok
+test shell::tests::valid_state_round_trips ... ok
+test takeover::host_proxy::macos::tests::macos_real_system_proxy_roundtrip ... ignored, requires BILLOW_TEST_PROXY_SERVICE; temporarily changes that macOS service's proxy
+test takeover::host_proxy::macos::tests::proxy_enable_checks_the_observed_endpoint_and_enabled_state ... ok
+test takeover::tests::android_starts_with_no_exclusions_and_keeps_an_excluded_package_out_of_vpn ... ok
+test takeover::tests::android_vpn_service_establishes_tun_and_reports_consent ... ok
+test takeover::tests::app_rules_switch_between_bypass_and_allowlist_and_persist ... ok
+test takeover::tests::clear_leaves_a_system_proxy_that_no_longer_points_at_us ... ok
+test takeover::tests::connected_exclude_reloads_kernel_with_the_new_fd_and_the_saved_list ... ok
+test takeover::tests::denied_tun_fails_without_changing_the_previous_system_proxy ... ok
+test takeover::tests::desktop_connect_opens_system_proxy_and_leaves_tun_off_until_the_user_enables_it ... ok
+test takeover::tests::desktop_kernel_failure_closes_system_proxy_and_tun ... ok
+test takeover::tests::excluding_while_connected_keeps_the_home_failure_and_hands_over_the_new_fd ... ok
+test takeover::tests::fail_activation_keeps_proxy_and_endpoint_when_clear_fails ... ok
+test takeover::tests::fail_kernel_keeps_system_proxy_and_endpoint_when_clear_fails ... ok
+test takeover::tests::failed_exclusion_reload_closes_vpn_and_is_not_connected ... ok
+test takeover::tests::failed_proxy_clear_keeps_the_switch_and_startup_retries ... ok
+test takeover::tests::failed_vpn_establish_closes_and_does_not_show_connected ... ok
+test takeover::tests::host_adapter_reloads_tun_and_can_deny_authorization ... ok
+test takeover::tests::host_vpn_prepares_then_starts_and_hands_the_fd_to_the_kernel ... ok
+test takeover::tests::installed_app_search_keeps_spaced_names_and_ignores_the_query_text ... ok
+test takeover::tests::installed_apps_enter_the_android_snapshot ... ok
+test takeover::tests::jni_consent_symbol_is_billow_vpn_bridge ... ok
+test takeover::tests::macos_and_windows_do_not_deny_tun_for_a_missing_linux_node ... ok
+test takeover::tests::macos_proxy_text_requires_an_enabled_server_and_port ... ok
+test takeover::tests::macos_setuid_probe_and_applescript_escape_paths_safely ... ok
+test takeover::tests::macos_utun_probe_does_not_authorize_an_unavailable_kernel ... ok
+test takeover::tests::pac_server_and_system_proxy_settings_render_and_normalize_cleanly ... ok
+test takeover::tests::session_commands_are_exposed ... ok
+test takeover::tests::set_tun_kernel_failure_keeps_proxy_when_clear_fails ... ok
+test takeover::tests::tun_alone_is_connected_and_survives_disabling_system_proxy ... ok
+test takeover::tests::tun_expectation_survives_disconnect_and_stays_off_after_the_user_closes_it ... ok
+test takeover::tests::uwp_loopback_parsers_and_diff_handle_english_chinese_and_validation ... ok
+test takeover::tests::vpn_denial_or_a_missing_kernel_closes_vpn_and_is_not_connected ... ok
+test takeover::tests::wanted_tun_is_still_wanted_after_reopen ... ok
+test takeover::tests::windows_grant_follows_wintun_open_and_not_token_elevation ... ok
+test profile::tests::missing_kernel_binary_fails_enable_without_opening_takeover ... ok
+test tray::tests::connected_menu_shows_state_mode_groups_and_profiles ... ok
+test tray::tests::empty_install_offers_add_profile_instead_of_a_dead_connect ... ok
+test tray::tests::long_groups_point_to_the_window_instead_of_a_huge_menu ... ok
+test tray::tests::menu_ids_round_trip_names_with_separators_and_spaces ... ok
+test tray::tests::tray_shows_and_selects_the_running_engine ... ok
+test profile::tests::process_runtime_reads_injected_controller_traffic_without_touching_system_proxy ... ok
+test takeover::tests::written_vpn_fd_returns_without_burning_the_timeout ... ok
+test override_engine::tests::runaway_scripts_are_stopped ... ok
+test diagnostics::tests::dns_query_explains_missing_records_disabled_dns_and_timeouts ... ok
+test profile::tests::forced_launch_respawns_even_for_an_unchanged_config ... ok
+test profile::tests::startup_exit_keeps_fatal_stdout_stderr_and_exit_status_for_the_ui ... ok
+test nodes::tests::pinning_waits_for_the_kernel_to_probe_a_dead_fallback_member ... ok
+
+test result: ok. 240 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 1.57s
+
+     Running unittests src/main.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t26a2-src-target/debug/deps/billow-59cf639d95aee454)
+
+running 0 tests
+
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests billow_lib
+
+running 0 tests
+
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

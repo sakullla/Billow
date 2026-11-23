@@ -211,7 +211,8 @@ fn run_android_tunnel(
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?
-        .block_on(wait_for_stop());
+        .block_on(wait_for_android_stop(&vpn));
+    let fd_lost = reason == FD_LOST;
     tracing::info!(reason, "stop requested");
     vpn.stop();
     // Staged by `AndroidVpn::start`; the next launch rewrites it.
@@ -229,7 +230,39 @@ fn run_android_tunnel(
         stats.fd.reads,
         stats.fd.written
     );
+    if fd_lost {
+        // The host only samples process liveness for the Rust engine, so an
+        // exited child (non-zero) is the signal that the data plane is gone.
+        eprintln!(
+            "error: android-vpn: the inherited TUN fd stopped carrying packets; \
+             exiting so the host can release the VPN"
+        );
+        return Ok(ExitCode::FAILURE);
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The fd pump ending on its own (a revoked VPN, the VpnService side closing
+/// the descriptor, or a hard read/write error) is a data-plane failure, not a
+/// stop request. The host can only observe process liveness for the Rust
+/// engine, so this returns and the process exits non-zero instead of waiting
+/// for a signal with a dead data plane.
+#[cfg(feature = "android-vpn")]
+const FD_LOST: &str = "tun-fd closed";
+
+#[cfg(feature = "android-vpn")]
+async fn wait_for_android_stop(vpn: &billow_kernel::android_vpn::AndroidVpn) -> &'static str {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    loop {
+        tokio::select! {
+            reason = wait_for_stop() => return reason,
+            _ = ticker.tick() => {
+                if !vpn.stats().running {
+                    return FD_LOST;
+                }
+            }
+        }
+    }
 }
 
 /// Apply scripted selections, wait for health checks, then print the group
