@@ -6,9 +6,10 @@ import Toggle from '../../components/Toggle.vue'
 import SettingsRow from '../../components/settings/SettingsRow.vue'
 import SettingsSection from '../../components/settings/SettingsSection.vue'
 import { t, tr } from '../../lib/i18n'
+import { PALETTE_LIST } from '../../lib/palettes'
 import { useSettingsSave } from '../../lib/settings/save'
 import { useStore } from '../../lib/store'
-import type { LanguagePreference, PalettePreference, ThemePreference } from '../../lib/types'
+import type { LanguagePreference, ThemePreference } from '../../lib/types'
 
 defineProps<{ compact?: boolean }>()
 const store = useStore()
@@ -21,25 +22,18 @@ const THEMES = computed<{ id: ThemePreference; label: string; icon: string }[]>(
   { id: 'light', label: tr('浅色'), icon: 'sun' },
   { id: 'dark', label: tr('深色'), icon: 'moon' },
 ])
-const PALETTE_OPTIONS = computed<
-  {
-    id: PalettePreference
-    label: string
-    accent: string
-    darkAccent: string
-    chrome: string
-    surface: string
-    darkChrome: string
-    darkSurface: string
-  }[]
->(() => [
-  { id: 'teal', label: tr('碧潮'), accent: '#0d9488', darkAccent: '#14b8a6', chrome: '#e4eded', surface: '#ffffff', darkChrome: '#091012', darkSurface: '#141e22' },
-  { id: 'sapphire', label: tr('晴空蓝'), accent: '#2563eb', darkAccent: '#3b82f6', chrome: '#e6ebf5', surface: '#ffffff', darkChrome: '#090d14', darkSurface: '#151c27' },
-  { id: 'indigo', label: tr('星夜靛'), accent: '#4f46e5', darkAccent: '#818cf8', chrome: '#eaeaf6', surface: '#ffffff', darkChrome: '#0a0a14', darkSurface: '#181828' },
-  { id: 'terracotta', label: tr('暖砂陶'), accent: '#c25e2c', darkAccent: '#e8834f', chrome: '#efe8dd', surface: '#fffdfa', darkChrome: '#100d0a', darkSurface: '#1e1915' },
-  { id: 'berry', label: tr('绯莓'), accent: '#be185d', darkAccent: '#f472b6', chrome: '#f0e6ec', surface: '#ffffff', darkChrome: '#100a0f', darkSurface: '#1e151c' },
-  { id: 'graphite', label: tr('墨韵'), accent: '#18181b', darkAccent: '#e4e4e7', chrome: '#e9e9ec', surface: '#ffffff', darkChrome: '#09090b', darkSurface: '#18181c' },
-])
+const PALETTE_OPTIONS = computed(() =>
+  PALETTE_LIST.map((meta) => ({
+    id: meta.id,
+    label: tr(meta.name),
+    accent: meta.light.accent,
+    darkAccent: meta.dark.accent,
+    chrome: meta.light.chrome,
+    surface: meta.light.surface,
+    darkChrome: meta.dark.chrome,
+    darkSurface: meta.dark.surface,
+  })),
+)
 const LANGUAGES = computed<{ id: LanguagePreference; label: string }[]>(() => [
   { id: 'system', label: t('language.system') },
   { id: 'zh-CN', label: tr('简体中文') },
