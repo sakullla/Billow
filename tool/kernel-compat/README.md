@@ -272,6 +272,15 @@ remaining per-family gaps, their proposed owners (T28/T29/decision) and the
 platform conditions are listed in `evidence/t27-option-parity.md`; raw logs are
 in `evidence/t27-a2/`.
 
+T28 moved 179 enabled / 135 disagreements to 151 enabled / 107 disagreements
+(55 implemented, 289 no-op, 0 problems; 10 of the removed rows were duplicates
+T27 emitted twice): `BasicOption` knobs for mieru/sudoku, the UDP-relevant
+socket knobs for the shadowquic QUIC endpoint, masque
+`congestion-controller`/`cwnd` on the quinn endpoint, trojan `ss-opts`, and the
+T27 ss/ssr UDP server-name/proxy-DNS boundary. Easytier, OpenVPN, DNS and
+sniffer/tun stay named gaps. Details, remaining per-family rows and unverified
+boundaries are in `evidence/t28-option-parity.{json,md}`.
+
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every
 `partial` claim must say what is missing, and every family in the peer matrix must have a

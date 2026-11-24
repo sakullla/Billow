@@ -1,5 +1,5 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t28-a1-target/release/billow-kernel
+# rust: /Users/yanggeng/github/Billow/.cache/target-t28a2/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
 # no-op cases: 289, implemented cases: 55, enabled cases: 151, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>

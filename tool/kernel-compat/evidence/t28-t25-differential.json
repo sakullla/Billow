@@ -1,0 +1,615 @@
+{
+  "format": "t25-differential",
+  "version": 1,
+  "startedAt": "2026-11-24T00:32:34.629Z",
+  "mihomo": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
+  "rust": "/Users/yanggeng/github/Billow/.cache/target-t28a2/debug/billow-kernel",
+  "summary": {
+    "cases": 49,
+    "pass": 47,
+    "differ": 0,
+    "recordedDivergences": 2
+  },
+  "results": [
+    {
+      "id": "auth-missing",
+      "equal": true,
+      "mihomo": {
+        "status": 401,
+        "message": "Unauthorized"
+      },
+      "rust": {
+        "status": 401,
+        "message": "Unauthorized"
+      }
+    },
+    {
+      "id": "auth-query-token-non-ws",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "auth-wrong-bearer-case",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "version-authorized",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "unknown-path",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "wrong-method",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "cors-preflight",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "cors-preflight-vary",
+      "equal": true,
+      "mihomo": [
+        "access-control-request-headers",
+        "access-control-request-method",
+        "origin"
+      ],
+      "rust": [
+        "access-control-request-headers",
+        "access-control-request-method",
+        "origin"
+      ],
+      "note": "Header order differs; both set Origin/Request-Method/Request-Headers."
+    },
+    {
+      "id": "cors-unauthorized-get",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "configs-get",
+      "equal": true,
+      "mihomo": {
+        "status": 200,
+        "mixed-port": 63112,
+        "tun.enable": false,
+        "mode": "rule",
+        "ipv6": true,
+        "log-level": "info"
+      },
+      "rust": {
+        "status": 200,
+        "mixed-port": 63119,
+        "tun.enable": false,
+        "mode": "rule",
+        "ipv6": true,
+        "log-level": "info"
+      },
+      "note": "Only the fields this kernel reports are compared; pinned General keys the Rust kernel does not implement (unified-delay, routing-mark, geox-url, …) are absent rather than fabricated."
+    },
+    {
+      "id": "configs-patch-tun-disable",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "configs-patch-tun-enable-missing",
+      "equal": false,
+      "mihomo": {
+        "status": 204
+      },
+      "rust": {
+        "status": 400
+      },
+      "note": "Pinned answers 204 and tries to (re)create a TUN device; the Rust kernel has no device layer (T6/T7) and rejects `tun.enable: true` by name with 400."
+    },
+    {
+      "id": "proxies-groups",
+      "equal": true,
+      "mihomo": {
+        "status": 200,
+        "Sel": {
+          "type": "Selector",
+          "now": "n1",
+          "all": [
+            "n1",
+            "n2",
+            "DIRECT"
+          ],
+          "hidden": false
+        },
+        "Fast": {
+          "type": "URLTest",
+          "now": "n1",
+          "all": [
+            "n1",
+            "n2"
+          ],
+          "expectedStatus": "*",
+          "hidden": false
+        }
+      },
+      "rust": {
+        "status": 200,
+        "Sel": {
+          "type": "Selector",
+          "now": "n1",
+          "all": [
+            "n1",
+            "n2",
+            "DIRECT"
+          ],
+          "hidden": false
+        },
+        "Fast": {
+          "type": "URLTest",
+          "now": "n1",
+          "all": [
+            "n1",
+            "n2"
+          ],
+          "expectedStatus": "*",
+          "hidden": false
+        }
+      },
+      "note": "The Rust kernel does not invent the pinned GLOBAL/PASS/COMPATIBLE builtins; only the configured groups and real outbounds are listed."
+    },
+    {
+      "id": "proxies-nodes",
+      "equal": true,
+      "mihomo": {
+        "DIRECT": {
+          "type": "Direct",
+          "provider": ""
+        },
+        "n1": {
+          "type": "Socks5",
+          "provider": ""
+        },
+        "pn1": {}
+      },
+      "rust": {
+        "DIRECT": {
+          "type": "Direct",
+          "provider": ""
+        },
+        "n1": {
+          "type": "Socks5",
+          "provider": ""
+        },
+        "pn1": {}
+      }
+    },
+    {
+      "id": "rules-shape",
+      "equal": true,
+      "mihomo": [
+        {
+          "index": 0,
+          "type": "RuleSet",
+          "payload": "rp",
+          "proxy": "DIRECT",
+          "size": -1
+        },
+        {
+          "index": 1,
+          "type": "Match",
+          "payload": "",
+          "proxy": "Sel",
+          "size": -1
+        }
+      ],
+      "rust": [
+        {
+          "index": 0,
+          "type": "RuleSet",
+          "payload": "rp",
+          "proxy": "DIRECT",
+          "size": -1
+        },
+        {
+          "index": 1,
+          "type": "Match",
+          "payload": "",
+          "proxy": "Sel",
+          "size": -1
+        }
+      ],
+      "note": "Pinned `extra` hit counters are not reported by the Rust kernel (rule hit statistics are not tracked)."
+    },
+    {
+      "id": "selection-put",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "selection-now",
+      "equal": true,
+      "mihomo": "n2",
+      "rust": "n2"
+    },
+    {
+      "id": "selection-missing-member",
+      "equal": true,
+      "mihomo": {
+        "status": 400,
+        "message": "Selector update error: proxy not exist"
+      },
+      "rust": {
+        "status": 400,
+        "message": "Selector update error: proxy not exist"
+      }
+    },
+    {
+      "id": "selection-delete-selector",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "delay-direct",
+      "equal": true,
+      "mihomo": {
+        "status": 200,
+        "hasDelay": true
+      },
+      "rust": {
+        "status": 200,
+        "hasDelay": true
+      },
+      "note": "Latency values are not compared byte-wise."
+    },
+    {
+      "id": "delay-timeout-missing",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "delay-unknown-proxy",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "delay-dead-node",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "providers-proxies",
+      "equal": true,
+      "mihomo": {
+        "pp": {
+          "type": "Proxy",
+          "vehicleType": "File",
+          "nodes": [
+            "pn1"
+          ]
+        },
+        "Sel": {
+          "type": "Proxy",
+          "vehicleType": "Compatible",
+          "nodes": [
+            "n1",
+            "n2",
+            "DIRECT"
+          ]
+        }
+      },
+      "rust": {
+        "pp": {
+          "type": "Proxy",
+          "vehicleType": "File",
+          "nodes": [
+            "pn1"
+          ]
+        },
+        "Sel": {
+          "type": "Proxy",
+          "vehicleType": "Compatible",
+          "nodes": [
+            "n1",
+            "n2",
+            "DIRECT"
+          ]
+        }
+      }
+    },
+    {
+      "id": "providers-rules",
+      "equal": true,
+      "mihomo": {
+        "behavior": "Classical",
+        "format": "YamlRule",
+        "ruleCount": 1,
+        "type": "Rule",
+        "vehicleType": "File"
+      },
+      "rust": {
+        "behavior": "Classical",
+        "format": "YamlRule",
+        "ruleCount": 1,
+        "type": "Rule",
+        "vehicleType": "File"
+      }
+    },
+    {
+      "id": "provider-rule-update-ok",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "provider-proxy-update-ok",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "provider-rule-update-failure",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "provider-proxy-update-failure",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "provider-failure-keeps-snapshot",
+      "equal": true,
+      "mihomo": 1,
+      "rust": 1
+    },
+    {
+      "id": "reload-success",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "reload-rule-effect",
+      "equal": true,
+      "mihomo": "DIRECT",
+      "rust": "DIRECT"
+    },
+    {
+      "id": "reload-invalid-yaml",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "reload-failure-keeps-config",
+      "equal": true,
+      "mihomo": 63112,
+      "rust": 63119
+    },
+    {
+      "id": "connections-list-close",
+      "equal": true,
+      "mihomo": {
+        "row": {
+          "network": "tcp",
+          "type": "HTTPS",
+          "destinationIP": "127.0.0.1",
+          "destinationPort": "63128",
+          "inboundName": "DEFAULT-MIXED",
+          "chains": [
+            "DIRECT"
+          ],
+          "rule": "Match",
+          "rulePayload": ""
+        },
+        "closeStatus": 204,
+        "afterEmpty": true,
+        "totals": {
+          "up": true
+        }
+      },
+      "rust": {
+        "row": {
+          "network": "tcp",
+          "type": "HTTPS",
+          "destinationIP": "127.0.0.1",
+          "destinationPort": "63128",
+          "inboundName": "DEFAULT-MIXED",
+          "chains": [
+            "DIRECT"
+          ],
+          "rule": "Match",
+          "rulePayload": ""
+        },
+        "closeStatus": 204,
+        "afterEmpty": true,
+        "totals": {
+          "up": true
+        }
+      }
+    },
+    {
+      "id": "connections-delete-unknown",
+      "equal": true,
+      "diffs": [],
+      "note": null
+    },
+    {
+      "id": "traffic-first-frame",
+      "equal": true,
+      "mihomo": {
+        "status": 200,
+        "keys": [
+          "up",
+          "down",
+          "upTotal",
+          "downTotal"
+        ]
+      },
+      "rust": {
+        "status": 200,
+        "keys": [
+          "down",
+          "downTotal",
+          "up",
+          "upTotal"
+        ]
+      },
+      "note": "Counters differ (different sessions); only the frame shape is compared."
+    },
+    {
+      "id": "logs-first-frame",
+      "equal": true,
+      "mihomo": {
+        "status": 200,
+        "keys": [
+          "type",
+          "payload"
+        ]
+      },
+      "rust": {
+        "status": 200,
+        "keys": [
+          "payload",
+          "type"
+        ]
+      },
+      "note": "Message contents differ between engines; the `{type,payload}` frame shape is compared."
+    },
+    {
+      "id": "unix-socket-version",
+      "equal": true,
+      "mihomo": {
+        "status": 200
+      },
+      "rust": {
+        "status": 200
+      },
+      "note": "Neither engine requires the Bearer secret on the Unix socket."
+    },
+    {
+      "id": "unix-socket-configs",
+      "equal": true,
+      "mihomo": {
+        "status": 200,
+        "port": 63112
+      },
+      "rust": {
+        "status": 200,
+        "port": 63119
+      }
+    },
+    {
+      "id": "tls-controller-version",
+      "equal": true,
+      "mihomo": {
+        "status": 200
+      },
+      "rust": {
+        "status": 200
+      }
+    },
+    {
+      "id": "tls-controller-unauthorized",
+      "equal": true,
+      "mihomo": {
+        "status": 401
+      },
+      "rust": {
+        "status": 401
+      }
+    },
+    {
+      "id": "unimplemented-configs-geo",
+      "equal": true,
+      "mihomo": {
+        "status": 405
+      },
+      "rust": {
+        "status": 404
+      },
+      "note": "The Rust kernel returns an explicit 404 for a pinned endpoint it does not implement; recorded in evidence/t25-controller.md."
+    },
+    {
+      "id": "unimplemented-upgrade-geo",
+      "equal": true,
+      "mihomo": {
+        "status": 405
+      },
+      "rust": {
+        "status": 404
+      },
+      "note": "The Rust kernel returns an explicit 404 for a pinned endpoint it does not implement; recorded in evidence/t25-controller.md."
+    },
+    {
+      "id": "unimplemented-group",
+      "equal": true,
+      "mihomo": {
+        "status": 200
+      },
+      "rust": {
+        "status": 404
+      },
+      "note": "The Rust kernel returns an explicit 404 for a pinned endpoint it does not implement; recorded in evidence/t25-controller.md."
+    },
+    {
+      "id": "unimplemented-cache",
+      "equal": true,
+      "mihomo": {
+        "status": 404
+      },
+      "rust": {
+        "status": 404
+      },
+      "note": "The Rust kernel returns an explicit 404 for a pinned endpoint it does not implement; recorded in evidence/t25-controller.md."
+    },
+    {
+      "id": "unimplemented-storage",
+      "equal": true,
+      "mihomo": {
+        "status": 404
+      },
+      "rust": {
+        "status": 404
+      },
+      "note": "The Rust kernel returns an explicit 404 for a pinned endpoint it does not implement; recorded in evidence/t25-controller.md."
+    },
+    {
+      "id": "unimplemented-dns-query",
+      "equal": true,
+      "mihomo": {
+        "status": 500
+      },
+      "rust": {
+        "status": 404
+      },
+      "note": "The Rust kernel returns an explicit 404 for a pinned endpoint it does not implement; recorded in evidence/t25-controller.md."
+    },
+    {
+      "id": "reload-listener-move",
+      "equal": false,
+      "mihomo": 204,
+      "rust": 400,
+      "note": "Pinned recreates the mixed listener on PUT /configs; the Rust kernel rejects a listener move by name (restart required). Recorded as a known divergence, not a compatibility pass."
+    }
+  ]
+}

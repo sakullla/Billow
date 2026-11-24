@@ -677,7 +677,6 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
             "udp-over-tcp-version: 2",
         ),
-        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {enabled: true}"),
         ("trojan", "server: 127.0.0.1, port: 1, password: p", "ech-opts: {enable: true}"),
         (
             "trojan",
@@ -913,7 +912,6 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
     let enabled: &[(&str, &str, &str)] = &[
         // `ech-opts`/`udp-over-tcp` are not socks5 options: Mihomo ignores them
         // there (covered by the no-op list), so they cannot be "enabled".
-        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ss-opts: {enabled: true}"),
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {public-key: k}"),
         ("anytls", "server: 127.0.0.1, port: 1, password: p", "idle-session-timeout: 30"),
         // anytls declares these security modes and applies them, so a content
@@ -1317,19 +1315,19 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
         ("down: 50 Mbps", "down"),
         ("quic-versions: [v2]", "quic-versions"),
         ("dialer-proxy: p2", "dialer-proxy"),
-        ("tfo: true", "tfo"),
-        ("mptcp: true", "mptcp"),
-        ("interface-name: eth0", "interface-name"),
-        ("routing-mark: 100", "routing-mark"),
-        ("ip-version: ipv4", "ip-version"),
     ] {
         let yaml = format!(
-            "proxies:\n  - {{name: sq, type: shadowquic, server: x, port: 1, {extra}}}\n  - {{name: p2, type: direct}}\nrules: ['MATCH,sq']\n"
+            "proxies:\n  - {{name: sq, type: shadowquic, server: x, port: 1, {extra}}}\n  - {{name: p2, type: socks5, server: 127.0.0.1, port: 2}}\nrules: ['MATCH,sq']\n"
         );
         let error = proxy_err(&yaml);
         assert!(error.contains(field), "{extra}: {error}");
         assert!(error.contains("not implemented"), "{extra}: {error}");
     }
+
+    // T28: the QUIC endpoint applies the UDP-relevant BasicOption knobs;
+    // `tfo`/`mptcp` are accepted no-ops because a QUIC server socket is UDP.
+    let applied = "proxies:\n  - {name: sq, type: shadowquic, server: x, port: 1, tfo: true, mptcp: true, interface-name: eth0, routing-mark: 100, ip-version: ipv4}\nrules: ['MATCH,sq']\n";
+    assert_eq!(err_tag(applied), "ok");
 }
 
 #[test]
@@ -1676,13 +1674,16 @@ fn masque_connect_ip_shape_is_strict() {
             "server: x, port: 1, udp: true, network: h3-l4proxy".to_string(),
             "h3-l4proxy",
         ),
+        // `congestion-controller: cubic|new_reno|bbr` and a non-negative
+        // `cwnd` are implemented (T28); unknown controllers and a negative
+        // window stay rejections.
         (
-            "server: x, port: 1, udp: true, congestion-controller: bbr".to_string(),
+            "server: x, port: 1, udp: true, congestion-controller: vegas".to_string(),
             "congestion-controller",
         ),
         (
-            "server: x, port: 1, udp: true, cwnd: 32".to_string(),
-            "cwnd",
+            "server: x, port: 1, udp: true, cwnd: -1".to_string(),
+            "option 'cwnd' must not be negative",
         ),
         (
             "server: x, port: 1, udp: true, bbr-profile: standard".to_string(),

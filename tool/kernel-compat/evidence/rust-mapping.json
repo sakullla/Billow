@@ -439,6 +439,7 @@
         "ws-opts.headers (Host override)",
         "ws-opts.v2ray-http-upgrade",
         "udp",
+        "ss-opts (enabled/method/password)",
         "dialer-proxy",
         "tfo",
         "mptcp",
@@ -470,11 +471,13 @@
         "tests/mihomo_peers.rs::trojan_udp_wrong_password_never_reaches_the_echo",
         "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
         "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
+        "src/outbound/shadowsocks.rs::tests::connect_layer_seals_the_first_payload_without_an_address_frame",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name).",
-      "reason": "T28 adds `ss-opts` (a bare Shadowsocks AEAD layer over the TLS/WS stream, method/password validated). The remaining named gaps are the uTLS fingerprint, ECH/REALITY/ShadowTLS/Restls/JLS handshakes and the gRPC transport."
+      "reason": "T28 adds `ss-opts` (a bare Shadowsocks AEAD layer over the TLS/WS stream, method/password validated; AES-128-GCM, AES-256-GCM and CHACHA20-IETF-POLY1305 are implemented, other ciphers are named rejections). The remaining named gaps are the uTLS fingerprint, ECH/REALITY/ShadowTLS/Restls/JLS handshakes and the gRPC transport."
     },
     "vless": {
       "status": "implemented",
@@ -880,7 +883,12 @@
         "password",
         "multiplexing",
         "handshake-mode",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version"
       ],
       "udp": "not implemented: `udp: true` (the UDP-associate wrapper) is rejected; TCP sessions only",
       "notImplemented": [
@@ -900,6 +908,7 @@
         "tests/mihomo_peers.rs::mieru_wrong_password_never_reaches_the_sink",
         "tests/mihomo_peers.rs::mieru_closed_peer_port_never_reaches_the_sink",
         "src/outbound/mieru.rs::tests::key_derivation_matches_the_pinned_protocol",
+        "tests/config.rs::t28_tcp_basic_options_reach_the_shared_dialer_families",
         "crates/billow-kernel-cli/tests/cli.rs::process_loads_t13_outbounds"
       ]
     },
@@ -922,15 +931,15 @@
         "mtu",
         "ip-stack",
         "remote-dns-resolve",
-        "dns"
+        "dns",
+        "congestion-controller",
+        "cwnd"
       ],
       "udp": "implemented in both shapes. CONNECT-IP: one UDP flow (local source port) per destination, at most 32 flows per association (least-recently-used eviction beyond that), packets built with IPv4 header/UDP checksums or the mandatory IPv6 UDP checksum, `mtu` (pinned default 1280) bounding one datagram, replies matched by (local address, local port, remote address); tunnel DNS is a UDP A/AAAA query to the configured name servers. CONNECT-UDP: one request stream per destination, DATAGRAM capsules with context ID 0, closed flows reclaimed before the cap is enforced.",
       "rejectedAtLoad": [
         "network: h2",
         "network: h3-l4proxy",
         "ip-stack.mode: gvisor",
-        "congestion-controller",
-        "cwnd",
         "bbr-profile",
         "dialer-proxy",
         "dns: non-udp scheme",
@@ -989,6 +998,7 @@
         "tests/config.rs::masque_accepts_the_connect_udp_subset",
         "tests/config.rs::masque_accepts_the_pinned_connect_ip_shape",
         "tests/config.rs::masque_connect_ip_shape_is_strict",
+        "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
         "tests/quic_peers.rs::masque_connect_ip_tunnels_udp_over_ipv4_and_ipv6",
         "tests/quic_peers.rs::masque_connect_ip_records_the_assignment_and_bounds_the_mtu",
         "tests/quic_peers.rs::masque_connect_ip_requires_the_pinned_endpoint_key",
@@ -1028,7 +1038,7 @@
     },
     "sudoku": {
       "status": "partial",
-      "reason": "TCP sessions with the legacy HTTP mask, the pure and packed downlink codecs, table rotation, all three record AEAD methods, the session mux (`multiplex: on`) and `dialer-proxy` (the exit's server connection is carried by a socks5 hop chain, repaired in T17-A3) are translated from the pinned GPL-3.0 `transport/sudoku` (T17); the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`) and the UoT association are rejected at load with the reason recorded T28: the shared stream dialer applies `tfo`/`mptcp`/`interface-name`/`routing-mark`/`ip-version`.",
+      "reason": "TCP sessions with the legacy HTTP mask, the pure and packed downlink codecs, table rotation, all three record AEAD methods, the session mux (`multiplex: on`) and `dialer-proxy` (the exit's server connection is carried by a socks5 hop chain, repaired in T17-A3) are translated from the pinned GPL-3.0 `transport/sudoku` (T17); the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`) and the UoT association are rejected at load with the reason recorded. T28: the shared stream dialer applies `tfo`/`mptcp`/`interface-name`/`routing-mark`/`ip-version`.",
       "license": "GPL-3.0-derived translation of Mihomo `transport/sudoku` v1.19.34 (commit 0455d0d28c4526937380505153e65a843d8612e8); the kernel workspace is GPL-3.0-only, any distribution of the combined work must follow GPL-3.0 (source availability etc.), see native-kernel/COPYING.GPL-3.0 and THIRD_PARTY_NOTICES.md",
       "options": [
         "server",
@@ -1046,7 +1056,12 @@
         "path-root",
         "multiplex",
         "httpmask",
-        "dialer-proxy"
+        "dialer-proxy",
+        "tfo",
+        "mptcp",
+        "interface-name",
+        "routing-mark",
+        "ip-version"
       ],
       "udp": "not implemented: `udp: true` (the UoT association, `KIPTypeStartUoT` + `transport/sudoku/uot.go`) is rejected at load; the kernel's UDP association selection for sudoku is a T9 decision",
       "notImplemented": [
@@ -1073,6 +1088,7 @@
         "tests/protocols.rs::sudoku_codec_matches_the_pinned_implementation",
         "src/outbound/sudoku/table.rs::pinned_vectors::the_pinned_encoder_output_decodes_with_our_table",
         "src/outbound/sudoku/mux.rs::tests::frames_are_demultiplexed_and_half_closed",
+        "tests/config.rs::t28_tcp_basic_options_reach_the_shared_dialer_families",
         "crates/billow-kernel-cli/tests/cli.rs::process_loads_t13_outbounds"
       ]
     },
@@ -1255,7 +1271,7 @@
     },
     "shadowquic": {
       "status": "partial",
-      "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with an independent JLS random seal and a protocol-level transport; provenance is in tool/kernel-compat/evidence/t15-cleanroom.md; `zero-rtt`, QUIC `v2` and the private Brutal congestion options are rejected by name because quinn has no Brutal controller/JLS 0-RTT ticket T28: the QUIC endpoint applies `interface-name`/`routing-mark`/`ip-version`; `tfo`/`mptcp` are accepted no-ops because the pinned packet dialer cannot apply TCP options to a QUIC UDP socket.",
+      "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with an independent JLS random seal and a protocol-level transport; provenance is in tool/kernel-compat/evidence/t15-cleanroom.md; `zero-rtt`, QUIC `v2` and the private Brutal congestion options are rejected by name because quinn has no Brutal controller/JLS 0-RTT ticket. T28: the QUIC endpoint applies `interface-name`/`routing-mark`/`ip-version`; `tfo`/`mptcp` are accepted no-ops because the pinned packet dialer cannot apply TCP options to a QUIC UDP socket.",
       "options": [
         "server",
         "port",
@@ -1270,7 +1286,12 @@
         "recv-window",
         "disable-mtu-discovery",
         "max-datagram-frame-size",
-        "max-open-streams"
+        "max-open-streams",
+        "interface-name",
+        "routing-mark",
+        "ip-version",
+        "tfo",
+        "mptcp"
       ],
       "notImplemented": [
         "zero-rtt: true",
@@ -1287,6 +1308,7 @@
         "src/outbound/jls.rs::tests::replay_returns_recorded_bytes_and_the_override",
         "src/outbound/shadowquic.rs::tests::address_round_trip",
         "tests/config.rs::shadowquic_transport_options_are_parsed_and_jls_gaps_named",
+        "tests/config.rs::t28_tcp_basic_options_reach_the_shared_dialer_families",
         "tests/mihomo_peers.rs::shadowquic_outbound_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::shadowquic_wrong_password_never_reaches_the_sink",
         "tests/mihomo_peers.rs::shadowquic_udp_reaches_the_receiving_side_through_mihomo",

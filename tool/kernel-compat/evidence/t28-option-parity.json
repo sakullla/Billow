@@ -1,0 +1,93 @@
+{
+  "format": "kernel-option-parity",
+  "version": 1,
+  "task": "T28",
+  "baselineMatrix": "tool/kernel-compat/evidence/t27-option-parity.json",
+  "matrix": "tool/kernel-compat/evidence/option-matrix.txt",
+  "command": "node tool/kernel-compat/option-probe.mjs --rust <built billow-kernel-cli> --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 --out tool/kernel-compat/evidence/option-matrix.txt",
+  "before": {
+    "enabledCases": 179,
+    "rustRejectMihomoAccept": 135,
+    "implementedCases": 50,
+    "noopCases": 287,
+    "problems": 0
+  },
+  "after": {
+    "enabledCases": 151,
+    "rustRejectMihomoAccept": 107,
+    "implementedCases": 55,
+    "noopCases": 289,
+    "problems": 0
+  },
+  "enabledReduction": 28,
+  "rustRejectMihomoAcceptReduction": 28,
+  "deduplicatedRows": 10,
+  "families": {
+    "mieru": {
+      "before": 15,
+      "after": 5,
+      "implementedInT28": true,
+      "note": "five duplicate enabled rows from T27's two lists were removed in the same change"
+    },
+    "sudoku": {
+      "before": 13,
+      "after": 3,
+      "implementedInT28": true,
+      "note": "five duplicate enabled rows from T27's two lists were removed in the same change"
+    },
+    "shadowquic": {
+      "before": 12,
+      "after": 7,
+      "implementedInT28": true,
+      "note": "tfo/mptcp also gained enabled no-op rows (the matrix noop count grows by 2)"
+    },
+    "masque": {
+      "before": 7,
+      "after": 5,
+      "implementedInT28": true
+    },
+    "trojan": {
+      "before": 7,
+      "after": 6,
+      "implementedInT28": true
+    }
+  },
+  "implementedInT28": [
+    "mieru/sudoku BasicOption knobs (tfo, mptcp, interface-name, routing-mark, ip-version) on the shared stream dialer",
+    "shadowquic QUIC endpoint socket knobs (interface-name, routing-mark, ip-version; tfo/mptcp accepted as TCP-only no-ops)",
+    "masque congestion-controller (cubic/new_reno/bbr) and cwnd mapped to the quinn endpoint",
+    "trojan ss-opts (Shadowsocks AEAD layer over the TLS/WS stream, method/password validated)"
+  ],
+  "remainingByFamily": {
+    "mieru": ["udp: true (UDP association)", "multiplexing levels", "traffic-pattern"],
+    "sudoku": ["udp: true (UoT association)", "http-mask-mode: stream/poll/auto/ws"],
+    "shadowquic": [
+      "zero-rtt",
+      "quic-versions: [v2]",
+      "congestion-controller (private Brutal)",
+      "bbr-profile",
+      "cwnd",
+      "up",
+      "down"
+    ],
+    "masque": [
+      "network: h2",
+      "network: h3-l4proxy",
+      "bbr-profile (quinn has no profile selector)",
+      "ip-stack.mode: gvisor",
+      "dialer-proxy"
+    ],
+    "trojan": [
+      "reality-opts",
+      "ech-opts",
+      "shadow-tls-opts",
+      "restls-opts",
+      "jls-opts",
+      "client-fingerprint"
+    ]
+  },
+  "alsoInT28": [
+    "ss/ssr UDP association resolves the proxy-server name through dns.proxy-server-nameserver and the dialer ip-version instead of the OS resolver",
+    "spawned TUN/mixed UDP associations re-enter the PROXY_DNS task-local scope"
+  ]
+}
