@@ -271,10 +271,10 @@ onBeforeUnmount(store.releaseTrafficStats)
               <strong class="traffic-summary-value" data-testid="traffic-total-all">{{ formatBytes(totals.upload + totals.download) }}</strong>
             </div>
             <div class="traffic-summary-split small">
-              <span class="traffic-dot down" aria-hidden="true" />
+              <Icon name="down" :size="12" class="traffic-icon down" aria-hidden="true" />
               <span class="muted">{{ t('traffic.download') }}</span>
               <span class="mono" data-testid="traffic-total-download">{{ formatBytes(totals.download) }}</span>
-              <span class="traffic-dot up" aria-hidden="true" />
+              <Icon name="up" :size="12" class="traffic-icon up" aria-hidden="true" />
               <span class="muted">{{ t('traffic.upload') }}</span>
               <span class="mono" data-testid="traffic-total-upload">{{ formatBytes(totals.upload) }}</span>
             </div>
@@ -447,19 +447,16 @@ onBeforeUnmount(store.releaseTrafficStats)
   margin-right: 0;
 }
 
-.traffic-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+.traffic-icon {
   flex: none;
 }
 
-.traffic-dot.down {
-  background: var(--data-down);
+.traffic-icon.down {
+  color: var(--data-down);
 }
 
-.traffic-dot.up {
-  background: var(--data-up);
+.traffic-icon.up {
+  color: var(--data-up);
 }
 
 .traffic-table {

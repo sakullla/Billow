@@ -2,6 +2,7 @@
 
 import { computed, ref, useId } from 'vue'
 import { formatSpeed } from '../lib/format'
+import Icon from './Icon.vue'
 
 /** `collecting` hides the curves until the session has enough samples to show a trend (R2). */
 const props = defineProps<{ up: number[]; down: number[]; height?: number; collecting?: boolean }>()
@@ -165,8 +166,8 @@ const label = computed(() =>
       </div>
       <!-- Same order as the rate cards above: download first (R2). -->
       <div v-else class="legend" aria-hidden="true" data-testid="chart-legend">
-        <span class="legend-item down">{{ tr('下载') }}</span>
-        <span class="legend-item up">{{ tr('上传') }}</span>
+        <span class="legend-item down"><Icon name="down" :size="12" />{{ tr('下载') }}</span>
+        <span class="legend-item up"><Icon name="up" :size="12" />{{ tr('上传') }}</span>
       </div>
       <span class="chart-head-end">
         <span v-if="!collecting && highest > 0" class="chart-peak" aria-hidden="true" :title="tr('最近一分钟内的最高速率（下载或上传）')" data-testid="chart-peak"> {{ tr('峰值') }} {{ formatSpeed(highest) }}
@@ -209,8 +210,7 @@ const label = computed(() =>
           vector-effect="non-scaling-stroke"
         />
       </svg>
-      <p v-if="collecting" class="chart-collecting small" role="status" data-testid="chart-collecting">
-        <span class="chart-collecting-dot" aria-hidden="true" />{{ tr('正在采集流量…') }} </p>
+      <p v-if="collecting" class="chart-collecting small" role="status" data-testid="chart-collecting">{{ tr('正在采集流量…') }}</p>
       <template v-if="inspected && !collecting">
         <span class="chart-dot down" :style="{ left: `${inspected.xPct}%`, top: `${inspected.downY}px` }" aria-hidden="true" />
         <span class="chart-dot up" :style="{ left: `${inspected.xPct}%`, top: `${inspected.upY}px` }" aria-hidden="true" />

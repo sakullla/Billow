@@ -802,7 +802,6 @@ defineExpose({ store })
             @keydown.space.prevent="store.page.value !== 'home' && store.go('home')"
           >
             <div class="side-status-head">
-              <span class="dot" />
               <span>{{ sideStatusWord }}</span>
             </div>
             <template v-if="snap.connected">
@@ -834,7 +833,7 @@ defineExpose({ store })
             <span v-if="store.connecting.value" class="spinner sm" />
             <Icon v-else name="power" :size="16" :stroke="2.2" />
           </button>
-          <span v-else-if="sidebarCollapsed" class="dot collapsed-status-dot" aria-hidden="true" />
+          <Icon v-else-if="sidebarCollapsed" name="power" :size="16" class="muted" aria-hidden="true" />
         </div>
       </div>
     </aside>
@@ -915,14 +914,8 @@ defineExpose({ store })
       >
         <span class="tab-icon-wrap">
           <Icon :name="item.icon" :size="21" />
-          <span
-            v-if="item.id === 'home' && (snap.connected || store.connecting.value)"
-            class="tab-live-dot"
-            :class="{ pending: store.connecting.value }"
-            aria-hidden="true"
-          />
         </span>
-        <span class="tab-label">{{ item.label }}<span v-if="item.id === 'settings' && store.appUpdate.offer.value" class="update-dot" :aria-label="tr('有可用更新')">•</span></span>
+        <span class="tab-label">{{ item.label }}</span>
       </button>
     </nav>
 

@@ -12,8 +12,6 @@ export interface MenuItem {
   disabled?: boolean
   /** Visible reason shown next to a disabled item (never a tooltip-only hint). */
   reason?: string
-  /** Draw the small accent dot used for "override is set" markers. */
-  mark?: boolean
 }
 
 const props = withDefaults(
@@ -208,7 +206,6 @@ onBeforeUnmount(() => {
       >
         <Icon v-if="item.icon" :name="item.icon" :size="15" />
         <span class="menu-label">{{ item.label }}</span>
-        <span v-if="item.mark" class="dot-mark" />
         <span v-if="reasonText(item)" :id="reasonId(index)" class="menu-reason">{{ reasonText(item) }}</span>
       </button>
     </div>

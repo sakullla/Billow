@@ -16,7 +16,7 @@ import TunPane from './TunPane.vue'
 /**
  * Renders the panes belonging to one settings category:
  * - Single pane: rendered directly.
- * - `layout === 'tabs'` (System Proxy & TUN): crisp segmented switcher with live status dots, zero accordions.
+ * - `layout === 'tabs'` (System Proxy & TUN): crisp segmented switcher with live status pills, zero accordions.
  * - `layout === 'stack'` (Backup & About): flat vertical sections, everything immediately visible.
  */
 const props = defineProps<{
@@ -79,10 +79,7 @@ const PANES: Record<CategoryId, Component> = {
           class="settings-subtab-state"
           :class="{ on: subTabStatus(id)!.on }"
           :data-testid="`pane-status-${id}`"
-        >
-          <span class="settings-subtab-dot" aria-hidden="true" />
-          {{ subTabStatus(id)!.label }}
-        </span>
+        >{{ subTabStatus(id)!.label }}</span>
       </button>
     </div>
     <div :key="currentSubPane" class="settings-pane" :data-pane="currentSubPane">

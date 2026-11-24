@@ -785,7 +785,6 @@ onMounted(() => {
       </div>
       <ul v-if="shownGeoFiles.length" class="geo-chips" data-testid="geo-files">
         <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }" :title="file.file">
-          <span class="geo-chip-dot" aria-hidden="true" />
           <strong>{{ file.label }}</strong>
           <span class="muted">{{ file.exists ? formatBytes(file.size) : tr('未下载') }}</span>
         </li>
@@ -817,7 +816,6 @@ onMounted(() => {
       <div class="geo-sheet" data-testid="geo-settings">
         <ul class="geo-file-list" data-testid="geo-file-list">
           <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }">
-            <span class="geo-chip-dot" aria-hidden="true" />
             <div class="grow min0">
               <strong>{{ file.label }}</strong>
               <span class="muted small mono">{{ file.file }}</span>

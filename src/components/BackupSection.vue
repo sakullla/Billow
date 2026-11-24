@@ -321,10 +321,7 @@ function backupTitle(item: RemoteBackup): string {
         :class="available ? 'ok' : ''"
         aria-live="polite"
         data-testid="webdav-status"
-      >
-        <span class="backup-status-dot" aria-hidden="true" />
-        {{ available ? t('backup.webdav.available') : t('backup.webdav.unavailable') }}
-      </span>
+      >{{ available ? t('backup.webdav.available') : t('backup.webdav.unavailable') }}</span>
     </template>
 
     <!-- Verified & collapsed: compact account summary + primary upload action above the fold. -->
@@ -580,16 +577,6 @@ function backupTitle(item: RemoteBackup): string {
   gap: 6px;
   align-self: center;
   flex: none;
-}
-.backup-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.72;
-}
-.backup-status.ok .backup-status-dot {
-  opacity: 1;
 }
 .backup-account-bar {
   flex-wrap: wrap;

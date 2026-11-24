@@ -868,8 +868,6 @@ onBeforeUnmount(() => {
 const denseLabel = computed(() => tr('双列视图'))
 const denseIcon = 'grid'
 
-const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card' || (hideFailed.value && failedNodeCount.value > 0))
-
 const groupPillsEl = ref<HTMLElement | null>(null)
 const draggingPills = ref(false)
 let pillsDragCleanup: (() => void) | null = null
@@ -1008,8 +1006,7 @@ onBeforeUnmount(() => {
       class="proxies-connect-bar"
       data-testid="proxies-connect-bar"
     >
-      <span class="proxies-connect-text small">
-        <span class="proxies-connect-dot" aria-hidden="true" /> {{ tr('当前未连接，连接后即可测速与实时生效') }} </span>
+      <span class="proxies-connect-text small">{{ tr('当前未连接，连接后即可测速与实时生效') }}</span>
       <button
         type="button"
         class="btn primary sm"
@@ -1052,7 +1049,7 @@ onBeforeUnmount(() => {
         v-if="compact"
         type="button"
         class="icon-btn options-btn"
-        :class="{ active: optionsOpen, marked: optionsActive && !optionsOpen }"
+        :class="{ active: optionsOpen }"
         :aria-expanded="optionsOpen"
         aria-controls="proxy-options"
         :aria-label="tr('排序与视图')"
@@ -1196,7 +1193,6 @@ onBeforeUnmount(() => {
           :data-testid="`jump-group-${group.name}`"
           @click="jumpToGroup(group.name)"
         >
-          <span v-if="store.activeTest.value?.group === group.name" class="group-pill-dot" aria-hidden="true" />
           <span class="group-pill-name">{{ group.name }}</span>
           <span class="group-pill-count mono">{{ group.nodes.length }}</span>
         </button>

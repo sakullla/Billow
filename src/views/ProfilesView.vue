@@ -240,7 +240,7 @@ function menuItems(profile: ProfileItem): MenuItem[] {
   items.push(
     { id: 'edit', get label() { return tr('编辑信息') }, icon: 'edit' },
     { id: 'content', get label() { return tr('编辑配置文件') }, icon: 'code' },
-    { id: 'override', get label() { return tr('覆写') }, icon: 'layers', mark: profile.override_text.trim().length > 0 },
+    { id: 'override', get label() { return tr('覆写') }, icon: 'layers' },
   )
   // Quiet entry: only the profile that runs has a final config worth reading.
   if (profile.current) items.push({ id: 'effective', get label() { return tr('查看生效配置') }, icon: 'file' })
@@ -1050,16 +1050,6 @@ const showRefreshBanner = computed(() => {
         >
           <span>{{ tr('自建节点') }}</span>
           <span class="profiles-tab-count mono">{{ store.customNodes.value.nodes.length }}</span>
-          <span
-            v-if="store.customProfileActive.value || overlayActiveCount > 0"
-            class="profiles-tab-dot active"
-            aria-hidden="true"
-          />
-          <span
-            v-else-if="store.hasCustomNodes.value && !store.customNodes.value.overlay_enabled"
-            class="profiles-tab-dot paused"
-            aria-hidden="true"
-          />
         </button>
       </div>
 
@@ -1267,9 +1257,7 @@ const showRefreshBanner = computed(() => {
           <div class="grow min0">
             <div class="profile-name">
               <strong :title="profile.name">{{ profile.name }}</strong>
-              <span v-if="profile.current" class="tag accent profile-active-tag">
-                <span class="profile-live-dot" aria-hidden="true" />{{ tr('使用中') }}
-              </span>
+              <span v-if="profile.current" class="tag accent profile-active-tag">{{ tr('使用中') }}</span>
               <span v-else-if="compact" class="tag profile-touch-cue" aria-hidden="true">{{ tr('启用') }}</span>
               <span v-else class="profile-switch-hint" aria-hidden="true">{{ tr('点击启用') }}</span>
             </div>

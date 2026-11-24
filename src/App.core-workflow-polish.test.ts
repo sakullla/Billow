@@ -683,7 +683,7 @@ describe('Core workflow polish (R3–R4)', () => {
       await flushPromises()
       expect(pill().classes()).toContain('testing')
       expect(pill().attributes('aria-busy')).toBe('true')
-      expect(pill().find('.group-pill-dot').exists()).toBe(true)
+      expect(pill().find('.group-pill-dot').exists()).toBe(false)
 
       gate.resolve(storeOf(wrapper).snapshot.value)
       await settle(200)

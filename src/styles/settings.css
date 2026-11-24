@@ -750,16 +750,6 @@ button.copy-chip:hover {
   background: var(--good-soft);
   color: var(--good-ink);
 }
-.settings-subtab-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.55;
-}
-.settings-subtab-state.on .settings-subtab-dot {
-  opacity: 1;
-}
 .settings-flat-stack {
   gap: 28px;
 }

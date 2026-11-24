@@ -573,7 +573,7 @@ onBeforeUnmount(() => {
           <span class="hero-status-pill">
             <Icon v-if="snap.kernel_running && !takeoverOn && !store.connecting.value" name="alert" :size="13" aria-hidden="true" />
             <Icon v-else-if="takeoverOn && !store.connecting.value" name="check" :size="13" aria-hidden="true" />
-            <span v-else class="hero-dot" aria-hidden="true" />
+            <span v-else-if="store.connecting.value" class="spinner xs" aria-hidden="true" />
             <span data-testid="hero-eyebrow">{{ heroEyebrow }}</span>
           </span>
           <div class="hero-pills-right">

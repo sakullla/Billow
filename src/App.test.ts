@@ -3260,7 +3260,7 @@ describe('App', () => {
     const { wrapper, backend } = await mountApp({ platform: 'android' }, 375)
     const enableSpy = vi.spyOn(backend, 'enable')
 
-    // Disconnected: dock has no live dot yet; profile trigger opens the quick switcher sheet
+    // Disconnected: dock stays clean without status dots; profile trigger opens the quick switcher sheet
     expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(false)
     expect(wrapper.find('[data-testid="mobile-profile-trigger"]').exists()).toBe(true)
     await wrapper.find('[data-testid="mobile-profile-trigger"]').trigger('click')
@@ -3273,10 +3273,10 @@ describe('App', () => {
     expect(document.body.querySelector('[data-testid="home-profile-sheet"]')).toBeNull()
     expect(wrapper.find('.main').attributes('data-page')).toBe('home')
 
-    // Connect and verify the dock live indicator lights up even after switching tabs
+    // Connect and verify the dock stays free of distracting corner dots
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
-    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(true)
+    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(false)
 
     // Tapping the active node capsule opens the in-place node picker, which links to ProxiesView
     const nodePill = wrapper.find('[data-testid="hero-node-pill"]')
@@ -3288,7 +3288,7 @@ describe('App', () => {
     document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
-    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(true)
+    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(false)
   })
 
   it('connects inline from mobile proxies when disconnected and focuses one group per pill tap', async () => {

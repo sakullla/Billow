@@ -200,4 +200,34 @@ describe('phone layout', () => {
     const { wrapper } = await mountPhone()
     expect(wrapper.find('[data-testid="mobile-open-palette"]').exists()).toBe(false)
   })
+
+  it('keeps home, proxies, profiles and dock free of distracting status and badge dots', async () => {
+    localStorage.setItem('billow:proxy-sort', JSON.stringify('delay'))
+    localStorage.setItem('billow:proxy-view', JSON.stringify('dense'))
+    const { wrapper } = await mountPhone()
+    void storeOf(wrapper).importCustomNodes('ss://YWVzLTI1Ni1nY206cGFzc0AxLjEuMS4xOjg4ODg=#TestNode')
+    await settle(300)
+    await connect(wrapper)
+
+    // Home & dock: no live dot on tabbar, no hero dot, no collecting dot, directional legend icons instead of dots
+    expect(wrapper.find('.tabbar .tab-live-dot').exists()).toBe(false)
+    expect(wrapper.find('.tabbar .update-dot').exists()).toBe(false)
+    expect(wrapper.find('.hero-dot').exists()).toBe(false)
+    expect(wrapper.find('.chart-collecting-dot').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="chart-legend"] .legend-item .icon')).toHaveLength(2)
+
+    // Proxies: options button never renders a marked corner dot even when sort/view are non-default
+    storeOf(wrapper).go('proxies')
+    await settle(100)
+    const optionsBtn = wrapper.find('[data-testid="toggle-options"]')
+    expect(optionsBtn.exists()).toBe(true)
+    expect(optionsBtn.classes()).not.toContain('marked')
+
+    // Profiles: custom nodes tab and active profile badge render without status dots
+    storeOf(wrapper).go('profiles')
+    await settle(100)
+    expect(wrapper.find('.profiles-tab-dot').exists()).toBe(false)
+    expect(wrapper.find('.profile-live-dot').exists()).toBe(false)
+    expect(wrapper.find('.profile-active-tag').text()).toBe('使用中')
+  })
 })

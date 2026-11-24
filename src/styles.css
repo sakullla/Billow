@@ -712,11 +712,6 @@ hr {
   box-shadow: 0 0 0 3px var(--fair-soft);
 }
 
-.update-dot {
-  margin-left: 4px;
-  color: var(--accent);
-}
-
 .side-search {
   display: flex;
   align-items: center;
@@ -852,21 +847,6 @@ hr {
   gap: 7px;
   font-weight: 650;
   font-size: var(--text-md);
-}
-.side-status .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-pill);
-  background: var(--muted);
-  flex: none;
-}
-.side-status.on .dot {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-.side-status.pending .dot {
-  background: var(--fair);
-  box-shadow: 0 0 0 3px var(--fair-soft);
 }
 /*
  * One fixed row: download and upload each own half the width and never wrap, so the
@@ -2215,32 +2195,16 @@ button.delay:hover:not(:disabled) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.hero-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--text-3);
-  flex: none;
-}
 .hero.on:not(.bare) .hero-status-pill {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 28%, transparent);
   color: var(--accent-ink);
-}
-.hero.on:not(.bare) .hero-dot {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .hero.bare .hero-status-pill,
 .hero.pending .hero-status-pill {
   background: var(--fair-soft);
   border-color: color-mix(in srgb, var(--fair) 28%, transparent);
   color: var(--fair-ink);
-}
-.hero.bare .hero-dot,
-.hero.pending .hero-dot {
-  background: var(--fair);
-  box-shadow: 0 0 0 3px var(--fair-soft);
 }
 
 .hero-port-btn {
@@ -2551,16 +2515,13 @@ button.delay:hover:not(:disabled) {
   font-size: var(--text-xs);
   color: var(--muted);
 }
-.legend-item::before {
-  content: '';
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-pill);
-  margin-right: 6px;
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
-.legend-item.up::before { background: var(--data-up); }
-.legend-item.down::before { background: var(--data-down); }
+.legend-item.up .icon { color: var(--data-up); }
+.legend-item.down .icon { color: var(--data-down); }
 .chart-readout {
   display: inline-flex;
   align-items: center;
@@ -3097,14 +3058,6 @@ button.delay:hover:not(:disabled) {
   color: var(--text-2);
   font-weight: 550;
 }
-.proxies-connect-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--fair);
-  box-shadow: 0 0 0 3px var(--fair-soft);
-  flex: none;
-}
 .proxies-connect-bar .btn {
   border-radius: var(--radius-pill);
   flex: none;
@@ -3154,16 +3107,6 @@ button.delay:hover:not(:disabled) {
   height: 40px;
   border: 1px solid var(--border-input);
   background: var(--surface);
-}
-.options-btn.marked::after {
-  content: '';
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
 }
 
 /* Horizontal Group Quick-Jump Strip */
@@ -3687,13 +3630,6 @@ button.delay:hover:not(:disabled) {
   height: 1px;
   background: var(--border);
   pointer-events: none;
-}
-.dot-mark {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-  margin-left: auto;
 }
 .menu.start {
   left: 0;
@@ -4845,15 +4781,8 @@ textarea.input {
   font-weight: 620;
   color: var(--text-2);
 }
-.geo-chip-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--good);
-}
-.missing > .geo-chip-dot {
-  background: var(--fair);
+.geo-chips li.missing {
+  border-color: color-mix(in srgb, var(--fair) 38%, var(--border));
 }
 
 .geo-sheet {
@@ -5725,19 +5654,6 @@ textarea.input {
   display: inline-grid;
   place-items: center;
 }
-.tab-live-dot {
-  position: absolute;
-  top: -1px;
-  right: -5px;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--good);
-  box-shadow: 0 0 0 2px var(--surface);
-}
-.tab-live-dot.pending {
-  background: var(--fair);
-}
 /* Content scrolling under the floating dock fades out instead of showing through half-cut. */
 .compact .tabbar::before {
   content: '';
@@ -6422,17 +6338,6 @@ button.nav-row:active {
   color: var(--text-3);
   pointer-events: none;
 }
-.chart-collecting-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--data-down);
-  animation: chart-collect 1.2s var(--ease) infinite;
-}
-@keyframes chart-collect {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 1; }
-}
 
 /* R3 Proxy toolbar: labelled view controls with a visible pressed state */
 .tool-btn {
@@ -6982,9 +6887,6 @@ details.cfg-section[open] .cfg-fold-icon {
 
 /* Reduced Motion */
 @media (prefers-reduced-motion: reduce) {
-  .chart-collecting-dot {
-    animation: none !important;
-  }
   *,
   *::before,
   *::after {
@@ -8744,30 +8646,10 @@ details.cfg-section[open] .cfg-fold-icon {
   }
 }
 
-/* R3: Group quick-jump pill testing pulse */
-@keyframes group-pill-pulse {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.42;
-    transform: scale(0.78);
-  }
-}
-
+/* R3: Group quick-jump pill testing state */
 .group-pill.testing {
   border-color: color-mix(in srgb, var(--accent) 44%, transparent);
   color: var(--accent-ink);
-}
-
-.group-pill-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-  animation: group-pill-pulse 1.1s var(--ease) infinite;
 }
 
 .group-empty-filter {
@@ -8777,12 +8659,6 @@ details.cfg-section[open] .cfg-fold-icon {
   flex-wrap: wrap;
   gap: var(--space-2);
   padding: var(--space-2) 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .group-pill-dot {
-    animation: none !important;
-  }
 }
 
 /* Unified top navigation row: tabs on left, inline search on right */
@@ -8875,35 +8751,10 @@ details.cfg-section[open] .cfg-fold-icon {
   color: var(--accent-ink);
 }
 
-.profiles-tab-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  flex: none;
-}
-
-.profiles-tab-dot.active {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.profiles-tab-dot.paused {
-  background: var(--fair);
-}
-
 .profile-active-tag {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-}
-
-.profile-live-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 26%, transparent);
-  flex: none;
 }
 
 /* Flat Custom Nodes Workspace (Tab 2) */

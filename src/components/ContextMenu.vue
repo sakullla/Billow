@@ -206,7 +206,6 @@ onBeforeUnmount(() => {
         >
           <Icon v-if="item.icon" :name="item.icon" :size="15" />
           <span class="menu-label">{{ item.label }}</span>
-          <span v-if="item.mark" class="dot-mark" />
           <span v-if="item.disabled && item.reason" class="menu-reason">{{ item.reason }}</span>
         </button>
       </div>
